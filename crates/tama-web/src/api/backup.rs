@@ -66,11 +66,11 @@ pub struct BackendEntry {
 /// GET /tama/v1/backup - Create backup and return as file download
 pub async fn create_backup(State(state): State<Arc<ProxyState>>) -> impl IntoResponse {
     let config_dir: std::path::PathBuf = match state.config.read().await.loaded_from.clone() {
-        Some(p) => p.parent().map(|d| d.to_path_buf()).unwrap_or(p),
+        Some(p) => p,
         None => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "config_path not configured"})),
+                Json(serde_json::json!({"error": "config_dir not configured"})),
             )
                 .into_response();
         }
@@ -140,7 +140,7 @@ pub async fn restore_preview(
         .await
         .loaded_from
         .as_ref()
-        .map(|p| p.parent().unwrap_or(p.as_path()).join("uploads"))
+        .map(|p| p.join("uploads"))
         .unwrap_or_else(|| std::env::temp_dir().join("tama_uploads"));
     if let Err(e) = std::fs::create_dir_all(&temp_dir) {
         return (
@@ -280,22 +280,12 @@ pub async fn start_restore(
         Ok(job) => {
             // Spawn background task for restore with safe error handling
             let config_dir = match state.config.read().await.loaded_from.as_ref() {
-                Some(path) => match path.parent() {
-                    Some(parent) => parent.to_path_buf(),
-                    None => {
-                        tracing::error!("Config path has no parent directory");
-                        return (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(serde_json::json!({"error": "Invalid config path"})),
-                        )
-                            .into_response();
-                    }
-                },
+                Some(path) => path.to_path_buf(),
                 None => {
-                    tracing::error!("Config path not configured");
+                    tracing::error!("Config dir not configured");
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({"error": "Config path not configured"})),
+                        Json(serde_json::json!({"error": "Config dir not configured"})),
                     )
                         .into_response();
                 }
@@ -306,7 +296,7 @@ pub async fn start_restore(
                 .await
                 .loaded_from
                 .as_ref()
-                .map(|p| p.parent().unwrap_or(p.as_path()).join("uploads"))
+                .map(|p| p.join("uploads"))
                 .unwrap_or_else(|| std::env::temp_dir().join("tama_uploads"));
             let job_id = job.id.clone();
 

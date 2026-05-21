@@ -71,7 +71,7 @@ pub async fn run_spec_benchmark(
 
     let job_id = job.id.clone();
     let req_clone = req.clone();
-    let config_path = state.config.read().await.loaded_from.clone();
+    let config_dir = state.config.read().await.loaded_from.clone();
     let proxy_base_url = state.config.read().await.proxy_url();
     let client = state.client.clone();
 
@@ -81,7 +81,7 @@ pub async fn run_spec_benchmark(
             jobs.clone(),
             &job,
             &req_clone,
-            config_path,
+            config_dir,
             proxy_base_url,
             client,
         )
@@ -107,7 +107,7 @@ pub async fn run_spec_benchmark_inner(
     jobs: Arc<JobManager>,
     job: &Arc<tama_core::web_types::Job>,
     req: &SpecBenchmarkRunRequest,
-    config_path: Option<std::path::PathBuf>,
+    config_dir: Option<std::path::PathBuf>,
     proxy_base_url: String,
     client: reqwest::Client,
 ) -> Result<()> {
@@ -117,11 +117,7 @@ pub async fn run_spec_benchmark_inner(
     unload_model_before_benchmark(&client, &proxy_base_url, &req.model_id, &job.id).await;
 
     // Load config
-    let config_dir = config_path
-        .as_ref()
-        .and_then(|p| p.parent())
-        .context("Cannot determine config directory")?
-        .to_path_buf();
+    let config_dir: std::path::PathBuf = config_dir.context("Cannot determine config directory")?;
 
     let config =
         tokio::task::spawn_blocking(move || tama_core::config::Config::load_from(&config_dir))

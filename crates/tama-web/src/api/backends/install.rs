@@ -149,13 +149,7 @@ pub async fn install_backend(
         };
 
         // Capture config_dir for the background task
-        let config_dir = state
-            .config
-            .read()
-            .await
-            .loaded_from
-            .as_ref()
-            .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+        let config_dir = state.config.read().await.loaded_from.clone();
 
         let jobs_clone = jobs.clone();
         let job_clone = job.clone();
@@ -420,13 +414,7 @@ pub async fn install_backend(
         _ => "custom",
     }
     .to_string();
-    let reg_config_dir = state
-        .config
-        .read()
-        .await
-        .loaded_from
-        .as_ref()
-        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+    let reg_config_dir = state.config.read().await.loaded_from.clone();
 
     let options = tama_core::backends::InstallOptions {
         backend_type: backend_type.clone(),
@@ -533,23 +521,12 @@ pub async fn remove_backend(
         }
     };
 
-    let config_path = match state.config.read().await.loaded_from.clone() {
+    let config_dir = match state.config.read().await.loaded_from.clone() {
         Some(p) => p,
         None => {
             return (
                 StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "config_path not configured"})),
-            )
-                .into_response();
-        }
-    };
-
-    let config_dir = match config_path.parent() {
-        Some(d) => d.to_path_buf(),
-        None => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "Cannot determine config directory"})),
+                Json(serde_json::json!({"error": "config_dir not configured"})),
             )
                 .into_response();
         }

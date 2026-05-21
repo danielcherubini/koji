@@ -30,23 +30,12 @@ pub async fn list_backends(State(state): State<Arc<ProxyState>>) -> impl IntoRes
     };
 
     // Open registry
-    let config_path = match state.config.read().await.loaded_from.clone() {
+    let config_dir = match state.config.read().await.loaded_from.clone() {
         Some(p) => p,
         None => {
             return (
                 StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "config_path not configured"})),
-            )
-                .into_response();
-        }
-    };
-
-    let config_dir = match config_path.parent() {
-        Some(d) => d.to_path_buf(),
-        None => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "Cannot determine config directory"})),
+                Json(serde_json::json!({"error": "config_dir not configured"})),
             )
                 .into_response();
         }
@@ -312,23 +301,12 @@ pub async fn check_backend_updates(State(state): State<Arc<ProxyState>>) -> impl
         })
         .map(|j| job_to_active_dto(&j));
 
-    let config_path = match state.config.read().await.loaded_from.clone() {
+    let config_dir = match state.config.read().await.loaded_from.clone() {
         Some(p) => p,
         None => {
             return (
                 StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "config_path not configured"})),
-            )
-                .into_response();
-        }
-    };
-
-    let config_dir = match config_path.parent() {
-        Some(d) => d.to_path_buf(),
-        None => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "Cannot determine config directory"})),
+                Json(serde_json::json!({"error": "config_dir not configured"})),
             )
                 .into_response();
         }
@@ -565,23 +543,12 @@ pub async fn list_backend_versions(
             .into_response();
     }
 
-    let config_path = match state.config.read().await.loaded_from.clone() {
+    let config_dir = match state.config.read().await.loaded_from.clone() {
         Some(p) => p,
         None => {
             return (
                 StatusCode::NOT_FOUND,
-                Json(json!({"error": "config_path not configured"})),
-            )
-                .into_response();
-        }
-    };
-
-    let config_dir = match config_path.parent() {
-        Some(d) => d.to_path_buf(),
-        None => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Cannot determine config directory"})),
+                Json(json!({"error": "config_dir not configured"})),
             )
                 .into_response();
         }
