@@ -299,7 +299,7 @@ pub fn App() -> impl IntoView {
                 <Routes fallback=|| "Page not found">
                     <Route path=path!("/ui") view=pages::dashboard::Dashboard />
                     <Route path=path!("/ui/models") view=pages::models::Models />
-                    <Route path=path!("/ui/models/:id/edit") view=pages::model_editor::ModelEditor />
+                    <Route path=path!("/ui/model/:id/edit") view=pages::model_editor::ModelEditor />
                     <Route path=path!("/ui/backends") view=pages::backends::Backends />
                     <Route path=path!("/ui/benchmarks") view=pages::benchmarks::Benchmarks />
                     <Route path=path!("/ui/logs") view=pages::logs::Logs />

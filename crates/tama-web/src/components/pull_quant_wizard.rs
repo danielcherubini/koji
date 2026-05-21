@@ -534,9 +534,7 @@ fn spawn_download_events_listener(
     ] {
         let es = es.clone();
         let job_ids = job_ids.clone();
-        let dj = dj.clone();
-        let ws = ws.clone();
-        let cancel = cancel.clone();
+        // RwSignal is Copy — no clone needed
         let event_name = event_name.to_string();
         let event_name_for_listener = event_name.clone();
 

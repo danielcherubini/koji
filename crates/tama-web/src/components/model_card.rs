@@ -265,7 +265,7 @@ pub fn ModelCard(
                     {if let Some(log_src) = &log_source {
                         view! {
                             <A
-                                href=format!("/logs?source={}", log_src)
+                                href=format!("/ui/logs?source={}", log_src)
                                 attr:class="btn-icon"
                                 attr:title="View backend logs"
                             >
@@ -278,7 +278,7 @@ pub fn ModelCard(
 
                     // Edit link — always rendered
                     <A
-                        href=format!("/models/{}/edit", edit_id)
+                        href=format!("/ui/model/{}/edit", edit_id)
                         attr:class="btn-icon"
                         attr:title="Edit model"
                     >
