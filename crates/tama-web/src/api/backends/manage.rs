@@ -8,7 +8,6 @@ use serde::Deserialize;
 use std::sync::Arc;
 
 use super::types::*;
-use crate::api::common::{get_config_dir, get_jobs, open_backend_manager, validate_path_param};
 use tama_core::proxy::ProxyState;
 
 /// Query params for POST /tama/v1/backends/:name/update
@@ -25,16 +24,42 @@ pub async fn update_backend(
     Path(name): Path<String>,
     axum::extract::Query(query): axum::extract::Query<UpdateQuery>,
 ) -> impl IntoResponse {
-    validate_path_param(&name)?;
+    // Validate path param to prevent path traversal attacks
+    if name.contains('/') || name.contains('\\') || name.contains("..") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Invalid backend name: path separators or traversal sequences not allowed"})),
+        )
+            .into_response();
+    }
 
-    let jobs = get_jobs(&state)?;
+    let jobs = match &state.web_jobs {
+        Some(j) => j,
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "job manager not configured"})),
+            )
+                .into_response();
+        }
+    };
 
-    let config_dir = get_config_dir(&state)?;
+    let config_dir = match state.config.read().await.loaded_from.clone() {
+        Some(p) => p,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "config_dir not configured"})),
+            )
+                .into_response();
+        }
+    };
 
     // Open manager and get backend
     let mgr_result: Result<tama_core::backends::BackendManager, _> =
-        open_backend_manager(config_dir.clone())
+        tokio::task::spawn_blocking(move || tama_core::backends::BackendManager::open(&config_dir))
             .await
+            .map_err(|e| anyhow::anyhow!("spawn error: {}", e))
             .and_then(|r| r);
 
     let mgr = match mgr_result {
@@ -343,14 +368,42 @@ pub async fn remove_backend_version(
     Path((name, version)): Path<(String, String)>,
     axum::extract::Query(query): axum::extract::Query<RemoveVersionQuery>,
 ) -> impl IntoResponse {
-    validate_path_param(&name)?;
-    validate_path_param(&version)?;
+    // Validate path params (prevent path traversal)
+    if name.contains('/') || name.contains('\\') || name.contains("..") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Invalid backend name: path separators or traversal sequences not allowed"})),
+        )
+            .into_response();
+    }
+    if version.contains('/') || version.contains('\\') || version.contains("..") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Invalid version: path separators or traversal sequences not allowed"})),
+        )
+            .into_response();
+    }
 
-    let config_dir = get_config_dir(&state)?;
+    let config_dir = match state.config.read().await.loaded_from.clone() {
+        Some(p) => p,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "config_dir not configured"})),
+            )
+                .into_response();
+        }
+    };
 
     // Open manager and get the specific version
+    let config_dir_clone = config_dir.clone();
     let mgr_result: Result<tama_core::backends::BackendManager, _> =
-        open_backend_manager(config_dir.clone()).await;
+        tokio::task::spawn_blocking(move || {
+            tama_core::backends::BackendManager::open(&config_dir_clone)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("spawn error: {}", e))
+        .and_then(|r| r);
 
     let mgr = match mgr_result {
         Ok(r) => r,
@@ -501,24 +554,58 @@ pub async fn activate_backend_version(
     axum::extract::Query(query): axum::extract::Query<ActivateQuery>,
     Json(req): Json<ActivateRequest>,
 ) -> impl IntoResponse {
-    validate_path_param(&name)?;
+    // Validate name
+    if name.contains('/') || name.contains('\\') || name.contains("..") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Invalid backend name"})),
+        )
+            .into_response();
+    }
 
-    let config_dir = get_config_dir(&state)?;
+    let config_dir = match state.config.read().await.loaded_from.clone() {
+        Some(p) => p,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "config_dir not configured"})),
+            )
+                .into_response();
+        }
+    };
 
     // Determine gpu_variant: use explicit value or auto-infer from manager
     let gpu_variant = match query.gpu_variant {
         Some(v) => v,
         None => {
+            let config_dir_clone = config_dir.clone();
             let name_clone = name.clone();
             let version_clone = req.version.clone();
-            let mgr = open_backend_manager(config_dir.clone()).await?;
-            let versions = match mgr.list_versions(&name_clone, None)? {
-                Some(v) => v,
-                None => {
+            let infer_result: Result<Option<Vec<tama_core::backends::BackendInfo>>, anyhow::Error> =
+                tokio::task::spawn_blocking(move || {
+                    let mgr = tama_core::backends::BackendManager::open(&config_dir_clone)?;
+                    mgr.list_versions(&name_clone, None)
+                })
+                .await
+                .map_err(|e| anyhow::anyhow!("spawn error: {}", e))
+                .and_then(|r| r);
+
+            let versions = match infer_result {
+                Ok(Some(v)) => v,
+                Ok(None) => {
                     return (
                         StatusCode::NOT_FOUND,
                         Json(serde_json::json!({
                             "error": format!("Backend '{}' not found", name)
+                        })),
+                    )
+                        .into_response();
+                }
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({
+                            "error": format!("Failed to query backend: {}", e)
                         })),
                     )
                         .into_response();
@@ -581,28 +668,45 @@ pub async fn activate_backend_version(
         }
     };
 
+    let config_dir_clone = config_dir.clone();
     let version_clone = req.version.clone();
     let name_clone = name.clone();
     let version_for_error = version_clone.clone();
     let gpu_variant_clone = gpu_variant.to_string();
-    let mgr = open_backend_manager(config_dir.clone()).await?;
-    let activated = mgr.activate(&name_clone, &gpu_variant_clone, &version_clone)?;
+    let mgr_result: Result<(tama_core::backends::BackendManager, bool), _> =
+        tokio::task::spawn_blocking(move || {
+            let mgr = tama_core::backends::BackendManager::open(&config_dir_clone)?;
+            let activated = mgr.activate(&name_clone, &gpu_variant_clone, &version_clone)?;
+            Ok((mgr, activated))
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("spawn error: {}", e))
+        .and_then(|r| r);
 
-    if !activated {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "error": format!("Version '{}' not found for backend '{}'", version_for_error, name)
-            })),
+    match mgr_result {
+        Ok((_, activated)) => {
+            if !activated {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({
+                        "error": format!("Version '{}' not found for backend '{}'", version_for_error, name)
+                    })),
+                )
+                    .into_response();
+            }
+
+            Json(ActivateResponse {
+                version: req.version,
+                is_active: true,
+            })
+            .into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("Failed to activate: {}", e)})),
         )
-            .into_response();
+            .into_response(),
     }
-
-    Json(ActivateResponse {
-        version: req.version,
-        is_active: true,
-    })
-    .into_response()
 }
 
 /// POST /tama/v1/backends/:name/default-args
@@ -625,18 +729,29 @@ pub async fn update_backend_default_args(
     axum::extract::Query(query): axum::extract::Query<DefaultArgsQuery>,
     Json(req): Json<UpdateDefaultArgsRequest>,
 ) -> impl IntoResponse {
-    let config_dir = get_config_dir(&state)?;
+    let config_dir = match state.config.read().await.loaded_from.clone() {
+        Some(p) => p,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "config_dir not configured"})),
+            )
+                .into_response();
+        }
+    };
 
     let backend_name = backend_name.clone();
     let gpu_variant = query.gpu_variant.clone();
     let default_args = req.default_args.clone();
 
-    let result: Result<(), anyhow::Error> = (async {
-        let mgr = open_backend_manager(config_dir.clone()).await?;
+    let result: Result<(), anyhow::Error> = tokio::task::spawn_blocking(move || {
+        let mgr = tama_core::backends::BackendManager::open(&config_dir)?;
         mgr.save_config(&backend_name, &gpu_variant, &default_args, None)?;
         Ok(())
     })
-    .await;
+    .await
+    .map_err(|e| anyhow::anyhow!("spawn error: {}", e))
+    .and_then(|r| r);
 
     match result {
         Ok(()) => Json(serde_json::json!({"success": true})).into_response(),
