@@ -134,10 +134,10 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         {
             let proxy_config_server = proxy_config.clone();
-            let config_path_server = config_path.clone();
+            let config_dir_server = config_dir.clone();
             tokio::spawn(async move {
                 let mut config = (*proxy_config_server.read().await).clone();
-                config.loaded_from = Some(config_path_server);
+                config.loaded_from = Some(config_dir_server);
                 let state = Arc::new(tama_core::proxy::ProxyState::new(config, None));
                 axum::serve(
                     listener,
@@ -371,10 +371,10 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         {
-            let config_path_server = config_path.clone();
+            let config_dir_server = config_dir.clone();
             tokio::spawn(async move {
                 let config = tama_core::config::Config {
-                    loaded_from: Some(config_path_server),
+                    loaded_from: Some(config_dir_server),
                     ..Default::default()
                 };
                 let state = Arc::new(tama_core::proxy::ProxyState::new(config, None));
