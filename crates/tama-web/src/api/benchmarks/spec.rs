@@ -71,7 +71,7 @@ pub async fn run_spec_benchmark(
 
     let job_id = job.id.clone();
     let req_clone = req.clone();
-    let config_dir = state.config.read().await.loaded_from.clone();
+    let config_dir = state.db_dir.clone();
     let proxy_base_url = state.config.read().await.proxy_url();
     let client = state.client.clone();
 

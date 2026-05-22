@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;
 
+use crate::api::common::get_config_dir;
 use tama_core::proxy::ProxyState;
 
 /// Request body for restore preview.
@@ -65,16 +66,7 @@ pub struct BackendEntry {
 
 /// GET /tama/v1/backup - Create backup and return as file download
 pub async fn create_backup(State(state): State<Arc<ProxyState>>) -> impl IntoResponse {
-    let config_dir: std::path::PathBuf = match state.config.read().await.loaded_from.clone() {
-        Some(p) => p,
-        None => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "config_dir not configured"})),
-            )
-                .into_response();
-        }
-    };
+    let config_dir = get_config_dir(&state)?;
 
     // Spawn blocking task for backup
     let result = tokio::task::spawn_blocking(move || {
@@ -135,10 +127,7 @@ pub async fn restore_preview(
 ) -> impl IntoResponse {
     // Save upload to temp file
     let temp_dir = state
-        .config
-        .read()
-        .await
-        .loaded_from
+        .db_dir
         .as_ref()
         .map(|p| p.join("uploads"))
         .unwrap_or_else(|| std::env::temp_dir().join("tama_uploads"));
@@ -279,22 +268,15 @@ pub async fn start_restore(
     match job {
         Ok(job) => {
             // Spawn background task for restore with safe error handling
-            let config_dir = match state.config.read().await.loaded_from.as_ref() {
-                Some(path) => path.to_path_buf(),
-                None => {
-                    tracing::error!("Config dir not configured");
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({"error": "Config dir not configured"})),
-                    )
-                        .into_response();
-                }
-            };
+            let config_dir = get_config_dir(&state).map_err(|_| {
+                tracing::error!("Config dir not configured");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": "Config dir not configured"})),
+                )
+            })?;
             let temp_dir = state
-                .config
-                .read()
-                .await
-                .loaded_from
+                .db_dir
                 .as_ref()
                 .map(|p| p.join("uploads"))
                 .unwrap_or_else(|| std::env::temp_dir().join("tama_uploads"));

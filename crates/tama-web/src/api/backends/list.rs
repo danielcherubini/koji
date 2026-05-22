@@ -8,6 +8,7 @@ use serde_json::json;
 use std::sync::Arc;
 
 use super::types::*;
+use crate::api::common::get_config_dir;
 use tama_core::proxy::ProxyState;
 
 /// GET /tama/v1/backends
@@ -30,16 +31,7 @@ pub async fn list_backends(State(state): State<Arc<ProxyState>>) -> impl IntoRes
     };
 
     // Open registry
-    let config_dir = match state.config.read().await.loaded_from.clone() {
-        Some(p) => p,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "config_dir not configured"})),
-            )
-                .into_response();
-        }
-    };
+    let config_dir = get_config_dir(&state)?;
 
     // Open registry (blocking call wrapped in spawn_blocking)
     let config_dir_clone = config_dir.clone();
@@ -301,16 +293,7 @@ pub async fn check_backend_updates(State(state): State<Arc<ProxyState>>) -> impl
         })
         .map(|j| job_to_active_dto(&j));
 
-    let config_dir = match state.config.read().await.loaded_from.clone() {
-        Some(p) => p,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "config_dir not configured"})),
-            )
-                .into_response();
-        }
-    };
+    let config_dir = get_config_dir(&state)?;
 
     // Open registry
     let config_dir_clone = config_dir.clone();
@@ -543,16 +526,7 @@ pub async fn list_backend_versions(
             .into_response();
     }
 
-    let config_dir = match state.config.read().await.loaded_from.clone() {
-        Some(p) => p,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": "config_dir not configured"})),
-            )
-                .into_response();
-        }
-    };
+    let config_dir = get_config_dir(&state)?;
 
     let config_dir_clone = config_dir.clone();
     let mgr_result: Result<tama_core::backends::BackendManager, _> =

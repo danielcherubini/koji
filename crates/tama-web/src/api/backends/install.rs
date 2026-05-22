@@ -8,6 +8,7 @@ use serde::Deserialize;
 use std::sync::Arc;
 
 use super::types::*;
+use crate::api::common::get_config_dir;
 use tama_core::proxy::ProxyState;
 
 /// POST /tama/v1/backends/install
@@ -149,7 +150,7 @@ pub async fn install_backend(
         };
 
         // Capture config_dir for the background task
-        let config_dir = state.config.read().await.loaded_from.clone();
+        let config_dir = state.db_dir.clone();
 
         let jobs_clone = jobs.clone();
         let job_clone = job.clone();
@@ -414,7 +415,7 @@ pub async fn install_backend(
         _ => "custom",
     }
     .to_string();
-    let reg_config_dir = state.config.read().await.loaded_from.clone();
+    let reg_config_dir = state.db_dir.clone();
 
     let options = tama_core::backends::InstallOptions {
         backend_type: backend_type.clone(),
@@ -521,16 +522,7 @@ pub async fn remove_backend(
         }
     };
 
-    let config_dir = match state.config.read().await.loaded_from.clone() {
-        Some(p) => p,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "config_dir not configured"})),
-            )
-                .into_response();
-        }
-    };
+    let config_dir = get_config_dir(&state)?;
 
     // Open manager and get backend
     if name.contains('/') || name.contains('\\') || name.contains("..") {

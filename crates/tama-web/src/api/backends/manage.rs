@@ -8,6 +8,7 @@ use serde::Deserialize;
 use std::sync::Arc;
 
 use super::types::*;
+use crate::api::common::get_config_dir;
 use tama_core::proxy::ProxyState;
 
 /// Query params for POST /tama/v1/backends/:name/update
@@ -44,16 +45,7 @@ pub async fn update_backend(
         }
     };
 
-    let config_dir = match state.config.read().await.loaded_from.clone() {
-        Some(p) => p,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "config_dir not configured"})),
-            )
-                .into_response();
-        }
-    };
+    let config_dir = get_config_dir(&state)?;
 
     // Open manager and get backend
     let mgr_result: Result<tama_core::backends::BackendManager, _> =
@@ -384,16 +376,7 @@ pub async fn remove_backend_version(
             .into_response();
     }
 
-    let config_dir = match state.config.read().await.loaded_from.clone() {
-        Some(p) => p,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "config_dir not configured"})),
-            )
-                .into_response();
-        }
-    };
+    let config_dir = get_config_dir(&state)?;
 
     // Open manager and get the specific version
     let config_dir_clone = config_dir.clone();
@@ -563,16 +546,7 @@ pub async fn activate_backend_version(
             .into_response();
     }
 
-    let config_dir = match state.config.read().await.loaded_from.clone() {
-        Some(p) => p,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "config_dir not configured"})),
-            )
-                .into_response();
-        }
-    };
+    let config_dir = get_config_dir(&state)?;
 
     // Determine gpu_variant: use explicit value or auto-infer from manager
     let gpu_variant = match query.gpu_variant {
@@ -729,16 +703,7 @@ pub async fn update_backend_default_args(
     axum::extract::Query(query): axum::extract::Query<DefaultArgsQuery>,
     Json(req): Json<UpdateDefaultArgsRequest>,
 ) -> impl IntoResponse {
-    let config_dir = match state.config.read().await.loaded_from.clone() {
-        Some(p) => p,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "config_dir not configured"})),
-            )
-                .into_response();
-        }
-    };
+    let config_dir = get_config_dir(&state)?;
 
     let backend_name = backend_name.clone();
     let gpu_variant = query.gpu_variant.clone();
