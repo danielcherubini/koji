@@ -8,7 +8,7 @@ use serde_json::json;
 use std::sync::Arc;
 
 use super::types::*;
-use crate::api::common::get_config_dir;
+use crate::api::common::{get_config_dir, open_backend_manager};
 use tama_core::proxy::ProxyState;
 
 /// GET /tama/v1/backends
@@ -34,14 +34,8 @@ pub async fn list_backends(State(state): State<Arc<ProxyState>>) -> impl IntoRes
     let config_dir = get_config_dir(&state)?;
 
     // Open registry (blocking call wrapped in spawn_blocking)
-    let config_dir_clone = config_dir.clone();
     let mgr_result: Result<tama_core::backends::BackendManager, _> =
-        tokio::task::spawn_blocking(move || {
-            tama_core::backends::BackendManager::open(&config_dir_clone)
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("spawn error: {}", e))
-        .and_then(|r| r);
+        open_backend_manager(config_dir.clone()).await;
 
     // Load backend configs from DB (keyed by (name, gpu_variant))
     let backend_configs_map: std::collections::HashMap<(String, String), Vec<String>> =
@@ -296,14 +290,8 @@ pub async fn check_backend_updates(State(state): State<Arc<ProxyState>>) -> impl
     let config_dir = get_config_dir(&state)?;
 
     // Open registry
-    let config_dir_clone = config_dir.clone();
     let mgr_result: Result<tama_core::backends::BackendManager, _> =
-        tokio::task::spawn_blocking(move || {
-            tama_core::backends::BackendManager::open(&config_dir_clone)
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("spawn error: {}", e))
-        .and_then(|r| r);
+        open_backend_manager(config_dir.clone()).await;
 
     // Load backend configs from DB (keyed by (name, gpu_variant))
     let backend_configs_map: std::collections::HashMap<(String, String), Vec<String>> =
@@ -528,14 +516,8 @@ pub async fn list_backend_versions(
 
     let config_dir = get_config_dir(&state)?;
 
-    let config_dir_clone = config_dir.clone();
     let mgr_result: Result<tama_core::backends::BackendManager, _> =
-        tokio::task::spawn_blocking(move || {
-            tama_core::backends::BackendManager::open(&config_dir_clone)
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("spawn error: {}", e))
-        .and_then(|r| r);
+        open_backend_manager(config_dir.clone()).await;
 
     match mgr_result {
         Ok(mgr) => {

@@ -8,7 +8,7 @@ use serde::Deserialize;
 use std::sync::Arc;
 
 use super::types::*;
-use crate::api::common::get_config_dir;
+use crate::api::common::{get_config_dir, get_jobs, open_backend_manager, validate_path_param};
 use tama_core::proxy::ProxyState;
 
 /// POST /tama/v1/backends/install
@@ -58,6 +58,8 @@ pub async fn install_backend(
         }
     }
 
+    let jobs = get_jobs(&state)?;
+
     // Validate gpu_type version fields: if present, must be non-empty and <= 32 chars
     match &req.gpu_type {
         GpuTypeDto::Cuda { version } | GpuTypeDto::Rocm { version } => {
@@ -79,16 +81,7 @@ pub async fn install_backend(
         _ => {}
     }
 
-    let jobs = match &state.web_jobs {
-        Some(j) => j,
-        None => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "job manager not configured"})),
-            )
-                .into_response();
-        }
-    };
+    let jobs = get_jobs(&state)?;
 
     // Parse backend type
     let backend_type = match req.backend_type.as_str() {
@@ -164,15 +157,7 @@ pub async fn install_backend(
             // Open manager and run TTS installer
             let result = match config_dir {
                 Some(ref config_dir) => {
-                    let config_dir_clone = config_dir.clone();
-                    let reg_result = tokio::task::spawn_blocking(move || {
-                        tama_core::backends::BackendManager::open(&config_dir_clone)
-                    })
-                    .await
-                    .map_err(|e| anyhow::anyhow!("spawn error: {}", e))
-                    .and_then(|r| r);
-
-                    let mgr = match reg_result {
+                    let mgr = match open_backend_manager(config_dir.clone()).await {
                         Ok(r) => r,
                         Err(e) => {
                             // Log the error and finish the job as failed
@@ -511,42 +496,16 @@ pub async fn remove_backend(
     Path(name): Path<String>,
     axum::extract::Query(query): axum::extract::Query<RemoveQuery>,
 ) -> impl IntoResponse {
-    let jobs = match &state.web_jobs {
-        Some(j) => j,
-        None => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "job manager not configured"})),
-            )
-                .into_response();
-        }
-    };
+    let jobs = get_jobs(&state)?;
 
     let config_dir = get_config_dir(&state)?;
 
     // Open manager and get backend
-    if name.contains('/') || name.contains('\\') || name.contains("..") {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "Invalid backend name: path separators or traversal sequences not allowed"
-            })),
-        )
-            .into_response();
-    }
+    validate_path_param(&name)?;
 
     let gpu_variant = query.gpu_variant;
 
-    let config_dir_clone = config_dir.clone();
-    let mgr_result: Result<tama_core::backends::BackendManager, _> =
-        tokio::task::spawn_blocking(move || {
-            tama_core::backends::BackendManager::open(&config_dir_clone)
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("spawn error: {}", e))
-        .and_then(|r| r);
-
-    let mgr = match mgr_result {
+    let mgr = match open_backend_manager(config_dir.clone()).await {
         Ok(r) => r,
         Err(e) => {
             return (
