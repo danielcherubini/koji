@@ -4,7 +4,14 @@ pub mod models;
 pub mod status;
 pub mod tts;
 
+// Re-exports for backward compatibility (flat imports via handlers::)
+#[allow(unused_imports)]
+pub use chat::{handle_chat_completions, handle_stream_chat_completions};
+#[allow(unused_imports)]
 pub use forward::{handle_fallback, handle_forward_get, handle_forward_post};
+#[allow(unused_imports)]
+pub use models::{handle_get_model, handle_list_models};
+#[allow(unused_imports)]
 pub use status::{handle_health, handle_metrics, handle_reload_configs, handle_status};
 
 use crate::proxy::ProxyState;

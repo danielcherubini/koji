@@ -1,7 +1,6 @@
 use super::chat::{handle_chat_completions, handle_stream_chat_completions};
 use super::forward::{handle_forward_get, handle_forward_post};
 use super::models::{handle_get_model, handle_list_models, parse_models_response};
-use super::*;
 use crate::config::{Config, ModelConfig};
 use crate::proxy::ProxyState;
 use axum::{
