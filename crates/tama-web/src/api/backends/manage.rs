@@ -525,28 +525,6 @@ pub async fn activate_backend_version(
                 }
             };
 
-            let versions = match infer_result {
-                Ok(Some(v)) => v,
-                Ok(None) => {
-                    return (
-                        StatusCode::NOT_FOUND,
-                        Json(serde_json::json!({
-                            "error": format!("Backend '{}' not found", name)
-                        })),
-                    )
-                        .into_response();
-                }
-                Err(e) => {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({
-                            "error": format!("Failed to query backend: {}", e)
-                        })),
-                    )
-                        .into_response();
-                }
-            };
-
             // Collect unique variants
             let mut variants: Vec<String> =
                 versions.iter().map(|v| v.gpu_variant.clone()).collect();
@@ -610,30 +588,21 @@ pub async fn activate_backend_version(
     let mgr = open_backend_manager(config_dir.clone()).await?;
     let activated = mgr.activate(&name_clone, &gpu_variant_clone, &version_clone)?;
 
-    match mgr_result {
-        Ok((_, activated)) => {
-            if !activated {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(serde_json::json!({
-                        "error": format!("Version '{}' not found for backend '{}'", version_for_error, name)
-                    })),
-                )
-                    .into_response();
-            }
-
-            Json(ActivateResponse {
-                version: req.version,
-                is_active: true,
-            })
-            .into_response()
-        }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("Failed to activate: {}", e)})),
+    if !activated {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": format!("Version '{}' not found for backend '{}'", version_for_error, name)
+            })),
         )
-            .into_response(),
+            .into_response();
     }
+
+    Json(ActivateResponse {
+        version: req.version,
+        is_active: true,
+    })
+    .into_response()
 }
 
 /// POST /tama/v1/backends/:name/default-args
@@ -662,11 +631,12 @@ pub async fn update_backend_default_args(
     let gpu_variant = query.gpu_variant.clone();
     let default_args = req.default_args.clone();
 
-    let result: Result<(), anyhow::Error> = (|| {
-        let mgr = tama_core::backends::BackendManager::open(&config_dir)?;
+    let result: Result<(), anyhow::Error> = (async {
+        let mgr = open_backend_manager(config_dir.clone()).await?;
         mgr.save_config(&backend_name, &gpu_variant, &default_args, None)?;
         Ok(())
-    })();
+    })
+    .await;
 
     match result {
         Ok(()) => Json(serde_json::json!({"success": true})).into_response(),
