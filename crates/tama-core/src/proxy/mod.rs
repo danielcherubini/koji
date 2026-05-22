@@ -12,13 +12,16 @@ pub mod tama_handlers;
 mod types;
 
 pub use forward::forward_request;
+pub use handlers::chat::{handle_chat_completions, handle_stream_chat_completions};
+pub use handlers::models::{
+    fetch_models_from_backend, handle_get_model, handle_list_models, parse_models_response,
+};
 pub use handlers::tts::{
     handle_audio_models, handle_audio_speech, handle_audio_stream, handle_audio_voices,
 };
 pub use handlers::{
-    fetch_models_from_backend, handle_chat_completions, handle_fallback, handle_forward_get,
-    handle_forward_post, handle_get_model, handle_health, handle_list_models, handle_metrics,
-    handle_status, handle_stream_chat_completions, json_error_response, parse_models_response,
+    handle_fallback, handle_forward_get, handle_forward_post, handle_health, handle_metrics,
+    handle_reload_configs, handle_status, json_error_response,
 };
 pub use process::{check_health, force_kill_process, is_process_alive, kill_process, override_arg};
 pub use server::ProxyServer;

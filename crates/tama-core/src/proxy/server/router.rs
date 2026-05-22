@@ -7,13 +7,14 @@ use std::sync::Arc;
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::cors::CorsLayer;
 
+use crate::proxy::handlers::chat::{handle_chat_completions, handle_stream_chat_completions};
+use crate::proxy::handlers::models::{handle_get_model, handle_list_models};
 use crate::proxy::handlers::tts::{
     handle_audio_models, handle_audio_speech, handle_audio_stream, handle_audio_voices,
 };
 use crate::proxy::handlers::{
-    handle_chat_completions, handle_fallback, handle_forward_get, handle_forward_post,
-    handle_get_model, handle_health, handle_list_models, handle_metrics, handle_reload_configs,
-    handle_status, handle_stream_chat_completions,
+    handle_fallback, handle_forward_get, handle_forward_post, handle_health, handle_metrics,
+    handle_reload_configs, handle_status,
 };
 use crate::proxy::tama_handlers::{
     backend_logs::handle_all_logs, handle_backend_log_sse, handle_hf_list_quants,
