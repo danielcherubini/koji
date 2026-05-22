@@ -1,5 +1,7 @@
 # Split proxy/handlers/mod.rs Plan
 
+**Status:** ✅ **Merged** — PR #93 merged to `main` on 2026-05-22.
+
 **Goal:** Split the 2109 LOC `proxy/handlers/mod.rs` into 6 focused files by responsibility.
 
 **Architecture:** Each handler group (chat, models, forwarding, status) gets its own module. Tests move to a dedicated `tests.rs`. Shared helpers stay in `mod.rs` as `pub(super)`. Re-exports maintain backward compatibility.
