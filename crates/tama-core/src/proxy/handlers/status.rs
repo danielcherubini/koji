@@ -10,7 +10,9 @@ use axum::{
 };
 use tracing;
 
-use crate::proxy::handlers::metrics::{format_backend_metrics, format_tama_metrics};
+use crate::proxy::handlers::metrics::{
+    format_backend_metrics, format_system_metrics, format_tama_metrics,
+};
 use crate::proxy::ProxyState;
 
 /// Returns the current proxy status.
@@ -126,7 +128,7 @@ pub async fn handle_metrics(state: State<Arc<ProxyState>>) -> Response {
         }
     }
 
-    // Build final output: backend metrics + Tama metrics
+    // Build final output: backend metrics + system metrics + Tama proxy metrics
     let mut output = String::new();
     for block in backend_metrics {
         output.push_str(&block);
@@ -134,6 +136,8 @@ pub async fn handle_metrics(state: State<Arc<ProxyState>>) -> Response {
             output.push('\n');
         }
     }
+    let sys = state.system_metrics.read().await;
+    output.push_str(&format_system_metrics(&sys));
     output.push_str(&format_tama_metrics(&state.metrics, active_count));
 
     Response::builder()

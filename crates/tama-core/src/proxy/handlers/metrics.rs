@@ -1,8 +1,9 @@
 //! Prometheus metrics formatting helpers.
 //!
-//! Converts Tama's internal proxy metrics and backend (llama.cpp) metrics
-//! into Prometheus exposition format for Grafana ingestion.
+//! Converts Tama's internal proxy metrics, system metrics, and backend
+//! (llama.cpp) metrics into Prometheus exposition format for Grafana ingestion.
 
+use crate::gpu::SystemMetrics;
 use crate::proxy::types::ProxyMetrics;
 use std::sync::atomic::Ordering::Relaxed;
 
@@ -59,7 +60,57 @@ pub fn format_tama_metrics(metrics: &ProxyMetrics, active_models: usize) -> Stri
     out
 }
 
-/// Push a gauge metric line to the output buffer.
+/// Format Tama's system metrics (CPU, RAM, GPU, VRAM) as Prometheus exposition format.
+pub fn format_system_metrics(sys: &SystemMetrics) -> String {
+    let mut out = String::new();
+
+    push_gauge_f32(
+        &mut out,
+        "tama:cpu_usage_pct",
+        "CPU utilization percentage (0.0-100.0).",
+        sys.cpu_usage_pct,
+    );
+    push_gauge(
+        &mut out,
+        "tama:ram_used_mib",
+        "RAM currently in use (MiB).",
+        sys.ram_used_mib,
+    );
+    push_gauge(
+        &mut out,
+        "tama:ram_total_mib",
+        "Total RAM (MiB).",
+        sys.ram_total_mib,
+    );
+
+    if let Some(pct) = sys.gpu_utilization_pct {
+        push_gauge(
+            &mut out,
+            "tama:gpu_utilization_pct",
+            "GPU utilization percentage (0-100).",
+            pct as u64,
+        );
+    }
+
+    if let Some(ref vram) = sys.vram {
+        push_gauge(
+            &mut out,
+            "tama:vram_used_mib",
+            "VRAM currently in use (MiB).",
+            vram.used_mib,
+        );
+        push_gauge(
+            &mut out,
+            "tama:vram_total_mib",
+            "Total VRAM (MiB).",
+            vram.total_mib,
+        );
+    }
+
+    out
+}
+
+/// Push a gauge metric line (u64 value) to the output buffer.
 fn push_gauge(out: &mut String, name: &str, help: &str, value: u64) {
     out.push_str("# HELP ");
     out.push_str(name);
@@ -73,6 +124,33 @@ fn push_gauge(out: &mut String, name: &str, help: &str, value: u64) {
     out.push(' ');
     out.push_str(&value.to_string());
     out.push('\n');
+}
+
+/// Push a gauge metric line (f32 value) to the output buffer.
+fn push_gauge_f32(out: &mut String, name: &str, help: &str, value: f32) {
+    out.push_str("# HELP ");
+    out.push_str(name);
+    out.push(' ');
+    out.push_str(help);
+    out.push('\n');
+    out.push_str("# TYPE ");
+    out.push_str(name);
+    out.push_str(" gauge\n");
+    out.push_str(name);
+    out.push(' ');
+    // Format with enough precision, removing trailing zeros
+    let formatted = format_value(value);
+    out.push_str(&formatted);
+    out.push('\n');
+}
+
+/// Format an f32 value, removing unnecessary trailing zeros.
+fn format_value(value: f32) -> String {
+    if value.fract() == 0.0 {
+        format!("{:.1}", value)
+    } else {
+        format!("{:.*}", 2, value)
+    }
 }
 
 /// Inject a `{server="<name>"}` label into a single Prometheus metric line.
