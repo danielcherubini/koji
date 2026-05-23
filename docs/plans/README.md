@@ -14,9 +14,9 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Quick Stats
 
-- **Total Plans**: 102
+- **Total Plans**: 103
 - **Completed**: 101 ✅
-- **In Progress**: 1 🚧
+- **In Progress**: 2 🚧
 - **Remaining**: 1
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
@@ -30,6 +30,7 @@ This directory contains implementation plans for the Tama project. Each plan doc
 | Plan | Description | PR / Git References |
 |------|-------------|---------------------|
 | [Split proxy/handlers/mod.rs](2025-05-22-split-proxy-handlers.md) | Split 2109 LOC file into 6 focused modules by responsibility | 🚧 IN PROGRESS |
+| [Merged /metrics Endpoint](2026-05-23-merged-metrics.md) | Merge Tama proxy metrics with backend (llama.cpp) metrics into Prometheus-format /metrics for Grafana | 🚧 IN PROGRESS |
 | [/v1/models Meta Enrichment](2026-05-20-v1-models-meta.md) | Forward /v1/models to backends for full GGUF meta, merge and inject ready | #92 ✅ COMPLETED |
 | [Wildcard Model Routing (whatevers-hot-n-fresh)](2026-05-19-whatevers-hot-n-fresh.md) | Virtual model alias that routes to most-recently-accessed loaded LLM, or loads last-used model from DB as fallback | `2048fb97`, `44c50a06`, `947f46b2`, `bcc95694`, `8e112e0a` ✅ COMPLETED |
 
