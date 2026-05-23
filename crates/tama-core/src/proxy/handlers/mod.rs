@@ -1,5 +1,6 @@
 pub mod chat;
 pub mod forward;
+pub mod metrics;
 pub mod models;
 pub mod status;
 pub mod tts;
@@ -9,6 +10,10 @@ pub mod tts;
 pub use chat::{handle_chat_completions, handle_stream_chat_completions};
 #[allow(unused_imports)]
 pub use forward::{handle_fallback, handle_forward_get, handle_forward_post};
+#[allow(unused_imports)]
+pub use metrics::{
+    format_backend_metrics, format_system_metrics, format_tama_metrics, inject_server_label,
+};
 #[allow(unused_imports)]
 pub use models::{handle_get_model, handle_list_models};
 #[allow(unused_imports)]

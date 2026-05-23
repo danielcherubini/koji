@@ -1,13 +1,18 @@
 //! Status, health, and metrics handlers.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::{
     extract::State,
     http::StatusCode,
-    response::{IntoResponse, Json},
+    response::{IntoResponse, Json, Response},
 };
+use tracing;
 
+use crate::proxy::handlers::metrics::{
+    format_backend_metrics, format_system_metrics, format_tama_metrics,
+};
 use crate::proxy::ProxyState;
 
 /// Returns the current proxy status.
@@ -48,20 +53,95 @@ pub async fn handle_health() -> Json<serde_json::Value> {
     }))
 }
 
-/// Returns current proxy metrics.
+/// Returns merged proxy and backend metrics in Prometheus exposition format.
 ///
-/// Provides JSON metrics including request counters, model load/unload
-/// counts, and the current number of active models.
+/// Fetches `/metrics` from all Ready (non-TTS) backends concurrently,
+/// injects `{server="<name>"}` labels, and appends Tama's own proxy
+/// metrics prefixed with `tama:`. Returns `text/plain; version=0.0.4`.
 #[axum::debug_handler]
-pub async fn handle_metrics(state: State<Arc<ProxyState>>) -> Json<serde_json::Value> {
-    use std::sync::atomic::Ordering::Relaxed;
-    let metrics = &state.metrics;
-    Json(serde_json::json!({
-        "total_requests": metrics.total_requests.load(Relaxed),
-        "successful_requests": metrics.successful_requests.load(Relaxed),
-        "failed_requests": metrics.failed_requests.load(Relaxed),
-        "models_loaded": metrics.models_loaded.load(Relaxed),
-        "models_unloaded": metrics.models_unloaded.load(Relaxed),
-        "active_models": state.models.read().await.len(),
-    }))
+pub async fn handle_metrics(state: State<Arc<ProxyState>>) -> Response {
+    // Collect Ready non-TTS backends and drop the lock immediately
+    let backends: Vec<(String, String)> = {
+        let models = state.models.read().await;
+        models
+            .iter()
+            .filter_map(|(name, ms)| {
+                if ms.is_ready() && !ms.is_tts_backend() {
+                    ms.backend_url().map(|url| (name.clone(), url.to_string()))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    };
+    let active_count = backends.len();
+
+    // Fetch metrics from each backend concurrently
+    let mut backend_metrics = Vec::new();
+    let client = state.client.clone();
+    let mut set = tokio::task::JoinSet::new();
+
+    for (server_name, backend_url) in &backends {
+        let client = client.clone();
+        let url = format!("{}/metrics", backend_url);
+        let name = server_name.clone();
+        set.spawn(async move {
+            match client
+                .get(&url)
+                .timeout(Duration::from_secs(5))
+                .send()
+                .await
+            {
+                Ok(resp) => match resp.text().await {
+                    Ok(body) => {
+                        let lines: Vec<&str> = body.lines().collect();
+                        Some(format_backend_metrics(&lines, &name))
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            backend = %name,
+                            error = %e,
+                            "Failed to read backend metrics body"
+                        );
+                        None
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!(
+                        backend = %name,
+                        error = %e,
+                        "Failed to fetch backend metrics"
+                    );
+                    None
+                }
+            }
+        });
+    }
+
+    while let Some(result) = set.join_next().await {
+        match result {
+            Ok(Some(metrics)) => backend_metrics.push(metrics),
+            Ok(None) => {} // Backend failed, already logged
+            Err(e) => {
+                tracing::warn!(error = %e, "Backend metrics task panicked");
+            }
+        }
+    }
+
+    // Build final output: backend metrics + system metrics + Tama proxy metrics
+    let mut output = String::new();
+    for block in backend_metrics {
+        output.push_str(&block);
+        if !block.ends_with('\n') {
+            output.push('\n');
+        }
+    }
+    let sys = state.system_metrics.read().await;
+    output.push_str(&format_system_metrics(&sys));
+    output.push_str(&format_tama_metrics(&state.metrics, active_count));
+
+    Response::builder()
+        .header("content-type", "text/plain; version=0.0.4; charset=utf-8")
+        .body(axum::body::Body::from(output))
+        .unwrap()
 }
