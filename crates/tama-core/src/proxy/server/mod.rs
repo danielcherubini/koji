@@ -538,6 +538,87 @@ mod tests {
         );
     }
 
+    /// Verify that /metrics merges backend metrics correctly with {server} labels.
+    #[tokio::test]
+    async fn test_metrics_merges_backend_metrics() {
+        use std::sync::atomic::AtomicU32;
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // Start a mock backend server
+        let mock_server = MockServer::start().await;
+
+        // Mock the /metrics endpoint with a simple Prometheus metric
+        let mock_body =
+            "# HELP test:counter A test counter.\n# TYPE test:counter counter\ntest:counter 42\n";
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(mock_body))
+            .mount(&mock_server)
+            .await;
+
+        let backend_url = format!("{}", mock_server.uri());
+
+        // Create state and register the mock as a Ready backend
+        let config = crate::config::Config::default();
+        let state = Arc::new(crate::proxy::ProxyState::new(config, None));
+
+        {
+            let mut models = state.models.write().await;
+            models.insert(
+                "test-model".to_string(),
+                super::super::types::ModelState::Ready {
+                    model_name: "test-model".to_string(),
+                    backend: "llama_cpp".to_string(),
+                    backend_pid: 99999,
+                    backend_url: backend_url.clone(),
+                    load_time: std::time::SystemTime::now(),
+                    last_accessed: std::time::Instant::now(),
+                    consecutive_failures: std::sync::Arc::new(AtomicU32::new(0)),
+                    failure_timestamp: None,
+                    restart_count: 0,
+                },
+            );
+        }
+
+        // Start the proxy server
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bound_addr = listener.local_addr().unwrap();
+
+        let server = ProxyServer::new(state.clone()).await;
+        let app = server.into_router();
+        let _handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        // Fetch /metrics and verify the merged output
+        let client = reqwest::Client::new();
+        let body = client
+            .get(format!("http://{}/metrics", bound_addr))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+
+        // Should contain Tama metrics
+        assert!(body.contains("tama:total_requests"), "missing Tama metrics");
+        assert!(
+            body.contains("tama:active_models 1"),
+            "should have 1 active model, got: {}",
+            body
+        );
+
+        // Should contain backend metric with server label
+        assert!(
+            body.contains("test:counter{server=\"test-model\"} 42"),
+            "backend metric should have server label, got: {}",
+            body
+        );
+    }
+
     #[tokio::test]
     async fn test_metrics_task_persists_to_db() {
         let tmp = tempfile::tempdir().unwrap();

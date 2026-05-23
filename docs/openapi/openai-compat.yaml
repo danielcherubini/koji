@@ -772,44 +772,6 @@ components:
           additionalProperties:
             $ref: "#/components/schemas/StatusModelEntry"
 
-    MetricsResponse:
-      type: object
-      required:
-        - total_requests
-        - successful_requests
-        - failed_requests
-        - models_loaded
-        - models_unloaded
-        - active_models
-      properties:
-        total_requests:
-          type: integer
-          format: int64
-          example: 42
-        successful_requests:
-          type: integer
-          format: int64
-          example: 40
-        failed_requests:
-          type: integer
-          format: int64
-          example: 2
-        models_loaded:
-          type: integer
-          format: int64
-          description: Cumulative load events since startup
-          example: 3
-        models_unloaded:
-          type: integer
-          format: int64
-          description: Cumulative unload events since startup
-          example: 1
-        active_models:
-          type: integer
-          format: int32
-          description: Number of model backends currently running
-          example: 2
-
     # -------------------------------------------------------------------------
     # Shared error schema
     # -------------------------------------------------------------------------

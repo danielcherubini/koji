@@ -3,8 +3,6 @@
 //! Converts Tama's internal proxy metrics and backend (llama.cpp) metrics
 //! into Prometheus exposition format for Grafana ingestion.
 
-#![allow(dead_code)]
-
 use crate::proxy::types::ProxyMetrics;
 use std::sync::atomic::Ordering::Relaxed;
 
