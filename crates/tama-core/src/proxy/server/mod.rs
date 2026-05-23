@@ -435,6 +435,109 @@ mod tests {
         assert_eq!(response.status(), 200);
     }
 
+    /// Verify that /metrics returns Prometheus content type and tama: prefixed metrics.
+    #[tokio::test]
+    async fn test_metrics_returns_prometheus_format() {
+        let config = crate::config::Config::default();
+        let state = Arc::new(crate::proxy::ProxyState::new(config, None));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bound_addr = listener.local_addr().unwrap();
+
+        let server = ProxyServer::new(state.clone()).await;
+        let app = server.into_router();
+        let _handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        let client = reqwest::Client::new();
+        let response = client
+            .get(format!("http://{}/metrics", bound_addr))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+
+        // Check content type
+        let content_type = response.headers().get("content-type").unwrap();
+        assert!(
+            content_type.to_str().unwrap().contains("text/plain"),
+            "content type should be text/plain, got: {}",
+            content_type.to_str().unwrap()
+        );
+
+        // Check body contains tama: prefixed metrics
+        let body = response.text().await.unwrap();
+        assert!(
+            body.contains("tama:total_requests"),
+            "missing tama:total_requests"
+        );
+        assert!(
+            body.contains("tama:successful_requests"),
+            "missing tama:successful_requests"
+        );
+        assert!(
+            body.contains("tama:failed_requests"),
+            "missing tama:failed_requests"
+        );
+        assert!(
+            body.contains("tama:models_loaded"),
+            "missing tama:models_loaded"
+        );
+        assert!(
+            body.contains("tama:models_unloaded"),
+            "missing tama:models_unloaded"
+        );
+        assert!(
+            body.contains("tama:active_models"),
+            "missing tama:active_models"
+        );
+        // Check Prometheus format markers
+        assert!(body.contains("# HELP"), "missing # HELP lines");
+        assert!(body.contains("# TYPE"), "missing # TYPE lines");
+    }
+
+    /// Verify that /metrics gracefully handles no backends (returns just Tama metrics).
+    #[tokio::test]
+    async fn test_metrics_no_backends_returns_tama_only() {
+        let config = crate::config::Config::default();
+        let state = Arc::new(crate::proxy::ProxyState::new(config, None));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bound_addr = listener.local_addr().unwrap();
+
+        let server = ProxyServer::new(state.clone()).await;
+        let app = server.into_router();
+        let _handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        let client = reqwest::Client::new();
+        let body = client
+            .get(format!("http://{}/metrics", bound_addr))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+
+        // Should have Tama metrics with 0 active models
+        assert!(
+            body.contains("tama:active_models 0"),
+            "should have 0 active models"
+        );
+        // Should NOT have any backend metrics (no llamacpp: lines)
+        assert!(
+            !body.contains("llamacpp:"),
+            "should have no backend metrics"
+        );
+    }
+
     #[tokio::test]
     async fn test_metrics_task_persists_to_db() {
         let tmp = tempfile::tempdir().unwrap();
