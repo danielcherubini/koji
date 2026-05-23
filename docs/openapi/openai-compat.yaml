@@ -10,8 +10,8 @@ info:
        OpenAI can be pointed at Tama with minimal changes.
 
     2. **Root utility endpoints** — `/health`, `/status`, and `/metrics`.
-       These predate the Tama management API and are kept as-is for backwards
-       compatibility. For richer system health, use `GET /tama/v1/system/health`
+       `/metrics` returns Prometheus exposition format (merged proxy + backend
+       metrics). For richer system health, use `GET /tama/v1/system/health`
        (see `tama-api.yaml`).
 
     **Base URL:** Point your OpenAI client at `http://localhost:8080` and set
@@ -342,27 +342,43 @@ paths:
   /metrics:
     get:
       operationId: getMetrics
-      summary: Request and model metrics
+      summary: Prometheus metrics (proxy + backend merged)
       description: |
-        Returns lightweight aggregate counters for monitoring:
-        - Request totals (total, successful, failed)
-        - Model load/unload event counts
-        - Current number of active (loaded) model backends
+        Returns merged metrics in Prometheus exposition format for Grafana ingestion.
+        - Tama proxy metrics use `tama:` prefix (e.g., `tama:total_requests`)
+        - Backend metrics (e.g., `llamacpp:*`) include `{server="<name>"}` labels
+        - Backends that are unreachable are skipped with a logged warning
       tags: [utility]
       responses:
         "200":
-          description: Metrics snapshot
+          description: Prometheus text format metrics
           content:
-            application/json:
+            text/plain:
               schema:
-                $ref: "#/components/schemas/MetricsResponse"
-              example:
-                total_requests: 42
-                successful_requests: 40
-                failed_requests: 2
-                models_loaded: 3
-                models_unloaded: 1
-                active_models: 2
+                type: string
+                description: Prometheus exposition format
+              example: |
+                # HELP tama:total_requests Total number of requests proxied.
+                # TYPE tama:total_requests gauge
+                tama:total_requests 98
+                # HELP tama:successful_requests Number of successful (2xx) requests.
+                # TYPE tama:successful_requests gauge
+                tama:successful_requests 90
+                # HELP tama:failed_requests Number of failed (non-2xx) requests.
+                # TYPE tama:failed_requests gauge
+                tama:failed_requests 4
+                # HELP tama:models_loaded Cumulative number of model load events.
+                # TYPE tama:models_loaded gauge
+                tama:models_loaded 2
+                # HELP tama:models_unloaded Cumulative number of model unload events.
+                # TYPE tama:models_unloaded gauge
+                tama:models_unloaded 1
+                # HELP tama:active_models Current number of active (ready) models.
+                # TYPE tama:active_models gauge
+                tama:active_models 1
+                # HELP llamacpp:prompt_tokens_total Number of prompt tokens processed.
+                # TYPE llamacpp:prompt_tokens_total counter
+                llamacpp:prompt_tokens_total{server="my-model"} 32479
 
 # ===========================================================================
 # Components
