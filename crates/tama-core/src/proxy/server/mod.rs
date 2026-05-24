@@ -556,7 +556,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let backend_url = format!("{}", mock_server.uri());
+        let backend_url = mock_server.uri().to_string();
 
         // Create state and register the mock as a Ready backend
         let config = crate::config::Config::default();
