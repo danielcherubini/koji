@@ -333,8 +333,8 @@ impl ProxyServer {
     }
 
     /// Consume the server and return a configured axum Router.
-    pub fn into_router(self) -> axum::Router {
-        router::build_router(self.state)
+    pub async fn into_router(self) -> axum::Router {
+        router::build_router(self.state).await
     }
 
     /// Consume the server and return a unified axum Router that merges
@@ -349,11 +349,11 @@ impl ProxyServer {
     /// let app = server.into_unified_router(web_routes);
     /// ```
     #[cfg(feature = "web-ui")]
-    pub fn into_unified_router(
+    pub async fn into_unified_router(
         self,
         extra_routes: axum::Router<Arc<crate::proxy::ProxyState>>,
     ) -> axum::Router {
-        router::build_unified_router(self.state, extra_routes)
+        router::build_unified_router(self.state, extra_routes).await
     }
 
     /// Start serving on the given address.
@@ -368,7 +368,7 @@ impl ProxyServer {
     ) -> anyhow::Result<()> {
         // Clone state for shutdown cleanup (unloads TTS backends)
         let cleanup_state = Arc::clone(&self.state);
-        let app = self.into_router();
+        let app = self.into_router().await;
         let on_shutdown = async move {
             let models = cleanup_state.models.read().await;
             let tts_backends: Vec<String> = models
@@ -402,7 +402,7 @@ mod tests {
         let bound_addr = listener.local_addr().unwrap();
 
         let server = ProxyServer::new(state.clone()).await;
-        let app = server.into_router();
+        let app = server.into_router().await;
         let _handle = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
@@ -445,7 +445,7 @@ mod tests {
         let bound_addr = listener.local_addr().unwrap();
 
         let server = ProxyServer::new(state.clone()).await;
-        let app = server.into_router();
+        let app = server.into_router().await;
         let _handle = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
@@ -509,7 +509,7 @@ mod tests {
         let bound_addr = listener.local_addr().unwrap();
 
         let server = ProxyServer::new(state.clone()).await;
-        let app = server.into_router();
+        let app = server.into_router().await;
         let _handle = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
@@ -585,7 +585,7 @@ mod tests {
         let bound_addr = listener.local_addr().unwrap();
 
         let server = ProxyServer::new(state.clone()).await;
-        let app = server.into_router();
+        let app = server.into_router().await;
         let _handle = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
@@ -778,7 +778,7 @@ mod tests {
         let bound_addr = listener.local_addr().unwrap();
 
         let server = ProxyServer::new(state.clone()).await;
-        let app = server.into_router();
+        let app = server.into_router().await;
         let _handle = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
@@ -904,7 +904,7 @@ mod tests {
         let bound_addr = listener.local_addr().unwrap();
 
         let server = ProxyServer::new(state.clone()).await;
-        let app = server.into_router();
+        let app = server.into_router().await;
         let _handle = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });

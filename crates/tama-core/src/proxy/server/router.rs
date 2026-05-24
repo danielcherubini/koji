@@ -1,8 +1,11 @@
 use axum::{
+    middleware,
     routing::{get, post},
     Router,
 };
 use std::sync::Arc;
+
+use crate::proxy::auth::auth_middleware;
 #[cfg(feature = "web-ui")]
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::cors::CorsLayer;
@@ -26,7 +29,7 @@ use crate::proxy::tama_handlers::{
 use crate::proxy::ProxyState;
 
 /// Build the axum router with all proxy routes and shared state.
-pub fn build_router(state: Arc<ProxyState>) -> Router {
+pub async fn build_router(state: Arc<ProxyState>) -> Router {
     Router::new()
         // OpenAI-compatible routes
         // Some clients (e.g. those with base_url = http://host/v1) POST directly to /v1
@@ -47,7 +50,7 @@ pub fn build_router(state: Arc<ProxyState>) -> Router {
         .route("/tama/v1/models/:id/load", post(handle_tama_load_model))
         .route("/tama/v1/models/:id/unload", post(handle_tama_unload_model))
         // OpenCode plugin discovery API — returns rich model metadata
-        .route("/tama/v1/opencode/models", get(handle_opencode_list_models))
+        .route("/v1/opencode/models", get(handle_opencode_list_models))
         // Pull jobs live under /tama/v1/pulls/ to avoid path conflict with /models/:id
         .route("/tama/v1/pulls", post(handle_tama_pull_model))
         .route("/tama/v1/pulls/:job_id", get(handle_tama_get_pull_job))
@@ -77,6 +80,10 @@ pub fn build_router(state: Arc<ProxyState>) -> Router {
         .route("/*path", post(handle_forward_post))
         .route("/*path", get(handle_forward_get))
         .fallback(handle_fallback)
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ))
         .with_state(state)
         .layer(CorsLayer::permissive())
 }
@@ -97,7 +104,7 @@ pub fn build_router(state: Arc<ProxyState>) -> Router {
 /// but without `.with_state()` called. This function merges proxy routes first
 /// (higher priority), then extra routes, and applies shared layers + state.
 #[cfg(feature = "web-ui")]
-pub fn build_unified_router(
+pub async fn build_unified_router(
     state: Arc<ProxyState>,
     extra_routes: Router<Arc<ProxyState>>,
 ) -> Router {
@@ -126,7 +133,7 @@ pub fn build_unified_router(
         .route("/tama/v1/models/:id/load", post(handle_tama_load_model))
         .route("/tama/v1/models/:id/unload", post(handle_tama_unload_model))
         // OpenCode plugin discovery API — returns rich model metadata
-        .route("/tama/v1/opencode/models", get(handle_opencode_list_models))
+        .route("/v1/opencode/models", get(handle_opencode_list_models))
         // Pull jobs live under /tama/v1/pulls/ to avoid path conflict with /models/:id
         .route("/tama/v1/pulls", post(handle_tama_pull_model))
         .route("/tama/v1/pulls/:job_id", get(handle_tama_get_pull_job))
@@ -160,9 +167,13 @@ pub fn build_unified_router(
     Router::new()
         .merge(proxy_routes)
         .merge(extra_routes)
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ))
+        .with_state(state)
         .layer(CorsLayer::permissive())
         .layer(CatchPanicLayer::new())
-        .with_state(state)
 }
 
 #[cfg(test)]
@@ -178,7 +189,7 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let bound_addr = listener.local_addr().unwrap();
 
-        let app = build_router(state.clone());
+        let app = build_router(state.clone()).await;
         let _handle = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
@@ -231,7 +242,7 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let bound_addr = listener.local_addr().unwrap();
 
-        let app = build_unified_router(state.clone(), extra_routes);
+        let app = build_unified_router(state.clone(), extra_routes).await;
         let _handle = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });

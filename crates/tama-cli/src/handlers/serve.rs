@@ -124,7 +124,7 @@ async fn start_proxy_server(
         // The proxy handles OS signals (SIGTERM/SIGINT) and graceful shutdown.
         let web_routes = tama_web::router::build_web_routes();
         let server = ProxyServer::new(state.clone()).await;
-        let app = server.into_unified_router(web_routes);
+        let app = server.into_unified_router(web_routes).await;
 
         // Clone state for shutdown cleanup (unloads TTS backends + kills job children)
         let cleanup_state = Arc::clone(&state);

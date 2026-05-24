@@ -1,3 +1,4 @@
+pub mod auth;
 pub mod download_queue;
 pub mod forward;
 mod handlers;

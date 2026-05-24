@@ -54,3 +54,4 @@ web-ui = ["dep:nix"]
 serde_json = "1.0.149"
 tempfile.workspace = true
 wiremock = "0.6"
+tower = { version = "0.5", features = ["util"] }

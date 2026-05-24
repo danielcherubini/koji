@@ -252,6 +252,15 @@ pub struct ProxyConfig {
     /// Set to 0 for unlimited (disabled). Default: 1.
     #[serde(default = "default_max_loaded_models")]
     pub max_loaded_models: u32,
+    /// Authentik instance URL for bearer token validation.
+    /// When set, all requests require auth (except paths in skip_paths).
+    /// Example: "https://auth.wizards.town"
+    #[serde(default)]
+    pub authenticator_url: Option<String>,
+    /// Paths exempt from authentication. Default: empty.
+    /// Example: ["/health", "/metrics"]
+    #[serde(default)]
+    pub authenticator_skip_paths: Vec<String>,
 }
 
 /// Main configuration struct.
@@ -601,6 +610,8 @@ impl From<CoreProxyConfig> for ProxyConfig {
             metrics_retention_secs: p.metrics_retention_secs,
             download_queue_poll_interval_secs: p.download_queue_poll_interval_secs,
             max_loaded_models: p.max_loaded_models,
+            authenticator_url: p.authenticator_url,
+            authenticator_skip_paths: p.authenticator_skip_paths,
         }
     }
 }
@@ -619,6 +630,8 @@ impl From<ProxyConfig> for CoreProxyConfig {
             metrics_retention_secs: p.metrics_retention_secs,
             download_queue_poll_interval_secs: p.download_queue_poll_interval_secs,
             max_loaded_models: p.max_loaded_models,
+            authenticator_url: p.authenticator_url,
+            authenticator_skip_paths: p.authenticator_skip_paths,
         }
     }
 }
@@ -835,6 +848,8 @@ mod tests {
             metrics_retention_secs: 86400,
             download_queue_poll_interval_secs: 2,
             max_loaded_models: 1,
+            authenticator_url: None,
+            authenticator_skip_paths: Vec::new(),
         };
 
         let json = serde_json::to_string(&proxy).unwrap();

@@ -96,6 +96,15 @@ pub struct ProxyConfig {
     /// Set to 0 for unlimited (disabled). Default: 1.
     #[serde(default = "default_max_loaded_models")]
     pub max_loaded_models: u32,
+    /// Authentik instance URL for bearer token validation.
+    /// When set, all requests require auth (except paths in skip_paths).
+    /// Example: "https://auth.wizards.town"
+    #[serde(default)]
+    pub authenticator_url: Option<String>,
+    /// Paths exempt from authentication. Default: empty.
+    /// Example: ["/health", "/metrics"]
+    #[serde(default)]
+    pub authenticator_skip_paths: Vec<String>,
 }
 
 impl Default for ProxyConfig {
@@ -111,6 +120,8 @@ impl Default for ProxyConfig {
             metrics_retention_secs: default_metrics_retention(),
             download_queue_poll_interval_secs: default_download_queue_poll_interval(),
             max_loaded_models: default_max_loaded_models(),
+            authenticator_url: None,
+            authenticator_skip_paths: Vec::new(),
         }
     }
 }
