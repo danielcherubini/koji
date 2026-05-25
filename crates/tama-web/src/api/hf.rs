@@ -55,7 +55,7 @@ pub async fn hf_metadata(
                     .map(|b| QuantEntry {
                         filename: b.filename,
                         quant: tama_core::models::pull::infer_quant_from_filename(&b.filename),
-                        size_bytes: Some(b.size),
+                        size_bytes: b.size,
                         kind: QuantKind::from_filename(&b.filename),
                     })
                     .collect();
