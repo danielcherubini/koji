@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::components::job_log_panel::JobLogPanel;
 use crate::components::self_update_section::SelfUpdateSection;
-use crate::utils::{extract_and_store_csrf_token, post_request};
+use crate::utils::{extract_and_store_csrf_token, get_request, post_request};
 
 fn short_sha(hash: &Option<String>) -> String {
     match hash {
@@ -158,10 +158,7 @@ pub fn Updates() -> impl IntoView {
     // Fetch on mount
     Effect::new(move |_| {
         wasm_bindgen_futures::spawn_local(async move {
-            match gloo_net::http::Request::get("/tama/v1/updates")
-                .send()
-                .await
-            {
+            match get_request("/tama/v1/updates").send().await {
                 Ok(resp) if resp.ok() => {
                     // Store CSRF token from response header (fallback when cookie unavailable)
                     extract_and_store_csrf_token(&resp);
@@ -186,10 +183,7 @@ pub fn Updates() -> impl IntoView {
                 Ok(resp) if resp.ok() => {
                     // Refresh list after a delay
                     gloo_timers::future::TimeoutFuture::new(2000).await;
-                    if let Ok(resp2) = gloo_net::http::Request::get("/tama/v1/updates")
-                        .send()
-                        .await
-                    {
+                    if let Ok(resp2) = get_request("/tama/v1/updates").send().await {
                         if let Ok(data) = resp2.json::<UpdatesListResponse>().await {
                             updates.set(data);
                         }
@@ -226,10 +220,7 @@ pub fn Updates() -> impl IntoView {
         // Refresh the updates list after job completes
         wasm_bindgen_futures::spawn_local(async move {
             gloo_timers::future::TimeoutFuture::new(500).await;
-            if let Ok(resp) = gloo_net::http::Request::get("/tama/v1/updates")
-                .send()
-                .await
-            {
+            if let Ok(resp) = get_request("/tama/v1/updates").send().await {
                 if let Ok(data) = resp.json::<UpdatesListResponse>().await {
                     let all_items: Vec<_> =
                         data.backends.iter().chain(data.models.iter()).collect();
@@ -243,7 +234,7 @@ pub fn Updates() -> impl IntoView {
     let _on_refresh_model = move |id: String| {
         wasm_bindgen_futures::spawn_local(async move {
             let url = format!("/tama/v1/models/{}/refresh", id);
-            let _ = gloo_net::http::Request::post(&url).send().await;
+            let _ = post_request(&url).send().await;
         });
     };
 
@@ -283,10 +274,7 @@ pub fn Updates() -> impl IntoView {
                     // Refresh list after delay
                     wasm_bindgen_futures::spawn_local(async move {
                         gloo_timers::future::TimeoutFuture::new(2000).await;
-                        if let Ok(r) = gloo_net::http::Request::get("/tama/v1/updates")
-                            .send()
-                            .await
-                        {
+                        if let Ok(r) = get_request("/tama/v1/updates").send().await {
                             if let Ok(data) = r.json::<UpdatesListResponse>().await {
                                 updates.set(data);
                             }
@@ -532,7 +520,7 @@ pub fn Updates() -> impl IntoView {
                                                         let url_id = id.clone();
                                                         async move {
                                                             let url = format!("/tama/v1/models/{}/refresh", url_id);
-                                                            let _ = gloo_net::http::Request::post(&url).send().await;
+                                                            let _ = post_request(&url).send().await;
                                                         }
                                                     })>
                                                     "Refresh Metadata"

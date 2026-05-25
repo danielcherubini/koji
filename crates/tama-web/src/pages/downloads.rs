@@ -3,7 +3,7 @@ use serde::Deserialize;
 use std::sync::LazyLock;
 
 pub use crate::utils::format_size;
-use crate::utils::{extract_and_store_csrf_token, post_request};
+use crate::utils::{extract_and_store_csrf_token, get_request, post_request};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct DownloadQueueItemDto {
@@ -79,10 +79,7 @@ pub fn Downloads() -> impl IntoView {
     // Initial fetch of active downloads
     let active_downloads_init = active_downloads.clone();
     wasm_bindgen_futures::spawn_local(async move {
-        if let Ok(resp) = gloo_net::http::Request::get("/tama/v1/downloads/active")
-            .send()
-            .await
-        {
+        if let Ok(resp) = get_request("/tama/v1/downloads/active").send().await {
             extract_and_store_csrf_token(&resp);
             if let Ok(data) = resp.json::<DownloadsActiveResponse>().await {
                 active_downloads_init.set(data.items);
@@ -102,7 +99,7 @@ pub fn Downloads() -> impl IntoView {
             let items_c = items.clone();
             let total_c = total.clone();
             wasm_bindgen_futures::spawn_local(async move {
-                if let Ok(resp) = gloo_net::http::Request::get(&format!(
+                if let Ok(resp) = get_request(&format!(
                     "/tama/v1/downloads/history?limit={}&offset={}",
                     limit_val,
                     page_val * limit_val
@@ -331,10 +328,7 @@ pub async fn cancel_download(job_id: &str) {
     if let Ok(resp) = post_request(&url).send().await {
         if resp.status() >= 200 && resp.status() < 300 {
             // Refresh active list
-            if let Ok(resp2) = gloo_net::http::Request::get("/tama/v1/downloads/active")
-                .send()
-                .await
-            {
+            if let Ok(resp2) = get_request("/tama/v1/downloads/active").send().await {
                 extract_and_store_csrf_token(&resp2);
                 if let Ok(data) = resp2.json::<DownloadsActiveResponse>().await {
                     ACTIVE_DOWNLOADS.set(data.items);

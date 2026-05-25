@@ -133,7 +133,7 @@ pub async fn poll_for_restart(
             max_attempts
         ));
 
-        if let Ok(resp) = gloo_net::http::Request::get("/tama/v1/self-update/check")
+        if let Ok(resp) = super::get_request("/tama/v1/self-update/check")
             .send()
             .await
         {

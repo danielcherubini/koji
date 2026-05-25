@@ -16,7 +16,7 @@ use self::spec_bench::SpecBench;
 use self::types::{HistoryEntry, BENCHMARK_TYPES, LLAMA_BENCH_PRESETS};
 use self::utils::{format_relative, format_timestamp};
 use crate::components::job_log_panel::JobLogPanel;
-use crate::utils::{extract_and_store_csrf_token, post_request};
+use crate::utils::{extract_and_store_csrf_token, get_request, post_request};
 
 /// Render "mean ± stddev" with one decimal place, or a single value when
 /// stddev rounds to zero.
@@ -206,7 +206,7 @@ pub fn Benchmarks() -> impl IntoView {
     Effect::new(move |_| {
         let _ = model_refresh.get();
         spawn_local(async move {
-            if let Ok(resp) = gloo_net::http::Request::get("/tama/v1/models").send().await {
+            if let Ok(resp) = get_request("/tama/v1/models").send().await {
                 extract_and_store_csrf_token(&resp);
                 if let Ok(root) = resp.json::<serde_json::Value>().await {
                     if let Some(models_arr) = root.get("models").and_then(|v| v.as_array()) {
@@ -231,10 +231,7 @@ pub fn Benchmarks() -> impl IntoView {
     // Fetch available backends for llama-bench selection.
     {
         spawn_local(async move {
-            if let Ok(resp) = gloo_net::http::Request::get("/tama/v1/backends")
-                .send()
-                .await
-            {
+            if let Ok(resp) = get_request("/tama/v1/backends").send().await {
                 extract_and_store_csrf_token(&resp);
                 if let Ok(root) = resp.json::<serde_json::Value>().await {
                     if let Some(backends_arr) = root.get("backends").and_then(|v| v.as_array()) {
@@ -264,10 +261,7 @@ pub fn Benchmarks() -> impl IntoView {
     Effect::new(move |_| {
         let _ = history_refresh.get();
         spawn_local(async move {
-            if let Ok(resp) = gloo_net::http::Request::get("/tama/v1/benchmarks/history")
-                .send()
-                .await
-            {
+            if let Ok(resp) = get_request("/tama/v1/benchmarks/history").send().await {
                 extract_and_store_csrf_token(&resp);
                 if let Ok(entries) = resp.json::<Vec<HistoryEntry>>().await {
                     history.set(entries);

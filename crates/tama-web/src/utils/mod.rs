@@ -57,6 +57,15 @@ pub fn extract_and_store_csrf_token(resp: &Response) {
     }
 }
 
+/// Build a GET request with X-CSRF-Token header injected.
+pub fn get_request(url: &str) -> RequestBuilder {
+    let mut builder = Request::get(url);
+    if let Some(token) = get_csrf_token() {
+        builder = builder.header("X-CSRF-Token", &token);
+    }
+    builder
+}
+
 /// Build a POST request with X-CSRF-Token header injected.
 pub fn post_request(url: &str) -> RequestBuilder {
     let mut builder = Request::post(url);
@@ -69,6 +78,15 @@ pub fn post_request(url: &str) -> RequestBuilder {
 /// Build a PUT request with X-CSRF-Token header injected.
 pub fn put_request(url: &str) -> RequestBuilder {
     let mut builder = Request::put(url);
+    if let Some(token) = get_csrf_token() {
+        builder = builder.header("X-CSRF-Token", &token);
+    }
+    builder
+}
+
+/// Build a DELETE request with X-CSRF-Token header injected.
+pub fn delete_request(url: &str) -> RequestBuilder {
+    let mut builder = Request::delete(url);
     if let Some(token) = get_csrf_token() {
         builder = builder.header("X-CSRF-Token", &token);
     }

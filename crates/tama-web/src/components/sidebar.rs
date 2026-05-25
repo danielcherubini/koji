@@ -2,6 +2,8 @@ use leptos::prelude::*;
 use leptos_router::components::A;
 use web_sys::window;
 
+use crate::utils::get_request;
+
 #[component]
 pub fn Sidebar() -> impl IntoView {
     let collapsed = RwSignal::new(false);
@@ -11,10 +13,7 @@ pub fn Sidebar() -> impl IntoView {
     // Check for backend/model updates on mount (separate from self-update)
     Effect::new(move |_| {
         wasm_bindgen_futures::spawn_local(async move {
-            if let Ok(resp) = gloo_net::http::Request::get("/tama/v1/updates")
-                .send()
-                .await
-            {
+            if let Ok(resp) = get_request("/tama/v1/updates").send().await {
                 if let Ok(data) = resp.json::<serde_json::Value>().await {
                     let has_updates = data
                         .get("backends")

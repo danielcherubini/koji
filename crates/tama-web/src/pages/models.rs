@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::components::modal::Modal;
 use crate::components::model_card::ModelCard;
 use crate::components::pull_quant_wizard::{CompletedQuant, PullQuantWizard};
-use crate::utils::{post_request, rw_signal_to_signal, CheckAllModelsApiResponse};
+use crate::utils::{get_request, post_request, rw_signal_to_signal, CheckAllModelsApiResponse};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ModelEntry {
@@ -50,10 +50,7 @@ pub fn Models() -> impl IntoView {
 
     let models = LocalResource::new(move || async move {
         let _ = refresh.get(); // track the signal
-        let resp = gloo_net::http::Request::get("/tama/v1/models")
-            .send()
-            .await
-            .ok()?;
+        let resp = get_request("/tama/v1/models").send().await.ok()?;
         resp.json::<ModelsResponse>().await.ok()
     });
 
@@ -86,7 +83,7 @@ pub fn Models() -> impl IntoView {
             check_all_status.set(None);
             // Fetch the list directly from the backend that exposes `id`s with
             // DB metadata so we iterate over the same set the editor operates on.
-            let resp = match gloo_net::http::Request::get("/tama/v1/models").send().await {
+            let resp = match get_request("/tama/v1/models").send().await {
                 Ok(r) => r,
                 Err(e) => {
                     check_all_status.set(Some((false, format!("Failed to list models: {}", e))));
