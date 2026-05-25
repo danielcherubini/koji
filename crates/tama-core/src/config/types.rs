@@ -121,10 +121,7 @@ impl Default for ProxyConfig {
             download_queue_poll_interval_secs: default_download_queue_poll_interval(),
             max_loaded_models: default_max_loaded_models(),
             authenticator_url: None,
-            authenticator_skip_paths: vec![
-                "/health".to_string(),
-                "/metrics".to_string(),
-            ],
+            authenticator_skip_paths: vec!["/health".to_string(), "/metrics".to_string()],
         }
     }
 }
