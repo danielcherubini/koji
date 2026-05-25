@@ -445,6 +445,26 @@ impl Config {
             }
         }
 
+        // Inject --alias for model identification in /v1/models responses.
+        // This allows the merge logic to match backend entries (by filename)
+        // against config entries (by api_name) via the aliases array.
+        // Only inject for llama.cpp backends, and only if not already set.
+        if is_llama_cpp_backend {
+            let alias_value = server
+                .api_name
+                .clone()
+                .or_else(|| server.model.clone())
+                .unwrap_or_default();
+            if !alias_value.is_empty() {
+                let already_has_alias = grouped
+                    .iter()
+                    .any(|e| matches!(crate::config::flag_name(e), Some("--alias") | Some("-a")));
+                if !already_has_alias {
+                    grouped.push(format!("--alias {}", alias_value));
+                }
+            }
+        }
+
         // Sampling: each sampling flag fully replaces the same flag in
         // anything injected so far.
         if let Some(sampling) = &server.sampling {

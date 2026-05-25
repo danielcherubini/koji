@@ -15,8 +15,9 @@ use tracing::warn;
 /// Find a matching model entry from backend responses.
 /// - If entries has exactly one model → return it
 /// - If multiple → try to match by config's `model` field against backend's `id` (file path)
+///   or against backend's `aliases` array
 /// - If no match → return first entry (best guess)
-fn find_model_in_entries(
+pub(crate) fn find_model_in_entries(
     entries: &[serde_json::Value],
     config_model: Option<&str>,
 ) -> Option<serde_json::Value> {
@@ -26,12 +27,23 @@ fn find_model_in_entries(
     if entries.len() == 1 {
         return Some(entries[0].clone());
     }
-    // Multiple entries: try to match by config's model field (file path)
+    // Multiple entries: try to match by config's model field (file path) or aliases
     if let Some(model_path) = config_model {
         for entry in entries {
+            // Match by id (file path)
             if let Some(id) = entry.get("id").and_then(|v| v.as_str()) {
                 if id == model_path {
                     return Some(entry.clone());
+                }
+            }
+            // Match by aliases array
+            if let Some(aliases) = entry.get("aliases").and_then(|a| a.as_array()) {
+                for alias in aliases {
+                    if let Some(alias_str) = alias.as_str() {
+                        if alias_str == model_path {
+                            return Some(entry.clone());
+                        }
+                    }
                 }
             }
         }
@@ -88,6 +100,10 @@ pub async fn handle_get_model(
         // Query backend's /v1/models and find matching entry
         let entries = fetch_models_from_backend(&state, backend_url).await;
         if let Some(mut entry) = find_model_in_entries(&entries, server_cfg.model.as_deref()) {
+            // Normalize the id to the config's api_name (or config_name)
+            // so the response is consistent with /v1/models list.
+            let canonical_id = server_cfg.api_name.as_deref().unwrap_or(&config_name);
+            entry["id"] = serde_json::json!(canonical_id);
             entry["ready"] = serde_json::value::to_value(true).unwrap();
             return Json(entry).into_response();
         }
@@ -148,27 +164,65 @@ pub async fn handle_list_models(state: State<Arc<ProxyState>>) -> Json<serde_jso
     let mut data: Vec<serde_json::Value> = Vec::new();
     let mut seen_ids = std::collections::HashSet::new();
 
-    // Track which config_names were served by backends (for fallback logic)
-    let mut served_config_names: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
-
     // We need to correlate backend results with config_names.
     // The order of `results` matches the order of Ready backends in `backend_info`.
     let mut ready_iter = backend_info.iter().filter(|(_, _, ready)| *ready);
     for entries in results {
         if let Some((config_name, _, _)) = ready_iter.next() {
-            served_config_names.insert(config_name.clone());
             for mut entry in entries {
-                let id = entry
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                if seen_ids.contains(&id) {
-                    warn!("Duplicate model id {} from backends", id);
-                    continue;
+                // Check if the entry's aliases match any config's api_name.
+                // If so, normalize the entry's id to the config's model_id
+                // (api_name or config_name) so deduplication works correctly.
+                let mut alias_matched = false;
+                let mut normalized_model_id: Option<String> = None;
+                if let Some(aliases) = entry.get("aliases").and_then(|a| a.as_array()) {
+                    for alias in aliases {
+                        if let Some(alias_str) = alias.as_str() {
+                            // Search all configs for a matching api_name
+                            for (_, cfg) in all_configs.iter() {
+                                if cfg.enabled
+                                    && cfg.api_name.as_deref().is_some_and(|n| n == alias_str)
+                                {
+                                    let model_id = cfg.api_name.as_deref().unwrap_or(config_name);
+                                    if seen_ids.contains(model_id) {
+                                        warn!(
+                                            "Duplicate model id {} (via alias) from backends",
+                                            model_id
+                                        );
+                                        alias_matched = true;
+                                        break;
+                                    }
+                                    normalized_model_id = Some(model_id.to_string());
+                                    break;
+                                }
+                            }
+                            if alias_matched || normalized_model_id.is_some() {
+                                break;
+                            }
+                        }
+                    }
                 }
-                seen_ids.insert(id);
+                // Apply normalization after dropping the immutable borrow on aliases
+                if let Some(new_id) = normalized_model_id {
+                    entry["id"] = serde_json::json!(new_id.clone());
+                    seen_ids.insert(new_id);
+                    alias_matched = true;
+                }
+
+                // Only check duplicate by raw id if we didn't match via alias.
+                // (Alias match already checked uniqueness and normalized the id.)
+                if !alias_matched {
+                    let id = entry
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if seen_ids.contains(&id) {
+                        warn!("Duplicate model id {} from backends", id);
+                        continue;
+                    }
+                    seen_ids.insert(id);
+                }
 
                 // Inject ready
                 entry["ready"] = serde_json::value::to_value(true).unwrap();

@@ -1352,11 +1352,8 @@ async fn test_handle_get_model_matches_by_model_field_when_multiple() {
     let bytes = to_bytes(body, 1024 * 1024).await.unwrap();
     let json: JsonValue = serde_json::from_slice(&bytes).unwrap();
 
-    // Should match model-b by config's model field
-    assert_eq!(
-        json["id"], "/path/to/model-b.gguf",
-        "Should match by config's model field"
-    );
+    // Should match model-b by config's model field, and normalize id to api_name
+    assert_eq!(json["id"], "my-api-name", "Should normalize id to api_name");
     assert_eq!(json["ready"], true);
 }
 
@@ -1414,4 +1411,344 @@ async fn test_handle_get_model_backend_failure_fallback() {
     assert_eq!(json["id"], "fail-api");
     assert!(json.get("meta").is_none());
     assert_eq!(json["ready"], false);
+}
+
+// ── Alias-based deduplication tests ──────────────────────────────────────
+
+/// Test that when a backend entry has an alias matching a config's api_name,
+/// the entry's id is normalized and no duplicate fallback entry is added.
+#[tokio::test]
+async fn test_handle_list_models_alias_deduplication() {
+    let mock_server = MockServer::start().await;
+
+    // Backend returns a model with filename id and an alias matching the api_name
+    let backend_response = serde_json::json!({
+        "object": "list",
+        "data": [
+            {
+                "id": "gemma-4-E2B-it-UD-IQ3_XXS.gguf",
+                "object": "model",
+                "created": 1779728594,
+                "owned_by": "llamacpp",
+                "aliases": ["unsloth/gemma-4-E2B-it-GGUF"],
+                "tags": [],
+                "meta": {
+                    "n_ctx": 32768,
+                    "n_params": "4647450147"
+                }
+            }
+        ]
+    });
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&backend_response))
+        .mount(&mock_server)
+        .await;
+
+    let config = Config::default();
+    let state = ProxyState::new(config, None);
+
+    // Config has api_name matching the alias
+    {
+        let mut mc = state.model_configs.write().await;
+        mc.insert(
+            "gemma-e2b".to_string(),
+            ModelConfig {
+                backend: "llama_cpp".to_string(),
+                api_name: Some("unsloth/gemma-4-E2B-it-GGUF".to_string()),
+                model: Some("unsloth/gemma-4-E2B-it-GGUF".to_string()),
+                enabled: true,
+                ..Default::default()
+            },
+        );
+    }
+
+    // Add a Ready model
+    {
+        let mut models = state.models.write().await;
+        models.insert(
+            "gemma-e2b".to_string(),
+            crate::proxy::ModelState::Ready {
+                model_name: "gemma-e2b".to_string(),
+                backend: "llama_cpp".to_string(),
+                backend_pid: 1001,
+                backend_url: mock_server.uri(),
+                load_time: std::time::SystemTime::now(),
+                last_accessed: std::time::Instant::now(),
+                consecutive_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+                failure_timestamp: None,
+                restart_count: 0,
+            },
+        );
+    }
+
+    let state_arc = Arc::new(state);
+    let state = State(state_arc.clone());
+
+    let response = handle_list_models(state).await;
+    let (_parts, body) = response.into_response().into_parts();
+    let bytes = to_bytes(body, 1024 * 1024).await.unwrap();
+    let json: JsonValue = serde_json::from_slice(&bytes).unwrap();
+
+    let data = json.get("data").unwrap().as_array().unwrap();
+
+    // Should have: wildcard + 1 from backend (normalized) = 2
+    // The fallback config entry should NOT be added because the alias matched.
+    assert_eq!(
+        data.len(),
+        2,
+        "Expected 2 entries (wildcard + 1), got: {:?}",
+        data
+    );
+
+    // Wildcard is first
+    assert_eq!(data[0]["id"], crate::proxy::WILDCARD_MODEL_NAME);
+
+    // The model entry should have the normalized id (api_name), not the filename
+    assert_eq!(
+        data[1]["id"], "unsloth/gemma-4-E2B-it-GGUF",
+        "Entry id should be normalized to api_name"
+    );
+    // Meta should be preserved from backend
+    assert!(
+        data[1].get("meta").is_some(),
+        "meta should be preserved from backend response"
+    );
+    assert_eq!(data[1]["ready"], true, "Loaded model should be ready");
+
+    // Verify no duplicate with the original filename id
+    let has_filename_id = data
+        .iter()
+        .any(|e| e["id"] == "gemma-4-E2B-it-UD-IQ3_XXS.gguf");
+    assert!(
+        !has_filename_id,
+        "Should not have entry with original filename id"
+    );
+}
+
+/// Test that backend entries without matching aliases are NOT normalized.
+#[tokio::test]
+async fn test_handle_list_models_no_alias_no_normalization() {
+    let mock_server = MockServer::start().await;
+
+    // Backend returns a model without aliases (or with non-matching aliases)
+    let backend_response = serde_json::json!({
+        "object": "list",
+        "data": [
+            {
+                "id": "some-random-model.gguf",
+                "object": "model",
+                "created": 100,
+                "owned_by": "llamacpp",
+                "aliases": ["some-other-alias"],
+                "meta": {"n_ctx": 4096}
+            }
+        ]
+    });
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&backend_response))
+        .mount(&mock_server)
+        .await;
+
+    let config = Config::default();
+    let state = ProxyState::new(config, None);
+
+    {
+        let mut mc = state.model_configs.write().await;
+        mc.insert(
+            "my-model".to_string(),
+            ModelConfig {
+                backend: "llama_cpp".to_string(),
+                api_name: Some("my-api-name".to_string()),
+                model: Some("test/model".to_string()),
+                enabled: true,
+                ..Default::default()
+            },
+        );
+    }
+
+    {
+        let mut models = state.models.write().await;
+        models.insert(
+            "my-model".to_string(),
+            crate::proxy::ModelState::Ready {
+                model_name: "my-model".to_string(),
+                backend: "llama_cpp".to_string(),
+                backend_pid: 1001,
+                backend_url: mock_server.uri(),
+                load_time: std::time::SystemTime::now(),
+                last_accessed: std::time::Instant::now(),
+                consecutive_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+                failure_timestamp: None,
+                restart_count: 0,
+            },
+        );
+    }
+
+    let state_arc = Arc::new(state);
+    let state = State(state_arc.clone());
+
+    let response = handle_list_models(state).await;
+    let (_parts, body) = response.into_response().into_parts();
+    let bytes = to_bytes(body, 1024 * 1024).await.unwrap();
+    let json: JsonValue = serde_json::from_slice(&bytes).unwrap();
+
+    let data = json.get("data").unwrap().as_array().unwrap();
+
+    // Should have: wildcard + 1 from backend + 1 from config (unloaded fallback) = 3
+    // The backend entry is NOT normalized (alias doesn't match any api_name)
+    // The config fallback IS added (api_name not in seen_ids)
+    assert_eq!(data.len(), 3, "Expected 3 entries, got: {:?}", data);
+
+    // Backend entry keeps its original filename id
+    let backend_entry = data.iter().find(|e| e["id"] == "some-random-model.gguf");
+    assert!(
+        backend_entry.is_some(),
+        "Backend entry should keep original id"
+    );
+
+    // Config fallback entry is present
+    let config_entry = data.iter().find(|e| e["id"] == "my-api-name");
+    assert!(config_entry.is_some(), "Config fallback should be present");
+}
+
+/// Test that find_model_in_entries matches by aliases array.
+#[test]
+fn test_find_model_in_entries_matches_by_alias() {
+    let entries = vec![
+        serde_json::json!({
+            "id": "model-a.gguf",
+            "aliases": ["api-name-a"],
+        }),
+        serde_json::json!({
+            "id": "model-b.gguf",
+            "aliases": ["api-name-b"],
+        }),
+    ];
+
+    // Match by alias
+    let result = super::models::find_model_in_entries(&entries, Some("api-name-b"));
+    assert!(result.is_some());
+    assert_eq!(result.unwrap()["id"], "model-b.gguf");
+
+    // Match by id (file path)
+    let result = super::models::find_model_in_entries(&entries, Some("model-a.gguf"));
+    assert!(result.is_some());
+    assert_eq!(result.unwrap()["id"], "model-a.gguf");
+
+    // No match
+    let result = super::models::find_model_in_entries(&entries, Some("not-found"));
+    // Returns first entry as best guess
+    assert!(result.is_some());
+    assert_eq!(result.unwrap()["id"], "model-a.gguf");
+}
+
+/// Test that find_model_in_entries prefers single entry without matching.
+#[test]
+fn test_find_model_in_entries_single_entry() {
+    let entries = vec![serde_json::json!({
+        "id": "only-model.gguf",
+        "aliases": ["some-alias"],
+    })];
+
+    // Single entry: should return it regardless of config_model
+    let result = super::models::find_model_in_entries(&entries, Some("different-name"));
+    assert!(result.is_some());
+    assert_eq!(result.unwrap()["id"], "only-model.gguf");
+}
+
+/// Test handle_get_model normalizes id when backend entry is found via alias.
+#[tokio::test]
+async fn test_handle_get_model_normalizes_id_from_alias() {
+    let mock_server = MockServer::start().await;
+
+    let backend_response = serde_json::json!({
+        "object": "list",
+        "data": [
+            {
+                "id": "gemma-4-E2B-it-UD-IQ3_XXS.gguf",
+                "object": "model",
+                "created": 1779728594,
+                "owned_by": "llamacpp",
+                "aliases": ["unsloth/gemma-4-E2B-it-GGUF"],
+                "meta": {"n_ctx": 32768}
+            }
+        ]
+    });
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&backend_response))
+        .mount(&mock_server)
+        .await;
+
+    let config = Config::default();
+    let state = ProxyState::new(config, None);
+
+    {
+        let mut mc = state.model_configs.write().await;
+        mc.insert(
+            "gemma-e2b".to_string(),
+            ModelConfig {
+                backend: "llama_cpp".to_string(),
+                api_name: Some("unsloth/gemma-4-E2B-it-GGUF".to_string()),
+                model: Some("unsloth/gemma-4-E2B-it-GGUF".to_string()),
+                enabled: true,
+                ..Default::default()
+            },
+        );
+    }
+
+    {
+        let mut models = state.models.write().await;
+        models.insert(
+            "gemma-e2b".to_string(),
+            crate::proxy::ModelState::Ready {
+                model_name: "gemma-e2b".to_string(),
+                backend: "llama_cpp".to_string(),
+                backend_pid: 1001,
+                backend_url: mock_server.uri(),
+                load_time: std::time::SystemTime::now(),
+                last_accessed: std::time::Instant::now(),
+                consecutive_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+                failure_timestamp: None,
+                restart_count: 0,
+            },
+        );
+    }
+
+    let state_arc = Arc::new(state);
+    let state = State(state_arc.clone());
+
+    // Look up by config key
+    let response = handle_get_model(state.clone(), Path("gemma-e2b".to_string())).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let (_parts, body) = response.into_response().into_parts();
+    let bytes = to_bytes(body, 1024 * 1024).await.unwrap();
+    let json: JsonValue = serde_json::from_slice(&bytes).unwrap();
+
+    // ID should be normalized to api_name
+    assert_eq!(
+        json["id"], "unsloth/gemma-4-E2B-it-GGUF",
+        "ID should be normalized to api_name"
+    );
+    // Meta should be preserved
+    assert!(json.get("meta").is_some(), "meta should be preserved");
+    assert_eq!(json["ready"], true);
+
+    // Also look up by api_name
+    let response = handle_get_model(
+        state.clone(),
+        Path("unsloth/gemma-4-E2B-it-GGUF".to_string()),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let (_parts, body) = response.into_response().into_parts();
+    let bytes = to_bytes(body, 1024 * 1024).await.unwrap();
+    let json: JsonValue = serde_json::from_slice(&bytes).unwrap();
+
+    assert_eq!(json["id"], "unsloth/gemma-4-E2B-it-GGUF");
+    assert_eq!(json["ready"], true);
 }
