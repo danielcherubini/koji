@@ -101,8 +101,8 @@ pub struct ProxyConfig {
     /// Example: "https://auth.wizards.town"
     #[serde(default)]
     pub authenticator_url: Option<String>,
-    /// Paths exempt from authentication. Default: empty.
-    /// Example: ["/health", "/metrics"]
+    /// Paths exempt from authentication.
+    /// Default: ["/health", "/metrics"] — internal endpoints not exposed via Caddy.
     #[serde(default)]
     pub authenticator_skip_paths: Vec<String>,
 }
@@ -121,7 +121,10 @@ impl Default for ProxyConfig {
             download_queue_poll_interval_secs: default_download_queue_poll_interval(),
             max_loaded_models: default_max_loaded_models(),
             authenticator_url: None,
-            authenticator_skip_paths: Vec::new(),
+            authenticator_skip_paths: vec![
+                "/health".to_string(),
+                "/metrics".to_string(),
+            ],
         }
     }
 }
