@@ -225,9 +225,7 @@ pub fn App() -> impl IntoView {
                             let job_id = event_json.job_id.clone();
                             wasm_bindgen_futures::spawn_local(async move {
                                 if let Ok(resp) =
-                                    utils::get_request("/tama/v1/downloads/active")
-                                        .send()
-                                        .await
+                                    utils::get_request("/tama/v1/downloads/active").send().await
                                 {
                                     if let Ok(data) = resp
                                         .json::<pages::downloads::DownloadsActiveResponse>()

@@ -231,10 +231,7 @@ pub fn Benchmarks() -> impl IntoView {
     // Fetch available backends for llama-bench selection.
     {
         spawn_local(async move {
-            if let Ok(resp) = get_request("/tama/v1/backends")
-                .send()
-                .await
-            {
+            if let Ok(resp) = get_request("/tama/v1/backends").send().await {
                 extract_and_store_csrf_token(&resp);
                 if let Ok(root) = resp.json::<serde_json::Value>().await {
                     if let Some(backends_arr) = root.get("backends").and_then(|v| v.as_array()) {
@@ -264,10 +261,7 @@ pub fn Benchmarks() -> impl IntoView {
     Effect::new(move |_| {
         let _ = history_refresh.get();
         spawn_local(async move {
-            if let Ok(resp) = get_request("/tama/v1/benchmarks/history")
-                .send()
-                .await
-            {
+            if let Ok(resp) = get_request("/tama/v1/benchmarks/history").send().await {
                 extract_and_store_csrf_token(&resp);
                 if let Ok(entries) = resp.json::<Vec<HistoryEntry>>().await {
                     history.set(entries);

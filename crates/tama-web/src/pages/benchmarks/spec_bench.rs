@@ -204,10 +204,7 @@ pub fn SpecBench() -> impl IntoView {
     // Fetch available backends.
     {
         spawn_local(async move {
-            if let Ok(resp) = get_request("/tama/v1/backends")
-                .send()
-                .await
-            {
+            if let Ok(resp) = get_request("/tama/v1/backends").send().await {
                 extract_and_store_csrf_token(&resp);
                 if let Ok(root) = resp.json::<serde_json::Value>().await {
                     // /v1/backends returns { backends: [BackendCardDto], custom: [BackendCardDto] }

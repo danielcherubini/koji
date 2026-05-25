@@ -158,10 +158,7 @@ pub fn Updates() -> impl IntoView {
     // Fetch on mount
     Effect::new(move |_| {
         wasm_bindgen_futures::spawn_local(async move {
-            match get_request("/tama/v1/updates")
-                .send()
-                .await
-            {
+            match get_request("/tama/v1/updates").send().await {
                 Ok(resp) if resp.ok() => {
                     // Store CSRF token from response header (fallback when cookie unavailable)
                     extract_and_store_csrf_token(&resp);
@@ -186,10 +183,7 @@ pub fn Updates() -> impl IntoView {
                 Ok(resp) if resp.ok() => {
                     // Refresh list after a delay
                     gloo_timers::future::TimeoutFuture::new(2000).await;
-                    if let Ok(resp2) = get_request("/tama/v1/updates")
-                        .send()
-                        .await
-                    {
+                    if let Ok(resp2) = get_request("/tama/v1/updates").send().await {
                         if let Ok(data) = resp2.json::<UpdatesListResponse>().await {
                             updates.set(data);
                         }
@@ -226,10 +220,7 @@ pub fn Updates() -> impl IntoView {
         // Refresh the updates list after job completes
         wasm_bindgen_futures::spawn_local(async move {
             gloo_timers::future::TimeoutFuture::new(500).await;
-            if let Ok(resp) = get_request("/tama/v1/updates")
-                .send()
-                .await
-            {
+            if let Ok(resp) = get_request("/tama/v1/updates").send().await {
                 if let Ok(data) = resp.json::<UpdatesListResponse>().await {
                     let all_items: Vec<_> =
                         data.backends.iter().chain(data.models.iter()).collect();
@@ -283,10 +274,7 @@ pub fn Updates() -> impl IntoView {
                     // Refresh list after delay
                     wasm_bindgen_futures::spawn_local(async move {
                         gloo_timers::future::TimeoutFuture::new(2000).await;
-                        if let Ok(r) = get_request("/tama/v1/updates")
-                            .send()
-                            .await
-                        {
+                        if let Ok(r) = get_request("/tama/v1/updates").send().await {
                             if let Ok(data) = r.json::<UpdatesListResponse>().await {
                                 updates.set(data);
                             }

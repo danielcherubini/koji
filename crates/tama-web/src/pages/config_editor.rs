@@ -182,10 +182,7 @@ pub fn ConfigEditor() -> impl IntoView {
         spawn_local(async move {
             loading.set(true);
             error.set(None);
-            match get_request("/tama/v1/config/structured")
-                .send()
-                .await
-            {
+            match get_request("/tama/v1/config/structured").send().await {
                 Ok(resp) => {
                     // Store CSRF token from response header (fallback when cookie unavailable)
                     extract_and_store_csrf_token(&resp);

@@ -2,14 +2,13 @@ use super::types::*;
 
 use super::types::{ModelDetail, ModelListResponse, RefreshResponse, VerifyResponse};
 
-use crate::utils::{delete_request, extract_and_store_csrf_token, get_request, post_request, put_request};
+use crate::utils::{
+    delete_request, extract_and_store_csrf_token, get_request, post_request, put_request,
+};
 
 pub async fn fetch_model(id: String) -> Option<ModelDetail> {
     if id == "new" {
-        let resp = get_request("/tama/v1/models")
-            .send()
-            .await
-            .ok()?;
+        let resp = get_request("/tama/v1/models").send().await.ok()?;
         extract_and_store_csrf_token(&resp);
         let list: ModelListResponse = resp.json().await.ok()?;
         return Some(ModelDetail {
@@ -256,10 +255,7 @@ pub async fn verify_model_api(id: String) -> Result<VerifyResponse, String> {
 
 pub async fn fetch_sampling_templates(
 ) -> Option<std::collections::HashMap<String, serde_json::Value>> {
-    let resp = get_request("/tama/v1/models")
-        .send()
-        .await
-        .ok()?;
+    let resp = get_request("/tama/v1/models").send().await.ok()?;
     extract_and_store_csrf_token(&resp);
     let list: ModelListResponse = resp.json().await.ok()?;
     let templates = list.sampling_templates?;

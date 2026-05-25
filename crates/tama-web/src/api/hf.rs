@@ -53,8 +53,7 @@ pub async fn hf_metadata(
                 let mut quants: Vec<QuantEntry> = blobs
                     .into_values()
                     .map(|b| {
-                        let quant =
-                            tama_core::models::pull::infer_quant_from_filename(&b.filename);
+                        let quant = tama_core::models::pull::infer_quant_from_filename(&b.filename);
                         let kind = QuantKind::from_filename(&b.filename);
                         QuantEntry {
                             filename: b.filename,

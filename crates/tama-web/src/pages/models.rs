@@ -50,10 +50,7 @@ pub fn Models() -> impl IntoView {
 
     let models = LocalResource::new(move || async move {
         let _ = refresh.get(); // track the signal
-        let resp = get_request("/tama/v1/models")
-            .send()
-            .await
-            .ok()?;
+        let resp = get_request("/tama/v1/models").send().await.ok()?;
         resp.json::<ModelsResponse>().await.ok()
     });
 
