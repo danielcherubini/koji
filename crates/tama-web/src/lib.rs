@@ -225,7 +225,7 @@ pub fn App() -> impl IntoView {
                             let job_id = event_json.job_id.clone();
                             wasm_bindgen_futures::spawn_local(async move {
                                 if let Ok(resp) =
-                                    gloo_net::http::Request::get("/tama/v1/downloads/active")
+                                    utils::get_request("/tama/v1/downloads/active")
                                         .send()
                                         .await
                                 {
@@ -256,7 +256,7 @@ pub fn App() -> impl IntoView {
                             let offset = pages::downloads::HISTORY_PAGE.get_untracked()
                                 * pages::downloads::HISTORY_LIMIT.get_untracked();
                             wasm_bindgen_futures::spawn_local(async move {
-                                if let Ok(resp) = gloo_net::http::Request::get(&format!(
+                                if let Ok(resp) = utils::get_request(&format!(
                                     "/tama/v1/downloads/history?limit={}&offset={}",
                                     limit, offset
                                 ))

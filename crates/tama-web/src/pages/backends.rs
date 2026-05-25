@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::components::backend_card::{BackendCard, BackendCardDto};
 use crate::components::install_modal::{CapabilitiesDto, InstallModal, InstallRequest};
 use crate::components::job_log_panel::JobLogPanel;
-use crate::utils::{extract_and_store_csrf_token, post_request};
+use crate::utils::{delete_request, extract_and_store_csrf_token, get_request, post_request};
 
 #[derive(Debug, Clone, Deserialize, Default)]
 struct BackendListResponse {
@@ -43,7 +43,7 @@ pub fn Backends() -> impl IntoView {
     Effect::new(move |_| {
         let _ = refresh_tick.get();
         wasm_bindgen_futures::spawn_local(async move {
-            match gloo_net::http::Request::get("/tama/v1/backends")
+            match get_request("/tama/v1/backends")
                 .send()
                 .await
             {
@@ -65,7 +65,7 @@ pub fn Backends() -> impl IntoView {
             return;
         }
         wasm_bindgen_futures::spawn_local(async move {
-            match gloo_net::http::Request::get("/tama/v1/system/capabilities")
+            match get_request("/tama/v1/system/capabilities")
                 .send()
                 .await
             {
@@ -118,7 +118,7 @@ pub fn Backends() -> impl IntoView {
                     Ok(resp) => {
                         if resp.ok() {
                             // After checking, refresh the full backend list to get updated status
-                            match gloo_net::http::Request::get("/tama/v1/backends")
+                            match get_request("/tama/v1/backends")
                                 .send()
                                 .await
                             {
@@ -144,7 +144,7 @@ pub fn Backends() -> impl IntoView {
         action_error.set(None);
         wasm_bindgen_futures::spawn_local(async move {
             let url = format!("/tama/v1/backends/{backend_type}?gpu_variant={gpu_variant}");
-            match gloo_net::http::Request::delete(&url).send().await {
+            match delete_request(&url).send().await {
                 Ok(resp) => {
                     if resp.ok() {
                         refresh_tick.update(|n| *n += 1);

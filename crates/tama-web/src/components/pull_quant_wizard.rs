@@ -3,7 +3,7 @@ use std::collections::HashSet;
 #[cfg(not(feature = "ssr"))]
 use wasm_bindgen::JsCast;
 
-use crate::utils::{post_request, put_request};
+use crate::utils::{get_request, post_request, put_request};
 
 use crate::components::pull_wizard::*;
 
@@ -153,7 +153,7 @@ pub fn PullQuantWizard(
 
             wasm_bindgen_futures::spawn_local(async move {
                 let url = format!("/tama/v1/hf/{}", repo);
-                match gloo_net::http::Request::get(&url).send().await {
+                match get_request(&url).send().await {
                     Ok(resp) => match resp.json::<Vec<QuantEntry>>().await {
                         Ok(quants) => {
                             if quants.is_empty() {
@@ -237,9 +237,8 @@ pub fn PullQuantWizard(
                             wasm_bindgen_futures::spawn_local(async move {
                                 let quants_url = format!("/tama/v1/hf/{}", rid);
                                 let metadata_url = format!("/tama/v1/hf/{}/metadata", rid);
-                                let quants_future = gloo_net::http::Request::get(&quants_url).send();
-                                let metadata_future =
-                                    gloo_net::http::Request::get(&metadata_url).send();
+                                let quants_future = get_request(&quants_url).send();
+                                let metadata_future = get_request(&metadata_url).send();
 
                                 let (quants_resp, metadata_resp) =
                                     futures_util::join!(quants_future, metadata_future);

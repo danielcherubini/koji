@@ -8,7 +8,7 @@ use wasm_bindgen::JsCast;
 
 use crate::components::job_log_panel::JobLogPanel;
 use crate::pages::benchmarks::types::parse_model;
-use crate::utils::{extract_and_store_csrf_token, post_request};
+use crate::utils::{extract_and_store_csrf_token, get_request, post_request};
 
 /// Parse a comma-separated string of integers into a Vec<u32>.
 fn parse_sizes(s: &str) -> Vec<u32> {
@@ -48,7 +48,7 @@ pub fn MtpBench() -> impl IntoView {
     Effect::new(move |_| {
         let _ = model_refresh.get();
         spawn_local(async move {
-            if let Ok(resp) = gloo_net::http::Request::get("/tama/v1/models").send().await {
+            if let Ok(resp) = get_request("/tama/v1/models").send().await {
                 extract_and_store_csrf_token(&resp);
                 if let Ok(root) = resp.json::<serde_json::Value>().await {
                     if let Some(models_arr) = root.get("models").and_then(|v| v.as_array()) {
@@ -71,7 +71,7 @@ pub fn MtpBench() -> impl IntoView {
     // Fetch available backends.
     {
         spawn_local(async move {
-            if let Ok(resp) = gloo_net::http::Request::get("/tama/v1/backends")
+            if let Ok(resp) = get_request("/tama/v1/backends")
                 .send()
                 .await
             {

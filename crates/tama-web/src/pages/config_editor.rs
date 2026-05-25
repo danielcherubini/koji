@@ -3,7 +3,7 @@ use leptos::task::spawn_local;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-use crate::utils::{extract_and_store_csrf_token, post_request};
+use crate::utils::{extract_and_store_csrf_token, get_request, post_request};
 
 // ─── WASM-safe JSON mirror types ──────────────────────────────────────────
 // These match the shape served by /api/config/structured and accepted by POST.
@@ -182,7 +182,7 @@ pub fn ConfigEditor() -> impl IntoView {
         spawn_local(async move {
             loading.set(true);
             error.set(None);
-            match gloo_net::http::Request::get("/tama/v1/config/structured")
+            match get_request("/tama/v1/config/structured")
                 .send()
                 .await
             {

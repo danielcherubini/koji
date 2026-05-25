@@ -2,11 +2,11 @@ use super::types::*;
 
 use super::types::{ModelDetail, ModelListResponse, RefreshResponse, VerifyResponse};
 
-use crate::utils::{extract_and_store_csrf_token, post_request, put_request};
+use crate::utils::{delete_request, extract_and_store_csrf_token, get_request, post_request, put_request};
 
 pub async fn fetch_model(id: String) -> Option<ModelDetail> {
     if id == "new" {
-        let resp = gloo_net::http::Request::get("/tama/v1/models")
+        let resp = get_request("/tama/v1/models")
             .send()
             .await
             .ok()?;
@@ -45,7 +45,7 @@ pub async fn fetch_model(id: String) -> Option<ModelDetail> {
         });
     }
     let encoded_id = urlencoding::encode(&id);
-    let resp = gloo_net::http::Request::get(&format!("/tama/v1/models/{}", encoded_id))
+    let resp = get_request(&format!("/tama/v1/models/{}", encoded_id))
         .send()
         .await;
     match resp {
@@ -192,7 +192,7 @@ pub async fn rename_model(old_id: &str, new_id: &str) -> Result<(), String> {
 
 pub async fn delete_model_api(id: String) -> Result<(), String> {
     let encoded_id = urlencoding::encode(&id);
-    let resp = gloo_net::http::Request::delete(&format!("/tama/v1/models/{}", encoded_id))
+    let resp = delete_request(&format!("/tama/v1/models/{}", encoded_id))
         .send()
         .await
         .map_err(|e| e.to_string())?;
@@ -207,7 +207,7 @@ pub async fn delete_model_api(id: String) -> Result<(), String> {
 pub async fn delete_quant_api(id: String, quant_key: String) -> Result<(), String> {
     let encoded_id = urlencoding::encode(&id);
     let encoded_key = urlencoding::encode(&quant_key);
-    let resp = gloo_net::http::Request::delete(&format!(
+    let resp = delete_request(&format!(
         "/tama/v1/models/{}/quants/{}",
         encoded_id, encoded_key
     ))
@@ -256,7 +256,7 @@ pub async fn verify_model_api(id: String) -> Result<VerifyResponse, String> {
 
 pub async fn fetch_sampling_templates(
 ) -> Option<std::collections::HashMap<String, serde_json::Value>> {
-    let resp = gloo_net::http::Request::get("/tama/v1/models")
+    let resp = get_request("/tama/v1/models")
         .send()
         .await
         .ok()?;
