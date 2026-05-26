@@ -222,6 +222,9 @@ pub struct ProxyState {
     pub config: Arc<tokio::sync::RwLock<crate::config::Config>>,
     pub model_configs:
         Arc<tokio::sync::RwLock<std::collections::HashMap<String, crate::config::ModelConfig>>>,
+    /// alias_name → resolved model name (api_name or repo_id)
+    /// Only enabled aliases are cached. Populated from DB on init and reload.
+    pub aliases: Arc<tokio::sync::RwLock<std::collections::HashMap<String, String>>>,
     pub models: Arc<tokio::sync::RwLock<std::collections::HashMap<String, ModelState>>>,
     pub client: reqwest::Client,
     pub metrics: Arc<ProxyMetrics>,

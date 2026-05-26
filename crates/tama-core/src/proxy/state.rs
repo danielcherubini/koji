@@ -20,6 +20,7 @@ impl ProxyState {
         let state = Self {
             config: Arc::new(tokio::sync::RwLock::new(config)),
             model_configs: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            aliases: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             models: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             client: reqwest::Client::builder()
                 // Only set a connect timeout — not an overall timeout.
@@ -230,6 +231,31 @@ impl ProxyState {
         let mut model_configs = self.model_configs.write().await;
         *model_configs = configs;
         Ok(())
+    }
+
+    /// Reload alias cache from the database.
+    ///
+    /// Populates the in-memory alias map with enabled aliases only.
+    /// Disabled aliases are filtered out by the DB query.
+    pub async fn reload_aliases(&self) -> Result<()> {
+        let mgr = self
+            .model_mgr()
+            .with_context(|| "Database directory not configured")?;
+        let pairs = crate::db::queries::load_aliases_for_cache(mgr.conn())?;
+        let mut aliases = self.aliases.write().await;
+        *aliases = pairs.into_iter().collect();
+        Ok(())
+    }
+
+    /// Resolve a model name through the alias registry.
+    /// - If `name` is an alias → returns the resolved model name (api_name or repo_id)
+    /// - If `name` is not an alias → returns `name` unchanged (pass-through)
+    pub async fn resolve_alias(&self, name: &str) -> String {
+        let aliases = self.aliases.read().await;
+        if let Some(resolved) = aliases.get(name) {
+            return resolved.clone();
+        }
+        name.to_string()
     }
 
     /// Open a ModelManager for model-related database operations.
@@ -648,6 +674,119 @@ mod tests {
         assert!(
             err.to_string().contains(WILDCARD_MODEL_NAME),
             "Error should reference wildcard model name after Failed fallback"
+        );
+    }
+
+    // ── Alias cache tests ─────────────────────────────────────────────────────
+
+    /// Test that resolve_alias returns the name unchanged when it is not an alias.
+    #[tokio::test]
+    async fn test_resolve_alias_pass_through() {
+        let config = crate::config::Config::default();
+        let state = ProxyState::new(config, None);
+        let result = state.resolve_alias("some-model-name").await;
+        assert_eq!(result, "some-model-name");
+    }
+
+    /// Test that resolve_alias returns the resolved model name for a known alias.
+    #[tokio::test]
+    async fn test_resolve_alias_resolves() {
+        let config = crate::config::Config::default();
+        let state = ProxyState::new(config, None);
+
+        // Manually populate the alias cache
+        {
+            let mut aliases = state.aliases.write().await;
+            aliases.insert("my-alias".to_string(), "owner--real-model".to_string());
+        }
+
+        let result = state.resolve_alias("my-alias").await;
+        assert_eq!(result, "owner--real-model");
+    }
+
+    /// Test that reload_aliases populates the cache from the database.
+    #[tokio::test]
+    async fn test_reload_aliases_populates_cache() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = crate::config::Config::default();
+        let state = ProxyState::new(config, Some(temp_dir.path().to_path_buf()));
+
+        // Insert a model config and an alias directly into the DB
+        let mgr = state.model_mgr().expect("DB should be configured");
+        let conn = mgr.conn();
+        conn.execute(
+            "INSERT INTO model_configs (repo_id, api_name, backend) VALUES (?, ?, ?)",
+            rusqlite::params!["test-owner/test-model", "TestModel", "llama_cpp"],
+        )
+        .unwrap();
+        let model_id: i64 = conn
+            .query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
+            .unwrap();
+        conn.execute(
+            "INSERT INTO model_aliases (name, model_id, enabled) VALUES (?, ?, 1)",
+            rusqlite::params!["short-name", model_id],
+        )
+        .unwrap();
+
+        // Cache should be empty before reload
+        assert!(state.aliases.read().await.is_empty());
+
+        // Reload
+        state.reload_aliases().await.unwrap();
+
+        // Cache should now contain the alias
+        let aliases = state.aliases.read().await;
+        assert!(
+            aliases.contains_key("short-name"),
+            "alias 'short-name' should be in cache"
+        );
+        assert_eq!(
+            aliases.get("short-name"),
+            Some(&"TestModel".to_string()),
+            "resolved name should be the api_name"
+        );
+    }
+
+    /// Test that disabled aliases are not included in the cache after reload.
+    #[tokio::test]
+    async fn test_reload_aliases_filters_disabled() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = crate::config::Config::default();
+        let state = ProxyState::new(config, Some(temp_dir.path().to_path_buf()));
+
+        // Insert a model config and two aliases (one enabled, one disabled)
+        let mgr = state.model_mgr().expect("DB should be configured");
+        let conn = mgr.conn();
+        conn.execute(
+            "INSERT INTO model_configs (repo_id, api_name, backend) VALUES (?, ?, ?)",
+            rusqlite::params!["owner/model1", "ModelOne", "llama_cpp"],
+        )
+        .unwrap();
+        let model_id: i64 = conn
+            .query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
+            .unwrap();
+        conn.execute(
+            "INSERT INTO model_aliases (name, model_id, enabled) VALUES (?, ?, 1)",
+            rusqlite::params!["enabled-alias", model_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO model_aliases (name, model_id, enabled) VALUES (?, ?, 0)",
+            rusqlite::params!["disabled-alias", model_id],
+        )
+        .unwrap();
+
+        // Reload
+        state.reload_aliases().await.unwrap();
+
+        let aliases = state.aliases.read().await;
+        assert!(
+            aliases.contains_key("enabled-alias"),
+            "enabled alias should be in cache"
+        );
+        assert!(
+            !aliases.contains_key("disabled-alias"),
+            "disabled alias should NOT be in cache"
         );
     }
 }

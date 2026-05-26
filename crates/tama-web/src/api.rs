@@ -100,7 +100,12 @@ async fn trigger_proxy_reload(state: &ProxyState) -> Result<(), (StatusCode, ser
             StatusCode::INTERNAL_SERVER_ERROR,
             serde_json::json!({"error": format!("Failed to reload model configs: {}", e)}),
         )
-    })
+    })?;
+    // Aliases are nice-to-have; log a warning but don't fail the whole operation.
+    if let Err(e) = state.reload_aliases().await {
+        tracing::warn!(error = %e, "Failed to reload aliases");
+    }
+    Ok(())
 }
 
 /// Body for structured config save.
