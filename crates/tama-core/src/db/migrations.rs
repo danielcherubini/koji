@@ -34,7 +34,7 @@ impl Drop for FkGuard<'_> {
 pub type Migration = (i32, &'static str);
 
 /// Version number for the latest migration
-pub const LATEST_VERSION: i32 = 26;
+pub const LATEST_VERSION: i32 = 27;
 
 /// Migrations that rebuild a parent table via DROP + RENAME. SQLite with
 /// `foreign_keys=ON` performs an implicit DELETE on the dropped table which
@@ -632,6 +632,33 @@ pub(crate) fn run_up_to(conn: &Connection, target_version: i32) -> anyhow::Resul
 
                 DROP TABLE model_configs;
                 ALTER TABLE model_configs_new RENAME TO model_configs;
+            "#,
+        ),
+        (
+            27,
+            r#"
+                DROP TABLE IF EXISTS last_used_model;
+
+                CREATE TABLE IF NOT EXISTS model_aliases (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                    model_id INTEGER NOT NULL REFERENCES model_configs(id) ON DELETE CASCADE,
+                    description TEXT,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_model_aliases_model_id ON model_aliases(model_id);
+                CREATE INDEX IF NOT EXISTS idx_model_aliases_enabled ON model_aliases(enabled);
+
+                -- Seed default alias for backward compatibility (only if enabled models exist)
+                INSERT OR IGNORE INTO model_aliases (name, model_id, description, enabled)
+                SELECT 'whatevers-hot-n-fresh', id, 'Default alias — routes to this model', 1
+                FROM model_configs
+                WHERE enabled = 1
+                ORDER BY id ASC
+                LIMIT 1;
             "#,
         ),
     ];
@@ -1358,8 +1385,8 @@ mod tests {
             "last_used_model should not exist before v25"
         );
 
-        // Apply v25
-        run(&conn).unwrap();
+        // Apply v25 (stop here — v27 drops last_used_model)
+        run_up_to(&conn, 25).unwrap();
 
         // Verify table now exists
         let table_after: i64 = conn
@@ -1438,5 +1465,148 @@ mod tests {
             )
             .unwrap();
         assert_eq!(num_parallel, 1);
+    }
+
+    /// Regression test: migration v27 must create model_aliases table, drop
+    /// last_used_model, and seed the default alias when enabled models exist.
+    #[test]
+    fn test_migration_v27_creates_model_aliases_and_drops_last_used_model() {
+        use rusqlite::OptionalExtension;
+
+        let conn = Connection::open_in_memory().unwrap();
+
+        // Bring DB up to v26 (pre-v27 schema)
+        run_up_to(&conn, 26).unwrap();
+
+        // Verify model_aliases does NOT exist yet
+        let aliases_before: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='model_aliases'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            aliases_before, 0,
+            "model_aliases should not exist before v27"
+        );
+
+        // Verify last_used_model DOES exist (created by v25)
+        let last_used_before: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='last_used_model'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            last_used_before, 1,
+            "last_used_model should exist before v27"
+        );
+
+        // Insert an enabled model config so the seed INSERT has something to pick
+        conn.execute(
+            "INSERT INTO model_configs (repo_id, backend, enabled) \
+             VALUES ('test/seed-model', 'llama_cpp', 1)",
+            [],
+        )
+        .unwrap();
+
+        // Apply v27
+        run(&conn).unwrap();
+
+        // (a) model_aliases table must exist with correct columns
+        let aliases_after: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='model_aliases'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(aliases_after, 1, "model_aliases must exist after v27");
+
+        let columns = [
+            "id",
+            "name",
+            "model_id",
+            "description",
+            "enabled",
+            "created_at",
+            "updated_at",
+        ];
+        for col in &columns {
+            let exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('model_aliases') WHERE name=?",
+                    [col],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(exists, 1, "column '{}' must exist", col);
+        }
+
+        // (b) last_used_model table must NOT exist
+        let last_used_after: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='last_used_model'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(last_used_after, 0, "last_used_model must be dropped by v27");
+
+        // (c) Default alias seeded when enabled models exist
+        let default_alias: Option<String> = conn
+            .query_row(
+                "SELECT name FROM model_aliases WHERE name = 'whatevers-hot-n-fresh'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert_eq!(
+            default_alias,
+            Some("whatevers-hot-n-fresh".to_string()),
+            "default alias must be seeded"
+        );
+
+        // Verify the default alias points to the first enabled model
+        let model_id: i64 = conn
+            .query_row(
+                "SELECT model_id FROM model_aliases WHERE name = 'whatevers-hot-n-fresh'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(model_id, 1);
+    }
+
+    /// When no enabled models exist, v27 must gracefully skip seeding.
+    #[test]
+    fn test_migration_v27_no_seed_without_enabled_models() {
+        let conn = Connection::open_in_memory().unwrap();
+
+        // Bring DB up to v26
+        run_up_to(&conn, 26).unwrap();
+
+        // Insert a model config but with enabled = 0
+        conn.execute(
+            "INSERT INTO model_configs (repo_id, backend, enabled) \
+             VALUES ('test/disabled-model', 'llama_cpp', 0)",
+            [],
+        )
+        .unwrap();
+
+        // Apply v27
+        run(&conn).unwrap();
+
+        // No default alias should be seeded
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM model_aliases", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            count, 0,
+            "no default alias should be seeded when no enabled models exist"
+        );
     }
 }

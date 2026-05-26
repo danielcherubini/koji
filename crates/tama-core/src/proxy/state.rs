@@ -484,23 +484,17 @@ mod tests {
         assert_eq!(result.unwrap(), "starting_server");
     }
 
-    /// Test resolve_wildcard_model falls back to DB when no models loaded.
-    /// When DB has a last_used record, it attempts to load that model.
-    /// Without model configs, load_model fails, so we verify the error path.
+    /// Test resolve_wildcard_model returns Err when no models loaded.
+    /// With no loaded models and no DB fallback (last_used_model dropped in v27),
+    /// resolve_wildcard_model returns an error.
     #[tokio::test]
     async fn test_resolve_wildcard_fallback_to_db() {
         let temp_dir = tempfile::tempdir().unwrap();
         let config = crate::config::Config::default();
         let state = ProxyState::new(config, Some(temp_dir.path().to_path_buf()));
 
-        // Set up the last_used record in the DB
-        let mgr = state.model_mgr().expect("DB should be available");
-        mgr.set_last_used("test-server", "test-model").unwrap();
-
-        // No models loaded — should fall back to DB, try load_model,
-        // which will fail without model configs → returns Err
+        // No models loaded — should return Err (DB fallback is a no-op after v27)
         let result = state.resolve_wildcard_model().await;
-        // The error should be about no model available (from DB fallback failure)
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains(WILDCARD_MODEL_NAME));
@@ -508,44 +502,42 @@ mod tests {
 
     // ── Integration tests ────────────────────────────────────────────────────
 
-    /// Integration test: full flow with DB persistence.
-    /// Verifies: (1) no models → Err, (2) after inserting last_used record,
-    /// resolve_wildcard_model consults DB and attempts load (fails without configs,
-    /// but proves the DB path is exercised).
+    /// Integration test: full flow with DB.
+    /// Verifies: (1) no models → Err, (2) after loading a model,
+    /// resolve_wildcard_model returns the loaded server.
     #[tokio::test]
     async fn test_wildcard_full_flow_with_db() {
         let temp_dir = tempfile::tempdir().unwrap();
         let config = crate::config::Config::default();
         let state = ProxyState::new(config, Some(temp_dir.path().to_path_buf()));
 
-        // Phase 1: No models loaded, no DB record → Err
+        // Phase 1: No models loaded → Err
         let result = state.resolve_wildcard_model().await;
-        assert!(
-            result.is_err(),
-            "Should fail when no models loaded and no DB record"
-        );
+        assert!(result.is_err(), "Should fail when no models loaded");
 
-        // Phase 2: Insert a last_used record into the DB
-        let mgr = state.model_mgr().expect("DB should be available");
-        mgr.set_last_used("saved-server", "saved-model").unwrap();
+        // Phase 2: Load a model
+        {
+            let mut models = state.models.write().await;
+            models.insert(
+                "test_server".to_string(),
+                ModelState::Ready {
+                    model_name: "test-model".to_string(),
+                    backend: "llama_cpp".to_string(),
+                    backend_pid: 123,
+                    backend_url: "http://localhost:8080".to_string(),
+                    load_time: std::time::SystemTime::now(),
+                    last_accessed: Instant::now(),
+                    consecutive_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+                    failure_timestamp: None,
+                    restart_count: 0,
+                },
+            );
+        }
 
-        // Verify the record was persisted
-        let record = mgr.get_last_used().unwrap().expect("Record should exist");
-        assert_eq!(record.server_name, "saved-server");
-        assert_eq!(record.model_name, "saved-model");
-
-        // Phase 3: resolve_wildcard_model should now consult DB and attempt load.
-        // load_model fails without model configs, but the error proves the DB path ran.
+        // Phase 3: resolve_wildcard_model should return the loaded server
         let result = state.resolve_wildcard_model().await;
-        assert!(
-            result.is_err(),
-            "Should still fail (load_model needs configs), but DB was consulted"
-        );
-        let err = result.unwrap_err();
-        assert!(
-            err.to_string().contains(WILDCARD_MODEL_NAME),
-            "Error should reference wildcard model name"
-        );
+        assert!(result.is_ok(), "Should succeed when a model is loaded");
+        assert_eq!(result.unwrap(), "test_server");
     }
 
     /// Integration test: concurrent wildcard requests are serialized by the guard mutex.
@@ -557,9 +549,24 @@ mod tests {
         let config = crate::config::Config::default();
         let state = ProxyState::new(config, Some(temp_dir.path().to_path_buf()));
 
-        // Pre-populate DB with a last_used record so all callers hit the same path
-        let mgr = state.model_mgr().expect("DB should be available");
-        mgr.set_last_used("saved-server", "saved-model").unwrap();
+        // Pre-load a model so all callers hit the same Ok path
+        {
+            let mut models = state.models.write().await;
+            models.insert(
+                "concurrent_server".to_string(),
+                ModelState::Ready {
+                    model_name: "test-model".to_string(),
+                    backend: "llama_cpp".to_string(),
+                    backend_pid: 123,
+                    backend_url: "http://localhost:8080".to_string(),
+                    load_time: std::time::SystemTime::now(),
+                    last_accessed: Instant::now(),
+                    consecutive_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+                    failure_timestamp: None,
+                    restart_count: 0,
+                },
+            );
+        }
 
         // Spawn 5 concurrent resolve_wildcard_model calls
         let state_clone = state.clone();
