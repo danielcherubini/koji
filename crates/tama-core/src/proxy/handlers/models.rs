@@ -124,7 +124,7 @@ pub async fn handle_get_model(
 #[axum::debug_handler]
 pub async fn handle_list_models(state: State<Arc<ProxyState>>) -> Json<serde_json::Value> {
     // Phase 1: Snapshot data under locks, then drop them before I/O.
-    let (backend_info, has_available_llm, all_configs) = {
+    let (backend_info, all_configs) = {
         let models = state.models.read().await;
         let configs = state.model_configs.read().await;
 
@@ -143,13 +143,7 @@ pub async fn handle_list_models(state: State<Arc<ProxyState>>) -> Json<serde_jso
         // Clone config map for use outside lock
         let configs = configs.clone();
 
-        // Check if any non-TTS model is Ready or Starting (for wildcard ready flag)
-        let has_available_llm = models.iter().any(|(_, s)| {
-            !s.is_tts_backend()
-                && (s.is_ready() || matches!(s, crate::proxy::ModelState::Starting { .. }))
-        });
-
-        (backend_info, has_available_llm, configs)
+        (backend_info, configs)
     };
     // All locks dropped here
 
@@ -248,18 +242,6 @@ pub async fn handle_list_models(state: State<Arc<ProxyState>>) -> Json<serde_jso
             "ready": false
         }));
     }
-
-    // Phase 5: Prepend wildcard entry.
-    data.insert(
-        0,
-        serde_json::json!({
-            "id": crate::proxy::WILDCARD_MODEL_NAME,
-            "object": "model",
-            "created": 0,
-            "owned_by": "tama-proxy",
-            "ready": has_available_llm
-        }),
-    );
 
     Json(serde_json::json!({
         "object": "list",

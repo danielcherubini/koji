@@ -19,7 +19,6 @@ pub use models::{handle_get_model, handle_list_models};
 #[allow(unused_imports)]
 pub use status::{handle_health, handle_metrics, handle_reload_configs, handle_status};
 
-use crate::proxy::ProxyState;
 use axum::{
     http::StatusCode,
     response::{IntoResponse, Json, Response},
@@ -36,19 +35,6 @@ pub fn json_error_response() -> Response {
         })),
     )
         .into_response()
-}
-
-/// Update the last_used_model in DB. Best-effort — never fails the request.
-/// Throttled: only writes if the server_name differs from what's stored.
-async fn update_last_used_best_effort(state: &ProxyState, server_name: &str, model_name: &str) {
-    let Some(mgr) = state.model_mgr() else {
-        return;
-    };
-    let current = mgr.get_last_used().ok().flatten();
-    if current.as_ref().map(|r| r.server_name.as_str()) == Some(server_name) {
-        return; // Same model, no write needed
-    }
-    let _ = mgr.set_last_used(server_name, model_name);
 }
 
 #[cfg(test)]

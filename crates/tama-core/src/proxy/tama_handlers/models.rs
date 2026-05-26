@@ -302,57 +302,7 @@ async fn build_model_entry(
 /// Handle listing all enabled models for OpenCode plugin discovery.
 /// Returns rich metadata including context limits, modalities, and capabilities.
 pub async fn handle_opencode_list_models(state: State<Arc<ProxyState>>) -> Json<serde_json::Value> {
-    let model_configs = state.model_configs.read().await;
-    let loaded_models = state.models.read().await;
-    let _config = state.config.read().await;
-
     let mut models: Vec<serde_json::Value> = Vec::new();
-
-    // Virtual wildcard entry: routes to whatever LLM model is active.
-    // Find the most-recently-accessed Ready/Starting non-TTS model (same logic as resolve_wildcard_model).
-    let wildcard_target = loaded_models
-        .iter()
-        .filter(|(_, s)| {
-            !s.is_tts_backend()
-                && (s.is_ready() || matches!(s, crate::proxy::ModelState::Starting { .. }))
-        })
-        .max_by_key(|(_, s)| s.last_accessed())
-        .map(|(server_name, _)| server_name.clone());
-
-    let wildcard_entry = if let Some(server_name) = &wildcard_target {
-        // Look up the config for the target model and build full metadata.
-        if let Some(cfg) = model_configs.get(server_name) {
-            if let Some(mut entry) = build_model_entry(&state, server_name, cfg).await {
-                // Override id and name for the virtual entry.
-                entry["id"] = serde_json::json!(crate::proxy::WILDCARD_MODEL_NAME);
-                entry["name"] = serde_json::json!("Whatever's Hot 'n Fresh");
-                entry
-            } else {
-                serde_json::json!({
-                    "id": crate::proxy::WILDCARD_MODEL_NAME,
-                    "name": "Whatever's Hot 'n Fresh",
-                    "ready": true,
-                })
-            }
-        } else {
-            serde_json::json!({
-                "id": crate::proxy::WILDCARD_MODEL_NAME,
-                "name": "Whatever's Hot 'n Fresh",
-                "ready": true,
-            })
-        }
-    } else {
-        serde_json::json!({
-            "id": crate::proxy::WILDCARD_MODEL_NAME,
-            "name": "Whatever's Hot 'n Fresh",
-            "ready": false,
-        })
-    };
-    models.push(wildcard_entry);
-
-    // Drop locks before the per-model async loop.
-    drop(loaded_models);
-    drop(model_configs);
 
     for (id, cfg) in state
         .model_configs

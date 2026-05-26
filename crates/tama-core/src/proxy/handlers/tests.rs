@@ -126,17 +126,11 @@ async fn test_handle_list_models_returns_api_name() {
     let json: JsonValue = serde_json::from_slice(&bytes).unwrap();
 
     let data = json.get("data").unwrap().as_array().unwrap();
-    // 2 models + 1 wildcard virtual entry
-    assert_eq!(data.len(), 3);
+    // 2 models (no wildcard entry)
+    assert_eq!(data.len(), 2);
 
-    // First entry should be the wildcard virtual entry
-    assert_eq!(
-        data[0].get("id").unwrap().as_str().unwrap(),
-        crate::proxy::WILDCARD_MODEL_NAME
-    );
-
-    // Collect all model ids (excluding wildcard)
-    let ids: Vec<&str> = data[1..]
+    // Collect all model ids
+    let ids: Vec<&str> = data
         .iter()
         .map(|m| m.get("id").unwrap().as_str().unwrap())
         .collect();
@@ -420,272 +414,6 @@ async fn test_handle_forward_get_empty_body_does_not_crash() {
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
 
-// ── Wildcard routing tests ────────────────────────────────────────────────
-
-/// Create a test state with a Ready model loaded.
-async fn create_test_state_with_ready_model() -> Arc<ProxyState> {
-    let config = Config::default();
-    let state = ProxyState::new(config, None);
-
-    // Add a model config
-    {
-        let mut mc = state.model_configs.write().await;
-        mc.insert(
-            "test-server".to_string(),
-            ModelConfig {
-                backend: "llama_cpp".to_string(),
-                api_name: None,
-                model: Some("test/model".to_string()),
-                enabled: true,
-                ..Default::default()
-            },
-        );
-    }
-
-    // Add a Ready model state
-    {
-        let mut models = state.models.write().await;
-        models.insert(
-            "test-server".to_string(),
-            crate::proxy::ModelState::Ready {
-                model_name: "test-model".to_string(),
-                backend: "llama_cpp".to_string(),
-                backend_pid: 1234,
-                backend_url: "http://localhost:8080".to_string(),
-                load_time: std::time::SystemTime::now(),
-                last_accessed: std::time::Instant::now(),
-                consecutive_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-                failure_timestamp: None,
-                restart_count: 0,
-            },
-        );
-    }
-
-    Arc::new(state)
-}
-
-#[tokio::test]
-async fn test_handle_chat_completions_wildcard_routes_to_loaded_model() {
-    let state_arc = create_test_state_with_ready_model().await;
-    let state = State(state_arc.clone());
-
-    // POST with wildcard model name
-    let body = serde_json::json!({
-        "model": crate::proxy::WILDCARD_MODEL_NAME,
-        "messages": [{"role": "user", "content": "Hello"}]
-    });
-    let req = Request::post("/v1/chat/completions")
-        .body(Body::from(body.to_string().into_bytes()))
-        .unwrap();
-
-    let response = handle_chat_completions(state, req).await;
-
-    // The response will be a forward (likely 404 from non-existent backend),
-    // but it should NOT be 503 (No model available).
-    // The key assertion: wildcard was resolved, not treated as unknown model.
-    let status = response.status();
-    // Should not be 503 (no model available) — it should attempt to forward
-    assert_ne!(
-        status,
-        StatusCode::SERVICE_UNAVAILABLE,
-        "Wildcard should resolve to loaded model, not return 503"
-    );
-}
-
-#[tokio::test]
-async fn test_handle_chat_completions_wildcard_503_no_models() {
-    let state_inner = create_test_state();
-    let state_arc = Arc::new(state_inner);
-    let state = State(state_arc.clone());
-
-    // POST with wildcard model name but no models loaded
-    let body = serde_json::json!({
-        "model": crate::proxy::WILDCARD_MODEL_NAME,
-        "messages": [{"role": "user", "content": "Hello"}]
-    });
-    let req = Request::post("/v1/chat/completions")
-        .body(Body::from(body.to_string().into_bytes()))
-        .unwrap();
-
-    let response = handle_chat_completions(state, req).await;
-
-    // No models loaded → 503
-    let status = response.status();
-    assert_eq!(
-        status,
-        StatusCode::SERVICE_UNAVAILABLE,
-        "Wildcard with no models should return 503"
-    );
-
-    let (_parts, body_bytes) = response.into_response().into_parts();
-    let bytes = to_bytes(body_bytes, 1024 * 1024).await.unwrap();
-    let json: JsonValue = serde_json::from_slice(&bytes).unwrap();
-
-    assert_eq!(json["error"]["type"].as_str(), Some("NoModelError"));
-}
-
-#[tokio::test]
-async fn test_handle_list_models_includes_wildcard() {
-    let state_arc = create_test_state_with_ready_model().await;
-    let state = State(state_arc.clone());
-
-    let response = handle_list_models(state).await;
-    let (_parts, body) = response.into_response().into_parts();
-    let bytes = to_bytes(body, 1024 * 1024).await.unwrap();
-    let json: JsonValue = serde_json::from_slice(&bytes).unwrap();
-
-    let data = json.get("data").unwrap().as_array().unwrap();
-
-    // First entry should be the wildcard virtual entry
-    assert!(!data.is_empty(), "Should have at least the wildcard entry");
-    assert_eq!(
-        data[0].get("id").unwrap().as_str().unwrap(),
-        crate::proxy::WILDCARD_MODEL_NAME
-    );
-    assert_eq!(data[0].get("object").unwrap().as_str(), Some("model"));
-    assert_eq!(
-        data[0].get("owned_by").unwrap().as_str(),
-        Some("tama-proxy")
-    );
-    // ready should be true since we have a Ready LLM model
-    assert_eq!(data[0].get("ready").unwrap().as_bool(), Some(true));
-}
-
-#[tokio::test]
-async fn test_handle_list_models_wildcard_ready_false_when_only_tts() {
-    let config = Config::default();
-    let state_inner = ProxyState::new(config, None);
-
-    // Add only a TTS backend
-    {
-        let mut models = state_inner.models.write().await;
-        models.insert(
-            "tts_server".to_string(),
-            crate::proxy::ModelState::Ready {
-                model_name: "kokoro".to_string(),
-                backend: "tts_kokoro".to_string(),
-                backend_pid: 300,
-                backend_url: "http://localhost:9000".to_string(),
-                load_time: std::time::SystemTime::now(),
-                last_accessed: std::time::Instant::now(),
-                consecutive_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-                failure_timestamp: None,
-                restart_count: 0,
-            },
-        );
-    }
-
-    let state_arc = Arc::new(state_inner);
-    let state = State(state_arc.clone());
-
-    let response = handle_list_models(state).await;
-    let (_parts, body) = response.into_response().into_parts();
-    let bytes = to_bytes(body, 1024 * 1024).await.unwrap();
-    let json: JsonValue = serde_json::from_slice(&bytes).unwrap();
-
-    let data = json.get("data").unwrap().as_array().unwrap();
-    // Wildcard entry should have ready: false (only TTS, no LLM)
-    assert_eq!(
-        data[0].get("id").unwrap().as_str().unwrap(),
-        crate::proxy::WILDCARD_MODEL_NAME
-    );
-    assert_eq!(data[0].get("ready").unwrap().as_bool(), Some(false));
-}
-
-// ── Integration tests: handler + DB persistence ──────────────────────────
-
-/// Integration test: handle_chat_completions with wildcard model and DB-backed state.
-/// Verifies the full handler → resolve_wildcard_model → DB fallback flow.
-#[tokio::test]
-async fn test_handle_chat_completions_wildcard_with_db_fallback() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let config = Config::default();
-    let state_inner = ProxyState::new(config, Some(temp_dir.path().to_path_buf()));
-    let state_arc = Arc::new(state_inner);
-    let state = State(state_arc.clone());
-
-    // No models loaded, no DB record → 503 with NoModelError
-    let body = serde_json::json!({
-        "model": crate::proxy::WILDCARD_MODEL_NAME,
-        "messages": [{"role": "user", "content": "Hello"}]
-    });
-    let req = Request::post("/v1/chat/completions")
-        .body(Body::from(body.to_string().into_bytes()))
-        .unwrap();
-
-    let response = handle_chat_completions(state.clone(), req).await;
-    assert_eq!(
-        response.status(),
-        StatusCode::SERVICE_UNAVAILABLE,
-        "Should return 503 when no models and no DB record"
-    );
-
-    let (_parts, body_bytes) = response.into_response().into_parts();
-    let bytes = to_bytes(body_bytes, 1024 * 1024).await.unwrap();
-    let json: JsonValue = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["error"]["type"].as_str(), Some("NoModelError"));
-}
-
-/// Integration test: handle_stream_chat_completions with wildcard model.
-/// Verifies streaming handler also respects wildcard routing.
-#[tokio::test]
-async fn test_handle_stream_chat_completions_wildcard_503_no_models() {
-    let state_inner = create_test_state();
-    let state_arc = Arc::new(state_inner);
-    let state = State(state_arc.clone());
-
-    // POST with wildcard model name but no models loaded
-    let body = serde_json::json!({
-        "model": crate::proxy::WILDCARD_MODEL_NAME,
-        "messages": [{"role": "user", "content": "Hello"}]
-    });
-    let req = Request::post("/v1/chat/completions")
-        .body(Body::from(body.to_string().into_bytes()))
-        .unwrap();
-
-    let response = handle_stream_chat_completions(state, req).await;
-
-    // No models loaded → 503
-    assert_eq!(
-        response.status(),
-        StatusCode::SERVICE_UNAVAILABLE,
-        "Stream wildcard with no models should return 503"
-    );
-
-    let (_parts, body_bytes) = response.into_response().into_parts();
-    let bytes = to_bytes(body_bytes, 1024 * 1024).await.unwrap();
-    let json: JsonValue = serde_json::from_slice(&bytes).unwrap();
-
-    assert_eq!(json["error"]["type"].as_str(), Some("NoModelError"));
-}
-
-/// Integration test: handle_forward_post with wildcard model and Ready model.
-/// Verifies the fallback POST handler also routes wildcard correctly.
-#[tokio::test]
-async fn test_handle_forward_post_wildcard_with_ready_model() {
-    let state_arc = create_test_state_with_ready_model().await;
-
-    let body = serde_json::json!({
-        "model": crate::proxy::WILDCARD_MODEL_NAME,
-        "messages": [{"role": "user", "content": "Hello"}]
-    });
-    let req = create_forward_post_request(&body.to_string().into_bytes());
-
-    let response = handle_forward_post(
-        Path("v1/chat/completions".to_string()),
-        State(state_arc.clone()),
-        req,
-    )
-    .await;
-
-    // Should NOT be 503 — wildcard resolved to loaded model
-    assert_ne!(
-        response.status(),
-        StatusCode::SERVICE_UNAVAILABLE,
-        "Forward POST wildcard should resolve to loaded model"
-    );
-}
-
 // ── handle_list_models: backend merge tests ──────────────────────────────
 
 /// Helper: set up a ProxyState with two Ready backends and model configs.
@@ -829,21 +557,13 @@ async fn test_handle_list_models_merges_backend_responses_with_meta() {
 
     let data = json.get("data").unwrap().as_array().unwrap();
 
-    // Should have: wildcard + 2 from backends + 3 from config = 6
+    // Should have: 2 from backends + 3 from config = 5
     // Backend IDs (llama3.gguf, mistral.gguf) don't match config api_names,
     // so all config entries are also added.
-    assert_eq!(data.len(), 6, "Expected 6 entries, got: {}", data.len());
+    assert_eq!(data.len(), 5, "Expected 5 entries, got: {}", data.len());
 
-    // Wildcard should be first
-    assert_eq!(
-        data[0]["id"],
-        crate::proxy::WILDCARD_MODEL_NAME,
-        "First entry should be wildcard"
-    );
-    assert_eq!(data[0]["ready"], true, "Wildcard ready should be true");
-
-    // Collect model entries (excluding wildcard)
-    let model_entries: Vec<_> = data[1..].iter().collect();
+    // Collect model entries
+    let model_entries: Vec<_> = data.iter().collect();
 
     // Find the model from backend 1
     let backend1_model = model_entries
@@ -939,92 +659,13 @@ async fn test_handle_list_models_unloaded_from_config() {
 
     let data = json.get("data").unwrap().as_array().unwrap();
 
-    // Should have: wildcard + 1 unloaded = 2 (disabled excluded)
-    assert_eq!(data.len(), 2, "Expected 2 entries, got: {}", data.len());
-
-    // Wildcard first
-    assert_eq!(data[0]["id"], crate::proxy::WILDCARD_MODEL_NAME);
-    assert_eq!(
-        data[0]["ready"], false,
-        "Wildcard ready should be false (no LLM backends)"
-    );
+    // Should have: 1 unloaded (disabled excluded)
+    assert_eq!(data.len(), 1, "Expected 1 entry, got: {}", data.len());
 
     // Unloaded model
-    assert_eq!(data[1]["id"], "my-unloaded-model");
-    assert_eq!(data[1]["ready"], false);
-    assert!(data[1].get("meta").is_none());
-}
-
-/// Test that wildcard entry is always prepended and has correct ready value.
-#[tokio::test]
-async fn test_handle_list_models_wildcard_prepended_with_correct_ready() {
-    let mock_server = MockServer::start().await;
-
-    let backend_response = serde_json::json!({
-        "object": "list",
-        "data": [
-            {"id": "some-model", "object": "model", "created": 123}
-        ]
-    });
-    Mock::given(method("GET"))
-        .and(path("/v1/models"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(&backend_response))
-        .mount(&mock_server)
-        .await;
-
-    let config = Config::default();
-    let state = ProxyState::new(config, None);
-
-    // Add one Ready model
-    {
-        let mut mc = state.model_configs.write().await;
-        mc.insert(
-            "server1".to_string(),
-            ModelConfig {
-                backend: "llama_cpp".to_string(),
-                api_name: Some("api-s1".to_string()),
-                model: Some("test/s1".to_string()),
-                enabled: true,
-                ..Default::default()
-            },
-        );
-    }
-    {
-        let mut models = state.models.write().await;
-        models.insert(
-            "server1".to_string(),
-            crate::proxy::ModelState::Ready {
-                model_name: "server1".to_string(),
-                backend: "llama_cpp".to_string(),
-                backend_pid: 999,
-                backend_url: mock_server.uri(),
-                load_time: std::time::SystemTime::now(),
-                last_accessed: std::time::Instant::now(),
-                consecutive_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-                failure_timestamp: None,
-                restart_count: 0,
-            },
-        );
-    }
-
-    let state_arc = Arc::new(state);
-    let state = State(state_arc.clone());
-
-    let response = handle_list_models(state).await;
-    let (_parts, body) = response.into_response().into_parts();
-    let bytes = to_bytes(body, 1024 * 1024).await.unwrap();
-    let json: JsonValue = serde_json::from_slice(&bytes).unwrap();
-
-    let data = json.get("data").unwrap().as_array().unwrap();
-
-    // Wildcard must be first
-    assert_eq!(data[0]["id"], crate::proxy::WILDCARD_MODEL_NAME);
-    assert_eq!(data[0]["object"], "model");
-    assert_eq!(data[0]["owned_by"], "tama-proxy");
-    assert_eq!(
-        data[0]["ready"], true,
-        "Wildcard ready should be true when LLM backend is Ready"
-    );
+    assert_eq!(data[0]["id"], "my-unloaded-model");
+    assert_eq!(data[0]["ready"], false);
+    assert!(data[0].get("meta").is_none());
 }
 
 /// Test that duplicate model IDs across backends are deduplicated.
@@ -1061,11 +702,8 @@ async fn test_handle_list_models_deduplicates_model_ids() {
 
     let data = json.get("data").unwrap().as_array().unwrap();
 
-    // Count occurrences of "duplicate-model" (excluding wildcard)
-    let dup_count = data[1..]
-        .iter()
-        .filter(|e| e["id"] == "duplicate-model")
-        .count();
+    // Count occurrences of "duplicate-model"
+    let dup_count = data.iter().filter(|e| e["id"] == "duplicate-model").count();
     assert_eq!(
         dup_count, 1,
         "duplicate-model should appear exactly once, found {} times",
@@ -1092,12 +730,8 @@ async fn test_handle_list_models_backend_failure_fallback() {
     let data = json.get("data").unwrap().as_array().unwrap();
 
     // Should still have entries from config fallback
-    // wildcard + model-a + model-b + model-c = 4
-    assert_eq!(data.len(), 4, "Expected 4 entries from config fallback");
-
-    // Wildcard should have ready: true (backends are in Ready state even if unreachable)
-    assert_eq!(data[0]["id"], crate::proxy::WILDCARD_MODEL_NAME);
-    assert_eq!(data[0]["ready"], true);
+    // model-a + model-b + model-c = 3
+    assert_eq!(data.len(), 3, "Expected 3 entries from config fallback");
 }
 
 /// Test response shape matches OpenAI spec.
@@ -1492,29 +1126,21 @@ async fn test_handle_list_models_alias_deduplication() {
 
     let data = json.get("data").unwrap().as_array().unwrap();
 
-    // Should have: wildcard + 1 from backend (normalized) = 2
+    // Should have: 1 from backend (normalized) = 1
     // The fallback config entry should NOT be added because the alias matched.
-    assert_eq!(
-        data.len(),
-        2,
-        "Expected 2 entries (wildcard + 1), got: {:?}",
-        data
-    );
-
-    // Wildcard is first
-    assert_eq!(data[0]["id"], crate::proxy::WILDCARD_MODEL_NAME);
+    assert_eq!(data.len(), 1, "Expected 1 entry, got: {:?}", data);
 
     // The model entry should have the normalized id (api_name), not the filename
     assert_eq!(
-        data[1]["id"], "unsloth/gemma-4-E2B-it-GGUF",
+        data[0]["id"], "unsloth/gemma-4-E2B-it-GGUF",
         "Entry id should be normalized to api_name"
     );
     // Meta should be preserved from backend
     assert!(
-        data[1].get("meta").is_some(),
+        data[0].get("meta").is_some(),
         "meta should be preserved from backend response"
     );
-    assert_eq!(data[1]["ready"], true, "Loaded model should be ready");
+    assert_eq!(data[0]["ready"], true, "Loaded model should be ready");
 
     // Verify no duplicate with the original filename id
     let has_filename_id = data
@@ -1596,10 +1222,10 @@ async fn test_handle_list_models_no_alias_no_normalization() {
 
     let data = json.get("data").unwrap().as_array().unwrap();
 
-    // Should have: wildcard + 1 from backend + 1 from config (unloaded fallback) = 3
+    // Should have: 1 from backend + 1 from config (unloaded fallback) = 2
     // The backend entry is NOT normalized (alias doesn't match any api_name)
     // The config fallback IS added (api_name not in seen_ids)
-    assert_eq!(data.len(), 3, "Expected 3 entries, got: {:?}", data);
+    assert_eq!(data.len(), 2, "Expected 2 entries, got: {:?}", data);
 
     // Backend entry keeps its original filename id
     let backend_entry = data.iter().find(|e| e["id"] == "some-random-model.gguf");

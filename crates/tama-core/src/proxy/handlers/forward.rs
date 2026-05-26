@@ -10,7 +10,6 @@ use serde_json::Value as JsonValue;
 use std::sync::Arc;
 
 use super::super::forward::forward_request;
-use super::update_last_used_best_effort;
 
 /// Fallback handler for unmatched routes.
 #[axum::debug_handler]
@@ -49,36 +48,6 @@ pub async fn handle_forward_post(
         .and_then(|v| v.get("model")?.as_str().map(String::from));
 
     let server_name = if let Some(ref model) = model_name {
-        // Check for wildcard model
-        if model.as_str() == crate::proxy::WILDCARD_MODEL_NAME {
-            match state.resolve_wildcard_model().await {
-                Ok(server_name) => {
-                    state.update_last_accessed(&server_name).await;
-                    update_last_used_best_effort(&state, &server_name, model).await;
-                    return forward_request(
-                        &state,
-                        &server_name,
-                        &parts,
-                        &body_bytes,
-                        Some(model.as_str()),
-                    )
-                    .await;
-                }
-                Err(e) => {
-                    return (
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        Json(serde_json::json!({
-                            "error": {
-                                "message": format!("No model available: {}", e),
-                                "type": "NoModelError"
-                            }
-                        })),
-                    )
-                        .into_response();
-                }
-            }
-        }
-
         match state.get_available_server_for_model(model).await {
             Some(name) => name,
             None => {
@@ -122,9 +91,6 @@ pub async fn handle_forward_post(
     };
 
     state.update_last_accessed(&server_name).await;
-    if let Some(ref model) = model_name {
-        update_last_used_best_effort(&state, &server_name, model).await;
-    }
     forward_request(
         &state,
         &server_name,
