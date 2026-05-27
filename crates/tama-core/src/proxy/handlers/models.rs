@@ -265,11 +265,14 @@ pub async fn handle_list_models(state: State<Arc<ProxyState>>) -> Json<serde_jso
     // Phase 5: Add alias entries from the alias cache.
     let aliases = state.aliases.read().await;
     for (alias_name, resolved_model) in aliases.iter() {
+        if seen_ids.contains(alias_name.as_str()) {
+            continue; // skip duplicate — model already in list
+        }
         data.push(serde_json::json!({
             "id": alias_name,
             "object": "model",
             "created": 0,
-            "owned_by": "tama",
+            "owned_by": "tama-proxy",
             "alias": true,
             "resolves_to": resolved_model,
         }));

@@ -1454,7 +1454,7 @@ async fn test_list_models_includes_aliases() {
         short_alias["resolves_to"], "owner--real-model",
         "resolves_to should match the resolved model name"
     );
-    assert_eq!(short_alias["owned_by"], "tama");
+    assert_eq!(short_alias["owned_by"], "tama-proxy");
 
     let another_alias = data
         .iter()
