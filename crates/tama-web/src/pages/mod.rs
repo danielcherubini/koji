@@ -1,3 +1,4 @@
+pub mod aliases;
 pub mod backends;
 pub mod benchmarks;
 pub mod config_editor;

@@ -300,6 +300,7 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("/ui/model/:id/edit") view=pages::model_editor::ModelEditor />
                     <Route path=path!("/ui/backends") view=pages::backends::Backends />
                     <Route path=path!("/ui/benchmarks") view=pages::benchmarks::Benchmarks />
+                    <Route path=path!("/ui/aliases") view=pages::aliases::AliasesPage />
                     <Route path=path!("/ui/logs") view=pages::logs::Logs />
                     <Route path=path!("/ui/config") view=pages::config_editor::ConfigEditor />
                     <Route path=path!("/ui/updates") view=pages::updates::Updates />

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::download_queue::{queue_processor_loop, DownloadQueueService};
-use super::types::{ModelState, ProxyMetrics, ProxyState, WILDCARD_MODEL_NAME};
+use super::types::{ModelState, ProxyMetrics, ProxyState};
 
 impl ProxyState {
     pub fn new(config: crate::config::Config, db_dir: Option<std::path::PathBuf>) -> Self {
@@ -20,6 +20,7 @@ impl ProxyState {
         let state = Self {
             config: Arc::new(tokio::sync::RwLock::new(config)),
             model_configs: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            aliases: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             models: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             client: reqwest::Client::builder()
                 // Only set a connect timeout — not an overall timeout.
@@ -45,7 +46,6 @@ impl ProxyState {
             config_write_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
             backend_logs: crate::backends::log_stream::BackendLogManager::default(),
             inference_stats: tokio::sync::watch::channel(None).0,
-            wildcard_resolve_guard: Arc::new(tokio::sync::Mutex::new(())),
             // ── Web UI fields ──
             #[cfg(feature = "web-ui")]
             web_jobs: Some(Arc::new(crate::web_types::JobManager::new())),
@@ -232,6 +232,31 @@ impl ProxyState {
         Ok(())
     }
 
+    /// Reload alias cache from the database.
+    ///
+    /// Populates the in-memory alias map with enabled aliases only.
+    /// Disabled aliases are filtered out by the DB query.
+    pub async fn reload_aliases(&self) -> Result<()> {
+        let mgr = self
+            .model_mgr()
+            .with_context(|| "Database directory not configured")?;
+        let pairs = crate::db::queries::load_aliases_for_cache(mgr.conn())?;
+        let mut aliases = self.aliases.write().await;
+        *aliases = pairs.into_iter().collect();
+        Ok(())
+    }
+
+    /// Resolve a model name through the alias registry.
+    /// - If `name` is an alias → returns the resolved model name (api_name or repo_id)
+    /// - If `name` is not an alias → returns `name` unchanged (pass-through)
+    pub async fn resolve_alias(&self, name: &str) -> String {
+        let aliases = self.aliases.read().await;
+        if let Some(resolved) = aliases.get(name) {
+            return resolved.clone();
+        }
+        name.to_string()
+    }
+
     /// Open a ModelManager for model-related database operations.
     ///
     /// Returns `None` if `db_dir` is not configured (e.g., in tests).
@@ -245,105 +270,6 @@ impl ProxyState {
             .as_ref()
             .and_then(|dir| crate::models::ModelManager::open(dir).ok())
     }
-
-    /// Resolve the server for a "whatevers-hot-n-fresh" request.
-    ///
-    /// Selection strategy (in order):
-    /// 1. Most-recently-accessed Ready or Starting LLM model (by last_accessed)
-    /// 2. Failed LLM model — extract model_name, call load_model
-    /// 3. Last-used model from DB — call load_model using record's model_name field
-    /// 4. 503 if nothing available
-    ///
-    /// Uses a Mutex guard so only one concurrent caller proceeds to DB lookup + load.
-    /// CRITICAL: Must drop the `self.models` read lock BEFORE calling `load_model`
-    /// because `load_model` acquires a write lock on the same RwLock (deadlock otherwise).
-    pub async fn resolve_wildcard_model(&self) -> Result<String> {
-        // Acquire the wildcard resolve guard — prevents concurrent redundant loads.
-        // Guard is held for the entire operation and dropped on all paths.
-        let _guard = self.wildcard_resolve_guard.lock().await;
-
-        // Phase 1: Collect decision data under self.models read lock
-        let decision = {
-            let models = self.models.read().await;
-
-            // Filter to non-TTS models that are Ready or Starting
-            let candidates: Vec<(&String, &ModelState)> = models
-                .iter()
-                .filter(|(_, state)| {
-                    !state.is_tts_backend()
-                        && (state.is_ready() || matches!(state, ModelState::Starting { .. }))
-                })
-                .collect();
-
-            if let Some((server_name, _)) = candidates
-                .iter()
-                .max_by_key(|(_, state)| state.last_accessed())
-            {
-                // Most-recently-accessed Ready/Starting model found.
-                // Clone server_name and return — read lock will be dropped after this block.
-                Some(WildcardDecision::UseServer(server_name.to_string()))
-            } else {
-                // No Ready/Starting models — check for Failed models
-                let failed_candidates: Vec<(&String, &ModelState)> = models
-                    .iter()
-                    .filter(|(_, state)| {
-                        !state.is_tts_backend() && matches!(state, ModelState::Failed { .. })
-                    })
-                    .collect();
-
-                if let Some((_, state)) = failed_candidates.first() {
-                    // Failed model found — extract model_name for reload attempt
-                    Some(WildcardDecision::ReloadFailed(
-                        state.model_name().to_string(),
-                    ))
-                } else {
-                    // No models at all
-                    None
-                }
-            }
-        };
-        // self.models read lock is dropped here — CRITICAL for avoiding deadlock
-
-        // Phase 2: Act on the decision
-        match decision {
-            Some(WildcardDecision::UseServer(server_name)) => Ok(server_name),
-            Some(WildcardDecision::ReloadFailed(model_name)) => {
-                // Attempt to reload the failed model
-                match self.load_model(&model_name, None).await {
-                    Ok(server_name) => Ok(server_name),
-                    Err(_) => {
-                        // Reload failed — fall through to DB lookup
-                        Self::try_db_fallback(self).await
-                    }
-                }
-            }
-            None => {
-                // No models loaded at all — try DB fallback
-                Self::try_db_fallback(self).await
-            }
-        }
-    }
-
-    /// DB fallback: try to load the last-used model from the database.
-    async fn try_db_fallback(&self) -> Result<String> {
-        let record = self
-            .model_mgr()
-            .and_then(|mgr| mgr.get_last_used().ok())
-            .flatten()
-            .ok_or_else(|| anyhow::anyhow!("No model available for '{}'", WILDCARD_MODEL_NAME))?;
-        self.load_model(&record.model_name, None)
-            .await
-            .map_err(|_| anyhow::anyhow!("No model available for '{}'", WILDCARD_MODEL_NAME))
-    }
-}
-
-/// Internal decision enum for wildcard resolution.
-#[derive(Debug, Clone)]
-enum WildcardDecision {
-    /// Use an already-loaded server directly.
-    UseServer(String),
-    /// Reload a previously failed model.
-    ReloadFailed(String),
 }
 
 #[cfg(test)]
@@ -359,288 +285,116 @@ mod tests {
         assert_eq!(state.metrics_tx.receiver_count(), 1);
     }
 
-    /// Test resolve_wildcard_model returns Err when no models loaded and no DB configured.
+    // ── Alias cache tests ─────────────────────────────────────────────────────
+
+    /// Test that resolve_alias returns the name unchanged when it is not an alias.
     #[tokio::test]
-    async fn test_resolve_wildcard_no_models() {
+    async fn test_resolve_alias_pass_through() {
         let config = crate::config::Config::default();
         let state = ProxyState::new(config, None);
-        let result = state.resolve_wildcard_model().await;
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains(WILDCARD_MODEL_NAME));
+        let result = state.resolve_alias("some-model-name").await;
+        assert_eq!(result, "some-model-name");
     }
 
-    /// Test resolve_wildcard_model picks the most-recently-accessed Ready model.
+    /// Test that resolve_alias returns the resolved model name for a known alias.
     #[tokio::test]
-    async fn test_resolve_wildcard_picks_most_recent_ready() {
-        let config = crate::config::Config::default();
-        let state = ProxyState::new(config, None);
-
-        // Insert two Ready models with different last_accessed times
-        let mut models = state.models.write().await;
-        models.insert(
-            "server_old".to_string(),
-            ModelState::Ready {
-                model_name: "old-model".to_string(),
-                backend: "llama_cpp".to_string(),
-                backend_pid: 100,
-                backend_url: "http://localhost:8080".to_string(),
-                load_time: std::time::SystemTime::now(),
-                last_accessed: Instant::now() - Duration::from_secs(100),
-                consecutive_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-                failure_timestamp: None,
-                restart_count: 0,
-            },
-        );
-        models.insert(
-            "server_new".to_string(),
-            ModelState::Ready {
-                model_name: "new-model".to_string(),
-                backend: "llama_cpp".to_string(),
-                backend_pid: 200,
-                backend_url: "http://localhost:8081".to_string(),
-                load_time: std::time::SystemTime::now(),
-                last_accessed: Instant::now(),
-                consecutive_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-                failure_timestamp: None,
-                restart_count: 0,
-            },
-        );
-        drop(models);
-
-        let result = state.resolve_wildcard_model().await;
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "server_new");
-    }
-
-    /// Test resolve_wildcard_model skips TTS backends and picks LLM.
-    #[tokio::test]
-    async fn test_resolve_wildcard_skips_tts() {
+    async fn test_resolve_alias_resolves() {
         let config = crate::config::Config::default();
         let state = ProxyState::new(config, None);
 
-        let mut models = state.models.write().await;
-        // TTS backend
-        models.insert(
-            "tts_server".to_string(),
-            ModelState::Ready {
-                model_name: "kokoro".to_string(),
-                backend: "tts_kokoro".to_string(),
-                backend_pid: 300,
-                backend_url: "http://localhost:9000".to_string(),
-                load_time: std::time::SystemTime::now(),
-                last_accessed: Instant::now(),
-                consecutive_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-                failure_timestamp: None,
-                restart_count: 0,
-            },
-        );
-        // LLM backend
-        models.insert(
-            "llm_server".to_string(),
-            ModelState::Ready {
-                model_name: "llm-model".to_string(),
-                backend: "llama_cpp".to_string(),
-                backend_pid: 400,
-                backend_url: "http://localhost:8082".to_string(),
-                load_time: std::time::SystemTime::now(),
-                last_accessed: Instant::now() - Duration::from_secs(10),
-                consecutive_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-                failure_timestamp: None,
-                restart_count: 0,
-            },
-        );
-        drop(models);
-
-        let result = state.resolve_wildcard_model().await;
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "llm_server");
-    }
-
-    /// Test resolve_wildcard_model includes Starting models as available.
-    #[tokio::test]
-    async fn test_resolve_wildcard_includes_starting() {
-        let config = crate::config::Config::default();
-        let state = ProxyState::new(config, None);
-
-        let mut models = state.models.write().await;
-        models.insert(
-            "starting_server".to_string(),
-            ModelState::Starting {
-                model_name: "starting-model".to_string(),
-                backend: "llama_cpp".to_string(),
-                backend_url: "http://localhost:8083".to_string(),
-                backend_pid: 500,
-                last_accessed: Instant::now(),
-                start_time: Instant::now(),
-                consecutive_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-                failure_timestamp: None,
-            },
-        );
-        drop(models);
-
-        let result = state.resolve_wildcard_model().await;
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "starting_server");
-    }
-
-    /// Test resolve_wildcard_model falls back to DB when no models loaded.
-    /// When DB has a last_used record, it attempts to load that model.
-    /// Without model configs, load_model fails, so we verify the error path.
-    #[tokio::test]
-    async fn test_resolve_wildcard_fallback_to_db() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let config = crate::config::Config::default();
-        let state = ProxyState::new(config, Some(temp_dir.path().to_path_buf()));
-
-        // Set up the last_used record in the DB
-        let mgr = state.model_mgr().expect("DB should be available");
-        mgr.set_last_used("test-server", "test-model").unwrap();
-
-        // No models loaded — should fall back to DB, try load_model,
-        // which will fail without model configs → returns Err
-        let result = state.resolve_wildcard_model().await;
-        // The error should be about no model available (from DB fallback failure)
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains(WILDCARD_MODEL_NAME));
-    }
-
-    // ── Integration tests ────────────────────────────────────────────────────
-
-    /// Integration test: full flow with DB persistence.
-    /// Verifies: (1) no models → Err, (2) after inserting last_used record,
-    /// resolve_wildcard_model consults DB and attempts load (fails without configs,
-    /// but proves the DB path is exercised).
-    #[tokio::test]
-    async fn test_wildcard_full_flow_with_db() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let config = crate::config::Config::default();
-        let state = ProxyState::new(config, Some(temp_dir.path().to_path_buf()));
-
-        // Phase 1: No models loaded, no DB record → Err
-        let result = state.resolve_wildcard_model().await;
-        assert!(
-            result.is_err(),
-            "Should fail when no models loaded and no DB record"
-        );
-
-        // Phase 2: Insert a last_used record into the DB
-        let mgr = state.model_mgr().expect("DB should be available");
-        mgr.set_last_used("saved-server", "saved-model").unwrap();
-
-        // Verify the record was persisted
-        let record = mgr.get_last_used().unwrap().expect("Record should exist");
-        assert_eq!(record.server_name, "saved-server");
-        assert_eq!(record.model_name, "saved-model");
-
-        // Phase 3: resolve_wildcard_model should now consult DB and attempt load.
-        // load_model fails without model configs, but the error proves the DB path ran.
-        let result = state.resolve_wildcard_model().await;
-        assert!(
-            result.is_err(),
-            "Should still fail (load_model needs configs), but DB was consulted"
-        );
-        let err = result.unwrap_err();
-        assert!(
-            err.to_string().contains(WILDCARD_MODEL_NAME),
-            "Error should reference wildcard model name"
-        );
-    }
-
-    /// Integration test: concurrent wildcard requests are serialized by the guard mutex.
-    /// All concurrent callers should get the same result (either all Ok with same server,
-    /// or all Err). This verifies the wildcard_resolve_guard prevents duplicate loads.
-    #[tokio::test]
-    async fn test_wildcard_concurrent_requests() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let config = crate::config::Config::default();
-        let state = ProxyState::new(config, Some(temp_dir.path().to_path_buf()));
-
-        // Pre-populate DB with a last_used record so all callers hit the same path
-        let mgr = state.model_mgr().expect("DB should be available");
-        mgr.set_last_used("saved-server", "saved-model").unwrap();
-
-        // Spawn 5 concurrent resolve_wildcard_model calls
-        let state_clone = state.clone();
-        let handles: Vec<_> = (0..5)
-            .map(|_| {
-                let s = state_clone.clone();
-                tokio::spawn(async move { s.resolve_wildcard_model().await })
-            })
-            .collect();
-
-        // Await all results
-        let results: Vec<_> = futures::future::join_all(handles)
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap();
-
-        // All 5 should produce the same outcome
-        // (Either all Ok with same server_name, or all Err)
-        let first = &results[0];
-        for (i, result) in results.iter().enumerate().skip(1) {
-            match (first, result) {
-                (Ok(a), Ok(b)) => {
-                    assert_eq!(
-                        a, b,
-                        "Concurrent call {} returned different server: {} vs {}",
-                        i, a, b
-                    );
-                }
-                (Err(a), Err(b)) => {
-                    assert_eq!(
-                        a.to_string(),
-                        b.to_string(),
-                        "Concurrent call {} returned different error",
-                        i
-                    );
-                }
-                _ => panic!(
-                    "Inconsistent results: call 0 = {:?}, call {} = {:?}",
-                    first, i, result
-                ),
-            }
-        }
-    }
-
-    /// Integration test: Failed model state triggers reload attempt.
-    /// When a model is in Failed state, resolve_wildcard_model should attempt
-    /// to reload it via load_model. If load_model fails (no configs), it falls
-    /// through to DB fallback.
-    #[tokio::test]
-    async fn test_wildcard_failed_model_fallback() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let config = crate::config::Config::default();
-        let state = ProxyState::new(config, Some(temp_dir.path().to_path_buf()));
-
-        // Add a Failed model
+        // Manually populate the alias cache
         {
-            let mut models = state.models.write().await;
-            models.insert(
-                "failed-server".to_string(),
-                ModelState::Failed {
-                    model_name: "failed-model".to_string(),
-                    backend: "llama_cpp".to_string(),
-                    error: "Backend crashed".to_string(),
-                },
-            );
+            let mut aliases = state.aliases.write().await;
+            aliases.insert("my-alias".to_string(), "owner--real-model".to_string());
         }
 
-        // resolve_wildcard_model should detect the Failed model and attempt reload
-        let result = state.resolve_wildcard_model().await;
+        let result = state.resolve_alias("my-alias").await;
+        assert_eq!(result, "owner--real-model");
+    }
 
-        // load_model will fail without configs → falls through to DB fallback
-        // DB is empty → Err with wildcard model name
+    /// Test that reload_aliases populates the cache from the database.
+    #[tokio::test]
+    async fn test_reload_aliases_populates_cache() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = crate::config::Config::default();
+        let state = ProxyState::new(config, Some(temp_dir.path().to_path_buf()));
+
+        // Insert a model config and an alias directly into the DB
+        let mgr = state.model_mgr().expect("DB should be configured");
+        let conn = mgr.conn();
+        conn.execute(
+            "INSERT INTO model_configs (repo_id, api_name, backend) VALUES (?, ?, ?)",
+            rusqlite::params!["test-owner/test-model", "TestModel", "llama_cpp"],
+        )
+        .unwrap();
+        let model_id: i64 = conn
+            .query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
+            .unwrap();
+        conn.execute(
+            "INSERT INTO model_aliases (name, model_id, enabled) VALUES (?, ?, 1)",
+            rusqlite::params!["short-name", model_id],
+        )
+        .unwrap();
+
+        // Cache should be empty before reload
+        assert!(state.aliases.read().await.is_empty());
+
+        // Reload
+        state.reload_aliases().await.unwrap();
+
+        // Cache should now contain the alias
+        let aliases = state.aliases.read().await;
         assert!(
-            result.is_err(),
-            "Should fail (no configs for load, no DB record for fallback)"
+            aliases.contains_key("short-name"),
+            "alias 'short-name' should be in cache"
         );
-        let err = result.unwrap_err();
+        assert_eq!(
+            aliases.get("short-name"),
+            Some(&"TestModel".to_string()),
+            "resolved name should be the api_name"
+        );
+    }
+
+    /// Test that disabled aliases are not included in the cache after reload.
+    #[tokio::test]
+    async fn test_reload_aliases_filters_disabled() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = crate::config::Config::default();
+        let state = ProxyState::new(config, Some(temp_dir.path().to_path_buf()));
+
+        // Insert a model config and two aliases (one enabled, one disabled)
+        let mgr = state.model_mgr().expect("DB should be configured");
+        let conn = mgr.conn();
+        conn.execute(
+            "INSERT INTO model_configs (repo_id, api_name, backend) VALUES (?, ?, ?)",
+            rusqlite::params!["owner/model1", "ModelOne", "llama_cpp"],
+        )
+        .unwrap();
+        let model_id: i64 = conn
+            .query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
+            .unwrap();
+        conn.execute(
+            "INSERT INTO model_aliases (name, model_id, enabled) VALUES (?, ?, 1)",
+            rusqlite::params!["enabled-alias", model_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO model_aliases (name, model_id, enabled) VALUES (?, ?, 0)",
+            rusqlite::params!["disabled-alias", model_id],
+        )
+        .unwrap();
+
+        // Reload
+        state.reload_aliases().await.unwrap();
+
+        let aliases = state.aliases.read().await;
         assert!(
-            err.to_string().contains(WILDCARD_MODEL_NAME),
-            "Error should reference wildcard model name after Failed fallback"
+            aliases.contains_key("enabled-alias"),
+            "enabled alias should be in cache"
+        );
+        assert!(
+            !aliases.contains_key("disabled-alias"),
+            "disabled alias should NOT be in cache"
         );
     }
 }

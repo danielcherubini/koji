@@ -26,7 +26,7 @@ pub use handlers::{
 };
 pub use process::{check_health, force_kill_process, is_process_alive, kill_process, override_arg};
 pub use server::ProxyServer;
-pub use types::{ModelState, ProxyMetrics, ProxyState, WILDCARD_MODEL_NAME};
+pub use types::{ModelState, ProxyMetrics, ProxyState};
 
 #[cfg(test)]
 mod tests {

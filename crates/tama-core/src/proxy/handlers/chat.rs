@@ -10,7 +10,7 @@ use axum::{
 use std::sync::Arc;
 use tracing::info;
 
-use super::{json_error_response, update_last_used_best_effort};
+use super::json_error_response;
 use crate::proxy::forward::forward_request;
 
 #[axum::debug_handler]
@@ -56,47 +56,19 @@ pub async fn handle_chat_completions(
         }
     };
 
-    info!("Routing request for model: {}", model_name);
+    // Resolve alias before routing
+    let resolved_model = state.resolve_alias(model_name).await;
+    info!("Routing request for model: {}", resolved_model);
 
-    // Check for wildcard model
-    if model_name == crate::proxy::WILDCARD_MODEL_NAME {
-        match state.resolve_wildcard_model().await {
-            Ok(server_name) => {
-                state.update_last_accessed(&server_name).await;
-                update_last_used_best_effort(&state, &server_name, model_name).await;
-                return forward_request(
-                    &state,
-                    &server_name,
-                    &parts,
-                    &body_bytes,
-                    Some(model_name),
-                )
-                .await;
-            }
-            Err(e) => {
-                return (
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    Json(serde_json::json!({
-                        "error": {
-                            "message": format!("No model available: {}", e),
-                            "type": "NoModelError"
-                        }
-                    })),
-                )
-                    .into_response();
-            }
-        }
-    }
-
-    let server_name = match state.get_available_server_for_model(model_name).await {
+    let server_name = match state.get_available_server_for_model(&resolved_model).await {
         Some(name) => name,
         None => {
             let _ = state.evict_lru_if_needed().await;
-            let model_card = state.get_model_card(model_name).await;
-            match state.load_model(model_name, model_card.as_ref()).await {
+            let model_card = state.get_model_card(&resolved_model).await;
+            match state.load_model(&resolved_model, model_card.as_ref()).await {
                 Ok(s) => s,
                 Err(e) => {
-                    tracing::warn!("Failed to load model {}: {}", model_name, e);
+                    tracing::warn!("Failed to load model {}: {}", resolved_model, e);
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(serde_json::json!({
@@ -113,9 +85,15 @@ pub async fn handle_chat_completions(
     };
 
     state.update_last_accessed(&server_name).await;
-    update_last_used_best_effort(&state, &server_name, model_name).await;
 
-    forward_request(&state, &server_name, &parts, &body_bytes, Some(model_name)).await
+    forward_request(
+        &state,
+        &server_name,
+        &parts,
+        &body_bytes,
+        Some(&resolved_model),
+    )
+    .await
 }
 
 #[axum::debug_handler]
@@ -162,44 +140,16 @@ pub async fn handle_stream_chat_completions(
         }
     };
 
-    info!("Streaming request for model: {}", model_name);
+    // Resolve alias before routing
+    let resolved_model = state.resolve_alias(model_name).await;
+    info!("Streaming request for model: {}", resolved_model);
 
-    // Check for wildcard model
-    if model_name == crate::proxy::WILDCARD_MODEL_NAME {
-        match state.resolve_wildcard_model().await {
-            Ok(server_name) => {
-                state.update_last_accessed(&server_name).await;
-                update_last_used_best_effort(&state, &server_name, model_name).await;
-                return forward_request(
-                    &state,
-                    &server_name,
-                    &parts,
-                    &body_bytes,
-                    Some(model_name),
-                )
-                .await;
-            }
-            Err(e) => {
-                return (
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    Json(serde_json::json!({
-                        "error": {
-                            "message": format!("No model available: {}", e),
-                            "type": "NoModelError"
-                        }
-                    })),
-                )
-                    .into_response();
-            }
-        }
-    }
-
-    let server_name = match state.get_available_server_for_model(model_name).await {
+    let server_name = match state.get_available_server_for_model(&resolved_model).await {
         Some(name) => name,
         None => {
             let _ = state.evict_lru_if_needed().await;
-            let model_card = state.get_model_card(model_name).await;
-            match state.load_model(model_name, model_card.as_ref()).await {
+            let model_card = state.get_model_card(&resolved_model).await;
+            match state.load_model(&resolved_model, model_card.as_ref()).await {
                 Ok(s) => s,
                 Err(e) => {
                     return (
@@ -218,7 +168,13 @@ pub async fn handle_stream_chat_completions(
     };
 
     state.update_last_accessed(&server_name).await;
-    update_last_used_best_effort(&state, &server_name, model_name).await;
 
-    forward_request(&state, &server_name, &parts, &body_bytes, Some(model_name)).await
+    forward_request(
+        &state,
+        &server_name,
+        &parts,
+        &body_bytes,
+        Some(&resolved_model),
+    )
+    .await
 }
