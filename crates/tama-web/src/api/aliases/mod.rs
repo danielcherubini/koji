@@ -151,10 +151,9 @@ pub async fn create_alias(
     };
 
     // Reload alias cache in ProxyState
-    let state_clone = state.clone();
-    tokio::spawn(async move {
-        let _ = state_clone.reload_aliases().await;
-    });
+    if let Err(e) = state.reload_aliases().await {
+        tracing::warn!("Failed to reload aliases after create: {}", e);
+    }
 
     // Return the created alias
     match tama_core::db::queries::get_alias_by_id(mgr.conn(), new_id) {
@@ -245,10 +244,9 @@ pub async fn update_alias(
     }
 
     // Reload alias cache in ProxyState
-    let state_clone = state.clone();
-    tokio::spawn(async move {
-        let _ = state_clone.reload_aliases().await;
-    });
+    if let Err(e) = state.reload_aliases().await {
+        tracing::warn!("Failed to reload aliases after update: {}", e);
+    }
 
     match tama_core::db::queries::get_alias_by_id(mgr.conn(), id) {
         Ok(Some(alias)) => Json(alias).into_response(),
@@ -293,10 +291,9 @@ pub async fn delete_alias(
     }
 
     // Reload alias cache in ProxyState
-    let state_clone = state.clone();
-    tokio::spawn(async move {
-        let _ = state_clone.reload_aliases().await;
-    });
+    if let Err(e) = state.reload_aliases().await {
+        tracing::warn!("Failed to reload aliases after delete: {}", e);
+    }
 
     Json(serde_json::json!({"deleted": true})).into_response()
 }
