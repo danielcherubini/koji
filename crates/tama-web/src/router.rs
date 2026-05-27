@@ -1,7 +1,7 @@
 use axum::{
     body::Body,
     extract::{Path, State},
-    http::{Request, StatusCode},
+    http::{Request, StatusCode, Uri},
     middleware,
     response::{Html, IntoResponse, Response},
     routing::{delete, get, post},
@@ -59,6 +59,31 @@ async fn serve_static(path: Option<Path<String>>) -> Response {
 /// Dedicated handler for the root path — avoids Axum type-inference issues with inline closures.
 async fn serve_index() -> Response {
     serve_static(None).await
+}
+
+/// Redirect old /ui/* paths to /tama, preserving query strings.
+async fn redirect_to_tama(path: Path<String>, uri: Uri) -> Response {
+    let query = uri.query().map(|q| format!("?{}", q)).unwrap_or_default();
+    let target = if path.0.is_empty() {
+        format!("/tama{}", query)
+    } else {
+        format!("/tama/{}{}", path.0, query)
+    };
+    (
+        StatusCode::SEE_OTHER,
+        [(axum::http::header::LOCATION, target)],
+    )
+        .into_response()
+}
+
+/// Redirect /ui root to /tama, preserving query strings.
+async fn redirect_ui_root(uri: Uri) -> Response {
+    let query = uri.query().map(|q| format!("?{}", q)).unwrap_or_default();
+    (
+        StatusCode::SEE_OTHER,
+        [(axum::http::header::LOCATION, format!("/tama{}", query))],
+    )
+        .into_response()
 }
 
 /// Serve a static file from dist if it exists, otherwise forward to an available
@@ -310,10 +335,13 @@ pub fn build_web_routes() -> Router<Arc<tama_core::proxy::ProxyState>> {
         .route("/tama/v1/logs/:backend", get(api::logs::get_backend_logs))
         .merge(csrf_routes)
         .merge(backend_routes)
-        // Web UI — mounted at /ui
-        .route("/ui", get(serve_index))
+        // Redirect old /ui paths to /tama
+        .route("/ui", get(redirect_ui_root))
+        .route("/ui/*path", get(redirect_to_tama))
+        // Web UI — mounted at /tama (SPA fallback, /tama/v1/* takes priority)
+        .route("/tama", get(serve_index))
         .route(
-            "/ui/*path",
+            "/tama/*path",
             get(|Path(p): Path<String>| async move { serve_static(Some(Path(p))).await }),
         )
         // Root-level static files + backend forwarding for unknown paths
