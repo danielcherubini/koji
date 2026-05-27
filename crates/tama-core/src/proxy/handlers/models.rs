@@ -263,19 +263,45 @@ pub async fn handle_list_models(state: State<Arc<ProxyState>>) -> Json<serde_jso
     }
 
     // Phase 5: Add alias entries from the alias cache.
+    // Inherit metadata (context_length, modalities, backend) from the target model.
     let aliases = state.aliases.read().await;
     for (alias_name, resolved_model) in aliases.iter() {
         if seen_ids.contains(alias_name.as_str()) {
             continue; // skip duplicate — model already in list
         }
-        data.push(serde_json::json!({
+
+        // Find the target config to inherit metadata
+        let resolved_lower = resolved_model.to_lowercase();
+        let target_cfg = all_configs.iter().find(|(_, cfg)| {
+            cfg.enabled
+                && (cfg.api_name.as_ref().map(|s| s.to_lowercase()) == Some(resolved_lower.clone())
+                    || cfg.model.as_ref().map(|s| s.to_lowercase()) == Some(resolved_lower.clone()))
+        });
+
+        let mut entry = serde_json::json!({
             "id": alias_name,
             "object": "model",
             "created": 0,
             "owned_by": "tama-proxy",
             "alias": true,
             "resolves_to": resolved_model,
-        }));
+        });
+
+        // Inherit metadata from target model
+        if let Some((_, cfg)) = target_cfg {
+            if let Some(ctx) = cfg.context_length {
+                entry["context_length"] = serde_json::json!(ctx);
+            }
+            if let Some(ref m) = cfg.modalities {
+                entry["modalities"] = serde_json::json!({
+                    "input": m.input,
+                    "output": m.output,
+                });
+            }
+            entry["backend"] = serde_json::json!(cfg.backend);
+        }
+
+        data.push(entry);
     }
     drop(aliases);
 

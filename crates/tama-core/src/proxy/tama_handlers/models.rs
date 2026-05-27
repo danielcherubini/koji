@@ -301,20 +301,51 @@ async fn build_model_entry(
 
 /// Handle listing all enabled models for OpenCode plugin discovery.
 /// Returns rich metadata including context limits, modalities, and capabilities.
+/// Aliases are included with the same metadata as their target model, using the alias name as `id`.
 pub async fn handle_opencode_list_models(state: State<Arc<ProxyState>>) -> Json<serde_json::Value> {
     let mut models: Vec<serde_json::Value> = Vec::new();
+    let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    for (id, cfg) in state
-        .model_configs
-        .read()
-        .await
-        .iter()
-        .filter(|(_, cfg)| cfg.enabled)
-    {
+    let configs = state.model_configs.read().await;
+    for (id, cfg) in configs.iter().filter(|(_, cfg)| cfg.enabled) {
         if let Some(entry) = build_model_entry(&state, id, cfg).await {
+            // Track the api_name so we can skip it if an alias points to it
+            if let Some(api_id) = entry.get("id").and_then(|v| v.as_str()) {
+                seen_ids.insert(api_id.to_lowercase());
+            }
             models.push(entry);
         }
     }
+    drop(configs);
+
+    // Add alias entries — inherit full metadata from the target model
+    let aliases = state.aliases.read().await;
+    let configs = state.model_configs.read().await;
+    for (alias_name, resolved_model) in aliases.iter() {
+        // Skip if the alias name itself is already in the list
+        if seen_ids.contains(&alias_name.to_lowercase()) {
+            continue;
+        }
+
+        // Find the config whose api_name or model matches the resolved name
+        let resolved_lower = resolved_model.to_lowercase();
+        let target_cfg = configs.iter().find(|(_, cfg)| {
+            cfg.enabled
+                && (cfg.api_name.as_ref().map(|s| s.to_lowercase()) == Some(resolved_lower.clone())
+                    || cfg.model.as_ref().map(|s| s.to_lowercase()) == Some(resolved_lower.clone()))
+        });
+
+        if let Some((key, cfg)) = target_cfg {
+            if let Some(mut entry) = build_model_entry(&state, key, cfg).await {
+                // Override the id to be the alias name (lowercased)
+                entry["id"] = serde_json::json!(alias_name.to_lowercase());
+                models.push(entry);
+                seen_ids.insert(alias_name.to_lowercase());
+            }
+        }
+    }
+    drop(aliases);
+    drop(configs);
 
     Json(serde_json::json!({
         "models": models
