@@ -529,7 +529,7 @@ pub fn Updates() -> impl IntoView {
                                         } else {
                                             view! { <span/> }.into_any()
                                         }}
-                                        <a href=format!("/ui/model/{}/edit", m.item_id) class="btn btn-ghost">
+                                        <a href=format!("/tama/model/{}/edit", m.item_id) class="btn btn-ghost">
                                             "Edit"
                                         </a>
                                     </div>
