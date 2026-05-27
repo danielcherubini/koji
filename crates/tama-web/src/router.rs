@@ -12,6 +12,7 @@ use std::sync::Arc;
 use tower_http::{catch_panic::CatchPanicLayer, cors::CorsLayer};
 
 use crate::api;
+use crate::api::aliases::{create_alias, delete_alias, get_alias, list_aliases, update_alias};
 use crate::api::backends::{
     activate_backend_version, check_backend_updates, get_job, install_backend, job_events_sse,
     list_backend_versions, list_backends, remove_backend, remove_backend_version,
@@ -245,6 +246,18 @@ pub fn build_web_routes() -> Router<Arc<tama_core::proxy::ProxyState>> {
         .route(
             "/tama/v1/downloads/:job_id/cancel",
             post(api::downloads::cancel_download).layer(json_body_limit),
+        )
+        // Alias CRUD routes
+        .route(
+            "/tama/v1/aliases",
+            get(list_aliases).post(create_alias).layer(json_body_limit),
+        )
+        .route(
+            "/tama/v1/aliases/:id",
+            get(get_alias)
+                .put(update_alias)
+                .delete(delete_alias)
+                .layer(json_body_limit),
         )
         .layer(
             CorsLayer::new()

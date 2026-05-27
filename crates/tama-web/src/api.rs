@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use tama_core::proxy::ProxyState;
 
+pub mod aliases;
 pub mod backends;
 pub mod backup;
 pub mod benchmarks;
