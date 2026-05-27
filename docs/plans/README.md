@@ -15,9 +15,9 @@ This directory contains implementation plans for the Tama project. Each plan doc
 ## Quick Stats
 
 - **Total Plans**: 105
-- **Completed**: 103 ✅
-- **In Progress**: 2 🚧
-- **Remaining**: 1
+- **Completed**: 104 ✅
+- **In Progress**: 1 🚧 (split-proxy-handlers)
+- **Remaining**: 0
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
 
@@ -32,7 +32,7 @@ This directory contains implementation plans for the Tama project. Each plan doc
 | [Split proxy/handlers/mod.rs](2025-05-22-split-proxy-handlers.md) | Split 2109 LOC file into 6 focused modules by responsibility | 🚧 IN PROGRESS |
 | [/v1/models Meta Enrichment](2026-05-20-v1-models-meta.md) | Forward /v1/models to backends for full GGUF meta, merge and inject ready | #92 ✅ COMPLETED |
 | [Wildcard Model Routing (whatevers-hot-n-fresh)](2026-05-19-whatevers-hot-n-fresh.md) | Virtual model alias that routes to most-recently-accessed loaded LLM, or loads last-used model from DB as fallback | `2048fb97`, `44c50a06`, `947f46b2`, `bcc95694`, `8e112e0a` 🔁 SUPERSEDED by model-aliases |
-| [Model Aliases](2026-05-26-model-aliases.md) | Replace hardcoded wildcard with user-managed global alias registry — DB table, ProxyState cache, handler integration, web API, and web UI | 🚧 IN PROGRESS |
+| [Model Aliases](2026-05-26-model-aliases.md) | Replace hardcoded wildcard with user-managed global alias registry — DB table, ProxyState cache, handler integration, web API, and web UI | `c07193f2`, `cc9bdccc`, `6dff30f2`, `f21fcf4c`, `c11a7120`, `d122d403`, `4afee36f`, `fedd5789`, `16dee7ba` ✅ COMPLETED (#95) |
 
 ### Recently Completed
 
