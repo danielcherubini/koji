@@ -1,9 +1,34 @@
 //! REST API endpoints for managing model aliases.
 
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
-use std::sync::Arc;
+use regex::Regex;
+use std::sync::{Arc, OnceLock};
 
 use tama_core::proxy::ProxyState;
+
+/// Regex for valid alias names: starts with alphanumeric, then alphanumeric/underscore/hyphen,
+/// max 128 characters total.
+fn alias_name_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$").expect("invalid alias name regex")
+    })
+}
+
+/// Returns an error message if the alias name is invalid, or `None` if valid.
+fn validate_alias_name(name: &str) -> Option<String> {
+    if name.is_empty() {
+        return Some("Alias name must not be empty".to_string());
+    }
+    if !alias_name_re().is_match(name) {
+        return Some(format!(
+            "Invalid alias name '{}': must start with a letter or digit, \
+            contain only letters, digits, underscores, and hyphens, and be at most 128 characters",
+            name
+        ));
+    }
+    None
+}
 
 /// GET /tama/v1/aliases
 /// Returns list of all aliases (enabled and disabled)
@@ -75,6 +100,15 @@ pub async fn create_alias(
                 .into_response();
         }
     };
+
+    // Validate alias name
+    if let Some(err) = validate_alias_name(&payload.name) {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({"error": err})),
+        )
+            .into_response();
+    }
 
     // Validate model_id exists
     let model_exists: bool = match mgr.conn().query_row(
@@ -154,6 +188,17 @@ pub async fn update_alias(
                 .into_response();
         }
     };
+
+    // Validate alias name if provided
+    if let Some(ref name) = payload.name {
+        if let Some(err) = validate_alias_name(name) {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({"error": err})),
+            )
+                .into_response();
+        }
+    }
 
     // Validate model_id if provided
     if let Some(ref model_id) = payload.model_id {
