@@ -59,6 +59,19 @@ impl ProxyServer {
                 Err(e) => tracing::error!("Failed to load model configs from database: {}", e),
             }
 
+            // Load aliases into the in-memory cache.
+            // Without this, /v1/models and /v1/opencode/models return zero aliases
+            // because the cache is never populated at startup.
+            match crate::db::queries::load_aliases_for_cache(&conn) {
+                Ok(pairs) => {
+                    if !pairs.is_empty() {
+                        tracing::info!("Loaded {} aliases from database", pairs.len());
+                    }
+                    *state.aliases.write().await = pairs.into_iter().collect();
+                }
+                Err(e) => tracing::error!("Failed to load aliases from database: {}", e),
+            }
+
             // Check if any models need HF metadata backfill (after migration v19).
             // If so, spawn a background task to fetch and populate the columns.
             let needs_backfill = conn
@@ -1042,5 +1055,65 @@ mod tests {
         );
         let model = model_configs.get("db-model-key").unwrap();
         assert_eq!(model.display_name.as_deref(), Some("DB Model"));
+    }
+
+    /// Test that aliases are loaded from the DB into the in-memory cache at startup.
+    /// Without this, /v1/models and /v1/opencode/models return zero aliases because
+    /// the alias cache is never populated.
+    #[tokio::test]
+    async fn test_proxy_loads_aliases_from_db_on_startup() {
+        use crate::config::ModelConfig;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let db_dir = tmp.path().to_path_buf();
+
+        // Pre-populate DB with a model config and an alias
+        {
+            let open_res = crate::db::open(&db_dir).unwrap();
+            let conn = open_res.conn;
+
+            // Insert a model config
+            let mc = ModelConfig {
+                backend: "llama_cpp".to_string(),
+                api_name: Some("test-model".to_string()),
+                ..Default::default()
+            };
+            crate::db::save_model_config(&conn, "owner--test-repo", &mc).unwrap();
+
+            // Get the model's integer id
+            let model_id: i64 = conn
+                .query_row(
+                    "SELECT id FROM model_configs WHERE repo_id = ?1",
+                    ["owner/test-repo"],
+                    |row| row.get(0),
+                )
+                .unwrap();
+
+            // Insert an alias pointing to the model
+            conn.execute(
+                "INSERT INTO model_aliases (name, model_id, enabled) VALUES (?1, ?2, 1)",
+                rusqlite::params!["my-alias", model_id],
+            )
+            .unwrap();
+        }
+
+        let config = crate::config::Config::default();
+        let state = Arc::new(crate::proxy::ProxyState::new(config, Some(db_dir)));
+
+        // Start the server (which should load aliases from DB)
+        let _server = ProxyServer::new(state.clone()).await;
+
+        // Verify that the alias from DB is now in the proxy state's alias cache
+        let aliases = state.aliases.read().await;
+        assert!(
+            aliases.contains_key("my-alias"),
+            "Expected alias 'my-alias' to be loaded from DB into cache"
+        );
+        // The alias should resolve to the model's api_name (or repo_id as fallback)
+        assert_eq!(
+            aliases.get("my-alias"),
+            Some(&"test-model".to_string()),
+            "alias should resolve to the model's api_name"
+        );
     }
 }
