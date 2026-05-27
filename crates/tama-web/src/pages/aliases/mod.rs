@@ -9,6 +9,33 @@ use crate::utils::{rw_signal_to_signal, target_value};
 use self::api::*;
 use self::types::{Alias, ModelOption};
 
+/// Validates an alias name against the allowed pattern.
+/// Pattern: ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$
+/// Returns None if valid, or an error message if invalid.
+fn validate_alias_name(name: &str) -> Option<String> {
+    let bytes = name.as_bytes();
+    let len = bytes.len();
+
+    if len == 0 {
+        return Some("Alias name is required.".to_string());
+    }
+    if len > 128 {
+        return Some("Alias name must be 128 characters or fewer.".to_string());
+    }
+    if !bytes[0].is_ascii_alphanumeric() {
+        return Some("Alias name must start with a letter or number.".to_string());
+    }
+    for &b in &bytes[1..] {
+        if !b.is_ascii_alphanumeric() && b != b'_' && b != b'-' {
+            return Some(
+                "Alias name can only contain letters, numbers, hyphens, and underscores."
+                    .to_string(),
+            );
+        }
+    }
+    None
+}
+
 /// Main Aliases page component.
 /// Displays a card-based list of model aliases with create/edit/delete functionality.
 #[component]
@@ -299,8 +326,8 @@ fn CreateAliasForm(
         let desc_val = description.get().trim().to_string();
         let model_id_val = model_id.get();
 
-        if name_val.is_empty() {
-            submit_error.set(Some("Alias name is required.".to_string()));
+        if let Some(err) = validate_alias_name(&name_val) {
+            submit_error.set(Some(err));
             return;
         }
         if model_id_val == 0 {
@@ -414,8 +441,8 @@ fn EditAliasForm(
         let model_id_val = model_id.get();
         let enabled_val = enabled.get();
 
-        if name_val.is_empty() {
-            submit_error.set(Some("Alias name is required.".to_string()));
+        if let Some(err) = validate_alias_name(&name_val) {
+            submit_error.set(Some(err));
             return;
         }
         if model_id_val == 0 {
