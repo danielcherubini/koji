@@ -1,5 +1,7 @@
 //! Record types for database query results.
 
+use serde::{Deserialize, Serialize};
+
 /// Per-repo user configuration for a model.
 #[derive(Debug, Clone)]
 pub struct ModelConfigRecord {
@@ -108,14 +110,6 @@ pub struct TtsConfigRecord {
     pub updated_at: String,
 }
 
-/// The last-used LLM model record (single row, id = 1).
-#[derive(Debug, Clone)]
-pub struct LastUsedModelRecord {
-    pub server_name: String, // config key (HashMap key for models map)
-    pub model_name: String,  // model identifier used for load_model
-    pub used_at: String,     // ISO 8601 timestamp
-}
-
 /// A stored update check record for a backend or model.
 #[derive(Debug, Clone)]
 pub struct UpdateCheckRecord {
@@ -128,4 +122,16 @@ pub struct UpdateCheckRecord {
     pub error_message: Option<String>,
     pub details_json: Option<String>, // JSON blob for model file changes
     pub checked_at: i64,              // unix timestamp
+}
+
+/// A model alias record — maps a friendly name to a model config.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelAliasRecord {
+    pub id: i64,
+    pub name: String,
+    pub model_id: i64,
+    pub description: Option<String>,
+    pub enabled: bool,
+    pub created_at: String,
+    pub updated_at: String,
 }

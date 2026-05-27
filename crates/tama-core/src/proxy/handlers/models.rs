@@ -57,7 +57,16 @@ pub async fn handle_get_model(
     state: State<Arc<ProxyState>>,
     Path(model_id): Path<String>,
 ) -> Response {
-    // Phase 1: Look up model by model_id in config.
+    // Check if model_id is an alias first
+    let aliases = state.aliases.read().await;
+    let (lookup_id, is_alias) = if let Some(resolved) = aliases.get(&model_id) {
+        (resolved.clone(), true)
+    } else {
+        (model_id.clone(), false)
+    };
+    drop(aliases);
+
+    // Phase 1: Look up model by lookup_id in config.
     // Match by config_name, api_name, or model field.
     let (config_name, server_cfg) = {
         let model_configs = state.model_configs.read().await;
@@ -67,9 +76,9 @@ pub async fn handle_get_model(
             if !cfg.enabled {
                 continue;
             }
-            if name == &model_id
-                || cfg.api_name.as_deref() == Some(&*model_id)
-                || cfg.model.as_deref() == Some(model_id.as_str())
+            if name == &lookup_id
+                || cfg.api_name.as_deref() == Some(&*lookup_id)
+                || cfg.model.as_deref() == Some(lookup_id.as_str())
             {
                 found = Some((name, cfg));
                 break;
@@ -102,17 +111,27 @@ pub async fn handle_get_model(
         if let Some(mut entry) = find_model_in_entries(&entries, server_cfg.model.as_deref()) {
             // Normalize the id to the config's api_name (or config_name)
             // so the response is consistent with /v1/models list.
-            let canonical_id = server_cfg.api_name.as_deref().unwrap_or(&config_name);
-            entry["id"] = serde_json::json!(canonical_id);
+            // If the request came in via an alias, use the alias name.
+            let response_id = if is_alias {
+                &model_id
+            } else {
+                server_cfg.api_name.as_deref().unwrap_or(&config_name)
+            };
+            entry["id"] = serde_json::json!(response_id);
             entry["ready"] = serde_json::value::to_value(true).unwrap();
             return Json(entry).into_response();
         }
     }
 
     // Phase 3: Fallback — construct from config (no meta, ready: false).
-    let model_id_val = server_cfg.api_name.as_deref().unwrap_or(&config_name);
+    // If the request came in via an alias, use the alias name as the id.
+    let response_id = if is_alias {
+        &model_id
+    } else {
+        server_cfg.api_name.as_deref().unwrap_or(&config_name)
+    };
     Json(serde_json::json!({
-        "id": model_id_val,
+        "id": response_id,
         "object": "model",
         "created": 0,
         "owned_by": server_cfg.backend,
@@ -124,7 +143,7 @@ pub async fn handle_get_model(
 #[axum::debug_handler]
 pub async fn handle_list_models(state: State<Arc<ProxyState>>) -> Json<serde_json::Value> {
     // Phase 1: Snapshot data under locks, then drop them before I/O.
-    let (backend_info, has_available_llm, all_configs) = {
+    let (backend_info, all_configs) = {
         let models = state.models.read().await;
         let configs = state.model_configs.read().await;
 
@@ -143,13 +162,7 @@ pub async fn handle_list_models(state: State<Arc<ProxyState>>) -> Json<serde_jso
         // Clone config map for use outside lock
         let configs = configs.clone();
 
-        // Check if any non-TTS model is Ready or Starting (for wildcard ready flag)
-        let has_available_llm = models.iter().any(|(_, s)| {
-            !s.is_tts_backend()
-                && (s.is_ready() || matches!(s, crate::proxy::ModelState::Starting { .. }))
-        });
-
-        (backend_info, has_available_llm, configs)
+        (backend_info, configs)
     };
     // All locks dropped here
 
@@ -249,17 +262,48 @@ pub async fn handle_list_models(state: State<Arc<ProxyState>>) -> Json<serde_jso
         }));
     }
 
-    // Phase 5: Prepend wildcard entry.
-    data.insert(
-        0,
-        serde_json::json!({
-            "id": crate::proxy::WILDCARD_MODEL_NAME,
+    // Phase 5: Add alias entries from the alias cache.
+    // Inherit metadata (context_length, modalities, backend) from the target model.
+    let aliases = state.aliases.read().await;
+    for (alias_name, resolved_model) in aliases.iter() {
+        if seen_ids.contains(alias_name.as_str()) {
+            continue; // skip duplicate — model already in list
+        }
+
+        // Find the target config to inherit metadata
+        let resolved_lower = resolved_model.to_lowercase();
+        let target_cfg = all_configs.iter().find(|(_, cfg)| {
+            cfg.enabled
+                && (cfg.api_name.as_ref().map(|s| s.to_lowercase()) == Some(resolved_lower.clone())
+                    || cfg.model.as_ref().map(|s| s.to_lowercase()) == Some(resolved_lower.clone()))
+        });
+
+        let mut entry = serde_json::json!({
+            "id": alias_name,
             "object": "model",
             "created": 0,
             "owned_by": "tama-proxy",
-            "ready": has_available_llm
-        }),
-    );
+            "alias": true,
+            "resolves_to": resolved_model,
+        });
+
+        // Inherit metadata from target model
+        if let Some((_, cfg)) = target_cfg {
+            if let Some(ctx) = cfg.context_length {
+                entry["context_length"] = serde_json::json!(ctx);
+            }
+            if let Some(ref m) = cfg.modalities {
+                entry["modalities"] = serde_json::json!({
+                    "input": m.input,
+                    "output": m.output,
+                });
+            }
+            entry["backend"] = serde_json::json!(cfg.backend);
+        }
+
+        data.push(entry);
+    }
+    drop(aliases);
 
     Json(serde_json::json!({
         "object": "list",

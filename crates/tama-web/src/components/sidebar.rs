@@ -123,6 +123,10 @@ pub fn Sidebar() -> impl IntoView {
                     <span class="sidebar-item__icon">"📊"</span>
                     <span class="sidebar-item__text">"Benchmarks"</span>
                 </A>
+                <A href="/ui/aliases" attr:class="sidebar-item" attr:data-tooltip="Aliases" on:click=move |_| mobile_open.set(false)>
+                    <span class="sidebar-item__icon">"🏷️"</span>
+                    <span class="sidebar-item__text">"Aliases"</span>
+                </A>
             </nav>
 
             <div class="sidebar-footer">
