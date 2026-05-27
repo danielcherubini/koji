@@ -57,7 +57,16 @@ pub async fn handle_get_model(
     state: State<Arc<ProxyState>>,
     Path(model_id): Path<String>,
 ) -> Response {
-    // Phase 1: Look up model by model_id in config.
+    // Check if model_id is an alias first
+    let aliases = state.aliases.read().await;
+    let (lookup_id, is_alias) = if let Some(resolved) = aliases.get(&model_id) {
+        (resolved.clone(), true)
+    } else {
+        (model_id.clone(), false)
+    };
+    drop(aliases);
+
+    // Phase 1: Look up model by lookup_id in config.
     // Match by config_name, api_name, or model field.
     let (config_name, server_cfg) = {
         let model_configs = state.model_configs.read().await;
@@ -67,9 +76,9 @@ pub async fn handle_get_model(
             if !cfg.enabled {
                 continue;
             }
-            if name == &model_id
-                || cfg.api_name.as_deref() == Some(&*model_id)
-                || cfg.model.as_deref() == Some(model_id.as_str())
+            if name == &lookup_id
+                || cfg.api_name.as_deref() == Some(&*lookup_id)
+                || cfg.model.as_deref() == Some(lookup_id.as_str())
             {
                 found = Some((name, cfg));
                 break;
@@ -102,17 +111,27 @@ pub async fn handle_get_model(
         if let Some(mut entry) = find_model_in_entries(&entries, server_cfg.model.as_deref()) {
             // Normalize the id to the config's api_name (or config_name)
             // so the response is consistent with /v1/models list.
-            let canonical_id = server_cfg.api_name.as_deref().unwrap_or(&config_name);
-            entry["id"] = serde_json::json!(canonical_id);
+            // If the request came in via an alias, use the alias name.
+            let response_id = if is_alias {
+                &model_id
+            } else {
+                server_cfg.api_name.as_deref().unwrap_or(&config_name)
+            };
+            entry["id"] = serde_json::json!(response_id);
             entry["ready"] = serde_json::value::to_value(true).unwrap();
             return Json(entry).into_response();
         }
     }
 
     // Phase 3: Fallback — construct from config (no meta, ready: false).
-    let model_id_val = server_cfg.api_name.as_deref().unwrap_or(&config_name);
+    // If the request came in via an alias, use the alias name as the id.
+    let response_id = if is_alias {
+        &model_id
+    } else {
+        server_cfg.api_name.as_deref().unwrap_or(&config_name)
+    };
     Json(serde_json::json!({
-        "id": model_id_val,
+        "id": response_id,
         "object": "model",
         "created": 0,
         "owned_by": server_cfg.backend,
@@ -242,6 +261,20 @@ pub async fn handle_list_models(state: State<Arc<ProxyState>>) -> Json<serde_jso
             "ready": false
         }));
     }
+
+    // Phase 5: Add alias entries from the alias cache.
+    let aliases = state.aliases.read().await;
+    for (alias_name, resolved_model) in aliases.iter() {
+        data.push(serde_json::json!({
+            "id": alias_name,
+            "object": "model",
+            "created": 0,
+            "owned_by": "tama",
+            "alias": true,
+            "resolves_to": resolved_model,
+        }));
+    }
+    drop(aliases);
 
     Json(serde_json::json!({
         "object": "list",

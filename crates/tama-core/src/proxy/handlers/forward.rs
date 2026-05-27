@@ -47,7 +47,14 @@ pub async fn handle_forward_post(
         .ok()
         .and_then(|v| v.get("model")?.as_str().map(String::from));
 
-    let server_name = if let Some(ref model) = model_name {
+    // Resolve alias before routing
+    let resolved_model: Option<String> = if let Some(ref m) = model_name {
+        Some(state.resolve_alias(m).await)
+    } else {
+        None
+    };
+
+    let server_name = if let Some(ref model) = resolved_model {
         match state.get_available_server_for_model(model).await {
             Some(name) => name,
             None => {
