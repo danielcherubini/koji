@@ -6,7 +6,7 @@ run: build-frontend-dev
 
 # Run Leptos frontend dev server with hot reload on http://localhost:8080
 dev: wasm-target
-	cd crates/tama-web && trunk serve --port 8080
+	cd crates/tama-web && trunk serve --port 8080 --public-url /tama
 
 # Ensure the wasm32 target is installed (idempotent — safe to run multiple times)
 wasm-target:
@@ -14,11 +14,11 @@ wasm-target:
 
 # Build the Leptos WASM frontend into crates/tama-web/dist/ (required before any Rust release build)
 build-frontend: wasm-target
-	cd crates/tama-web && trunk build --release
+	cd crates/tama-web && trunk build --release --public-url /tama
 
 # Development WASM build (unoptimised, faster iteration)
 build-frontend-dev: wasm-target
-	cd crates/tama-web && trunk build
+	cd crates/tama-web && trunk build --public-url /tama
 
 # Full release build: frontend first, then the Rust workspace
 build: build-frontend
