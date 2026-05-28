@@ -88,8 +88,29 @@ mod tests {
 
     #[test]
     fn test_find_llama_server_not_found() {
+        // Acquire lock and clear env vars so the function cannot find llama-server
+        // via LLAMA_SERVER_PATH or PATH lookup — otherwise this test is flaky
+        // on machines/CI runners that have llama.cpp installed.
+        let _lock = ENV_VAR_MUTEX.lock().unwrap();
+
+        let prev_env = std::env::var_os("LLAMA_SERVER_PATH");
+        let prev_path = std::env::var_os("PATH");
+        std::env::remove_var("LLAMA_SERVER_PATH");
+        std::env::set_var("PATH", "");
+
         let nonexistent = PathBuf::from("/nonexistent/path/backend");
         let result = find_llama_server(&nonexistent);
+
+        match prev_env {
+            Some(val) => std::env::set_var("LLAMA_SERVER_PATH", val),
+            None => std::env::remove_var("LLAMA_SERVER_PATH"),
+        }
+        if let Some(ref p) = prev_path {
+            std::env::set_var("PATH", p.clone());
+        } else {
+            std::env::remove_var("PATH");
+        }
+
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("llama-server binary not found"));
