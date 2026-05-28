@@ -1,9 +1,13 @@
 use crate::config::BackendConfig;
 
-mod args_building;
+mod aliases;
+mod basic;
+mod context_np;
 mod kv_cache_types;
 mod path_resolution;
 mod server_resolution;
+mod spec_decoding;
+mod unified_slots;
 
 fn make_test_config(llama_cpp_path: Option<&str>) -> crate::config::Config {
     let mut config = crate::config::Config::default();
