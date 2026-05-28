@@ -9,7 +9,7 @@ pub mod tts;
 #[allow(unused_imports)]
 pub use chat::{handle_chat_completions, handle_stream_chat_completions};
 #[allow(unused_imports)]
-pub use forward::{handle_fallback, handle_forward_get, handle_forward_post};
+pub use forward::{forward_to_backend, handle_fallback, handle_forward_get, handle_forward_post};
 #[allow(unused_imports)]
 pub use metrics::{
     format_backend_metrics, format_system_metrics, format_tama_metrics, inject_server_label,

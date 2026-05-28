@@ -21,8 +21,8 @@ pub use handlers::tts::{
     handle_audio_models, handle_audio_speech, handle_audio_stream, handle_audio_voices,
 };
 pub use handlers::{
-    handle_fallback, handle_forward_get, handle_forward_post, handle_health, handle_metrics,
-    handle_reload_configs, handle_status, json_error_response,
+    forward_to_backend, handle_fallback, handle_forward_get, handle_forward_post, handle_health,
+    handle_metrics, handle_reload_configs, handle_status, json_error_response,
 };
 pub use process::{check_health, force_kill_process, is_process_alive, kill_process, override_arg};
 pub use server::ProxyServer;

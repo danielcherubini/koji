@@ -116,11 +116,23 @@ pub async fn handle_forward_get(
     req: Request<Body>,
 ) -> Response {
     let (parts, body) = req.into_parts();
+    forward_to_backend(&state, parts, body).await
+}
+
+/// Forward a request to the first available backend server.
+///
+/// Used by both the proxy's `handle_forward_get` and the web UI's root-level
+/// fallback (`/*path`). GET requests don't carry a `model` field, so we
+/// simply pick the first available server.
+pub async fn forward_to_backend(
+    state: &Arc<ProxyState>,
+    parts: http::request::Parts,
+    body: Body,
+) -> Response {
     let body_bytes = to_bytes(body, MAX_REQUEST_BODY_SIZE)
         .await
         .unwrap_or_default();
 
-    // GET requests don't have a model field — forward to any available server
     let models = state.models.read().await;
     let server_name = models.keys().next().cloned().unwrap_or_else(String::new);
     drop(models);
@@ -138,5 +150,5 @@ pub async fn handle_forward_get(
             .into_response();
     }
 
-    forward_request(&state, &server_name, &parts, &body_bytes, None).await
+    forward_request(state, &server_name, &parts, &body_bytes, None).await
 }
