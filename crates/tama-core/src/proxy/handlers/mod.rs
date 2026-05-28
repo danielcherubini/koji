@@ -38,4 +38,12 @@ pub fn json_error_response() -> Response {
 }
 
 #[cfg(test)]
+mod alias_tests;
+#[cfg(test)]
+mod forward_tests;
+#[cfg(test)]
+mod get_model_tests;
+#[cfg(test)]
+mod list_models_tests;
+#[cfg(test)]
 mod tests;
