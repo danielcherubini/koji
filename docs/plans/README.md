@@ -16,8 +16,8 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 - **Total Plans**: 107
 - **Completed**: 105 ✅
-- **In Progress**: 1 🚧 (split-remaining-files)
-- **Remaining**: 1
+- **In Progress**: 0 🚧
+- **Remaining**: 0
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
 
@@ -25,16 +25,11 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Completed Plans
 
-### In Progress
-
-| Plan | Description | PR / Git References |
-|------|-------------|---------------------|
-| [Split Remaining Long Files](2026-05-27-split-remaining-files.md) | Split args_building.rs (2,256), handlers/tests.rs (1,530), and db/backfill.rs (1,023) into focused sub-modules | 🚧 IN PROGRESS |
-
 ### Recently Completed
 
 | Plan | Description | PR / Git References |
 |------|-------------|---------------------|
+| [Split Remaining Long Files](2026-05-27-split-remaining-files.md) | Split args_building.rs (2,256), handlers/tests.rs (1,530), and db/backfill.rs (1,023) into focused sub-modules | #97 ✅ COMPLETED |
 | [Move Web UI from /ui to /tama](2026-05-27-move-ui-to-tama.md) | Consolidate all non-bearer-token endpoints under /tama — web UI at /tama, API at /tama/v1/* | #96 ✅ COMPLETED |
 | [Split proxy/handlers/mod.rs](2025-05-22-split-proxy-handlers.md) | Split 2109 LOC file into 6 focused modules by responsibility | #93 ✅ COMPLETED |
 | [/v1/models Meta Enrichment](2026-05-20-v1-models-meta.md) | Forward /v1/models to backends for full GGUF meta, merge and inject ready | #92 ✅ COMPLETED |
@@ -272,4 +267,4 @@ When implementing a new feature:
 
 ---
 
-**Last Updated**: 2026-05-27
+**Last Updated**: 2026-05-28
