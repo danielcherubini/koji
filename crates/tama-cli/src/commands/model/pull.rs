@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use reqwest::Client;
 use tama_core::config::Config;
 use tama_core::models::pull;
 use tama_core::models::{ModelCard, ModelManager, ModelMeta, QuantInfo};
@@ -116,8 +115,8 @@ pub(super) async fn cmd_pull(config: &Config, repo_id: &str) -> Result<()> {
         println!();
         println!("  Downloading {}...", gguf.filename);
 
-        let client = Client::new();
-        let result = pull::download_gguf(&client, repo_id, &gguf.filename, &model_dir).await?;
+        let result =
+            pull::download_gguf_with_progress(repo_id, &gguf.filename, &model_dir, None).await?;
 
         let base_quant = gguf.quant.clone().unwrap_or_else(|| gguf.filename.clone());
         let quant_key = super::utils::unique_quant_key(&card.quants, &base_quant, &gguf.filename);

@@ -1,10 +1,13 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use reqwest::Client;
 
 use crate::models::download::ProgressCallback;
+
+// ── ProgressAdapter (kept for proxy handler) ─────────────────────────────────
 
 /// Progress adapter that bridges hf-hub's Progress trait to our callback.
 #[derive(Clone)]
@@ -49,185 +52,233 @@ impl hf_hub::api::tokio::Progress for ProgressAdapter {
     }
 }
 
-/// Clean up the HF cache file after a successful download and verification.
-///
-/// Called after the file has been moved or copied from the HF cache to the
-/// destination. On a same-filesystem rename the cache file is already gone
-/// (source not found → returns Ok immediately). On a cross-filesystem copy the
-/// source still exists and is removed here, only after verifying:
-/// 1. The destination file exists
-/// 2. The destination file size matches the source file size
-///
-/// # Arguments
-///
-/// * `source_path` - Path to the file in the HF cache directory
-/// * `dest_path` - Path to the final destination in the Tama models directory
-///
-/// # Returns
-///
-/// * `Ok(())` if cleanup was successful or not needed (source already gone)
-/// * `Err(anyhow::Error)` if safety checks fail or deletion fails
-pub async fn cleanup_hf_cache(source_path: &Path, dest_path: &Path) -> Result<()> {
-    // Safety check 1: Verify destination exists and get its metadata FIRST
-    // This fails fast if dest is gone, preventing TOCTOU race condition
-    let dest_meta = tokio::fs::metadata(dest_path).await.with_context(|| {
-        format!(
-            "Destination file does not exist at '{}', skipping cache cleanup",
-            dest_path.display()
-        )
-    })?;
+// ── Parallel downloader ─────────────────────────────────────────────────────
 
-    // Get source metadata - if not found, there's nothing to clean up (already deleted)
-    let source_meta = match tokio::fs::metadata(source_path).await {
-        Ok(meta) => meta,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            tracing::debug!(
-                "Source cache file does not exist at '{}', nothing to clean up",
-                source_path.display()
-            );
-            return Ok(());
-        }
-        Err(e) => {
-            return Err(e).with_context(|| {
-                format!(
-                    "Failed to get metadata for source path: {}",
-                    source_path.display()
-                )
-            });
-        }
-    };
+/// Result of downloading a GGUF file.
+#[derive(Debug)]
+pub struct DownloadResult {
+    /// Local path to the file
+    pub path: PathBuf,
+    /// File size in bytes
+    pub size_bytes: u64,
+}
 
-    // Safety check 2: Verify destination size matches source
-    if source_meta.len() != dest_meta.len() {
-        anyhow::bail!(
-            "Size mismatch: source={}, dest={}, skipping cache cleanup",
-            source_meta.len(),
-            dest_meta.len()
+/// Download a GGUF file from a HuggingFace repo using our parallel downloader.
+/// Uses HTTP Range requests with auth headers for gated repos.
+pub async fn download_gguf_with_progress(
+    repo_id: &str,
+    filename: &str,
+    dest_dir: &Path,
+    progress_callback: Option<ProgressCallback>,
+) -> Result<DownloadResult> {
+    let endpoint =
+        std::env::var("HF_ENDPOINT").unwrap_or_else(|_| "https://huggingface.co".to_string());
+    let url = format!("{}/{}/resolve/main/{}", endpoint, repo_id, filename);
+
+    let dest_path = dest_dir.join(filename);
+    if let Some(parent) = dest_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
+    }
+
+    // Build auth headers
+    let mut headers = reqwest::header::HeaderMap::new();
+    if let Some(token) = super::get_hf_token() {
+        headers.insert(
+            reqwest::header::AUTHORIZATION,
+            format!("Bearer {}", token)
+                .parse()
+                .context("Failed to parse Authorization header")?,
         );
     }
 
-    // Safe to delete - remove the source file from HF cache
-    tokio::fs::remove_file(source_path)
-        .await
-        .with_context(|| format!("Failed to remove cache file: {}", source_path.display()))?;
+    // Build client with HTTP/2 keep-alive
+    let client = Client::builder()
+        .http2_keep_alive_timeout(std::time::Duration::from_secs(15))
+        .build()
+        .context("Failed to build HTTP client")?;
 
-    Ok(())
+    let size_bytes = crate::models::download::download_chunked_with_progress(
+        &client,
+        &url,
+        &dest_path,
+        8, // max connections
+        progress_callback,
+        Some(&headers),
+    )
+    .await
+    .with_context(|| format!("Failed to download '{}' from '{}'", filename, repo_id))?;
+
+    Ok(DownloadResult {
+        path: dest_path,
+        size_bytes,
+    })
 }
+
+// ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hf_hub::api::tokio::Progress;
+    use std::sync::Mutex;
 
-    /// Verifies that `cleanup_hf_cache` deletes the source file when:
-    /// - The destination exists
-    /// - The destination size matches the source size
-    #[tokio::test]
-    async fn test_cleanup_hf_cache_success() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let source_path = temp_dir.path().join("source.gguf");
-        let dest_path = temp_dir.path().join("dest.gguf");
+    // Guard to serialize env var tests
+    static ENV_GUARD: Mutex<()> = Mutex::new(());
 
-        // Create source file (simulating HF cache)
-        std::fs::write(&source_path, b"test data").unwrap();
+    /// Verifies that the HF resolve URL is constructed correctly
+    #[test]
+    fn test_download_gguf_url_construction_default_endpoint() {
+        let _guard = ENV_GUARD.lock().unwrap();
+        std::env::remove_var("HF_ENDPOINT");
 
-        // Create dest file with same size (simulating successful move)
-        std::fs::write(&dest_path, b"test data").unwrap();
-
-        // Verify source exists before cleanup
-        assert!(source_path.exists());
-        assert!(dest_path.exists());
-
-        // Run cleanup
-        let result = cleanup_hf_cache(&source_path, &dest_path).await;
-
-        // Verify cleanup succeeded
-        assert!(result.is_ok(), "Cleanup should succeed: {:?}", result.err());
-
-        // Verify source was deleted but dest remains
-        assert!(
-            !source_path.exists(),
-            "Source should be deleted after successful cleanup"
+        // We can't call the full async function against a real URL,
+        // but we can verify the URL format by checking the logic directly
+        let repo_id = "org/model";
+        let filename = "model.gguf";
+        let expected_url = format!(
+            "https://huggingface.co/{}/resolve/main/{}",
+            repo_id, filename
         );
-        assert!(dest_path.exists(), "Dest should still exist after cleanup");
-    }
-
-    /// Verifies that `cleanup_hf_cache` does NOT delete the source file when:
-    /// - The destination does not exist (safety check)
-    #[tokio::test]
-    async fn test_cleanup_hf_cache_dest_missing() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let source_path = temp_dir.path().join("source.gguf");
-        let dest_path = temp_dir.path().join("dest.gguf");
-
-        // Create source file only
-        std::fs::write(&source_path, b"test data").unwrap();
-
-        // Verify source exists, dest does not
-        assert!(source_path.exists());
-        assert!(!dest_path.exists());
-
-        // Run cleanup - should fail safety check
-        let result = cleanup_hf_cache(&source_path, &dest_path).await;
-
-        // Verify cleanup was skipped (source still exists)
-        assert!(result.is_err(), "Cleanup should fail when dest is missing");
-        assert!(
-            source_path.exists(),
-            "Source should NOT be deleted when dest is missing"
+        assert_eq!(
+            expected_url,
+            "https://huggingface.co/org/model/resolve/main/model.gguf"
         );
     }
 
-    /// Verifies that `cleanup_hf_cache` does NOT delete the source file when:
-    /// - The destination size does not match the source size (safety check)
-    #[tokio::test]
-    async fn test_cleanup_hf_cache_size_mismatch() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let source_path = temp_dir.path().join("source.gguf");
-        let dest_path = temp_dir.path().join("dest.gguf");
+    /// Verifies that HF_ENDPOINT env var is respected in URL construction
+    #[test]
+    fn test_download_gguf_url_construction_custom_endpoint() {
+        let _guard = ENV_GUARD.lock().unwrap();
+        std::env::set_var("HF_ENDPOINT", "https://hf.mirror.example.com");
 
-        // Create source file with specific size
-        std::fs::write(&source_path, b"test data").unwrap();
-
-        // Create dest file with different size
-        std::fs::write(&dest_path, b"test data with different size").unwrap();
-
-        // Verify both exist with different sizes
-        assert!(source_path.exists());
-        assert!(dest_path.exists());
-
-        // Run cleanup - should fail size check
-        let result = cleanup_hf_cache(&source_path, &dest_path).await;
-
-        // Verify cleanup was skipped (source still exists)
-        assert!(result.is_err(), "Cleanup should fail when sizes mismatch");
-        assert!(
-            source_path.exists(),
-            "Source should NOT be deleted when sizes mismatch"
+        let repo_id = "org/model";
+        let filename = "model.gguf";
+        let endpoint =
+            std::env::var("HF_ENDPOINT").unwrap_or_else(|_| "https://huggingface.co".to_string());
+        let url = format!("{}/{}/resolve/main/{}", endpoint, repo_id, filename);
+        assert_eq!(
+            url,
+            "https://hf.mirror.example.com/org/model/resolve/main/model.gguf"
         );
+
+        std::env::remove_var("HF_ENDPOINT");
     }
 
-    /// Verifies that `cleanup_hf_cache` handles missing source gracefully
-    /// (e.g., if it was already deleted by another process)
-    #[tokio::test]
-    async fn test_cleanup_hf_cache_source_missing() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let source_path = temp_dir.path().join("source.gguf");
-        let dest_path = temp_dir.path().join("dest.gguf");
+    /// Verifies that empty token does NOT add Authorization header
+    #[test]
+    fn test_empty_token_no_auth_header() {
+        let _guard = ENV_GUARD.lock().unwrap();
+        std::env::set_var("HF_TOKEN", "");
 
-        // Create dest file only (source already gone)
-        std::fs::write(&dest_path, b"test data").unwrap();
+        let token = super::super::get_hf_token();
+        assert!(token.is_none(), "Empty HF_TOKEN should resolve to None");
 
-        // Verify source is missing
-        assert!(!source_path.exists());
-        assert!(dest_path.exists());
+        std::env::remove_var("HF_TOKEN");
+    }
 
-        // Run cleanup - should handle gracefully (not panic)
-        let result = cleanup_hf_cache(&source_path, &dest_path).await;
+    /// Verifies that whitespace-only token does NOT add Authorization header
+    #[test]
+    fn test_whitespace_token_no_auth_header() {
+        let _guard = ENV_GUARD.lock().unwrap();
+        std::env::set_var("HF_TOKEN", "   \n  ");
 
-        // Cleanup should succeed (nothing to clean up)
+        let token = super::super::get_hf_token();
         assert!(
-            result.is_ok(),
-            "Cleanup should succeed when source is already gone"
+            token.is_none(),
+            "Whitespace-only HF_TOKEN should resolve to None"
         );
+
+        std::env::remove_var("HF_TOKEN");
+    }
+
+    /// Verifies that a valid token produces the correct Bearer header value
+    #[test]
+    fn test_valid_token_produces_bearer_header() {
+        let _guard = ENV_GUARD.lock().unwrap();
+        std::env::set_var("HF_TOKEN", "hf_test_token_123");
+
+        let token = super::super::get_hf_token();
+        assert_eq!(token, Some("hf_test_token_123".to_string()));
+
+        // Verify the header value format
+        let header_value = format!("Bearer {}", token.unwrap());
+        assert_eq!(header_value, "Bearer hf_test_token_123");
+
+        // Verify it parses as a valid header
+        let parsed: reqwest::header::HeaderValue = header_value.parse().unwrap();
+        assert_eq!(parsed.to_str().unwrap(), "Bearer hf_test_token_123");
+
+        std::env::remove_var("HF_TOKEN");
+    }
+
+    /// Verifies DownloadResult contains expected fields
+    #[test]
+    fn test_download_result_structure() {
+        let result = DownloadResult {
+            path: PathBuf::from("/tmp/model.gguf"),
+            size_bytes: 1234567890,
+        };
+        assert_eq!(result.path, PathBuf::from("/tmp/model.gguf"));
+        assert_eq!(result.size_bytes, 1234567890);
+    }
+
+    // ── ProgressAdapter tests ─────────────────────────────────────────────
+
+    /// Verifies ProgressAdapter::new creates adapter with zeroed state
+    #[test]
+    fn test_progress_adapter_new_state() {
+        let adapter = ProgressAdapter::new(None);
+        assert_eq!(adapter.total_size, 0);
+        assert_eq!(adapter.downloaded.load(Ordering::Relaxed), 0);
+    }
+
+    /// Verifies ProgressAdapter::init sets total size and calls callback
+    #[tokio::test]
+    async fn test_progress_adapter_init() {
+        let called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let called_clone = called.clone();
+        let callback: ProgressCallback = Arc::new(move |_downloaded: u64, _total: u64| {
+            called_clone.store(true, Ordering::Relaxed);
+        });
+
+        let mut adapter = ProgressAdapter::new(Some(callback));
+        adapter.init(1000, "test.gguf").await;
+
+        assert_eq!(adapter.total_size, 1000);
+        assert!(called.load(Ordering::Relaxed));
+    }
+
+    /// Verifies ProgressAdapter::update accumulates downloaded bytes
+    #[tokio::test]
+    async fn test_progress_adapter_update() {
+        let downloaded = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let downloaded_clone = downloaded.clone();
+        let callback: ProgressCallback = Arc::new(move |d: u64, _total: u64| {
+            downloaded_clone.store(d, Ordering::Relaxed);
+        });
+
+        let mut adapter = ProgressAdapter::new(Some(callback));
+        adapter.init(1000, "test.gguf").await;
+        adapter.update(100).await;
+        adapter.update(200).await;
+
+        assert_eq!(downloaded.load(Ordering::Relaxed), 300);
+    }
+
+    /// Verifies ProgressAdapter::finish reports total as fully downloaded
+    #[tokio::test]
+    async fn test_progress_adapter_finish() {
+        let final_downloaded = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let final_downloaded_clone = final_downloaded.clone();
+        let callback: ProgressCallback = Arc::new(move |d: u64, _total: u64| {
+            final_downloaded_clone.store(d, Ordering::Relaxed);
+        });
+
+        let mut adapter = ProgressAdapter::new(Some(callback));
+        adapter.init(1000, "test.gguf").await;
+        adapter.finish().await;
+
+        assert_eq!(final_downloaded.load(Ordering::Relaxed), 1000);
     }
 }

@@ -120,7 +120,7 @@ pub use api::{
     fetch_blob_metadata, fetch_hf_metadata, fetch_model_pipeline_tag,
     infer_modalities_from_pipeline, list_gguf_files, parse_blob_siblings,
 };
-pub use download::{cleanup_hf_cache, ProgressAdapter};
+pub use download::{download_gguf_with_progress, DownloadResult, ProgressAdapter};
 pub use metadata::{fetch_community_card, parse_readme_metadata};
 pub use quant::infer_quant_from_filename;
 
