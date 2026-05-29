@@ -35,8 +35,8 @@ pub(crate) fn get_hf_token() -> Option<String> {
     }
 
     // 3. ~/.cache/huggingface/token
-    if let Ok(home) = std::env::var("HOME") {
-        let token_path = PathBuf::from(&home).join(".cache/huggingface/token");
+    if let Some(base_dirs) = directories::BaseDirs::new() {
+        let token_path = base_dirs.home_dir().join(".cache/huggingface/token");
         if let Ok(content) = std::fs::read_to_string(&token_path) {
             let trimmed = content.trim().to_string();
             if !trimmed.is_empty() {

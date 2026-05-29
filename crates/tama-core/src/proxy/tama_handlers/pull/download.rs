@@ -191,7 +191,12 @@ pub async fn start_download_from_queue(
 
     // HEAD request to get total_bytes upfront
     let client = reqwest::Client::new();
-    if let Ok(resp) = client.head(&resolve_url).headers(headers.clone()).send().await {
+    if let Ok(resp) = client
+        .head(&resolve_url)
+        .headers(headers.clone())
+        .send()
+        .await
+    {
         let total = crate::models::download::parse_content_length(resp.headers());
         let mut jobs = pull_jobs_arc.write().await;
         if let Some(job) = jobs.get_mut(&job_id_clone) {
