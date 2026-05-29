@@ -174,14 +174,24 @@ pub async fn start_download_from_queue(
         }
     }
 
-    let url = format!(
-        "https://huggingface.co/{}/resolve/main/{}",
-        repo_id_clone, filename_clone
+    // Resolve HF_ENDPOINT and build auth headers (shared by HEAD + download)
+    let endpoint =
+        std::env::var("HF_ENDPOINT").unwrap_or_else(|_| "https://huggingface.co".to_string());
+    let resolve_url = format!(
+        "{}/{}/resolve/main/{}",
+        endpoint, repo_id_clone, filename_clone
     );
+
+    let mut headers = reqwest::header::HeaderMap::new();
+    if let Some(token) = crate::models::pull::get_hf_token() {
+        if let Ok(auth) = format!("Bearer {}", token).parse::<reqwest::header::HeaderValue>() {
+            headers.insert(reqwest::header::AUTHORIZATION, auth);
+        }
+    }
 
     // HEAD request to get total_bytes upfront
     let client = reqwest::Client::new();
-    if let Ok(resp) = client.head(&url).send().await {
+    if let Ok(resp) = client.head(&resolve_url).headers(headers.clone()).send().await {
         let total = crate::models::download::parse_content_length(resp.headers());
         let mut jobs = pull_jobs_arc.write().await;
         if let Some(job) = jobs.get_mut(&job_id_clone) {
@@ -268,21 +278,8 @@ pub async fn start_download_from_queue(
         "Beginning file download via parallel downloader"
     );
 
-    // Build resolve URL directly
-    let endpoint =
-        std::env::var("HF_ENDPOINT").unwrap_or_else(|_| "https://huggingface.co".to_string());
-    let download_url = format!(
-        "{}/{}/resolve/main/{}",
-        endpoint, repo_id_clone, filename_clone
-    );
-
-    // Build auth headers
-    let mut headers = reqwest::header::HeaderMap::new();
-    if let Some(token) = crate::models::pull::get_hf_token() {
-        if let Ok(auth) = format!("Bearer {}", token).parse::<reqwest::header::HeaderValue>() {
-            headers.insert(reqwest::header::AUTHORIZATION, auth);
-        }
-    }
+    // Build download URL (endpoint + headers already resolved above for HEAD)
+    let download_url = resolve_url;
 
     // Build client with HTTP/2 keep-alive
     let download_client = match reqwest::Client::builder()
