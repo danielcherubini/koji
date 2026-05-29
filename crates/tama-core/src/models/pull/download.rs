@@ -1,19 +1,10 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use reqwest;
 
 use crate::models::download::ProgressCallback;
-
-/// Result of downloading a GGUF file.
-pub struct DownloadResult {
-    /// Local path to the file (in the model directory)
-    pub path: PathBuf,
-    /// File size in bytes (from the hf-hub cache, always accurate)
-    pub size_bytes: u64,
-}
 
 /// Progress adapter that bridges hf-hub's Progress trait to our callback.
 #[derive(Clone)]
@@ -121,101 +112,6 @@ pub async fn cleanup_hf_cache(source_path: &Path, dest_path: &Path) -> Result<()
         .with_context(|| format!("Failed to remove cache file: {}", source_path.display()))?;
 
     Ok(())
-}
-
-/// Download a specific GGUF file using hf-hub's downloader with progress reporting.
-/// Uses hf-hub's built-in parallel chunked downloads and caching.
-pub async fn download_gguf_with_progress(
-    repo_id: &str,
-    filename: &str,
-    dest_dir: &Path,
-    progress_callback: Option<ProgressCallback>,
-) -> Result<DownloadResult> {
-    let api = crate::models::pull::hf_api().await?;
-    let repo = api.model(repo_id.to_string());
-
-    // Check if file already exists with correct size (hf-hub handles caching)
-    let dest_path = dest_dir.join(filename);
-    if let Some(parent) = dest_path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
-    }
-
-    // Use hf-hub's downloader with our progress adapter
-    let progress_adapter = ProgressAdapter::new(progress_callback);
-
-    let cached_path = repo
-        .download_with_progress(filename, progress_adapter)
-        .await
-        .with_context(|| format!("Failed to download '{}' from '{}'", filename, repo_id))?;
-
-    // Get file size
-    let size_bytes = tokio::fs::metadata(&cached_path)
-        .await
-        .context("Failed to get file size")?
-        .len();
-
-    // Move or copy from cache to destination if different.
-    // Canonicalise first — hf-hub snapshot paths are symlinks to the real blob;
-    // renaming the symlink entry would leave a broken link at dest_path.
-    if cached_path != dest_path {
-        if dest_path.exists() {
-            tokio::fs::remove_file(&dest_path).await.ok();
-        }
-        let blob = tokio::fs::canonicalize(&cached_path)
-            .await
-            .unwrap_or_else(|_| cached_path.clone());
-        if tokio::fs::rename(&blob, &dest_path).await.is_err() {
-            // Cross-filesystem: copy then delete the blob from cache.
-            tokio::fs::copy(&blob, &dest_path)
-                .await
-                .context("Failed to copy file from cache to destination")?;
-            tokio::fs::remove_file(&blob).await.ok();
-        }
-        // Remove the snapshot symlink if it is distinct from the blob.
-        if cached_path != blob {
-            tokio::fs::remove_file(&cached_path).await.ok();
-        }
-    }
-
-    Ok(DownloadResult {
-        path: dest_path,
-        size_bytes,
-    })
-}
-
-/// Download a specific GGUF file from a HuggingFace repo to the given model directory.
-/// Returns the local path and file size.
-/// Downloads directly via reqwest with parallel chunked downloads (bypasses hf-hub's downloader).
-#[allow(dead_code)]
-pub async fn download_gguf(
-    client: &reqwest::Client,
-    repo_id: &str,
-    filename: &str,
-    dest_dir: &Path,
-) -> Result<DownloadResult> {
-    // Ensure the full directory path exists
-    let dest_path = dest_dir.join(filename);
-    if let Some(parent) = dest_path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
-    }
-    let url = format!(
-        "https://huggingface.co/{}/resolve/main/{}",
-        repo_id, filename
-    );
-
-    // Use chunked parallel download (includes skip-if-exists check)
-    let size_bytes = crate::models::download::download_chunked(
-        client, &url, &dest_path, 8, None, // connections, headers
-    )
-    .await
-    .with_context(|| format!("Failed to download '{}' from '{}'", filename, repo_id))?;
-
-    Ok(DownloadResult {
-        path: dest_path,
-        size_bytes,
-    })
 }
 
 #[cfg(test)]
