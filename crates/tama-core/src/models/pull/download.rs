@@ -207,7 +207,7 @@ pub async fn download_gguf(
 
     // Use chunked parallel download (includes skip-if-exists check)
     let size_bytes = crate::models::download::download_chunked(
-        client, &url, &dest_path, 8, // connections
+        client, &url, &dest_path, 8, None, // connections, headers
     )
     .await
     .with_context(|| format!("Failed to download '{}' from '{}'", filename, repo_id))?;

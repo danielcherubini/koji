@@ -7,6 +7,7 @@ use anyhow::Context;
 use futures_util::TryStreamExt;
 use indicatif::ProgressBar;
 use rand::Rng;
+use reqwest::header::HeaderMap;
 use reqwest::Client;
 use tokio::io::AsyncWriteExt;
 
@@ -25,6 +26,7 @@ fn exponential_backoff(attempt: u32) -> Duration {
 }
 
 /// Download a file using parallel HTTP Range requests.
+#[allow(clippy::too_many_arguments)]
 pub async fn download_parallel(
     client: &Client,
     url: &str,
@@ -33,6 +35,7 @@ pub async fn download_parallel(
     num_connections: usize,
     pb: &ProgressBar,
     progress_callback: Option<&ProgressCallback>,
+    headers: Option<&HeaderMap>,
 ) -> anyhow::Result<()> {
     if num_connections == 0 {
         anyhow::bail!("num_connections must be > 0");
@@ -92,6 +95,7 @@ pub async fn download_parallel(
         let tmp_path = tmp_path.clone();
         let pb = pb.clone();
         let total_downloaded = total_downloaded.clone();
+        let headers = headers.cloned();
 
         let handle = tokio::spawn(async move {
             download_chunk_with_retry(
@@ -103,6 +107,7 @@ pub async fn download_parallel(
                 i,
                 &pb,
                 Some(&total_downloaded),
+                &headers.unwrap_or_default(),
             )
             .await?;
             Ok::<PathBuf, anyhow::Error>(tmp_path)
@@ -165,6 +170,7 @@ async fn download_chunk_with_retry(
     chunk_index: usize,
     pb: &ProgressBar,
     total_downloaded: Option<&AtomicU64>,
+    headers: &HeaderMap,
 ) -> anyhow::Result<()> {
     let expected_size = end - start + 1;
     let mut attempt = 0u32;
@@ -173,7 +179,10 @@ async fn download_chunk_with_retry(
         attempt += 1;
 
         let range = format!("bytes={}-{}", start, end);
-        let request = client.get(url).header("Range", &range);
+        let request = client
+            .get(url)
+            .header("Range", &range)
+            .headers(headers.clone());
         let resp = match request.send().await {
             Ok(r) => r,
             Err(e) if attempt <= MAX_RETRIES => {

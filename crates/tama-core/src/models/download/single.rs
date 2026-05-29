@@ -2,6 +2,7 @@ use anyhow::Context;
 use futures_util::TryStreamExt;
 use indicatif::ProgressBar;
 use rand::Rng;
+use reqwest::header::HeaderMap;
 use reqwest::Client;
 use std::path::Path;
 use std::time::Duration;
@@ -29,14 +30,16 @@ pub async fn download_single(
     total_size: u64,
     pb: &ProgressBar,
     progress_callback: Option<&ProgressCallback>,
+    headers: Option<&HeaderMap>,
 ) -> anyhow::Result<()> {
+    let headers = headers.cloned().unwrap_or_default();
     let mut attempt = 0u32;
     let mut downloaded: u64 = 0;
 
     loop {
         attempt += 1;
 
-        let mut request = client.get(url);
+        let mut request = client.get(url).headers(headers.clone());
         if downloaded > 0 {
             request = request.header("Range", format!("bytes={}-", downloaded));
         }
