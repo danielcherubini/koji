@@ -34,7 +34,7 @@ pub(super) fn cmd_ls(
                 let on_disk = mc
                     .model
                     .as_ref()
-                    .and_then(|m| mc.quant.as_ref().map(|q| (m, q)))
+                    .zip(mc.quant.as_ref())
                     .and_then(|(_m, q)| mc.quants.get(q.as_str()))
                     .map(|qe| {
                         tama_core::models::repo_path(&models_dir, repo)
