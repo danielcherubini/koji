@@ -174,4 +174,21 @@ mod tests {
         assert_eq!(result.path, PathBuf::from("/tmp/model.gguf"));
         assert_eq!(result.size_bytes, 1234567890);
     }
+
+    /// Integration test: download a small public file from HuggingFace.
+    /// Marked `#[ignore]` to skip in normal test runs.
+    #[tokio::test]
+    #[ignore]
+    async fn test_download_gguf_with_progress_real() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let result = download_gguf_with_progress(
+            "julien-c/dummy-unknown",
+            "config.json",
+            temp_dir.path(),
+            None,
+        )
+        .await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().path.exists());
+    }
 }
