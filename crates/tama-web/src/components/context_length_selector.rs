@@ -104,6 +104,7 @@ pub fn ContextLengthSelector(
                         view! { <option value=val_str.clone()>{val_str.clone()}</option> }
                     }).collect::<Vec<_>>()
                 }}
+                <option value="204800">"200K (204800)"</option>
                 <option value="custom">"Custom..."</option>
             </select>
 

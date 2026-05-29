@@ -6,12 +6,27 @@ use std::time::Duration;
 use anyhow::Context;
 use futures_util::TryStreamExt;
 use indicatif::ProgressBar;
+use rand::Rng;
+use reqwest::header::HeaderMap;
 use reqwest::Client;
 use tokio::io::AsyncWriteExt;
 
 use super::{ProgressCallback, MAX_RETRIES};
 
+/// Random jitter in milliseconds (0..=500), adapted from hf_transfer.
+fn jitter() -> u64 {
+    rand::rng().random_range(0..=500)
+}
+
+/// Exponential backoff with jitter, adapted from hf_transfer.
+/// Base: 300ms, max: 10000ms.
+fn exponential_backoff(attempt: u32) -> Duration {
+    let base = 300 + (attempt as u64).pow(2) + jitter();
+    Duration::from_millis(base.min(10_000))
+}
+
 /// Download a file using parallel HTTP Range requests.
+#[allow(clippy::too_many_arguments)]
 pub async fn download_parallel(
     client: &Client,
     url: &str,
@@ -20,6 +35,7 @@ pub async fn download_parallel(
     num_connections: usize,
     pb: &ProgressBar,
     progress_callback: Option<&ProgressCallback>,
+    headers: Option<&HeaderMap>,
 ) -> anyhow::Result<()> {
     if num_connections == 0 {
         anyhow::bail!("num_connections must be > 0");
@@ -79,6 +95,7 @@ pub async fn download_parallel(
         let tmp_path = tmp_path.clone();
         let pb = pb.clone();
         let total_downloaded = total_downloaded.clone();
+        let headers = headers.cloned();
 
         let handle = tokio::spawn(async move {
             download_chunk_with_retry(
@@ -90,6 +107,7 @@ pub async fn download_parallel(
                 i,
                 &pb,
                 Some(&total_downloaded),
+                &headers.unwrap_or_default(),
             )
             .await?;
             Ok::<PathBuf, anyhow::Error>(tmp_path)
@@ -152,6 +170,7 @@ async fn download_chunk_with_retry(
     chunk_index: usize,
     pb: &ProgressBar,
     total_downloaded: Option<&AtomicU64>,
+    headers: &HeaderMap,
 ) -> anyhow::Result<()> {
     let expected_size = end - start + 1;
     let mut attempt = 0u32;
@@ -160,7 +179,10 @@ async fn download_chunk_with_retry(
         attempt += 1;
 
         let range = format!("bytes={}-{}", start, end);
-        let request = client.get(url).header("Range", &range);
+        let request = client
+            .get(url)
+            .header("Range", &range)
+            .headers(headers.clone());
         let resp = match request.send().await {
             Ok(r) => r,
             Err(e) if attempt <= MAX_RETRIES => {
@@ -170,7 +192,7 @@ async fn download_chunk_with_retry(
                         chunk_index, attempt, MAX_RETRIES, e
                     );
                 });
-                tokio::time::sleep(Duration::from_secs(2u64.pow(attempt - 1))).await;
+                tokio::time::sleep(exponential_backoff(attempt)).await;
                 continue;
             }
             Err(e) => {
@@ -189,7 +211,7 @@ async fn download_chunk_with_retry(
                         chunk_index, status, attempt, MAX_RETRIES
                     );
                 });
-                tokio::time::sleep(Duration::from_secs(2u64.pow(attempt - 1))).await;
+                tokio::time::sleep(exponential_backoff(attempt)).await;
                 continue;
             }
             anyhow::bail!(
@@ -234,7 +256,7 @@ async fn download_chunk_with_retry(
                 );
             }
             pb.dec(chunk_downloaded);
-            tokio::time::sleep(Duration::from_secs(2u64.pow(attempt - 1))).await;
+            tokio::time::sleep(exponential_backoff(attempt)).await;
             continue;
         }
 
@@ -248,7 +270,7 @@ async fn download_chunk_with_retry(
                     );
                 });
                 pb.dec(chunk_downloaded);
-                tokio::time::sleep(Duration::from_secs(2u64.pow(attempt - 1))).await;
+                tokio::time::sleep(exponential_backoff(attempt)).await;
                 continue;
             }
             anyhow::bail!(

@@ -71,8 +71,9 @@ pub async fn download_chunked(
     url: &str,
     dest: &Path,
     connections: usize,
+    headers: Option<&HeaderMap>,
 ) -> Result<u64> {
-    download_chunked_with_progress(client, url, dest, connections, None).await
+    download_chunked_with_progress(client, url, dest, connections, None, headers).await
 }
 
 /// Download a file using parallel HTTP Range requests with progress callback.
@@ -87,10 +88,12 @@ pub async fn download_chunked_with_progress(
     dest: &Path,
     connections: usize,
     progress_callback: Option<ProgressCallback>,
+    headers: Option<&HeaderMap>,
 ) -> Result<u64> {
     // HEAD request to get Content-Length and check Range support
     let head = client
         .head(url)
+        .headers(headers.cloned().unwrap_or_default())
         .send()
         .await
         .with_context(|| format!("HEAD request failed for {}", url))?;
@@ -159,6 +162,7 @@ pub async fn download_chunked_with_progress(
             total_size,
             &pb,
             callback_for_bar.as_ref(),
+            headers,
         )
         .await
     } else {
@@ -170,6 +174,7 @@ pub async fn download_chunked_with_progress(
             num_connections,
             &pb,
             callback_for_bar.as_ref(),
+            headers,
         )
         .await
     };

@@ -14,7 +14,7 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Quick Stats
 
-- **Total Plans**: 107
+- **Total Plans**: 108
 - **Completed**: 106 ✅
 - **In Progress**: 0 🚧
 - **Remaining**: 0
@@ -29,6 +29,7 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 | Plan | Description | PR / Git References |
 |------|-------------|---------------------|
+| [Faster HF Downloads](2026-05-29-faster-hf-downloads.md) | Replace hf-hub's slow downloader with enhanced parallel downloader + jitter backoff + auth headers; fix HF token passthrough for CLI | #99 ✅ COMPLETED |
 | [Split Remaining Long Files](2026-05-27-split-remaining-files.md) | Split args_building.rs (2,256), handlers/tests.rs (1,530), and db/backfill.rs (1,023) into focused sub-modules | #97 ✅ COMPLETED |
 | [Move Web UI from /ui to /tama](2026-05-27-move-ui-to-tama.md) | Consolidate all non-bearer-token endpoints under /tama — web UI at /tama, API at /tama/v1/* | #96 ✅ COMPLETED |
 | [Split proxy/handlers/mod.rs](2025-05-22-split-proxy-handlers.md) | Split 2109 LOC file into 6 focused modules by responsibility | #93 ✅ COMPLETED |
