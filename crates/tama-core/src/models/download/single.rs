@@ -1,12 +1,25 @@
 use anyhow::Context;
 use futures_util::TryStreamExt;
 use indicatif::ProgressBar;
+use rand::Rng;
 use reqwest::Client;
 use std::path::Path;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 
 use super::{ProgressCallback, MAX_RETRIES};
+
+/// Random jitter in milliseconds (0..=500), adapted from hf_transfer.
+fn jitter() -> u64 {
+    rand::rng().random_range(0..=500)
+}
+
+/// Exponential backoff with jitter, adapted from hf_transfer.
+/// Base: 300ms, max: 10000ms.
+fn exponential_backoff(attempt: u32) -> Duration {
+    let base = 300 + (attempt as u64).pow(2) + jitter();
+    Duration::from_millis(base.min(10_000))
+}
 
 /// Download a file using a single HTTP stream with retry support.
 pub async fn download_single(
@@ -37,7 +50,7 @@ pub async fn download_single(
                         attempt, MAX_RETRIES, e
                     );
                 });
-                tokio::time::sleep(Duration::from_secs(2u64.pow(attempt - 1))).await;
+                tokio::time::sleep(exponential_backoff(attempt)).await;
                 continue;
             }
             Err(e) => return Err(e.into()),
@@ -61,7 +74,7 @@ pub async fn download_single(
                         status, attempt, MAX_RETRIES
                     );
                 });
-                tokio::time::sleep(Duration::from_secs(2u64.pow(attempt - 1))).await;
+                tokio::time::sleep(exponential_backoff(attempt)).await;
                 continue;
             }
             anyhow::bail!("Download failed with status {}", status);
@@ -74,7 +87,7 @@ pub async fn download_single(
                         status, attempt, MAX_RETRIES
                     );
                 });
-                tokio::time::sleep(Duration::from_secs(2u64.pow(attempt - 1))).await;
+                tokio::time::sleep(exponential_backoff(attempt)).await;
                 continue;
             }
             anyhow::bail!("Download failed with status {}", status);
@@ -132,7 +145,7 @@ pub async fn download_single(
         file.flush().await?;
 
         if stream_failed {
-            tokio::time::sleep(Duration::from_secs(2u64.pow(attempt - 1))).await;
+            tokio::time::sleep(exponential_backoff(attempt)).await;
             continue;
         }
 
