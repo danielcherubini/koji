@@ -185,8 +185,6 @@ pub async fn delete_model(
         // This ensures that if the transaction fails, no files are touched yet
         // and the DB remains consistent.
         {
-            let repo_id = model_record.repo_id.clone();
-
             // Run atomic delete operations via ModelManager transaction
             tracing::debug!("Deleting model config for id={}", model_id);
             let result = mgr.transaction(|tx| {
@@ -199,7 +197,7 @@ pub async fn delete_model(
                 // Delete update check record (best-effort, non-fatal)
                 let _ = tx.execute(
                     "DELETE FROM update_checks WHERE item_type = ?1 AND item_id = ?2",
-                    rusqlite::params!["model", &repo_id],
+                    rusqlite::params!["model", model_id.to_string()],
                 );
 
                 Ok(())

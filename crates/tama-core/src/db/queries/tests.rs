@@ -174,6 +174,137 @@ fn test_get_oldest_check_time() {
 }
 
 #[test]
+fn test_delete_update_checks_by_pattern() {
+    let OpenResult { conn, .. } = open_in_memory().unwrap();
+
+    // Insert records for multiple backends with variant-style item_ids
+    upsert_update_check(
+        &conn,
+        super::update_check_queries::UpdateCheckParams {
+            item_type: "backend",
+            item_id: "llama_cpp:cpu",
+            current_version: None,
+            latest_version: None,
+            update_available: false,
+            status: "unknown",
+            error_message: None,
+            details_json: None,
+            checked_at: 1000,
+        },
+    )
+    .unwrap();
+
+    upsert_update_check(
+        &conn,
+        super::update_check_queries::UpdateCheckParams {
+            item_type: "backend",
+            item_id: "llama_cpp:cuda",
+            current_version: None,
+            latest_version: None,
+            update_available: false,
+            status: "unknown",
+            error_message: None,
+            details_json: None,
+            checked_at: 1001,
+        },
+    )
+    .unwrap();
+
+    upsert_update_check(
+        &conn,
+        super::update_check_queries::UpdateCheckParams {
+            item_type: "backend",
+            item_id: "ik_llama:cpu",
+            current_version: None,
+            latest_version: None,
+            update_available: false,
+            status: "unknown",
+            error_message: None,
+            details_json: None,
+            checked_at: 1002,
+        },
+    )
+    .unwrap();
+
+    // Delete all llama_cpp variants using LIKE pattern
+    let pattern = "llama_cpp:%";
+    delete_update_checks_by_pattern(&conn, "backend", pattern).unwrap();
+
+    // Verify llama_cpp records are gone
+    assert!(get_update_check(&conn, "backend", "llama_cpp:cpu")
+        .unwrap()
+        .is_none());
+    assert!(get_update_check(&conn, "backend", "llama_cpp:cuda")
+        .unwrap()
+        .is_none());
+
+    // Verify ik_llama record is unaffected
+    assert!(get_update_check(&conn, "backend", "ik_llama:cpu")
+        .unwrap()
+        .is_some());
+
+    // Edge case: pattern that matches nothing should not error
+    delete_update_checks_by_pattern(&conn, "backend", "nonexistent:%").unwrap();
+}
+
+#[test]
+fn test_delete_update_checks_by_pattern_escapes_underscore() {
+    let OpenResult { conn, .. } = open_in_memory().unwrap();
+
+    // Insert a record with underscore in the name
+    upsert_update_check(
+        &conn,
+        super::update_check_queries::UpdateCheckParams {
+            item_type: "backend",
+            item_id: "my_backend:cpu",
+            current_version: None,
+            latest_version: None,
+            update_available: false,
+            status: "unknown",
+            error_message: None,
+            details_json: None,
+            checked_at: 1000,
+        },
+    )
+    .unwrap();
+
+    // Insert a similar record that should NOT match
+    upsert_update_check(
+        &conn,
+        super::update_check_queries::UpdateCheckParams {
+            item_type: "backend",
+            item_id: "myXbackend:cpu",
+            current_version: None,
+            latest_version: None,
+            update_available: false,
+            status: "unknown",
+            error_message: None,
+            details_json: None,
+            checked_at: 1001,
+        },
+    )
+    .unwrap();
+
+    // Escape the underscore so it matches literally, not as wildcard
+    let escaped_name = "my_backend"
+        .replace('\\', "\\\\")
+        .replace('_', "\\_")
+        .replace('%', "\\%");
+    let pattern = format!("{}:%", escaped_name);
+    delete_update_checks_by_pattern(&conn, "backend", &pattern).unwrap();
+
+    // my_backend:cpu should be deleted
+    assert!(get_update_check(&conn, "backend", "my_backend:cpu")
+        .unwrap()
+        .is_none());
+
+    // myXbackend:cpu should NOT be deleted (underscore was escaped)
+    assert!(get_update_check(&conn, "backend", "myXbackend:cpu")
+        .unwrap()
+        .is_some());
+}
+
+#[test]
 fn test_upsert_and_get_model_config() {
     let OpenResult { conn, .. } = open_in_memory().unwrap();
     let record = ModelConfigRecord {
