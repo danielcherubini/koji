@@ -14,10 +14,10 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Quick Stats
 
-- **Total Plans**: 108
+- **Total Plans**: 109
 - **Completed**: 106 ✅
-- **In Progress**: 0 🚧
-- **Remaining**: 0
+- **In Progress**: 1 🚧
+- **Remaining**: 2
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
 
@@ -63,6 +63,12 @@ This directory contains implementation plans for the Tama project. Each plan doc
 | [Shared Activity Panel + SSE Core](2026-05-06-shared-activity-panel-and-sse-core.md) | Extract duplicated SSE reconnection logic into shared utility, create generic ActivityPanel UI shell | `ca711f2` ✅ COMPLETED |
 | [Metrics Snapshot Stream](2026-05-07-metrics-snapshot-stream.md) | Replace delta SSE with full snapshot delivery every 2s, unify inference stats into same pipeline, eliminate frontend desync | #86 `309c895`, `5d920b7`, `aff3c15`, `b024266` ✅ COMPLETED |
 | [Remove Windows Support](todo/2026-05-08-remove-windows-support.md) | Remove all Windows-specific code, CI, build targets, dependencies, and documentation | #87 `091b11f`, `5f6a1c4`, `91559b3`, `918e2dd`, `9d7dbf4`, `f1af925`, `8f30f52`, `3b8419f` ✅ COMPLETED |
+
+### In Progress
+
+| Plan | Description | PR / Git References |
+|------|-------------|---------------------|
+| [Updates Center Fixes](2026-05-30-updates-center-fixes.md) | Fix 5 issues: page header layout, Tama card consistency, missing variant badges, stale entries for deleted items, no refresh after backend update | 🚧 IN PROGRESS |
 
 ### Draft
 
