@@ -54,6 +54,7 @@ pub async fn update_backend(
                 .into_response();
         }
     };
+    let config_dir_clone = config_dir.clone();
 
     // Open manager and get backend
     let mgr_result: Result<tama_core::backends::BackendManager, _> =
@@ -231,6 +232,10 @@ pub async fn update_backend(
         allow_overwrite: true,
     };
 
+    // Clone variables needed for the post-update check
+    let checker = state.web_update_checker.clone();
+    let backend_type_clone = backend_type.clone();
+
     // Spawn the update task
     let jobs_clone = jobs.clone();
     let job_clone = job.clone();
@@ -269,6 +274,15 @@ pub async fn update_backend(
             Ok(_) => {
                 let _ = jobs_clone
                     .finish(&job_clone, tama_core::web_types::JobStatus::Succeeded, None)
+                    .await;
+                // Refresh the update check record so the Updates Center reflects the new version
+                let _ = checker
+                    .check_backend(
+                        &config_dir_clone,
+                        &name_clone,
+                        &backend_type_clone,
+                        &gpu_variant_clone,
+                    )
                     .await;
             }
             Err(e) => {
