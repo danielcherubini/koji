@@ -14,16 +14,22 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Quick Stats
 
-- **Total Plans**: 109
+- **Total Plans**: 110
 - **Completed**: 107 ✅
-- **In Progress**: 0 🚧
-- **Remaining**: 1
+- **In Progress**: 1 🚧
+- **Remaining**: 2
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
 
 ---
 
 ## Completed Plans
+
+### In Progress
+
+| Plan | Description | PR / Git References |
+|------|-------------|---------------------|
+| [Aliases Page Redesign](2026-05-30-aliases-redesign.md) | Redesign aliases page with compact card layout, enabled dot indicator, proper page header, and dedicated CSS | 🚧 IN PROGRESS |
 
 ### Recently Completed
 
