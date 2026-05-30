@@ -14,8 +14,8 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Quick Stats
 
-- **Total Plans**: 109
-- **Completed**: 107 ✅
+- **Total Plans**: 110
+- **Completed**: 108 ✅
 - **In Progress**: 0 🚧
 - **Remaining**: 1
 
@@ -29,6 +29,7 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 | Plan | Description | PR / Git References |
 |------|-------------|---------------------|
+| [Aliases Page Redesign](2026-05-30-aliases-redesign.md) | Redesign aliases page with compact card layout, enabled dot indicator, proper page header, and dedicated CSS | #101 ✅ COMPLETED |
 | [Updates Center Fixes](2026-05-30-updates-center-fixes.md) | Fix 5 issues: page header layout, Tama card consistency, missing variant badges, stale entries for deleted items, no refresh after backend update | #100 ✅ COMPLETED |
 | [Faster HF Downloads](2026-05-29-faster-hf-downloads.md) | Replace hf-hub's slow downloader with enhanced parallel downloader + jitter backoff + auth headers; fix HF token passthrough for CLI | #99 ✅ COMPLETED |
 | [Split Remaining Long Files](2026-05-27-split-remaining-files.md) | Split args_building.rs (2,256), handlers/tests.rs (1,530), and db/backfill.rs (1,023) into focused sub-modules | #97 ✅ COMPLETED |

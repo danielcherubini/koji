@@ -89,20 +89,20 @@ pub fn AliasesPage() -> impl IntoView {
         <div class="page">
             <div class="page-header">
                 <h1>"🏷️ Aliases"</h1>
-                <p>"Custom model aliases — point a friendly name to any loaded model."</p>
-                <div class="page-header-actions">
-                    {move || save_status.get().map(|(ok, msg)| {
-                        let cls = if ok { "alert alert--success" } else { "alert alert--error" };
-                        view! { <div class=cls>{msg}</div> }
-                    })}
-                    <button
-                        class="btn btn-primary"
-                        on:click=move |_| show_create.set(true)
-                    >
-                        "+ New Alias"
-                    </button>
-                </div>
+                <button
+                    class="btn btn-primary"
+                    on:click=move |_| show_create.set(true)
+                >
+                    "+ New Alias"
+                </button>
             </div>
+            <p class="page-header__subtitle">"Custom model aliases - point a friendly name to any loaded model."</p>
+
+            // Save status alerts
+            {move || save_status.get().map(|(ok, msg)| {
+                let cls = if ok { "alert alert--success" } else { "alert alert--error" };
+                view! { <div class=cls>{msg}</div> }
+            })}
 
             // Loading state
             {move || {
@@ -131,10 +131,7 @@ pub fn AliasesPage() -> impl IntoView {
                 (!loading.get() && aliases.get().is_empty()).then(|| {
                     view! {
                         <div class="card card--centered">
-                            <p class="text-muted">"No aliases configured yet."</p>
-                            <button class="btn btn-primary mt-2" on:click=move |_| show_create.set(true)>
-                                "Create your first alias"
-                            </button>
+                            <p class="text-muted">"No aliases yet. Click + New to create one."</p>
                         </div>
                     }
                     .into_any()
@@ -190,69 +187,64 @@ fn AliasCard(
     models: RwSignal<Vec<ModelOption>>,
     save_status: RwSignal<Option<(bool, String)>>,
 ) -> impl IntoView {
-    let alias_name = alias.name.clone();
     let alias_id = alias.id;
+    let alias_name = alias.name.clone();
     let alias_enabled = alias.enabled;
+    let alias_model_name = alias.model_name.clone();
+    let alias_description = alias.description.clone();
+    let alias_description_is_default =
+        alias.description.as_deref() == Some("Default alias - routes to this model");
     let show_edit = RwSignal::new(false);
 
-    let alias_name_for_title = alias.name.clone();
-    let alias_name_for_delete = alias.name.clone();
+    let alias_name_for_title = alias_name.clone();
+    let alias_name_for_delete = alias_name.clone();
 
     view! {
-        <div class="card alias-card">
-            <div class="card-header">
-                <h3>{alias_name.clone()}</h3>
-                <span class=format!("badge {}", if alias.enabled { "badge--enabled" } else { "badge--disabled" })>
-                    {if alias.enabled { "Enabled" } else { "Disabled" }}
-                </span>
-            </div>
-            <div class="card-body">
-                <p>"→" {alias.model_name.clone()}</p>
-                <p class="description">{alias.description.as_deref().unwrap_or("").to_string()}</p>
-            </div>
-            <div class="card-actions">
-                <button
-                    class="btn btn-sm btn-secondary"
-                    on:click=move |_| show_edit.set(true)
-                >
-                    "Edit"
-                </button>
-                <button
-                    class="btn btn-sm"
-                    class=("btn-secondary", move || !alias_enabled)
-                    class=("btn-warning", move || alias_enabled)
-                    on:click=move |_| {
-                        let aliases_c = aliases;
-                        let save_status_c = save_status;
-                        wasm_bindgen_futures::spawn_local(async move {
-                            match update_alias(alias_id, None, None, None, Some(!alias_enabled)).await {
-                                Ok(updated) => {
-                                    let mut list = aliases_c.get_untracked();
-                                    if let Some(pos) = list.iter().position(|a| a.id == alias_id) {
-                                        list[pos] = updated;
-                                        list.sort_by(|a, b| a.name.cmp(&b.name));
-                                        aliases_c.set(list);
+        <div class=format!("alias-card {}", if alias_enabled { "alias-card--enabled" } else { "alias-card--disabled" })>
+            // Line 1: dot, name, actions
+            <div class="alias-card__line1">
+                <span class=format!("alias-card__dot {}", if alias_enabled { "alias-card__dot--enabled" } else { "alias-card__dot--disabled" })></span>
+                <span class="alias-card__name">{alias_name.clone()}</span>
+                <div class="alias-card__actions">
+                    // Edit button
+                    <button class="btn-icon" title="Edit" on:click=move |_| show_edit.set(true)>
+                        "✏️"
+                    </button>
+                    // Toggle enable/disable
+                    <button
+                        class="btn-icon"
+                        title=if alias_enabled { "Disable" } else { "Enable" }
+                        on:click=move |_| {
+                            let aliases_c = aliases;
+                            let save_status_c = save_status;
+                            wasm_bindgen_futures::spawn_local(async move {
+                                match update_alias(alias_id, None, None, None, Some(!alias_enabled)).await {
+                                    Ok(updated) => {
+                                        let mut list = aliases_c.get_untracked();
+                                        if let Some(pos) = list.iter().position(|a| a.id == alias_id) {
+                                            list[pos] = updated;
+                                            list.sort_by(|a, b| a.name.cmp(&b.name));
+                                            aliases_c.set(list);
+                                        }
+                                        save_status_c.set(Some((
+                                            true,
+                                            format!(
+                                                "Alias {}.",
+                                                if alias_enabled { "disabled" } else { "enabled" }
+                                            ),
+                                        )));
                                     }
-                                    save_status_c.set(Some((
-                                        true,
-                                        format!(
-                                            "Alias {}.",
-                                            if alias_enabled { "disabled" } else { "enabled" }
-                                        ),
-                                    )));
+                                    Err(e) => {
+                                        save_status_c.set(Some((false, format!("Failed to toggle alias: {}", e))));
+                                    }
                                 }
-                                Err(e) => {
-                                    save_status_c.set(Some((false, format!("Failed to toggle alias: {}", e))));
-                                }
-                            }
-                        });
-                    }
-                >
-                    {if alias_enabled { "Disable" } else { "Enable" }}
-                </button>
-                <button
-                    class="btn btn-sm btn-danger"
-                    on:click=move |_| {
+                            });
+                        }
+                    >
+                        {if alias_enabled { "👁️" } else { "🚫" }}
+                    </button>
+                    // Delete button
+                    <button class="btn-icon btn-icon--danger" title="Delete" on:click=move |_| {
                         let name_for_confirm = alias_name_for_delete.clone();
                         let confirmed = web_sys::window()
                             .and_then(|w| w.confirm_with_message(&format!("Delete alias \"{}\"? This cannot be undone.", name_for_confirm)).ok())
@@ -275,10 +267,32 @@ fn AliasCard(
                                 }
                             });
                         }
+                    }>
+                        "🗑️"
+                    </button>
+                </div>
+            </div>
+            // Line 2: target model, description, default badge
+            <div class="alias-card__line2">
+                <span class="alias-card__target">
+                    <span class="alias-card__target-arrow">"→"</span>
+                    {alias_model_name}
+                </span>
+                // Description (only if non-empty)
+                {alias_description.as_ref().map(|d| {
+                    if d.is_empty() {
+                        view! { <span/> }.into_any()
+                    } else {
+                        let desc = d.to_string();
+                        view! { <span class="alias-card__description">{desc}</span> }.into_any()
                     }
-                >
-                    "Delete"
-                </button>
+                }).unwrap_or_else(|| view! { <span/> }.into_any())}
+                // Default alias badge
+                {if alias_description_is_default {
+                    view! { <span class="badge-pill badge-pill--default">"Default alias"</span> }.into_any()
+                } else {
+                    view! { <span/> }.into_any()
+                }}
             </div>
 
             // Inline edit modal
