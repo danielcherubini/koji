@@ -4,13 +4,6 @@
   max-width: 1000px;
 }
 
-.updates-header {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  margin-bottom: 1.5rem;
-}
-
 .last-checked {
   font-size: 0.85rem;
   color: var(--text-muted);

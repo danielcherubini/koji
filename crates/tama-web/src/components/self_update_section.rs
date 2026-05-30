@@ -104,66 +104,82 @@ pub fn SelfUpdateSection() -> impl IntoView {
     };
 
     view! {
-        <div class="self-update-section">
-            <h2 class="section__title">"Tama"</h2>
+        <div class="update-item" class:update-available=move || update_available.get()>
+            <div class="update-item__info">
+                <span class="update-item__name">"Tama"</span>
 
-            // Loading state (check in flight)
-            {move || checking.get().then(|| view! {
-                <div class="self-update-progress">
-                    <div class="self-update-spinner"></div>
-                    <span>"Checking for updates…"</span>
-                </div>
-            })}
-
-            // Initial state — show "Check for updates" button
-            {move || (!checking.get() && !update_in_progress.get() && check_error.get().is_none() && current_version.with(|v| v.is_empty())).then(|| view! {
-                <button class="btn btn-primary"
-                    on:click=move |_| check_for_updates()>
-                    "Check for updates"
-                </button>
-            })}
-
-            // Inline progress during update
-            {move || update_in_progress.get().then(|| view! {
-                <div class="self-update-progress">
-                    <div class="self-update-spinner"></div>
-                    <span>{move || update_status.get()}</span>
-                </div>
-            })}
-
-            // Error state with retry (only when not in progress)
-            {move || (!update_in_progress.get() && check_error.get().is_some()).then(|| view! {
-                <div class="self-update-error">
-                    <span>{move || check_error.get().clone().unwrap_or_default()}</span>
-                    <button class="btn btn-ghost" on:click=move |_| retry_check()>"Retry"</button>
-                </div>
-            })}
-
-            // Normal state (check completed, no error, not in progress)
-            {move || (!update_in_progress.get() && check_error.get().is_none() && !current_version.with(|v| v.is_empty())).then(|| view! {
-                <div class="self-update-info">
-                    <span class="self-update-version">
+                // Version display (only when version is known)
+                {move || (!update_in_progress.get() && check_error.get().is_none() && !current_version.with(|v| v.is_empty())).then(|| view! {
+                    <span class="update-item__version">
                         {move || {
                             let cv = current_version.get();
-                            if update_available.get() && !cv.is_empty() {
-                                format!("v{} → v{}", cv, latest_version.get())
-                            } else {
-                                format!("v{}", cv)
-                            }
+                            format!("v{}", cv)
                         }}
                     </span>
-                    {move || (update_available.get() && !update_in_progress.get()).then(|| view! {
-                        <button class="btn btn-primary" disabled=move || update_in_progress.get()
-                            on:click=move |_| show_update_confirm.set(true)>
-                            "Update"
-                        </button>
-                    })}
-                    <button class="btn btn-ghost" disabled=move || update_in_progress.get()
+                })}
+
+                // Update available badge
+                {move || (update_available.get() && !current_version.with(|v| v.is_empty())).then(|| view! {
+                    <span class="update-badge">
+                        {move || format!(" → v{}", latest_version.get())}
+                    </span>
+                })}
+
+                // Up to date badge
+                {move || (!update_available.get() && !update_in_progress.get() && check_error.get().is_none() && !current_version.with(|v| v.is_empty())).then(|| view! {
+                    <span class="up-to-date-badge">"✓ Up to date"</span>
+                })}
+
+                // Loading state (check in flight)
+                {move || checking.get().then(|| view! {
+                    <div class="self-update-progress">
+                        <div class="self-update-spinner"></div>
+                        <span>"Checking for updates…"</span>
+                    </div>
+                })}
+
+                // Inline progress during update
+                {move || update_in_progress.get().then(|| view! {
+                    <div class="self-update-progress">
+                        <div class="self-update-spinner"></div>
+                        <span>{move || update_status.get()}</span>
+                    </div>
+                })}
+
+                // Error state with retry (only when not in progress)
+                {move || (!update_in_progress.get() && check_error.get().is_some()).then(|| view! {
+                    <div class="self-update-error">
+                        <span>{move || check_error.get().clone().unwrap_or_default()}</span>
+                        <button class="btn btn-ghost" on:click=move |_| retry_check()>"Retry"</button>
+                    </div>
+                })}
+            </div>
+
+            <div class="update-item__actions">
+                // Initial state — show "Check for updates" button
+                {move || (!checking.get() && !update_in_progress.get() && check_error.get().is_none() && current_version.with(|v| v.is_empty())).then(|| view! {
+                    <button class="btn btn-primary"
                         on:click=move |_| check_for_updates()>
-                        "Check again"
+                        "Check for updates"
                     </button>
-                </div>
-            })}
+                })}
+
+                // Normal state buttons (check completed, no error, not in progress)
+                {move || (!update_in_progress.get() && check_error.get().is_none() && !current_version.with(|v| v.is_empty())).then(|| view! {
+                    <>
+                        {move || (update_available.get() && !update_in_progress.get()).then(|| view! {
+                            <button class="btn btn-primary" disabled=move || update_in_progress.get()
+                                on:click=move |_| show_update_confirm.set(true)>
+                                "Update"
+                            </button>
+                        })}
+                        <button class="btn btn-ghost" disabled=move || update_in_progress.get()
+                            on:click=move |_| check_for_updates()>
+                            "Refresh"
+                        </button>
+                    </>
+                })}
+            </div>
         </div>
 
         // Confirmation dialog (page-scoped overlay, shown BEFORE update starts)
