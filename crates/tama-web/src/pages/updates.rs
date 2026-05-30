@@ -114,6 +114,8 @@ fn render_quant_list(
 pub struct UpdateCheckDto {
     pub item_type: String,
     pub item_id: String,
+    #[serde(default)]
+    pub variant: Option<String>,
     pub repo_id: Option<String>,
     pub display_name: Option<String>,
     pub current_version: Option<String>,
@@ -341,6 +343,9 @@ pub fn Updates() -> impl IntoView {
                                 <div class="update-item" class:update-available=b.update_available>
                                     <div class="update-item__info">
                                         <span class="update-item__name">{b.item_id.clone()}</span>
+                                        {b.variant.map(|v| {
+                                            view! { <span class="update-item__variant">{v}</span> }
+                                        })}
                                         <span class="update-item__version">
                                             {b.current_version.clone().unwrap_or_else(|| "—".to_string())}
                                         </span >

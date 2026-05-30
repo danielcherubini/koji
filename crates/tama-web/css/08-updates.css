@@ -68,6 +68,16 @@
   font-family: var(--font-mono);
 }
 
+.update-item__variant {
+  background-color: rgba(96, 165, 250, 0.15);
+  color: #60a5fa;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  font-family: var(--font-mono);
+}
+
 .update-badge {
   background-color: rgba(210, 153, 34, 0.15);
   color: var(--accent-yellow);
