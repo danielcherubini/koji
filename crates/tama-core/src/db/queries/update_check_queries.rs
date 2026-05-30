@@ -102,6 +102,21 @@ pub fn delete_update_check(conn: &Connection, item_type: &str, item_id: &str) ->
     Ok(())
 }
 
+/// Delete update check records matching a SQL LIKE pattern.
+/// The pattern should have `_` and `%` already escaped with `\\` for literal matching.
+/// Uses `ESCAPE '\\'` so that `\\_` matches a literal `_` and `\\%` matches a literal `%`.
+pub fn delete_update_checks_by_pattern(
+    conn: &Connection,
+    item_type: &str,
+    item_id_pattern: &str,
+) -> Result<()> {
+    conn.execute(
+        "DELETE FROM update_checks WHERE item_type = ?1 AND item_id LIKE ?2 ESCAPE '\\'",
+        (item_type, item_id_pattern),
+    )?;
+    Ok(())
+}
+
 pub fn get_oldest_check_time(conn: &Connection) -> Result<Option<i64>> {
     let mut stmt = conn.prepare("SELECT MIN(checked_at) FROM update_checks")?;
     let mut rows = stmt.query_map([], |row| row.get::<_, Option<i64>>(0))?;

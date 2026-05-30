@@ -4,13 +4,6 @@
   max-width: 1000px;
 }
 
-.updates-header {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  margin-bottom: 1.5rem;
-}
-
 .last-checked {
   font-size: 0.85rem;
   color: var(--text-muted);
@@ -72,6 +65,16 @@
 .update-item__version {
   font-size: 0.85rem;
   color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.update-item__variant {
+  background-color: rgba(96, 165, 250, 0.15);
+  color: #60a5fa;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 500;
   font-family: var(--font-mono);
 }
 

@@ -114,6 +114,8 @@ fn render_quant_list(
 pub struct UpdateCheckDto {
     pub item_type: String,
     pub item_id: String,
+    #[serde(default)]
+    pub variant: Option<String>,
     pub repo_id: Option<String>,
     pub display_name: Option<String>,
     pub current_version: Option<String>,
@@ -300,22 +302,23 @@ pub fn Updates() -> impl IntoView {
 
     view! {
         <div class="page updates-page">
-            <h1 class="page__title">"Updates Center"</h1>
-
-            <div class="updates-header">
-                <button
-                    class="btn btn-primary"
-                    disabled=move || checking.get()
-                    on:click=on_check_now
-                >
-                    {move || if checking.get() { "Checking..." } else { "Check Now" }}
-                </button>
-                {move || last_checked.get().map(|ts| {
-                    let date = chrono::DateTime::from_timestamp(ts, 0)
-                        .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
-                        .unwrap_or_default();
-                    view! { <span class="last-checked">"Last checked: " {date}</span> }
-                })}
+            <div class="page-header">
+                <h1>"Updates Center"</h1>
+                <div class="page-header-actions">
+                    {move || last_checked.get().map(|ts| {
+                        let date = chrono::DateTime::from_timestamp(ts, 0)
+                            .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+                            .unwrap_or_default();
+                        view! { <span class="last-checked">"Last checked: " {date}</span> }
+                    })}
+                    <button
+                        class="btn btn-primary"
+                        disabled=move || checking.get()
+                        on:click=on_check_now
+                    >
+                        {move || if checking.get() { "Checking..." } else { "Check Now" }}
+                    </button>
+                </div>
             </div>
 
             {move || error.get().map(|e| view! {
@@ -323,7 +326,12 @@ pub fn Updates() -> impl IntoView {
             })}
 
             // Self-update section for the Tama application itself
-            <SelfUpdateSection />
+            <section class="updates-section">
+                <h2 class="section__title">"Application"</h2>
+                <div class="updates-list">
+                    <SelfUpdateSection />
+                </div>
+            </section>
 
             <section class="updates-section">
                 <h2 class="section__title">"Backends"</h2>
@@ -335,6 +343,9 @@ pub fn Updates() -> impl IntoView {
                                 <div class="update-item" class:update-available=b.update_available>
                                     <div class="update-item__info">
                                         <span class="update-item__name">{b.item_id.clone()}</span>
+                                        {b.variant.map(|v| {
+                                            view! { <span class="update-item__variant">{v}</span> }
+                                        })}
                                         <span class="update-item__version">
                                             {b.current_version.clone().unwrap_or_else(|| "—".to_string())}
                                         </span >

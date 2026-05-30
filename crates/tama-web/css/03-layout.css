@@ -184,35 +184,7 @@
 }
 
 /* Minimal version indicator in sidebar footer */
-/* Self-update section card on /updates page */
-.self-update-section {
-  background: var(--bg-secondary, #1e293b);
-  border: 1px solid var(--border, #334155);
-  border-radius: 8px;
-  padding: 16px;
-  margin-bottom: 24px;
-}
-
-.self-update-section .section__title {
-  margin: 0 0 8px 0;
-  font-size: 1rem;
-  color: var(--text-primary, #e2e8f0);
-}
-
-.self-update-info {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-top: 4px;
-}
-
-.self-update-version {
-  font-size: 0.9rem;
-  color: var(--text-muted, #94a3b8);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-}
-
+/* Self-update inline elements on /updates page */
 .self-update-progress {
   display: flex;
   align-items: center;
