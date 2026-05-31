@@ -29,15 +29,15 @@ pub fn TabButtons(
     view! {
         <div class="tab-buttons">
             {tabs.into_iter().map(|tab| {
-                let key1 = tab.key.clone();
-                let key2 = tab.key.clone();
+                let key_for_class = tab.key.clone();
+                let key_for_click = tab.key.clone();
                 let label = tab.label.clone();
                 let ac = active_class.clone();
                 let ic = inactive_class.clone();
                 view! {
                     <button
-                        class=move || if active.get() == key1 { ac.clone() } else { ic.clone() }
-                        on:click=move |_| on_select.run(key2.clone())
+                        class=move || if active.get() == key_for_class { ac.clone() } else { ic.clone() }
+                        on:click=move |_| on_select.run(key_for_click.clone())
                     >
                         {label}
                     </button>
