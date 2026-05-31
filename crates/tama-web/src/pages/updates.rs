@@ -2,6 +2,7 @@ use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::components::job_log_panel::JobLogPanel;
+use crate::components::list_card::ListCard;
 use crate::components::self_update_section::SelfUpdateSection;
 use crate::utils::{extract_and_store_csrf_token, get_request, post_request};
 
@@ -339,30 +340,14 @@ pub fn Updates() -> impl IntoView {
                     {move || {
                         let backends = updates.with(|u| u.backends.clone());
                         backends.into_iter().map(|b| {
+                            let item_id = b.item_id.clone();
+                            let is_update_available = b.update_available;
                             view! {
-                                <div class="update-item" class:update-available=b.update_available>
-                                    <div class="update-item__info">
-                                        <span class="update-item__name">{b.item_id.clone()}</span>
-                                        {b.variant.map(|v| {
-                                            view! { <span class="update-item__variant">{v}</span> }
-                                        })}
-                                        <span class="update-item__version">
-                                            {b.current_version.clone().unwrap_or_else(|| "—".to_string())}
-                                        </span >
-                                        {if b.update_available {
-                                            let latest = b.latest_version.clone().unwrap_or_default();
-                                            view! {
-                                                <span class="update-badge">
-                                                    {format!(" → {}", latest)}
-                                                </span >
-                                            }.into_any()
-                                        } else {
-                                            view! { <span class="up-to-date-badge">{"✓ Up to date"}</span> }.into_any()
-                                        }}
-                                    </div >
-                                    <div class="update-item__actions">
-                                        {if b.update_available {
-                                            let id = b.item_id.clone();
+                                <ListCard
+                                    state=if is_update_available { Some(RwSignal::new(Some("update-available".to_string())).read_only()) } else { None }
+                                    actions=Some(Box::new(move || view! {
+                                        {if is_update_available {
+                                            let id = item_id.clone();
                                             view! {
                                                 <button class="btn btn-secondary"
                                                     on:click=move |_| on_update_backend(id.clone())>
@@ -374,7 +359,7 @@ pub fn Updates() -> impl IntoView {
                                         }}
                                         <button class="btn btn-ghost"
                                             on:click=move |_| {
-                                                let id = b.item_id.clone();
+                                                let id = item_id.clone();
                                                 wasm_bindgen_futures::spawn_local(async move {
                                                     let url = format!("/tama/v1/updates/check/backend/{}", id);
                                                     let _ = post_request(&url).send().await;
@@ -382,8 +367,26 @@ pub fn Updates() -> impl IntoView {
                                             }>
                                             "Refresh"
                                         </button>
-                                    </div >
-                                </div>
+                                    }.into_any()))
+                                >
+                                    <span class="update-item__name">{b.item_id.clone()}</span>
+                                    {b.variant.map(|v| {
+                                        view! { <span class="update-item__variant">{v}</span> }
+                                    })}
+                                    <span class="update-item__version">
+                                        {b.current_version.clone().unwrap_or_else(|| "—".to_string())}
+                                    </span>
+                                    {if b.update_available {
+                                        let latest = b.latest_version.clone().unwrap_or_default();
+                                        view! {
+                                            <span class="update-badge">
+                                                {format!(" → {}", latest)}
+                                            </span>
+                                        }.into_any()
+                                    } else {
+                                        view! { <span class="up-to-date-badge">{"✓ Up to date"}</span> }.into_any()
+                                    }}
+                                </ListCard>
                             }
                         }).collect::<Vec<_>>()
                     }}
@@ -445,106 +448,114 @@ pub fn Updates() -> impl IntoView {
 
                             let has_updates = quants_with_updates.iter().any(|(_, _, _, _, u)| *u);
 
+                            // Clone for icon closure (needs 'static)
+                            let mid_for_icon = mid_expand.clone();
+                            let model_id_for_icon = model_id.clone();
+                            // Clone for line2 closure
+                            let mid_for_line2 = mid_expand.clone();
+                            let m_item_id = m.item_id.clone();
+
                             view! {
-                                <div class="update-item" class:update-available=has_updates>
-                                    {/* Model header with expand/collapse chevron */}
-                                    <div class="update-item__info">
+                                <ListCard
+                                    state=if has_updates { Some(RwSignal::new(Some("update-available".to_string())).read_only()) } else { None }
+                                    icon=Some(Box::new(move || view! {
                                         <span
                                             class="expand-toggle"
                                             style="cursor:pointer;margin-right:0.5rem;font-size:0.75rem;"
-                                            on:click=move |_| on_toggle_expand(model_id.clone())
+                                            on:click=move |_| on_toggle_expand(model_id_for_icon.clone())
                                         >
-                                            {let mid_chev = mid_expand.clone(); move || {
+                                            {let mid_chev = mid_for_icon.clone(); move || {
                                                 match model_expanded.get().get(&mid_chev) {
                                                     Some(&v) => if v { "▼".to_string() } else { "▶".to_string() },
                                                     None => "▶".to_string(),
                                                 }
                                             }}
                                         </span>
-                                        <span class="update-item__name">{display_name}</span>
-                                        {/* version info */}
-                                        {m.current_version.as_ref().map(|v| {
-                                            let ver = v[..8.min(v.len())].to_string();
-                                            view! {
-                                                <span class="update-item__version">
-                                                    {ver}
-                                                </span>
-                                            }
-                                        })}
-                                        {if has_updates {
-                                            let latest = m.latest_version.as_ref().map(|v| &v[..8.min(v.len())]).unwrap_or("").to_string();
-                                            view! {
-                                                <span class="update-badge">
-                                                    {format!(" → {}", latest)}
-                                                </span>
-                                            }.into_any()
-                                        } else {
-                                            view! { <span class="up-to-date-badge">{"✓ Up to date"}</span> }.into_any()
-                                        }}
-                                    </div>
-
-                                    {/* Expandable quant list */}
-                                    {let mid_for_cond = mid_expand.clone();
-                                     let expanded = model_expanded.with(|map| map.get(&mid_for_cond).copied().unwrap_or(false));
-                                     if expanded {
-                                        // Prepare owned data for the helper function
-                                        let mid_sel = mid_expand.clone();
-                                        let mid_select_all = mid_expand.clone();
-                                        let quants_owned: Vec<(String, Option<String>, Option<String>, bool)> =
-                                            quants_with_updates.iter().map(|(qn, filename, ch, lh, u)| {
-                                                (
-                                                    qn.clone().unwrap_or_else(|| filename.clone()),
-                                                    ch.clone(),
-                                                    lh.clone(),
-                                                    *u,
-                                                )
-                                            }).collect();
-                                        let on_select_all_cb = move || {
-                                            model_selections.update(|map| {
-                                                let set: std::collections::HashSet<String> = quants_for_select_owned
-                                                    .iter()
-                                                    .filter(|(_, u)| *u)
-                                                    .map(|(k, _)| k.clone())
-                                                    .collect();
-                                                map.insert(mid_select_all.clone(), set);
-                                            });
-                                        };
-                                        render_quant_list(
-                                            mid_sel,
-                                            quants_owned,
-                                            model_selections,
-                                            model_update_busy,
-                                            on_select_all_cb,
-                                            on_update_selected,
-                                        ).into_any()
-                                    } else {
-                                        view! { <span/> }.into_any()
-                                    }}
-
-                                    {/* Legacy action buttons — keep for backward compat */}
-                                    <div class="update-item__actions">
-                                        {if has_updates {
-                                            let id = m.item_id.clone();
-                                            view! {
-                                                <button class="btn btn-secondary"
-                                                    on:click=move |_| wasm_bindgen_futures::spawn_local({
-                                                        let url_id = id.clone();
-                                                        async move {
-                                                            let url = format!("/tama/v1/models/{}/refresh", url_id);
-                                                            let _ = post_request(&url).send().await;
-                                                        }
-                                                    })>
-                                                    "Refresh Metadata"
-                                                </button>
-                                            }.into_any()
+                                    }.into_any()))
+                                    line2=Some(Box::new(move || view! {
+                                        {/* Expandable quant list */}
+                                        {let mid_for_cond = mid_for_line2.clone();
+                                         let expanded = model_expanded.with(|map| map.get(&mid_for_cond).copied().unwrap_or(false));
+                                         if expanded {
+                                            // Prepare owned data for the helper function
+                                            let mid_sel = mid_for_line2.clone();
+                                            let mid_select_all = mid_for_line2.clone();
+                                            let quants_owned: Vec<(String, Option<String>, Option<String>, bool)> =
+                                                quants_with_updates.iter().map(|(qn, filename, ch, lh, u)| {
+                                                    (
+                                                        qn.clone().unwrap_or_else(|| filename.clone()),
+                                                        ch.clone(),
+                                                        lh.clone(),
+                                                        *u,
+                                                    )
+                                                }).collect();
+                                            let on_select_all_cb = move || {
+                                                model_selections.update(|map| {
+                                                    let set: std::collections::HashSet<String> = quants_for_select_owned
+                                                        .iter()
+                                                        .filter(|(_, u)| *u)
+                                                        .map(|(k, _)| k.clone())
+                                                        .collect();
+                                                    map.insert(mid_select_all.clone(), set);
+                                                });
+                                            };
+                                            render_quant_list(
+                                                mid_sel,
+                                                quants_owned,
+                                                model_selections,
+                                                model_update_busy,
+                                                on_select_all_cb,
+                                                on_update_selected,
+                                            ).into_any()
                                         } else {
                                             view! { <span/> }.into_any()
                                         }}
-                                        <a href=format!("/tama/model/{}/edit", m.item_id) class="btn btn-ghost">
-                                            "Edit"
-                                        </a>
-                                    </div>
-                                </div>
+
+                                        {/* Action buttons */}
+                                        <div style="display:flex;gap:0.5rem;margin-top:0.5rem;">
+                                            {if has_updates {
+                                                let id = m_item_id.clone();
+                                                view! {
+                                                    <button class="btn btn-secondary"
+                                                        on:click=move |_| wasm_bindgen_futures::spawn_local({
+                                                            let url_id = id.clone();
+                                                            async move {
+                                                                let url = format!("/tama/v1/models/{}/refresh", url_id);
+                                                                let _ = post_request(&url).send().await;
+                                                            }
+                                                        })>
+                                                        "Refresh Metadata"
+                                                    </button>
+                                                }.into_any()
+                                            } else {
+                                                view! { <span/> }.into_any()
+                                            }}
+                                            <a href=format!("/tama/model/{}/edit", m_item_id) class="btn btn-ghost">
+                                                "Edit"
+                                            </a>
+                                        </div>
+                                    }.into_any()))
+                                >
+                                    <span class="update-item__name">{display_name}</span>
+                                    {m.current_version.as_ref().map(|v| {
+                                        let ver = v[..8.min(v.len())].to_string();
+                                        view! {
+                                            <span class="update-item__version">
+                                                {ver}
+                                            </span>
+                                        }
+                                    })}
+                                    {if has_updates {
+                                        let latest = m.latest_version.as_ref().map(|v| &v[..8.min(v.len())]).unwrap_or("").to_string();
+                                        view! {
+                                            <span class="update-badge">
+                                                {format!(" → {}", latest)}
+                                            </span>
+                                        }.into_any()
+                                    } else {
+                                        view! { <span class="up-to-date-badge">{"✓ Up to date"}</span> }.into_any()
+                                    }}
+                                </ListCard>
                             }.into_any()
                         }).collect::<Vec<_>>()
                     }}

@@ -2,6 +2,7 @@ use gloo_net::http::Request;
 use leptos::prelude::*;
 use wasm_bindgen_futures::spawn_local;
 
+use crate::components::list_card::ListCard;
 use crate::utils::{post_request, self_update::stream_update_events};
 
 /// Self-update section component for the /updates page.
@@ -17,6 +18,16 @@ pub fn SelfUpdateSection() -> impl IntoView {
     let update_status = RwSignal::new(String::new());
     let show_update_confirm = RwSignal::new(false);
     let check_error = RwSignal::new(Option::<String>::None);
+
+    // Derived state signal for ListCard
+    let card_state = RwSignal::new(Option::<String>::None);
+    Effect::new(move |_| {
+        card_state.set(if update_available.get() {
+            Some("update-available".to_string())
+        } else {
+            None
+        });
+    });
 
     let checking = RwSignal::new(false);
 
@@ -104,60 +115,11 @@ pub fn SelfUpdateSection() -> impl IntoView {
     };
 
     view! {
-        <div class="update-item" class:update-available=move || update_available.get()>
-            <div class="update-item__info">
-                <span class="update-item__name">"Tama"</span>
-
-                // Version display (only when version is known)
-                {move || (!update_in_progress.get() && check_error.get().is_none() && !current_version.with(|v| v.is_empty())).then(|| view! {
-                    <span class="update-item__version">
-                        {move || {
-                            let cv = current_version.get();
-                            format!("v{}", cv)
-                        }}
-                    </span>
-                })}
-
-                // Update available badge
-                {move || (update_available.get() && !current_version.with(|v| v.is_empty())).then(|| view! {
-                    <span class="update-badge">
-                        {move || format!(" → v{}", latest_version.get())}
-                    </span>
-                })}
-
-                // Up to date badge
-                {move || (!update_available.get() && !update_in_progress.get() && check_error.get().is_none() && !current_version.with(|v| v.is_empty())).then(|| view! {
-                    <span class="up-to-date-badge">"✓ Up to date"</span>
-                })}
-
-                // Loading state (check in flight)
-                {move || checking.get().then(|| view! {
-                    <div class="self-update-progress">
-                        <div class="self-update-spinner"></div>
-                        <span>"Checking for updates…"</span>
-                    </div>
-                })}
-
-                // Inline progress during update
-                {move || update_in_progress.get().then(|| view! {
-                    <div class="self-update-progress">
-                        <div class="self-update-spinner"></div>
-                        <span>{move || update_status.get()}</span>
-                    </div>
-                })}
-
-                // Error state with retry (only when not in progress)
-                {move || (!update_in_progress.get() && check_error.get().is_some()).then(|| view! {
-                    <div class="self-update-error">
-                        <span>{move || check_error.get().clone().unwrap_or_default()}</span>
-                        <button class="btn btn-ghost" on:click=move |_| retry_check()>"Retry"</button>
-                    </div>
-                })}
-            </div>
-
-            <div class="update-item__actions">
+        <ListCard
+            state=Some(card_state.read_only())
+            actions=Some(Box::new(move || view! {
                 // Initial state — show "Check for updates" button
-                {move || (!checking.get() && !update_in_progress.get() && check_error.get().is_none() && current_version.with(|v| v.is_empty())).then(|| view! {
+                {(!checking.get() && !update_in_progress.get() && check_error.get().is_none() && current_version.with(|v| v.is_empty())).then(|| view! {
                     <button class="btn btn-primary"
                         on:click=move |_| check_for_updates()>
                         "Check for updates"
@@ -165,9 +127,9 @@ pub fn SelfUpdateSection() -> impl IntoView {
                 })}
 
                 // Normal state buttons (check completed, no error, not in progress)
-                {move || (!update_in_progress.get() && check_error.get().is_none() && !current_version.with(|v| v.is_empty())).then(|| view! {
+                {(!update_in_progress.get() && check_error.get().is_none() && !current_version.with(|v| v.is_empty())).then(|| view! {
                     <>
-                        {move || (update_available.get() && !update_in_progress.get()).then(|| view! {
+                        {(update_available.get() && !update_in_progress.get()).then(|| view! {
                             <button class="btn btn-primary" disabled=move || update_in_progress.get()
                                 on:click=move |_| show_update_confirm.set(true)>
                                 "Update"
@@ -179,8 +141,53 @@ pub fn SelfUpdateSection() -> impl IntoView {
                         </button>
                     </>
                 })}
-            </div>
-        </div>
+            }.into_any()))
+        >
+            <span class="update-item__name">"Tama"</span>
+
+            // Version display (only when version is known)
+            {(!update_in_progress.get() && check_error.get().is_none() && !current_version.with(|v| v.is_empty())).then(|| view! {
+                <span class="update-item__version">
+                    {move || format!("v{}", current_version.get())}
+                </span>
+            })}
+
+            // Update available badge
+            {(update_available.get() && !current_version.with(|v| v.is_empty())).then(|| view! {
+                <span class="update-badge">
+                    {move || format!(" → v{}", latest_version.get())}
+                </span>
+            })}
+
+            // Up to date badge
+            {(!update_available.get() && !update_in_progress.get() && check_error.get().is_none() && !current_version.with(|v| v.is_empty())).then(|| view! {
+                <span class="up-to-date-badge">"✓ Up to date"</span>
+            })}
+
+            // Loading state (check in flight)
+            {checking.get().then(|| view! {
+                <div class="self-update-progress">
+                    <div class="self-update-spinner"></div>
+                    <span>"Checking for updates…"</span>
+                </div>
+            })}
+
+            // Inline progress during update
+            {update_in_progress.get().then(|| view! {
+                <div class="self-update-progress">
+                    <div class="self-update-spinner"></div>
+                    <span>{move || update_status.get()}</span>
+                </div>
+            })}
+
+            // Error state with retry (only when not in progress)
+            {(!update_in_progress.get() && check_error.get().is_some()).then(|| view! {
+                <div class="self-update-error">
+                    <span>{move || check_error.get().clone().unwrap_or_default()}</span>
+                    <button class="btn btn-ghost" on:click=move |_| retry_check()>"Retry"</button>
+                </div>
+            })}
+        </ListCard>
 
         // Confirmation dialog (page-scoped overlay, shown BEFORE update starts)
         {move || show_update_confirm.get().then(|| view! {
