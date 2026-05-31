@@ -32,12 +32,11 @@ pub fn TabButtons(
                 let key1 = tab.key.clone();
                 let key2 = tab.key.clone();
                 let label = tab.label.clone();
-                let active_clone = active.clone();
                 let ac = active_class.clone();
                 let ic = inactive_class.clone();
                 view! {
                     <button
-                        class=move || if active_clone.get() == key1 { ac.clone() } else { ic.clone() }
+                        class=move || if active.get() == key1 { ac.clone() } else { ic.clone() }
                         on:click=move |_| on_select.run(key2.clone())
                     >
                         {label}
