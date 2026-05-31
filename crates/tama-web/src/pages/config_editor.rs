@@ -3,6 +3,7 @@ use leptos::task::spawn_local;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+use crate::components::section_card::SectionCard;
 use crate::utils::{extract_and_store_csrf_token, get_request, post_request};
 
 // ─── WASM-safe JSON mirror types ──────────────────────────────────────────
@@ -314,9 +315,7 @@ fn GeneralForm(config: RwSignal<Option<Config>>) -> impl IntoView {
     let get_general = move || config.get().map(|c| c.general).unwrap_or_default();
 
     view! {
-        <div class="card">
-            <h2>"General Settings"</h2>
-            <p class="text-muted">"Global Tama settings."</p>
+        <SectionCard title="General Settings".to_string() description=Some("Global Tama settings.".to_string())>
 
             <div style="display:flex;flex-direction:column;gap:1rem;margin-top:1rem;">
                 <div>
@@ -385,7 +384,7 @@ fn GeneralForm(config: RwSignal<Option<Config>>) -> impl IntoView {
                     </p>
                 </div>
             </div>
-        </div>
+        </SectionCard>
     }
 }
 
@@ -396,9 +395,7 @@ fn ProxyForm(config: RwSignal<Option<Config>>) -> impl IntoView {
     let get_proxy = move || config.get().map(|c| c.proxy).unwrap_or_default();
 
     view! {
-        <div class="card">
-            <h2>"Proxy Settings"</h2>
-            <p class="text-muted">"Configure the proxy server that routes OpenAI/Ollama-compatible requests."</p>
+        <SectionCard title="Proxy Settings".to_string() description=Some("Configure the proxy server that routes OpenAI/Ollama-compatible requests.".to_string())>
 
             <div style="display:flex;flex-direction:column;gap:1rem;margin-top:1rem;">
                 <div>
@@ -516,7 +513,7 @@ fn ProxyForm(config: RwSignal<Option<Config>>) -> impl IntoView {
                     />
                 </div>
             </div>
-        </div>
+        </SectionCard>
     }
 }
 
@@ -527,9 +524,7 @@ fn SupervisorForm(config: RwSignal<Option<Config>>) -> impl IntoView {
     let get_sup = move || config.get().map(|c| c.supervisor).unwrap_or_default();
 
     view! {
-        <div class="card">
-            <h2>"Supervisor"</h2>
-            <p class="text-muted">"Process restart and health-check behavior for managed models."</p>
+        <SectionCard title="Supervisor".to_string() description=Some("Process restart and health-check behavior for managed models.".to_string())>
 
             <div style="display:flex;flex-direction:column;gap:1rem;margin-top:1rem;">
                 <div>
@@ -617,7 +612,7 @@ fn SupervisorForm(config: RwSignal<Option<Config>>) -> impl IntoView {
                     />
                 </div>
             </div>
-        </div>
+        </SectionCard>
     }
 }
 
@@ -694,9 +689,7 @@ fn SamplingForm(config: RwSignal<Option<Config>>) -> impl IntoView {
     };
 
     view! {
-        <div class="card">
-            <h2>"Sampling Templates"</h2>
-            <p class="text-muted">"Reusable named sets of LLM sampling parameters."</p>
+        <SectionCard title="Sampling Templates".to_string() description=Some("Reusable named sets of LLM sampling parameters.".to_string())>
 
             {move || {
                 let keys = template_keys();
@@ -725,6 +718,6 @@ fn SamplingForm(config: RwSignal<Option<Config>>) -> impl IntoView {
                     }.into_any()
                 }
             }}
-        </div>
+        </SectionCard>
     }
 }

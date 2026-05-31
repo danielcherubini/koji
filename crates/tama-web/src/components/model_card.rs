@@ -7,12 +7,14 @@
 use leptos::prelude::*;
 use leptos_router::components::A;
 
+use crate::components::list_card::ListCard;
+
 // ── Inline SVG helpers ───────────────────────────────────────────────────────
 
 /// A simple server/box glyph, 16×16.
 fn server_icon() -> impl IntoView {
     view! {
-        <svg viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg" class="model-list-card__icon">
+        <svg viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg" class="list-card__icon">
             <rect x="2" y="1" width="12" height="5" rx="1" stroke="currentColor" stroke-width="1.2" fill="none" />
             <rect x="2" y="8" width="12" height="5" rx="1" stroke="currentColor" stroke-width="1.2" fill="none" />
             <circle cx="5" cy="3.5" r="0.75" fill="currentColor" />
@@ -155,13 +157,13 @@ pub fn ModelCard(
     let button_class = model_action_button_class(effective_state);
     let button_label = model_action_button_label(effective_state);
 
-    // Card state class for accent strip styling
-    let card_state_class = match effective_state {
-        "ready" => "model-list-card model-list-card--ready",
-        "loading" => "model-list-card model-list-card--loading",
-        "unloading" => "model-list-card model-list-card--unloading",
-        "failed" => "model-list-card model-list-card--failed",
-        _ => "model-list-card",
+    // Map effective_state to ListCard state
+    let card_state: Option<ReadSignal<Option<String>>> = match effective_state {
+        "ready" => Some(RwSignal::new(Some("ready".to_string())).read_only()),
+        "loading" => Some(RwSignal::new(Some("loading".to_string())).read_only()),
+        "unloading" => Some(RwSignal::new(Some("unloading".to_string())).read_only()),
+        "failed" => Some(RwSignal::new(Some("failed".to_string())).read_only()),
+        _ => None, // idle/unknown → no state class (default gray strip)
     };
 
     // Determine action button to show
@@ -180,124 +182,54 @@ pub fn ModelCard(
     let is_load_disabled = move || load_busy.as_ref().map(|s| s.get()).unwrap_or(false);
     let is_unload_disabled = move || unload_busy.as_ref().map(|s| s.get()).unwrap_or(false);
 
+    // Clone values for closures (need 'static for Children type)
+    let log_source_clone = log_source.clone();
+    let edit_id_clone = edit_id.clone();
+    let quant_clone = quant.clone();
+    let context_length_clone = context_length;
+    let backend_clone = backend.clone();
+    let hf_architecture_type_clone = hf_architecture_type.clone();
+    let hf_base_model_clone = hf_base_model.clone();
+
     view! {
-        <div class=card_state_class>
-            // Line 1 — name, status badge, actions
-            <div class="model-list-card__line1">
-                {server_icon()}
-                <span class="model-list-card__name">{display_name}</span>
-
-                // Optional enabled/disabled badge
-                {match enabled {
-                    Some(true) => view! {
-                        <span class="badge-pill badge-pill--enabled">"Enabled"</span>
-                    }.into_any(),
-                    Some(false) => view! {
-                        <span class="badge-pill badge-pill--disabled">"Disabled"</span>
-                    }.into_any(),
-                    None => view! { <span/> }.into_any(),
-                }}
-
-                <span class={badge_class}>{badge_label}</span>
-
-                // Action button (Load/Unload/Retry/Loading…)
-                {if is_ready {
-                    if let Some(cb) = on_unload {
-                        let id_unload = id.clone();
-                        view! {
-                            <button
-                                class={button_class}
-                                prop:disabled=is_unload_disabled
-                                on:click=move |_| { cb.run(id_unload.clone()); }
-                            >
-                                {button_label}
-                            </button>
-                        }.into_any()
-                    } else {
-                        view! { <span/> }.into_any()
-                    }
-                } else if is_loading_or_unloading {
+        <ListCard
+            state=card_state
+            icon=Some(Box::new(|| view! { {server_icon()} }.into_any()))
+            actions=Some(Box::new(move || view! {
+                // Logs link — only rendered when log_source is Some
+                {if let Some(log_src) = &log_source_clone {
                     view! {
-                        <button
-                            class={button_class}
-                            prop:disabled=true
+                        <A
+                            href=format!("/tama/logs?source={}", log_src)
+                            attr:class="btn-icon"
+                            attr:title="View backend logs"
                         >
-                            {button_label}
-                        </button>
+                            {logs_icon()}
+                        </A>
                     }.into_any()
-                } else if is_failed {
-                    // Failed → Retry (uses on_load)
-                    if let Some(cb) = on_load {
-                        let id_load = id.clone();
-                        view! {
-                            <button
-                                class={button_class}
-                                prop:disabled=is_load_disabled
-                                on:click=move |_| { cb.run(id_load.clone()); }
-                            >
-                                {button_label}
-                            </button>
-                        }.into_any()
-                    } else {
-                        view! { <span/> }.into_any()
-                    }
                 } else {
-                    // Idle → Load
-                    if let Some(cb) = on_load {
-                        let id_load = id.clone();
-                        view! {
-                            <button
-                                class={button_class}
-                                prop:disabled=is_load_disabled
-                                on:click=move |_| { cb.run(id_load.clone()); }
-                            >
-                                {button_label}
-                            </button>
-                        }.into_any()
-                    } else {
-                        view! { <span/> }.into_any()
-                    }
+                    view! { <span/> }.into_any()
                 }}
-
-                // Icon-only action buttons container
-                <div class="model-list-card__actions">
-                    // Logs link — only rendered when log_source is Some
-                    {if let Some(log_src) = &log_source {
-                        view! {
-                            <A
-                                href=format!("/tama/logs?source={}", log_src)
-                                attr:class="btn-icon"
-                                attr:title="View backend logs"
-                            >
-                                {logs_icon()}
-                            </A>
-                        }.into_any()
-                    } else {
-                        view! { <span/> }.into_any()
-                    }}
-
-                    // Edit link — always rendered
-                    <A
-                        href=format!("/tama/model/{}/edit", edit_id)
-                        attr:class="btn-icon"
-                        attr:title="Edit model"
-                    >
-                        {edit_icon()}
-                    </A>
-                </div>
-            </div>
-
-            // Line 2 — badge pills
-            <div class="model-list-card__line2">
-                {if let Some(q) = quant {
+                // Edit link — always rendered
+                <A
+                    href=format!("/tama/model/{}/edit", edit_id_clone)
+                    attr:class="btn-icon"
+                    attr:title="Edit model"
+                >
+                    {edit_icon()}
+                </A>
+            }.into_any()))
+            line2=Some(Box::new(move || view! {
+                // Quant badge
+                {if let Some(q) = quant_clone {
                     view! {
                         <span class="badge-pill badge-pill--quant">{q}</span>
                     }.into_any()
                 } else {
                     view! { <span/> }.into_any()
                 }}
-
-                {if let Some(ctx) = context_length {
+                // Context length badge
+                {if let Some(ctx) = context_length_clone {
                     let ctx_display = format_context_length(ctx);
                     view! {
                         <span class="badge-pill badge-pill--context">{ctx_display}</span>
@@ -305,26 +237,99 @@ pub fn ModelCard(
                 } else {
                     view! { <span/> }.into_any()
                 }}
-
-                <span class="badge-pill badge-pill--backend">{backend}</span>
-
-                {if let Some(arch) = hf_architecture_type {
+                // Backend badge
+                <span class="badge-pill badge-pill--backend">{backend_clone}</span>
+                // Architecture badge
+                {if let Some(arch) = hf_architecture_type_clone {
                     view! {
                         <span class="badge-pill badge-pill--architecture">{arch}</span>
                     }.into_any()
                 } else {
                     view! { <span/> }.into_any()
                 }}
-
-                {if let Some(base) = hf_base_model {
+                // Base model badge
+                {if let Some(base) = hf_base_model_clone {
                     view! {
                         <span class="badge-pill badge-pill--base-model">{base}</span>
                     }.into_any()
                 } else {
                     view! { <span/> }.into_any()
                 }}
-            </div>
-        </div>
+            }.into_any()))
+        >
+            // Children — name + enabled badge + status badge + load/unload button
+            <span class="list-card__name">{display_name}</span>
+
+            // Optional enabled/disabled badge
+            {match enabled {
+                Some(true) => view! {
+                    <span class="badge-pill badge-pill--enabled">"Enabled"</span>
+                }.into_any(),
+                Some(false) => view! {
+                    <span class="badge-pill badge-pill--disabled">"Disabled"</span>
+                }.into_any(),
+                None => view! { <span/> }.into_any(),
+            }}
+
+            <span class={badge_class}>{badge_label}</span>
+
+            // Action button (Load/Unload/Retry/Loading…)
+            {if is_ready {
+                if let Some(cb) = on_unload {
+                    let id_unload = id.clone();
+                    view! {
+                        <button
+                            class={button_class}
+                            prop:disabled=is_unload_disabled
+                            on:click=move |_| { cb.run(id_unload.clone()); }
+                        >
+                            {button_label}
+                        </button>
+                    }.into_any()
+                } else {
+                    view! { <span/> }.into_any()
+                }
+            } else if is_loading_or_unloading {
+                view! {
+                    <button
+                        class={button_class}
+                        prop:disabled=true
+                    >
+                        {button_label}
+                    </button>
+                }.into_any()
+            } else if is_failed {
+                if let Some(cb) = on_load {
+                    let id_load = id.clone();
+                    view! {
+                        <button
+                            class={button_class}
+                            prop:disabled=is_load_disabled
+                            on:click=move |_| { cb.run(id_load.clone()); }
+                        >
+                            {button_label}
+                        </button>
+                    }.into_any()
+                } else {
+                    view! { <span/> }.into_any()
+                }
+            } else {
+                if let Some(cb) = on_load {
+                    let id_load = id.clone();
+                    view! {
+                        <button
+                            class={button_class}
+                            prop:disabled=is_load_disabled
+                            on:click=move |_| { cb.run(id_load.clone()); }
+                        >
+                            {button_label}
+                        </button>
+                    }.into_any()
+                } else {
+                    view! { <span/> }.into_any()
+                }
+            }}
+        </ListCard>
     }
 }
 

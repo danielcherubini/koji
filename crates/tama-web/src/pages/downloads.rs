@@ -2,6 +2,7 @@ use leptos::prelude::*;
 use serde::Deserialize;
 use std::sync::LazyLock;
 
+use crate::components::tab_buttons::{TabButton, TabButtons};
 pub use crate::utils::format_size;
 use crate::utils::{extract_and_store_csrf_token, get_request, post_request};
 
@@ -129,20 +130,16 @@ pub fn Downloads() -> impl IntoView {
             <h1 class="page__title">"Downloads Center"</h1>
 
             // Tab navigation
-            <div class="downloads-tabs">
-                <button
-                    class=move || format!("tab-btn {}", if active_tab.get() == "active" { "active" } else { "" })
-                    on:click=move |_| active_tab.set("active".to_string())
-                >
-                    "Active"
-                </button>
-                <button
-                    class=move || format!("tab-btn {}", if active_tab.get() == "history" { "active" } else { "" })
-                    on:click=move |_| active_tab.set("history".to_string())
-                >
-                    "History"
-                </button>
-            </div>
+            <TabButtons
+                active=Signal::derive(move || active_tab.get())
+                tabs=vec![
+                    TabButton { key: "active".into(), label: "Active".into() },
+                    TabButton { key: "history".into(), label: "History".into() },
+                ]
+                on_select=Callback::new(move |key| active_tab.set(key))
+                active_class="tab-btn active".into()
+                inactive_class="tab-btn".into()
+            />
 
             // Tab content — render only the active tab
             {move || {

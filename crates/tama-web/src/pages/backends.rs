@@ -3,6 +3,7 @@
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::components::alert_banner::{AlertBanner, AlertVariant};
 use crate::components::backend_card::{BackendCard, BackendCardDto};
 use crate::components::install_modal::{CapabilitiesDto, InstallModal, InstallRequest};
 use crate::components::job_log_panel::JobLogPanel;
@@ -335,17 +336,9 @@ pub fn Backends() -> impl IntoView {
             <p class="text-muted">"Manage inference backend installations."</p>
 
             {/* Error banner */}
-            {move || {
-                if let Some(err) = action_error.get() {
-                    view! {
-                        <div style="background:#fee2e2;border:1px solid #ef4444;color:#b91c1c;padding:0.75rem;border-radius:4px;margin-bottom:1rem;font-size:0.875rem;">
-                            {err}
-                        </div>
-                    }.into_any()
-                } else {
-                    view! { <span/> }.into_any()
-                }
-            }}
+            {move || action_error.get().map(|err| view! {
+                <AlertBanner variant=AlertVariant::Error>{err}</AlertBanner>
+            }.into_any())}
 
             {/* Active job log panel */}
             {move || {

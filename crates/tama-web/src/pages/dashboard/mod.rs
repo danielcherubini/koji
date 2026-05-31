@@ -1,6 +1,7 @@
 use leptos::prelude::*;
 use wasm_bindgen::prelude::*;
 
+use crate::components::alert_banner::{AlertBanner, AlertVariant};
 use crate::components::modal::Modal;
 use crate::components::model_card::ModelCard;
 use crate::components::pull_quant_wizard::{CompletedQuant, PullQuantWizard};
@@ -141,7 +142,7 @@ pub fn Dashboard() -> impl IntoView {
                 // Network error, no data yet — show error with retry button
                 return view! {
                     <div class="card">
-                        <p class="text-error">"Failed to load metrics stream. Is Tama running?"</p>
+                        <AlertBanner variant=AlertVariant::Error>"Failed to load metrics stream. Is Tama running?"</AlertBanner>
                         <button class="btn btn-secondary btn-sm mt-2" on:click=manual_refresh>"Retry"</button>
                     </div>
                 }.into_any();

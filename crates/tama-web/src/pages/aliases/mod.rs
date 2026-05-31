@@ -3,6 +3,8 @@ mod types;
 
 use leptos::prelude::*;
 
+use crate::components::alert_banner::{AlertBanner, AlertVariant};
+use crate::components::list_card::ListCard;
 use crate::components::modal::Modal;
 use crate::utils::{rw_signal_to_signal, target_value};
 
@@ -100,8 +102,8 @@ pub fn AliasesPage() -> impl IntoView {
 
             // Save status alerts
             {move || save_status.get().map(|(ok, msg)| {
-                let cls = if ok { "alert alert--success" } else { "alert alert--error" };
-                view! { <div class=cls>{msg}</div> }
+                let variant = if ok { AlertVariant::Success } else { AlertVariant::Error };
+                view! { <AlertBanner variant=variant>{msg}</AlertBanner> }
             })}
 
             // Loading state
@@ -117,14 +119,9 @@ pub fn AliasesPage() -> impl IntoView {
             }}
 
             // Error state
-            {move || {
-                error.get().map(|e| {
-                    view! {
-                        <div class="alert alert--error">{e}</div>
-                    }
-                    .into_any()
-                })
-            }}
+            {move || error.get().map(|e| view! {
+                <AlertBanner variant=AlertVariant::Error>{e}</AlertBanner>
+            }.into_any())}
 
             // Empty state (when not loading and no aliases)
             {move || {
@@ -199,87 +196,97 @@ fn AliasCard(
     let alias_name_for_title = alias_name.clone();
     let alias_name_for_delete = alias_name.clone();
 
+    // Clone values for closures (need 'static for Children type)
+    let alias_enabled_icon = alias_enabled;
+    let show_edit_actions = show_edit;
+    let aliases_actions = aliases;
+    let save_status_actions = save_status;
+    let alias_id_actions = alias_id;
+    let alias_enabled_actions = alias_enabled;
+    let alias_name_for_delete_actions = alias_name_for_delete;
+    let alias_model_name_line2 = alias_model_name;
+    let alias_description_line2 = alias_description;
+    let alias_description_is_default_line2 = alias_description_is_default;
+
     view! {
-        <div class=format!("alias-card {}", if alias_enabled { "alias-card--enabled" } else { "alias-card--disabled" })>
-            // Line 1: dot, name, actions
-            <div class="alias-card__line1">
-                <span class=format!("alias-card__dot {}", if alias_enabled { "alias-card__dot--enabled" } else { "alias-card__dot--disabled" })></span>
-                <span class="alias-card__name">{alias_name.clone()}</span>
-                <div class="alias-card__actions">
-                    // Edit button
-                    <button class="btn-icon" title="Edit" on:click=move |_| show_edit.set(true)>
-                        "✏️"
-                    </button>
-                    // Toggle enable/disable
-                    <button
-                        class="btn-icon"
-                        title=if alias_enabled { "Disable" } else { "Enable" }
-                        on:click=move |_| {
-                            let aliases_c = aliases;
-                            let save_status_c = save_status;
-                            wasm_bindgen_futures::spawn_local(async move {
-                                match update_alias(alias_id, None, None, None, Some(!alias_enabled)).await {
-                                    Ok(updated) => {
-                                        let mut list = aliases_c.get_untracked();
-                                        if let Some(pos) = list.iter().position(|a| a.id == alias_id) {
-                                            list[pos] = updated;
-                                            list.sort_by(|a, b| a.name.cmp(&b.name));
-                                            aliases_c.set(list);
-                                        }
-                                        save_status_c.set(Some((
-                                            true,
-                                            format!(
-                                                "Alias {}.",
-                                                if alias_enabled { "disabled" } else { "enabled" }
-                                            ),
-                                        )));
-                                    }
-                                    Err(e) => {
-                                        save_status_c.set(Some((false, format!("Failed to toggle alias: {}", e))));
-                                    }
-                                }
-                            });
-                        }
-                    >
-                        {if alias_enabled { "👁️" } else { "🚫" }}
-                    </button>
-                    // Delete button
-                    <button class="btn-icon btn-icon--danger" title="Delete" on:click=move |_| {
-                        let name_for_confirm = alias_name_for_delete.clone();
-                        let confirmed = web_sys::window()
-                            .and_then(|w| w.confirm_with_message(&format!("Delete alias \"{}\"? This cannot be undone.", name_for_confirm)).ok())
-                            .unwrap_or(false);
-                        if confirmed {
-                            let name_for_status = alias_name_for_delete.clone();
-                            let aliases_c = aliases;
-                            let save_status_c = save_status;
-                            wasm_bindgen_futures::spawn_local(async move {
-                                match delete_alias(alias_id).await {
-                                    Ok(()) => {
-                                        let mut list = aliases_c.get_untracked();
-                                        list.retain(|a| a.id != alias_id);
+        <ListCard
+            state=Some(RwSignal::new(Some(if alias_enabled { "enabled".to_string() } else { "disabled".to_string() })).read_only())
+            icon=Some(Box::new(move || view! {
+                <span class=format!("alias-card__dot {}", if alias_enabled_icon { "alias-card__dot--enabled" } else { "alias-card__dot--disabled" })></span>
+            }.into_any()))
+            actions=Some(Box::new(move || view! {
+                // Edit button
+                <button class="btn-icon" title="Edit" on:click=move |_| show_edit_actions.set(true)>
+                    "✏️"
+                </button>
+                // Toggle enable/disable
+                <button
+                    class="btn-icon"
+                    title=if alias_enabled_actions { "Disable" } else { "Enable" }
+                    on:click=move |_| {
+                        let aliases_c = aliases_actions;
+                        let save_status_c = save_status_actions;
+                        wasm_bindgen_futures::spawn_local(async move {
+                            match update_alias(alias_id_actions, None, None, None, Some(!alias_enabled_actions)).await {
+                                Ok(updated) => {
+                                    let mut list = aliases_c.get_untracked();
+                                    if let Some(pos) = list.iter().position(|a| a.id == alias_id_actions) {
+                                        list[pos] = updated;
+                                        list.sort_by(|a, b| a.name.cmp(&b.name));
                                         aliases_c.set(list);
-                                        save_status_c.set(Some((true, format!("Alias \"{}\" deleted.", name_for_status))));
                                     }
-                                    Err(e) => {
-                                        save_status_c.set(Some((false, format!("Failed to delete alias: {}", e))));
-                                    }
+                                    save_status_c.set(Some((
+                                        true,
+                                        format!(
+                                            "Alias {}.",
+                                            if alias_enabled_actions { "disabled" } else { "enabled" }
+                                        ),
+                                    )));
                                 }
-                            });
-                        }
-                    }>
-                        "🗑️"
-                    </button>
-                </div>
-            </div>
-            // Line 2: target model, description, default badge
-            <div class="alias-card__line2">
+                                Err(e) => {
+                                    save_status_c.set(Some((false, format!("Failed to toggle alias: {}", e))));
+                                }
+                            }
+                        });
+                    }
+                >
+                    {if alias_enabled_actions { "👁️" } else { "🚫" }}
+                </button>
+                // Delete button
+                <button class="btn-icon btn-icon--danger" title="Delete" on:click=move |_| {
+                    let name_for_confirm = alias_name_for_delete_actions.clone();
+                    let confirmed = web_sys::window()
+                        .and_then(|w| w.confirm_with_message(&format!("Delete alias \"{}\"? This cannot be undone.", name_for_confirm)).ok())
+                        .unwrap_or(false);
+                    if confirmed {
+                        let name_for_status = alias_name_for_delete_actions.clone();
+                        let aliases_c = aliases_actions;
+                        let save_status_c = save_status_actions;
+                        wasm_bindgen_futures::spawn_local(async move {
+                            match delete_alias(alias_id_actions).await {
+                                Ok(()) => {
+                                    let mut list = aliases_c.get_untracked();
+                                    list.retain(|a| a.id != alias_id_actions);
+                                    aliases_c.set(list);
+                                    save_status_c.set(Some((true, format!("Alias \"{}\" deleted.", name_for_status))));
+                                }
+                                Err(e) => {
+                                    save_status_c.set(Some((false, format!("Failed to delete alias: {}", e))));
+                                }
+                            }
+                        });
+                    }
+                }>
+                    "🗑️"
+                </button>
+            }.into_any()))
+            line2=Some(Box::new(move || view! {
                 <span class="alias-card__target">
                     <span class="alias-card__target-arrow">"→"</span>
-                    {alias_model_name}
+                    {alias_model_name_line2}
                 </span>
                 // Description (only if non-empty)
-                {alias_description.as_ref().map(|d| {
+                {alias_description_line2.as_ref().map(|d| {
                     if d.is_empty() {
                         view! { <span/> }.into_any()
                     } else {
@@ -288,28 +295,31 @@ fn AliasCard(
                     }
                 }).unwrap_or_else(|| view! { <span/> }.into_any())}
                 // Default alias badge
-                {if alias_description_is_default {
+                {if alias_description_is_default_line2 {
                     view! { <span class="badge-pill badge-pill--default">"Default alias"</span> }.into_any()
                 } else {
                     view! { <span/> }.into_any()
                 }}
-            </div>
+            }.into_any()))
+        >
+            // Children — just the alias name
+            <span class="alias-card__name">{alias_name.clone()}</span>
+        </ListCard>
 
-            // Inline edit modal
-            <Modal
-                open=rw_signal_to_signal(show_edit)
+        // Inline edit modal
+        <Modal
+            open=rw_signal_to_signal(show_edit)
+            on_close=Callback::new(move |_| show_edit.set(false))
+            title=move || format!("Edit: {}", alias_name_for_title)
+        >
+            <EditAliasForm
+                alias=alias.clone()
+                models=models
+                aliases=aliases
+                save_status=save_status
                 on_close=Callback::new(move |_| show_edit.set(false))
-                title=move || format!("Edit: {}", alias_name_for_title)
-            >
-                <EditAliasForm
-                    alias=alias.clone()
-                    models=models
-                    aliases=aliases
-                    save_status=save_status
-                    on_close=Callback::new(move |_| show_edit.set(false))
-                />
-            </Modal>
-        </div>
+            />
+        </Modal>
     }
 }
 
