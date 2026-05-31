@@ -5,34 +5,35 @@
 
 	let { data } = $props();
 
-	let config = $state<Config>(
-		data.config ?? {
-			general: { log_level: 'info' },
-			proxy: {
-				host: '0.0.0.0',
-				port: 11434,
-				auto_unload: false,
-				idle_timeout_secs: 300,
-				startup_timeout_secs: 120,
-				circuit_breaker_threshold: 3,
-				circuit_breaker_cooldown_seconds: 60,
-				metrics_retention_secs: 86400
-			},
-			supervisor: {
-				restart_policy: 'always',
-				max_restarts: 10,
-				restart_delay_ms: 3000,
-				health_check_interval_ms: 5000,
-				health_check_timeout_ms: 30000,
-				health_check_retries: 3
-			},
-			sampling_templates: {}
-		}
-	);
+	const initialConfig = data.config ?? {
+		general: { log_level: 'info' },
+		proxy: {
+			host: '0.0.0.0',
+			port: 11434,
+			auto_unload: false,
+			idle_timeout_secs: 300,
+			startup_timeout_secs: 120,
+			circuit_breaker_threshold: 3,
+			circuit_breaker_cooldown_seconds: 60,
+			metrics_retention_secs: 86400
+		},
+		supervisor: {
+			restart_policy: 'always',
+			max_restarts: 10,
+			restart_delay_ms: 3000,
+			health_check_interval_ms: 5000,
+			health_check_timeout_ms: 30000,
+			health_check_retries: 3
+		},
+		sampling_templates: {}
+	};
+	const initialError = data.error ?? null;
+
+	let config = $state<Config>(initialConfig);
 
 	let activeSection = $state<'general' | 'proxy' | 'supervisor' | 'sampling'>('general');
-	let loading = $state(!data.config);
-	let error = $state<string | null>(data.error ?? null);
+	let loading = $state(!initialConfig);
+	let error = $state<string | null>(initialError);
 	let saving = $state(false);
 	let saveStatus = $state<string | null>(null);
 
@@ -182,8 +183,9 @@
 					<p class="config-section-desc">Global Tama settings.</p>
 					<div class="config-fields">
 						<div class="config-field">
-							<label class="config-label">Log Level</label>
+							<label class="config-label" for="log-level">Log Level</label>
 							<select
+								id="log-level"
 								class="config-input"
 								value={config.general.log_level}
 								onchange={(e) => {
@@ -199,8 +201,9 @@
 						</div>
 
 						<div class="config-field">
-							<label class="config-label">Models Directory</label>
+							<label class="config-label" for="models-directory">Models Directory</label>
 							<input
+								id="models-directory"
 								class="config-input"
 								type="text"
 								placeholder="/path/to/models"
@@ -213,8 +216,9 @@
 						</div>
 
 						<div class="config-field">
-							<label class="config-label">Logs Directory</label>
+							<label class="config-label" for="logs-directory">Logs Directory</label>
 							<input
+								id="logs-directory"
 								class="config-input"
 								type="text"
 								placeholder="/path/to/logs"
@@ -227,8 +231,9 @@
 						</div>
 
 						<div class="config-field">
-							<label class="config-label">HuggingFace Token</label>
+							<label class="config-label" for="huggingface-token">HuggingFace Token</label>
 							<input
+								id="huggingface-token"
 								class="config-input"
 								type="password"
 								placeholder="hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
@@ -252,8 +257,9 @@
 					<p class="config-section-desc">Configure the proxy server that routes OpenAI/Ollama-compatible requests.</p>
 					<div class="config-fields">
 						<div class="config-field">
-							<label class="config-label">Host</label>
+							<label class="config-label" for="proxy-host">Host</label>
 							<input
+								id="proxy-host"
 								class="config-input"
 								type="text"
 								value={config.proxy.host}
@@ -264,8 +270,9 @@
 						</div>
 
 						<div class="config-field">
-							<label class="config-label">Port</label>
+							<label class="config-label" for="proxy-port">Port</label>
 							<input
+								id="proxy-port"
 								class="config-input"
 								type="number"
 								min="1"
@@ -294,8 +301,9 @@
 						</div>
 
 						<div class="config-field">
-							<label class="config-label">Idle Timeout (seconds)</label>
+							<label class="config-label" for="idle-timeout">Idle Timeout (seconds)</label>
 							<input
+								id="idle-timeout"
 								class="config-input"
 								type="number"
 								min="1"
@@ -310,8 +318,9 @@
 						</div>
 
 						<div class="config-field">
-							<label class="config-label">Startup Timeout (seconds)</label>
+							<label class="config-label" for="startup-timeout">Startup Timeout (seconds)</label>
 							<input
+								id="startup-timeout"
 								class="config-input"
 								type="number"
 								min="0"
@@ -326,8 +335,9 @@
 						</div>
 
 						<div class="config-field">
-							<label class="config-label">Circuit Breaker Threshold</label>
+							<label class="config-label" for="circuit-breaker-threshold">Circuit Breaker Threshold</label>
 							<input
+								id="circuit-breaker-threshold"
 								class="config-input"
 								type="number"
 								min="0"
@@ -342,8 +352,9 @@
 						</div>
 
 						<div class="config-field">
-							<label class="config-label">Circuit Breaker Cooldown (seconds)</label>
+							<label class="config-label" for="circuit-breaker-cooldown">Circuit Breaker Cooldown (seconds)</label>
 							<input
+								id="circuit-breaker-cooldown"
 								class="config-input"
 								type="number"
 								min="0"
@@ -358,8 +369,9 @@
 						</div>
 
 						<div class="config-field">
-							<label class="config-label">Metrics Retention (seconds)</label>
+							<label class="config-label" for="metrics-retention">Metrics Retention (seconds)</label>
 							<input
+								id="metrics-retention"
 								class="config-input"
 								type="number"
 								min="0"
@@ -381,8 +393,9 @@
 					<p class="config-section-desc">Process restart and health-check behavior for managed models.</p>
 					<div class="config-fields">
 						<div class="config-field">
-							<label class="config-label">Restart Policy</label>
+							<label class="config-label" for="restart-policy">Restart Policy</label>
 							<select
+								id="restart-policy"
 								class="config-input"
 								value={config.supervisor.restart_policy}
 								onchange={(e) => {
@@ -396,8 +409,9 @@
 						</div>
 
 						<div class="config-field">
-							<label class="config-label">Max Restarts</label>
+							<label class="config-label" for="max-restarts">Max Restarts</label>
 							<input
+								id="max-restarts"
 								class="config-input"
 								type="number"
 								min="0"
@@ -412,8 +426,9 @@
 						</div>
 
 						<div class="config-field">
-							<label class="config-label">Restart Delay (ms)</label>
+							<label class="config-label" for="restart-delay">Restart Delay (ms)</label>
 							<input
+								id="restart-delay"
 								class="config-input"
 								type="number"
 								min="0"
@@ -428,8 +443,9 @@
 						</div>
 
 						<div class="config-field">
-							<label class="config-label">Health Check Interval (ms)</label>
+							<label class="config-label" for="health-check-interval">Health Check Interval (ms)</label>
 							<input
+								id="health-check-interval"
 								class="config-input"
 								type="number"
 								min="0"
@@ -444,8 +460,9 @@
 						</div>
 
 						<div class="config-field">
-							<label class="config-label">Health Check Timeout (ms)</label>
+							<label class="config-label" for="health-check-timeout">Health Check Timeout (ms)</label>
 							<input
+								id="health-check-timeout"
 								class="config-input"
 								type="number"
 								min="0"
@@ -460,8 +477,9 @@
 						</div>
 
 						<div class="config-field">
-							<label class="config-label">Health Check Retries</label>
+							<label class="config-label" for="health-check-retries">Health Check Retries</label>
 							<input
+								id="health-check-retries"
 								class="config-input"
 								type="number"
 								min="0"
@@ -526,8 +544,9 @@
 									{#if editingTemplate === name}
 										<div class="config-template-fields">
 											<div class="config-template-field">
-												<label class="config-label">Temperature</label>
+												<label class="config-label" for="sampling-temperature">Temperature</label>
 												<input
+													id="sampling-temperature"
 													class="config-input config-input-sm"
 													type="number"
 													step="0.01"
@@ -542,8 +561,9 @@
 												/>
 											</div>
 											<div class="config-template-field">
-												<label class="config-label">Top K</label>
+												<label class="config-label" for="sampling-top-k">Top K</label>
 												<input
+													id="sampling-top-k"
 													class="config-input config-input-sm"
 													type="number"
 													min="0"
@@ -559,8 +579,9 @@
 												/>
 											</div>
 											<div class="config-template-field">
-												<label class="config-label">Top P</label>
+												<label class="config-label" for="sampling-top-p">Top P</label>
 												<input
+													id="sampling-top-p"
 													class="config-input config-input-sm"
 													type="number"
 													step="0.01"
@@ -575,8 +596,9 @@
 												/>
 											</div>
 											<div class="config-template-field">
-												<label class="config-label">Min P</label>
+												<label class="config-label" for="sampling-min-p">Min P</label>
 												<input
+													id="sampling-min-p"
 													class="config-input config-input-sm"
 													type="number"
 													step="0.01"
@@ -591,8 +613,9 @@
 												/>
 											</div>
 											<div class="config-template-field">
-												<label class="config-label">Presence Penalty</label>
+												<label class="config-label" for="sampling-presence-penalty">Presence Penalty</label>
 												<input
+													id="sampling-presence-penalty"
 													class="config-input config-input-sm"
 													type="number"
 													step="0.01"
@@ -607,8 +630,9 @@
 												/>
 											</div>
 											<div class="config-template-field">
-												<label class="config-label">Frequency Penalty</label>
+												<label class="config-label" for="sampling-frequency-penalty">Frequency Penalty</label>
 												<input
+													id="sampling-frequency-penalty"
 													class="config-input config-input-sm"
 													type="number"
 													step="0.01"
@@ -623,8 +647,9 @@
 												/>
 											</div>
 											<div class="config-template-field">
-												<label class="config-label">Repeat Penalty</label>
+												<label class="config-label" for="sampling-repeat-penalty">Repeat Penalty</label>
 												<input
+													id="sampling-repeat-penalty"
 													class="config-input config-input-sm"
 													type="number"
 													step="0.01"

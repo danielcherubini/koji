@@ -34,7 +34,7 @@
 <div class="space-y-4">
 	<!-- Spec types checkboxes -->
 	<div>
-		<label class="mb-2 block text-sm font-medium text-text-primary">Spec Types</label>
+		<p class="mb-2 block text-sm font-medium text-text-primary">Spec Types</p>
 		<div class="space-y-2">
 			{#each SPEC_TYPES as type}
 				<div class="flex items-center gap-2">

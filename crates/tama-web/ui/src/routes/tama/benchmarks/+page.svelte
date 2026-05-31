@@ -30,8 +30,11 @@
 
 	let { data } = $props();
 
-	let models = $state<ModelEntry[]>(data.models ?? []);
-	let history = $state<HistoryEntry[]>(data.history ?? []);
+	const initialModels = data.models ?? [];
+	const initialHistory = data.history ?? [];
+
+	let models = $state<ModelEntry[]>(initialModels);
+	let history = $state<HistoryEntry[]>(initialHistory);
 
 	// Active tab
 	let activeTab = $state<'standard' | 'mtp' | 'spec' | 'history'>('standard');
@@ -377,8 +380,9 @@
 			<div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
 				<!-- Model select -->
 				<div>
-					<label class="mb-1 block text-sm font-medium text-text-primary">Model</label>
+					<label class="mb-1 block text-sm font-medium text-text-primary" for="std-model">Model</label>
 					<select
+						id="std-model"
 						class="w-full rounded-md border border-border-default bg-bg-primary px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-blue/50"
 						bind:value={stdModelId}
 					>
@@ -391,8 +395,9 @@
 
 				<!-- Preset -->
 				<div>
-					<label class="mb-1 block text-sm font-medium text-text-primary">Preset</label>
+					<label class="mb-1 block text-sm font-medium text-text-primary" for="std-preset">Preset</label>
 					<select
+						id="std-preset"
 						class="w-full rounded-md border border-border-default bg-bg-primary px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-blue/50"
 						bind:value={stdPresetIdx}
 					>
@@ -419,8 +424,9 @@
 			<!-- Form fields -->
 			<div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
 				<div>
-					<label class="mb-1 block text-sm font-medium text-text-primary">PP Sizes</label>
+					<label class="mb-1 block text-sm font-medium text-text-primary" for="std-pp-sizes">PP Sizes</label>
 					<input
+						id="std-pp-sizes"
 						type="text"
 						class="w-full rounded-md border border-border-default bg-bg-primary px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-blue/50"
 						placeholder="2048"
@@ -428,8 +434,9 @@
 					/>
 				</div>
 				<div>
-					<label class="mb-1 block text-sm font-medium text-text-primary">TG Sizes</label>
+					<label class="mb-1 block text-sm font-medium text-text-primary" for="std-tg-sizes">TG Sizes</label>
 					<input
+						id="std-tg-sizes"
 						type="text"
 						class="w-full rounded-md border border-border-default bg-bg-primary px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-blue/50"
 						placeholder="128"
@@ -437,8 +444,9 @@
 					/>
 				</div>
 				<div>
-					<label class="mb-1 block text-sm font-medium text-text-primary">Runs</label>
+					<label class="mb-1 block text-sm font-medium text-text-primary" for="std-runs">Runs</label>
 					<input
+						id="std-runs"
 						type="number"
 						class="w-full rounded-md border border-border-default bg-bg-primary px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-blue/50"
 						min="1"
@@ -446,8 +454,9 @@
 					/>
 				</div>
 				<div>
-					<label class="mb-1 block text-sm font-medium text-text-primary">Threads</label>
+					<label class="mb-1 block text-sm font-medium text-text-primary" for="std-threads">Threads</label>
 					<input
+						id="std-threads"
 						type="text"
 						class="w-full rounded-md border border-border-default bg-bg-primary px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-blue/50"
 						placeholder="auto"
@@ -458,8 +467,9 @@
 
 			<div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
 				<div>
-					<label class="mb-1 block text-sm font-medium text-text-primary">NGG Range</label>
+					<label class="mb-1 block text-sm font-medium text-text-primary" for="std-ngg-range">NGG Range</label>
 					<input
+						id="std-ngg-range"
 						type="text"
 						class="w-full rounded-md border border-border-default bg-bg-primary px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-blue/50"
 						placeholder="99"
@@ -467,8 +477,9 @@
 					/>
 				</div>
 				<div>
-					<label class="mb-1 block text-sm font-medium text-text-primary">Batch Sizes</label>
+					<label class="mb-1 block text-sm font-medium text-text-primary" for="std-batch-sizes">Batch Sizes</label>
 					<input
+						id="std-batch-sizes"
 						type="text"
 						class="w-full rounded-md border border-border-default bg-bg-primary px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-blue/50"
 						placeholder="4096"
@@ -476,8 +487,9 @@
 					/>
 				</div>
 				<div>
-					<label class="mb-1 block text-sm font-medium text-text-primary">Ubatch Sizes</label>
+					<label class="mb-1 block text-sm font-medium text-text-primary" for="std-ubatch-sizes">Ubatch Sizes</label>
 					<input
+						id="std-ubatch-sizes"
 						type="text"
 						class="w-full rounded-md border border-border-default bg-bg-primary px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-blue/50"
 						placeholder="2048"
@@ -485,8 +497,9 @@
 					/>
 				</div>
 				<div>
-					<label class="mb-1 block text-sm font-medium text-text-primary">KV Cache Type</label>
+					<label class="mb-1 block text-sm font-medium text-text-primary" for="std-kv-cache-type">KV Cache Type</label>
 					<input
+						id="std-kv-cache-type"
 						type="text"
 						class="w-full rounded-md border border-border-default bg-bg-primary px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-blue/50"
 						placeholder="default"
@@ -497,8 +510,9 @@
 
 			<div class="grid grid-cols-2 md:grid-cols-3 gap-3 mb-4">
 				<div>
-					<label class="mb-1 block text-sm font-medium text-text-primary">Depth</label>
+					<label class="mb-1 block text-sm font-medium text-text-primary" for="std-depth">Depth</label>
 					<input
+						id="std-depth"
 						type="text"
 						class="w-full rounded-md border border-border-default bg-bg-primary px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-blue/50"
 						placeholder="0"
@@ -537,8 +551,9 @@
 
 			<div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
 				<div>
-					<label class="mb-1 block text-sm font-medium text-text-primary">Model</label>
+					<label class="mb-1 block text-sm font-medium text-text-primary" for="mtp-model">Model</label>
 					<select
+						id="mtp-model"
 						class="w-full rounded-md border border-border-default bg-bg-primary px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-blue/50"
 						bind:value={mtpModelId}
 					>
@@ -549,8 +564,9 @@
 					</select>
 				</div>
 				<div>
-					<label class="mb-1 block text-sm font-medium text-text-primary">Draft Max Values</label>
+					<label class="mb-1 block text-sm font-medium text-text-primary" for="mtp-draft-max">Draft Max Values</label>
 					<input
+						id="mtp-draft-max"
 						type="text"
 						class="w-full rounded-md border border-border-default bg-bg-primary px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-blue/50"
 						placeholder="0,1,2,3,4,5,6,7,8"
@@ -561,8 +577,9 @@
 
 			<div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
 				<div>
-					<label class="mb-1 block text-sm font-medium text-text-primary">NGL</label>
+					<label class="mb-1 block text-sm font-medium text-text-primary" for="mtp-ngl">NGL</label>
 					<input
+						id="mtp-ngl"
 						type="text"
 						class="w-full rounded-md border border-border-default bg-bg-primary px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-blue/50"
 						placeholder="99"
@@ -570,8 +587,9 @@
 					/>
 				</div>
 				<div>
-					<label class="mb-1 block text-sm font-medium text-text-primary">Draft NGL</label>
+					<label class="mb-1 block text-sm font-medium text-text-primary" for="mtp-draft-ngl">Draft NGL</label>
 					<input
+						id="mtp-draft-ngl"
 						type="text"
 						class="w-full rounded-md border border-border-default bg-bg-primary px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-blue/50"
 						placeholder="99"
@@ -579,8 +597,9 @@
 					/>
 				</div>
 				<div>
-					<label class="mb-1 block text-sm font-medium text-text-primary">Context Size</label>
+					<label class="mb-1 block text-sm font-medium text-text-primary" for="mtp-context-size">Context Size</label>
 					<input
+						id="mtp-context-size"
 						type="text"
 						class="w-full rounded-md border border-border-default bg-bg-primary px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-blue/50"
 						placeholder="32768"
@@ -619,8 +638,9 @@
 
 			<div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
 				<div>
-					<label class="mb-1 block text-sm font-medium text-text-primary">Model</label>
+					<label class="mb-1 block text-sm font-medium text-text-primary" for="spec-model">Model</label>
 					<select
+						id="spec-model"
 						class="w-full rounded-md border border-border-default bg-bg-primary px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-blue/50"
 						bind:value={specModelId}
 					>
@@ -631,8 +651,9 @@
 					</select>
 				</div>
 				<div>
-					<label class="mb-1 block text-sm font-medium text-text-primary">Spec Type</label>
+					<label class="mb-1 block text-sm font-medium text-text-primary" for="spec-type">Spec Type</label>
 					<select
+						id="spec-type"
 						class="w-full rounded-md border border-border-default bg-bg-primary px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-blue/50"
 						bind:value={specType}
 					>
@@ -646,7 +667,7 @@
 
 			<!-- Preset -->
 			<div class="mb-4">
-				<label class="mb-1 block text-sm font-medium text-text-primary">Preset</label>
+				<p class="mb-1 block text-sm font-medium text-text-primary">Preset</p>
 				<div class="flex gap-2">
 					{#each SPEC_PRESETS as preset, i}
 						<button
@@ -664,8 +685,9 @@
 
 			<div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
 				<div>
-					<label class="mb-1 block text-sm font-medium text-text-primary">Draft Max</label>
+					<label class="mb-1 block text-sm font-medium text-text-primary" for="spec-draft-max">Draft Max</label>
 					<input
+						id="spec-draft-max"
 						type="text"
 						class="w-full rounded-md border border-border-default bg-bg-primary px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-blue/50"
 						placeholder="256"
@@ -673,8 +695,9 @@
 					/>
 				</div>
 				<div>
-					<label class="mb-1 block text-sm font-medium text-text-primary">N-gram N</label>
+					<label class="mb-1 block text-sm font-medium text-text-primary" for="spec-ngram-n">N-gram N</label>
 					<input
+						id="spec-ngram-n"
 						type="text"
 						class="w-full rounded-md border border-border-default bg-bg-primary px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-blue/50"
 						placeholder="16"
@@ -682,8 +705,9 @@
 					/>
 				</div>
 				<div>
-					<label class="mb-1 block text-sm font-medium text-text-primary">N-gram M</label>
+					<label class="mb-1 block text-sm font-medium text-text-primary" for="spec-ngram-m">N-gram M</label>
 					<input
+						id="spec-ngram-m"
 						type="text"
 						class="w-full rounded-md border border-border-default bg-bg-primary px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-blue/50"
 						placeholder="12"
@@ -691,8 +715,9 @@
 					/>
 				</div>
 				<div>
-					<label class="mb-1 block text-sm font-medium text-text-primary">N-gram Max</label>
+					<label class="mb-1 block text-sm font-medium text-text-primary" for="spec-ngram-max">N-gram Max</label>
 					<input
+						id="spec-ngram-max"
 						type="text"
 						class="w-full rounded-md border border-border-default bg-bg-primary px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-blue/50"
 						placeholder="48"
@@ -703,8 +728,9 @@
 
 			<div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
 				<div>
-					<label class="mb-1 block text-sm font-medium text-text-primary">N-gram Min Hits</label>
+					<label class="mb-1 block text-sm font-medium text-text-primary" for="spec-ngram-min-hits">N-gram Min Hits</label>
 					<input
+						id="spec-ngram-min-hits"
 						type="number"
 						class="w-full rounded-md border border-border-default bg-bg-primary px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-blue/50"
 						min="1"
@@ -712,8 +738,9 @@
 					/>
 				</div>
 				<div>
-					<label class="mb-1 block text-sm font-medium text-text-primary">Gen Tokens</label>
+					<label class="mb-1 block text-sm font-medium text-text-primary" for="spec-gen-tokens">Gen Tokens</label>
 					<input
+						id="spec-gen-tokens"
 						type="number"
 						class="w-full rounded-md border border-border-default bg-bg-primary px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-blue/50"
 						min="1"
@@ -721,8 +748,9 @@
 					/>
 				</div>
 				<div>
-					<label class="mb-1 block text-sm font-medium text-text-primary">Runs</label>
+					<label class="mb-1 block text-sm font-medium text-text-primary" for="spec-runs">Runs</label>
 					<input
+						id="spec-runs"
 						type="number"
 						class="w-full rounded-md border border-border-default bg-bg-primary px-3 py-2 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-blue/50"
 						min="1"

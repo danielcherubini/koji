@@ -23,12 +23,13 @@
 	}: Props = $props();
 
 	// Track selected version index for multi-version backends
-	let selectedVersionIdx = $state(
-		backend.versions.findIndex((v) => v.is_active) ?? 0
-	);
+	// Props are passed as plain data — not reactive, so these are safe seed values
+	const _initialVersionIdx = backend.versions.findIndex((v) => v.is_active) ?? 0;
+	const _initialDefaultArgsText = backend.default_args.join(' ');
+	let selectedVersionIdx = $state(_initialVersionIdx);
 
 	// Default args text (space-separated)
-	let defaultArgsText = $state(backend.default_args.join(' '));
+	let defaultArgsText = $state(_initialDefaultArgsText);
 
 	let selectedVersion = $derived.by(() => {
 		if (selectedVersionIdx < 0 || selectedVersionIdx >= backend.versions.length) return null;
@@ -94,8 +95,9 @@
 	<!-- Version selector -->
 	{#if isInstalled && versionCount > 1}
 		<div class="flex items-center gap-2 mb-2">
-			<label class="text-sm font-medium text-text-secondary">Version:</label>
+			<label class="text-sm font-medium text-text-secondary" for={`backend-${backend.type}-${backend.gpu_variant}-version`}>Version:</label>
 			<select
+				id={`backend-${backend.type}-${backend.gpu_variant}-version`}
 				class="rounded-md border border-border-default bg-bg-primary px-2 py-1 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-accent-blue/50"
 				value={selectedVersionIdx}
 				onchange={handleVersionChange}
@@ -128,8 +130,9 @@
 
 	<!-- Default args editor -->
 	<div class="mb-3">
-		<label class="text-sm font-medium text-text-secondary mb-1 block">Default Args</label>
+		<label class="text-sm font-medium text-text-secondary mb-1 block" for={`backend-${backend.type}-${backend.gpu_variant}-default-args`}>Default Args</label>
 		<input
+			id={`backend-${backend.type}-${backend.gpu_variant}-default-args`}
 			type="text"
 			class="w-full rounded-md border border-border-default bg-bg-primary px-3 py-1.5 text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent-blue/50 font-mono"
 			placeholder="No default args set"
