@@ -580,6 +580,11 @@ mod tests {
     }
 
     #[test]
+    fn test_format_spec_decoding_unknown_types() {
+        assert_eq!(format_spec_decoding(&["unknown-type".to_string()]), None);
+    }
+
+    #[test]
     fn test_format_backend_with_variant() {
         assert_eq!(
             format_backend_with_variant("llama.cpp", Some("cuda")),
