@@ -21,7 +21,7 @@ web-ui = ["dep:tama-web", "dep:axum-server", "tama-core/web-ui"]
 
 [dependencies]
 tama-core = { path = "../tama-core" }
-tama-web = { path = "../tama-web", features = ["ssr"], optional = true }
+tama-web = { path = "../tama-web", optional = true }
 axum-server = { workspace = true, optional = true }
 tokio.workspace = true
 clap.workspace = true

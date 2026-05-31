@@ -1,7 +1,6 @@
 //! Dynamic OpenAPI 3.1.0 spec generation from registered routes.
 //! Served at `GET /tama/v1/docs` as JSON.
 
-#[cfg(feature = "ssr")]
 use axum::{http::StatusCode, response::IntoResponse, Json};
 
 /// Returns the full OpenAPI 3.1.0 specification as a JSON value.
@@ -925,7 +924,6 @@ fn responses_map<'a>(entries: impl IntoIterator<Item = (&'a str, &'a str)>) -> s
 }
 
 /// Serves the OpenAPI 3.1.0 specification as JSON at `GET /tama/v1/docs`.
-#[cfg(feature = "ssr")]
 pub async fn serve_spec() -> impl IntoResponse {
     let spec = spec();
     (StatusCode::OK, Json(spec)).into_response()

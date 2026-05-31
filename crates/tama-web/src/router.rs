@@ -25,8 +25,8 @@ use crate::api::benchmarks::{
 };
 use tama_core::proxy::{forward_to_backend, ProxyState};
 
-/// Embedded dist/ directory for serving the web UI.
-static DIST: Dir = include_dir!("$CARGO_MANIFEST_DIR/dist");
+/// Embedded ui/build/ directory for serving the SvelteKit web UI.
+static DIST: Dir = include_dir!("$CARGO_MANIFEST_DIR/ui/build");
 
 /// Serve a static file from the embedded `dist/` directory.
 async fn serve_static(path: Option<Path<String>>) -> Response {
