@@ -1,6 +1,7 @@
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::components::alert_banner::{AlertBanner, AlertVariant};
 use crate::components::modal::Modal;
 use crate::components::model_card::ModelCard;
 use crate::components::pull_quant_wizard::{CompletedQuant, PullQuantWizard};
@@ -171,8 +172,8 @@ pub fn Models() -> impl IntoView {
             </div>
         </div>
         {move || check_all_status.get().map(|(ok, msg)| {
-            let cls = if ok { "alert alert--success" } else { "alert alert--error" };
-            view! { <div class=cls>{msg}</div> }
+            let variant = if ok { AlertVariant::Success } else { AlertVariant::Error };
+            view! { <AlertBanner variant=variant>{msg}</AlertBanner> }
         })}
         <Suspense fallback=|| view! {
             <div class="card card--centered">

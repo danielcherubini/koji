@@ -3,6 +3,7 @@ mod types;
 
 use leptos::prelude::*;
 
+use crate::components::alert_banner::{AlertBanner, AlertVariant};
 use crate::components::list_card::ListCard;
 use crate::components::modal::Modal;
 use crate::utils::{rw_signal_to_signal, target_value};
@@ -101,8 +102,8 @@ pub fn AliasesPage() -> impl IntoView {
 
             // Save status alerts
             {move || save_status.get().map(|(ok, msg)| {
-                let cls = if ok { "alert alert--success" } else { "alert alert--error" };
-                view! { <div class=cls>{msg}</div> }
+                let variant = if ok { AlertVariant::Success } else { AlertVariant::Error };
+                view! { <AlertBanner variant=variant>{msg}</AlertBanner> }
             })}
 
             // Loading state
@@ -118,14 +119,9 @@ pub fn AliasesPage() -> impl IntoView {
             }}
 
             // Error state
-            {move || {
-                error.get().map(|e| {
-                    view! {
-                        <div class="alert alert--error">{e}</div>
-                    }
-                    .into_any()
-                })
-            }}
+            {move || error.get().map(|e| view! {
+                <AlertBanner variant=AlertVariant::Error>{e}</AlertBanner>
+            }.into_any())}
 
             // Empty state (when not loading and no aliases)
             {move || {

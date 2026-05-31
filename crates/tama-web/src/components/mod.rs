@@ -1,4 +1,5 @@
 pub mod activity_panel;
+pub mod alert_banner;
 pub mod backend_card;
 pub mod model_card;
 

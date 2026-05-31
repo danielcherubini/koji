@@ -1,6 +1,7 @@
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::components::alert_banner::{AlertBanner, AlertVariant};
 use crate::components::job_log_panel::JobLogPanel;
 use crate::components::list_card::ListCard;
 use crate::components::self_update_section::SelfUpdateSection;
@@ -323,7 +324,7 @@ pub fn Updates() -> impl IntoView {
             </div>
 
             {move || error.get().map(|e| view! {
-                <div class="error-banner">{e}</div>
+                <AlertBanner variant=AlertVariant::Error>{e}</AlertBanner>
             })}
 
             // Self-update section for the Tama application itself
