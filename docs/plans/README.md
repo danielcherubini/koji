@@ -15,8 +15,8 @@ This directory contains implementation plans for the Tama project. Each plan doc
 ## Quick Stats
 
 - **Total Plans**: 112
-- **Completed**: 109 ✅
-- **In Progress**: 1 🚧
+- **Completed**: 110 ✅
+- **In Progress**: 0 🚧
 - **Remaining**: 2
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
@@ -30,7 +30,7 @@ This directory contains implementation plans for the Tama project. Each plan doc
 | Plan | Description | PR / Git References |
 |------|-------------|---------------------|
 | [Shared Components Consolidation](2026-05-31-list-card-refactor.md) | Consolidate duplicated UI patterns into 4 shared components: ListCard, SectionCard, AlertBanner, TabButtons | #102 ✅ COMPLETED |
-| [Extended Model Card Pips](2026-05-31-model-card-pips.md) | Add GPU variant (combined with backend), KV cache quant, and speculative decoding indicator pips to model cards | 🚧 IN PROGRESS |
+| [Extended Model Card Pips](2026-05-31-model-card-pips.md) | Add GPU variant (combined with backend), KV cache quant, and speculative decoding indicator pips to model cards | #103 ✅ COMPLETED |
 
 ### Recently Completed
 
