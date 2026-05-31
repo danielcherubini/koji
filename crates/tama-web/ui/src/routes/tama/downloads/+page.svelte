@@ -6,17 +6,17 @@
 	import { addToast } from '$lib/stores/toasts';
 	import type { DownloadItem } from '$lib/types/downloads';
 
-	let { data } = $props();
+let { data } = $props();
 
-	// Tab state
-	let activeTab = $state('active');
+	const initialActiveDownloads = data.activeDownloads ?? [];
+	const initialHistoryItems = data.historyItems ?? [];
+	const initialHistoryTotal = data.historyTotal ?? 0;
 
-	// Active downloads: seeded from page data, then updated by SSE store
-	let activeDownloads = $state<DownloadItem[]>(data.activeDownloads ?? []);
-
-	// History: seeded from page data, with pagination
-	let historyItems = $state<DownloadItem[]>(data.historyItems ?? []);
-	let historyTotal = $state<number>(data.historyTotal ?? 0);
+	let activeDownloads = $state<Map<string, JobDto>>(
+		new Map(initialActiveDownloads.map((j: JobDto) => [j.id, j]))
+	);
+	let historyItems = $state<JobDto[]>(initialHistoryItems);
+	let historyTotal = $state<number>(initialHistoryTotal);
 	let historyPage = $state(1);
 	const PAGE_SIZE = 50;
 

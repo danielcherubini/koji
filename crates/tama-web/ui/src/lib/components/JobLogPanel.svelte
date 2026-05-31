@@ -17,7 +17,7 @@
 	let status = $state<string>('running');
 	let finished = $state(false);
 	let autoScroll = $state(true);
-	let scrollContainer: HTMLPreElement | null = null;
+	let scrollContainer: HTMLPreElement | null = $state(null);
 
 	let eventSource: EventSource | null = null;
 

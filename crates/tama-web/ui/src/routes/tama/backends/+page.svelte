@@ -16,19 +16,22 @@
 
 	let { data } = $props();
 
-	let allBackends = $state<BackendCardDto[]>([
-		...(data.backends ?? []),
-		...(data.custom ?? [])
-	]);
-	let capabilities = $state<CapabilitiesDto>(data.capabilities ?? {
+	const initialBackends = data.backends ?? [];
+	const initialCustom = data.custom ?? [];
+	const initialCapabilities = data.capabilities ?? {
 		os: 'unknown',
 		arch: 'unknown',
 		git_available: false,
 		cmake_available: false,
 		compiler_available: false,
 		supported_cuda_versions: []
-	});
-	let availableBackends = $state<string[]>(data.available ?? []);
+	};
+	const initialAvailable = data.available ?? [];
+	const initialActiveJob = data.activeJob;
+
+	let allBackends = $state<BackendCardDto[]>([...initialBackends, ...initialCustom]);
+	let capabilities = $state<CapabilitiesDto>(initialCapabilities);
+	let availableBackends = $state<string[]>(initialAvailable);
 
 	// UI state
 	let error = $state<string | null>(null);
@@ -40,7 +43,7 @@
 	let installBackendType = $state('llama_cpp');
 
 	// Job log
-	let activeJobId = $state<string | null>(data.activeJob?.id ?? null);
+	let activeJobId = $state<string | null>(initialActiveJob?.id ?? null);
 	let jobTitle = $state('Job Progress');
 
 	// Pending default args changes
@@ -56,9 +59,9 @@
 	];
 
 	onMount(() => {
-		if (data.activeJob?.id) {
-			activeJobId = data.activeJob.id;
-			jobTitle = `${data.activeJob.kind} ${data.activeJob.backend_type}`;
+		if (initialActiveJob?.id) {
+			activeJobId = initialActiveJob.id;
+			jobTitle = `${initialActiveJob.kind} ${initialActiveJob.backend_type}`;
 		}
 	});
 

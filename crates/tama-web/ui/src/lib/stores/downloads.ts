@@ -1,5 +1,6 @@
 import { writable, type Writable } from 'svelte/store';
 import { browser } from '$app/environment';
+import type { DownloadItem } from '$lib/types/downloads';
 
 export interface DownloadEvent {
 	event: string;
@@ -22,7 +23,7 @@ export interface ActiveDownload {
 }
 
 export const activeDownloads: Writable<ActiveDownload[]> = writable([]);
-export const downloadHistory: Writable<unknown[]> = writable([]);
+export const downloadHistory: Writable<DownloadItem[]> = writable([]);
 
 let eventSource: EventSource | null = null;
 

@@ -22,13 +22,18 @@
 
 	let { data }: { data: PageData } = $props();
 
+	const initialForm = data.form;
+	const initialBackends = data.backends;
+	const initialSamplingTemplates = data.samplingTemplates;
+	const initialId = data.id;
+
 	// Form state — initialized from loader data
-	let form = $state<ModelForm | null>(data.form);
-	let backends = $state<BackendOption[]>(data.backends);
-	let samplingTemplates = $state(data.samplingTemplates);
+	let form = $state<ModelForm | null>(initialForm);
+	let backends = $state<BackendOption[]>(initialBackends);
+	let samplingTemplates = $state(initialSamplingTemplates);
 
 	// Original (persisted) ID for rename tracking
-	let originalId = $state(data.id);
+	let originalId = $state(initialId);
 
 	// UI state
 	let activeSection = $state<'General' | 'Sampling' | 'Spec Decoding' | 'Quants & Vision' | 'Extra Args'>('General');

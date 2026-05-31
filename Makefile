@@ -10,11 +10,11 @@ dev:
 
 # Build the SvelteKit frontend into crates/tama-web/ui/build/ (required before any Rust release build)
 build-frontend:
-	cd crates/tama-web/ui && pnpm install && pnpm build
+	cd crates/tama-web/ui && pnpm install --frozen-lockfile && pnpm build
 
-# Development SvelteKit build (faster, for local testing)
+# Development SvelteKit build (faster, skips install for local testing)
 build-frontend-dev:
-	cd crates/tama-web/ui && pnpm install && pnpm build
+	cd crates/tama-web/ui && pnpm build
 
 # Full release build: frontend first, then the Rust workspace
 build: build-frontend

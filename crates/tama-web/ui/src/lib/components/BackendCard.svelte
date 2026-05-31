@@ -37,8 +37,8 @@
 	});
 
 	let isUpdateAvailable = $derived(!!backend.update.update_available);
-	let isInstalled = backend.installed;
-	let versionCount = backend.versions.length;
+	let isInstalled = $derived(backend.installed);
+	let versionCount = $derived(backend.versions.length);
 
 	function handleDefaultArgsInput(e: Event) {
 		const target = e.target as HTMLInputElement;

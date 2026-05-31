@@ -6,7 +6,8 @@
 
 	let { initialRepo, onLoad }: Props = $props();
 
-	let repoId = $state(initialRepo);
+	const _initialRepoValue = initialRepo;
+	let repoId = $state(_initialRepoValue);
 	let error = $state<string | null>(null);
 
 	function handleLoad() {

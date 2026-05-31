@@ -6,7 +6,9 @@
 
 	let { data } = $props();
 
-	let models = $state<ModelEntry[]>(data.models ?? []);
+	const initialModels = data.models ?? [];
+
+	let models = $state<ModelEntry[]>(initialModels);
 	let checking = $state(false);
 	let checkError = $state<string | null>(null);
 	let checkSuccess = $state(0);
