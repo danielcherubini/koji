@@ -1,0 +1,94 @@
+@import "tailwindcss";
+
+:root {
+	color-scheme: dark;
+}
+
+@theme {
+	--color-bg-primary: #0d1117;
+	--color-bg-secondary: #161b22;
+	--color-bg-tertiary: #21262d;
+	--color-border-default: #30363d;
+	--color-border-hover: #484f58;
+	--color-text-primary: #e6edf3;
+	--color-text-secondary: #8b949e;
+	--color-text-muted: #6e7681;
+	--color-accent-blue: #58a6ff;
+	--color-accent-green: #3fb950;
+	--color-accent-red: #f85149;
+	--color-accent-yellow: #d29922;
+	--color-accent-purple: #bc8cff;
+	--color-accent-cyan: #39d2c0;
+	--color-accent-orange: #fb923c;
+	--color-accent-pink: #f472b6;
+	--font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans",
+		Helvetica, Arial, sans-serif;
+	--font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+}
+
+@layer base {
+	html {
+		background-color: var(--color-bg-primary);
+		color: var(--color-text-primary);
+		font-family: var(--font-sans);
+	}
+	body {
+		min-height: 100vh;
+	}
+}
+
+@layer components {
+	.btn {
+		@apply inline-flex items-center justify-center rounded-md px-3 py-1.5 text-sm font-medium
+			transition-colors focus:outline-none focus:ring-2 focus:ring-accent-blue/50;
+	}
+	.btn-primary {
+		@apply bg-accent-blue text-white hover:bg-accent-blue/80;
+	}
+	.btn-secondary {
+		@apply bg-bg-tertiary text-text-primary hover:bg-border-default;
+	}
+	.btn-danger {
+		@apply bg-accent-red text-white hover:bg-accent-red/80;
+	}
+	.btn-sm {
+		@apply px-2 py-1 text-xs;
+	}
+
+	.card {
+		@apply bg-bg-secondary rounded-lg p-4 border border-border-default shadow-sm;
+	}
+
+	.badge {
+		@apply inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium;
+	}
+	.badge-success {
+		@apply bg-accent-green/20 text-accent-green;
+	}
+	.badge-danger {
+		@apply bg-accent-red/20 text-accent-red;
+	}
+	.badge-warning {
+		@apply bg-accent-yellow/20 text-accent-yellow;
+	}
+	.badge-info {
+		@apply bg-accent-blue/20 text-accent-blue;
+	}
+
+	.page-header {
+		@apply flex items-center justify-between mb-6;
+	}
+	.page-header h1 {
+		@apply text-xl font-semibold text-text-primary;
+	}
+	.page-header-actions {
+		@apply flex items-center gap-2;
+	}
+
+	.text-muted {
+		@apply text-text-muted;
+	}
+	.text-secondary {
+		@apply text-text-secondary;
+	}
+}

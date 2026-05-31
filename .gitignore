@@ -6,6 +6,11 @@
 
 crates/koji-web/dist/
 
+# Node / SvelteKit
+crates/tama-web/ui/node_modules/
+crates/tama-web/ui/build/
+crates/tama-web/ui/.svelte-kit/
+
 # Log files
 *.log
 VP_VULKANINFO_*.json

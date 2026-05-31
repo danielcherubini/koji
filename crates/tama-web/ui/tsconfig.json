@@ -1,0 +1,11 @@
+{
+	"extends": "./.svelte-kit/tsconfig.json",
+	"compilerOptions": {
+		"strict": true,
+		"target": "ES2022",
+		"module": "ES2022",
+		"moduleResolution": "bundler",
+		"types": ["node", "@sveltejs/kit"]
+	},
+	"include": ["src/**/*", "tests/**/*"]
+}

@@ -1,4 +1,4 @@
-.PHONY: build install update test check fmt clippy clean build-web build-web-dev wasm-target coverage dev run
+.PHONY: build install update test check fmt clippy clean build-web build-web-dev wasm-target coverage dev run build-frontend-svelte dev-svelte
 
 # Run tama in dev mode: proxy (:11434) + web UI (:11435) as a single foreground process
 run: build-frontend-dev
@@ -66,3 +66,11 @@ build-web-dev: build-frontend-dev
 # Run code coverage analysis with cargo-tarpaulin (HTML report in target/coverage/)
 coverage:
 	cargo tarpaulin --workspace --features ssr --out Html --output-dir target/coverage --timeout 300
+
+# Build the SvelteKit frontend
+build-frontend-svelte:
+	cd crates/tama-web/ui && pnpm install && pnpm build
+
+# Run the SvelteKit dev server with hot reload
+dev-svelte:
+	cd crates/tama-web/ui && pnpm dev
