@@ -1,5 +1,6 @@
 use gloo_net::http::Request;
 use leptos::prelude::*;
+use leptos_router::hooks::use_query_map;
 use serde::Deserialize;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
@@ -33,10 +34,29 @@ fn log_level_class(line: &str) -> &'static str {
     }
 }
 
+/// Update the ?source= query param in the URL without triggering a full navigation.
+fn set_source_in_url(source: &str) {
+    if let Some(window) = web_sys::window() {
+        let mut url = url::Url::parse(window.location().href().unwrap().as_str()).unwrap();
+        url.query_pairs_mut().clear().append_pair("source", source);
+        let new_href = url.to_string();
+        window
+            .history()
+            .unwrap()
+            .push_state_with_url(&js_sys::Object::new(), "", Some(&new_href))
+            .ok();
+    }
+}
+
 #[component]
 pub fn Logs() -> impl IntoView {
-    // Selected source (empty = show all)
-    let selected_source = RwSignal::new(String::new());
+    // Reactive query params from leptos_router — updates on SPA navigation
+    let query = use_query_map();
+    let selected_source = move || {
+        query
+            .with(|q| q.get("source"))
+            .unwrap_or_else(|| "tama".to_string())
+    };
 
     // Log data grouped by source
     let sources = RwSignal::new(Vec::<SourceLogs>::new());
@@ -92,58 +112,39 @@ pub fn Logs() -> impl IntoView {
         });
     });
 
-    // Pre-select source from ?source= query parameter once sources are loaded.
-    // Depends on sources.get() so it runs after the <option> elements are rendered,
-    // but only applies once (guard prevents overwriting user's manual selection on polls).
-    let url_param_applied = RwSignal::new(false);
-    Effect::new(move |_| {
-        let _ = sources.get(); // depend on sources to re-run when data arrives
-        if url_param_applied.get() {
-            return; // already applied, don't overwrite user's manual selection
-        }
-        url_param_applied.set(true);
-        if let Some(href) = web_sys::window().and_then(|w| w.location().href().ok()) {
-            if let Some(query_start) = href.find('?') {
-                let query = &href[query_start + 1..];
-                for param in query.split('&') {
-                    if let Some(eq_pos) = param.find('=') {
-                        let key = &param[..eq_pos];
-                        let value = urlencoding::decode(&param[eq_pos + 1..]).ok();
-                        if key == "source" {
-                            if let Some(source) = value {
-                                if !source.is_empty() {
-                                    selected_source.set(source.to_string());
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    });
-
     view! {
         <div class="page-header">
             <h1>"Log Viewer"</h1>
             <div class="log-toolbar">
                 <select
                     class="form-select form-select-sm"
-                    prop:value=selected_source
                     on:change=move |e| {
                         let val = e
                             .target()
                             .unwrap()
                             .dyn_into::<web_sys::HtmlSelectElement>()
                             .unwrap();
-                        selected_source.set(val.value());
+                        set_source_in_url(&val.value());
                     }
                 >
-                    <option value="">"All Sources"</option>
+                    <option
+                        value="tama"
+                        selected=move || selected_source() == "tama"
+                    >
+                        "tama"
+                    </option>
                     {move || {
-                        sources.get().into_iter().map(|s| {
-                            let name = s.name.clone();
+                        sources.get().into_iter().filter(|s| s.name != "tama").map(|s| {
+                            let val = s.name.clone();
+                            let sel = s.name.clone();
+                            let label = s.name.clone();
                             view! {
-                                <option value=name.clone()> {name.clone()} </option>
+                                <option
+                                    value=val
+                                    selected=move || selected_source() == sel
+                                >
+                                    {label}
+                                </option>
                             }.into_any()
                         }).collect::<Vec<_>>()
                     }}
@@ -185,7 +186,7 @@ pub fn Logs() -> impl IntoView {
                     </div>
                 }.into_any()
             } else {
-                let selected = selected_source.get();
+                let selected = selected_source();
                 let selected_clone = selected.clone();
                 view! {
                     <div class="log-viewer card">
