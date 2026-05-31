@@ -454,7 +454,8 @@ pub fn Updates() -> impl IntoView {
                             let model_id_for_icon = model_id.clone();
                             // Clone for line2 closure
                             let mid_for_line2 = mid_expand.clone();
-                            let m_item_id = m.item_id.clone();
+                            // Clone for actions closure
+                            let m_item_id_for_actions = m.item_id.clone();
 
                             view! {
                                 <ListCard
@@ -472,6 +473,11 @@ pub fn Updates() -> impl IntoView {
                                                 }
                                             }}
                                         </span>
+                                    }.into_any()))
+                                    actions=Some(Box::new(move || view! {
+                                        <a href=format!("/tama/model/{}/edit", m_item_id_for_actions) class="btn btn-ghost btn-sm">
+                                            "Edit"
+                                        </a>
                                     }.into_any()))
                                     line2=Some(Box::new(move || view! {
                                         {/* Expandable quant list */}
@@ -512,29 +518,6 @@ pub fn Updates() -> impl IntoView {
                                             view! { <span/> }.into_any()
                                         }}
 
-                                        {/* Action buttons */}
-                                        <div style="display:flex;gap:0.5rem;margin-top:0.5rem;">
-                                            {if has_updates {
-                                                let id = m_item_id.clone();
-                                                view! {
-                                                    <button class="btn btn-secondary"
-                                                        on:click=move |_| wasm_bindgen_futures::spawn_local({
-                                                            let url_id = id.clone();
-                                                            async move {
-                                                                let url = format!("/tama/v1/models/{}/refresh", url_id);
-                                                                let _ = post_request(&url).send().await;
-                                                            }
-                                                        })>
-                                                        "Refresh Metadata"
-                                                    </button>
-                                                }.into_any()
-                                            } else {
-                                                view! { <span/> }.into_any()
-                                            }}
-                                            <a href=format!("/tama/model/{}/edit", m_item_id) class="btn btn-ghost">
-                                                "Edit"
-                                            </a>
-                                        </div>
                                     }.into_any()))
                                 >
                                     <span class="update-item__name">{display_name}</span>
