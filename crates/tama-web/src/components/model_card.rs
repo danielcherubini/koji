@@ -125,6 +125,44 @@ pub(crate) fn resolve_state(state: &str, loaded: Option<bool>) -> &str {
     }
 }
 
+/// Format backend display with optional GPU variant: "llama_cpp (cuda)" or "llama_cpp".
+pub(crate) fn format_backend_with_variant(backend: &str, gpu_variant: Option<&str>) -> String {
+    if let Some(variant) = gpu_variant {
+        if !variant.is_empty() {
+            return format!("{} ({})", backend, variant);
+        }
+    }
+    backend.to_string()
+}
+
+/// Format KV cache quant display: "KV: q4_0/q8_0", "KV: f16/-", etc.
+/// Returns None if both cache_type_k and cache_type_v are None.
+pub(crate) fn format_kv_cache(k: Option<&str>, v: Option<&str>) -> Option<String> {
+    let k_str = k.unwrap_or("-");
+    let v_str = v.unwrap_or("-");
+    if k.is_none() && v.is_none() {
+        None
+    } else {
+        Some(format!("KV: {}/{}", k_str, v_str))
+    }
+}
+
+/// Format speculative decoding display: "MTP", "Ngram", or "MTP+Ngram".
+/// Returns None if spec_types is empty.
+pub(crate) fn format_spec_decoding(spec_types: &[String]) -> Option<String> {
+    if spec_types.is_empty() {
+        return None;
+    }
+    let has_mtp = spec_types.iter().any(|s| s == "draft-mtp");
+    let has_ngram = spec_types.iter().any(|s| s == "ngram-simple");
+    match (has_mtp, has_ngram) {
+        (true, true) => Some("MTP+Ngram".to_string()),
+        (true, false) => Some("MTP".to_string()),
+        (false, true) => Some("Ngram".to_string()),
+        (false, false) => None, // Unknown types — don't show anything
+    }
+}
+
 // ── Component ────────────────────────────────────────────────────────────────
 
 /// ModelCard — horizontal two-line card for dashboard and models page.
@@ -141,6 +179,10 @@ pub fn ModelCard(
     context_length: Option<u32>,
     #[prop(default = None)] hf_architecture_type: Option<String>,
     #[prop(default = None)] hf_base_model: Option<String>,
+    #[prop(default = None)] gpu_variant: Option<String>,
+    #[prop(default = None)] cache_type_k: Option<String>,
+    #[prop(default = None)] cache_type_v: Option<String>,
+    #[prop(default = Vec::new())] spec_types: Vec<String>,
     backend: String,
     log_source: Option<String>,
     state: String,
@@ -190,6 +232,10 @@ pub fn ModelCard(
     let backend_clone = backend.clone();
     let hf_architecture_type_clone = hf_architecture_type.clone();
     let hf_base_model_clone = hf_base_model.clone();
+    let gpu_variant_clone = gpu_variant.clone();
+    let cache_type_k_clone = cache_type_k.clone();
+    let cache_type_v_clone = cache_type_v.clone();
+    let spec_types_clone = spec_types.clone();
 
     view! {
         <ListCard
@@ -238,11 +284,27 @@ pub fn ModelCard(
                     view! { <span/> }.into_any()
                 }}
                 // Backend badge
-                <span class="badge-pill badge-pill--backend">{backend_clone}</span>
+                <span class="badge-pill badge-pill--backend">{format_backend_with_variant(&backend_clone, gpu_variant_clone.as_deref())}</span>
                 // Architecture badge
                 {if let Some(arch) = hf_architecture_type_clone {
                     view! {
                         <span class="badge-pill badge-pill--architecture">{arch}</span>
+                    }.into_any()
+                } else {
+                    view! { <span/> }.into_any()
+                }}
+                // KV Cache badge
+                {if let Some(kv_label) = format_kv_cache(cache_type_k_clone.as_deref(), cache_type_v_clone.as_deref()) {
+                    view! {
+                        <span class="badge-pill badge-pill--kv-cache">{kv_label}</span>
+                    }.into_any()
+                } else {
+                    view! { <span/> }.into_any()
+                }}
+                // Spec Decoding badge
+                {if let Some(spec_label) = format_spec_decoding(&spec_types_clone) {
+                    view! {
+                        <span class="badge-pill badge-pill--spec-decoding">{spec_label}</span>
                     }.into_any()
                 } else {
                     view! { <span/> }.into_any()
@@ -455,5 +517,78 @@ mod tests {
     #[test]
     fn test_model_card_hides_enabled_badge_when_none() {
         // When enabled is None, no enabled/disabled badge is rendered.
+    }
+
+    // ── Helper function tests ────────────────────────────────────────────────
+
+    #[test]
+    fn test_format_kv_cache_both_set() {
+        assert_eq!(
+            format_kv_cache(Some("q4_0"), Some("q8_0")),
+            Some("KV: q4_0/q8_0".to_string())
+        );
+    }
+
+    #[test]
+    fn test_format_kv_cache_only_k_set() {
+        assert_eq!(
+            format_kv_cache(Some("f16"), None),
+            Some("KV: f16/-".to_string())
+        );
+    }
+
+    #[test]
+    fn test_format_kv_cache_only_v_set() {
+        assert_eq!(
+            format_kv_cache(None, Some("q8_0")),
+            Some("KV: -/q8_0".to_string())
+        );
+    }
+
+    #[test]
+    fn test_format_kv_cache_neither_set() {
+        assert_eq!(format_kv_cache(None, None), None);
+    }
+
+    #[test]
+    fn test_format_spec_decoding_mtp_only() {
+        assert_eq!(
+            format_spec_decoding(&["draft-mtp".to_string()]),
+            Some("MTP".to_string())
+        );
+    }
+
+    #[test]
+    fn test_format_spec_decoding_ngram_only() {
+        assert_eq!(
+            format_spec_decoding(&["ngram-simple".to_string()]),
+            Some("Ngram".to_string())
+        );
+    }
+
+    #[test]
+    fn test_format_spec_decoding_both() {
+        assert_eq!(
+            format_spec_decoding(&["draft-mtp".to_string(), "ngram-simple".to_string()]),
+            Some("MTP+Ngram".to_string())
+        );
+    }
+
+    #[test]
+    fn test_format_spec_decoding_empty() {
+        assert_eq!(format_spec_decoding(&[]), None);
+    }
+
+    #[test]
+    fn test_format_backend_with_variant() {
+        assert_eq!(
+            format_backend_with_variant("llama.cpp", Some("cuda")),
+            "llama.cpp (cuda)"
+        );
+        assert_eq!(
+            format_backend_with_variant("llama.cpp", Some("")),
+            "llama.cpp"
+        );
+        assert_eq!(format_backend_with_variant("llama.cpp", None), "llama.cpp");
     }
 }

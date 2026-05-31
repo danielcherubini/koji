@@ -440,6 +440,10 @@ pub fn Dashboard() -> impl IntoView {
                                                 context_length=m.context_length
                                                 hf_architecture_type=m.hf_architecture_type.clone()
                                                 hf_base_model=m.hf_base_model.clone()
+                                                gpu_variant=m.gpu_variant.clone()
+                                                cache_type_k=m.cache_type_k.clone()
+                                                cache_type_v=m.cache_type_v.clone()
+                                                spec_types=m.spec_types.clone()
                                                 backend=m.backend.clone()
                                                 log_source=Some(format!("{}_{}", m.backend, m.id))
                                                 state=m.state.clone()
@@ -498,6 +502,10 @@ pub fn Dashboard() -> impl IntoView {
                                                         context_length=m.context_length
                                                         hf_architecture_type=m.hf_architecture_type.clone()
                                                         hf_base_model=m.hf_base_model.clone()
+                                                        gpu_variant=m.gpu_variant.clone()
+                                                        cache_type_k=m.cache_type_k.clone()
+                                                        cache_type_v=m.cache_type_v.clone()
+                                                        spec_types=m.spec_types.clone()
                                                         backend=m.backend.clone()
                                                         log_source=Some(format!("{}_{}", m.backend, m.id))
                                                         state=m.state.clone()

@@ -209,6 +209,10 @@ pub fn Models() -> impl IntoView {
                                                 display_name=model_display_name(&m)
                                                 quant=m.quant.clone()
                                                 context_length=None
+                                                gpu_variant=None
+                                                cache_type_k=None
+                                                cache_type_v=None
+                                                spec_types=vec![]
                                                 backend=m.backend.clone()
                                                 log_source=Some(m.backend.clone())
                                                 state=m.state.clone()
