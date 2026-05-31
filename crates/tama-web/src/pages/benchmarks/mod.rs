@@ -16,6 +16,7 @@ use self::spec_bench::SpecBench;
 use self::types::{HistoryEntry, BENCHMARK_TYPES, LLAMA_BENCH_PRESETS};
 use self::utils::{format_relative, format_timestamp};
 use crate::components::job_log_panel::JobLogPanel;
+use crate::components::tab_buttons::{TabButton, TabButtons};
 use crate::utils::{extract_and_store_csrf_token, get_request, post_request};
 
 /// Render "mean ± stddev" with one decimal place, or a single value when
@@ -451,7 +452,7 @@ pub fn Benchmarks() -> impl IntoView {
     let (current_job_id_sig, _) = current_job_id.split();
 
     // Tab toggle — switch between llama-bench and spec-decoding views.
-    let active_tab = RwSignal::new("llama-bench");
+    let active_tab: RwSignal<String> = RwSignal::new("llama-bench".to_string());
 
     view! {
         <div class="page-header">
@@ -459,20 +460,15 @@ pub fn Benchmarks() -> impl IntoView {
         </div>
 
         // Tab buttons
-        <div class="tab-buttons">
-            <button class=move || if active_tab.get() == "llama-bench" { "btn btn-sm btn-primary" } else { "btn btn-sm btn-outline-secondary" }
-                    on:click=move |_| active_tab.set("llama-bench")>
-                "LLaMA-Bench"
-            </button>
-            <button class=move || if active_tab.get() == "spec-decode" { "btn btn-sm btn-primary" } else { "btn btn-sm btn-outline-secondary" }
-                    on:click=move |_| active_tab.set("spec-decode")>
-                "Spec Decoding"
-            </button>
-            <button class=move || if active_tab.get() == "mtp-testing" { "btn btn-sm btn-primary" } else { "btn btn-sm btn-outline-secondary" }
-                    on:click=move |_| active_tab.set("mtp-testing")>
-                "MTP Testing"
-            </button>
-        </div>
+        <TabButtons
+            active=Signal::derive(move || active_tab.get().to_string())
+            tabs=vec![
+                TabButton { key: "llama-bench".into(), label: "LLaMA-Bench".into() },
+                TabButton { key: "spec-decode".into(), label: "Spec Decoding".into() },
+                TabButton { key: "mtp-testing".into(), label: "MTP Testing".into() },
+            ]
+            on_select=Callback::new(move |key| active_tab.set(key))
+        />
 
         // LLaMA-Bench tab content
         {move || {
