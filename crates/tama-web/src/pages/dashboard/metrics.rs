@@ -67,6 +67,14 @@ pub struct ModelStatus {
     pub hf_architecture_type: Option<String>,
     #[serde(default)]
     pub hf_base_model: Option<String>,
+    #[serde(default)]
+    pub gpu_variant: Option<String>,
+    #[serde(default)]
+    pub cache_type_k: Option<String>,
+    #[serde(default)]
+    pub cache_type_v: Option<String>,
+    #[serde(default)]
+    pub spec_types: Vec<String>,
 }
 
 /// Format a number with comma separators (e.g. `8460` → `"8,460"`).

@@ -58,6 +58,10 @@ impl ProxyState {
                 context_length: model_cfg.context_length,
                 hf_architecture_type: model_cfg.hf_architecture_type.clone(),
                 hf_base_model: model_cfg.hf_base_model.clone(),
+                gpu_variant: model_cfg.gpu_variant.clone(),
+                cache_type_k: model_cfg.cache_type_k.clone(),
+                cache_type_v: model_cfg.cache_type_v.clone(),
+                spec_types: model_cfg.spec_decoding.spec_types.clone(),
             });
         }
         // Stable order so dashboard rows don't shuffle between samples.
