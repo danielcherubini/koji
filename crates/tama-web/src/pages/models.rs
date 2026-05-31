@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::components::alert_banner::{AlertBanner, AlertVariant};
 use crate::components::modal::Modal;
-use crate::components::model_card::ModelCard;
+use crate::components::model_card::{ModelCard, ModelPips};
 use crate::components::pull_quant_wizard::{CompletedQuant, PullQuantWizard};
 use crate::utils::{get_request, post_request, rw_signal_to_signal, CheckAllModelsApiResponse};
 
@@ -209,10 +209,7 @@ pub fn Models() -> impl IntoView {
                                                 display_name=model_display_name(&m)
                                                 quant=m.quant.clone()
                                                 context_length=None
-                                                gpu_variant=None
-                                                cache_type_k=None
-                                                cache_type_v=None
-                                                spec_types=vec![]
+                                                pips=ModelPips::default()
                                                 backend=m.backend.clone()
                                                 log_source=Some(m.backend.clone())
                                                 state=m.state.clone()

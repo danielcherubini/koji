@@ -45,6 +45,18 @@ fn edit_icon() -> impl IntoView {
     }
 }
 
+// ── Pip metadata struct ─────────────────────────────────────────────────────
+
+/// Pip metadata for model cards (KV cache, spec decoding, GPU variant).
+/// Grouped to keep the ModelCard component signature manageable.
+#[derive(Default, Clone)]
+pub(crate) struct ModelPips {
+    pub gpu_variant: Option<String>,
+    pub cache_type_k: Option<String>,
+    pub cache_type_v: Option<String>,
+    pub spec_types: Vec<String>,
+}
+
 // ── Helper functions (pub(crate) for use by dashboard.rs and models.rs) ──────
 
 /// CSS class string used for the per-model status badge.
@@ -179,10 +191,7 @@ pub fn ModelCard(
     context_length: Option<u32>,
     #[prop(default = None)] hf_architecture_type: Option<String>,
     #[prop(default = None)] hf_base_model: Option<String>,
-    #[prop(default = None)] gpu_variant: Option<String>,
-    #[prop(default = None)] cache_type_k: Option<String>,
-    #[prop(default = None)] cache_type_v: Option<String>,
-    #[prop(default = Vec::new())] spec_types: Vec<String>,
+    #[prop(default = ModelPips::default())] pips: ModelPips,
     backend: String,
     log_source: Option<String>,
     state: String,
@@ -232,10 +241,10 @@ pub fn ModelCard(
     let backend_clone = backend.clone();
     let hf_architecture_type_clone = hf_architecture_type.clone();
     let hf_base_model_clone = hf_base_model.clone();
-    let gpu_variant_clone = gpu_variant.clone();
-    let cache_type_k_clone = cache_type_k.clone();
-    let cache_type_v_clone = cache_type_v.clone();
-    let spec_types_clone = spec_types.clone();
+    let gpu_variant_clone = pips.gpu_variant.clone();
+    let cache_type_k_clone = pips.cache_type_k.clone();
+    let cache_type_v_clone = pips.cache_type_v.clone();
+    let spec_types_clone = pips.spec_types.clone();
 
     view! {
         <ListCard
