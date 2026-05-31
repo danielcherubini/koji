@@ -27,12 +27,13 @@ const CSS_14: &str = include_str!("../css/14-model-editor.css");
 const CSS_15: &str = include_str!("../css/15-dashboard.css");
 const CSS_16: &str = include_str!("../css/16-benchmarks.css");
 const CSS_17: &str = include_str!("../css/17-api-docs.css");
+const CSS_18: &str = include_str!("../css/18-aliases.css");
 
 /// Concatenate all CSS partials in import order.
 fn combined_css() -> String {
     [
         CSS_01, CSS_02, CSS_03, CSS_04, CSS_05, CSS_06, CSS_07, CSS_08, CSS_09, CSS_10, CSS_11,
-        CSS_12, CSS_13, CSS_14, CSS_15, CSS_16, CSS_17,
+        CSS_12, CSS_13, CSS_14, CSS_15, CSS_16, CSS_17, CSS_18,
     ]
     .join("\n")
 }
