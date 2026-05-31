@@ -14,9 +14,9 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Quick Stats
 
-- **Total Plans**: 112
+- **Total Plans**: 113
 - **Completed**: 110 ✅
-- **In Progress**: 0 🚧
+- **In Progress**: 1 🚧
 - **Remaining**: 2
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
@@ -77,6 +77,8 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 | Plan | Description | PR / Git References |
 |------|-------------|---------------------|
+| [SvelteKit Frontend Migration](2026-05-31-sveltekit-migration-plan.md) | Replace Leptos/WASM frontend with SvelteKit + TypeScript + Tailwind CSS — 8-task implementation plan reviewed and ready | 🚧 IN PROGRESS |
+| [SvelteKit Frontend Migration Spec](2026-05-31-sveltekit-migration-spec.md) | Design spec (superseded by plan above) | 🔁 SUPERSEDED |
 | [Split Remaining Long Files](2026-05-06-split-remaining-files-spec.md) | Split args_building.rs (1,411), pull/download.rs (1,041), crud/mod.rs (1,007) | 📋 DRAFT |
 
 ### Completed Plans
