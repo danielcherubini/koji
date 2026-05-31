@@ -9,7 +9,7 @@
  *   Foundation:    01-custom-properties, 02-reset-base
  *   Layout:        03-layout
  *   Components:    04-cards-grid-tables, 05-buttons-forms-progress,
- *                  06-badges-model-list, 07-gauges-charts,
+ *                  06-badges-list-card, 07-gauges-charts,
  *                  10-page-components, 11-models, 12-forms-alerts
  *   Pages:         08-updates, 13-downloads, 14-model-editor,
  *                  15-dashboard, 16-benchmarks, 17-api-docs, 18-aliases
@@ -21,7 +21,7 @@
 @import "./css/03-layout.css";
 @import "./css/04-cards-grid-tables.css";
 @import "./css/05-buttons-forms-progress.css";
-@import "./css/06-badges-model-list.css";
+@import "./css/06-badges-list-card.css";
 @import "./css/07-gauges-charts.css";
 @import "./css/08-updates.css";
 @import "./css/09-utilities.css";
