@@ -82,6 +82,18 @@ pub struct ModelStatus {
     /// Base model from HF metadata (e.g. "Qwen/Qwen3.6-27B"). Display-only on dashboard.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hf_base_model: Option<String>,
+    /// GPU variant for the backend (e.g. "cpu", "cuda", "vulkan"). Display-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_variant: Option<String>,
+    /// KV cache quant for K head (e.g. "q4_0", "f16"). Display-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_type_k: Option<String>,
+    /// KV cache quant for V head (e.g. "q8_0", "f16"). Display-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_type_v: Option<String>,
+    /// Speculative decoding types (e.g. ["draft-mtp", "ngram-simple"]). Display-only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spec_types: Vec<String>,
 }
 
 /// Collect a snapshot of system metrics using a caller-owned `System`.

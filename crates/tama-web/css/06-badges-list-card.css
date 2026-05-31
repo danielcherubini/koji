@@ -75,6 +75,16 @@
   color: #6e7681;
 }
 
+.badge-pill--kv-cache {
+  background: rgba(88, 166, 255, 0.12);
+  color: var(--accent-blue);
+}
+
+.badge-pill--spec-decoding {
+  background: rgba(180, 120, 255, 0.12);
+  color: #b478ff;
+}
+
 /* List card — horizontal two-line card for dashboard and models page */
 .list-card {
   display: flex;

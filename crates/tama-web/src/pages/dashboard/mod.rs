@@ -3,7 +3,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::components::alert_banner::{AlertBanner, AlertVariant};
 use crate::components::modal::Modal;
-use crate::components::model_card::ModelCard;
+use crate::components::model_card::{ModelCard, ModelPips};
 use crate::components::pull_quant_wizard::{CompletedQuant, PullQuantWizard};
 use crate::components::sparkline::{format_relative_time, SparklineChart};
 use crate::utils::{post_request, rw_signal_to_signal};
@@ -440,6 +440,12 @@ pub fn Dashboard() -> impl IntoView {
                                                 context_length=m.context_length
                                                 hf_architecture_type=m.hf_architecture_type.clone()
                                                 hf_base_model=m.hf_base_model.clone()
+                                                pips=ModelPips {
+                                                    gpu_variant: m.gpu_variant.clone(),
+                                                    cache_type_k: m.cache_type_k.clone(),
+                                                    cache_type_v: m.cache_type_v.clone(),
+                                                    spec_types: m.spec_types.clone(),
+                                                }
                                                 backend=m.backend.clone()
                                                 log_source=Some(format!("{}_{}", m.backend, m.id))
                                                 state=m.state.clone()
@@ -498,6 +504,12 @@ pub fn Dashboard() -> impl IntoView {
                                                         context_length=m.context_length
                                                         hf_architecture_type=m.hf_architecture_type.clone()
                                                         hf_base_model=m.hf_base_model.clone()
+                                                        pips=ModelPips {
+                                                            gpu_variant: m.gpu_variant.clone(),
+                                                            cache_type_k: m.cache_type_k.clone(),
+                                                            cache_type_v: m.cache_type_v.clone(),
+                                                            spec_types: m.spec_types.clone(),
+                                                        }
                                                         backend=m.backend.clone()
                                                         log_source=Some(format!("{}_{}", m.backend, m.id))
                                                         state=m.state.clone()
