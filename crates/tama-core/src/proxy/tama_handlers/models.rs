@@ -399,6 +399,14 @@ pub async fn handle_opencode_list_models(state: State<Arc<ProxyState>>) -> Json<
             let caps = cap_map.get(key);
             if let Some(mut entry) = build_model_entry(&state, key, cfg, caps).await {
                 entry["id"] = serde_json::json!(alias_name.to_lowercase());
+                // Derive a display name from the alias slug (not from the target model).
+                let alias_display = alias_name
+                    .replace(['-', '_'], " ")
+                    .split_whitespace()
+                    .map(capitalize_first)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                entry["name"] = serde_json::json!(alias_display);
                 models.push(entry);
                 seen_ids.insert(alias_name.to_lowercase());
             }
@@ -819,6 +827,64 @@ mod tests {
         assert!(
             alias_entry.get("temperature").unwrap().as_bool().unwrap(),
             "alias should have temperature: true"
+        );
+    }
+
+    /// Alias entry's name is derived from the alias slug, not the target model.
+    #[tokio::test]
+    async fn test_alias_name_derived_from_slug() {
+        let mock_server = MockServer::start().await;
+
+        // Mock /props
+        Mock::given(method("GET"))
+            .and(path("/props"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "chat_template_caps": {
+                    "supports_tool_calls": true,
+                    "supports_preserve_reasoning": false
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let backend_url = mock_server.uri();
+        let state = crate::proxy::handlers::tests::create_state_with_two_backends(
+            &backend_url,
+            &backend_url,
+        )
+        .await;
+
+        // Add an alias pointing to model-a (model: "test/model-a" → name would be "Test: Model A")
+        {
+            let mut aliases = state.aliases.write().await;
+            aliases.insert("my-awesome-alias".to_string(), "api-model-a".to_string());
+        }
+
+        let result = call_list_models(state).await;
+        let models = result.get("models").unwrap().as_array().unwrap();
+
+        // Find the alias entry
+        let alias_entry = models
+            .iter()
+            .find(|m| m.get("id").unwrap().as_str().unwrap() == "my-awesome-alias")
+            .expect("alias entry should exist");
+
+        // The name should be derived from the alias slug, NOT from the target model.
+        assert_eq!(
+            alias_entry.get("name").unwrap().as_str().unwrap(),
+            "My Awesome Alias",
+            "Alias name should be derived from the alias slug, not the target model"
+        );
+
+        // The target model entry should still have its own name
+        let target_entry = models
+            .iter()
+            .find(|m| m.get("id").unwrap().as_str().unwrap() == "api-model-a")
+            .expect("target model entry should exist");
+        assert_eq!(
+            target_entry.get("name").unwrap().as_str().unwrap(),
+            "Test: Model A",
+            "Target model should keep its own name"
         );
     }
 
