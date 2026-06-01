@@ -14,8 +14,8 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Quick Stats
 
-- **Total Plans**: 112
-- **Completed**: 110 ✅
+- **Total Plans**: 113
+- **Completed**: 111 ✅
 - **In Progress**: 0 🚧
 - **Remaining**: 2
 
@@ -29,6 +29,7 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 | Plan | Description | PR / Git References |
 |------|-------------|---------------------|
+| [/v1/opencode/models Capability Enrichment](2026-06-01-opencode-models-capabilities.md) | Add tool_call, reasoning, attachment, temperature fields to /v1/opencode/models from backend /props | #105 ✅ COMPLETED |
 | [Shared Components Consolidation](2026-05-31-list-card-refactor.md) | Consolidate duplicated UI patterns into 4 shared components: ListCard, SectionCard, AlertBanner, TabButtons | #102 ✅ COMPLETED |
 | [Extended Model Card Pips](2026-05-31-model-card-pips.md) | Add GPU variant (combined with backend), KV cache quant, and speculative decoding indicator pips to model cards | #103 ✅ COMPLETED |
 
@@ -277,4 +278,4 @@ When implementing a new feature:
 
 ---
 
-**Last Updated**: 2026-05-31
+**Last Updated**: 2026-06-01
