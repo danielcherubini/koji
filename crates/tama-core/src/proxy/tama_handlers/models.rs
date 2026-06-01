@@ -351,3 +351,156 @@ pub async fn handle_opencode_list_models(state: State<Arc<ProxyState>>) -> Json<
         "models": models
     }))
 }
+
+/// Extract capability flags from a /props response body.
+/// Returns (tool_call, reasoning) tuple. Defaults to (true, false) on any error.
+#[allow(dead_code)]
+fn extract_capabilities(body: &[u8]) -> (bool, bool) {
+    let value = match serde_json::from_slice::<serde_json::Value>(body) {
+        Ok(v) => v,
+        Err(_) => return (true, false),
+    };
+
+    let mut tool_call = true; // default
+    let mut reasoning = false; // default
+
+    // Check chat_template_caps.supports_tool_calls
+    if let Some(supports_tool_calls) = value
+        .get("chat_template_caps")
+        .and_then(|c| c.get("supports_tool_calls"))
+        .and_then(|v| v.as_bool())
+    {
+        tool_call = supports_tool_calls;
+    }
+
+    // Check chat_template_caps.supports_preserve_reasoning
+    if let Some(supports_reasoning) = value
+        .get("chat_template_caps")
+        .and_then(|c| c.get("supports_preserve_reasoning"))
+        .and_then(|v| v.as_bool())
+    {
+        reasoning = supports_reasoning;
+    }
+
+    // Also check default_generation_settings.params.reasoning_format != "none"
+    if let Some(reasoning_format) = value
+        .get("default_generation_settings")
+        .and_then(|d| d.get("params"))
+        .and_then(|p| p.get("reasoning_format"))
+        .and_then(|v| v.as_str())
+    {
+        if !reasoning_format.eq_ignore_ascii_case("none") {
+            reasoning = true;
+        }
+    }
+
+    (tool_call, reasoning)
+}
+
+/// Query a single backend's /props endpoint and extract capability flags.
+/// Returns (tool_call, reasoning) tuple. Defaults to (true, false) on any error.
+#[allow(dead_code)]
+async fn fetch_capabilities_from_backend(
+    client: &reqwest::Client,
+    backend_url: &str,
+) -> (bool, bool) {
+    let url = format!("{}/props", backend_url);
+    match client
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(3))
+        .send()
+        .await
+    {
+        Ok(resp) => match resp.bytes().await {
+            Ok(bytes) => extract_capabilities(&bytes),
+            Err(_) => (true, false),
+        },
+        Err(_) => (true, false),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Valid response with supports_tool_calls: true → (true, false)
+    #[test]
+    fn test_extract_capabilities_tool_calls_true() {
+        let body = r#"{
+            "chat_template_caps": {
+                "supports_tool_calls": true
+            }
+        }"#;
+        let (tool_call, reasoning) = extract_capabilities(body.as_bytes());
+        assert!(tool_call, "tool_call should be true");
+        assert!(!reasoning, "reasoning should default to false");
+    }
+
+    /// Valid response with supports_preserve_reasoning: true → (true, true)
+    #[test]
+    fn test_extract_capabilities_preserve_reasoning_true() {
+        let body = r#"{
+            "chat_template_caps": {
+                "supports_tool_calls": true,
+                "supports_preserve_reasoning": true
+            }
+        }"#;
+        let (tool_call, reasoning) = extract_capabilities(body.as_bytes());
+        assert!(tool_call);
+        assert!(
+            reasoning,
+            "reasoning should be true from supports_preserve_reasoning"
+        );
+    }
+
+    /// Valid response with reasoning_format: "xml" → (true, true)
+    #[test]
+    fn test_extract_capabilities_reasoning_format_xml() {
+        let body = r#"{
+            "default_generation_settings": {
+                "params": {
+                    "reasoning_format": "xml"
+                }
+            }
+        }"#;
+        let (tool_call, reasoning) = extract_capabilities(body.as_bytes());
+        assert!(tool_call, "tool_call should default to true");
+        assert!(
+            reasoning,
+            "reasoning should be true from reasoning_format != none"
+        );
+    }
+
+    /// Missing chat_template_caps → (true, false) defaults
+    #[test]
+    fn test_extract_capabilities_missing_chat_template_caps() {
+        let body = r#"{}"#;
+        let (tool_call, reasoning) = extract_capabilities(body.as_bytes());
+        assert!(tool_call, "tool_call should default to true");
+        assert!(!reasoning, "reasoning should default to false");
+    }
+
+    /// Invalid JSON → (true, false) defaults
+    #[test]
+    fn test_extract_capabilities_invalid_json() {
+        let body = b"not json at all";
+        let (tool_call, reasoning) = extract_capabilities(body);
+        assert!(tool_call, "tool_call should default to true on parse error");
+        assert!(
+            !reasoning,
+            "reasoning should default to false on parse error"
+        );
+    }
+
+    /// Empty body → (true, false) defaults
+    #[test]
+    fn test_extract_capabilities_empty_body() {
+        let body = b"";
+        let (tool_call, reasoning) = extract_capabilities(body);
+        assert!(tool_call, "tool_call should default to true on empty body");
+        assert!(
+            !reasoning,
+            "reasoning should default to false on empty body"
+        );
+    }
+}
