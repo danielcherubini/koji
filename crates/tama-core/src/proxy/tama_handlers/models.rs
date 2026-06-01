@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use axum::{
@@ -369,7 +369,7 @@ pub async fn handle_opencode_list_models(state: State<Arc<ProxyState>>) -> Json<
 
     // 3. Build model entries with capabilities
     let mut models: Vec<serde_json::Value> = Vec::new();
-    let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen_ids: HashSet<String> = HashSet::new();
 
     for (id, cfg) in all_configs.iter().filter(|(_, cfg)| cfg.enabled) {
         let caps = cap_map.get(id);
@@ -833,6 +833,49 @@ mod tests {
             alias_entry.get("temperature").unwrap().as_bool().unwrap(),
             true,
             "alias should have temperature: true"
+        );
+    }
+
+    // ── fetch_capabilities_from_backend HTTP failure tests ────────────────
+
+    /// Backend returns 500 → safe defaults (true, false).
+    #[tokio::test]
+    async fn test_fetch_capabilities_backend_500_returns_defaults() {
+        let mock_server = MockServer::start().await;
+
+        // Mock /props returning a 500 Internal Server Error
+        Mock::given(method("GET"))
+            .and(path("/props"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("Internal Server Error"))
+            .mount(&mock_server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let (tool_call, reasoning) =
+            fetch_capabilities_from_backend(&client, &mock_server.uri()).await;
+
+        assert!(tool_call, "tool_call should default to true on 500 error");
+        assert!(!reasoning, "reasoning should default to false on 500 error");
+    }
+
+    /// Backend unreachable (no mock) → safe defaults (true, false) with timeout.
+    #[tokio::test]
+    async fn test_fetch_capabilities_unreachable_backend_returns_defaults() {
+        // Use a local address with no listener — the 3-second timeout prevents
+        // hanging indefinitely.
+        let unreachable_url = "http://127.0.0.1:19999";
+
+        let client = reqwest::Client::new();
+        let (tool_call, reasoning) =
+            fetch_capabilities_from_backend(&client, unreachable_url).await;
+
+        assert!(
+            tool_call,
+            "tool_call should default to true on unreachable backend"
+        );
+        assert!(
+            !reasoning,
+            "reasoning should default to false on unreachable backend"
         );
     }
 }
