@@ -46,4 +46,4 @@ mod get_model_tests;
 #[cfg(test)]
 mod list_models_tests;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
