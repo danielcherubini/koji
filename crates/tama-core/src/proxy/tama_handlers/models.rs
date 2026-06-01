@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use axum::{
@@ -9,6 +10,12 @@ use axum::{
 
 use super::types::ModelResponse;
 use crate::proxy::ProxyState;
+
+#[derive(Debug, Clone, Copy, Default)]
+struct ModelCapabilities {
+    tool_call: bool,
+    reasoning: bool,
+}
 
 /// Capitalize the first character of a string, preserve the rest unchanged.
 pub fn capitalize_first(s: &str) -> String {
@@ -227,6 +234,7 @@ async fn build_model_entry(
     state: &ProxyState,
     id: &str,
     cfg: &crate::config::ModelConfig,
+    capabilities: Option<&ModelCapabilities>,
 ) -> Option<serde_json::Value> {
     // Use model field first, fall back to api_name.
     let hf_repo = cfg.model.as_deref().or(cfg.api_name.as_deref())?;
@@ -296,6 +304,22 @@ async fn build_model_entry(
         model_json["modalities"] = m;
     }
 
+    // Derive attachment from modalities
+    let attachment = cfg
+        .modalities
+        .as_ref()
+        .is_some_and(|m| m.input.iter().any(|s| s == "image"));
+
+    // Use provided capabilities or config-derived defaults
+    let (tool_call, reasoning) = capabilities
+        .map(|c| (c.tool_call, c.reasoning))
+        .unwrap_or((true, false));
+
+    model_json["tool_call"] = serde_json::json!(tool_call);
+    model_json["reasoning"] = serde_json::json!(reasoning);
+    model_json["attachment"] = serde_json::json!(attachment);
+    model_json["temperature"] = serde_json::json!(true);
+
     Some(model_json)
 }
 
@@ -303,41 +327,77 @@ async fn build_model_entry(
 /// Returns rich metadata including context limits, modalities, and capabilities.
 /// Aliases are included with the same metadata as their target model, using the alias name as `id`.
 pub async fn handle_opencode_list_models(state: State<Arc<ProxyState>>) -> Json<serde_json::Value> {
-    let mut models: Vec<serde_json::Value> = Vec::new();
-    let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // 1. Snapshot data under locks
+    let (loaded_models, all_configs): (HashMap<_, _>, _) = {
+        let models = state.models.read().await;
+        let configs = state.model_configs.read().await;
+        // Collect (config_name, backend_url) for Ready backends
+        let loaded: HashMap<_, _> = models
+            .iter()
+            .filter_map(|(name, ms)| {
+                if let crate::proxy::ModelState::Ready { backend_url, .. } = ms {
+                    Some((name.clone(), backend_url.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        (loaded, configs.clone())
+    }; // locks dropped
 
-    let configs = state.model_configs.read().await;
-    for (id, cfg) in configs.iter().filter(|(_, cfg)| cfg.enabled) {
-        if let Some(entry) = build_model_entry(&state, id, cfg).await {
-            // Track the api_name so we can skip it if an alias points to it
+    // 2. Fetch capabilities for all loaded backends concurrently
+    let futures: Vec<_> = loaded_models
+        .values()
+        .map(|url| fetch_capabilities_from_backend(&state.client, url))
+        .collect();
+    let capabilities: Vec<(bool, bool)> = futures::future::join_all(futures).await;
+
+    // Build a map: config_name -> ModelCapabilities
+    let cap_map: HashMap<_, _> = loaded_models
+        .keys()
+        .zip(capabilities)
+        .map(|(name, (tc, r))| {
+            (
+                name.clone(),
+                ModelCapabilities {
+                    tool_call: tc,
+                    reasoning: r,
+                },
+            )
+        })
+        .collect();
+
+    // 3. Build model entries with capabilities
+    let mut models: Vec<serde_json::Value> = Vec::new();
+    let mut seen_ids: HashSet<String> = HashSet::new();
+
+    for (id, cfg) in all_configs.iter().filter(|(_, cfg)| cfg.enabled) {
+        let caps = cap_map.get(id);
+        if let Some(entry) = build_model_entry(&state, id, cfg, caps).await {
             if let Some(api_id) = entry.get("id").and_then(|v| v.as_str()) {
                 seen_ids.insert(api_id.to_lowercase());
             }
             models.push(entry);
         }
     }
-    drop(configs);
 
-    // Add alias entries — inherit full metadata from the target model
+    // 4. Add alias entries — inherit capabilities from target model
     let aliases = state.aliases.read().await;
-    let configs = state.model_configs.read().await;
     for (alias_name, resolved_model) in aliases.iter() {
-        // Skip if the alias name itself is already in the list
         if seen_ids.contains(&alias_name.to_lowercase()) {
             continue;
         }
 
-        // Find the config whose api_name or model matches the resolved name
         let resolved_lower = resolved_model.to_lowercase();
-        let target_cfg = configs.iter().find(|(_, cfg)| {
+        let target_cfg = all_configs.iter().find(|(_, cfg)| {
             cfg.enabled
                 && (cfg.api_name.as_ref().map(|s| s.to_lowercase()) == Some(resolved_lower.clone())
                     || cfg.model.as_ref().map(|s| s.to_lowercase()) == Some(resolved_lower.clone()))
         });
 
         if let Some((key, cfg)) = target_cfg {
-            if let Some(mut entry) = build_model_entry(&state, key, cfg).await {
-                // Override the id to be the alias name (lowercased)
+            let caps = cap_map.get(key);
+            if let Some(mut entry) = build_model_entry(&state, key, cfg, caps).await {
                 entry["id"] = serde_json::json!(alias_name.to_lowercase());
                 models.push(entry);
                 seen_ids.insert(alias_name.to_lowercase());
@@ -345,9 +405,463 @@ pub async fn handle_opencode_list_models(state: State<Arc<ProxyState>>) -> Json<
         }
     }
     drop(aliases);
-    drop(configs);
 
-    Json(serde_json::json!({
-        "models": models
-    }))
+    Json(serde_json::json!({ "models": models }))
+}
+
+/// Extract capability flags from a /props response body.
+/// Returns (tool_call, reasoning) tuple. Defaults to (true, false) on any error.
+fn extract_capabilities(body: &[u8]) -> (bool, bool) {
+    let value = match serde_json::from_slice::<serde_json::Value>(body) {
+        Ok(v) => v,
+        Err(_) => return (true, false),
+    };
+
+    let mut tool_call = true; // default
+    let mut reasoning = false; // default
+
+    // Check chat_template_caps.supports_tool_calls
+    if let Some(supports_tool_calls) = value
+        .get("chat_template_caps")
+        .and_then(|c| c.get("supports_tool_calls"))
+        .and_then(|v| v.as_bool())
+    {
+        tool_call = supports_tool_calls;
+    }
+
+    // Check chat_template_caps.supports_preserve_reasoning
+    if let Some(supports_reasoning) = value
+        .get("chat_template_caps")
+        .and_then(|c| c.get("supports_preserve_reasoning"))
+        .and_then(|v| v.as_bool())
+    {
+        reasoning = supports_reasoning;
+    }
+
+    // Also check default_generation_settings.params.reasoning_format != "none"
+    if let Some(reasoning_format) = value
+        .get("default_generation_settings")
+        .and_then(|d| d.get("params"))
+        .and_then(|p| p.get("reasoning_format"))
+        .and_then(|v| v.as_str())
+    {
+        if !reasoning_format.eq_ignore_ascii_case("none") {
+            reasoning = true;
+        }
+    }
+
+    (tool_call, reasoning)
+}
+
+/// Query a single backend's /props endpoint and extract capability flags.
+/// Returns (tool_call, reasoning) tuple. Defaults to (true, false) on any error.
+async fn fetch_capabilities_from_backend(
+    client: &reqwest::Client,
+    backend_url: &str,
+) -> (bool, bool) {
+    let url = format!("{}/props", backend_url);
+    match client
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(3))
+        .send()
+        .await
+    {
+        Ok(resp) => match resp.bytes().await {
+            Ok(bytes) => extract_capabilities(&bytes),
+            Err(_) => (true, false),
+        },
+        Err(_) => (true, false),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{Config, ModelConfig, ModelModalities};
+    use axum::body::Body;
+    use axum::extract::Request;
+    use axum::Router;
+    use tower::ServiceExt;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+
+    /// Valid response with supports_tool_calls: true → (true, false)
+    #[test]
+    fn test_extract_capabilities_tool_calls_true() {
+        let body = r#"{
+            "chat_template_caps": {
+                "supports_tool_calls": true
+            }
+        }"#;
+        let (tool_call, reasoning) = extract_capabilities(body.as_bytes());
+        assert!(tool_call, "tool_call should be true");
+        assert!(!reasoning, "reasoning should default to false");
+    }
+
+    /// Valid response with supports_preserve_reasoning: true → (true, true)
+    #[test]
+    fn test_extract_capabilities_preserve_reasoning_true() {
+        let body = r#"{
+            "chat_template_caps": {
+                "supports_tool_calls": true,
+                "supports_preserve_reasoning": true
+            }
+        }"#;
+        let (tool_call, reasoning) = extract_capabilities(body.as_bytes());
+        assert!(tool_call);
+        assert!(
+            reasoning,
+            "reasoning should be true from supports_preserve_reasoning"
+        );
+    }
+
+    /// Valid response with reasoning_format: "xml" → (true, true)
+    #[test]
+    fn test_extract_capabilities_reasoning_format_xml() {
+        let body = r#"{
+            "default_generation_settings": {
+                "params": {
+                    "reasoning_format": "xml"
+                }
+            }
+        }"#;
+        let (tool_call, reasoning) = extract_capabilities(body.as_bytes());
+        assert!(tool_call, "tool_call should default to true");
+        assert!(
+            reasoning,
+            "reasoning should be true from reasoning_format != none"
+        );
+    }
+
+    /// Missing chat_template_caps → (true, false) defaults
+    #[test]
+    fn test_extract_capabilities_missing_chat_template_caps() {
+        let body = r#"{}"#;
+        let (tool_call, reasoning) = extract_capabilities(body.as_bytes());
+        assert!(tool_call, "tool_call should default to true");
+        assert!(!reasoning, "reasoning should default to false");
+    }
+
+    /// Invalid JSON → (true, false) defaults
+    #[test]
+    fn test_extract_capabilities_invalid_json() {
+        let body = b"not json at all";
+        let (tool_call, reasoning) = extract_capabilities(body);
+        assert!(tool_call, "tool_call should default to true on parse error");
+        assert!(
+            !reasoning,
+            "reasoning should default to false on parse error"
+        );
+    }
+
+    /// Empty body → (true, false) defaults
+    #[test]
+    fn test_extract_capabilities_empty_body() {
+        let body = b"";
+        let (tool_call, reasoning) = extract_capabilities(body);
+        assert!(tool_call, "tool_call should default to true on empty body");
+        assert!(
+            !reasoning,
+            "reasoning should default to false on empty body"
+        );
+    }
+
+    // ── Integration tests for capability fields ──────────────────────────
+
+    /// Helper: create a ProxyState with a single model config.
+    async fn create_state_with_model(model_cfg: ModelConfig) -> Arc<ProxyState> {
+        let config = Config::default();
+        let state = ProxyState::new(config, None);
+        let mut mc = state.model_configs.write().await;
+        mc.insert("test-model".to_string(), model_cfg);
+        drop(mc);
+        Arc::new(state)
+    }
+
+    /// Helper: build the router and call handle_opencode_list_models.
+    async fn call_list_models(state: Arc<ProxyState>) -> serde_json::Value {
+        let app = Router::new()
+            .route(
+                "/v1/opencode/models",
+                axum::routing::get(handle_opencode_list_models),
+            )
+            .with_state(state);
+
+        let request = Request::get("/v1/opencode/models")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    /// Loaded model: capabilities from /props appear in opencode response.
+    #[tokio::test]
+    async fn test_loaded_model_capabilities_from_props() {
+        let mock_server = MockServer::start().await;
+
+        // Mock /props with tool_call: true, reasoning: true
+        Mock::given(method("GET"))
+            .and(path("/props"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "chat_template_caps": {
+                    "supports_tool_calls": true,
+                    "supports_preserve_reasoning": true
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let backend_url = mock_server.uri();
+        let state = crate::proxy::handlers::tests::create_state_with_two_backends(
+            &backend_url,
+            &backend_url,
+        )
+        .await;
+
+        let result = call_list_models(state).await;
+        let models = result.get("models").unwrap().as_array().unwrap();
+
+        // model-a and model-b are loaded, model-c is not
+        for model in models {
+            let id = model.get("id").unwrap().as_str().unwrap();
+            if id == "api-model-a" || id == "api-model-b" {
+                // Loaded models: should have capabilities from /props
+                assert!(
+                    model.get("tool_call").unwrap().as_bool().unwrap(),
+                    "tool_call should be true for loaded model {}",
+                    id
+                );
+                assert!(
+                    model.get("reasoning").unwrap().as_bool().unwrap(),
+                    "reasoning should be true for loaded model {}",
+                    id
+                );
+                assert!(
+                    model.get("temperature").unwrap().as_bool().unwrap(),
+                    "temperature should always be true"
+                );
+            } else if id == "api-model-c" {
+                // Unloaded model: should have defaults
+                assert!(
+                    model.get("tool_call").unwrap().as_bool().unwrap(),
+                    "tool_call should default to true for unloaded model"
+                );
+                assert!(
+                    !model.get("reasoning").unwrap().as_bool().unwrap(),
+                    "reasoning should default to false for unloaded model"
+                );
+            }
+        }
+    }
+
+    /// Unloaded model: defaults tool_call: true, reasoning: false.
+    #[tokio::test]
+    async fn test_unloaded_model_defaults() {
+        let state = create_state_with_model(ModelConfig {
+            backend: "llama_cpp".to_string(),
+            api_name: Some("test-unloaded".to_string()),
+            model: Some("test/unloaded".to_string()),
+            enabled: true,
+            ..Default::default()
+        })
+        .await;
+
+        let result = call_list_models(state).await;
+        let models = result.get("models").unwrap().as_array().unwrap();
+        assert_eq!(models.len(), 1);
+
+        let model = &models[0];
+        assert!(
+            model.get("tool_call").unwrap().as_bool().unwrap(),
+            "tool_call should default to true for unloaded model"
+        );
+        assert!(
+            !model.get("reasoning").unwrap().as_bool().unwrap(),
+            "reasoning should default to false for unloaded model"
+        );
+        assert!(
+            model.get("temperature").unwrap().as_bool().unwrap(),
+            "temperature should always be true"
+        );
+    }
+
+    /// Model with modalities.input containing "image" → attachment: true.
+    #[tokio::test]
+    async fn test_model_with_image_modality_has_attachment() {
+        let state = create_state_with_model(ModelConfig {
+            backend: "llama_cpp".to_string(),
+            api_name: Some("test-vision".to_string()),
+            model: Some("test/vision".to_string()),
+            enabled: true,
+            modalities: Some(ModelModalities {
+                input: vec!["text".to_string(), "image".to_string()],
+                output: vec!["text".to_string()],
+            }),
+            ..Default::default()
+        })
+        .await;
+
+        let result = call_list_models(state).await;
+        let models = result.get("models").unwrap().as_array().unwrap();
+        assert_eq!(models.len(), 1);
+
+        let model = &models[0];
+        assert!(
+            model.get("attachment").unwrap().as_bool().unwrap(),
+            "attachment should be true when modalities.input contains 'image'"
+        );
+    }
+
+    /// Model with modalities.input: ["text"] → attachment: false.
+    #[tokio::test]
+    async fn test_model_text_only_modality_no_attachment() {
+        let state = create_state_with_model(ModelConfig {
+            backend: "llama_cpp".to_string(),
+            api_name: Some("test-text".to_string()),
+            model: Some("test/text".to_string()),
+            enabled: true,
+            modalities: Some(ModelModalities {
+                input: vec!["text".to_string()],
+                output: vec!["text".to_string()],
+            }),
+            ..Default::default()
+        })
+        .await;
+
+        let result = call_list_models(state).await;
+        let models = result.get("models").unwrap().as_array().unwrap();
+        assert_eq!(models.len(), 1);
+
+        let model = &models[0];
+        assert!(
+            !model.get("attachment").unwrap().as_bool().unwrap(),
+            "attachment should be false when modalities.input only contains 'text'"
+        );
+    }
+
+    /// Model with no modalities → attachment: false.
+    #[tokio::test]
+    async fn test_model_no_modality_no_attachment() {
+        let state = create_state_with_model(ModelConfig {
+            backend: "llama_cpp".to_string(),
+            api_name: Some("test-nomod".to_string()),
+            model: Some("test/nomod".to_string()),
+            enabled: true,
+            ..Default::default()
+        })
+        .await;
+
+        let result = call_list_models(state).await;
+        let models = result.get("models").unwrap().as_array().unwrap();
+        assert_eq!(models.len(), 1);
+
+        let model = &models[0];
+        assert!(
+            !model.get("attachment").unwrap().as_bool().unwrap(),
+            "attachment should be false when modalities is None"
+        );
+    }
+
+    /// Alias entries inherit capabilities from target model.
+    #[tokio::test]
+    async fn test_alias_inherits_capabilities() {
+        let mock_server = MockServer::start().await;
+
+        // Mock /props with reasoning: true
+        Mock::given(method("GET"))
+            .and(path("/props"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "chat_template_caps": {
+                    "supports_tool_calls": true,
+                    "supports_preserve_reasoning": true
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let backend_url = mock_server.uri();
+        let state = crate::proxy::handlers::tests::create_state_with_two_backends(
+            &backend_url,
+            &backend_url,
+        )
+        .await;
+
+        // Add an alias pointing to model-a
+        {
+            let mut aliases = state.aliases.write().await;
+            aliases.insert("my-alias".to_string(), "api-model-a".to_string());
+        }
+
+        let result = call_list_models(state).await;
+        let models = result.get("models").unwrap().as_array().unwrap();
+
+        // Find the alias entry
+        let alias_entry = models
+            .iter()
+            .find(|m| m.get("id").unwrap().as_str().unwrap() == "my-alias")
+            .expect("alias entry should exist");
+
+        assert!(
+            alias_entry.get("tool_call").unwrap().as_bool().unwrap(),
+            "alias should inherit tool_call from target"
+        );
+        assert!(
+            alias_entry.get("reasoning").unwrap().as_bool().unwrap(),
+            "alias should inherit reasoning from target"
+        );
+        assert!(
+            alias_entry.get("temperature").unwrap().as_bool().unwrap(),
+            "alias should have temperature: true"
+        );
+    }
+
+    // ── fetch_capabilities_from_backend HTTP failure tests ────────────────
+
+    /// Backend returns 500 → safe defaults (true, false).
+    #[tokio::test]
+    async fn test_fetch_capabilities_backend_500_returns_defaults() {
+        let mock_server = MockServer::start().await;
+
+        // Mock /props returning a 500 Internal Server Error
+        Mock::given(method("GET"))
+            .and(path("/props"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("Internal Server Error"))
+            .mount(&mock_server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let (tool_call, reasoning) =
+            fetch_capabilities_from_backend(&client, &mock_server.uri()).await;
+
+        assert!(tool_call, "tool_call should default to true on 500 error");
+        assert!(!reasoning, "reasoning should default to false on 500 error");
+    }
+
+    /// Backend unreachable (no mock) → safe defaults (true, false) with timeout.
+    #[tokio::test]
+    async fn test_fetch_capabilities_unreachable_backend_returns_defaults() {
+        // Use a local address with no listener — the 3-second timeout prevents
+        // hanging indefinitely.
+        let unreachable_url = "http://127.0.0.1:19999";
+
+        let client = reqwest::Client::new();
+        let (tool_call, reasoning) =
+            fetch_capabilities_from_backend(&client, unreachable_url).await;
+
+        assert!(
+            tool_call,
+            "tool_call should default to true on unreachable backend"
+        );
+        assert!(
+            !reasoning,
+            "reasoning should default to false on unreachable backend"
+        );
+    }
 }
