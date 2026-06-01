@@ -633,33 +633,28 @@ mod tests {
             let id = model.get("id").unwrap().as_str().unwrap();
             if id == "api-model-a" || id == "api-model-b" {
                 // Loaded models: should have capabilities from /props
-                assert_eq!(
+                assert!(
                     model.get("tool_call").unwrap().as_bool().unwrap(),
-                    true,
                     "tool_call should be true for loaded model {}",
                     id
                 );
-                assert_eq!(
+                assert!(
                     model.get("reasoning").unwrap().as_bool().unwrap(),
-                    true,
                     "reasoning should be true for loaded model {}",
                     id
                 );
-                assert_eq!(
+                assert!(
                     model.get("temperature").unwrap().as_bool().unwrap(),
-                    true,
                     "temperature should always be true"
                 );
             } else if id == "api-model-c" {
                 // Unloaded model: should have defaults
-                assert_eq!(
+                assert!(
                     model.get("tool_call").unwrap().as_bool().unwrap(),
-                    true,
                     "tool_call should default to true for unloaded model"
                 );
-                assert_eq!(
-                    model.get("reasoning").unwrap().as_bool().unwrap(),
-                    false,
+                assert!(
+                    !model.get("reasoning").unwrap().as_bool().unwrap(),
                     "reasoning should default to false for unloaded model"
                 );
             }
@@ -683,19 +678,16 @@ mod tests {
         assert_eq!(models.len(), 1);
 
         let model = &models[0];
-        assert_eq!(
+        assert!(
             model.get("tool_call").unwrap().as_bool().unwrap(),
-            true,
             "tool_call should default to true for unloaded model"
         );
-        assert_eq!(
-            model.get("reasoning").unwrap().as_bool().unwrap(),
-            false,
+        assert!(
+            !model.get("reasoning").unwrap().as_bool().unwrap(),
             "reasoning should default to false for unloaded model"
         );
-        assert_eq!(
+        assert!(
             model.get("temperature").unwrap().as_bool().unwrap(),
-            true,
             "temperature should always be true"
         );
     }
@@ -721,9 +713,8 @@ mod tests {
         assert_eq!(models.len(), 1);
 
         let model = &models[0];
-        assert_eq!(
+        assert!(
             model.get("attachment").unwrap().as_bool().unwrap(),
-            true,
             "attachment should be true when modalities.input contains 'image'"
         );
     }
@@ -749,9 +740,8 @@ mod tests {
         assert_eq!(models.len(), 1);
 
         let model = &models[0];
-        assert_eq!(
-            model.get("attachment").unwrap().as_bool().unwrap(),
-            false,
+        assert!(
+            !model.get("attachment").unwrap().as_bool().unwrap(),
             "attachment should be false when modalities.input only contains 'text'"
         );
     }
@@ -773,9 +763,8 @@ mod tests {
         assert_eq!(models.len(), 1);
 
         let model = &models[0];
-        assert_eq!(
-            model.get("attachment").unwrap().as_bool().unwrap(),
-            false,
+        assert!(
+            !model.get("attachment").unwrap().as_bool().unwrap(),
             "attachment should be false when modalities is None"
         );
     }
@@ -819,19 +808,16 @@ mod tests {
             .find(|m| m.get("id").unwrap().as_str().unwrap() == "my-alias")
             .expect("alias entry should exist");
 
-        assert_eq!(
+        assert!(
             alias_entry.get("tool_call").unwrap().as_bool().unwrap(),
-            true,
             "alias should inherit tool_call from target"
         );
-        assert_eq!(
+        assert!(
             alias_entry.get("reasoning").unwrap().as_bool().unwrap(),
-            true,
             "alias should inherit reasoning from target"
         );
-        assert_eq!(
+        assert!(
             alias_entry.get("temperature").unwrap().as_bool().unwrap(),
-            true,
             "alias should have temperature: true"
         );
     }
