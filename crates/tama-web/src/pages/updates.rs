@@ -203,8 +203,12 @@ pub fn Updates() -> impl IntoView {
         backend_update_busy.set(true);
         wasm_bindgen_futures::spawn_local(async move {
             let url = match variant {
-                Some(v) => format!("/tama/v1/backends/{}/update?gpu_variant={}", name, v),
-                None => format!("/tama/v1/backends/{}/update", name),
+                Some(v) => format!(
+                    "/tama/v1/backends/{}/update?gpu_variant={}",
+                    urlencoding::encode(&name),
+                    urlencoding::encode(&v)
+                ),
+                None => format!("/tama/v1/backends/{}/update", urlencoding::encode(&name)),
             };
             if let Ok(resp) = post_request(&url).send().await {
                 if resp.ok() {
@@ -214,7 +218,10 @@ pub fn Updates() -> impl IntoView {
                         }
                     }
                 } else {
-                    let text = resp.text().await.unwrap_or_default();
+                    let text = resp
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "unknown error".to_string());
                     error.set(Some(format!("Update failed: {}", text)));
                 }
             }
@@ -290,7 +297,10 @@ pub fn Updates() -> impl IntoView {
                 }
                 Ok(resp) => {
                     let status = resp.status();
-                    let text = resp.text().await.unwrap_or_default();
+                    let text = resp
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "unknown error".to_string());
                     if status == 409 {
                         error.set(Some(format!("Download already in progress: {}", text)));
                     } else if status == 422 {
@@ -345,8 +355,7 @@ pub fn Updates() -> impl IntoView {
                         let backends = updates.with(|u| u.backends.clone());
                         backends.into_iter().map(|b| {
                             let item_id = b.item_id.clone();
-                            let variant = b.variant.clone();
-                            let variant_for_update = variant.clone();
+                            let variant_for_update = b.variant.clone();
                             let is_update_available = b.update_available;
                             view! {
                                 <ListCard
@@ -376,9 +385,9 @@ pub fn Updates() -> impl IntoView {
                                     }.into_any()))
                                 >
                                     <span class="update-item__name">{b.item_id.clone()}</span>
-                                    {variant.map(|v| {
-                                        view! { <span class="update-item__variant">{v}</span> }
-                                    })}
+                                   {b.variant.as_ref().map(|v| {
+                                         view! { <span class="update-item__variant">{v.clone()}</span> }
+                                     })}
                                     <span class="update-item__version">
                                         {b.current_version.clone().unwrap_or_else(|| "—".to_string())}
                                     </span>

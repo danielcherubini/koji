@@ -22,12 +22,12 @@ struct SourceLogs {
 
 /// Classify a log line and return the CSS modifier class suffix.
 fn log_level_class(line: &str) -> &'static str {
-    let upper = line.to_uppercase();
-    if upper.contains("ERROR") || upper.contains("FATAL") {
+    let lower = line.to_ascii_lowercase();
+    if lower.contains("error") || lower.contains("fatal") {
         "log-line--error"
-    } else if upper.contains("WARN") {
+    } else if lower.contains("warn") {
         "log-line--warn"
-    } else if upper.contains("DEBUG") {
+    } else if lower.contains("debug") {
         "log-line--debug"
     } else {
         "log-line--info"
@@ -101,8 +101,11 @@ pub fn Logs() -> impl IntoView {
         });
     };
 
-    // Load on mount, then every 5 seconds
+    // Set default source in URL if not present, then load logs
     Effect::new(move |_| {
+        if query.with(|q| q.get("source").is_none()) {
+            set_source_in_url("tama");
+        }
         load_logs();
         spawn_local(async move {
             loop {
@@ -136,14 +139,13 @@ pub fn Logs() -> impl IntoView {
                     {move || {
                         sources.get().into_iter().filter(|s| s.name != "tama").map(|s| {
                             let val = s.name.clone();
-                            let sel = s.name.clone();
-                            let label = s.name.clone();
+                            let sel = val.clone();
                             view! {
                                 <option
                                     value=val
                                     selected=move || selected_source() == sel
                                 >
-                                    {label}
+                                    {sel.clone()}
                                 </option>
                             }.into_any()
                         }).collect::<Vec<_>>()
@@ -187,25 +189,11 @@ pub fn Logs() -> impl IntoView {
                 }.into_any()
             } else {
                 let selected = selected_source();
-                let selected_clone = selected.clone();
                 view! {
                     <div class="log-viewer card">
-                        {all_sources.into_iter().filter(move |s| {
-                            selected.is_empty() || s.name == selected
-                        }).flat_map(|source| {
-                            // Add a header for each source (unless showing all)
-                            let headers = if selected_clone.is_empty() && !source.lines.is_empty() {
-                                vec![format!("=== {} ===", source.name)]
-                            } else {
-                                vec![]
-                            };
-                            let lines = headers.into_iter().chain(source.lines).collect::<Vec<_>>();
-                            lines.into_iter().map(|line| {
-                                let cls = if line.starts_with("===") {
-                                    "log-line log-line--header".to_string()
-                                } else {
-                                    format!("log-line {}", log_level_class(&line))
-                                };
+                        {all_sources.into_iter().filter(move |s| s.name == selected).flat_map(|source| {
+                            source.lines.into_iter().map(|line| {
+                                let cls = format!("log-line {}", log_level_class(&line));
                                 view! { <div class=cls>{line}</div> }
                             }).collect::<Vec<_>>()
                         }).collect::<Vec<_>>()}
