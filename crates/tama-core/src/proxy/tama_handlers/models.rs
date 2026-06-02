@@ -327,7 +327,8 @@ async fn build_model_entry(
 /// Returns rich metadata including context limits, modalities, and capabilities.
 /// Aliases are included with the same metadata as their target model, using the alias name as `id`.
 pub async fn handle_opencode_list_models(state: State<Arc<ProxyState>>) -> Json<serde_json::Value> {
-    // 1. Snapshot data under locks
+    // 1. Snapshot data under locks — clone out so locks are dropped before any .await below.
+    // `all_configs` is a clone of the HashMap contents, not the guard, so no explicit drop needed.
     let (loaded_models, all_configs): (HashMap<_, _>, _) = {
         let models = state.models.read().await;
         let configs = state.model_configs.read().await;
