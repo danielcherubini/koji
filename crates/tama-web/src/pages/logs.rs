@@ -101,7 +101,7 @@ pub fn Logs() -> impl IntoView {
         });
     };
 
-   // Set default source in URL if not present, then load logs
+    // Set default source in URL if not present, then load logs
     Effect::new(move |_| {
         if query.with(|q| q.get("source").is_none()) {
             set_source_in_url("tama");
@@ -122,7 +122,9 @@ pub fn Logs() -> impl IntoView {
             }
         });
         // Signal the poller to stop when component unmounts.
-        move || { stopped.set(true); }
+        move || {
+            stopped.set(true);
+        }
     });
 
     view! {
