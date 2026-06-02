@@ -11,6 +11,5 @@ pub const MIGRATION: (i32, bool, &str) = (
             health_check_url TEXT,
             UNIQUE(name, gpu_variant)
         );
-        CREATE INDEX idx_backend_configs_name_variant ON backend_configs(name, gpu_variant);
     "#,
 );

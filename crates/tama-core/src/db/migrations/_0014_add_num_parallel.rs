@@ -3,6 +3,6 @@ pub const MIGRATION: (i32, bool, &str) = (
     14,
     false,
     r#"
-        ALTER TABLE model_configs ADD COLUMN num_parallel INTEGER DEFAULT 1 CHECK(num_parallel >= 1);
+        ALTER TABLE model_configs ADD COLUMN num_parallel INTEGER NOT NULL DEFAULT 1 CHECK(num_parallel >= 1);
     "#,
 );

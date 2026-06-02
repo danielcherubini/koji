@@ -101,18 +101,28 @@ pub fn Logs() -> impl IntoView {
         });
     };
 
-    // Set default source in URL if not present, then load logs
+   // Set default source in URL if not present, then load logs
     Effect::new(move |_| {
         if query.with(|q| q.get("source").is_none()) {
             set_source_in_url("tama");
         }
         load_logs();
+    });
+
+    // Poll for fresh logs every 5 s — runs once on mount, cancelled on unmount.
+    let stopped = RwSignal::new(false);
+    Effect::new(move |_| {
         spawn_local(async move {
-            loop {
+            while !stopped.get() {
                 gloo_timers::future::TimeoutFuture::new(5_000).await;
+                if stopped.get() {
+                    break;
+                }
                 load_logs();
             }
         });
+        // Signal the poller to stop when component unmounts.
+        move || { stopped.set(true); }
     });
 
     view! {

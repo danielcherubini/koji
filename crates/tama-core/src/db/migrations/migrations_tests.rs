@@ -2,8 +2,33 @@
 //!
 //! Tests exercise `run()`, `run_up_to()`, and `FkGuard` behaviour.
 
-use super::{run, run_up_to, FkGuard};
+use super::{run, run_up_to, FkGuard, LATEST_VERSION, MIGRATIONS};
 use rusqlite::Connection;
+
+/// Compile-time safety: MIGRATIONS must be strictly ordered by version with no
+/// duplicates, and the last entry must match LATEST_VERSION.
+#[test]
+fn test_migrations_registry_is_ordered_and_complete() {
+    assert!(!MIGRATIONS.is_empty(), "MIGRATIONS must not be empty");
+
+    for window in MIGRATIONS.windows(2) {
+        let (prev_version, _, _) = window[0];
+        let (curr_version, _, _) = window[1];
+        assert!(
+            curr_version > prev_version,
+            "migration versions must be strictly increasing: found {} then {}",
+            prev_version,
+            curr_version,
+        );
+    }
+
+    let last_version = MIGRATIONS.last().map(|(v, _, _)| *v).unwrap();
+    assert_eq!(
+        last_version, LATEST_VERSION,
+        "last migration version ({}) must equal LATEST_VERSION ({})",
+        last_version, LATEST_VERSION,
+    );
+}
 
 #[test]
 fn test_migration_v6_creates_update_checks_table() {
@@ -473,8 +498,8 @@ fn test_migration_v20_preserves_existing_data() {
     )
     .unwrap();
 
-    // Apply v20
-    run(&conn).unwrap();
+    // Apply v20 only
+    run_up_to(&conn, 20).unwrap();
 
     // The row must survive with gpu_variant = 'cpu'
     let variant: String = conn
@@ -513,16 +538,6 @@ fn test_migration_v23_creates_backend_configs() {
         )
         .unwrap();
     assert_eq!(table_exists, 1);
-
-    // Index must exist
-    let idx_exists: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_backend_configs_name_variant'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(idx_exists, 1);
 
     // Columns must exist
     let columns = [

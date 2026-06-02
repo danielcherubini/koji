@@ -3,8 +3,6 @@ pub const MIGRATION: (i32, bool, &str) = (
     27,
     false,
     r#"
-        DROP TABLE IF EXISTS last_used_model;
-
         CREATE TABLE IF NOT EXISTS model_aliases (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL UNIQUE COLLATE NOCASE,
@@ -14,6 +12,19 @@ pub const MIGRATION: (i32, bool, &str) = (
             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
         );
+
+        -- Migrate last_used_model into model_aliases before dropping it.
+        -- server_name in last_used_model maps to repo_id in model_configs.
+        INSERT OR IGNORE INTO model_aliases (name, model_id, description, enabled)
+        SELECT
+            lum.server_name,
+            mc.id,
+            'Migrated from last_used_model',
+            1
+        FROM last_used_model lum
+        JOIN model_configs mc ON mc.repo_id = lum.server_name;
+
+        DROP TABLE IF EXISTS last_used_model;
 
         CREATE INDEX IF NOT EXISTS idx_model_aliases_model_id ON model_aliases(model_id);
         CREATE INDEX IF NOT EXISTS idx_model_aliases_enabled ON model_aliases(enabled);

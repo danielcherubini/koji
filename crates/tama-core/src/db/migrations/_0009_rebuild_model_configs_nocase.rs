@@ -21,6 +21,42 @@ pub const MIGRATION: (i32, bool, &str) = (
         -- Deduplicate any existing rows that differ only by case
         -- (keep the row with the lowest id). Without this, the new
         -- UNIQUE constraint would fail to enforce.
+
+        -- Before deleting duplicate parents, remap child rows to the surviving
+        -- parent id so nothing becomes orphaned.  kept_id maps each repo to the
+        -- id that will survive (MIN(id) per LOWER(repo_id)).
+        UPDATE model_files SET model_id = (
+            SELECT kept.id FROM (
+                SELECT MIN(id) AS id FROM model_configs GROUP BY LOWER(repo_id)
+            ) kept
+            JOIN model_configs mc ON mc.id = kept.id
+            WHERE LOWER(mc.repo_id) = LOWER(model_files.repo_id)
+        )
+        WHERE model_id IN (
+            SELECT id FROM model_configs WHERE id NOT IN (
+                SELECT MIN(id) FROM model_configs GROUP BY LOWER(repo_id)
+            )
+        );
+
+        UPDATE model_pulls SET model_id = (
+            SELECT kept.id FROM (
+                SELECT MIN(id) AS id FROM model_configs GROUP BY LOWER(repo_id)
+            ) kept
+            JOIN model_configs mc ON mc.id = kept.id
+            WHERE LOWER(mc.repo_id) = LOWER(model_pulls.repo_id)
+        )
+        WHERE model_id IN (
+            SELECT id FROM model_configs WHERE id NOT IN (
+                SELECT MIN(id) FROM model_configs GROUP BY LOWER(repo_id)
+            )
+        );
+
+        -- After remapping, deduplicate any (model_id, filename) collisions
+        -- caused by the merge (keep the row with the lowest id).
+        DELETE FROM model_files WHERE id NOT IN (
+            SELECT MIN(id) FROM model_files GROUP BY model_id, filename
+        );
+
         DELETE FROM model_configs WHERE id NOT IN (
             SELECT MIN(id) FROM model_configs GROUP BY LOWER(repo_id)
         );

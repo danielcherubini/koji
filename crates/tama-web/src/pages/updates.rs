@@ -372,14 +372,14 @@ pub fn Updates() -> impl IntoView {
                                         } else {
                                             view! { <span/> }.into_any()
                                         }}
-                                        <button class="btn btn-ghost"
-                                            on:click=move |_| {
-                                                let id = item_id.clone();
-                                                wasm_bindgen_futures::spawn_local(async move {
-                                                    let url = format!("/tama/v1/updates/check/backend/{}", id);
-                                                    let _ = post_request(&url).send().await;
-                                                });
-                                            }>
+                                      <button class="btn btn-ghost"
+                                             on:click=move |_| {
+                                                 let id = item_id.clone();
+                                                 wasm_bindgen_futures::spawn_local(async move {
+                                                     let url = format!("/tama/v1/updates/check/backend/{}", urlencoding::encode(&id));
+                                                     let _ = post_request(&url).send().await;
+                                                 });
+                                             }>
                                             "Refresh"
                                         </button>
                                     }.into_any()))
