@@ -199,10 +199,13 @@ pub fn Updates() -> impl IntoView {
         });
     };
 
-    let on_update_backend = move |name: String| {
+    let on_update_backend = move |(name, variant): (String, Option<String>)| {
         backend_update_busy.set(true);
         wasm_bindgen_futures::spawn_local(async move {
-            let url = format!("/tama/v1/backends/{}/update", name);
+            let url = match variant {
+                Some(v) => format!("/tama/v1/backends/{}/update?gpu_variant={}", name, v),
+                None => format!("/tama/v1/backends/{}/update", name),
+            };
             if let Ok(resp) = post_request(&url).send().await {
                 if resp.ok() {
                     if let Ok(data) = resp.json::<serde_json::Value>().await {
@@ -342,6 +345,8 @@ pub fn Updates() -> impl IntoView {
                         let backends = updates.with(|u| u.backends.clone());
                         backends.into_iter().map(|b| {
                             let item_id = b.item_id.clone();
+                            let variant = b.variant.clone();
+                            let variant_for_update = variant.clone();
                             let is_update_available = b.update_available;
                             view! {
                                 <ListCard
@@ -351,7 +356,7 @@ pub fn Updates() -> impl IntoView {
                                             let id = item_id.clone();
                                             view! {
                                                 <button class="btn btn-secondary"
-                                                    on:click=move |_| on_update_backend(id.clone())>
+                                                    on:click=move |_| on_update_backend((id.clone(), variant_for_update.clone()))>
                                                     "Update"
                                                 </button>
                                             }.into_any()
@@ -371,7 +376,7 @@ pub fn Updates() -> impl IntoView {
                                     }.into_any()))
                                 >
                                     <span class="update-item__name">{b.item_id.clone()}</span>
-                                    {b.variant.map(|v| {
+                                    {variant.map(|v| {
                                         view! { <span class="update-item__variant">{v}</span> }
                                     })}
                                     <span class="update-item__version">
