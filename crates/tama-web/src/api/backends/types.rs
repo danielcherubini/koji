@@ -284,6 +284,20 @@ pub struct ActivateResponse {
     pub is_active: bool,
 }
 
+/// Request body for POST /tama/v1/backends/:name/source.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct UpdateSourceRequest {
+    pub build_from_source: bool,
+}
+
+/// Response for POST /tama/v1/backends/:name/source.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct UpdateSourceResponse {
+    pub build_from_source: bool,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct CheckUpdatesResponse {
