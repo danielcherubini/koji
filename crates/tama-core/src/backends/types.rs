@@ -93,3 +93,28 @@ impl FromStr for BackendType {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_git_url() {
+        assert_eq!(
+            BackendType::LlamaCpp.default_git_url(),
+            "https://github.com/ggml-org/llama.cpp.git"
+        );
+        assert_eq!(
+            BackendType::IkLlama.default_git_url(),
+            "https://github.com/ikawrakow/ik_llama.cpp.git"
+        );
+        assert_eq!(
+            BackendType::TtsKokoro.default_git_url(),
+            "https://github.com/ggml-org/llama.cpp.git"
+        );
+        assert_eq!(
+            BackendType::Custom.default_git_url(),
+            "https://github.com/ggml-org/llama.cpp.git"
+        );
+    }
+}
