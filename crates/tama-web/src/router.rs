@@ -16,7 +16,7 @@ use crate::api::aliases::{create_alias, delete_alias, get_alias, list_aliases, u
 use crate::api::backends::{
     activate_backend_version, check_backend_updates, get_job, install_backend, job_events_sse,
     list_backend_versions, list_backends, remove_backend, remove_backend_version,
-    system_capabilities, update_backend, update_backend_default_args,
+    system_capabilities, update_backend, update_backend_default_args, update_backend_source,
 };
 use crate::api::backup::{restore_preview, start_restore};
 use crate::api::benchmarks::{
@@ -133,6 +133,10 @@ pub fn build_web_routes() -> Router<Arc<tama_core::proxy::ProxyState>> {
         .route(
             "/tama/v1/backends/:name/activate",
             post(activate_backend_version),
+        )
+        .route(
+            "/tama/v1/backends/:name/source",
+            post(update_backend_source),
         )
         .route("/tama/v1/backends/jobs/:id", get(get_job))
         .route("/tama/v1/backends/jobs/:id/events", get(job_events_sse))

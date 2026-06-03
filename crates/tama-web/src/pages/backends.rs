@@ -150,6 +150,29 @@ pub fn Backends() -> impl IntoView {
         });
     });
 
+    let on_build_method_change = Callback::new(
+        move |(backend_type, gpu_variant, build_from_source): (String, String, bool)| {
+            action_error.set(None);
+            wasm_bindgen_futures::spawn_local(async move {
+                let url = format!(
+                    "/tama/v1/backends/{}/source?gpu_variant={}",
+                    backend_type, gpu_variant
+                );
+                let body = serde_json::json!({ "build_from_source": build_from_source });
+                match post_request(&url).json(&body).unwrap().send().await {
+                    Ok(resp) if resp.ok() => {
+                        // Success — no need to refresh, toggle already reflects the change
+                    }
+                    Ok(resp) => {
+                        let text = resp.text().await.unwrap_or_default();
+                        action_error.set(Some(format!("Failed to update build method: {text}")));
+                    }
+                    Err(e) => action_error.set(Some(format!("Request failed: {e}"))),
+                }
+            });
+        },
+    );
+
     let on_install_submit = Callback::new(move |req: InstallRequest| {
         install_modal_for.set(None);
         action_error.set(None);
@@ -383,6 +406,7 @@ pub fn Backends() -> impl IntoView {
                                 on_delete=on_delete_click
                                 on_default_args_change=on_default_args_change
                                 on_version_change=on_version_change
+                                on_build_method_change=on_build_method_change
                             />
                         }.into_any());
                     }

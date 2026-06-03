@@ -64,6 +64,17 @@ impl BackendType {
     pub fn is_tts(&self) -> bool {
         matches!(self, BackendType::TtsKokoro)
     }
+
+    /// Return the canonical git URL for cloning this backend's source code.
+    pub fn default_git_url(&self) -> &'static str {
+        match self {
+            BackendType::LlamaCpp => "https://github.com/ggml-org/llama.cpp.git",
+            BackendType::IkLlama => "https://github.com/ikawrakow/ik_llama.cpp.git",
+            BackendType::TtsKokoro | BackendType::Custom => {
+                "https://github.com/ggml-org/llama.cpp.git" // fallback, never reached in practice
+            }
+        }
+    }
 }
 
 impl FromStr for BackendType {
@@ -80,5 +91,30 @@ impl FromStr for BackendType {
                 s
             )),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_git_url() {
+        assert_eq!(
+            BackendType::LlamaCpp.default_git_url(),
+            "https://github.com/ggml-org/llama.cpp.git"
+        );
+        assert_eq!(
+            BackendType::IkLlama.default_git_url(),
+            "https://github.com/ikawrakow/ik_llama.cpp.git"
+        );
+        assert_eq!(
+            BackendType::TtsKokoro.default_git_url(),
+            "https://github.com/ggml-org/llama.cpp.git"
+        );
+        assert_eq!(
+            BackendType::Custom.default_git_url(),
+            "https://github.com/ggml-org/llama.cpp.git"
+        );
     }
 }

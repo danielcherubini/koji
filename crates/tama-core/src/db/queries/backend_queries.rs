@@ -234,6 +234,29 @@ pub fn delete_all_backend_versions(
     Ok(())
 }
 
+/// Update the `source` column on the active backend installation row.
+///
+/// Fails with an error if no active row matches the given name and gpu_variant.
+pub fn update_backend_source(
+    conn: &Connection,
+    name: &str,
+    gpu_variant: &str,
+    source_json: &str,
+) -> Result<()> {
+    let rows = conn.execute(
+        "UPDATE backend_installations SET source = ?1 WHERE name = ?2 AND gpu_variant = ?3 AND is_active = 1",
+        (source_json, name, gpu_variant),
+    )?;
+    if rows == 0 {
+        anyhow::bail!(
+            "No active backend '{}' variant '{}' found",
+            name,
+            gpu_variant
+        );
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Backend config queries
 // ---------------------------------------------------------------------------
@@ -484,5 +507,51 @@ mod tests {
             .unwrap();
         assert!(record.default_args.is_empty());
         assert!(record.health_check_url.is_none());
+    }
+
+    #[test]
+    fn test_update_backend_source_success() {
+        let OpenResult { conn, .. } = open_in_memory().unwrap();
+
+        // Insert a backend with no source
+        insert_backend_installation(
+            &conn,
+            &BackendInstallationRecord {
+                id: 0,
+                name: "llama_cpp".to_string(),
+                backend_type: "llama_cpp".to_string(),
+                version: "b8407".to_string(),
+                path: "/tmp/test/llama-server".to_string(),
+                installed_at: 0,
+                gpu_type: None,
+                gpu_variant: "cpu".to_string(),
+                source: None,
+                is_active: true,
+            },
+        )
+        .unwrap();
+
+        // Update the source column
+        let new_source = r#"{"source":"SourceCode","content":{"version":"b8407","git_url":"https://github.com/ggml-org/llama.cpp.git"}}"#;
+        update_backend_source(&conn, "llama_cpp", "cpu", new_source).unwrap();
+
+        // Verify the source was updated
+        let record = get_active_backend(&conn, "llama_cpp", "cpu")
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.source, Some(new_source.to_string()));
+    }
+
+    #[test]
+    fn test_update_backend_source_not_found() {
+        let OpenResult { conn, .. } = open_in_memory().unwrap();
+
+        let result = update_backend_source(
+            &conn,
+            "nonexistent",
+            "cpu",
+            r#"{"source":"Prebuilt","content":{"version":"v1"}}"#,
+        );
+        assert!(result.is_err());
     }
 }

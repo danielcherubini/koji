@@ -366,6 +366,101 @@ mod tests {
             "update_backend should reject names containing '..' with 400"
         );
     }
+
+    /// Path traversal in update_backend_source name should return 400.
+    #[tokio::test]
+    async fn test_update_backend_source_path_traversal_rejected() {
+        let config = tama_core::config::Config::default();
+        let state = Arc::new(tama_core::proxy::ProxyState::new(config, None));
+
+        let router = crate::router::build_web_routes().with_state(state);
+
+        let csrf_token = "test-csrf-token-12345";
+        let cookie_header = format!("{}={}", "tama_csrf_token", csrf_token);
+
+        let body = serde_json::json!({"build_from_source": true}).to_string();
+
+        // Test with `..` in name — Axum normalizes `../` segments but not `..`
+        // embedded within a segment. The validation catches this.
+        let req = Request::builder()
+            .method("POST")
+            .uri("/tama/v1/backends/foo..bar/source")
+            .header(axum::http::header::COOKIE, cookie_header.as_str())
+            .header("X-CSRF-Token", csrf_token)
+            .header("Content-Type", "application/json")
+            .body(Body::from(body.clone()))
+            .unwrap();
+
+        let resp = router
+            .clone()
+            .oneshot(req)
+            .await
+            .expect("request should complete");
+
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::BAD_REQUEST,
+            "update_backend_source should reject names containing '..' with 400"
+        );
+
+        // Test with `\` in name — backslash won't be normalized by Axum.
+        let req = Request::builder()
+            .method("POST")
+            .uri("/tama/v1/backends/foo\\bar/source")
+            .header(axum::http::header::COOKIE, cookie_header.as_str())
+            .header("X-CSRF-Token", csrf_token)
+            .header("Content-Type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+
+        let resp = router
+            .clone()
+            .oneshot(req)
+            .await
+            .expect("request should complete");
+
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::BAD_REQUEST,
+            "update_backend_source should reject names containing '\\' with 400"
+        );
+    }
+
+    /// Missing backend in update_backend_source should return 404.
+    #[tokio::test]
+    async fn test_update_backend_source_missing_backend() {
+        let config = tama_core::config::Config::default();
+        let state = Arc::new(tama_core::proxy::ProxyState::new(config, None));
+
+        let router = crate::router::build_web_routes().with_state(state);
+
+        let csrf_token = "test-csrf-token-12345";
+        let cookie_header = format!("{}={}", "tama_csrf_token", csrf_token);
+
+        let body = serde_json::json!({"build_from_source": true}).to_string();
+
+        // POST to a non-existent backend
+        let req = Request::builder()
+            .method("POST")
+            .uri("/tama/v1/backends/nonexistent_backend/source")
+            .header(axum::http::header::COOKIE, cookie_header.as_str())
+            .header("X-CSRF-Token", csrf_token)
+            .header("Content-Type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+
+        let resp = router
+            .clone()
+            .oneshot(req)
+            .await
+            .expect("request should complete");
+
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::NOT_FOUND,
+            "update_backend_source should return 404 for non-existent backend"
+        );
+    }
 }
 
 /// Query params for DELETE /tama/v1/backends/:name/versions/:version
@@ -782,6 +877,153 @@ pub async fn update_backend_default_args(
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": format!("Failed to update backend config: {}", e)})),
+        )
+            .into_response(),
+    }
+}
+
+/// Query params for POST /tama/v1/backends/:name/source
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct SourceQuery {
+    #[serde(default)]
+    pub gpu_variant: Option<String>,
+}
+
+/// POST /tama/v1/backends/:name/source
+/// Updates the build method (source vs prebuilt) for a backend.
+pub async fn update_backend_source(
+    State(state): State<Arc<ProxyState>>,
+    Path(name): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<SourceQuery>,
+    Json(req): Json<UpdateSourceRequest>,
+) -> impl IntoResponse {
+    // Validate path param to prevent path traversal attacks
+    if name.contains('/') || name.contains('\\') || name.contains("..") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Invalid backend name"})),
+        )
+            .into_response();
+    }
+
+    let config_dir = match state.config.read().await.loaded_from.clone() {
+        Some(p) => p,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "config_dir not configured"})),
+            )
+                .into_response();
+        }
+    };
+
+    // Open manager and determine gpu_variant
+    let config_dir_clone = config_dir.clone();
+    let name_clone = name.clone();
+    let query_gpu_variant = query.gpu_variant.clone();
+    let mgr_result: Result<(tama_core::backends::BackendManager, String), _> =
+        tokio::task::spawn_blocking(move || {
+            let mgr = tama_core::backends::BackendManager::open(&config_dir_clone)?;
+
+            // Determine gpu_variant: use explicit value or auto-infer from manager
+            let gpu_variant = match query_gpu_variant {
+                Some(v) => v,
+                None => {
+                    let versions = mgr.list_versions(&name_clone, None)?;
+                    let versions = match versions {
+                        Some(v) => v,
+                        None => {
+                            return Err(anyhow::anyhow!(
+                                "Backend '{}' not found",
+                                name_clone
+                            ));
+                        }
+                    };
+                    let mut variants: Vec<String> =
+                        versions.iter().map(|v| v.gpu_variant.clone()).collect();
+                    variants.sort();
+                    variants.dedup();
+                    match variants.len() {
+                        1 => variants.into_iter().next().unwrap(),
+                        _ => {
+                            return Err(anyhow::anyhow!(
+                                "Backend '{}' has multiple variants. Please specify gpu_variant. Available: {}",
+                                name_clone,
+                                variants.join(", ")
+                            ));
+                        }
+                    }
+                }
+            };
+
+            // Validate resolved gpu_variant for path traversal
+            if gpu_variant.contains('/') || gpu_variant.contains('\\') || gpu_variant.contains("..")
+            {
+                return Err(anyhow::anyhow!("Invalid gpu_variant: path separators or traversal sequences not allowed"));
+            }
+
+            Ok((mgr, gpu_variant))
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("spawn error: {}", e))
+        .and_then(|r| r);
+
+    let (mgr, gpu_variant) = match mgr_result {
+        Ok(r) => r,
+        Err(e) => {
+            let err_msg = e.to_string();
+            if err_msg.contains("not found") {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({"error": err_msg})),
+                )
+                    .into_response();
+            }
+            if err_msg.contains("Invalid gpu_variant") || err_msg.contains("multiple variants") {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": err_msg})),
+                )
+                    .into_response();
+            }
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("Failed to open manager: {}", e)})),
+            )
+                .into_response();
+        }
+    };
+
+    // Check for active job conflict
+    if let Some(jobs) = &state.web_jobs {
+        if let Some(active_job) = jobs.active().await {
+            if active_job.backend_type.as_ref().map(|b| b.to_string()) == Some(name.clone()) {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(serde_json::json!({"error": "another backend job is already running"})),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    let name_for_update = name.clone();
+    let gpu_variant_for_update = gpu_variant.clone();
+    let build_from_source = req.build_from_source;
+
+    let update_result: Result<(), anyhow::Error> = tokio::task::spawn_blocking(move || {
+        mgr.update_build_method(&name_for_update, &gpu_variant_for_update, build_from_source)
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("spawn error: {}", e))
+    .and_then(|r| r);
+
+    match update_result {
+        Ok(()) => Json(UpdateSourceResponse { build_from_source }).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("Failed to update build method: {}", e)})),
         )
             .into_response(),
     }
