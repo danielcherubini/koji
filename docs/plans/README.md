@@ -14,8 +14,8 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Quick Stats
 
-- **Total Plans**: 114
-- **Completed**: 112 ✅
+- **Total Plans**: 115
+- **Completed**: 113 ✅
 - **In Progress**: 0 🚧
 - **Remaining**: 2
 
@@ -29,6 +29,7 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 | Plan | Description | PR / Git References |
 |------|-------------|---------------------|
+| [Unified Dashboard Models](2026-06-03-unified-dashboard-models.md) | Merge "Active Models" and "Inactive Models" sections into a single "Models" section on the dashboard | #108 `1f6cc9f` ✅ COMPLETED |
 | [Backend Build Method Toggle](2026-06-03-backend-build-method-toggle.md) | Add "Build from source" toggle on backend cards that persists to DB, letting users switch between prebuilt and source for updates | #107 ✅ COMPLETED |
 | [/v1/opencode/models Capability Enrichment](2026-06-01-opencode-models-capabilities.md) | Add tool_call, reasoning, attachment, temperature fields to /v1/opencode/models from backend /props | #105 ✅ COMPLETED |
 | [Shared Components Consolidation](2026-05-31-list-card-refactor.md) | Consolidate duplicated UI patterns into 4 shared components: ListCard, SectionCard, AlertBanner, TabButtons | #102 ✅ COMPLETED |
@@ -279,4 +280,4 @@ When implementing a new feature:
 
 ---
 
-**Last Updated**: 2026-06-01
+**Last Updated**: 2026-06-03

@@ -162,8 +162,6 @@ pub fn Dashboard() -> impl IntoView {
             let vram_y_refs = vec![vram_max];
 
             let all_models: Vec<ModelStatus> = buf.last().map(|h| h.models.clone()).unwrap_or_default();
-            let active = active_models(&all_models);
-            let inactive = inactive_models(&all_models);
 
             view! {
                 <div class="grid-stats">
@@ -398,13 +396,11 @@ pub fn Dashboard() -> impl IntoView {
                     }.into_any()
                 }}
 
-                // Active Models section
+                // Models section
                 <section class="dashboard-models">
                     <div class="page-header">
-                        <h2>"Active Models"</h2>
-                        <span class="text-muted">
-                            {format!("{} loaded", active.len())}
-                        </span>
+                        <h2>"Models"</h2>
+                        <span class="text-muted">{format!("{} models", all_models.len())}</span>
                     </div>
                     {
                         if all_models.is_empty() {
@@ -413,18 +409,10 @@ pub fn Dashboard() -> impl IntoView {
                                     <p class="text-muted">"No models configured yet."</p>
                                 </div>
                             }.into_any()
-                        } else if active.is_empty() {
-                            view! {
-                                <div class="card card--centered">
-                                    <p class="text-muted">"No models currently loaded."</p>
-                                </div>
-                            }.into_any()
                         } else {
-                            let mut active_sorted = active.clone();
-                            active_sorted.sort_by_key(model_sort_key);
                             view! {
                                 <div class="models-list">
-                                    {active_sorted.into_iter().map(|m| {
+                                    {all_models.into_iter().map(|m| {
                                         let on_load_cb = Callback::new(move |id: String| {
                                             load_action.dispatch(id);
                                         });
@@ -463,72 +451,6 @@ pub fn Dashboard() -> impl IntoView {
                         }
                     }
                 </section>
-
-                // Inactive Models section — only render when all_models is non-empty
-                {if all_models.is_empty() {
-                    view! { <div></div> }.into_any()
-                } else {
-                    view! {
-                        <section class="dashboard-models">
-                            <div class="page-header">
-                                <h2>"Inactive Models"</h2>
-                                <span class="text-muted">
-                                    {format!("{} inactive", inactive.len())}
-                                </span>
-                            </div>
-                            {
-                                if inactive.is_empty() {
-                                    view! {
-                                        <div class="card card--centered">
-                                            <p class="text-muted">"No inactive models."</p>
-                                        </div>
-                                    }.into_any()
-                                } else {
-                                    let mut inactive_sorted = inactive.clone();
-                                    inactive_sorted.sort_by_key(model_sort_key);
-                                    view! {
-                                        <div class="models-list">
-                                            {inactive_sorted.into_iter().map(|m| {
-                                                let on_load_cb = Callback::new(move |id: String| {
-                                                    load_action.dispatch(id);
-                                                });
-                                                let on_unload_cb = Callback::new(move |id: String| {
-                                                    unload_action.dispatch(id);
-                                                });
-                                                view! {
-                                                    <ModelCard
-                                                        id=m.id.clone()
-                                                        db_id=m.db_id
-                                                        display_name=model_display_name(&m)
-                                                        quant=m.quant.clone()
-                                                        context_length=m.context_length
-                                                        hf_architecture_type=m.hf_architecture_type.clone()
-                                                        hf_base_model=m.hf_base_model.clone()
-                                                        pips=ModelPips {
-                                                            gpu_variant: m.gpu_variant.clone(),
-                                                            cache_type_k: m.cache_type_k.clone(),
-                                                            cache_type_v: m.cache_type_v.clone(),
-                                                            spec_types: m.spec_types.clone(),
-                                                        }
-                                                        backend=m.backend.clone()
-                                                        log_source=Some(format!("{}_{}", m.backend, m.id))
-                                                        state=m.state.clone()
-                                                        loaded=None
-                                                        enabled=None
-                                                        on_load=on_load_cb
-                                                        on_unload=on_unload_cb
-                                                        load_busy=load_busy
-                                                        unload_busy=unload_busy
-                                                    />
-                                                }
-                                            }).collect::<Vec<_>>()}
-                                        </div>
-                                    }.into_any()
-                                }
-                            }
-                        </section>
-                    }.into_any()
-                }}
             }.into_any()
         }}
 
