@@ -64,6 +64,17 @@ impl BackendType {
     pub fn is_tts(&self) -> bool {
         matches!(self, BackendType::TtsKokoro)
     }
+
+    /// Return the canonical git URL for cloning this backend's source code.
+    pub fn default_git_url(&self) -> &'static str {
+        match self {
+            BackendType::LlamaCpp => "https://github.com/ggml-org/llama.cpp.git",
+            BackendType::IkLlama => "https://github.com/ikawrakow/ik_llama.cpp.git",
+            BackendType::TtsKokoro | BackendType::Custom => {
+                "https://github.com/ggml-org/llama.cpp.git" // fallback, never reached in practice
+            }
+        }
+    }
 }
 
 impl FromStr for BackendType {

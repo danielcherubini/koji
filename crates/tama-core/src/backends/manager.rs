@@ -252,6 +252,51 @@ impl BackendManager {
         crate::db::queries::delete_all_backend_versions(&self.conn, name, gpu_variant)
     }
 
+    /// Update the build method (source vs prebuilt) for an active backend installation.
+    ///
+    /// When switching to source build (`build_from_source = true`):
+    /// - If the existing source is `SourceCode`, preserves the existing `git_url` and `commit`.
+    /// - Otherwise, uses the default git URL for the backend type.
+    ///
+    /// When switching to prebuilt (`build_from_source = false`):
+    /// - Sets source to `Prebuilt` with the current version.
+    pub fn update_build_method(
+        &self,
+        name: &str,
+        gpu_variant: &str,
+        build_from_source: bool,
+    ) -> Result<()> {
+        let backend_info = self
+            .get_active(name, gpu_variant)?
+            .ok_or_else(|| anyhow!("Backend '{}' variant '{}' not found", name, gpu_variant))?;
+
+        let new_source = if build_from_source {
+            match &backend_info.source {
+                Some(BackendSource::SourceCode {
+                    git_url, commit, ..
+                }) => BackendSource::SourceCode {
+                    version: backend_info.version.clone(),
+                    git_url: git_url.clone(),
+                    commit: commit.clone(),
+                },
+                _ => BackendSource::SourceCode {
+                    version: backend_info.version.clone(),
+                    git_url: backend_info.backend_type.default_git_url().to_string(),
+                    commit: None,
+                },
+            }
+        } else {
+            BackendSource::Prebuilt {
+                version: backend_info.version.clone(),
+            }
+        };
+
+        let source_json =
+            serde_json::to_string(&new_source).context("Failed to serialize BackendSource")?;
+
+        crate::db::queries::update_backend_source(&self.conn, name, gpu_variant, &source_json)
+    }
+
     // ── Private helpers ──────────────────────────────────────
 
     fn info_to_record(info: &BackendInfo) -> Result<crate::db::queries::BackendInstallationRecord> {
@@ -820,5 +865,148 @@ mod tests {
             std::path::PathBuf::from("/path/to/llama_cpp_v2")
         );
         assert!(active.source.is_some());
+    }
+
+    // ── Update build method tests ──────────────────────────────────────
+
+    fn insert_active_with_source(
+        conn: &Connection,
+        name: &str,
+        gpu_variant: &str,
+        version: &str,
+        source: Option<BackendSource>,
+    ) -> Result<()> {
+        let source_json = source
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .unwrap();
+        crate::db::queries::insert_backend_installation(
+            conn,
+            &BackendInstallationRecord {
+                id: 0,
+                name: name.to_string(),
+                backend_type: "llama_cpp".to_string(),
+                version: version.to_string(),
+                path: "/tmp/test/llama-server".to_string(),
+                installed_at: 0,
+                gpu_type: None,
+                gpu_variant: gpu_variant.to_string(),
+                source: source_json,
+                is_active: true,
+            },
+        )
+    }
+
+    #[test]
+    fn test_update_build_method_prebuilt_to_source() {
+        let manager = BackendManager::open_in_memory().unwrap();
+
+        // Insert with Prebuilt source
+        insert_active_with_source(
+            &manager.conn,
+            "llama_cpp",
+            "cpu",
+            "b8407",
+            Some(BackendSource::Prebuilt {
+                version: "b8407".to_string(),
+            }),
+        )
+        .unwrap();
+
+        // Switch to source build
+        manager
+            .update_build_method("llama_cpp", "cpu", true)
+            .unwrap();
+
+        let active = manager.get_active("llama_cpp", "cpu").unwrap().unwrap();
+        let source = active.source.unwrap();
+        assert!(matches!(source, BackendSource::SourceCode { .. }));
+        if let BackendSource::SourceCode {
+            git_url, version, ..
+        } = source
+        {
+            assert_eq!(git_url, "https://github.com/ggml-org/llama.cpp.git");
+            assert_eq!(version, "b8407");
+        }
+    }
+
+    #[test]
+    fn test_update_build_method_source_to_prebuilt() {
+        let manager = BackendManager::open_in_memory().unwrap();
+
+        // Insert with SourceCode
+        insert_active_with_source(
+            &manager.conn,
+            "llama_cpp",
+            "cpu",
+            "b8407",
+            Some(BackendSource::SourceCode {
+                version: "b8407".to_string(),
+                git_url: "https://github.com/ggml-org/llama.cpp.git".to_string(),
+                commit: None,
+            }),
+        )
+        .unwrap();
+
+        // Switch to prebuilt
+        manager
+            .update_build_method("llama_cpp", "cpu", false)
+            .unwrap();
+
+        let active = manager.get_active("llama_cpp", "cpu").unwrap().unwrap();
+        let source = active.source.unwrap();
+        assert!(matches!(source, BackendSource::Prebuilt { .. }));
+        if let BackendSource::Prebuilt { version } = source {
+            assert_eq!(version, "b8407");
+        }
+    }
+
+    #[test]
+    fn test_update_build_method_not_found() {
+        let manager = BackendManager::open_in_memory().unwrap();
+
+        let result = manager.update_build_method("nonexistent", "cpu", true);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_update_build_method_preserves_git_url() {
+        let manager = BackendManager::open_in_memory().unwrap();
+
+        // Insert with SourceCode using a custom git URL
+        let custom_url = "https://github.com/custom/llama.cpp.git".to_string();
+        insert_active_with_source(
+            &manager.conn,
+            "llama_cpp",
+            "cpu",
+            "b8407",
+            Some(BackendSource::SourceCode {
+                version: "b8407".to_string(),
+                git_url: custom_url.clone(),
+                commit: Some("abc123".to_string()),
+            }),
+        )
+        .unwrap();
+
+        // Re-apply source build — should preserve the custom git_url and commit
+        manager
+            .update_build_method("llama_cpp", "cpu", true)
+            .unwrap();
+
+        let active = manager.get_active("llama_cpp", "cpu").unwrap().unwrap();
+        let source = active.source.unwrap();
+        if let BackendSource::SourceCode {
+            git_url,
+            commit,
+            version,
+        } = source
+        {
+            assert_eq!(git_url, custom_url);
+            assert_eq!(commit, Some("abc123".to_string()));
+            assert_eq!(version, "b8407");
+        } else {
+            panic!("Expected SourceCode, got {:?}", source);
+        }
     }
 }
