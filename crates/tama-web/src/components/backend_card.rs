@@ -55,6 +55,13 @@ pub enum BackendSourceDto {
     },
 }
 
+impl BackendSourceDto {
+    /// Returns true if this backend was built from source code.
+    pub fn is_source_code(&self) -> bool {
+        matches!(self, BackendSourceDto::SourceCode { .. })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct BackendInfoDto {
@@ -137,6 +144,9 @@ pub fn BackendCard(
     /// Called with (backend_type, version, gpu_variant) when version dropdown changes.
     #[prop(optional)]
     on_version_change: Option<Callback<(String, String, String)>>,
+    /// Called with (backend_type, gpu_variant, build_from_source) when toggle changes.
+    #[prop(optional)]
+    on_build_method_change: Option<Callback<(String, String, bool)>>,
 ) -> impl IntoView {
     let type_install = backend.r#type.clone();
     let type_update = backend.r#type.clone();
@@ -180,6 +190,25 @@ pub fn BackendCard(
     let is_selected_active = move || {
         selected_version_idx.get() < version_count
             && versions_for_active[selected_version_idx.get()].is_active
+    };
+
+    // Build method toggle state
+    let current_build_from_source = RwSignal::new(
+        backend
+            .info
+            .as_ref()
+            .and_then(|i| i.source.as_ref())
+            .map(|s| s.is_source_code())
+            .unwrap_or(false), // Default to prebuilt if no source recorded
+    );
+
+    // Whether toggle should be disabled (forced source)
+    let force_source = backend.r#type == "ik_llama";
+
+    // Whether to show the toggle at all (not for tts/custom, only when installed)
+    let show_toggle = {
+        let bt = backend.r#type.clone();
+        installed && bt != "tts_kokoro" && bt != "custom"
     };
 
     view! {
@@ -316,6 +345,50 @@ pub fn BackendCard(
                 }}
             </div>
 
+            {/* Build method toggle */}
+            {if show_toggle {
+                let bt = backend.r#type.clone();
+                let gv = gpu_variant.clone();
+                let cb = on_build_method_change;
+                let force = force_source;
+                view! {
+                    <div style="margin-top:0.75rem;">
+                        <div class="form-check" style="display:flex;align-items:center;gap:0.5rem;">
+                            <input
+                                type="checkbox"
+                                class="form-check-input"
+                                prop:checked=move || current_build_from_source.get()
+                                prop:disabled=move || force
+                                on:change=move |e| {
+                                    let checked = e.target()
+                                        .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
+                                        .map(|el| el.checked())
+                                        .unwrap_or(false);
+                                    current_build_from_source.set(checked);
+                                    if let Some(c) = &cb {
+                                        c.run((bt.clone(), gv.clone(), checked));
+                                    }
+                                }
+                            />
+                            <span class="form-check-label" style="font-size:0.875rem;">"Build from source"</span>
+                        </div>
+                        {move || {
+                            if force {
+                                view! {
+                                    <div style="font-size:0.75rem;color:var(--muted,#666);margin-top:0.125rem;margin-left:1.5rem;">
+                                        "Always built from source — no prebuilt binaries"
+                                    </div>
+                                }.into_any()
+                            } else {
+                                view! { <span/> }.into_any()
+                            }
+                        }}
+                    </div>
+                }.into_any()
+            } else {
+                view! { <span/> }.into_any()
+            }}
+
             <div style="display:flex;gap:0.5rem;margin-top:1rem;flex-wrap:wrap;">
                 {/* Install button */}
                 {if !installed {
@@ -432,6 +505,28 @@ pub fn BackendCard(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_backend_source_dto_is_source_code() {
+        let prebuilt = BackendSourceDto::Prebuilt {
+            version: "1.0.0".to_string(),
+        };
+        assert!(!prebuilt.is_source_code());
+
+        let source = BackendSourceDto::SourceCode {
+            version: "main".to_string(),
+            git_url: "https://github.com/example/repo".to_string(),
+            commit: Some("abc123".to_string()),
+        };
+        assert!(source.is_source_code());
+
+        let source_no_commit = BackendSourceDto::SourceCode {
+            version: "main".to_string(),
+            git_url: "https://github.com/example/repo".to_string(),
+            commit: None,
+        };
+        assert!(source_no_commit.is_source_code());
+    }
 
     #[test]
     fn test_gpu_type_label() {
