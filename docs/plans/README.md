@@ -15,9 +15,9 @@ This directory contains implementation plans for the Tama project. Each plan doc
 ## Quick Stats
 
 - **Total Plans**: 116
-- **Completed**: 113 ✅
-- **In Progress**: 1 🚧
-- **Remaining**: 3
+- **Completed**: 114 ✅
+- **In Progress**: 0 🚧
+- **Remaining**: 2
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
 
@@ -29,7 +29,7 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 | Plan | Description | PR / Git References |
 |------|-------------|---------------------|
-| [SSE-Powered Updates Page](2026-06-04-sse-updates-page.md) | Replace fire-and-forget refresh buttons with SSE-driven real-time updates on the updates page | 🚧 IN PROGRESS |
+| [SSE-Powered Updates Page](2026-06-04-sse-updates-page.md) | Replace fire-and-forget refresh buttons with SSE-driven real-time updates on the updates page | #109 `7a1a39dc`, `6faed2bf`, `03dbbcfe`, `efefdcf`, `eef6916` ✅ COMPLETED |
 | [Unified Dashboard Models](2026-06-03-unified-dashboard-models.md) | Merge "Active Models" and "Inactive Models" sections into a single "Models" section on the dashboard | #108 `1f6cc9f` ✅ COMPLETED |
 | [Backend Build Method Toggle](2026-06-03-backend-build-method-toggle.md) | Add "Build from source" toggle on backend cards that persists to DB, letting users switch between prebuilt and source for updates | #107 ✅ COMPLETED |
 | [/v1/opencode/models Capability Enrichment](2026-06-01-opencode-models-capabilities.md) | Add tool_call, reasoning, attachment, temperature fields to /v1/opencode/models from backend /props | #105 ✅ COMPLETED |
@@ -281,4 +281,4 @@ When implementing a new feature:
 
 ---
 
-**Last Updated**: 2026-06-03
+**Last Updated**: 2026-06-04
