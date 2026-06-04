@@ -137,6 +137,17 @@ pub struct UpdatesListResponse {
     pub models: Vec<UpdateCheckDto>,
 }
 
+/// Normalize model `item_id` from DB numeric format ("123") to config_key format
+/// ("model-123") so that SSE `patch_list` can match against the initial REST fetch.
+fn normalize_model_item_ids(models: &mut Vec<UpdateCheckDto>) {
+    for m in models.iter_mut() {
+        // If item_id is purely numeric, convert to "model-{id}" config_key format
+        if m.item_type == "model" && m.item_id.parse::<i64>().is_ok() {
+            m.item_id = format!("model-{}", m.item_id);
+        }
+    }
+}
+
 /// Merge a DTO into the updates list, matching on (item_id, variant) for backends,
 /// item_id for models. Replaces existing entry or appends if new.
 #[cfg(not(feature = "ssr"))]
@@ -305,7 +316,9 @@ pub fn Updates() -> impl IntoView {
                 Ok(resp) if resp.ok() => {
                     // Store CSRF token from response header (fallback when cookie unavailable)
                     extract_and_store_csrf_token(&resp);
-                    if let Ok(data) = resp.json::<UpdatesListResponse>().await {
+                    if let Ok(mut data) = resp.json::<UpdatesListResponse>().await {
+                        // Normalize model item_ids to config_key format for SSE patch_list matching
+                        normalize_model_item_ids(&mut data.models);
                         updates.set(data.clone());
                         // Get last checked time from any record
                         let all_items: Vec<_> =
@@ -385,7 +398,8 @@ pub fn Updates() -> impl IntoView {
                     gloo_timers::future::TimeoutFuture::new(30000).await;
                     if checking.get() && outstanding_checks.get() == 0 {
                         if let Ok(resp2) = get_request("/tama/v1/updates").send().await {
-                            if let Ok(data) = resp2.json::<UpdatesListResponse>().await {
+                            if let Ok(mut data) = resp2.json::<UpdatesListResponse>().await {
+                                normalize_model_item_ids(&mut data.models);
                                 updates.set(data);
                             }
                         }
@@ -469,7 +483,8 @@ pub fn Updates() -> impl IntoView {
         wasm_bindgen_futures::spawn_local(async move {
             gloo_timers::future::TimeoutFuture::new(500).await;
             if let Ok(resp) = get_request("/tama/v1/updates").send().await {
-                if let Ok(data) = resp.json::<UpdatesListResponse>().await {
+                if let Ok(mut data) = resp.json::<UpdatesListResponse>().await {
+                    normalize_model_item_ids(&mut data.models);
                     let all_items: Vec<_> =
                         data.backends.iter().chain(data.models.iter()).collect();
                     last_checked.set(all_items.iter().map(|r| r.checked_at).max());
@@ -544,7 +559,8 @@ pub fn Updates() -> impl IntoView {
                     wasm_bindgen_futures::spawn_local(async move {
                         gloo_timers::future::TimeoutFuture::new(2000).await;
                         if let Ok(r) = get_request("/tama/v1/updates").send().await {
-                            if let Ok(data) = r.json::<UpdatesListResponse>().await {
+                            if let Ok(mut data) = r.json::<UpdatesListResponse>().await {
+                                normalize_model_item_ids(&mut data.models);
                                 updates.set(data);
                             }
                         }

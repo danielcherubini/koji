@@ -144,7 +144,9 @@ impl UpdateChecker {
     #[cfg(feature = "web-ui")]
     fn emit(&self, event: UpdateEvent) {
         if let Some(ref tx) = self.update_events_tx {
-            let _ = tx.send(event);
+            if let Err(e) = tx.send(event) {
+                tracing::trace!("Dropped update event: {}", e);
+            }
         }
     }
 
