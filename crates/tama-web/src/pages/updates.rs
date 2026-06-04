@@ -139,7 +139,7 @@ pub struct UpdatesListResponse {
 
 /// Normalize model `item_id` from DB numeric format ("123") to config_key format
 /// ("model-123") so that SSE `patch_list` can match against the initial REST fetch.
-fn normalize_model_item_ids(models: &mut Vec<UpdateCheckDto>) {
+fn normalize_model_item_ids(models: &mut [UpdateCheckDto]) {
     for m in models.iter_mut() {
         // If item_id is purely numeric, convert to "model-{id}" config_key format
         if m.item_type == "model" && m.item_id.parse::<i64>().is_ok() {
