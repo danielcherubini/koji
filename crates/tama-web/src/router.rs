@@ -154,6 +154,10 @@ pub fn build_web_routes() -> Router<Arc<tama_core::proxy::ProxyState>> {
             post(api::updates::check_single),
         )
         .route(
+            "/tama/v1/updates/events",
+            get(api::updates::update_events_sse),
+        )
+        .route(
             "/tama/v1/updates/apply/backend/:name",
             post(api::updates::apply_backend_update),
         )
