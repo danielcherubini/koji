@@ -5,6 +5,8 @@ use crate::components::alert_banner::{AlertBanner, AlertVariant};
 use crate::components::job_log_panel::JobLogPanel;
 use crate::components::list_card::ListCard;
 use crate::components::self_update_section::SelfUpdateSection;
+#[cfg(not(feature = "ssr"))]
+use crate::utils::sse_stream;
 use crate::utils::{extract_and_store_csrf_token, get_request, post_request};
 
 fn short_sha(hash: &Option<String>) -> String {
@@ -135,6 +137,119 @@ pub struct UpdatesListResponse {
     pub models: Vec<UpdateCheckDto>,
 }
 
+/// Merge a DTO into the updates list, matching on (item_id, variant) for backends,
+/// item_id for models. Replaces existing entry or appends if new.
+#[cfg(not(feature = "ssr"))]
+fn patch_list(list: &mut Vec<UpdateCheckDto>, dto: &UpdateCheckDto) {
+    if let Some(existing) = list
+        .iter_mut()
+        .find(|i| i.item_id == dto.item_id && i.variant == dto.variant)
+    {
+        *existing = dto.clone();
+    } else {
+        list.push(dto.clone());
+    }
+}
+
+#[cfg(not(feature = "ssr"))]
+fn handle_update_event(
+    event_type: &str,
+    data: &serde_json::Value,
+    updates: RwSignal<UpdatesListResponse>,
+    last_checked: RwSignal<Option<i64>>,
+    item_checking: RwSignal<std::collections::HashMap<String, bool>>,
+    checking: RwSignal<bool>,
+    error: RwSignal<Option<String>>,
+    outstanding: RwSignal<u32>,
+) {
+    let item_type: Option<String> = data
+        .get("item_type")
+        .and_then(|v| v.as_str().map(String::from));
+    let item_id: Option<String> = data
+        .get("item_id")
+        .and_then(|v| v.as_str().map(String::from));
+    let variant: Option<String> = data
+        .get("variant")
+        .and_then(|v| v.as_str().map(String::from));
+
+    // Build checking key: "backend:name:variant" or "model:id"
+    let checking_key = match (item_type.as_deref(), item_id.as_deref(), variant.as_deref()) {
+        (Some("backend"), Some(id), Some(v)) => format!("backend:{}:{}", id, v),
+        (Some("backend"), Some(id), None) => format!("backend:{}", id),
+        (Some("model"), Some(id), _) => format!("model:{}", id),
+        _ => format!(
+            "{}:{}",
+            item_type.as_deref().unwrap_or(""),
+            item_id.as_deref().unwrap_or("")
+        ),
+    };
+
+    match event_type {
+        "CheckStarted" => {
+            item_checking.update(|m| {
+                m.insert(checking_key.clone(), true);
+            });
+            outstanding.update(|n| *n += 1);
+        }
+        "CheckCompleted" => {
+            item_checking.update(|m| {
+                m.remove(&checking_key);
+            });
+            outstanding.update(|n| {
+                if *n > 0 {
+                    *n -= 1;
+                }
+            });
+            if outstanding.get() == 0 {
+                checking.set(false);
+            }
+            // Patch the updates list
+            if let Some(dto_value) = data.get("dto") {
+                if let Ok(dto) = serde_json::from_value::<UpdateCheckDto>(dto_value.clone()) {
+                    updates.update(|u| match item_type.as_deref() {
+                        Some("backend") => patch_list(&mut u.backends, &dto),
+                        Some("model") => patch_list(&mut u.models, &dto),
+                        _ => {}
+                    });
+                    last_checked.set(Some(dto.checked_at));
+                }
+            }
+        }
+        "CheckError" => {
+            item_checking.update(|m| {
+                m.remove(&checking_key);
+            });
+            outstanding.update(|n| {
+                if *n > 0 {
+                    *n -= 1;
+                }
+            });
+            if outstanding.get() == 0 {
+                checking.set(false);
+            }
+            if let Some(err) = data.get("error").and_then(|v| v.as_str()) {
+                error.set(Some(format!(
+                    "{}: {}",
+                    item_id.as_deref().unwrap_or("item"),
+                    err
+                )));
+            }
+        }
+        "CheckSkipped" => {
+            checking.set(false);
+            outstanding.set(0);
+            item_checking.set(std::collections::HashMap::new());
+            if let Some(reason) = data.get("reason").and_then(|v| v.as_str()) {
+                error.set(Some(reason.to_string()));
+            }
+        }
+        "Lagged" => {
+            item_checking.set(std::collections::HashMap::new());
+        }
+        _ => {}
+    }
+}
+
 #[component]
 pub fn Updates() -> impl IntoView {
     let updates = RwSignal::new(UpdatesListResponse {
@@ -159,6 +274,30 @@ pub fn Updates() -> impl IntoView {
     // Busy state for model update action (model_id → bool)
     let model_update_busy = RwSignal::new(Option::<String>::None);
 
+    // Cancelled flag for SSE cleanup on unmount
+    #[cfg(not(feature = "ssr"))]
+    let cancelled = RwSignal::new(false);
+    // DropGuard sets cancelled to true when component unmounts
+    #[cfg(not(feature = "ssr"))]
+    struct CancelledGuard(RwSignal<bool>);
+    #[cfg(not(feature = "ssr"))]
+    impl Drop for CancelledGuard {
+        fn drop(&mut self) {
+            self.0.set(true);
+        }
+    }
+    #[cfg(not(feature = "ssr"))]
+    let _cancelled_guard = CancelledGuard(cancelled);
+
+    // Per-item checking state: "backend:name:variant" → bool, "model:id" → bool
+    #[allow(unused)]
+    let item_checking: RwSignal<std::collections::HashMap<String, bool>> =
+        RwSignal::new(std::collections::HashMap::new());
+
+    // Outstanding checks counter for "Check Now" (unused in SSR mode)
+    #[allow(unused_assignments)]
+    let outstanding_checks = RwSignal::new(0u32);
+
     // Fetch on mount
     Effect::new(move |_| {
         wasm_bindgen_futures::spawn_local(async move {
@@ -179,23 +318,118 @@ pub fn Updates() -> impl IntoView {
         });
     });
 
+    // SSE subscription for real-time update events
+    #[cfg(not(feature = "ssr"))]
+    Effect::new(move |_| {
+        let updates = updates;
+        let last_checked = last_checked;
+        let item_checking = item_checking;
+        let checking = checking;
+        let error = error;
+        let outstanding = outstanding_checks;
+        wasm_bindgen_futures::spawn_local(async move {
+            // Create ONE connection, subscribe to multiple named event types
+            let conn = sse_stream::create("/tama/v1/updates/events".to_string(), cancelled, None);
+            if conn.connect_once().await.is_err() {
+                return;
+            }
+
+            let event_types = [
+                "CheckStarted",
+                "CheckCompleted",
+                "CheckError",
+                "CheckSkipped",
+                "Lagged",
+            ];
+            for event_type in &event_types {
+                // Clone signals for each spawned task
+                let u = updates;
+                let lc = last_checked;
+                let ic = item_checking;
+                let ch = checking;
+                let er = error;
+                let out = outstanding;
+                let et = event_type.to_string();
+
+                // Subscribe on the SAME connection (not a new one)
+                match conn.subscribe(event_type) {
+                    Ok(mut stream) => {
+                        wasm_bindgen_futures::spawn_local(async move {
+                            use futures_util::StreamExt;
+                            while let Some(result) = stream.next().await {
+                                if let Ok(event) = result {
+                                    let data: serde_json::Value =
+                                        serde_json::from_str(&event.data).unwrap_or_default();
+                                    handle_update_event(&et, &data, u, lc, ic, ch, er, out);
+                                }
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        log::debug!("Failed to subscribe to {}: {}", event_type, e);
+                    }
+                }
+            }
+        });
+    });
+
     let on_check_now = move |_| {
         checking.set(true);
         error.set(None);
+        outstanding_checks.set(0);
         wasm_bindgen_futures::spawn_local(async move {
             match post_request("/tama/v1/updates/check").send().await {
                 Ok(resp) if resp.ok() => {
-                    // Refresh list after a delay
-                    gloo_timers::future::TimeoutFuture::new(2000).await;
-                    if let Ok(resp2) = get_request("/tama/v1/updates").send().await {
-                        if let Ok(data) = resp2.json::<UpdatesListResponse>().await {
-                            updates.set(data);
+                    // SSE events update cards progressively.
+                    // Fallback: if no events arrive within 30s, poll once.
+                    gloo_timers::future::TimeoutFuture::new(30000).await;
+                    if checking.get() && outstanding_checks.get() == 0 {
+                        if let Ok(resp2) = get_request("/tama/v1/updates").send().await {
+                            if let Ok(data) = resp2.json::<UpdatesListResponse>().await {
+                                updates.set(data);
+                            }
                         }
+                        checking.set(false);
                     }
                 }
-                _ => error.set(Some("Failed to trigger check".to_string())),
+                _ => {
+                    error.set(Some("Failed to trigger check".to_string()));
+                    checking.set(false);
+                }
             }
-            checking.set(false);
+        });
+    };
+
+    let on_check_backend = move |(name, variant): (String, Option<String>)| {
+        let key = match &variant {
+            Some(v) => format!("backend:{}:{}", name, v),
+            None => format!("backend:{}", name),
+        };
+        item_checking.update(|m| {
+            m.insert(key.clone(), true);
+        });
+        let error_key = key.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let url = format!(
+                "/tama/v1/updates/check/backend/{}",
+                urlencoding::encode(&name)
+            );
+            match post_request(&url).send().await {
+                Ok(resp) if !resp.ok() => {
+                    let text = resp.text().await.unwrap_or_default();
+                    error.update(|e| *e = Some(format!("Check failed: {}", text)));
+                    item_checking.update(|m| {
+                        m.remove(&error_key);
+                    });
+                }
+                Err(err) => {
+                    error.update(|e| *e = Some(format!("Check failed: {}", err)));
+                    item_checking.update(|m| {
+                        m.remove(&error_key);
+                    });
+                }
+                _ => { /* success — SSE clears checking state */ }
+            }
         });
     };
 
@@ -245,10 +479,31 @@ pub fn Updates() -> impl IntoView {
         });
     });
 
-    let _on_refresh_model = move |id: String| {
+    let on_check_model = move |id: String| {
+        let key = format!("model:{}", id);
+        item_checking.update(|m| {
+            m.insert(key.clone(), true);
+        });
+        let error_key = key.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            let url = format!("/tama/v1/models/{}/refresh", id);
-            let _ = post_request(&url).send().await;
+            // The item_id in the DTO is the config_key (e.g., "model-123" or "owner--repo-name")
+            let url = format!("/tama/v1/updates/check/model/{}", urlencoding::encode(&id));
+            match post_request(&url).send().await {
+                Ok(resp) if !resp.ok() => {
+                    let text = resp.text().await.unwrap_or_default();
+                    error.update(|e| *e = Some(format!("Check failed: {}", text)));
+                    item_checking.update(|m| {
+                        m.remove(&error_key);
+                    });
+                }
+                Err(err) => {
+                    error.update(|e| *e = Some(format!("Check failed: {}", err)));
+                    item_checking.update(|m| {
+                        m.remove(&error_key);
+                    });
+                }
+                _ => { /* success — SSE clears checking state */ }
+            }
         });
     };
 
@@ -360,29 +615,37 @@ pub fn Updates() -> impl IntoView {
                             view! {
                                 <ListCard
                                     state=if is_update_available { Some(RwSignal::new(Some("update-available".to_string())).read_only()) } else { None }
-                                    actions=Some(Box::new(move || view! {
-                                        {if is_update_available {
-                                            let id = item_id.clone();
-                                            view! {
-                                                <button class="btn btn-secondary"
-                                                    on:click=move |_| on_update_backend((id.clone(), variant_for_update.clone()))>
-                                                    "Update"
-                                                </button>
-                                            }.into_any()
-                                        } else {
-                                            view! { <span/> }.into_any()
-                                        }}
-                                      <button class="btn btn-ghost"
-                                             on:click=move |_| {
-                                                 let id = item_id.clone();
-                                                 wasm_bindgen_futures::spawn_local(async move {
-                                                     let url = format!("/tama/v1/updates/check/backend/{}", urlencoding::encode(&id));
-                                                     let _ = post_request(&url).send().await;
-                                                 });
-                                             }>
-                                            "Refresh"
-                                        </button>
-                                    }.into_any()))
+                                   actions=Some(Box::new(move || {
+                                        let variant_clone = variant_for_update.clone();
+                                        let btn_key = match &variant_for_update {
+                                            Some(v) => format!("backend:{}:{}", item_id, v),
+                                            None => format!("backend:{}", item_id),
+                                        };
+                                        let is_checking = Memo::new(move |_| {
+                                            item_checking.with(|m| m.get(&btn_key).copied().unwrap_or(false))
+                                        });
+                                        view! {
+                                            {if is_update_available {
+                                                let id = item_id.clone();
+                                                let vc = variant_clone.clone();
+                                                view! {
+                                                    <button class="btn btn-secondary"
+                                                        on:click=move |_| on_update_backend((id.clone(), vc.clone()))>
+                                                        "Update"
+                                                    </button>
+                                                }.into_any()
+                                            } else {
+                                                view! { <span/> }.into_any()
+                                            }}
+                                            <button
+                                                class="btn btn-ghost"
+                                                disabled=is_checking
+                                                on:click=move |_| on_check_backend((item_id.clone(), variant_clone.clone()))
+                                            >
+                                                {move || if is_checking.get() { "Checking..." } else { "Check" }}
+                                            </button>
+                                        }.into_any()
+                                    }))
                                 >
                                     <span class="update-item__name">{b.item_id.clone()}</span>
                                    {b.variant.as_ref().map(|v| {
@@ -488,11 +751,24 @@ pub fn Updates() -> impl IntoView {
                                             }}
                                         </span>
                                     }.into_any()))
-                                    actions=Some(Box::new(move || view! {
-                                        <a href=format!("/tama/model/{}/edit", m_item_id_for_actions) class="btn btn-ghost btn-sm">
-                                            "Edit"
-                                        </a>
-                                    }.into_any()))
+                                  actions=Some(Box::new(move || {
+                                            let model_key = format!("model:{}", m_item_id_for_actions);
+                                            let is_checking = Memo::new(move |_| {
+                                                item_checking.with(|m| m.get(&model_key).copied().unwrap_or(false))
+                                            });
+                                            view! {
+                                                <a href=format!("/tama/model/{}/edit", m_item_id_for_actions) class="btn btn-ghost btn-sm">
+                                                    "Edit"
+                                                </a>
+                                                <button
+                                                    class="btn btn-ghost btn-sm"
+                                                    disabled=is_checking
+                                                    on:click=move |_| on_check_model(m_item_id_for_actions.clone())
+                                                >
+                                                    {move || if is_checking.get() { "Checking..." } else { "Check" }}
+                                                </button>
+                                            }.into_any()
+                                        }))
                                     line2=Some(Box::new(move || view! {
                                         {/* Expandable quant list */}
                                         {let mid_for_cond = mid_for_line2.clone();
