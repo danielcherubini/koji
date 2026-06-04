@@ -52,7 +52,12 @@ impl ProxyState {
             #[cfg(feature = "web-ui")]
             web_capabilities: Some(Arc::new(crate::web_types::CapabilitiesCache::new())),
             #[cfg(feature = "web-ui")]
-            web_update_checker: Arc::new(crate::updates::UpdateChecker::new()),
+            web_update_checker: {
+                let (tx, _) = tokio::sync::broadcast::channel::<crate::updates::UpdateEvent>(256);
+                let mut checker = crate::updates::UpdateChecker::new();
+                checker.set_update_events_tx(tx);
+                Arc::new(checker)
+            },
             #[cfg(feature = "web-ui")]
             web_binary_version: String::new(), // Set later by CLI
             #[cfg(feature = "web-ui")]
