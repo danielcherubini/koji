@@ -12,6 +12,32 @@ use crate::models::pull;
 use crate::models::pull::BlobInfo;
 use crate::models::update::FileStatus;
 
+#[cfg(feature = "web-ui")]
+#[derive(Debug, Clone, serde::Serialize)]
+pub enum UpdateEvent {
+    CheckStarted {
+        item_type: String,
+        item_id: String,
+        variant: Option<String>,
+    },
+    CheckCompleted {
+        item_type: String,
+        item_id: String,
+        variant: Option<String>,
+        dto: serde_json::Value,
+    },
+    CheckError {
+        item_type: String,
+        item_id: String,
+        variant: Option<String>,
+        error: String,
+    },
+    CheckSkipped {
+        item_type: String,
+        reason: String,
+    },
+}
+
 /// Cache entry: (commit_sha, files, epoch_timestamp)
 type CacheEntry = (String, Vec<crate::models::pull::RemoteGguf>, i64);
 
@@ -87,6 +113,9 @@ pub struct UpdateChecker {
     lock: Arc<Mutex<()>>,
     /// In-memory LRU cache for remote GGUF listings.
     gguf_listing_cache: GgufListingCache,
+    /// Broadcast sender for update events (web UI feature).
+    #[cfg(feature = "web-ui")]
+    pub update_events_tx: Option<tokio::sync::broadcast::Sender<UpdateEvent>>,
 }
 
 /// Results from an initial sync of backends and models to check for updates.
@@ -100,6 +129,24 @@ impl UpdateChecker {
         Self {
             lock: Arc::new(Mutex::new(())),
             gguf_listing_cache: GgufListingCache::new(),
+            #[cfg(feature = "web-ui")]
+            update_events_tx: None,
+        }
+    }
+
+    /// Set the broadcast sender for update events.
+    #[cfg(feature = "web-ui")]
+    pub fn set_update_events_tx(&mut self, tx: tokio::sync::broadcast::Sender<UpdateEvent>) {
+        self.update_events_tx = Some(tx);
+    }
+
+    /// Emit an update event (non-blocking, fire-and-forget).
+    #[cfg(feature = "web-ui")]
+    fn emit(&self, event: UpdateEvent) {
+        if let Some(ref tx) = self.update_events_tx {
+            if let Err(e) = tx.send(event) {
+                tracing::trace!("Dropped update event: {}", e);
+            }
         }
     }
 
@@ -110,6 +157,11 @@ impl UpdateChecker {
         let _guard = match self.lock.try_lock() {
             Ok(guard) => guard,
             Err(_) => {
+                #[cfg(feature = "web-ui")]
+                self.emit(UpdateEvent::CheckSkipped {
+                    item_type: "all".to_string(),
+                    reason: "Update check already in progress".to_string(),
+                });
                 tracing::info!("Update check already in progress, skipping");
                 return Ok(());
             }
@@ -203,6 +255,14 @@ impl UpdateChecker {
         // Use "name:variant" as the item_id so each variant has its own record
         let item_id = format!("{}:{}", backend_name, gpu_variant);
 
+        // item_id is "name:variant" internally, but frontend DTO uses name-only
+        #[cfg(feature = "web-ui")]
+        self.emit(UpdateEvent::CheckStarted {
+            item_type: "backend".to_string(),
+            item_id: backend_name.to_string(),
+            variant: Some(gpu_variant.to_string()),
+        });
+
         // Sync: Get current version from DB
         let current_version = tokio::task::spawn_blocking({
             let config_dir = config_dir.to_path_buf();
@@ -234,6 +294,15 @@ impl UpdateChecker {
                             None,
                         )
                         .await?;
+
+                        #[cfg(feature = "web-ui")]
+                        self.emit(UpdateEvent::CheckError {
+                            item_type: "backend".to_string(),
+                            item_id: backend_name.to_string(),
+                            variant: Some(gpu_variant.to_string()),
+                            error: e.to_string(),
+                        });
+
                         return Ok(());
                     }
                 }
@@ -254,18 +323,42 @@ impl UpdateChecker {
             "up_to_date"
         };
 
-        self.save_check_result(
-            config_dir,
-            "backend",
-            &item_id,
-            current_version.as_deref(),
-            latest_version.as_deref(),
-            update_available,
-            status,
-            None,
-            None,
-        )
-        .await
+        let save_result = self
+            .save_check_result(
+                config_dir,
+                "backend",
+                &item_id,
+                current_version.as_deref(),
+                latest_version.as_deref(),
+                update_available,
+                status,
+                None,
+                None,
+            )
+            .await;
+
+        #[cfg(feature = "web-ui")]
+        if save_result.is_ok() {
+            let dto = serde_json::json!({
+                "item_type": "backend",
+                "item_id": backend_name,
+                "variant": gpu_variant,
+                "current_version": current_version,
+                "latest_version": latest_version,
+                "update_available": update_available,
+                "status": status,
+                "error_message": null,
+                "checked_at": chrono::Utc::now().timestamp(),
+                "details_json": null,
+            });
+            self.emit(UpdateEvent::CheckCompleted {
+                item_type: "backend".to_string(),
+                item_id: backend_name.to_string(),
+                variant: Some(gpu_variant.to_string()),
+                dto,
+            });
+        }
+        save_result
     }
 
     /// Check a single model for updates.
@@ -278,6 +371,16 @@ impl UpdateChecker {
         model_id: i64,
         repo_id: Option<&str>,
     ) -> anyhow::Result<()> {
+        // Frontend DTO uses config_key format "model-{id}"
+        #[cfg(feature = "web-ui")]
+        let model_config_key = format!("model-{}", model_id);
+        #[cfg(feature = "web-ui")]
+        self.emit(UpdateEvent::CheckStarted {
+            item_type: "model".to_string(),
+            item_id: model_config_key.clone(),
+            variant: None,
+        });
+
         let repo_id = match repo_id {
             Some(id) if !id.is_empty() => id,
             _ => {
@@ -293,6 +396,15 @@ impl UpdateChecker {
                     None,
                 )
                 .await?;
+
+                #[cfg(feature = "web-ui")]
+                self.emit(UpdateEvent::CheckError {
+                    item_type: "model".to_string(),
+                    item_id: model_config_key,
+                    variant: None,
+                    error: "Model has no source repo configured".to_string(),
+                });
+
                 return Ok(());
             }
         };
@@ -317,18 +429,42 @@ impl UpdateChecker {
 
         // Handle no prior record
         let Some((pull_record, file_records)) = db_state else {
-            self.save_check_result(
-                config_dir,
-                "model",
-                &model_id.to_string(),
-                None,
-                None,
-                false,
-                "no_prior_record",
-                None,
-                None,
-            )
-            .await?;
+            let save_result = self
+                .save_check_result(
+                    config_dir,
+                    "model",
+                    &model_id.to_string(),
+                    None,
+                    None,
+                    false,
+                    "no_prior_record",
+                    None,
+                    None,
+                )
+                .await;
+
+            #[cfg(feature = "web-ui")]
+            if save_result.is_ok() {
+                let dto = serde_json::json!({
+                    "item_type": "model",
+                    "item_id": model_config_key,
+                    "variant": null,
+                    "current_version": null,
+                    "latest_version": null,
+                    "update_available": false,
+                    "status": "no_prior_record",
+                    "error_message": null,
+                    "checked_at": chrono::Utc::now().timestamp(),
+                    "details_json": null,
+                });
+                self.emit(UpdateEvent::CheckCompleted {
+                    item_type: "model".to_string(),
+                    item_id: model_config_key,
+                    variant: None,
+                    dto,
+                });
+            }
+            save_result?;
             return Ok(());
         };
 
@@ -362,18 +498,42 @@ impl UpdateChecker {
 
         // Tier 1 — quick check: commit SHA match?
         if remote_listing.commit_sha == pull_record.commit_sha {
-            self.save_check_result(
-                config_dir,
-                "model",
-                &model_id.to_string(),
-                Some(&pull_record.commit_sha),
-                Some(&remote_listing.commit_sha),
-                false,
-                "up_to_date",
-                None,
-                None,
-            )
-            .await?;
+            let save_result = self
+                .save_check_result(
+                    config_dir,
+                    "model",
+                    &model_id.to_string(),
+                    Some(&pull_record.commit_sha),
+                    Some(&remote_listing.commit_sha),
+                    false,
+                    "up_to_date",
+                    None,
+                    None,
+                )
+                .await;
+
+            #[cfg(feature = "web-ui")]
+            if save_result.is_ok() {
+                let dto = serde_json::json!({
+                    "item_type": "model",
+                    "item_id": model_config_key,
+                    "variant": null,
+                    "current_version": &pull_record.commit_sha,
+                    "latest_version": &remote_listing.commit_sha,
+                    "update_available": false,
+                    "status": "up_to_date",
+                    "error_message": null,
+                    "checked_at": chrono::Utc::now().timestamp(),
+                    "details_json": null,
+                });
+                self.emit(UpdateEvent::CheckCompleted {
+                    item_type: "model".to_string(),
+                    item_id: model_config_key,
+                    variant: None,
+                    dto,
+                });
+            }
+            save_result?;
             return Ok(());
         }
 
@@ -382,20 +542,45 @@ impl UpdateChecker {
         let remote_blobs = match pull::fetch_blob_metadata(resolved_repo_id).await {
             Ok(blobs) => blobs,
             Err(e) => {
-                self.save_check_result(
-                    config_dir,
-                    "model",
-                    &model_id.to_string(),
-                    Some(&pull_record.commit_sha),
-                    Some(&remote_listing.commit_sha),
-                    false,
-                    "error",
-                    Some(&format!(
-                        "Commit changed but failed to fetch file details: {e}"
-                    )),
-                    None,
-                )
-                .await?;
+                let save_result = self
+                    .save_check_result(
+                        config_dir,
+                        "model",
+                        &model_id.to_string(),
+                        Some(&pull_record.commit_sha),
+                        Some(&remote_listing.commit_sha),
+                        false,
+                        "error",
+                        Some(&format!(
+                            "Commit changed but failed to fetch file details: {e}"
+                        )),
+                        None,
+                    )
+                    .await;
+
+                #[cfg(feature = "web-ui")]
+                if save_result.is_ok() {
+                    let error_msg = format!("Commit changed but failed to fetch file details: {e}");
+                    let dto = serde_json::json!({
+                        "item_type": "model",
+                        "item_id": model_config_key,
+                        "variant": null,
+                        "current_version": &pull_record.commit_sha,
+                        "latest_version": &remote_listing.commit_sha,
+                        "update_available": false,
+                        "status": "error",
+                        "error_message": error_msg,
+                        "checked_at": chrono::Utc::now().timestamp(),
+                        "details_json": null,
+                    });
+                    self.emit(UpdateEvent::CheckCompleted {
+                        item_type: "model".to_string(),
+                        item_id: model_config_key,
+                        variant: None,
+                        dto,
+                    });
+                }
+                save_result?;
                 return Ok(());
             }
         };
@@ -482,18 +667,42 @@ impl UpdateChecker {
         })
         .to_string();
 
-        self.save_check_result(
-            config_dir,
-            "model",
-            &model_id.to_string(),
-            Some(&pull_record.commit_sha),
-            Some(&remote_listing.commit_sha),
-            update_available,
-            status,
-            None,
-            Some(&details_json),
-        )
-        .await
+        let save_result = self
+            .save_check_result(
+                config_dir,
+                "model",
+                &model_id.to_string(),
+                Some(&pull_record.commit_sha),
+                Some(&remote_listing.commit_sha),
+                update_available,
+                status,
+                None,
+                Some(&details_json),
+            )
+            .await;
+
+        #[cfg(feature = "web-ui")]
+        if save_result.is_ok() {
+            let dto = serde_json::json!({
+                "item_type": "model",
+                "item_id": model_config_key,
+                "variant": null,
+                "current_version": &pull_record.commit_sha,
+                "latest_version": &remote_listing.commit_sha,
+                "update_available": update_available,
+                "status": status,
+                "error_message": null,
+                "checked_at": chrono::Utc::now().timestamp(),
+                "details_json": &details_json,
+            });
+            self.emit(UpdateEvent::CheckCompleted {
+                item_type: "model".to_string(),
+                item_id: model_config_key,
+                variant: None,
+                dto,
+            });
+        }
+        save_result
     }
 
     #[allow(clippy::too_many_arguments)]
