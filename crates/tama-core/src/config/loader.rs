@@ -1,5 +1,5 @@
 use super::migrate::rename_legacy_directories;
-use super::types::{Config, General, ProxyConfig, Supervisor};
+use super::types::{CompactionConfig, Config, General, ProxyConfig, Supervisor};
 use crate::profiles::Profile;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -173,6 +173,7 @@ impl Default for Config {
             backends,
             supervisor: Supervisor::default(),
             proxy: ProxyConfig::default(),
+            compaction: CompactionConfig::default(),
             sampling_templates,
             loaded_from: None,
         }

@@ -10,9 +10,10 @@ use std::collections::BTreeMap;
 // Import types from tama_core
 use crate::api::StructuredConfigBody;
 use tama_core::config::{
-    BackendConfig as CoreBackendConfig, Config as CoreConfig, General as CoreGeneral,
-    ModelConfig as CoreModelConfig, ModelModalities as CoreModelModalities,
-    ProxyConfig as CoreProxyConfig, Supervisor as CoreSupervisor,
+    BackendConfig as CoreBackendConfig, CompactionConfig as CoreCompactionConfig,
+    Config as CoreConfig, General as CoreGeneral, ModelConfig as CoreModelConfig,
+    ModelModalities as CoreModelModalities, ProxyConfig as CoreProxyConfig,
+    Supervisor as CoreSupervisor,
 };
 use tama_core::config::{
     HealthCheck as CoreHealthCheck, QuantEntry as CoreQuantEntry, QuantKind as CoreQuantKind,
@@ -275,10 +276,37 @@ pub struct Config {
     pub sampling_templates: BTreeMap<String, SamplingParams>,
     #[serde(default)]
     pub proxy: ProxyConfig,
+    #[serde(default)]
+    pub compaction: CompactionConfig,
     /// The directory this config was loaded from.
     /// Skipped in serialization (managed separately by backend).
     #[serde(skip)]
     pub loaded_from: Option<std::path::PathBuf>,
+}
+
+/// Configuration for the LLMLingua-2 compaction service.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CompactionConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub server_path: Option<String>,
+    #[serde(default)]
+    pub venv_path: Option<String>,
+    #[serde(default = "default_compaction_device")]
+    pub device: String,
+    #[serde(default)]
+    pub port: Option<u16>,
+    #[serde(default = "default_compaction_timeout_ms")]
+    pub timeout_ms: u64,
+}
+
+fn default_compaction_device() -> String {
+    "cpu".to_string()
+}
+
+fn default_compaction_timeout_ms() -> u64 {
+    30_000
 }
 
 /// Default helper functions for Config fields.
@@ -636,6 +664,34 @@ impl From<ProxyConfig> for CoreProxyConfig {
     }
 }
 
+/// Convert from mirror CompactionConfig to CoreCompactionConfig.
+impl From<CompactionConfig> for CoreCompactionConfig {
+    fn from(c: CompactionConfig) -> Self {
+        Self {
+            enabled: c.enabled,
+            server_path: c.server_path,
+            venv_path: c.venv_path,
+            device: c.device,
+            port: c.port,
+            timeout_ms: c.timeout_ms,
+        }
+    }
+}
+
+/// Convert from CoreCompactionConfig to mirror CompactionConfig.
+impl From<CoreCompactionConfig> for CompactionConfig {
+    fn from(c: CoreCompactionConfig) -> Self {
+        Self {
+            enabled: c.enabled,
+            server_path: c.server_path,
+            venv_path: c.venv_path,
+            device: c.device,
+            port: c.port,
+            timeout_ms: c.timeout_ms,
+        }
+    }
+}
+
 /// Convert from CoreConfig to mirror type.
 impl From<CoreConfig> for Config {
     fn from(c: CoreConfig) -> Self {
@@ -649,6 +705,7 @@ impl From<CoreConfig> for Config {
                 .map(|(k, v)| (k, v.into()))
                 .collect(),
             proxy: c.proxy.into(),
+            compaction: c.compaction.into(),
             loaded_from: c.loaded_from, // Preserved for internal use, not serialized
         }
     }
@@ -667,6 +724,7 @@ impl From<StructuredConfigBody> for CoreConfig {
                 .map(|(k, v)| (k, v.into()))
                 .collect(),
             proxy: b.proxy.into(),
+            compaction: CoreConfig::default().compaction.clone(),
             loaded_from: None, // Will be restored from proxy config before save
         }
     }
@@ -685,6 +743,7 @@ impl From<Config> for CoreConfig {
                 .map(|(k, v)| (k, v.into()))
                 .collect(),
             proxy: c.proxy.into(),
+            compaction: c.compaction.into(),
             loaded_from: c.loaded_from, // Preserved for internal use
         }
     }

@@ -1,0 +1,6 @@
+# Requires Python >= 3.8
+fastapi>=0.104.0
+uvicorn>=0.24.0
+llmlingua>=0.3.0
+torch>=2.0.0
+transformers>=4.36.0

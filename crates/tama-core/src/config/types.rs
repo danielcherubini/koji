@@ -58,6 +58,8 @@ pub struct Config {
     pub sampling_templates: HashMap<String, SamplingParams>,
     #[serde(default)]
     pub proxy: ProxyConfig,
+    #[serde(default)]
+    pub compaction: CompactionConfig,
     /// The directory this config was loaded from. Used to resolve models_dir
     /// when running as a service (where %APPDATA% differs from the installing user).
     #[serde(skip)]
@@ -414,7 +416,44 @@ impl ModelConfig {
     }
 }
 
-/// Configuration for speculative decoding (draft model) support.
+/// Configuration for the LLMLingua-2 compaction service.
+/// When absent from config.toml, compaction is disabled.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompactionConfig {
+    /// Whether compaction is enabled. Default: false.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Path to the Python entrypoint (main.py). If omitted, uses embedded default.
+    #[serde(default)]
+    pub server_path: Option<String>,
+    /// Path to the Python virtual environment. If omitted, uses system python.
+    #[serde(default)]
+    pub venv_path: Option<String>,
+    /// Compute device: "cpu", "cuda", "cuda:0", "mps". Default: "cpu".
+    #[serde(default = "default_compaction_device")]
+    pub device: String,
+    /// Fixed port for the compaction server. If omitted, auto-assigned via TcpListener.
+    #[serde(default)]
+    pub port: Option<u16>,
+    /// Request timeout in milliseconds. Default: 30000 (30s).
+    #[serde(default = "default_compaction_timeout_ms")]
+    pub timeout_ms: u64,
+}
+
+impl Default for CompactionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            server_path: None,
+            venv_path: None,
+            device: default_compaction_device(),
+            port: None,
+            timeout_ms: default_compaction_timeout_ms(),
+        }
+    }
+}
+
+/// Configuration for speculative decoding (draft model support).
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SpecDecodingConfig {
@@ -540,6 +579,14 @@ fn default_health_check_timeout_ms() -> u64 {
 
 fn default_health_check_retries() -> u32 {
     3
+}
+
+fn default_compaction_device() -> String {
+    "cpu".to_string()
+}
+
+fn default_compaction_timeout_ms() -> u64 {
+    30_000
 }
 
 /// Maximum request body size in bytes (16 MB)
@@ -793,6 +840,46 @@ backend = "llama.cpp"
         let round_trip = ModelConfig::from_db_record(&record);
 
         assert_eq!(round_trip.spec_decoding, spec);
+    }
+
+    /// Test that CompactionConfig fields have correct defaults.
+    #[test]
+    fn test_compaction_config_defaults() {
+        let config = CompactionConfig::default();
+        assert!(!config.enabled);
+        assert_eq!(config.server_path, None);
+        assert_eq!(config.venv_path, None);
+        assert_eq!(config.device, "cpu");
+        assert_eq!(config.port, None);
+        assert_eq!(config.timeout_ms, 30_000);
+    }
+
+    /// Test that CompactionConfig survives a TOML round-trip.
+    #[test]
+    fn test_compaction_config_toml_roundtrip() {
+        let compaction = CompactionConfig {
+            enabled: true,
+            server_path: Some("/opt/compaction/main.py".to_string()),
+            venv_path: Some("/opt/compaction/venv".to_string()),
+            device: "cuda:0".to_string(),
+            port: Some(8081),
+            timeout_ms: 60_000,
+        };
+        let toml_str = toml::to_string_pretty(&compaction).unwrap();
+        let loaded: CompactionConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(loaded.enabled, compaction.enabled);
+        assert_eq!(loaded.server_path, compaction.server_path);
+        assert_eq!(loaded.venv_path, compaction.venv_path);
+        assert_eq!(loaded.device, compaction.device);
+        assert_eq!(loaded.port, compaction.port);
+        assert_eq!(loaded.timeout_ms, compaction.timeout_ms);
+    }
+
+    /// Test that CompactionConfig is disabled by default.
+    #[test]
+    fn test_compaction_config_disabled_by_default() {
+        let config = CompactionConfig::default();
+        assert!(!config.enabled, "compaction should be disabled by default");
     }
 
     /// Test that SpecDecodingConfig serializes to camelCase JSON and deserializes back.
