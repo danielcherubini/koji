@@ -14,10 +14,10 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Quick Stats
 
-- **Total Plans**: 116
-- **Completed**: 114 ✅
+- **Total Plans**: 117
+- **Completed**: 115 ✅
 - **In Progress**: 0 🚧
-- **Remaining**: 2
+- **Remaining**: 1
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
 
@@ -29,6 +29,7 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 | Plan | Description | PR / Git References |
 |------|-------------|---------------------|
+| [LLMLingua-2 Compaction Endpoint](2026-06-08-llmlingua-compaction.md) | Add `/v1/compaction` endpoint that compresses prompts via Microsoft LLMLingua-2 (XLM-RoBERTa-large) before they hit the main LLM | #111 `72a334f`, `b0f3961`, `d159aa0`, `d668261`, `d340ff4`, `b1bc9d3` ✅ COMPLETED |
 | [SSE-Powered Updates Page](2026-06-04-sse-updates-page.md) | Replace fire-and-forget refresh buttons with SSE-driven real-time updates on the updates page | #109 `7a1a39dc`, `6faed2bf`, `03dbbcfe`, `efefdcf`, `eef6916` ✅ COMPLETED |
 | [Unified Dashboard Models](2026-06-03-unified-dashboard-models.md) | Merge "Active Models" and "Inactive Models" sections into a single "Models" section on the dashboard | #108 `1f6cc9f` ✅ COMPLETED |
 | [Backend Build Method Toggle](2026-06-03-backend-build-method-toggle.md) | Add "Build from source" toggle on backend cards that persists to DB, letting users switch between prebuilt and source for updates | #107 ✅ COMPLETED |
@@ -281,4 +282,4 @@ When implementing a new feature:
 
 ---
 
-**Last Updated**: 2026-06-04
+**Last Updated**: 2026-06-08
