@@ -424,10 +424,17 @@ pub fn Updates() -> impl IntoView {
         });
         let error_key = key.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            let url = format!(
-                "/tama/v1/updates/check/backend/{}",
-                urlencoding::encode(&name)
-            );
+            let url = match &variant {
+                Some(v) => format!(
+                    "/tama/v1/updates/check/backend/{}?gpu_variant={}",
+                    urlencoding::encode(&name),
+                    urlencoding::encode(v)
+                ),
+                None => format!(
+                    "/tama/v1/updates/check/backend/{}",
+                    urlencoding::encode(&name)
+                ),
+            };
             match post_request(&url).send().await {
                 Ok(resp) if !resp.ok() => {
                     let text = resp.text().await.unwrap_or_default();

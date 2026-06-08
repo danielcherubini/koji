@@ -357,6 +357,19 @@ impl UpdateChecker {
                 variant: Some(gpu_variant.to_string()),
                 dto,
             });
+        } else {
+            // Emit CheckError so the frontend clears the "Checking..." state
+            let save_err = save_result
+                .as_ref()
+                .err()
+                .map(|e| e.to_string())
+                .unwrap_or_default();
+            self.emit(UpdateEvent::CheckError {
+                item_type: "backend".to_string(),
+                item_id: backend_name.to_string(),
+                variant: Some(gpu_variant.to_string()),
+                error: format!("Failed to save check result: {}", save_err),
+            });
         }
         save_result
     }
@@ -459,9 +472,21 @@ impl UpdateChecker {
                 });
                 self.emit(UpdateEvent::CheckCompleted {
                     item_type: "model".to_string(),
-                    item_id: model_config_key,
+                    item_id: model_config_key.clone(),
                     variant: None,
                     dto,
+                });
+            } else {
+                let save_err = save_result
+                    .as_ref()
+                    .err()
+                    .map(|e| e.to_string())
+                    .unwrap_or_default();
+                self.emit(UpdateEvent::CheckError {
+                    item_type: "model".to_string(),
+                    item_id: model_config_key,
+                    variant: None,
+                    error: format!("Failed to save check result: {}", save_err),
                 });
             }
             save_result?;
@@ -528,9 +553,21 @@ impl UpdateChecker {
                 });
                 self.emit(UpdateEvent::CheckCompleted {
                     item_type: "model".to_string(),
-                    item_id: model_config_key,
+                    item_id: model_config_key.clone(),
                     variant: None,
                     dto,
+                });
+            } else {
+                let save_err = save_result
+                    .as_ref()
+                    .err()
+                    .map(|e| e.to_string())
+                    .unwrap_or_default();
+                self.emit(UpdateEvent::CheckError {
+                    item_type: "model".to_string(),
+                    item_id: model_config_key,
+                    variant: None,
+                    error: format!("Failed to save check result: {}", save_err),
                 });
             }
             save_result?;
@@ -575,9 +612,21 @@ impl UpdateChecker {
                     });
                     self.emit(UpdateEvent::CheckCompleted {
                         item_type: "model".to_string(),
-                        item_id: model_config_key,
+                        item_id: model_config_key.clone(),
                         variant: None,
                         dto,
+                    });
+                } else {
+                    let save_err = save_result
+                        .as_ref()
+                        .err()
+                        .map(|err| err.to_string())
+                        .unwrap_or_default();
+                    self.emit(UpdateEvent::CheckError {
+                        item_type: "model".to_string(),
+                        item_id: model_config_key,
+                        variant: None,
+                        error: format!("Failed to save check result: {}", save_err),
                     });
                 }
                 save_result?;
@@ -697,9 +746,21 @@ impl UpdateChecker {
             });
             self.emit(UpdateEvent::CheckCompleted {
                 item_type: "model".to_string(),
-                item_id: model_config_key,
+                item_id: model_config_key.clone(),
                 variant: None,
                 dto,
+            });
+        } else {
+            let save_err = save_result
+                .as_ref()
+                .err()
+                .map(|e| e.to_string())
+                .unwrap_or_default();
+            self.emit(UpdateEvent::CheckError {
+                item_type: "model".to_string(),
+                item_id: model_config_key,
+                variant: None,
+                error: format!("Failed to save check result: {}", save_err),
             });
         }
         save_result
