@@ -720,7 +720,7 @@ impl From<StructuredConfigBody> for CoreConfig {
                 .map(|(k, v)| (k, v.into()))
                 .collect(),
             proxy: b.proxy.into(),
-            compaction: CoreConfig::default().compaction.clone(),
+            compaction: b.compaction.into(),
             loaded_from: None, // Will be restored from proxy config before save
         }
     }
