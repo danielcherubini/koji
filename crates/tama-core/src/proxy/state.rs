@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::download_queue::{queue_processor_loop, DownloadQueueService};
-use super::types::{ModelState, ProxyMetrics, ProxyState};
+use super::types::{CompactionServerState, ModelState, ProxyMetrics, ProxyState};
 
 impl ProxyState {
     pub fn new(config: crate::config::Config, db_dir: Option<std::path::PathBuf>) -> Self {
@@ -46,6 +46,7 @@ impl ProxyState {
             config_write_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
             backend_logs: crate::backends::log_stream::BackendLogManager::default(),
             inference_stats: tokio::sync::watch::channel(None).0,
+            compaction_server: Arc::new(tokio::sync::RwLock::new(CompactionServerState::Idle)),
             // ── Web UI fields ──
             #[cfg(feature = "web-ui")]
             web_jobs: Some(Arc::new(crate::web_types::JobManager::new())),
