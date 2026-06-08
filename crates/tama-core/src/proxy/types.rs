@@ -213,9 +213,10 @@ pub struct LatestInferenceStats {
 }
 
 /// State for the compaction server subprocess.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum CompactionServerState {
     /// Server is not running.
+    #[default]
     Idle,
     /// Server is starting up (process spawned, awaiting health check).
     Starting {
@@ -251,12 +252,6 @@ impl CompactionServerState {
             CompactionServerState::Ready { pid, .. } => Some(*pid),
             _ => None,
         }
-    }
-}
-
-impl Default for CompactionServerState {
-    fn default() -> Self {
-        Self::Idle
     }
 }
 
