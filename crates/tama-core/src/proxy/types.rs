@@ -330,9 +330,11 @@ impl ProxyState {
     /// - Clears in-flight downloads
     pub async fn shutdown(&self) {
         // Kill compaction server subprocess first
-        let compaction = self.compaction_server.read().await;
-        if let Some(pid) = compaction.pid() {
-            drop(compaction);
+        let pid_to_kill = {
+            let compaction = self.compaction_server.read().await;
+            compaction.pid()
+        };
+        if let Some(pid) = pid_to_kill {
             if let Err(e) = super::process::kill_process_group(pid).await {
                 tracing::warn!("Failed to SIGTERM compaction server (pid {}): {}", pid, e);
             }
