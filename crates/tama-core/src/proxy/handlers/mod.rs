@@ -1,4 +1,5 @@
 pub mod chat;
+pub mod compaction;
 pub mod forward;
 pub mod metrics;
 pub mod models;

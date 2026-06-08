@@ -11,6 +11,7 @@ use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::cors::CorsLayer;
 
 use crate::proxy::handlers::chat::{handle_chat_completions, handle_stream_chat_completions};
+use crate::proxy::handlers::compaction::handle_compaction;
 use crate::proxy::handlers::models::{handle_get_model, handle_list_models};
 use crate::proxy::handlers::tts::{
     handle_audio_models, handle_audio_speech, handle_audio_stream, handle_audio_voices,
@@ -76,6 +77,8 @@ pub async fn build_router(state: Arc<ProxyState>) -> Router {
         .route("/v1/audio/speech", post(handle_audio_speech))
         .route("/v1/audio/speech/stream", post(handle_audio_stream))
         .route("/v1/audio/voices", get(handle_audio_voices))
+        // Compaction endpoint
+        .route("/v1/compaction", post(handle_compaction))
         // Wildcard forwarding for all other endpoints (llama.cpp API)
         .route("/*path", post(handle_forward_post))
         .route("/*path", get(handle_forward_get))
@@ -157,6 +160,8 @@ pub async fn build_unified_router(
         .route("/v1/audio/speech", post(handle_audio_speech))
         .route("/v1/audio/speech/stream", post(handle_audio_stream))
         .route("/v1/audio/voices", get(handle_audio_voices))
+        // Compaction endpoint
+        .route("/v1/compaction", post(handle_compaction))
         // Wildcard POST forwarding for backend endpoints (completions, tokenize, slots, etc.)
         .route("/*path", post(handle_forward_post));
 
