@@ -45,6 +45,7 @@ base64 = "0.22"
 futures = "0.3"
 regex.workspace = true
 rand.workspace = true
+include_dir.workspace = true
 gguf-parser = { git = "https://github.com/Defilan/gguf-parser", branch = "main" }
 nix = { workspace = true, optional = true }
 

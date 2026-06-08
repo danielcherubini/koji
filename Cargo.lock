@@ -3815,6 +3815,7 @@ dependencies = [
  "hf-hub",
  "http",
  "http-body-util",
+ "include_dir",
  "indicatif",
  "inquire",
  "libc",
