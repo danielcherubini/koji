@@ -1193,10 +1193,9 @@ impl ProxyState {
         let base_dir =
             crate::config::Config::base_dir().with_context(|| "Failed to get config directory")?;
 
-        // Resolve server entrypoint and python binary
+        // Resolve server entrypoint
         let server_path = crate::compaction_server::get_server_entrypoint(compaction, &base_dir)
             .with_context(|| "Failed to resolve compaction server entrypoint")?;
-        let python_bin = crate::compaction_server::get_python_bin(compaction);
 
         // Determine port
         let port = if let Some(p) = compaction.port {
@@ -1236,14 +1235,17 @@ impl ProxyState {
             .to_string();
         let uvicorn_target = format!("{}:app", module_name);
 
-        // Spawn the Python process
+        // Resolve server directory for uvx --project
         let server_dir = server_path
             .parent()
             .ok_or_else(|| anyhow::anyhow!("Server path has no parent"))?;
-        let mut child = tokio::process::Command::new(&python_bin);
+
+        // Spawn via uvx — auto-installs deps from pyproject.toml
+        let mut child = tokio::process::Command::new("uvx");
         configure_process_group(&mut child);
         child
-            .arg("-m")
+            .arg("--project")
+            .arg(server_dir)
             .arg("uvicorn")
             .arg(&uvicorn_target)
             .arg("--host")
@@ -1255,10 +1257,7 @@ impl ProxyState {
             .current_dir(server_dir);
 
         let mut child = child.spawn().with_context(|| {
-            format!(
-                "Failed to spawn compaction server: {}",
-                python_bin.display()
-            )
+            "Failed to spawn compaction server via uvx (install with: pipx install uv)".to_string()
         })?;
 
         let pid = child

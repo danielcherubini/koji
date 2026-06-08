@@ -291,8 +291,6 @@ pub struct CompactionConfig {
     pub enabled: bool,
     #[serde(default)]
     pub server_path: Option<String>,
-    #[serde(default)]
-    pub venv_path: Option<String>,
     #[serde(default = "default_compaction_device")]
     pub device: String,
     #[serde(default)]
@@ -670,7 +668,6 @@ impl From<CompactionConfig> for CoreCompactionConfig {
         Self {
             enabled: c.enabled,
             server_path: c.server_path,
-            venv_path: c.venv_path,
             device: c.device,
             port: c.port,
             timeout_ms: c.timeout_ms,
@@ -684,7 +681,6 @@ impl From<CoreCompactionConfig> for CompactionConfig {
         Self {
             enabled: c.enabled,
             server_path: c.server_path,
-            venv_path: c.venv_path,
             device: c.device,
             port: c.port,
             timeout_ms: c.timeout_ms,

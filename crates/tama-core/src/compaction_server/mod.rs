@@ -75,37 +75,9 @@ pub fn get_server_entrypoint(
     }
 }
 
-/// Get the Python binary path.
-/// Uses config.venv_path if set, otherwise uses system `python3`.
-pub fn get_python_bin(config: &crate::config::CompactionConfig) -> PathBuf {
-    if let Some(ref venv_path) = config.venv_path {
-        PathBuf::from(venv_path).join("bin").join("python")
-    } else {
-        PathBuf::from("python3")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_get_python_bin_default() {
-        let config = crate::config::CompactionConfig::default();
-        assert_eq!(get_python_bin(&config), PathBuf::from("python3"));
-    }
-
-    #[test]
-    fn test_get_python_bin_venv() {
-        let config = crate::config::CompactionConfig {
-            venv_path: Some("/tmp/venv".to_string()),
-            ..Default::default()
-        };
-        assert_eq!(
-            get_python_bin(&config),
-            PathBuf::from("/tmp/venv/bin/python")
-        );
-    }
 
     #[test]
     fn test_get_server_entrypoint_prefers_config() {

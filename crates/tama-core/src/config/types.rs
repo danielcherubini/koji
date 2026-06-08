@@ -426,9 +426,6 @@ pub struct CompactionConfig {
     /// Path to the Python entrypoint (main.py). If omitted, uses embedded default.
     #[serde(default)]
     pub server_path: Option<String>,
-    /// Path to the Python virtual environment. If omitted, uses system python.
-    #[serde(default)]
-    pub venv_path: Option<String>,
     /// Compute device: "cpu", "cuda", "cuda:0", "mps". Default: "cpu".
     #[serde(default = "default_compaction_device")]
     pub device: String,
@@ -445,7 +442,6 @@ impl Default for CompactionConfig {
         Self {
             enabled: false,
             server_path: None,
-            venv_path: None,
             device: default_compaction_device(),
             port: None,
             timeout_ms: default_compaction_timeout_ms(),
@@ -848,7 +844,6 @@ backend = "llama.cpp"
         let config = CompactionConfig::default();
         assert!(!config.enabled);
         assert_eq!(config.server_path, None);
-        assert_eq!(config.venv_path, None);
         assert_eq!(config.device, "cpu");
         assert_eq!(config.port, None);
         assert_eq!(config.timeout_ms, 30_000);
@@ -860,7 +855,6 @@ backend = "llama.cpp"
         let compaction = CompactionConfig {
             enabled: true,
             server_path: Some("/opt/compaction/main.py".to_string()),
-            venv_path: Some("/opt/compaction/venv".to_string()),
             device: "cuda:0".to_string(),
             port: Some(8081),
             timeout_ms: 60_000,
@@ -869,7 +863,6 @@ backend = "llama.cpp"
         let loaded: CompactionConfig = toml::from_str(&toml_str).unwrap();
         assert_eq!(loaded.enabled, compaction.enabled);
         assert_eq!(loaded.server_path, compaction.server_path);
-        assert_eq!(loaded.venv_path, compaction.venv_path);
         assert_eq!(loaded.device, compaction.device);
         assert_eq!(loaded.port, compaction.port);
         assert_eq!(loaded.timeout_ms, compaction.timeout_ms);
