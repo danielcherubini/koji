@@ -23,6 +23,8 @@ pub struct Config {
     pub sampling_templates: BTreeMap<String, SamplingParams>,
     #[serde(default)]
     pub proxy: ProxyConfig,
+    #[serde(default)]
+    pub compaction: CompactionConfig,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -118,6 +120,28 @@ pub struct ProxyConfig {
     pub metrics_retention_secs: u64,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CompactionConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub server_path: Option<String>,
+    #[serde(default = "default_compaction_device")]
+    pub device: String,
+    #[serde(default)]
+    pub port: Option<u16>,
+    #[serde(default = "default_compaction_timeout_ms")]
+    pub timeout_ms: u64,
+}
+
+fn default_compaction_device() -> String {
+    "cpu".to_string()
+}
+
+fn default_compaction_timeout_ms() -> u64 {
+    30_000
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct SamplingParams {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -144,6 +168,7 @@ enum Section {
     Proxy,
     Supervisor,
     Sampling,
+    Compaction,
     // Backup, // TODO: Fix compilation
 }
 
@@ -154,6 +179,7 @@ impl Section {
             Section::Proxy => "Proxy",
             Section::Supervisor => "Supervisor",
             Section::Sampling => "Sampling Templates",
+            Section::Compaction => "Compaction",
             // Section::Backup => "Backup & Restore", // TODO: Fix compilation
         }
     }
@@ -163,6 +189,7 @@ impl Section {
             Section::Proxy => "🌐",
             Section::Supervisor => "👀",
             Section::Sampling => "🎲",
+            Section::Compaction => "📦",
             // Section::Backup => "💾", // TODO: Fix compilation
         }
     }
@@ -255,13 +282,14 @@ pub fn ConfigEditor() -> impl IntoView {
                         // Side nav
                         <nav class="card" style="width:220px;flex-shrink:0;padding:0.75rem;position:sticky;top:0;">
                             <ul style="list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:0.25rem;">
-                                {[Section::General, Section::Proxy, Section::Supervisor, Section::Sampling]
+                                {[Section::General, Section::Proxy, Section::Supervisor, Section::Sampling, Section::Compaction]
                                     .into_iter().map(|s| {
                                         let scroll_id = match s {
                                             Section::General => "cfg-general",
                                             Section::Proxy => "cfg-proxy",
                                             Section::Supervisor => "cfg-supervisor",
                                             Section::Sampling => "cfg-sampling",
+                                            Section::Compaction => "cfg-compaction",
                                             // Section::Backup => "cfg-backup", // TODO: Fix compilation
                                         };
                                         let active = move || current.get() == s;
@@ -297,6 +325,7 @@ pub fn ConfigEditor() -> impl IntoView {
                             <div id="cfg-proxy"><ProxyForm config=config /></div>
                             <div id="cfg-supervisor"><SupervisorForm config=config /></div>
                             <div id="cfg-sampling"><SamplingForm config=config /></div>
+                            <div id="cfg-compaction"><CompactionForm config=config /></div>
                         </div>
                     </div>
                 }.into_any()
@@ -718,6 +747,109 @@ fn SamplingForm(config: RwSignal<Option<Config>>) -> impl IntoView {
                     }.into_any()
                 }
             }}
+        </SectionCard>
+    }
+}
+
+// ─── Compaction Form ──────────────────────────────────────────────────────
+
+#[component]
+fn CompactionForm(config: RwSignal<Option<Config>>) -> impl IntoView {
+    let get_compaction = move || config.get().map(|c| c.compaction).unwrap_or_default();
+
+    view! {
+        <SectionCard title="Compaction (LLMLingua-2)".to_string() description=Some("Compress prompts before they hit the LLM to reduce token costs. Requires uv installed (pipx install uv).".to_string())>
+
+            <div style="display:flex;flex-direction:column;gap:1rem;margin-top:1rem;">
+                <div>
+                    <label class="checkbox-label">
+                        <input
+                            type="checkbox"
+                            prop:checked=move || get_compaction().enabled
+                            on:change=move |ev| {
+                                use wasm_bindgen::JsCast;
+                                let checked = ev.target()
+                                    .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
+                                    .map(|el| el.checked())
+                                    .unwrap_or(false);
+                                config.update(|c| if let Some(c) = c { c.compaction.enabled = checked; });
+                            }
+                        />
+                        "Enable compaction"
+                    </label>
+                </div>
+
+                <div>
+                    <label>"Device"</label>
+                    <select
+                        on:change=move |ev| {
+                            let v = target_value(&ev);
+                            config.update(|c| if let Some(c) = c { c.compaction.device = v; });
+                        }
+                        prop:value=move || get_compaction().device
+                    >
+                        <option value="cpu">"cpu"</option>
+                        <option value="cuda">"cuda"</option>
+                        <option value="cuda:0">"cuda:0"</option>
+                        <option value="mps">"mps"</option>
+                    </select>
+                    <p class="text-muted" style="font-size:0.85em;margin-top:0.25rem;">
+                        "Compute device for the compaction model. CUDA is recommended if available."
+                    </p>
+                </div>
+
+                <div>
+                    <label>"Port"</label>
+                    <input
+                        type="number"
+                        min="0"
+                        placeholder="auto-assigned"
+                        prop:value=move || get_compaction().port.map(|p| p.to_string()).unwrap_or_default()
+                        on:input=move |ev| {
+                            let v = target_value(&ev);
+                            config.update(|c| if let Some(c) = c {
+                                c.compaction.port = if v.is_empty() { None } else { v.parse::<u16>().ok() };
+                            });
+                        }
+                    />
+                    <p class="text-muted" style="font-size:0.85em;margin-top:0.25rem;">
+                        "Leave empty for auto-assignment."
+                    </p>
+                </div>
+
+                <div>
+                    <label>"Timeout (ms)"</label>
+                    <input
+                        type="number"
+                        min="1000"
+                        step="1000"
+                        prop:value=move || get_compaction().timeout_ms.to_string()
+                        on:input=move |ev| {
+                            if let Ok(v) = target_value(&ev).parse::<u64>() {
+                                config.update(|c| if let Some(c) = c { c.compaction.timeout_ms = v; });
+                            }
+                        }
+                    />
+                </div>
+
+                <div>
+                    <label>"Custom Server Path"</label>
+                    <input
+                        type="text"
+                        placeholder="use embedded default"
+                        prop:value=move || get_compaction().server_path.clone().unwrap_or_default()
+                        on:input=move |ev| {
+                            let v = target_value(&ev);
+                            config.update(|c| if let Some(c) = c {
+                                c.compaction.server_path = if v.is_empty() { None } else { Some(v) };
+                            });
+                        }
+                    />
+                    <p class="text-muted" style="font-size:0.85em;margin-top:0.25rem;">
+                        "Path to a custom main.py. Leave empty to use the embedded server."
+                    </p>
+                </div>
+            </div>
         </SectionCard>
     }
 }
