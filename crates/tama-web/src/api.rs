@@ -124,6 +124,8 @@ pub struct StructuredConfigBody {
         std::collections::BTreeMap<String, crate::types::config::SamplingParams>,
     #[serde(default)]
     pub proxy: crate::types::config::ProxyConfig,
+    #[serde(default)]
+    pub compaction: crate::types::config::CompactionConfig,
 }
 
 pub async fn save_config(
