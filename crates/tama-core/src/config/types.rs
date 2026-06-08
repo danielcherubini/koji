@@ -846,7 +846,7 @@ backend = "llama.cpp"
     #[test]
     fn test_compaction_config_defaults() {
         let config = CompactionConfig::default();
-        assert_eq!(config.enabled, false);
+        assert!(!config.enabled);
         assert_eq!(config.server_path, None);
         assert_eq!(config.venv_path, None);
         assert_eq!(config.device, "cpu");
