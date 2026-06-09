@@ -1149,7 +1149,7 @@ impl ProxyState {
         None
     }
 
-    /// Load the compaction backend by spawning the embedded Python server via uvx.
+    /// Load the compaction backend by spawning the embedded Python server via `uv run`.
     ///
     /// Uses the model registry lifecycle (Starting → Ready/Failed) for state tracking.
     /// Follows the Kokoro TTS pattern for registry registration and state transitions.
@@ -1229,10 +1229,11 @@ impl ProxyState {
 
         info!("Starting compaction backend on port {}", port);
 
-        // 9. Spawn via uvx
-        let mut child = tokio::process::Command::new("uvx");
+        // 9. Spawn via `uv run` (uses project venv so deps are available)
+        let mut child = tokio::process::Command::new("uv");
         configure_process_group(&mut child);
         child
+            .arg("run")
             .arg("--project")
             .arg(&server_dir)
             .arg("uvicorn")
@@ -1246,7 +1247,7 @@ impl ProxyState {
             .current_dir(&server_dir);
 
         let mut child = child.spawn().with_context(|| {
-            "Failed to spawn compaction server via uvx (install with: pipx install uv)".to_string()
+            "Failed to spawn compaction server via uv run (install with: pipx install uv)".to_string()
         })?;
 
         let pid = child
