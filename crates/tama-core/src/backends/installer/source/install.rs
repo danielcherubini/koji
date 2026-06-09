@@ -1,7 +1,10 @@
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
+use reqwest::Client;
+use zip::ZipArchive;
 
 use super::build::build_cmake_args;
 use super::build::emit;
@@ -32,7 +35,11 @@ pub async fn install_from_source(
 
     // Check prerequisites
     let caps = crate::gpu::detect_build_prerequisites();
-    if !caps.git_available {
+    // Git is only needed for ik_llama (no releases) and commit-based builds.
+    // llama.cpp uses GitHub source ZIP downloads instead.
+    if !caps.git_available
+        && (matches!(options.backend_type, BackendType::IkLlama) || commit.is_some())
+    {
         return Err(anyhow!(
             "Git is required to build from source.\n\
              Install it: https://git-scm.com/downloads\n\
@@ -90,8 +97,16 @@ pub async fn install_from_source(
         version.to_string()
     };
 
-    // Clone repository
-    clone_repository(&resolved_version, git_url, &source_dir, commit, progress).await?;
+    // Fetch source — download ZIP for llama.cpp releases, git clone for ik_llama/commits
+    fetch_source(
+        &options.backend_type,
+        &resolved_version,
+        git_url,
+        &source_dir,
+        commit,
+        progress,
+    )
+    .await?;
 
     // Configure with CMake
     configure_cmake(options, &source_dir, &build_output, progress).await?;
@@ -165,6 +180,118 @@ pub async fn install_from_source(
     }
 
     result
+}
+
+/// Fetch source code for building — downloads a ZIP for llama.cpp releases,
+/// falls back to git clone for ik_llama (no releases) or commit-based builds.
+async fn fetch_source(
+    backend_type: &BackendType,
+    version: &str,
+    git_url: &str,
+    source_dir: &Path,
+    commit: Option<&str>,
+    progress: Option<&Arc<dyn ProgressSink>>,
+) -> Result<()> {
+    // For llama.cpp with a release tag (e.g. "b9585"), download the source ZIP.
+    // This avoids needing git and is faster for large repos.
+    if matches!(backend_type, BackendType::LlamaCpp)
+        && commit.is_none()
+        && !version.starts_with("main@")
+    {
+        return download_source_zip(backend_type, version, source_dir, progress).await;
+    }
+
+    // Fall back to git clone for ik_llama, commit-based builds, or edge cases.
+    clone_repository(version, git_url, source_dir, commit, progress).await
+}
+
+/// Download a GitHub source ZIP and extract it to the source directory.
+async fn download_source_zip(
+    backend_type: &BackendType,
+    version: &str,
+    source_dir: &Path,
+    progress: Option<&Arc<dyn ProgressSink>>,
+) -> Result<()> {
+    let repo_match = match backend_type {
+        BackendType::LlamaCpp => "ggml-org/llama.cpp",
+        _ => return Err(anyhow!("ZIP download not supported for this backend")),
+    };
+
+    let zip_url = format!(
+        "https://github.com/{}/archive/refs/tags/{}.zip",
+        repo_match, version
+    );
+
+    emit(progress, format!("Downloading source archive: {}", version));
+
+    let client = Client::builder()
+        .user_agent("tama-backend-manager")
+        .timeout(std::time::Duration::from_secs(300))
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .build()?;
+
+    let response = client
+        .get(&zip_url)
+        .send()
+        .await
+        .with_context(|| format!("Failed to download source ZIP from {}", zip_url))?;
+
+    if !response.status().is_success() {
+        return Err(anyhow!(
+            "Failed to download source ZIP: HTTP {}",
+            response.status()
+        ));
+    }
+
+    let bytes = response
+        .bytes()
+        .await
+        .with_context(|| "Failed to read source ZIP bytes")?;
+
+    emit(progress, "Extracting source archive...");
+    std::fs::create_dir_all(source_dir)?;
+
+    let cursor = Cursor::new(bytes.as_ref());
+    let mut archive =
+        ZipArchive::new(cursor).with_context(|| "Failed to open source ZIP archive")?;
+
+    // GitHub source ZIPs have a top-level directory like "llama.cpp-b9585/".
+    // We need to extract its contents directly into source_dir.
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i)?;
+        let entry_name = entry
+            .enclosed_name()
+            .ok_or_else(|| anyhow!("Invalid path in archive: {}", entry.name()))?;
+
+        let outpath = source_dir.join(&entry_name);
+
+        if entry.is_dir() {
+            std::fs::create_dir_all(&outpath)?;
+        } else {
+            if let Some(p) = outpath.parent() {
+                std::fs::create_dir_all(p)?;
+            }
+            let mut outfile = std::fs::File::create(&outpath)?;
+            std::io::copy(&mut entry, &mut outfile)?;
+        }
+    }
+
+    // GitHub ZIPs wrap everything in a top-level dir like "llama.cpp-b9585/".
+    // Move contents out so source_dir has the source files directly.
+    let children: Vec<_> = std::fs::read_dir(source_dir)?
+        .filter_map(|e| e.ok())
+        .collect();
+    if children.len() == 1 && children[0].path().is_dir() {
+        let inner = children[0].path();
+        for entry in std::fs::read_dir(&inner)? {
+            let entry = entry?;
+            let dest = source_dir.join(entry.file_name());
+            std::fs::rename(entry.path(), dest)?;
+        }
+        std::fs::remove_dir(&inner)?;
+    }
+
+    Ok(())
 }
 
 /// Clone a git repository, with fallback logic for "latest" and "main" tags.

@@ -1247,7 +1247,8 @@ impl ProxyState {
             .current_dir(&server_dir);
 
         let mut child = child.spawn().with_context(|| {
-            "Failed to spawn compaction server via uv run (install with: pipx install uv)".to_string()
+            "Failed to spawn compaction server via uv run (install with: pipx install uv)"
+                .to_string()
         })?;
 
         let pid = child
