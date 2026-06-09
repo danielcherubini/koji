@@ -452,6 +452,10 @@ pub fn Backends() -> impl IntoView {
                                                 }
                                             }
                                         });
+                                        // Refresh to pick up updated compaction status
+                                        // Note: refresh fires immediately; if the API call fails
+                                        // the re-fetch will restore the previous state (prop:checked
+                                        // is bound to server state), so the checkbox snaps back.
                                         refresh_tick.update(|n| *n += 1);
                                     }
                                 />
