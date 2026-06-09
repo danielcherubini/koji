@@ -124,7 +124,7 @@ pub async fn handle_compaction(state: State<Arc<ProxyState>>, req: Request<Body>
             )
                 .into_response();
         }
-        config.compaction.timeout_ms
+        config.compaction.request_timeout_ms
     };
 
     // Ensure server is running
