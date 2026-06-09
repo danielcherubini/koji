@@ -14,9 +14,9 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Quick Stats
 
-- **Total Plans**: 118
+- **Total Plans**: 119
 - **Completed**: 116 ✅
-- **In Progress**: 0 🚧
+- **In Progress**: 1 🚧
 - **Remaining**: 2
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
@@ -29,6 +29,7 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 | Plan | Description | PR / Git References |
 |------|-------------|---------------------|
+| [Compaction Backend Card](2026-06-09-compaction-backend-card.md) | Add compaction card to backends page with status and enable/disable toggle | 🚧 IN PROGRESS |
 | [Compaction Backend Lifecycle](2026-06-09-compaction-backend-lifecycle.md) | Route compaction server through existing backend lifecycle (Kokoro TTS pattern) instead of custom subprocess management | #116 ✅ COMPLETED |
 | [LLMLingua-2 Compaction Endpoint](2026-06-08-llmlingua-compaction.md) | Add `/v1/compaction` endpoint that compresses prompts via Microsoft LLMLingua-2 (XLM-RoBERTa-large) before they hit the main LLM | #111, #112, #113, #114 ✅ COMPLETED |
 | [SSE-Powered Updates Page](2026-06-04-sse-updates-page.md) | Replace fire-and-forget refresh buttons with SSE-driven real-time updates on the updates page | #109 `7a1a39dc`, `6faed2bf`, `03dbbcfe`, `efefdcf`, `eef6916` ✅ COMPLETED |
