@@ -297,6 +297,8 @@ pub struct CompactionConfig {
     pub port: Option<u16>,
     #[serde(default = "default_compaction_timeout_ms")]
     pub timeout_ms: u64,
+    #[serde(default = "default_compaction_startup_timeout_secs")]
+    pub startup_timeout_secs: u64,
 }
 
 fn default_compaction_device() -> String {
@@ -305,6 +307,10 @@ fn default_compaction_device() -> String {
 
 fn default_compaction_timeout_ms() -> u64 {
     30_000
+}
+
+fn default_compaction_startup_timeout_secs() -> u64 {
+    600
 }
 
 /// Default helper functions for Config fields.
@@ -671,6 +677,7 @@ impl From<CompactionConfig> for CoreCompactionConfig {
             device: c.device,
             port: c.port,
             timeout_ms: c.timeout_ms,
+            startup_timeout_secs: c.startup_timeout_secs,
         }
     }
 }
@@ -684,6 +691,7 @@ impl From<CoreCompactionConfig> for CompactionConfig {
             device: c.device,
             port: c.port,
             timeout_ms: c.timeout_ms,
+            startup_timeout_secs: c.startup_timeout_secs,
         }
     }
 }

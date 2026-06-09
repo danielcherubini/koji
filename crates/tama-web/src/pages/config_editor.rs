@@ -132,6 +132,8 @@ pub struct CompactionConfig {
     pub port: Option<u16>,
     #[serde(default = "default_compaction_timeout_ms")]
     pub timeout_ms: u64,
+    #[serde(default = "default_compaction_startup_timeout_secs")]
+    pub startup_timeout_secs: u64,
 }
 
 fn default_compaction_device() -> String {
@@ -140,6 +142,10 @@ fn default_compaction_device() -> String {
 
 fn default_compaction_timeout_ms() -> u64 {
     30_000
+}
+
+fn default_compaction_startup_timeout_secs() -> u64 {
+    600
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -847,6 +853,24 @@ fn CompactionForm(config: RwSignal<Option<Config>>) -> impl IntoView {
                     />
                     <p class="text-muted" style="font-size:0.85em;margin-top:0.25rem;">
                         "Path to a custom main.py. Leave empty to use the embedded server."
+                    </p>
+                </div>
+
+                <div>
+                    <label>"Startup Timeout (s)"</label>
+                    <input
+                        type="number"
+                        min="30"
+                        step="30"
+                        prop:value=move || get_compaction().startup_timeout_secs.to_string()
+                        on:input=move |ev| {
+                            if let Ok(v) = target_value(&ev).parse::<u64>() {
+                                config.update(|c| if let Some(c) = c { c.compaction.startup_timeout_secs = v; });
+                            }
+                        }
+                    />
+                    <p class="text-muted" style="font-size:0.85em;margin-top:0.25rem;">
+                        "Max time to wait for server startup. First run installs deps (torch, etc.) and can take 5-10 min."
                     </p>
                 </div>
             </div>

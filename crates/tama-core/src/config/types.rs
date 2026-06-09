@@ -435,6 +435,9 @@ pub struct CompactionConfig {
     /// Request timeout in milliseconds. Default: 30000 (30s).
     #[serde(default = "default_compaction_timeout_ms")]
     pub timeout_ms: u64,
+    /// Startup timeout in seconds. Default: 600 (10 min, first-run dep install is slow).
+    #[serde(default = "default_compaction_startup_timeout_secs")]
+    pub startup_timeout_secs: u64,
 }
 
 impl Default for CompactionConfig {
@@ -445,6 +448,7 @@ impl Default for CompactionConfig {
             device: default_compaction_device(),
             port: None,
             timeout_ms: default_compaction_timeout_ms(),
+            startup_timeout_secs: default_compaction_startup_timeout_secs(),
         }
     }
 }
@@ -583,6 +587,10 @@ fn default_compaction_device() -> String {
 
 fn default_compaction_timeout_ms() -> u64 {
     30_000
+}
+
+fn default_compaction_startup_timeout_secs() -> u64 {
+    600 // 10 min — first-run dep install (torch, transformers) is slow
 }
 
 /// Maximum request body size in bytes (16 MB)
@@ -858,6 +866,7 @@ backend = "llama.cpp"
             device: "cuda:0".to_string(),
             port: Some(8081),
             timeout_ms: 60_000,
+            startup_timeout_secs: 300,
         };
         let toml_str = toml::to_string_pretty(&compaction).unwrap();
         let loaded: CompactionConfig = toml::from_str(&toml_str).unwrap();
@@ -866,6 +875,7 @@ backend = "llama.cpp"
         assert_eq!(loaded.device, compaction.device);
         assert_eq!(loaded.port, compaction.port);
         assert_eq!(loaded.timeout_ms, compaction.timeout_ms);
+        assert_eq!(loaded.startup_timeout_secs, compaction.startup_timeout_secs);
     }
 
     /// Test that CompactionConfig is disabled by default.

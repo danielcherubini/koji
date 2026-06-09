@@ -1296,8 +1296,9 @@ impl ProxyState {
         });
 
         // Health check: poll every 500ms, require 2 consecutive successes
+        // Use compaction-specific timeout (first-run dep install is slow)
         let timeout =
-            std::time::Duration::from_secs(self.config.read().await.proxy.startup_timeout_secs);
+            std::time::Duration::from_secs(compaction.startup_timeout_secs);
         let start = Instant::now();
         let mut consecutive_successes: u32 = 0;
 
@@ -1343,8 +1344,8 @@ impl ProxyState {
     }
 
     async fn wait_for_compaction_ready(&self) -> anyhow::Result<String> {
-        // Wait up to startup_timeout_secs for the server to become Ready
-        let timeout_secs = self.config.read().await.proxy.startup_timeout_secs;
+        // Wait up to compaction startup_timeout_secs for the server to become Ready
+        let timeout_secs = self.config.read().await.compaction.startup_timeout_secs;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
 
         loop {
