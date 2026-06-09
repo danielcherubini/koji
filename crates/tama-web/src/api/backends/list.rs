@@ -265,11 +265,38 @@ pub async fn list_backends(State(state): State<Arc<ProxyState>>) -> impl IntoRes
         }
     }
 
+    // Get compaction config
+    let compaction_config = state.config.read().await.compaction.clone();
+
+    // Check if compaction backend is running (in model registry as "compaction")
+    let (compaction_running, compaction_url) = {
+        let models = state.models.read().await;
+        if let Some(model_state) = models.get("compaction") {
+            if model_state.is_ready() {
+                (true, model_state.backend_url().map(|u| u.to_string()))
+            } else {
+                (false, None)
+            }
+        } else {
+            (false, None)
+        }
+    };
+
+    let compaction_card = CompactionCardDto {
+        enabled: compaction_config.enabled,
+        device: compaction_config.device,
+        port: compaction_config.port,
+        running: compaction_running,
+        server_url: compaction_url,
+        request_timeout_ms: compaction_config.request_timeout_ms,
+    };
+
     Json(BackendListResponse {
         active_job,
         backends,
         custom,
         available,
+        compaction: compaction_card,
     })
     .into_response()
 }

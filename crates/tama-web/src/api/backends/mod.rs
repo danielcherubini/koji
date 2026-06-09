@@ -1,4 +1,5 @@
 pub mod capabilities;
+pub mod compaction;
 pub mod install;
 pub mod jobs;
 pub mod list;

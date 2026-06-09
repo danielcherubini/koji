@@ -14,9 +14,10 @@ use tower_http::{catch_panic::CatchPanicLayer, cors::CorsLayer};
 use crate::api;
 use crate::api::aliases::{create_alias, delete_alias, get_alias, list_aliases, update_alias};
 use crate::api::backends::{
-    activate_backend_version, check_backend_updates, get_job, install_backend, job_events_sse,
-    list_backend_versions, list_backends, remove_backend, remove_backend_version,
-    system_capabilities, update_backend, update_backend_default_args, update_backend_source,
+    activate_backend_version, check_backend_updates, compaction::update_compaction, get_job,
+    install_backend, job_events_sse, list_backend_versions, list_backends, remove_backend,
+    remove_backend_version, system_capabilities, update_backend, update_backend_default_args,
+    update_backend_source,
 };
 use crate::api::backup::{restore_preview, start_restore};
 use crate::api::benchmarks::{
@@ -140,6 +141,7 @@ pub fn build_web_routes() -> Router<Arc<tama_core::proxy::ProxyState>> {
         )
         .route("/tama/v1/backends/jobs/:id", get(get_job))
         .route("/tama/v1/backends/jobs/:id/events", get(job_events_sse))
+        .route("/tama/v1/backends/compaction", post(update_compaction))
         // Restore routes (CSRF-protected)
         .route("/tama/v1/restore/preview", post(restore_preview))
         .route("/tama/v1/restore", post(start_restore))
