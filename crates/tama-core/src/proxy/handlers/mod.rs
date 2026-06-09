@@ -6,6 +6,8 @@ pub mod models;
 pub mod status;
 pub mod tts;
 
+pub(crate) mod helpers;
+
 // Re-exports for backward compatibility (flat imports via handlers::)
 #[allow(unused_imports)]
 pub use chat::{handle_chat_completions, handle_stream_chat_completions};
