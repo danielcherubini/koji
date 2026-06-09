@@ -9,6 +9,25 @@ use tama_core::web_types::JobManager;
 // Wire DTOs (tama-web only, not exposed from tama-core)
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// DTO for the compaction backend card (embedded, always installed).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompactionCardDto {
+    /// Whether compaction is enabled in config.
+    pub enabled: bool,
+    /// Compute device (e.g. "cpu", "cuda", "mps").
+    pub device: String,
+    /// Fixed port or null if auto-assigned.
+    pub port: Option<u16>,
+    /// Whether the compaction backend is currently running (Ready in model registry).
+    pub running: bool,
+    /// Server URL if running (e.g. "http://127.0.0.1:18962").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_url: Option<String>,
+    /// Request timeout in milliseconds.
+    pub request_timeout_ms: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct BackendListResponse {
@@ -18,6 +37,8 @@ pub struct BackendListResponse {
     /// Backend type identifiers that are known but not currently installed.
     #[serde(default)]
     pub available: Vec<String>,
+    /// Compaction backend status (embedded, always "installed").
+    pub compaction: CompactionCardDto,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
