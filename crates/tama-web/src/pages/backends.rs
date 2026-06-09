@@ -4,12 +4,27 @@ use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::JsCast;
 
-use crate::api::backends::types::CompactionCardDto;
 use crate::components::alert_banner::{AlertBanner, AlertVariant};
 use crate::components::backend_card::{BackendCard, BackendCardDto};
 use crate::components::install_modal::{CapabilitiesDto, InstallModal, InstallRequest};
 use crate::components::job_log_panel::JobLogPanel;
 use crate::utils::{delete_request, extract_and_store_csrf_token, get_request, post_request};
+
+/// Compaction backend card DTO (mirrors the SSR-side type).
+/// Defined here because `crate::api` is gated behind `ssr` feature.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct CompactionCardDto {
+    enabled: bool,
+    device: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    port: Option<u16>,
+    running: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    server_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    request_timeout_ms: Option<u64>,
+}
 
 #[derive(Debug, Clone, Deserialize, Default)]
 struct BackendListResponse {
