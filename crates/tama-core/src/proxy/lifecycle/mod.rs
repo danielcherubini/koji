@@ -341,11 +341,22 @@ impl ProxyState {
             return Ok(None);
         }
 
-        // Collect all Ready server names while holding the write lock.
+        // Collect all Ready server names AND non-inference server names while
+        // holding the write lock. Non-inference backends (TTS, compaction) are
+        // NOT in model_configs (DB), so we must check the runtime `models` map.
         let models = self.models.write().await;
         let ready_servers: Vec<String> = models
             .iter()
             .filter(|(_, s)| matches!(s, ModelState::Ready { .. }))
+            .map(|(name, _)| name.clone())
+            .collect();
+
+        // Collect names of non-inference backends (TTS, compaction) from the
+        // runtime models map. These are NOT in model_configs, so checking only
+        // model_configs would miss them (e.g. compaction).
+        let non_inference_servers: std::collections::HashSet<String> = models
+            .iter()
+            .filter(|(_, s)| s.is_non_inference_backend())
             .map(|(name, _)| name.clone())
             .collect();
 
@@ -360,6 +371,7 @@ impl ProxyState {
                 !model_configs
                     .get(server_name.as_str())
                     .is_some_and(|mc| mc.backend.starts_with("tts_") || mc.backend == "compaction")
+                    && !non_inference_servers.contains(server_name.as_str())
             })
             .count();
 
@@ -375,6 +387,7 @@ impl ProxyState {
                 !model_configs
                     .get(server_name.as_str())
                     .is_some_and(|mc| mc.backend.starts_with("tts_") || mc.backend == "compaction")
+                    && !non_inference_servers.contains(server_name.as_str())
             })
             .filter_map(|server_name| models.get(server_name).map(|s| (server_name, s)))
             .min_by_key(|(_, s)| s.last_accessed())
