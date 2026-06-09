@@ -15,8 +15,8 @@ This directory contains implementation plans for the Tama project. Each plan doc
 ## Quick Stats
 
 - **Total Plans**: 118
-- **Completed**: 115 ✅
-- **In Progress**: 1 🚧
+- **Completed**: 116 ✅
+- **In Progress**: 0 🚧
 - **Remaining**: 2
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
@@ -29,7 +29,7 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 | Plan | Description | PR / Git References |
 |------|-------------|---------------------|
-| [Compaction Backend Lifecycle](2026-06-09-compaction-backend-lifecycle.md) | Route compaction server through existing backend lifecycle (Kokoro TTS pattern) instead of custom subprocess management | 🚧 IN PROGRESS |
+| [Compaction Backend Lifecycle](2026-06-09-compaction-backend-lifecycle.md) | Route compaction server through existing backend lifecycle (Kokoro TTS pattern) instead of custom subprocess management | #116 ✅ COMPLETED |
 | [LLMLingua-2 Compaction Endpoint](2026-06-08-llmlingua-compaction.md) | Add `/v1/compaction` endpoint that compresses prompts via Microsoft LLMLingua-2 (XLM-RoBERTa-large) before they hit the main LLM | #111, #112, #113, #114 ✅ COMPLETED |
 | [SSE-Powered Updates Page](2026-06-04-sse-updates-page.md) | Replace fire-and-forget refresh buttons with SSE-driven real-time updates on the updates page | #109 `7a1a39dc`, `6faed2bf`, `03dbbcfe`, `efefdcf`, `eef6916` ✅ COMPLETED |
 | [Unified Dashboard Models](2026-06-03-unified-dashboard-models.md) | Merge "Active Models" and "Inactive Models" sections into a single "Models" section on the dashboard | #108 `1f6cc9f` ✅ COMPLETED |
