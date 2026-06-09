@@ -2,7 +2,9 @@
 
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
+use wasm_bindgen::JsCast;
 
+use crate::api::backends::types::CompactionCardDto;
 use crate::components::alert_banner::{AlertBanner, AlertVariant};
 use crate::components::backend_card::{BackendCard, BackendCardDto};
 use crate::components::install_modal::{CapabilitiesDto, InstallModal, InstallRequest};
@@ -17,6 +19,13 @@ struct BackendListResponse {
     custom: Vec<BackendCardDto>,
     #[serde(default)]
     available: Vec<String>,
+    #[serde(default)]
+    compaction: CompactionCardDto,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CompactionToggleRequest {
+    enabled: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -373,6 +382,85 @@ pub fn Backends() -> impl IntoView {
                     view! { <span/> }.into_any()
                 }
             }}
+
+            {/* Compaction card */}
+            {move || {
+                let comp = backends_list.get().compaction.clone();
+                let border_color = if comp.running {
+                    "#22c55e"
+                } else {
+                    "#475569"
+                };
+                let status = if comp.running {
+                    "Running"
+                } else if comp.enabled {
+                    "Enabled (not running)"
+                } else {
+                    "Disabled"
+                };
+                let url_suffix = comp
+                    .server_url
+                    .as_ref()
+                    .map(|u| format!(" — {}", u))
+                    .unwrap_or_default();
+                let port_str = comp
+                    .port
+                    .map(|p| format!(", Port: {}", p))
+                    .unwrap_or_else(|| ", Port: auto".to_string());
+
+                view! {
+                    <div class="card" style=format!("margin-bottom:1rem;border-left:3px solid {}", border_color)>
+                        <div style="display:flex;justify-content:space-between;align-items:center;">
+                            <div>
+                                <h3 style="margin:0;">"LLMLingua Compaction"</h3>
+                                <p class="text-muted">
+                                    {status}
+                                    {url_suffix}
+                                </p>
+                                <p class="text-muted" style="font-size:0.8rem;">
+                                    "Device: " {comp.device} {port_str}
+                                </p>
+                            </div>
+                            <label class="form-check" style="display:flex;align-items:center;gap:0.5rem;">
+                                <input
+                                    type="checkbox"
+                                    class="form-check-input"
+                                    prop:checked=move || comp.enabled
+                                    on:change=move |ev| {
+                                        let enabled = ev
+                                            .target()
+                                            .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
+                                            .map(|el| el.checked())
+                                            .unwrap_or(false);
+                                        let req = CompactionToggleRequest { enabled };
+                                        wasm_bindgen_futures::spawn_local(async move {
+                                            match post_request("/tama/v1/backends/compaction")
+                                                .json(&req)
+                                                .unwrap()
+                                                .send()
+                                                .await
+                                            {
+                                                Ok(resp) if resp.ok() => {
+                                                    leptos::logging::log!("Compaction toggle succeeded");
+                                                }
+                                                Ok(resp) => {
+                                                    let text = resp.text().await.unwrap_or_default();
+                                                    leptos::logging::error!("Toggle failed: {}", text);
+                                                }
+                                                Err(e) => {
+                                                    leptos::logging::error!("Toggle request failed: {}", e);
+                                                }
+                                            }
+                                        });
+                                        refresh_tick.update(|n| *n += 1);
+                                    }
+                                />
+                                <span class="form-check-label">"Enable"</span>
+                            </label>
+                        </div>
+                    </div>
+                }
+            }.into_any()}
 
             {/* Backend cards */}
             <div style="display:flex;flex-direction:column;gap:1rem;margin-top:1rem;">

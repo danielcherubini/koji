@@ -10,7 +10,7 @@ use tama_core::web_types::JobManager;
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// DTO for the compaction backend card (embedded, always installed).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompactionCardDto {
     /// Whether compaction is enabled in config.
