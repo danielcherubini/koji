@@ -103,8 +103,10 @@ pub async fn cmd_update(
                 BackendType::LlamaCpp => BackendSource::Prebuilt {
                     version: update_check.latest_version.clone(),
                 },
-                BackendType::TtsKokoro => {
-                    return Err(anyhow!("Cannot update TTS backends via this command"))
+                BackendType::TtsKokoro | BackendType::Compaction => {
+                    return Err(anyhow!(
+                        "Cannot update non-inference backends via this command"
+                    ))
                 }
                 BackendType::Custom => return Err(anyhow!("Cannot update custom backends")),
             }

@@ -85,7 +85,9 @@ pub async fn check_latest_version(backend: &BackendType) -> Result<String> {
             // but we clone "main" branch for source builds
             Ok(format!("main@{}", &commit.sha[..8]))
         }
-        BackendType::TtsKokoro => Err(anyhow!("Cannot check updates for TTS backends")),
+        BackendType::TtsKokoro | BackendType::Compaction => {
+            Err(anyhow!("Cannot check updates for non-inference backends"))
+        }
         BackendType::Custom => Err(anyhow!("Cannot check updates for custom backends")),
     }
 }

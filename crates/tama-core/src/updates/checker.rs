@@ -307,7 +307,7 @@ impl UpdateChecker {
                     }
                 }
             }
-            BackendType::TtsKokoro | BackendType::Custom => None,
+            BackendType::TtsKokoro | BackendType::Compaction | BackendType::Custom => None,
         };
 
         let update_available = latest_version

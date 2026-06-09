@@ -46,6 +46,7 @@ pub enum BackendType {
     LlamaCpp,
     IkLlama,
     TtsKokoro,
+    Compaction,
     Custom,
 }
 
@@ -55,6 +56,7 @@ impl std::fmt::Display for BackendType {
             BackendType::LlamaCpp => write!(f, "llama_cpp"),
             BackendType::IkLlama => write!(f, "ik_llama"),
             BackendType::TtsKokoro => write!(f, "tts_kokoro"),
+            BackendType::Compaction => write!(f, "compaction"),
             BackendType::Custom => write!(f, "custom"),
         }
     }
@@ -65,12 +67,18 @@ impl BackendType {
         matches!(self, BackendType::TtsKokoro)
     }
 
+    /// Return true for backends that are not LLM inference engines.
+    /// Currently covers TTS and compaction backends.
+    pub fn is_non_inference_backend(&self) -> bool {
+        matches!(self, BackendType::TtsKokoro | BackendType::Compaction)
+    }
+
     /// Return the canonical git URL for cloning this backend's source code.
     pub fn default_git_url(&self) -> &'static str {
         match self {
             BackendType::LlamaCpp => "https://github.com/ggml-org/llama.cpp.git",
             BackendType::IkLlama => "https://github.com/ikawrakow/ik_llama.cpp.git",
-            BackendType::TtsKokoro | BackendType::Custom => {
+            BackendType::TtsKokoro | BackendType::Compaction | BackendType::Custom => {
                 "https://github.com/ggml-org/llama.cpp.git" // fallback, never reached in practice
             }
         }
@@ -85,9 +93,10 @@ impl FromStr for BackendType {
             "llama_cpp" | "llamacpp" => Ok(BackendType::LlamaCpp),
             "ik_llama" | "ik-llama" | "ikllama" => Ok(BackendType::IkLlama),
             "tts_kokoro" | "ttskokoro" => Ok(BackendType::TtsKokoro),
+            "compaction" => Ok(BackendType::Compaction),
             "custom" => Ok(BackendType::Custom),
             _ => Err(format!(
-                "Unknown backend type '{}'. Supported: llama_cpp, ik_llama, tts_kokoro, custom",
+                "Unknown backend type '{}'. Supported: llama_cpp, ik_llama, tts_kokoro, compaction, custom",
                 s
             )),
         }
@@ -113,8 +122,21 @@ mod tests {
             "https://github.com/ggml-org/llama.cpp.git"
         );
         assert_eq!(
+            BackendType::Compaction.default_git_url(),
+            "https://github.com/ggml-org/llama.cpp.git"
+        );
+        assert_eq!(
             BackendType::Custom.default_git_url(),
             "https://github.com/ggml-org/llama.cpp.git"
         );
+    }
+
+    #[test]
+    fn test_is_non_inference_backend() {
+        assert!(BackendType::TtsKokoro.is_non_inference_backend());
+        assert!(BackendType::Compaction.is_non_inference_backend());
+        assert!(!BackendType::LlamaCpp.is_non_inference_backend());
+        assert!(!BackendType::IkLlama.is_non_inference_backend());
+        assert!(!BackendType::Custom.is_non_inference_backend());
     }
 }
