@@ -107,6 +107,12 @@ impl ModelState {
         self.backend().starts_with("tts_")
     }
 
+    /// Returns true if this is a non-inference backend (TTS or compaction).
+    /// Non-inference backends are excluded from idle timeout checks and LRU eviction.
+    pub fn is_non_inference_backend(&self) -> bool {
+        self.backend().starts_with("tts_") || self.backend() == "compaction"
+    }
+
     pub fn consecutive_failures(&self) -> Option<&Arc<std::sync::atomic::AtomicU32>> {
         match self {
             ModelState::Starting {
