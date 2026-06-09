@@ -453,6 +453,58 @@ async fn install_binary(
         tracing::warn!("No bin/ directory found in build output at {:?}", bin_dir);
     }
 
+    // Shared libraries (.so files) are placed by CMake in subdirectories like
+    // src/, ggml/src/, examples/mtmd/ — not in bin/. Recursively scan the
+    // entire build tree for .so files and copy them to the target directory
+    // so the binary can find them at runtime via the registered ldconfig path.
+    fn copy_shared_libs(build_root: &std::path::Path, dest_dir: &std::path::Path) {
+        fn walk(dir: &std::path::Path, dest: &std::path::Path) {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    let name = match path.file_name().and_then(|n| n.to_str()) {
+                        Some(n) => n.to_string(),
+                        None => continue,
+                    };
+                    // Skip build metadata directories
+                    if name == "CMakeFiles" || name == ".git" {
+                        continue;
+                    }
+                    // Use symlink_metadata to detect symlinks vs regular files
+                    let sym_meta = match std::fs::symlink_metadata(&path) {
+                        Ok(m) => m,
+                        Err(_) => continue,
+                    };
+                    if sym_meta.file_type().is_symlink() {
+                        // Copy .so symlinks (e.g. libllama.so -> libllama.so.0)
+                        if name.starts_with("lib") && name.contains(".so") {
+                            let dest_path = dest.join(&name);
+                            if !dest_path.exists() && !dest_path.is_symlink() {
+                                if let Err(e) = std::fs::copy(&path, &dest_path) {
+                                    tracing::warn!("Failed to copy symlink {}: {}", name, e);
+                                }
+                            }
+                        }
+                    } else if sym_meta.is_dir() {
+                        walk(&path, dest);
+                    } else if sym_meta.is_file() {
+                        // Copy .so* files (shared libraries and versioned variants)
+                        if name.starts_with("lib") && name.contains(".so") {
+                            let dest_path = dest.join(&name);
+                            if !dest_path.exists() {
+                                if let Err(e) = std::fs::copy(&path, &dest_path) {
+                                    tracing::warn!("Failed to copy {}: {}", name, e);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        walk(build_root, dest_dir);
+    }
+    copy_shared_libs(build_output, &options.target_dir);
+
     // Set executable permissions on all copied executables (Unix only).
     #[cfg(unix)]
     {

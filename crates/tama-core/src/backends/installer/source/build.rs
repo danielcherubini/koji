@@ -29,6 +29,12 @@ pub(crate) fn build_cmake_args(
         "-S".to_string(),
         source_dir.to_string_lossy().to_string(),
         "-DCMAKE_BUILD_TYPE=Release".to_string(),
+        // Set RUNPATH to $ORIGIN so the binary looks for shared libraries
+        // in its own directory. Combined with copying .so files during
+        // installation, this eliminates the need for ldconfig or LD_LIBRARY_PATH.
+        "-DCMAKE_BUILD_RPATH=$ORIGIN".to_string(),
+        // Ensure the build RPATH is used (don't replace with install RPATH)
+        "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON".to_string(),
     ];
 
     // Add GPU-specific flags
@@ -99,6 +105,24 @@ mod tests {
             gpu_variant: "cpu".to_string(),
             allow_overwrite: false,
         }
+    }
+
+    /// All builds must set CMAKE_BUILD_RPATH to $ORIGIN so the binary looks
+    /// for shared libraries in its own directory after installation.
+    #[test]
+    fn test_all_builds_include_rpath_origin() {
+        let opts = make_options(BackendType::LlamaCpp, None);
+        let args = build_cmake_args(&opts, Path::new("/src"), Path::new("/build"), &[]);
+        assert!(
+            args.contains(&"-DCMAKE_BUILD_RPATH=$ORIGIN".to_string()),
+            "All builds must include -DCMAKE_BUILD_RPATH=$ORIGIN, got: {:?}",
+            args
+        );
+        assert!(
+            args.contains(&"-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON".to_string()),
+            "All builds must include -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON, got: {:?}",
+            args
+        );
     }
 
     /// ik_llama source builds must explicitly set GGML_IQK_FA_ALL_QUANTS=ON.
