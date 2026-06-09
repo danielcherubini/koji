@@ -1277,8 +1277,6 @@ impl ProxyState {
         let timeout = Duration::from_secs(self.config.read().await.proxy.startup_timeout_secs);
         let start = Instant::now();
         let mut consecutive_successes: u32 = 0;
-        #[allow(unused_assignments)]
-        let mut health_ok = false;
 
         loop {
             tokio::time::sleep(Duration::from_millis(500)).await;
@@ -1317,7 +1315,6 @@ impl ProxyState {
                             "Health check confirmed for compaction backend ({} consecutive successes)",
                             consecutive_successes
                         );
-                        health_ok = true;
                         break;
                     }
                 } else {
@@ -1328,8 +1325,8 @@ impl ProxyState {
             }
         }
 
-        // 13. Transition to Ready
-        if health_ok {
+        // 13. Transition to Ready (always reached — timeout returns early)
+        {
             let mut models = self.models.write().await;
             if let Some(state) = models.get_mut("compaction") {
                 if let ModelState::Starting {
