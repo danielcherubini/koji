@@ -433,8 +433,8 @@ pub struct CompactionConfig {
     #[serde(default)]
     pub port: Option<u16>,
     /// Request timeout in milliseconds. Default: 30000 (30s).
-    #[serde(default = "default_compaction_timeout_ms")]
-    pub timeout_ms: u64,
+    #[serde(default = "default_compaction_request_timeout_ms")]
+    pub request_timeout_ms: u64,
 }
 
 impl Default for CompactionConfig {
@@ -444,7 +444,7 @@ impl Default for CompactionConfig {
             server_path: None,
             device: default_compaction_device(),
             port: None,
-            timeout_ms: default_compaction_timeout_ms(),
+            request_timeout_ms: default_compaction_request_timeout_ms(),
         }
     }
 }
@@ -581,7 +581,7 @@ fn default_compaction_device() -> String {
     "cpu".to_string()
 }
 
-fn default_compaction_timeout_ms() -> u64 {
+fn default_compaction_request_timeout_ms() -> u64 {
     30_000
 }
 
@@ -846,7 +846,7 @@ backend = "llama.cpp"
         assert_eq!(config.server_path, None);
         assert_eq!(config.device, "cpu");
         assert_eq!(config.port, None);
-        assert_eq!(config.timeout_ms, 30_000);
+        assert_eq!(config.request_timeout_ms, 30_000);
     }
 
     /// Test that CompactionConfig survives a TOML round-trip.
@@ -857,7 +857,7 @@ backend = "llama.cpp"
             server_path: Some("/opt/compaction/main.py".to_string()),
             device: "cuda:0".to_string(),
             port: Some(8081),
-            timeout_ms: 60_000,
+            request_timeout_ms: 60_000,
         };
         let toml_str = toml::to_string_pretty(&compaction).unwrap();
         let loaded: CompactionConfig = toml::from_str(&toml_str).unwrap();
@@ -865,7 +865,7 @@ backend = "llama.cpp"
         assert_eq!(loaded.server_path, compaction.server_path);
         assert_eq!(loaded.device, compaction.device);
         assert_eq!(loaded.port, compaction.port);
-        assert_eq!(loaded.timeout_ms, compaction.timeout_ms);
+        assert_eq!(loaded.request_timeout_ms, compaction.request_timeout_ms);
     }
 
     /// Test that CompactionConfig is disabled by default.

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use super::download_queue::DownloadQueueService;
 use super::pull_jobs::PullJob;
@@ -105,6 +105,12 @@ impl ModelState {
     /// lifecycle management separate from LLM models.
     pub fn is_tts_backend(&self) -> bool {
         self.backend().starts_with("tts_")
+    }
+
+    /// Returns true if this is a non-inference backend (TTS or compaction).
+    /// Non-inference backends are excluded from idle timeout checks and LRU eviction.
+    pub fn is_non_inference_backend(&self) -> bool {
+        self.backend().starts_with("tts_") || self.backend() == "compaction"
     }
 
     pub fn consecutive_failures(&self) -> Option<&Arc<std::sync::atomic::AtomicU32>> {
@@ -212,49 +218,6 @@ pub struct LatestInferenceStats {
     pub last_updated_ms: i64,
 }
 
-/// State for the compaction server subprocess.
-#[derive(Debug, Clone, Default)]
-pub enum CompactionServerState {
-    /// Server is not running.
-    #[default]
-    Idle,
-    /// Server is starting up (process spawned, awaiting health check).
-    Starting {
-        pid: u32,
-        port: u16,
-        start_time: Instant,
-    },
-    /// Server is ready and accepting requests.
-    Ready { pid: u32, port: u16 },
-    /// Server failed to start.
-    Failed { error: String },
-}
-
-impl CompactionServerState {
-    /// Check if the server is ready to accept requests.
-    pub fn is_ready(&self) -> bool {
-        matches!(self, CompactionServerState::Ready { .. })
-    }
-
-    /// Get the server port (if known).
-    pub fn port(&self) -> Option<u16> {
-        match self {
-            CompactionServerState::Starting { port, .. } => Some(*port),
-            CompactionServerState::Ready { port, .. } => Some(*port),
-            _ => None,
-        }
-    }
-
-    /// Get the server PID (if known).
-    pub fn pid(&self) -> Option<u32> {
-        match self {
-            CompactionServerState::Starting { pid, .. } => Some(*pid),
-            CompactionServerState::Ready { pid, .. } => Some(*pid),
-            _ => None,
-        }
-    }
-}
-
 /// Manages proxy state and model lifecycle.
 #[derive(Clone)]
 pub struct ProxyState {
@@ -285,9 +248,6 @@ pub struct ProxyState {
     /// Watch channel for latest inference stats. Single-producer (intercept handler),
     /// multi-consumer (metrics task). `None` until first stats are received.
     pub inference_stats: tokio::sync::watch::Sender<Option<LatestInferenceStats>>,
-
-    /// Compaction server state — tracked separately from model backends.
-    pub compaction_server: Arc<tokio::sync::RwLock<CompactionServerState>>,
 
     // ── Web UI fields (only present when `web-ui` feature is enabled) ──
     /// Job manager for backend install/update/restore/benchmark operations.
@@ -329,26 +289,6 @@ impl ProxyState {
     /// - Clears active pull jobs
     /// - Clears in-flight downloads
     pub async fn shutdown(&self) {
-        // Kill compaction server subprocess first
-        let pid_to_kill = {
-            let compaction = self.compaction_server.read().await;
-            compaction.pid()
-        };
-        if let Some(pid) = pid_to_kill {
-            if let Err(e) = super::process::kill_process_group(pid).await {
-                tracing::warn!("Failed to SIGTERM compaction server (pid {}): {}", pid, e);
-            }
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            if super::process::is_process_group_alive(pid) {
-                if let Err(e) = super::process::force_kill_process_group(pid).await {
-                    tracing::warn!("Failed to SIGKILL compaction server (pid {}): {}", pid, e);
-                }
-            }
-            tracing::info!("Compaction server (pid: {}) stopped", pid);
-        }
-        // Reset to Idle
-        *self.compaction_server.write().await = CompactionServerState::Idle;
-
         // Close the metrics broadcast channel to stop the metrics stream
         let _ = self
             .metrics_tx
@@ -374,67 +314,6 @@ impl ProxyState {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_compaction_server_state_defaults() {
-        let state = CompactionServerState::default();
-        match state {
-            CompactionServerState::Idle => {}
-            other => panic!("expected Idle, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_compaction_server_state_is_ready() {
-        let idle = CompactionServerState::Idle;
-        assert!(!idle.is_ready());
-
-        let starting = CompactionServerState::Starting {
-            pid: 1234,
-            port: 8080,
-            start_time: Instant::now(),
-        };
-        assert!(!starting.is_ready());
-
-        let ready = CompactionServerState::Ready {
-            pid: 1234,
-            port: 8080,
-        };
-        assert!(ready.is_ready());
-
-        let failed = CompactionServerState::Failed {
-            error: "oops".to_string(),
-        };
-        assert!(!failed.is_ready());
-    }
-
-    #[test]
-    fn test_compaction_server_state_port_pid() {
-        let idle = CompactionServerState::Idle;
-        assert_eq!(idle.port(), None);
-        assert_eq!(idle.pid(), None);
-
-        let starting = CompactionServerState::Starting {
-            pid: 5678,
-            port: 9090,
-            start_time: Instant::now(),
-        };
-        assert_eq!(starting.port(), Some(9090));
-        assert_eq!(starting.pid(), Some(5678));
-
-        let ready = CompactionServerState::Ready {
-            pid: 5678,
-            port: 9090,
-        };
-        assert_eq!(ready.port(), Some(9090));
-        assert_eq!(ready.pid(), Some(5678));
-
-        let failed = CompactionServerState::Failed {
-            error: "crash".to_string(),
-        };
-        assert_eq!(failed.port(), None);
-        assert_eq!(failed.pid(), None);
-    }
 
     #[test]
     fn test_latest_inference_stats_default() {

@@ -4,6 +4,7 @@
 
 use crate::config::MAX_REQUEST_BODY_SIZE;
 use crate::proxy::ProxyState;
+use anyhow;
 use axum::{
     body::{to_bytes, Body},
     extract::State,
@@ -14,6 +15,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
+
+use super::helpers::get_backend_url;
 
 /// Request for raw text compression.
 #[derive(Debug, Deserialize)]
@@ -91,6 +94,22 @@ impl CompactionResponse {
     }
 }
 
+const COMPACTION_BACKEND_NAME: &str = "compaction";
+
+/// Ensure the compaction backend is loaded and return its server URL.
+async fn ensure_compaction_backend(state: &ProxyState) -> anyhow::Result<String> {
+    // Check if already loaded and get URL from ModelState
+    if let Some(url) = get_backend_url(state, COMPACTION_BACKEND_NAME).await? {
+        return Ok(url);
+    }
+    // Not loaded — try to load it
+    state.load_compaction_backend().await?;
+    // After loading, get the server URL from models map
+    get_backend_url(state, COMPACTION_BACKEND_NAME)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Compaction backend loaded but URL not set"))
+}
+
 #[axum::debug_handler]
 pub async fn handle_compaction(state: State<Arc<ProxyState>>, req: Request<Body>) -> Response {
     // Read and parse request body
@@ -124,11 +143,11 @@ pub async fn handle_compaction(state: State<Arc<ProxyState>>, req: Request<Body>
             )
                 .into_response();
         }
-        config.compaction.timeout_ms
+        config.compaction.request_timeout_ms
     };
 
     // Ensure server is running
-    let server_url = match state.ensure_compaction_server().await {
+    let server_url = match ensure_compaction_backend(&state).await {
         Ok(url) => url,
         Err(e) => {
             tracing::warn!("Compaction server unavailable: {}", e);

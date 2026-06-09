@@ -130,15 +130,15 @@ pub struct CompactionConfig {
     pub device: String,
     #[serde(default)]
     pub port: Option<u16>,
-    #[serde(default = "default_compaction_timeout_ms")]
-    pub timeout_ms: u64,
+    #[serde(default = "default_compaction_request_timeout_ms")]
+    pub request_timeout_ms: u64,
 }
 
 fn default_compaction_device() -> String {
     "cpu".to_string()
 }
 
-fn default_compaction_timeout_ms() -> u64 {
+fn default_compaction_request_timeout_ms() -> u64 {
     30_000
 }
 
@@ -818,15 +818,15 @@ fn CompactionForm(config: RwSignal<Option<Config>>) -> impl IntoView {
                 </div>
 
                 <div>
-                    <label>"Timeout (ms)"</label>
+                    <label>"Request Timeout (ms)"</label>
                     <input
                         type="number"
                         min="1000"
                         step="1000"
-                        prop:value=move || get_compaction().timeout_ms.to_string()
+                        prop:value=move || get_compaction().request_timeout_ms.to_string()
                         on:input=move |ev| {
                             if let Ok(v) = target_value(&ev).parse::<u64>() {
-                                config.update(|c| if let Some(c) = c { c.compaction.timeout_ms = v; });
+                                config.update(|c| if let Some(c) = c { c.compaction.request_timeout_ms = v; });
                             }
                         }
                     />

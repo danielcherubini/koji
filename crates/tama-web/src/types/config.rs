@@ -295,15 +295,15 @@ pub struct CompactionConfig {
     pub device: String,
     #[serde(default)]
     pub port: Option<u16>,
-    #[serde(default = "default_compaction_timeout_ms")]
-    pub timeout_ms: u64,
+    #[serde(default = "default_compaction_request_timeout_ms")]
+    pub request_timeout_ms: u64,
 }
 
 fn default_compaction_device() -> String {
     "cpu".to_string()
 }
 
-fn default_compaction_timeout_ms() -> u64 {
+fn default_compaction_request_timeout_ms() -> u64 {
     30_000
 }
 
@@ -670,7 +670,7 @@ impl From<CompactionConfig> for CoreCompactionConfig {
             server_path: c.server_path,
             device: c.device,
             port: c.port,
-            timeout_ms: c.timeout_ms,
+            request_timeout_ms: c.request_timeout_ms,
         }
     }
 }
@@ -683,7 +683,7 @@ impl From<CoreCompactionConfig> for CompactionConfig {
             server_path: c.server_path,
             device: c.device,
             port: c.port,
-            timeout_ms: c.timeout_ms,
+            request_timeout_ms: c.request_timeout_ms,
         }
     }
 }

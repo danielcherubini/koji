@@ -195,6 +195,7 @@ pub(super) fn job_to_active_dto(j: &tama_core::web_types::Job) -> ActiveJobDto {
             Some(tama_core::backends::BackendType::LlamaCpp) => "llama_cpp".to_string(),
             Some(tama_core::backends::BackendType::IkLlama) => "ik_llama".to_string(),
             Some(tama_core::backends::BackendType::TtsKokoro) => "tts_kokoro".to_string(),
+            Some(tama_core::backends::BackendType::Compaction) => "compaction".to_string(),
             Some(tama_core::backends::BackendType::Custom) => "custom".to_string(),
             None => String::new(),
         },

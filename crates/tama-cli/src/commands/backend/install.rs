@@ -189,8 +189,8 @@ pub async fn cmd_install(
         BackendType::Custom => {
             anyhow::bail!("Custom backends cannot be installed via this command");
         }
-        // TTS variants handled earlier with dedicated installers
-        BackendType::TtsKokoro => unreachable!(),
+        // Non-inference backends handled earlier with dedicated installers
+        BackendType::TtsKokoro | BackendType::Compaction => unreachable!(),
     };
 
     let source = if use_source {

@@ -9,7 +9,7 @@ use super::process::{
     configure_process_group, force_kill_process, force_kill_process_group, is_process_alive,
     is_process_group_alive, kill_process, kill_process_group, override_arg,
 };
-use super::types::{CompactionServerState, ModelState, ProxyState};
+use super::types::{ModelState, ProxyState};
 use crate::backends::BackendManager;
 use crate::logging;
 
@@ -341,7 +341,9 @@ impl ProxyState {
             return Ok(None);
         }
 
-        // Collect all Ready server names while holding the write lock.
+        // Collect all Ready server names AND non-inference server names while
+        // holding the write lock. Non-inference backends (TTS, compaction) are
+        // NOT in model_configs (DB), so we must check the runtime `models` map.
         let models = self.models.write().await;
         let ready_servers: Vec<String> = models
             .iter()
@@ -349,17 +351,27 @@ impl ProxyState {
             .map(|(name, _)| name.clone())
             .collect();
 
+        // Collect names of non-inference backends (TTS, compaction) from the
+        // runtime models map. These are NOT in model_configs, so checking only
+        // model_configs would miss them (e.g. compaction).
+        let non_inference_servers: std::collections::HashSet<String> = models
+            .iter()
+            .filter(|(_, s)| s.is_non_inference_backend())
+            .map(|(name, _)| name.clone())
+            .collect();
+
         // Release the write lock before reading model_configs (avoids deadlock).
         drop(models);
 
-        // Only count LLM (non-TTS) models against the limit.
+        // Only count LLM (non-TTS, non-compaction) models against the limit.
         let model_configs = self.model_configs.read().await;
         let llm_count = ready_servers
             .iter()
             .filter(|server_name| {
                 !model_configs
                     .get(server_name.as_str())
-                    .is_some_and(|mc| mc.backend.starts_with("tts_"))
+                    .is_some_and(|mc| mc.backend.starts_with("tts_") || mc.backend == "compaction")
+                    && !non_inference_servers.contains(server_name.as_str())
             })
             .count();
 
@@ -367,14 +379,15 @@ impl ProxyState {
             return Ok(None);
         }
 
-        // Find LRU Ready model among LLM (non-TTS) models only.
+        // Find LRU Ready model among LLM (non-TTS, non-compaction) models only.
         let mut models = self.models.write().await;
         let lru_name = ready_servers
             .iter()
             .filter(|server_name| {
                 !model_configs
                     .get(server_name.as_str())
-                    .is_some_and(|mc| mc.backend.starts_with("tts_"))
+                    .is_some_and(|mc| mc.backend.starts_with("tts_") || mc.backend == "compaction")
+                    && !non_inference_servers.contains(server_name.as_str())
             })
             .filter_map(|server_name| models.get(server_name).map(|s| (server_name, s)))
             .min_by_key(|(_, s)| s.last_accessed())
@@ -557,9 +570,9 @@ impl ProxyState {
                 continue;
             }
 
-            // Skip TTS backends for Ready checks (separate lifecycle)
-            // TTS Starting was already checked above
-            if state.is_tts_backend() {
+            // Skip non-inference backends (TTS, compaction) for Ready checks (separate lifecycle)
+            // Starting states for all backends were already checked above
+            if state.is_non_inference_backend() {
                 continue;
             }
 
@@ -1136,98 +1149,74 @@ impl ProxyState {
         None
     }
 
-    /// Ensure the compaction server is running.
+    /// Load the compaction backend by spawning the embedded Python server via uvx.
     ///
-    /// If already Ready, returns immediately.
-    /// If Idle, spawns the Python subprocess and polls health.
-    /// If Starting, waits for health check to complete.
-    /// If Failed, returns an error.
-    ///
-    /// Returns the server URL (e.g., "http://127.0.0.1:18962").
-    pub async fn ensure_compaction_server(&self) -> anyhow::Result<String> {
+    /// Uses the model registry lifecycle (Starting → Ready/Failed) for state tracking.
+    /// Follows the Kokoro TTS pattern for registry registration and state transitions.
+    pub async fn load_compaction_backend(&self) -> Result<()> {
+        // 1. Read config (scoped read lock)
         let compaction = {
             let config = self.config.read().await;
             config.compaction.clone()
         };
 
+        // 2. Check enabled
         if !compaction.enabled {
             return Err(anyhow::anyhow!("Compaction is not enabled in config"));
         }
 
-        // Fast path: already ready
+        // 3. Fast path — already starting or ready
         {
-            let state = self.compaction_server.read().await;
-            if let CompactionServerState::Ready { port, .. } = *state {
-                return Ok(format!("http://127.0.0.1:{}", port));
+            let models = self.models.read().await;
+            if let Some(state) = models.get("compaction") {
+                if state.is_ready() || matches!(state, ModelState::Starting { .. }) {
+                    debug!("Compaction backend already loaded/starting");
+                    return Ok(());
+                }
             }
         }
 
-        // Check for Failed state
-        {
-            let state = self.compaction_server.read().await;
-            if let CompactionServerState::Failed { ref error } = *state {
-                return Err(anyhow::anyhow!(
-                    "Compaction server previously failed: {}",
-                    error
-                ));
-            }
-        }
-
-        // If Starting, wait for it
-        {
-            let state = self.compaction_server.read().await;
-            if matches!(*state, CompactionServerState::Starting { .. }) {
-                drop(state);
-                return self.wait_for_compaction_ready().await;
-            }
-        }
-
-        // Idle — spawn the server
-        self.spawn_compaction_server(&compaction).await
-    }
-
-    async fn spawn_compaction_server(
-        &self,
-        compaction: &crate::config::CompactionConfig,
-    ) -> anyhow::Result<String> {
+        // 4. Extract embedded files
         let base_dir =
             crate::config::Config::base_dir().with_context(|| "Failed to get config directory")?;
+        let server_dir = crate::compaction_server::get_server_dir(&base_dir)
+            .with_context(|| "Failed to get compaction server directory")?;
 
-        // Resolve server entrypoint
-        let server_path = crate::compaction_server::get_server_entrypoint(compaction, &base_dir)
+        // 5. Resolve entrypoint
+        let server_path = crate::compaction_server::get_server_entrypoint(&compaction, &base_dir)
             .with_context(|| "Failed to resolve compaction server entrypoint")?;
 
-        // Determine port
+        // 6. Determine port — honor config port, auto-assign otherwise
         let port = if let Some(p) = compaction.port {
             p
         } else {
-            // Auto-assign via TcpListener
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
                 .await
                 .with_context(|| "Failed to bind TcpListener for port assignment")?;
-            listener.local_addr()?.port()
+            let p = listener.local_addr()?.port();
+            drop(listener); // Free the port for the backend
+            p
         };
 
-        let backend_url = format!("http://127.0.0.1:{}", port);
-        let health_url = format!("{}/health", backend_url);
-
-        // Transition to Starting state (write lock)
+        // 7. Register in model registry
         {
-            let mut state = self.compaction_server.write().await;
-            // Double-check: another request may have started it
-            if state.is_ready() {
-                return Ok(format!("http://127.0.0.1:{}", state.port().unwrap()));
-            }
-            *state = CompactionServerState::Starting {
-                pid: 0, // Updated after spawn
-                port,
-                start_time: Instant::now(),
-            };
+            let mut models = self.models.write().await;
+            models.insert(
+                "compaction".to_string(),
+                ModelState::Starting {
+                    model_name: "compaction".to_string(),
+                    backend: "compaction".to_string(),
+                    backend_url: String::new(),
+                    backend_pid: 0,
+                    last_accessed: Instant::now(),
+                    start_time: Instant::now(),
+                    consecutive_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+                    failure_timestamp: None,
+                },
+            );
         }
 
-        tracing::info!("Starting compaction server on port {}", port);
-
-        // Derive uvicorn module name from the server filename (e.g., "main.py" → "main:app")
+        // 8. Derive uvicorn target from entrypoint filename
         let module_name = server_path
             .file_stem()
             .and_then(|s| s.to_str())
@@ -1235,17 +1224,17 @@ impl ProxyState {
             .to_string();
         let uvicorn_target = format!("{}:app", module_name);
 
-        // Resolve server directory for uvx --project
-        let server_dir = server_path
-            .parent()
-            .ok_or_else(|| anyhow::anyhow!("Server path has no parent"))?;
+        let backend_url = format!("http://127.0.0.1:{}", port);
+        let health_url = format!("{}/health", backend_url);
 
-        // Spawn via uvx — auto-installs deps from pyproject.toml
+        info!("Starting compaction backend on port {}", port);
+
+        // 9. Spawn via uvx
         let mut child = tokio::process::Command::new("uvx");
         configure_process_group(&mut child);
         child
             .arg("--project")
-            .arg(server_dir)
+            .arg(&server_dir)
             .arg("uvicorn")
             .arg(&uvicorn_target)
             .arg("--host")
@@ -1254,7 +1243,7 @@ impl ProxyState {
             .arg(port.to_string())
             .env("COMPACTION_PORT", port.to_string())
             .env("COMPACTION_DEVICE", &compaction.device)
-            .current_dir(server_dir);
+            .current_dir(&server_dir);
 
         let mut child = child.spawn().with_context(|| {
             "Failed to spawn compaction server via uvx (install with: pipx install uv)".to_string()
@@ -1264,107 +1253,108 @@ impl ProxyState {
             .id()
             .ok_or_else(|| anyhow::anyhow!("Failed to get PID for compaction server"))?;
 
-        // Update PID in Starting state
+        // 10. Update PID in Starting state
         {
-            let mut state = self.compaction_server.write().await;
-            if let CompactionServerState::Starting { pid: ref mut p, .. } = *state {
-                *p = pid;
+            let mut models = self.models.write().await;
+            if let Some(ModelState::Starting { backend_pid, .. }) = models.get_mut("compaction") {
+                *backend_pid = pid;
             }
         }
 
-        tracing::info!("Compaction server started (pid: {})", pid);
-
-        // Spawn reaper task
-        let reaper_pid = pid;
+        // 11. Spawn reaper task
         tokio::spawn(async move {
             match child.wait().await {
                 Ok(status) => {
-                    tracing::debug!(
-                        "Compaction server process {} exited with {}",
-                        reaper_pid,
-                        status
-                    );
+                    debug!("Compaction server process {} exited with {}", pid, status);
                 }
                 Err(e) => {
-                    tracing::warn!(
-                        "Failed to wait on compaction server process {}: {}",
-                        reaper_pid,
-                        e
-                    );
+                    warn!("Failed to wait on compaction server process {}: {}", pid, e);
                 }
             }
         });
 
-        // Health check: poll every 500ms, require 2 consecutive successes
-        let timeout =
-            std::time::Duration::from_secs(self.config.read().await.proxy.startup_timeout_secs);
+        // 12. Health poll loop
+        let timeout = Duration::from_secs(self.config.read().await.proxy.startup_timeout_secs);
         let start = Instant::now();
         let mut consecutive_successes: u32 = 0;
 
         loop {
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            tokio::time::sleep(Duration::from_millis(500)).await;
             if start.elapsed() >= timeout {
-                tracing::warn!(
-                    "Compaction server startup timeout after {}s, killing process",
+                warn!(
+                    "Startup health check timeout for compaction backend after {}s, killing process group",
                     timeout.as_secs()
                 );
                 let _ = kill_process_group(pid).await;
-                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                tokio::time::sleep(Duration::from_millis(250)).await;
                 if is_process_group_alive(pid) {
                     let _ = force_kill_process_group(pid).await;
+                    tokio::time::sleep(Duration::from_millis(500)).await;
                 }
-                *self.compaction_server.write().await = CompactionServerState::Failed {
-                    error: format!("Startup timeout after {}s", timeout.as_secs()),
-                };
+                // Set Failed state
+                let mut models = self.models.write().await;
+                models.insert(
+                    "compaction".to_string(),
+                    ModelState::Failed {
+                        model_name: "compaction".to_string(),
+                        backend: "compaction".to_string(),
+                        error: format!("Startup timeout after {}s", timeout.as_secs()),
+                    },
+                );
                 return Err(anyhow::anyhow!(
-                    "Compaction server failed to start (timeout after {}s)",
+                    "Compaction backend failed to start (timeout after {}s)",
                     timeout.as_secs()
                 ));
             }
 
-            match super::process::check_health(&health_url, Some(30)).await {
-                Ok(response) if response.status().is_success() => {
+            if let Ok(response) = super::process::check_health(&health_url, Some(30)).await {
+                if response.status().is_success() {
                     consecutive_successes += 1;
                     if consecutive_successes >= 2 {
+                        debug!(
+                            "Health check confirmed for compaction backend ({} consecutive successes)",
+                            consecutive_successes
+                        );
                         break;
                     }
-                }
-                _ => {
+                } else {
                     consecutive_successes = 0;
                 }
+            } else {
+                consecutive_successes = 0;
             }
         }
 
-        // Transition to Ready
-        *self.compaction_server.write().await = CompactionServerState::Ready { pid, port };
-
-        tracing::info!("Compaction server ready on {}", backend_url);
-        Ok(backend_url)
-    }
-
-    async fn wait_for_compaction_ready(&self) -> anyhow::Result<String> {
-        // Wait up to startup_timeout_secs for the server to become Ready
-        let timeout_secs = self.config.read().await.proxy.startup_timeout_secs;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
-
-        loop {
-            let state = self.compaction_server.read().await;
-            match *state {
-                CompactionServerState::Ready { port, .. } => {
-                    return Ok(format!("http://127.0.0.1:{}", port));
+        // 13. Transition to Ready (always reached — timeout returns early)
+        {
+            let mut models = self.models.write().await;
+            if let Some(state) = models.get_mut("compaction") {
+                if let ModelState::Starting {
+                    consecutive_failures,
+                    failure_timestamp,
+                    ..
+                } = state
+                {
+                    consecutive_failures.store(0, std::sync::atomic::Ordering::Relaxed);
+                    let cf = Arc::clone(consecutive_failures);
+                    let ft = *failure_timestamp;
+                    *state = ModelState::Ready {
+                        model_name: "compaction".to_string(),
+                        backend: "compaction".to_string(),
+                        backend_pid: pid,
+                        backend_url: backend_url.clone(),
+                        load_time: std::time::SystemTime::now(),
+                        last_accessed: Instant::now(),
+                        consecutive_failures: cf,
+                        failure_timestamp: ft,
+                        restart_count: 0,
+                    };
                 }
-                CompactionServerState::Failed { ref error } => {
-                    return Err(anyhow::anyhow!("Compaction server failed: {}", error));
-                }
-                _ => {} // Still starting
             }
-            drop(state);
-
-            if std::time::Instant::now() >= deadline {
-                return Err(anyhow::anyhow!("Timed out waiting for compaction server"));
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            info!("Compaction backend loaded successfully on {}", backend_url);
         }
+
+        Ok(())
     }
 }
 
