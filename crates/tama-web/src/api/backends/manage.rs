@@ -200,13 +200,26 @@ pub async fn update_backend(
         }
     };
 
-    // Build update options
-    let options = tama_core::backends::InstallOptions {
-        backend_type: backend_type.clone(),
-        source: backend_info.source.clone().unwrap_or_else(|| {
+    // Build update options — always use latest_version, not the old version from the registry.
+    let source = match backend_info.source.clone() {
+        Some(src) => match src {
+            tama_core::backends::BackendSource::Prebuilt { .. } => {
+                tama_core::backends::BackendSource::Prebuilt {
+                    version: latest_version.clone(),
+                }
+            }
+            tama_core::backends::BackendSource::SourceCode {
+                git_url, commit: _, ..
+            } => tama_core::backends::BackendSource::SourceCode {
+                version: latest_version.clone(),
+                git_url,
+                commit: None,
+            },
+        },
+        None => {
             // Fallback: use source code if no source recorded
             tama_core::backends::BackendSource::SourceCode {
-                version: "main".to_string(),
+                version: latest_version.clone(),
                 git_url: match &backend_type {
                     tama_core::backends::BackendType::LlamaCpp => {
                         "https://github.com/ggml-org/llama.cpp.git"
@@ -225,7 +238,12 @@ pub async fn update_backend(
                 .to_string(),
                 commit: None,
             }
-        }),
+        }
+    };
+
+    let options = tama_core::backends::InstallOptions {
+        backend_type: backend_type.clone(),
+        source,
         target_dir,
         gpu_type: backend_info.gpu_type,
         gpu_variant: backend_info.gpu_variant.clone(),
