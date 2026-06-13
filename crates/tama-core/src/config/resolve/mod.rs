@@ -303,6 +303,49 @@ impl Config {
             }
         }
 
+        // Inject --mtp-model from model card, only if:
+        // 1. mtp_model is set
+        // 2. The referenced quant has kind = Mtp
+        // 3. draft-mtp is in spec_decoding.spec_types (user enabled it)
+        // No backend gate — mirrors --mmproj; silently ignored by non-llama.cpp
+        // backends if they don't recognise the flag.
+        if let (Some(ref model_id), Some(ref mtp_name)) = (&server.model, &server.mtp_model) {
+            let has_draft_mtp = server
+                .spec_decoding
+                .spec_types
+                .iter()
+                .any(|t| t == "draft-mtp");
+            if has_draft_mtp {
+                if let Some(mtp_entry) = server.quants.get(mtp_name.as_str()) {
+                    if mtp_entry.kind == crate::config::QuantKind::Mtp {
+                        let models_dir = self.models_dir()?;
+                        let mtp_path = repo_path(&models_dir, model_id).join(&mtp_entry.file);
+                        let already_has_mtp = grouped
+                            .iter()
+                            .any(|e| matches!(crate::config::flag_name(e), Some("--mtp-model")));
+                        if !already_has_mtp {
+                            let path_str = mtp_path.to_string_lossy();
+                            let quoted = crate::config::quote_value(&path_str);
+                            grouped.push(format!("--mtp-model {}", quoted));
+                        }
+                    } else {
+                        tracing::warn!(
+                            "mtp_model '{}' for model '{}' has kind={:?}, expected Mtp",
+                            mtp_name,
+                            model_id,
+                            mtp_entry.kind
+                        );
+                    }
+                } else {
+                    tracing::warn!(
+                        "mtp_model '{}' not found in ModelConfig for model '{}'",
+                        mtp_name,
+                        model_id
+                    );
+                }
+            }
+        }
+
         // Inject -c (context length) only if not already present.
         let ctx = ctx_override.or(server.context_length).or_else(|| {
             server
