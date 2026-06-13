@@ -1,7 +1,7 @@
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
-use super::types::ModelForm;
+use super::types::{ModelForm, QuantKind};
 use crate::utils::target_value;
 
 const SPEC_TYPE_DRAFT_MTP: &str = "draft-mtp";
@@ -46,6 +46,26 @@ pub fn ModelEditorSpecDecodingForm(form: RwSignal<Option<ModelForm>>) -> impl In
                     .contains(&SPEC_TYPE_DRAFT_MTP.to_string())
             })
             .unwrap_or(false)
+    });
+
+    let has_mtp_quants = Signal::derive(move || {
+        form.get()
+            .as_ref()
+            .map(|f| f.quants.iter().any(|(_, q)| q.kind == QuantKind::Mtp))
+            .unwrap_or(false)
+    });
+
+    let mtp_quants = Signal::derive(move || {
+        form.get()
+            .as_ref()
+            .map(|f| {
+                f.quants
+                    .iter()
+                    .filter(|(_, q)| q.kind == QuantKind::Mtp)
+                    .map(|(k, q)| (k.clone(), q.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
     });
 
     view! {
@@ -174,6 +194,49 @@ pub fn ModelEditorSpecDecodingForm(form: RwSignal<Option<ModelForm>>) -> impl In
                         });
                     }
                 />
+
+                // MTP Draft Model selector — shown when draft-mtp is checked and
+                // at least one MTP-kind quant is available.
+                <Show when=move || has_mtp_quants.get()>
+                    <label class="form-label" for="field-mtp-model">
+                        "MTP Draft Model"
+                        <div class="form-hint">
+                            "Select an MTP draft model file for speculative decoding"
+                        </div>
+                    </label>
+                    <select
+                        id="field-mtp-model"
+                        class="form-select"
+                        on:change=move |e| {
+                            let val = target_value(&e);
+                            form.update(|f| {
+                                if let Some(form) = f {
+                                    form.mtp_model = if val.is_empty() { None } else { Some(val) };
+                                }
+                            });
+                        }
+                    >
+                        <option value="">"(none)"</option>
+                        {move || {
+                            mtp_quants
+                                .get()
+                                .iter()
+                                .map(|(key, q)| {
+                                    let key_val = key.clone();
+                                    let file = q.file.clone();
+                                    let selected = form
+                                        .get_untracked()
+                                        .as_ref()
+                                        .and_then(|f| f.mtp_model.as_deref())
+                                        == Some(key.as_str());
+                                    view! {
+                                        <option value=key_val selected=selected>{file}</option>
+                                    }
+                                })
+                                .collect::<Vec<_>>()
+                        }}
+                    </select>
+                </Show>
             </Show>
         </div>
     }

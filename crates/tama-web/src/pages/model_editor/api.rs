@@ -127,6 +127,7 @@ pub async fn save_model(args: Vec<String>, form: ModelForm, is_new: bool) -> Res
         "model": form.model,
         "quant": form.quant,
         "mmproj": form.mmproj,
+        "mtp_model": form.mtp_model,
         "args": args,
         "sampling": sampling,
         "enabled": form.enabled,

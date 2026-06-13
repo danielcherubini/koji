@@ -459,6 +459,10 @@ pub fn ModelEditor() -> impl IntoView {
                                 if form.mmproj.as_deref() == Some(key.as_str()) {
                                     form.mmproj = None;
                                 }
+                                // Clear mtp_model if matching
+                                if form.mtp_model.as_deref() == Some(key.as_str()) {
+                                    form.mtp_model = None;
+                                }
                             }
                         });
                         save_status.set(Some((true, "✅ Quant deleted from disk.".into())));
