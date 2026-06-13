@@ -233,6 +233,8 @@ pub fn PullQuantWizard(
                         on_search=Callback::new(move |rid| {
                             error_msg.set(None);
                             selected_filenames.set(std::collections::HashSet::new());
+                            selected_mmproj_filenames.set(std::collections::HashSet::new());
+                            selected_mtp_filenames.set(std::collections::HashSet::new());
                             gguf_context_length.set(None);
                             model_id.set(None);
                             context_settings.set(ContextSettings::default());
