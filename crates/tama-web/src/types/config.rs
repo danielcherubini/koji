@@ -32,7 +32,7 @@ pub enum QuantKind {
     Model,
     /// A vision projector (mmproj-*.gguf). Passed via `--mmproj` to llama.cpp.
     Mmproj,
-    /// An MTP draft model (mtp-*.gguf). Passed via `--mtp-model` to llama.cpp.
+    /// An MTP draft model (mtp-*.gguf). Passed via `--spec-draft-model` to llama.cpp.
     Mtp,
 }
 

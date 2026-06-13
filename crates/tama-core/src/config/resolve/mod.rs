@@ -303,7 +303,7 @@ impl Config {
             }
         }
 
-        // Inject --mtp-model from model card, only if:
+        // Inject --spec-draft-model from model card, only if:
         // 1. mtp_model is set
         // 2. The referenced quant has kind = Mtp
         // 3. draft-mtp is in spec_decoding.spec_types (user enabled it)
@@ -320,13 +320,13 @@ impl Config {
                     if mtp_entry.kind == crate::config::QuantKind::Mtp {
                         let models_dir = self.models_dir()?;
                         let mtp_path = repo_path(&models_dir, model_id).join(&mtp_entry.file);
-                        let already_has_mtp = grouped
-                            .iter()
-                            .any(|e| matches!(crate::config::flag_name(e), Some("--mtp-model")));
-                        if !already_has_mtp {
+                        let already_has_draft = grouped.iter().any(|e| {
+                            matches!(crate::config::flag_name(e), Some("--spec-draft-model"))
+                        });
+                        if !already_has_draft {
                             let path_str = mtp_path.to_string_lossy();
                             let quoted = crate::config::quote_value(&path_str);
-                            grouped.push(format!("--mtp-model {}", quoted));
+                            grouped.push(format!("--spec-draft-model {}", quoted));
                         }
                     } else {
                         tracing::warn!(

@@ -477,7 +477,7 @@ fn test_spec_decoding_empty_types_no_flags() {
     );
 }
 
-/// Tests that `--mtp-model <path>` is injected when `mtp_model` is set,
+/// Tests that `--spec-draft-model <path>` is injected when `mtp_model` is set,
 /// `draft-mtp` is in `spec_types`, and the referenced quant has `kind = Mtp`.
 #[test]
 fn test_mtp_model_injected_when_draft_mtp_enabled() {
@@ -557,10 +557,10 @@ fn test_mtp_model_injected_when_draft_mtp_enabled() {
         .build_full_args(&server, &backend, None, &[])
         .expect("build_full_args failed");
 
-    // --mtp-model flag should be injected
+    // --spec-draft-model flag should be injected
     assert!(
-        args.contains(&"--mtp-model".to_string()),
-        "Expected --mtp-model flag, got: {:?}",
+        args.contains(&"--spec-draft-model".to_string()),
+        "Expected --spec-draft-model flag, got: {:?}",
         args
     );
 
@@ -574,7 +574,7 @@ fn test_mtp_model_injected_when_draft_mtp_enabled() {
     );
 }
 
-/// Tests that `--mtp-model` is NOT injected when `mtp_model` is set
+/// Tests that `--spec-draft-model` is NOT injected when `mtp_model` is set
 /// but `draft-mtp` is NOT in `spec_types`.
 #[test]
 fn test_mtp_model_not_injected_without_draft_mtp() {
@@ -655,15 +655,15 @@ fn test_mtp_model_not_injected_without_draft_mtp() {
         .build_full_args(&server, &backend, None, &[])
         .expect("build_full_args failed");
 
-    // --mtp-model should NOT be injected
+    // --spec-draft-model should NOT be injected
     assert!(
-        !args.contains(&"--mtp-model".to_string()),
-        "Expected no --mtp-model when draft-mtp not in spec_types, got: {:?}",
+        !args.contains(&"--spec-draft-model".to_string()),
+        "Expected no --spec-draft-model when draft-mtp not in spec_types, got: {:?}",
         args
     );
 }
 
-/// Tests that no duplicate `--mtp-model` is injected when the user already has
+/// Tests that no duplicate `--spec-draft-model` is injected when the user already has
 /// it in their `args`.
 #[test]
 fn test_mtp_model_no_duplicate_when_in_args() {
@@ -701,10 +701,10 @@ fn test_mtp_model_no_duplicate_when_in_args() {
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
     config.loaded_from = Some(temp_dir.path().to_path_buf());
 
-    // User already has --mtp-model in args
+    // User already has --spec-draft-model in args
     let server = ModelConfig {
         backend: "llama_cpp".to_string(),
-        args: vec!["--mtp-model /custom/path.gguf".to_string()],
+        args: vec!["--spec-draft-model /custom/path.gguf".to_string()],
         sampling: None,
         model: Some("org/repo".to_string()),
         quant: Some("Q4_K_M".to_string()),
@@ -744,16 +744,16 @@ fn test_mtp_model_no_duplicate_when_in_args() {
         .build_full_args(&server, &backend, None, &[])
         .expect("build_full_args failed");
 
-    // --mtp-model should appear exactly once (user's version, not duplicated)
-    let mtp_count = args.iter().filter(|a| *a == "--mtp-model").count();
+    // --spec-draft-model should appear exactly once (user's version, not duplicated)
+    let mtp_count = args.iter().filter(|a| *a == "--spec-draft-model").count();
     assert_eq!(
         mtp_count, 1,
-        "--mtp-model should appear exactly once, got {} in: {:?}",
+        "--spec-draft-model should appear exactly once, got {} in: {:?}",
         mtp_count, args
     );
 }
 
-/// Tests that `--mtp-model` is NOT injected when `mtp_model` is None,
+/// Tests that `--spec-draft-model` is NOT injected when `mtp_model` is None,
 /// even when `draft-mtp` is in `spec_types`.
 #[test]
 fn test_mtp_model_not_injected_when_none() {
@@ -823,10 +823,10 @@ fn test_mtp_model_not_injected_when_none() {
         .build_full_args(&server, &backend, None, &[])
         .expect("build_full_args failed");
 
-    // --mtp-model should NOT be injected
+    // --spec-draft-model should NOT be injected
     assert!(
-        !args.contains(&"--mtp-model".to_string()),
-        "Expected no --mtp-model when mtp_model is None, got: {:?}",
+        !args.contains(&"--spec-draft-model".to_string()),
+        "Expected no --spec-draft-model when mtp_model is None, got: {:?}",
         args
     );
 }
@@ -901,15 +901,15 @@ fn test_mtp_model_warns_on_kind_mismatch() {
     };
 
     // Should not panic - the kind mismatch should emit a warning and
-    // skip the --mtp-model injection.
+    // skip the --spec-draft-model injection.
     let args = config
         .build_full_args(&server, &backend, None, &[])
         .expect("build_full_args failed");
 
-    // --mtp-model should NOT be injected since the kind doesn't match
+    // --spec-draft-model should NOT be injected since the kind doesn't match
     assert!(
-        !args.contains(&"--mtp-model".to_string()),
-        "Expected no --mtp-model when kind mismatches, got: {:?}",
+        !args.contains(&"--spec-draft-model".to_string()),
+        "Expected no --spec-draft-model when kind mismatches, got: {:?}",
         args
     );
 }
