@@ -390,11 +390,14 @@ pub async fn start_download_from_queue(
 
     // Parse GGUF metadata (soft failure — don't fail the download)
     // Skip mmproj files — they're vision projectors, not LLM models.
-    let is_mmproj = matches!(
+    // Skip MTP files too — they're draft models for speculative decoding,
+    // not the main LLM, and their architecture metadata is not what we
+    // want to record on the parent model config.
+    let skip_gguf_parse = matches!(
         crate::config::QuantKind::from_filename(&filename_clone),
-        crate::config::QuantKind::Mmproj
+        crate::config::QuantKind::Mmproj | crate::config::QuantKind::Mtp
     );
-    let gguf_metadata = if outcome.passed && !is_mmproj {
+    let gguf_metadata = if outcome.passed && !skip_gguf_parse {
         match crate::models::gguf::parse_gguf_metadata(&dest_path) {
             Ok(meta) => {
                 tracing::info!(
@@ -469,6 +472,33 @@ pub async fn start_download_from_queue(
                         file = %filename_clone,
                         "model_files row written"
                     );
+                }
+                // Tag the model_files row with the file kind so downstream
+                // consumers can distinguish MTP draft models from regular
+                // GGUF quants. `upsert_file` does not currently accept a
+                // `kind` parameter, so we issue a follow-up UPDATE. Mirrors
+                // the `QuantKind::from_filename` logic used to drive the
+                // card's `kind` field.
+                let db_kind = match crate::config::QuantKind::from_filename(&filename_clone) {
+                    crate::config::QuantKind::Model => "model",
+                    crate::config::QuantKind::Mmproj => "mmproj",
+                    crate::config::QuantKind::Mtp => "mtp",
+                };
+                if db_kind != "model" {
+                    if let Err(e) = mgr.conn().execute(
+                        "UPDATE model_files SET kind = ?1
+                          WHERE model_id = ?2 AND filename = ?3",
+                        rusqlite::params![db_kind, mid, filename_clone],
+                    ) {
+                        tracing::warn!(
+                            job_id = %job_id_clone,
+                            model_id = mid,
+                            file = %filename_clone,
+                            kind = db_kind,
+                            error = %e,
+                            "model_files kind UPDATE failed"
+                        );
+                    }
                 }
                 if let Err(e) = mgr.update_verification(
                     mid,
@@ -814,11 +844,14 @@ pub(crate) async fn _setup_model_after_pull_with_config(
     // vision by wiring the mmproj filename and adding "image" to the input
     // modalities. Downloading an mmproj is an explicit user choice, so
     // enabling vision automatically saves an extra click in the editor.
-    let is_mmproj = matches!(
-        crate::config::QuantKind::from_filename(&spec.filename),
-        crate::config::QuantKind::Mmproj
-    );
-    if !is_mmproj {
+    //
+    // MTP files follow the same stub-then-wire pattern (see below). Unlike
+    // mmproj, MTP does NOT modify input modalities — it's a draft model for
+    // speculative decoding and does not change what the model can accept.
+    let file_kind = crate::config::QuantKind::from_filename(&spec.filename);
+    let is_mmproj = matches!(file_kind, crate::config::QuantKind::Mmproj);
+    let is_mtp = matches!(file_kind, crate::config::QuantKind::Mtp);
+    if !is_mmproj && !is_mtp {
         // Fetch pipeline_tag from HF to infer modalities (best-effort).
         let modalities = match crate::models::pull::fetch_model_pipeline_tag(repo_id).await {
             Ok(pipeline_tag) => {
@@ -907,18 +940,18 @@ pub(crate) async fn _setup_model_after_pull_with_config(
         return Some(model_key);
     }
 
-    // For mmproj, still save the card.
+    // For mmproj / MTP, still save the card.
     let _ = std::fs::create_dir_all(configs_dir);
     let _ = card.save(&card_path);
 
     let key = match existing_key {
         Some(k) => k,
         None => {
-            // mmproj pulled before any main quant. Create a stub entry with
-            // enabled=false so the file is tracked; the next main-quant pull
-            // will find this entry by `model == repo_id` and flip enabled to
-            // true. Without the stub, the mmproj file sits on disk invisible
-            // to the editor.
+            // mmproj / MTP pulled before any main quant. Create a stub entry
+            // with enabled=false so the file is tracked; the next main-quant
+            // pull will find this entry by `model == repo_id` and flip
+            // enabled to true. Without the stub, the auxiliary file sits on
+            // disk invisible to the editor.
             let display_name = crate::proxy::tama_handlers::generate_display_name(repo_id);
             let stub_key = repo_slug.to_lowercase();
             model_configs
@@ -963,25 +996,36 @@ pub(crate) async fn _setup_model_after_pull_with_config(
     };
 
     // Wire mmproj + image modality onto the entry (stub or existing parent).
-    if let Some(mc) = model_configs.get_mut(&key) {
-        mc.mmproj = Some(spec.filename.clone());
-        let modalities = mc.modalities.get_or_insert_with(Default::default);
-        if !modalities
-            .input
-            .iter()
-            .any(|m| m.eq_ignore_ascii_case("text"))
-        {
-            modalities.input.push("text".to_string());
+    if is_mmproj {
+        if let Some(mc) = model_configs.get_mut(&key) {
+            mc.mmproj = Some(spec.filename.clone());
+            let modalities = mc.modalities.get_or_insert_with(Default::default);
+            if !modalities
+                .input
+                .iter()
+                .any(|m| m.eq_ignore_ascii_case("text"))
+            {
+                modalities.input.push("text".to_string());
+            }
+            if !modalities
+                .input
+                .iter()
+                .any(|m| m.eq_ignore_ascii_case("image"))
+            {
+                modalities.input.push("image".to_string());
+            }
+            if modalities.output.is_empty() {
+                modalities.output.push("text".to_string());
+            }
         }
-        if !modalities
-            .input
-            .iter()
-            .any(|m| m.eq_ignore_ascii_case("image"))
-        {
-            modalities.input.push("image".to_string());
-        }
-        if modalities.output.is_empty() {
-            modalities.output.push("text".to_string());
+    } else if is_mtp {
+        // Wire mtp_model onto the entry (stub or existing parent). MTP
+        // affects speculative decoding only, so input modalities are left
+        // untouched. We do NOT auto-enable `draft-mtp` in
+        // `spec_decoding.spec_types` — that's a runtime decision that may
+        // depend on hardware and the user can flip it from the editor.
+        if let Some(mc) = model_configs.get_mut(&key) {
+            mc.mtp_model = Some(spec.filename.clone());
         }
     }
     Some(key)

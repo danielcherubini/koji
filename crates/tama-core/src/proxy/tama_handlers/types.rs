@@ -55,6 +55,9 @@ pub struct PullRequest {
     /// Vision projector files
     #[serde(default)]
     pub mmproj_filenames: Vec<String>,
+    /// MTP draft model files
+    #[serde(default)]
+    pub mtp_filenames: Vec<String>,
     #[serde(default)]
     pub context_length: Option<u32>,
 }

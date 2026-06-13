@@ -20,13 +20,18 @@ pub async fn handle_tama_pull_model(
 ) -> Response {
     let repo_id = request.repo_id.clone();
 
-    // Simplified format path: when `filenames` or `mmproj_filenames` is non-empty,
-    // use the new simplified format (no per-quant context_length).
-    if !request.filenames.is_empty() || !request.mmproj_filenames.is_empty() {
+    // Simplified format path: when `filenames`, `mmproj_filenames`, or
+    // `mtp_filenames` is non-empty, use the new simplified format
+    // (no per-quant context_length).
+    if !request.filenames.is_empty()
+        || !request.mmproj_filenames.is_empty()
+        || !request.mtp_filenames.is_empty()
+    {
         let all_files: Vec<_> = request
             .filenames
             .iter()
             .chain(request.mmproj_filenames.iter())
+            .chain(request.mtp_filenames.iter())
             .cloned()
             .collect();
 
