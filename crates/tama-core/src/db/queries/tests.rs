@@ -316,6 +316,7 @@ fn test_upsert_and_get_model_config() {
         enabled: true,
         selected_quant: Some("Q4_K_M".to_string()),
         selected_mmproj: Some("mmproj-f16.gguf".to_string()),
+        selected_mtp_model: Some("mtp-F16.gguf".to_string()),
         context_length: Some(4096),
         num_parallel: Some(1),
         kv_unified: false,
@@ -374,6 +375,54 @@ fn test_upsert_and_get_model_config() {
     // updated_at will be different because upsert_model_config updates it via strftime
 }
 
+/// `mtp_model` must round-trip through the DB record: a value set in
+/// `ModelConfig` survives `to_db_record` + `upsert_model_config` + read-back.
+#[test]
+fn test_mtp_model_db_round_trip() {
+    use crate::config::ModelConfig;
+
+    let OpenResult { conn, .. } = open_in_memory().unwrap();
+
+    let mc = ModelConfig {
+        backend: "llama_cpp".to_string(),
+        model: Some("owner/repo".to_string()),
+        quant: Some("Q4_K_M".to_string()),
+        mtp_model: Some("mtp-F16.gguf".to_string()),
+        ..Default::default()
+    };
+
+    let record = mc.to_db_record("owner/repo");
+    assert_eq!(record.selected_mtp_model.as_deref(), Some("mtp-F16.gguf"));
+
+    upsert_model_config(&conn, &record).unwrap();
+
+    let fetched = get_model_config_by_repo_id(&conn, "owner/repo")
+        .unwrap()
+        .unwrap();
+    assert_eq!(fetched.selected_mtp_model.as_deref(), Some("mtp-F16.gguf"));
+
+    // And ModelConfig::from_db_record should rehydrate the mtp_model field.
+    let round_tripped = ModelConfig::from_db_record(&fetched);
+    assert_eq!(round_tripped.mtp_model.as_deref(), Some("mtp-F16.gguf"));
+}
+
+/// `mtp_model` round-trips through TOML serialization on ModelConfig.
+#[test]
+fn test_mtp_model_toml_round_trip() {
+    use crate::config::ModelConfig;
+
+    let mc = ModelConfig {
+        backend: "llama_cpp".to_string(),
+        mtp_model: Some("mtp-F16.gguf".to_string()),
+        ..Default::default()
+    };
+
+    let toml_str = toml::to_string_pretty(&mc).unwrap();
+    let loaded: ModelConfig = toml::from_str(&toml_str).unwrap();
+
+    assert_eq!(loaded.mtp_model.as_deref(), Some("mtp-F16.gguf"));
+}
+
 #[test]
 fn test_get_all_model_configs() {
     let OpenResult { conn, .. } = open_in_memory().unwrap();
@@ -386,6 +435,7 @@ fn test_get_all_model_configs() {
         enabled: true,
         selected_quant: None,
         selected_mmproj: None,
+        selected_mtp_model: None,
         context_length: None,
         num_parallel: Some(1),
         kv_unified: false,
@@ -421,6 +471,7 @@ fn test_get_all_model_configs() {
         enabled: true,
         selected_quant: None,
         selected_mmproj: None,
+        selected_mtp_model: None,
         context_length: None,
         num_parallel: Some(1),
         kv_unified: false,
@@ -467,6 +518,7 @@ fn test_delete_model_config() {
         enabled: true,
         selected_quant: None,
         selected_mmproj: None,
+        selected_mtp_model: None,
         context_length: None,
         num_parallel: Some(1),
         kv_unified: false,

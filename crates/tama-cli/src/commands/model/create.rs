@@ -65,6 +65,7 @@ pub(super) async fn cmd_create(
         model: Some(model_id_arg.to_string()),
         quant: quant_name.clone(),
         mmproj: None,
+        mtp_model: None,
         port: None,
         health_check: None,
         enabled: true,

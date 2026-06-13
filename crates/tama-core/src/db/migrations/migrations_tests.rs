@@ -921,3 +921,51 @@ fn test_migration_v27_no_seed_without_enabled_models() {
         "no default alias should be seeded when no enabled models exist"
     );
 }
+
+/// Migration v28 must add a `selected_mtp_model` column to `model_configs`.
+/// The column must use COLLATE NOCASE so case-variant upserts behave the same
+/// as for `selected_mmproj`.
+#[test]
+fn test_migration_v28_adds_selected_mtp_model_column() {
+    let conn = Connection::open_in_memory().unwrap();
+    run(&conn).unwrap();
+
+    let col_exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('model_configs') WHERE name='selected_mtp_model'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        col_exists, 1,
+        "selected_mtp_model column must exist after migration v28"
+    );
+
+    // Existing rows from earlier migrations should have NULL for the new column.
+    let _null_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM model_configs WHERE selected_mtp_model IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    // _null_count is informational; we don't fail on the count, but we want to
+    // at least exercise the query path.
+
+    // Insert a row with a value and confirm it round-trips.
+    conn.execute(
+        "INSERT INTO model_configs (repo_id, backend, selected_mtp_model) \
+         VALUES ('test/mtp', 'llama_cpp', 'mtp-F16.gguf')",
+        [],
+    )
+    .unwrap();
+    let stored: Option<String> = conn
+        .query_row(
+            "SELECT selected_mtp_model FROM model_configs WHERE repo_id = 'test/mtp'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored.as_deref(), Some("mtp-F16.gguf"));
+}

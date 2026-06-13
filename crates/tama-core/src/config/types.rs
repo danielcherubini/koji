@@ -5,8 +5,9 @@ use std::collections::{BTreeMap, HashMap};
 /// What kind of file a quant entry represents.
 ///
 /// Used to distinguish regular GGUF model quants from auxiliary files like
-/// vision projectors (mmproj). Drives both UI grouping and how the file is
-/// passed on the server command line (`-m` vs `--mmproj`).
+/// vision projectors (mmproj) and MTP draft models. Drives both UI grouping
+/// and how the file is passed on the server command line (`-m` vs `--mmproj`
+/// vs `--mtp-model`).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum QuantKind {
@@ -15,6 +16,8 @@ pub enum QuantKind {
     Model,
     /// A vision projector (mmproj-*.gguf). Passed via `--mmproj` to llama.cpp.
     Mmproj,
+    /// An MTP draft model (mtp-*.gguf). Passed via --mtp-model to llama.cpp.
+    Mtp,
 }
 
 impl QuantKind {
@@ -24,6 +27,8 @@ impl QuantKind {
         let lower = filename.to_lowercase();
         if lower.starts_with("mmproj") && lower.ends_with(".gguf") {
             QuantKind::Mmproj
+        } else if lower.starts_with("mtp") && lower.ends_with(".gguf") {
+            QuantKind::Mtp
         } else {
             QuantKind::Model
         }
@@ -215,6 +220,12 @@ pub struct ModelConfig {
     /// gets `--mmproj <path>` injected automatically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mmproj: Option<String>,
+    /// Which MTP draft model to use, if any. References a key in
+    /// `quants` whose entry has `kind = Mtp`. When set AND `draft-mtp`
+    /// is in `spec_decoding.spec_types`, the launch command gets
+    /// `--mtp-model <path>` injected automatically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mtp_model: Option<String>,
     /// Custom port for this server (None = backend default)
     #[serde(default)]
     pub port: Option<u16>,
@@ -315,6 +326,7 @@ impl ModelConfig {
             enabled: self.enabled,
             selected_quant: self.quant.clone(),
             selected_mmproj: self.mmproj.clone(),
+            selected_mtp_model: self.mtp_model.clone(),
             context_length: self.context_length,
             num_parallel: self.num_parallel,
             kv_unified: self.kv_unified,
@@ -375,6 +387,7 @@ impl ModelConfig {
             model: Some(record.repo_id.clone()),
             quant: record.selected_quant.clone(),
             mmproj: record.selected_mmproj.clone(),
+            mtp_model: record.selected_mtp_model.clone().filter(|s| !s.is_empty()),
             args: record
                 .args
                 .as_ref()

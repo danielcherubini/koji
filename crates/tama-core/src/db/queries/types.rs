@@ -13,6 +13,7 @@ pub struct ModelConfigRecord {
     pub enabled: bool,
     pub selected_quant: Option<String>,
     pub selected_mmproj: Option<String>,
+    pub selected_mtp_model: Option<String>,
     pub context_length: Option<u32>,
     pub num_parallel: Option<u32>,
     pub kv_unified: bool,

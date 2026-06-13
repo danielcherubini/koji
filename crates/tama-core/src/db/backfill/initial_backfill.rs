@@ -309,6 +309,7 @@ pub fn repair_orphaned_model_files(
             let kind = QuantKind::from_filename(filename);
             let quant = match kind {
                 QuantKind::Mmproj => None,
+                QuantKind::Mtp => None,
                 QuantKind::Model => infer_quant_from_filename(filename),
             };
             let size = std::fs::metadata(&path).ok().map(|m| m.len() as i64);
@@ -530,6 +531,7 @@ installed_at = 1700000000
             enabled: true,
             selected_quant: Some("UD-Q4_K_XL".to_string()),
             selected_mmproj: None,
+            selected_mtp_model: None,
             context_length: None,
             num_parallel: Some(1),
             kv_unified: false,
@@ -618,6 +620,7 @@ installed_at = 1700000000
             enabled: true,
             selected_quant: Some("Q4_K_M".to_string()),
             selected_mmproj: Some("user-chosen.gguf".to_string()),
+            selected_mtp_model: None,
             context_length: None,
             num_parallel: Some(1),
             kv_unified: false,
