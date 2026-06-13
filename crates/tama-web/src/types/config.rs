@@ -32,6 +32,8 @@ pub enum QuantKind {
     Model,
     /// A vision projector (mmproj-*.gguf). Passed via `--mmproj` to llama.cpp.
     Mmproj,
+    /// An MTP draft model (mtp-*.gguf). Passed via `--spec-draft-model` to llama.cpp.
+    Mtp,
 }
 
 /// A quantization entry for a model.
@@ -132,6 +134,9 @@ pub struct ModelConfig {
     /// Which mmproj (vision projector) to use, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mmproj: Option<String>,
+    /// Which MTP draft model to use, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mtp_model: Option<String>,
     /// Custom port for this server (None = backend default)
     #[serde(default)]
     pub port: Option<u16>,
@@ -410,6 +415,7 @@ impl From<CoreQuantKind> for QuantKind {
         match q {
             CoreQuantKind::Model => QuantKind::Model,
             CoreQuantKind::Mmproj => QuantKind::Mmproj,
+            CoreQuantKind::Mtp => QuantKind::Mtp,
         }
     }
 }
@@ -420,6 +426,7 @@ impl From<QuantKind> for CoreQuantKind {
         match q {
             QuantKind::Model => CoreQuantKind::Model,
             QuantKind::Mmproj => CoreQuantKind::Mmproj,
+            QuantKind::Mtp => CoreQuantKind::Mtp,
         }
     }
 }
@@ -535,6 +542,7 @@ impl From<CoreModelConfig> for ModelConfig {
             model: m.model,
             quant: m.quant,
             mmproj: m.mmproj,
+            mtp_model: m.mtp_model,
             port: m.port,
             health_check: m.health_check.map(Into::into),
             enabled: m.enabled,
@@ -565,6 +573,7 @@ impl From<ModelConfig> for CoreModelConfig {
             model: m.model,
             quant: m.quant,
             mmproj: m.mmproj,
+            mtp_model: m.mtp_model,
             port: m.port,
             health_check: m.health_check.map(Into::into),
             enabled: m.enabled,

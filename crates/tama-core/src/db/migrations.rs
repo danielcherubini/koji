@@ -30,6 +30,7 @@ mod _0024_add_spec_decoding;
 mod _0025_create_last_used_model;
 mod _0026_rebuild_model_configs_auto_parallel;
 mod _0027_create_model_aliases;
+mod _0028_add_selected_mtp_model;
 
 #[cfg(test)]
 mod migrations_tests;
@@ -65,7 +66,7 @@ impl Drop for FkGuard<'_> {
 type Migration = (i32, bool, &'static str);
 
 /// Version number for the latest migration
-pub const LATEST_VERSION: i32 = 27;
+pub const LATEST_VERSION: i32 = 28;
 
 /// All migrations collected from individual files, sorted by version.
 const MIGRATIONS: &[Migration] = &[
@@ -96,6 +97,7 @@ const MIGRATIONS: &[Migration] = &[
     _0025_create_last_used_model::MIGRATION,
     _0026_rebuild_model_configs_auto_parallel::MIGRATION,
     _0027_create_model_aliases::MIGRATION,
+    _0028_add_selected_mtp_model::MIGRATION,
 ];
 
 /// Run all applicable migrations on the database

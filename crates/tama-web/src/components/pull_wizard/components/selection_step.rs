@@ -6,8 +6,10 @@ pub fn SelectionStep(
     repo_id: Signal<String>,
     available_quants: Signal<Vec<QuantEntry>>,
     available_mmprojs: Signal<Vec<QuantEntry>>,
+    available_mtps: Signal<Vec<QuantEntry>>,
     selected_filenames: RwSignal<HashSet<String>>,
     selected_mmproj_filenames: RwSignal<HashSet<String>>,
+    selected_mtp_filenames: RwSignal<HashSet<String>>,
     on_next: Callback<()>,
     on_back: Callback<()>,
 ) -> impl IntoView {
@@ -128,6 +130,53 @@ pub fn SelectionStep(
             </table>
         </div>
 
+        <Show when=move || !available_mtps.get().is_empty()>
+            <div class="mt-4 mb-2">
+                <h3 class="form-label">"MTP Draft Models"</h3>
+                <p class="text-muted text-sm mb-2">"Select MTP draft model files for speculative decoding (mtp-*.gguf)."</p>
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th class="icon-sm"></th>
+                            <th>"Filename"</th>
+                            <th>"Size"</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {move || available_mtps.get().into_iter().map(|q| {
+                            let fname = q.filename.clone();
+                            let fname_check = fname.clone();
+                            let size_str = q.size_bytes
+                                .map(format_bytes)
+                                .unwrap_or_else(|| "?".to_string());
+                            let is_checked = move || selected_mtp_filenames.get().contains(&fname_check);
+                            view! {
+                                <tr>
+                                    <td>
+                                        <input
+                                            type="checkbox"
+                                            prop:checked=is_checked
+                                            on:change=move |_| {
+                                                selected_mtp_filenames.update(|set| {
+                                                    if set.contains(&fname) {
+                                                        set.remove(&fname);
+                                                    } else {
+                                                        set.insert(fname.clone());
+                                                    }
+                                                });
+                                            }
+                                        />
+                                    </td>
+                                    <td><code>{q.filename.clone()}</code></td>
+                                    <td class="text-muted">{size_str}</td>
+                                </tr>
+                            }
+                        }).collect::<Vec<_>>()}
+                    </tbody>
+                </table>
+            </div>
+        </Show>
+
         <div class="form-actions mt-3">
             <Show when=move || !repo_id.get().trim().is_empty()>
                 <button class="btn btn-secondary" on:click=move |_| on_back.run(())>
@@ -136,7 +185,7 @@ pub fn SelectionStep(
             </Show>
             <button
                 class="btn btn-primary"
-                prop:disabled=move || selected_filenames.get().is_empty() && selected_mmproj_filenames.get().is_empty()
+                prop:disabled=move || selected_filenames.get().is_empty() && selected_mmproj_filenames.get().is_empty() && selected_mtp_filenames.get().is_empty()
                 on:click=move |_| on_next.run(())
             >
                 "Next →"

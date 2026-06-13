@@ -5,13 +5,14 @@ use std::collections::HashSet;
 // ── Local types ──────────────────────────────────────────────────────────────
 
 /// Mirrors `tama_core::config::QuantKind`. Used to distinguish model quants
-/// from auxiliary files (mmproj) in the wizard's grouping logic.
+/// from auxiliary files (mmproj, MTP) in the wizard's grouping logic.
 #[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum QuantKind {
     #[default]
     Model,
     Mmproj,
+    Mtp,
 }
 
 /// Mirrors `tama_core::models::pull::HfModelMetadata` for frontend use.
@@ -260,6 +261,7 @@ pub struct PullRequest {
     pub model_id: Option<u32>,
     pub filenames: Vec<String>,
     pub mmproj_filenames: Vec<String>,
+    pub mtp_filenames: Vec<String>,
 }
 
 // ── Public types ─────────────────────────────────────────────────────────────

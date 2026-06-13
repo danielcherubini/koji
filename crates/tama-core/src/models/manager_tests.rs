@@ -16,6 +16,7 @@ fn make_test_record(repo_id: &str) -> ModelConfigRecord {
         enabled: true,
         selected_quant: None,
         selected_mmproj: None,
+        selected_mtp_model: None,
         context_length: None,
         num_parallel: None,
         kv_unified: false,

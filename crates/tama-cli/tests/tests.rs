@@ -256,6 +256,7 @@ async fn test_cmd_server_edit_valid_profile_succeeds() {
             model: None,
             quant: None,
             mmproj: None,
+            mtp_model: None,
             port: None,
             health_check: None,
             enabled: true,

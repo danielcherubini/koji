@@ -8,6 +8,7 @@ pub enum QuantKind {
     #[default]
     Model,
     Mmproj,
+    Mtp,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -65,6 +66,8 @@ pub struct ModelDetail {
     pub quant: Option<String>,
     #[serde(default)]
     pub mmproj: Option<String>,
+    #[serde(default)]
+    pub mtp_model: Option<String>,
     pub args: Vec<String>,
     pub sampling: Option<serde_json::Value>,
     pub enabled: bool,
@@ -126,6 +129,8 @@ pub struct ModelForm {
     pub model: Option<String>,
     pub quant: Option<String>,
     pub mmproj: Option<String>,
+    #[serde(default)]
+    pub mtp_model: Option<String>,
     pub args: String,
     pub sampling: std::collections::HashMap<String, SamplingField>,
     pub enabled: bool,
