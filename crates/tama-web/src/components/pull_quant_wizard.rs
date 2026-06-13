@@ -46,8 +46,10 @@ pub fn PullQuantWizard(
     let repo_id = RwSignal::new(String::new());
     let available_quants = RwSignal::new(Vec::<QuantEntry>::new());
     let available_mmprojs = RwSignal::new(Vec::<QuantEntry>::new());
+    let available_mtps = RwSignal::new(Vec::<QuantEntry>::new());
     let selected_filenames = RwSignal::new(HashSet::<String>::new());
     let selected_mmproj_filenames = RwSignal::new(HashSet::<String>::new());
+    let selected_mtp_filenames = RwSignal::new(HashSet::<String>::new());
     let gguf_context_length = RwSignal::new(None::<u64>);
     let context_settings = RwSignal::new(ContextSettings::default());
     let model_id = RwSignal::new(None::<u32>);
@@ -135,6 +137,7 @@ pub fn PullQuantWizard(
             }
             selected_filenames.set(std::collections::HashSet::new());
             selected_mmproj_filenames.set(std::collections::HashSet::new());
+            selected_mtp_filenames.set(std::collections::HashSet::new());
             gguf_context_length.set(None);
             model_id.set(None);
             hf_metadata.set(HfModelMetadata::default());
@@ -164,15 +167,17 @@ pub fn PullQuantWizard(
                             } else {
                                 let mut model_quants: Vec<QuantEntry> = Vec::new();
                                 let mut mmprojs: Vec<QuantEntry> = Vec::new();
+                                let mut mtps: Vec<QuantEntry> = Vec::new();
                                 for q in quants {
-                                    if q.kind == QuantKind::Mmproj {
-                                        mmprojs.push(q);
-                                    } else {
-                                        model_quants.push(q);
+                                    match q.kind {
+                                        QuantKind::Mmproj => mmprojs.push(q),
+                                        QuantKind::Mtp => mtps.push(q),
+                                        _ => model_quants.push(q),
                                     }
                                 }
                                 available_quants.set(model_quants);
                                 available_mmprojs.set(mmprojs);
+                                available_mtps.set(mtps);
                                 wizard_step.set(WizardStep::SelectQuants);
                             }
                         }
@@ -303,15 +308,17 @@ pub fn PullQuantWizard(
                                             } else {
                                                 let mut model_quants: Vec<QuantEntry> = Vec::new();
                                                 let mut mmprojs: Vec<QuantEntry> = Vec::new();
+                                                let mut mtps: Vec<QuantEntry> = Vec::new();
                                                 for q in quants {
-                                                    if q.kind == QuantKind::Mmproj {
-                                                        mmprojs.push(q);
-                                                    } else {
-                                                        model_quants.push(q);
+                                                    match q.kind {
+                                                        QuantKind::Mmproj => mmprojs.push(q),
+                                                        QuantKind::Mtp => mtps.push(q),
+                                                        _ => model_quants.push(q),
                                                     }
                                                 }
                                                 available_quants.set(model_quants);
                                                 available_mmprojs.set(mmprojs);
+                                                available_mtps.set(mtps);
                                                 wizard_step.set(WizardStep::SelectQuants);
                                             }
                                         }
@@ -341,12 +348,18 @@ pub fn PullQuantWizard(
                         repo_id=repo_id.into()
                         available_quants=available_quants.into()
                         available_mmprojs=available_mmprojs.into()
+                        available_mtps=available_mtps.into()
                         selected_filenames=selected_filenames
                         selected_mmproj_filenames=selected_mmproj_filenames
+                        selected_mtp_filenames=selected_mtp_filenames
                         on_next=Callback::new(move |_| {
                             let rid = repo_id.get();
                             let filenames: Vec<String> = selected_filenames.get().into_iter().collect();
                             let mmproj_filenames: Vec<String> = selected_mmproj_filenames
+                                .get()
+                                .into_iter()
+                                .collect();
+                            let mtp_filenames: Vec<String> = selected_mtp_filenames
                                 .get()
                                 .into_iter()
                                 .collect();
@@ -356,6 +369,7 @@ pub fn PullQuantWizard(
                                 model_id: model_id.get_untracked(),
                                 filenames,
                                 mmproj_filenames,
+                                mtp_filenames,
                             };
 
                             wasm_bindgen_futures::spawn_local(async move {

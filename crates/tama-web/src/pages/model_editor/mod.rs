@@ -185,6 +185,7 @@ pub fn ModelEditor() -> impl IntoView {
                     model: d.model,
                     quant: d.quant,
                     mmproj: d.mmproj,
+                    mtp_model: d.mtp_model,
                     args: d.args.join("\n"),
                     sampling: sampling_fields,
                     enabled: d.enabled,
@@ -360,6 +361,7 @@ pub fn ModelEditor() -> impl IntoView {
                 model: initial_form.model.clone(),
                 quant: initial_form.quant.clone(),
                 mmproj: initial_form.mmproj.clone(),
+                mtp_model: initial_form.mtp_model.clone(),
                 args: initial_form.args.clone(),
                 sampling: initial_form.sampling.clone(),
                 enabled: initial_form.enabled,
@@ -776,11 +778,13 @@ pub fn ModelEditor() -> impl IntoView {
                     form.update(|f| {
                         if let Some(form) = f {
                             for cq in completed {
-                                // Detect mmproj files by filename pattern (matches
+                                // Detect mmproj / mtp files by filename pattern (matches
                                 // the backend's QuantKind::from_filename logic).
                                 let lower = cq.filename.to_lowercase();
                                 let kind = if lower.starts_with("mmproj") && lower.ends_with(".gguf") {
                                     QuantKind::Mmproj
+                                } else if lower.starts_with("mtp") && lower.ends_with(".gguf") {
+                                    QuantKind::Mtp
                                 } else {
                                     QuantKind::Model
                                 };

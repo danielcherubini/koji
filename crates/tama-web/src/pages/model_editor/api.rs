@@ -37,6 +37,7 @@ pub async fn fetch_model(id: String) -> Option<ModelDetail> {
             quants: std::collections::BTreeMap::new(),
             backends: list.backends,
             mmproj: None,
+            mtp_model: None,
             repo_commit_sha: None,
             repo_pulled_at: None,
             modalities: None,
