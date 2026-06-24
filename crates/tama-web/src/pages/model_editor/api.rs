@@ -265,3 +265,37 @@ pub async fn fetch_sampling_templates(
     let templates = list.sampling_templates?;
     Some(templates)
 }
+
+/// Fetch GPU devices available for a backend.
+pub async fn fetch_gpu_devices(backend: &str) -> Vec<super::types::GpuDeviceInfo> {
+    let resp = get_request(&format!(
+        "/tama/v1/system/gpu-devices?backend={}",
+        urlencoding::encode(backend)
+    ))
+    .send()
+    .await;
+    match resp {
+        Ok(r) if r.status() == 200 => r
+            .json::<Vec<super::types::GpuDeviceInfo>>()
+            .await
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+/// Refresh GPU devices for a backend (forces re-discovery).
+pub async fn refresh_gpu_devices(backend: &str) -> Vec<super::types::GpuDeviceInfo> {
+    let resp = post_request(&format!(
+        "/tama/v1/system/gpu-devices/refresh?backend={}",
+        urlencoding::encode(backend)
+    ))
+    .send()
+    .await;
+    match resp {
+        Ok(r) if r.status() == 200 => r
+            .json::<Vec<super::types::GpuDeviceInfo>>()
+            .await
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}

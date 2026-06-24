@@ -1,17 +1,17 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{sse::Event, sse::KeepAlive, IntoResponse, Response, Sse},
     Json,
 };
 use futures_util::Stream;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::types::{is_safe_path_component, QuantEntry};
-use crate::gpu::VramInfo;
+use crate::gpu::{GpuDeviceInfo, VramInfo};
 use crate::proxy::ProxyState;
 
 /// Typed response for the system health endpoint.
@@ -143,4 +143,101 @@ pub async fn handle_system_metrics_stream(
         }
     };
     Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+/// Query parameters for GPU device listing.
+#[derive(Debug, Deserialize)]
+pub struct GpuDevicesQuery {
+    pub backend: String,
+}
+
+/// Handle listing GPU devices for a backend (Tama management API).
+///
+/// Returns cached devices if available, otherwise runs discovery via
+/// `<backend-binary> --list-devices` on first access.
+///
+/// Registered as `GET /tama/v1/system/gpu-devices?backend=<name>`.
+pub async fn handle_tama_system_gpu_devices(
+    State(state): State<Arc<ProxyState>>,
+    Query(query): Query<GpuDevicesQuery>,
+) -> Response {
+    let backend_name = query.backend;
+
+    // Resolve binary path for this backend
+    let binary_path = match state.resolve_backend_binary_path(&backend_name, None).await {
+        Ok(path) => path,
+        Err(e) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "error": format!("Backend '{}' not found: {}", backend_name, e),
+                    "devices": Vec::<GpuDeviceInfo>::new()
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    // Get or discover devices
+    match state
+        .get_or_discover_gpu_devices(&backend_name, &binary_path)
+        .await
+    {
+        Ok(devices) => (StatusCode::OK, Json(devices)).into_response(),
+        Err(e) => {
+            tracing::warn!(
+                "Failed to discover GPU devices for backend '{}': {}",
+                backend_name,
+                e
+            );
+            (StatusCode::OK, Json(Vec::<GpuDeviceInfo>::new())).into_response()
+        }
+    }
+}
+
+/// Handle refreshing GPU devices for a backend (Tama management API).
+///
+/// Forces re-discovery by running `<backend-binary> --list-devices` again.
+///
+/// Registered as `POST /tama/v1/system/gpu-devices/refresh?backend=<name>`.
+pub async fn handle_tama_system_gpu_devices_refresh(
+    State(state): State<Arc<ProxyState>>,
+    Query(query): Query<GpuDevicesQuery>,
+) -> Response {
+    let backend_name = query.backend;
+
+    // Resolve binary path for this backend
+    let binary_path = match state.resolve_backend_binary_path(&backend_name, None).await {
+        Ok(path) => path,
+        Err(e) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "error": format!("Backend '{}' not found: {}", backend_name, e),
+                    "devices": Vec::<GpuDeviceInfo>::new()
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    // Force refresh
+    match state.refresh_gpu_devices(&backend_name, &binary_path).await {
+        Ok(devices) => (StatusCode::OK, Json(devices)).into_response(),
+        Err(e) => {
+            tracing::warn!(
+                "Failed to refresh GPU devices for backend '{}': {}",
+                backend_name,
+                e
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": e.to_string(),
+                    "devices": Vec::<GpuDeviceInfo>::new()
+                })),
+            )
+                .into_response()
+        }
+    }
 }

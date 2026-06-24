@@ -46,6 +46,7 @@ impl ProxyState {
             config_write_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
             backend_logs: crate::backends::log_stream::BackendLogManager::default(),
             inference_stats: tokio::sync::watch::channel(None).0,
+            gpu_devices_cache: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             // ── Web UI fields ──
             #[cfg(feature = "web-ui")]
             web_jobs: Some(Arc::new(crate::web_types::JobManager::new())),
@@ -274,6 +275,74 @@ impl ProxyState {
         self.db_dir
             .as_ref()
             .and_then(|dir| crate::models::ModelManager::open(dir).ok())
+    }
+
+    /// Get cached GPU devices for a backend, or discover them on first access.
+    ///
+    /// Returns cached results if available (no TTL — refresh manually via
+    /// `refresh_gpu_devices`). Runs `spawn_blocking` subprocess call on first hit.
+    pub async fn get_or_discover_gpu_devices(
+        &self,
+        backend_name: &str,
+        binary_path: &std::path::Path,
+    ) -> Result<Vec<crate::gpu::GpuDeviceInfo>> {
+        // Check cache first
+        {
+            let cache = self.gpu_devices_cache.read().await;
+            if let Some((_, devices)) = cache.get(backend_name) {
+                return Ok(devices.clone());
+            }
+        }
+
+        // Not cached — discover
+        self.refresh_gpu_devices(backend_name, binary_path).await
+    }
+
+    /// Force re-discovery of GPU devices for a backend.
+    ///
+    /// Runs `<binary> --list-devices` in a blocking task, parses output,
+    /// and stores results in the cache.
+    pub async fn refresh_gpu_devices(
+        &self,
+        backend_name: &str,
+        binary_path: &std::path::Path,
+    ) -> Result<Vec<crate::gpu::GpuDeviceInfo>> {
+        let binary_path = binary_path.to_path_buf();
+        let backend_name = backend_name.to_string();
+
+        let devices = tokio::task::spawn_blocking(move || {
+            crate::gpu::discover_devices_via_binary(&binary_path)
+        })
+        .await
+        .context("spawn_blocking panicked")??;
+
+        let now = std::time::Instant::now();
+        let mut cache = self.gpu_devices_cache.write().await;
+        cache.insert(backend_name, (now, devices.clone()));
+
+        Ok(devices)
+    }
+
+    /// Resolve the binary path for a backend name using the same logic as `load_model`.
+    ///
+    /// Opens the BackendManager, looks up the active installation, and returns the path.
+    /// Falls back to config.path if no DB entry exists.
+    pub async fn resolve_backend_binary_path(
+        &self,
+        backend_name: &str,
+        gpu_variant: Option<&str>,
+    ) -> Result<std::path::PathBuf> {
+        let config = self.config.read().await;
+        let manager = self
+            .db_dir
+            .as_ref()
+            .and_then(|dir| crate::backends::BackendManager::open(dir).ok())
+            .unwrap_or_else(|| {
+                crate::backends::BackendManager::open_in_memory()
+                    .expect("in-memory BackendManager must always open")
+            });
+
+        config.resolve_backend_path(backend_name, gpu_variant, &manager)
     }
 }
 

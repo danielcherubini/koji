@@ -1,7 +1,9 @@
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
+use wasm_bindgen_futures::spawn_local;
 
-use super::types::{BackendOption, ModelForm};
+use super::api::{fetch_gpu_devices, refresh_gpu_devices};
+use super::types::{BackendOption, GpuDeviceInfo, ModelForm};
 use crate::components::context_length_selector::ContextLengthSelector;
 use crate::utils::target_value;
 
@@ -87,6 +89,77 @@ pub fn ModelEditorGeneralForm(
 ) -> impl IntoView {
     // Track the last form ID we've initialized inputs for
     let last_init_id = StoredValue::new(None::<String>);
+
+    // GPU devices discovered for the current backend
+    let gpu_devices: RwSignal<Vec<GpuDeviceInfo>> = RwSignal::new(Vec::new());
+    let gpu_fetching: RwSignal<bool> = RwSignal::new(false);
+
+    // Fetch GPU devices for the given backend name.
+    let fetch_devices_for_backend = Callback::new(move |backend_name: String| {
+        if backend_name.is_empty() {
+            gpu_devices.set(Vec::new());
+            return;
+        }
+        let devices_signal = gpu_devices;
+        let fetching_signal = gpu_fetching;
+        spawn_local(async move {
+            fetching_signal.set(true);
+            let devices = fetch_gpu_devices(&backend_name).await;
+            devices_signal.set(devices);
+            fetching_signal.set(false);
+        });
+    });
+
+    // Refresh GPU devices for the current backend.
+    let refresh_devices = Callback::new(move |_| {
+        let backend = form.with(|f| f.as_ref().map(|f| f.backend.clone()).unwrap_or_default());
+        if backend.is_empty() {
+            return;
+        }
+        let devices_signal = gpu_devices;
+        let fetching_signal = gpu_fetching;
+        spawn_local(async move {
+            fetching_signal.set(true);
+            let devices = refresh_gpu_devices(&backend).await;
+            devices_signal.set(devices);
+            fetching_signal.set(false);
+        });
+    });
+
+    // When backend changes, fetch GPU devices
+    let last_backend = StoredValue::new(String::new());
+    Effect::new(move |_| {
+        let current_backend = form
+            .get()
+            .as_ref()
+            .map(|f| f.backend.clone())
+            .unwrap_or_default();
+        let prev = last_backend.get_value();
+        if current_backend != prev && !current_backend.is_empty() {
+            last_backend.set_value(current_backend.clone());
+            fetch_devices_for_backend.run(current_backend);
+        } else if current_backend.is_empty() {
+            last_backend.set_value(String::new());
+            gpu_devices.set(Vec::new());
+        }
+    });
+
+    // On first mount, if backend is already set, fetch devices
+    let mounted = StoredValue::new(false);
+    Effect::new(move |_| {
+        if !mounted.get_value() {
+            mounted.set_value(true);
+            let backend = form
+                .get()
+                .as_ref()
+                .map(|f| f.backend.clone())
+                .unwrap_or_default();
+            if !backend.is_empty() {
+                last_backend.set_value(backend.clone());
+                fetch_devices_for_backend.run(backend);
+            }
+        }
+    });
 
     // When form changes to a new model, populate the input values
     Effect::new(move |_| {
@@ -228,22 +301,64 @@ pub fn ModelEditorGeneralForm(
                 }
             />
 
-            <label class="form-label" for="field-gpu-device">"GPU Device"</label>
-            <input
+            <label class="form-label" for="field-gpu-device">
+                "GPU Device"
+                <span class="form-actions-inline">
+                    <button
+                        class="form-icon-button"
+                        title="Refresh GPU devices"
+                        disabled=move || gpu_fetching.get()
+                        on:click=move |_| {
+                            refresh_devices.run(());
+                        }
+                    >
+                        {move || {
+                            if gpu_fetching.get() {
+                                "⟳".to_string()
+                            } else {
+                                "↻".to_string()
+                            }
+                        }}
+                    </button>
+                </span>
+            </label>
+            <select
                 id="field-gpu-device"
-                class="form-input"
-                type="text"
-                placeholder="e.g. CUDA0, ROCm0 (leave blank for default)"
-                title="GPU device name passed as --device to llama.cpp backends. See llama-server --list-devices."
-                on:input=move |ev| {
-                    let val = target_value(&ev);
+                class="form-select"
+                on:change=move |e| {
+                    let val = target_value(&e);
                     form.update(|f| {
                         if let Some(form) = f {
-                            form.gpu_device = if val.trim().is_empty() { None } else { Some(val) };
+                            form.gpu_device = if val.is_empty() { None } else { Some(val) };
                         }
                     });
                 }
-            />
+            >
+                <option value="">
+                    {move || {
+                        if gpu_devices.get().is_empty() && !gpu_fetching.get() {
+                            "Default (could not list devices)"
+                        } else {
+                            "Default (backend default)"
+                        }
+                    }}
+                </option>
+                {move || {
+                    let current = form.get().as_ref().and_then(|f| f.gpu_device.clone()).unwrap_or_default();
+                    gpu_devices.get().into_iter().map(|dev| {
+                        let selected = current == dev.device_id;
+                        let label = if dev.vram_total_mib.is_some() {
+                            format!("{} — {} ({} MiB)", dev.device_id, dev.name, dev.vram_total_mib.unwrap_or(0))
+                        } else {
+                            format!("{} — {}", dev.device_id, dev.name)
+                        };
+                        view! { <option value=dev.device_id selected=selected>{label}</option> }
+                    }).collect::<Vec<_>>()
+                }}
+            </select>
+            <Show when=move || gpu_devices.get().is_empty() && !gpu_fetching.get() && form.get().as_ref().map(|f| !f.backend.is_empty()).unwrap_or(false)>
+                <div class="form-hint">Could not list devices - leave blank for default</div>
+            </Show>
 
             <label class="form-label" for="field-ctx">"Context length"</label>
             <ContextLengthSelector

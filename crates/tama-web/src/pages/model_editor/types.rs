@@ -210,3 +210,16 @@ pub struct FileRecordJson {
     #[serde(default)]
     pub verify_error: Option<String>,
 }
+
+/// GPU device information returned by the backend discovery API.
+#[derive(Debug, Clone, Deserialize)]
+pub struct GpuDeviceInfo {
+    pub device_id: String,
+    pub name: String,
+    #[serde(default)]
+    pub vendor: String,
+    #[serde(default)]
+    pub vram_total_mib: Option<u64>,
+    #[serde(default)]
+    pub vram_free_mib: Option<u64>,
+}

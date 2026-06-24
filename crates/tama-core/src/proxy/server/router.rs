@@ -25,6 +25,7 @@ use crate::proxy::tama_handlers::{
     handle_opencode_list_models, handle_pull_job_stream, handle_system_metrics_stream,
     handle_tama_get_model as handle_tama_get_model_fn, handle_tama_get_pull_job,
     handle_tama_list_models, handle_tama_load_model, handle_tama_pull_model,
+    handle_tama_system_gpu_devices, handle_tama_system_gpu_devices_refresh,
     handle_tama_system_health, handle_tama_system_restart, handle_tama_unload_model,
 };
 use crate::proxy::ProxyState;
@@ -67,6 +68,14 @@ pub async fn build_router(state: Arc<ProxyState>) -> Router {
         .route(
             "/tama/v1/system/metrics/stream",
             get(handle_system_metrics_stream),
+        )
+        .route(
+            "/tama/v1/system/gpu-devices",
+            get(handle_tama_system_gpu_devices),
+        )
+        .route(
+            "/tama/v1/system/gpu-devices/refresh",
+            post(handle_tama_system_gpu_devices_refresh),
         )
         .route("/tama/v1/system/restart", post(handle_tama_system_restart))
         // Backend log endpoints
@@ -150,6 +159,14 @@ pub async fn build_unified_router(
         .route(
             "/tama/v1/system/metrics/stream",
             get(handle_system_metrics_stream),
+        )
+        .route(
+            "/tama/v1/system/gpu-devices",
+            get(handle_tama_system_gpu_devices),
+        )
+        .route(
+            "/tama/v1/system/gpu-devices/refresh",
+            post(handle_tama_system_gpu_devices_refresh),
         )
         .route("/tama/v1/system/restart", post(handle_tama_system_restart))
         // Backend log endpoints
