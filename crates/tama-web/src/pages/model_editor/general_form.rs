@@ -94,25 +94,31 @@ pub fn ModelEditorGeneralForm(
     let gpu_devices: RwSignal<Vec<GpuDeviceInfo>> = RwSignal::new(Vec::new());
     let gpu_fetching: RwSignal<bool> = RwSignal::new(false);
 
-    // Fetch GPU devices for the given backend name.
-    let fetch_devices_for_backend = Callback::new(move |backend_name: String| {
-        if backend_name.is_empty() {
-            gpu_devices.set(Vec::new());
-            return;
-        }
-        let devices_signal = gpu_devices;
-        let fetching_signal = gpu_fetching;
-        spawn_local(async move {
-            fetching_signal.set(true);
-            let devices = fetch_gpu_devices(&backend_name).await;
-            devices_signal.set(devices);
-            fetching_signal.set(false);
-        });
-    });
+    // Fetch GPU devices for the given backend name and variant.
+    let fetch_devices_for_backend = Callback::new(
+        move |(backend_name, gpu_variant): (String, Option<String>)| {
+            if backend_name.is_empty() {
+                gpu_devices.set(Vec::new());
+                return;
+            }
+            let devices_signal = gpu_devices;
+            let fetching_signal = gpu_fetching;
+            spawn_local(async move {
+                fetching_signal.set(true);
+                let devices = fetch_gpu_devices(&backend_name, gpu_variant.as_deref()).await;
+                devices_signal.set(devices);
+                fetching_signal.set(false);
+            });
+        },
+    );
 
     // Refresh GPU devices for the current backend.
     let refresh_devices = Callback::new(move |_| {
-        let backend = form.with(|f| f.as_ref().map(|f| f.backend.clone()).unwrap_or_default());
+        let (backend, gpu_variant) = form.with(|f| {
+            f.as_ref()
+                .map(|f| (f.backend.clone(), f.gpu_variant.clone()))
+                .unwrap_or_default()
+        });
         if backend.is_empty() {
             return;
         }
@@ -120,7 +126,7 @@ pub fn ModelEditorGeneralForm(
         let fetching_signal = gpu_fetching;
         spawn_local(async move {
             fetching_signal.set(true);
-            let devices = refresh_gpu_devices(&backend).await;
+            let devices = refresh_gpu_devices(&backend, gpu_variant.as_deref()).await;
             devices_signal.set(devices);
             fetching_signal.set(false);
         });
@@ -129,15 +135,15 @@ pub fn ModelEditorGeneralForm(
     // When backend changes, fetch GPU devices
     let last_backend = StoredValue::new(String::new());
     Effect::new(move |_| {
-        let current_backend = form
+        let (current_backend, current_variant) = form
             .get()
             .as_ref()
-            .map(|f| f.backend.clone())
+            .map(|f| (f.backend.clone(), f.gpu_variant.clone()))
             .unwrap_or_default();
         let prev = last_backend.get_value();
         if current_backend != prev && !current_backend.is_empty() {
             last_backend.set_value(current_backend.clone());
-            fetch_devices_for_backend.run(current_backend);
+            fetch_devices_for_backend.run((current_backend, current_variant));
         } else if current_backend.is_empty() {
             last_backend.set_value(String::new());
             gpu_devices.set(Vec::new());
@@ -149,14 +155,14 @@ pub fn ModelEditorGeneralForm(
     Effect::new(move |_| {
         if !mounted.get_value() {
             mounted.set_value(true);
-            let backend = form
+            let (backend, gpu_variant) = form
                 .get()
                 .as_ref()
-                .map(|f| f.backend.clone())
+                .map(|f| (f.backend.clone(), f.gpu_variant.clone()))
                 .unwrap_or_default();
             if !backend.is_empty() {
                 last_backend.set_value(backend.clone());
-                fetch_devices_for_backend.run(backend);
+                fetch_devices_for_backend.run((backend, gpu_variant));
             }
         }
     });

@@ -281,34 +281,39 @@ impl ProxyState {
     ///
     /// Returns cached results if available (no TTL — refresh manually via
     /// `refresh_gpu_devices`). Runs `spawn_blocking` subprocess call on first hit.
+    /// Cache key is `"{backend_name}:{gpu_variant}"` (or `"{backend_name}:default"` when None).
     pub async fn get_or_discover_gpu_devices(
         &self,
         backend_name: &str,
+        gpu_variant: Option<&str>,
         binary_path: &std::path::Path,
     ) -> Result<Vec<crate::gpu::GpuDeviceInfo>> {
+        let cache_key = format!("{}:{}", backend_name, gpu_variant.unwrap_or("default"));
         // Check cache first
         {
             let cache = self.gpu_devices_cache.read().await;
-            if let Some((_, devices)) = cache.get(backend_name) {
+            if let Some((_, devices)) = cache.get(&cache_key) {
                 return Ok(devices.clone());
             }
         }
 
         // Not cached — discover
-        self.refresh_gpu_devices(backend_name, binary_path).await
+        self.refresh_gpu_devices(backend_name, gpu_variant, binary_path)
+            .await
     }
 
     /// Force re-discovery of GPU devices for a backend.
     ///
     /// Runs `<binary> --list-devices` in a blocking task, parses output,
-    /// and stores results in the cache.
+    /// and stores results in the cache. Cache key is `"{backend_name}:{gpu_variant}"`.
     pub async fn refresh_gpu_devices(
         &self,
         backend_name: &str,
+        gpu_variant: Option<&str>,
         binary_path: &std::path::Path,
     ) -> Result<Vec<crate::gpu::GpuDeviceInfo>> {
         let binary_path = binary_path.to_path_buf();
-        let backend_name = backend_name.to_string();
+        let cache_key = format!("{}:{}", backend_name, gpu_variant.unwrap_or("default"));
 
         let devices = tokio::task::spawn_blocking(move || {
             crate::gpu::discover_devices_via_binary(&binary_path)
@@ -318,7 +323,7 @@ impl ProxyState {
 
         let now = std::time::Instant::now();
         let mut cache = self.gpu_devices_cache.write().await;
-        cache.insert(backend_name, (now, devices.clone()));
+        cache.insert(cache_key, (now, devices.clone()));
 
         Ok(devices)
     }

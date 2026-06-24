@@ -267,13 +267,22 @@ pub async fn fetch_sampling_templates(
 }
 
 /// Fetch GPU devices available for a backend.
-pub async fn fetch_gpu_devices(backend: &str) -> Vec<super::types::GpuDeviceInfo> {
-    let resp = get_request(&format!(
-        "/tama/v1/system/gpu-devices?backend={}",
-        urlencoding::encode(backend)
-    ))
-    .send()
-    .await;
+pub async fn fetch_gpu_devices(
+    backend: &str,
+    gpu_variant: Option<&str>,
+) -> Vec<super::types::GpuDeviceInfo> {
+    let url = match gpu_variant {
+        Some(v) => format!(
+            "/tama/v1/system/gpu-devices?backend={}&gpu_variant={}",
+            urlencoding::encode(backend),
+            urlencoding::encode(v)
+        ),
+        None => format!(
+            "/tama/v1/system/gpu-devices?backend={}",
+            urlencoding::encode(backend)
+        ),
+    };
+    let resp = get_request(&url).send().await;
     match resp {
         Ok(r) if r.status() == 200 => r
             .json::<Vec<super::types::GpuDeviceInfo>>()
@@ -284,13 +293,22 @@ pub async fn fetch_gpu_devices(backend: &str) -> Vec<super::types::GpuDeviceInfo
 }
 
 /// Refresh GPU devices for a backend (forces re-discovery).
-pub async fn refresh_gpu_devices(backend: &str) -> Vec<super::types::GpuDeviceInfo> {
-    let resp = post_request(&format!(
-        "/tama/v1/system/gpu-devices/refresh?backend={}",
-        urlencoding::encode(backend)
-    ))
-    .send()
-    .await;
+pub async fn refresh_gpu_devices(
+    backend: &str,
+    gpu_variant: Option<&str>,
+) -> Vec<super::types::GpuDeviceInfo> {
+    let url = match gpu_variant {
+        Some(v) => format!(
+            "/tama/v1/system/gpu-devices/refresh?backend={}&gpu_variant={}",
+            urlencoding::encode(backend),
+            urlencoding::encode(v)
+        ),
+        None => format!(
+            "/tama/v1/system/gpu-devices/refresh?backend={}",
+            urlencoding::encode(backend)
+        ),
+    };
+    let resp = post_request(&url).send().await;
     match resp {
         Ok(r) if r.status() == 200 => r
             .json::<Vec<super::types::GpuDeviceInfo>>()

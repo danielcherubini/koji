@@ -149,6 +149,8 @@ pub async fn handle_system_metrics_stream(
 #[derive(Debug, Deserialize)]
 pub struct GpuDevicesQuery {
     pub backend: String,
+    #[serde(default)]
+    pub gpu_variant: Option<String>,
 }
 
 /// Handle listing GPU devices for a backend (Tama management API).
@@ -162,15 +164,19 @@ pub async fn handle_tama_system_gpu_devices(
     Query(query): Query<GpuDevicesQuery>,
 ) -> Response {
     let backend_name = query.backend;
+    let gpu_variant = query.gpu_variant.as_deref();
 
     // Resolve binary path for this backend
-    let binary_path = match state.resolve_backend_binary_path(&backend_name, None).await {
+    let binary_path = match state
+        .resolve_backend_binary_path(&backend_name, gpu_variant)
+        .await
+    {
         Ok(path) => path,
         Err(e) => {
             return (
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({
-                    "error": format!("Backend '{}' not found: {}", backend_name, e),
+                    "error": format!("Backend '{}' (variant: {:?}) not found: {}", backend_name, gpu_variant, e),
                     "devices": Vec::<GpuDeviceInfo>::new()
                 })),
             )
@@ -180,14 +186,15 @@ pub async fn handle_tama_system_gpu_devices(
 
     // Get or discover devices
     match state
-        .get_or_discover_gpu_devices(&backend_name, &binary_path)
+        .get_or_discover_gpu_devices(&backend_name, gpu_variant, &binary_path)
         .await
     {
         Ok(devices) => (StatusCode::OK, Json(devices)).into_response(),
         Err(e) => {
             tracing::warn!(
-                "Failed to discover GPU devices for backend '{}': {}",
+                "Failed to discover GPU devices for backend '{}' (variant: {:?}): {}",
                 backend_name,
+                gpu_variant,
                 e
             );
             (StatusCode::OK, Json(Vec::<GpuDeviceInfo>::new())).into_response()
@@ -205,15 +212,19 @@ pub async fn handle_tama_system_gpu_devices_refresh(
     Query(query): Query<GpuDevicesQuery>,
 ) -> Response {
     let backend_name = query.backend;
+    let gpu_variant = query.gpu_variant.as_deref();
 
     // Resolve binary path for this backend
-    let binary_path = match state.resolve_backend_binary_path(&backend_name, None).await {
+    let binary_path = match state
+        .resolve_backend_binary_path(&backend_name, gpu_variant)
+        .await
+    {
         Ok(path) => path,
         Err(e) => {
             return (
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({
-                    "error": format!("Backend '{}' not found: {}", backend_name, e),
+                    "error": format!("Backend '{}' (variant: {:?}) not found: {}", backend_name, gpu_variant, e),
                     "devices": Vec::<GpuDeviceInfo>::new()
                 })),
             )
@@ -222,12 +233,16 @@ pub async fn handle_tama_system_gpu_devices_refresh(
     };
 
     // Force refresh
-    match state.refresh_gpu_devices(&backend_name, &binary_path).await {
+    match state
+        .refresh_gpu_devices(&backend_name, gpu_variant, &binary_path)
+        .await
+    {
         Ok(devices) => (StatusCode::OK, Json(devices)).into_response(),
         Err(e) => {
             tracing::warn!(
-                "Failed to refresh GPU devices for backend '{}': {}",
+                "Failed to refresh GPU devices for backend '{}' (variant: {:?}): {}",
                 backend_name,
+                gpu_variant,
                 e
             );
             (
