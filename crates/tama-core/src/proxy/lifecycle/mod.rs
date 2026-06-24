@@ -18,7 +18,7 @@ impl ProxyState {
     pub async fn load_model(
         &self,
         model_name: &str,
-        _model_card: Option<&crate::models::card::ModelCard>,
+        model_card: Option<&crate::models::card::ModelCard>,
     ) -> Result<String> {
         debug!("Loading model: {}", model_name);
 
@@ -90,11 +90,28 @@ impl ProxyState {
         let port = listener.local_addr()?.port();
         drop(listener); // Free the port for the backend to use
 
+        // Resolve effective gpu_device: model config > model card default
+        let effective_gpu_device = resolve_gpu_device(
+            server_config.gpu_device.clone(),
+            model_card.and_then(|card| card.model.default_gpu_device.clone()),
+        );
+
+        // Build a modified server config with the resolved gpu_device.
+        // This ensures build_full_args() sees the effective value.
+        let server_config = if effective_gpu_device.is_some() && server_config.gpu_device.is_none()
+        {
+            let mut modified = server_config.clone();
+            modified.gpu_device = effective_gpu_device;
+            modified
+        } else {
+            server_config.clone()
+        };
+
         // Build full args (including -m, -c, -ngl from model card) and override host/port
         let gpu_variant = server_config.gpu_variant.as_deref().unwrap_or("cpu");
         let default_args = manager.get_default_args(&server_config.backend, gpu_variant);
         let mut args =
-            config.build_full_args(server_config, backend_config, None, &default_args)?;
+            config.build_full_args(&server_config, backend_config, None, &default_args)?;
         override_arg(&mut args, "--host", "127.0.0.1");
         override_arg(&mut args, "--port", &port.to_string());
 
@@ -1358,6 +1375,12 @@ impl ProxyState {
 
         Ok(())
     }
+}
+
+/// Resolve the effective GPU device from the fallback chain:
+/// model config > model card default.
+fn resolve_gpu_device(config: Option<String>, card_default: Option<String>) -> Option<String> {
+    config.or(card_default)
 }
 
 #[cfg(test)]

@@ -485,6 +485,27 @@ async fn test_evict_lru_if_needed_concurrent_no_double_eviction() {
     );
 }
 
+/// Test that resolve_gpu_device uses config value when set.
+#[test]
+fn test_resolve_gpu_device_config_takes_precedence() {
+    let result = super::resolve_gpu_device(Some("CUDA1".to_string()), Some("ROCm0".to_string()));
+    assert_eq!(result, Some("CUDA1".to_string()));
+}
+
+/// Test that resolve_gpu_device falls back to card default when config is None.
+#[test]
+fn test_resolve_gpu_device_falls_back_to_card() {
+    let result = super::resolve_gpu_device(None, Some("ROCm0".to_string()));
+    assert_eq!(result, Some("ROCm0".to_string()));
+}
+
+/// Test that resolve_gpu_device returns None when both are None.
+#[test]
+fn test_resolve_gpu_device_both_none() {
+    let result = super::resolve_gpu_device(None, None);
+    assert_eq!(result, None);
+}
+
 /// Test that TTS backends are excluded from LRU eviction count.
 #[tokio::test]
 async fn test_evict_lru_excludes_tts_backends() {
