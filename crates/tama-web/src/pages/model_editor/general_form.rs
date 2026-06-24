@@ -95,8 +95,8 @@ pub fn ModelEditorGeneralForm(
     let gpu_fetching: RwSignal<bool> = RwSignal::new(false);
 
     // Fetch GPU devices for the given backend name and variant.
-    let fetch_devices_for_backend = Callback::new(
-        move |(backend_name, gpu_variant): (String, Option<String>)| {
+    let fetch_devices_for_backend =
+        Callback::new(move |(backend_name, gpu_variant): (String, String)| {
             if backend_name.is_empty() {
                 gpu_devices.set(Vec::new());
                 return;
@@ -105,19 +105,24 @@ pub fn ModelEditorGeneralForm(
             let fetching_signal = gpu_fetching;
             spawn_local(async move {
                 fetching_signal.set(true);
-                let devices = fetch_gpu_devices(&backend_name, gpu_variant.as_deref()).await;
+                let devices = fetch_gpu_devices(&backend_name, &gpu_variant).await;
                 devices_signal.set(devices);
                 fetching_signal.set(false);
             });
-        },
-    );
+        });
 
     // Refresh GPU devices for the current backend.
     let refresh_devices = Callback::new(move |_| {
         let (backend, gpu_variant) = form.with(|f| {
-            f.as_ref()
-                .map(|f| (f.backend.clone(), f.gpu_variant.clone()))
-                .unwrap_or_default()
+            let variant = f
+                .as_ref()
+                .and_then(|f| f.gpu_variant.as_deref())
+                .filter(|s| !s.is_empty())
+                .unwrap_or("cpu");
+            (
+                f.as_ref().map(|f| f.backend.clone()).unwrap_or_default(),
+                variant.to_string(),
+            )
         });
         if backend.is_empty() {
             return;
@@ -126,7 +131,7 @@ pub fn ModelEditorGeneralForm(
         let fetching_signal = gpu_fetching;
         spawn_local(async move {
             fetching_signal.set(true);
-            let devices = refresh_gpu_devices(&backend, gpu_variant.as_deref()).await;
+            let devices = refresh_gpu_devices(&backend, &gpu_variant).await;
             devices_signal.set(devices);
             fetching_signal.set(false);
         });
@@ -138,7 +143,14 @@ pub fn ModelEditorGeneralForm(
         let (current_backend, current_variant) = form
             .get()
             .as_ref()
-            .map(|f| (f.backend.clone(), f.gpu_variant.clone()))
+            .map(|f| {
+                let variant = f
+                    .gpu_variant
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("cpu");
+                (f.backend.clone(), variant.to_string())
+            })
             .unwrap_or_default();
         let prev = last_backend.get_value();
         if current_backend != prev && !current_backend.is_empty() {
@@ -158,7 +170,14 @@ pub fn ModelEditorGeneralForm(
             let (backend, gpu_variant) = form
                 .get()
                 .as_ref()
-                .map(|f| (f.backend.clone(), f.gpu_variant.clone()))
+                .map(|f| {
+                    let variant = f
+                        .gpu_variant
+                        .as_deref()
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or("cpu");
+                    (f.backend.clone(), variant.to_string())
+                })
                 .unwrap_or_default();
             if !backend.is_empty() {
                 last_backend.set_value(backend.clone());

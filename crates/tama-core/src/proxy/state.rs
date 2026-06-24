@@ -281,14 +281,14 @@ impl ProxyState {
     ///
     /// Returns cached results if available (no TTL — refresh manually via
     /// `refresh_gpu_devices`). Runs `spawn_blocking` subprocess call on first hit.
-    /// Cache key is `"{backend_name}:{gpu_variant}"` (or `"{backend_name}:default"` when None).
+    /// Cache key is `"{backend_name}:{gpu_variant}"`.
     pub async fn get_or_discover_gpu_devices(
         &self,
         backend_name: &str,
-        gpu_variant: Option<&str>,
+        gpu_variant: &str,
         binary_path: &std::path::Path,
     ) -> Result<Vec<crate::gpu::GpuDeviceInfo>> {
-        let cache_key = format!("{}:{}", backend_name, gpu_variant.unwrap_or("default"));
+        let cache_key = format!("{}:{}", backend_name, gpu_variant);
         // Check cache first
         {
             let cache = self.gpu_devices_cache.read().await;
@@ -309,11 +309,11 @@ impl ProxyState {
     pub async fn refresh_gpu_devices(
         &self,
         backend_name: &str,
-        gpu_variant: Option<&str>,
+        gpu_variant: &str,
         binary_path: &std::path::Path,
     ) -> Result<Vec<crate::gpu::GpuDeviceInfo>> {
         let binary_path = binary_path.to_path_buf();
-        let cache_key = format!("{}:{}", backend_name, gpu_variant.unwrap_or("default"));
+        let cache_key = format!("{}:{}", backend_name, gpu_variant);
 
         let devices = tokio::task::spawn_blocking(move || {
             crate::gpu::discover_devices_via_binary(&binary_path)
@@ -335,7 +335,7 @@ impl ProxyState {
     pub async fn resolve_backend_binary_path(
         &self,
         backend_name: &str,
-        gpu_variant: Option<&str>,
+        gpu_variant: &str,
     ) -> Result<std::path::PathBuf> {
         let config = self.config.read().await;
         let manager = self
@@ -347,7 +347,7 @@ impl ProxyState {
                     .expect("in-memory BackendManager must always open")
             });
 
-        config.resolve_backend_path(backend_name, gpu_variant, &manager)
+        config.resolve_backend_path(backend_name, Some(gpu_variant), &manager)
     }
 }
 
