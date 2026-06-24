@@ -117,16 +117,51 @@ fn parse_mib_value(s: &str) -> Option<u64> {
 /// Discover GPU devices by running `<binary> --list-devices`.
 ///
 /// Spawns a blocking subprocess call, captures stdout, and parses the output.
+///
+/// Uses [`crate::process::configure_backend_command`] to set the working
+/// directory and `LD_LIBRARY_PATH` to the binary's parent — without this,
+/// a backend binary with no RPATH can pick up shared libraries from a
+/// *different* backend installation (e.g. a vulkan llama-server loading
+/// rocm's `libllama-server-impl.so`), which crashes the process.
 pub fn discover_devices_via_binary(binary_path: &Path) -> Result<Vec<GpuDeviceInfo>> {
-    let output = std::process::Command::new(binary_path)
-        .arg("--list-devices")
-        .output()
-        .with_context(|| {
-            format!(
-                "Failed to execute '{} --list-devices'",
-                binary_path.display()
-            )
-        })?;
+    let mut cmd = std::process::Command::new(binary_path);
+    crate::process::configure_backend_command(&mut cmd, binary_path);
+    cmd.arg("--list-devices");
+
+    let output = cmd.output().with_context(|| {
+        format!(
+            "Failed to execute '{} --list-devices'",
+            binary_path.display()
+        )
+    })?;
+
+    // If the process crashed (non-zero exit), surface the stderr so the caller
+    // (and ultimately the user) knows *why* device discovery failed rather than
+    // getting a silent empty list.
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut detail = String::new();
+        if !stderr.trim().is_empty() {
+            detail.push_str(stderr.trim());
+        }
+        if !stdout.trim().is_empty() {
+            if !detail.is_empty() {
+                detail.push('\n');
+            }
+            detail.push_str(stdout.trim());
+        }
+        anyhow::bail!(
+            "'{} --list-devices' exited with {}: {}",
+            binary_path.display(),
+            output.status,
+            if detail.is_empty() {
+                "(no output)".to_string()
+            } else {
+                detail
+            }
+        );
+    }
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();

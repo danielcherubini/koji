@@ -17,7 +17,11 @@ use crate::logging;
 /// Sets the working directory and LD_LIBRARY_PATH (on Unix) to the binary's
 /// parent directory so that .so/.dylib/.dll files in the same location are
 /// found at runtime. Call this before spawning any backend process.
-pub fn configure_backend_command(cmd: &mut Command, binary_path: &Path) {
+///
+/// Generic over the Command type so it works with both `tokio::process::Command`
+/// (for live backend launches) and `std::process::Command` (for one-off
+/// subprocess probes like `--list-devices` discovery).
+pub fn configure_backend_command(cmd: &mut impl BackendCommand, binary_path: &Path) {
     if let Some(parent) = binary_path.parent().filter(|p| p.is_dir()) {
         cmd.current_dir(parent);
         #[cfg(unix)]
@@ -31,6 +35,34 @@ pub fn configure_backend_command(cmd: &mut Command, binary_path: &Path) {
             };
             cmd.env("LD_LIBRARY_PATH", new_path);
         }
+    }
+    // Silence unused warning on non-unix targets.
+    let _ = binary_path;
+}
+
+/// Abstraction over the small slice of a `Command` builder that
+/// [`configure_backend_command`] needs. Implemented for both
+/// `tokio::process::Command` and `std::process::Command`.
+pub trait BackendCommand {
+    fn current_dir(&mut self, dir: &Path);
+    fn env<K: AsRef<std::ffi::OsStr>, V: AsRef<std::ffi::OsStr>>(&mut self, key: K, value: V);
+}
+
+impl BackendCommand for Command {
+    fn current_dir(&mut self, dir: &Path) {
+        Command::current_dir(self, dir);
+    }
+    fn env<K: AsRef<std::ffi::OsStr>, V: AsRef<std::ffi::OsStr>>(&mut self, key: K, value: V) {
+        Command::env(self, key, value);
+    }
+}
+
+impl BackendCommand for std::process::Command {
+    fn current_dir(&mut self, dir: &Path) {
+        std::process::Command::current_dir(self, dir);
+    }
+    fn env<K: AsRef<std::ffi::OsStr>, V: AsRef<std::ffi::OsStr>>(&mut self, key: K, value: V) {
+        std::process::Command::env(self, key, value);
     }
 }
 
