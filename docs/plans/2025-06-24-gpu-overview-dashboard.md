@@ -2,7 +2,7 @@
 
 **Goal:** Surface per-GPU metrics and model placement on the dashboard, so users can see at a glance which models are running on which GPUs and how each GPU is utilized.
 
-**Architecture:** Extend the existing metrics pipeline (nvidia-smi + AMD sysfs) to expose per-device stats. The `MetricSample` SSE payload gains a `gpus: Vec<GpuDeviceStats>` field. A new `GpuDeviceCard` component renders one card per detected GPU on the dashboard, showing utilization/VRAM bars, loaded model(s), and temp/power/fan telemetry. Each `ModelStatus` carries its `gpu_device` so cards can show the cross-link.
+**Architecture:** Extend the existing metrics pipeline (nvidia-smi + AMD sysfs) to expose per-device stats. The `MetricSample` SSE payload gains a `gpus: Vec<GpuDeviceStats>` field. A new `GpuDeviceCard` component renders one card per detected GPU on the dashboard, showing utilization/VRAM bars (purple→pink gradient), the loaded model (or "No model loaded" / "Transferring..."), and Temp/Power/Fan telemetry. The GPU's position in the array becomes its display label (e.g. "GPU 0", "GPU 1") used in both card headers and the model row's "VRAM: Loaded (GPU 0)" cross-link. The underlying `ModelConfig.gpu_device` (e.g. `CUDA0`, `ROCm0`) stays internal and is used only to dispatch the `--device` flag.
 
 **Tech Stack:** Rust, axum, leptos, nvidia-smi, AMD sysfs (`/sys/class/drm/card*`), SSE
 
@@ -240,67 +240,114 @@ The dashboard currently shows aggregate CPU/RAM/GPU/VRAM stat cards. The mockup 
 
 **What to implement:**
 
-1. In `components/gpu_device_card.rs`, define:
+1. In `components/gpu_device_card.rs`, define the state enum:
    ```rust
    /// Lifecycle state of a GPU device, derived from loaded model states.
+   /// Mirrors the mockup's status badges: ACTIVE / IDLE / LOADING.
    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
    pub enum GpuDeviceState {
-       /// At least one loaded/loading model is targeting this device.
+       /// At least one ready/loading model is targeting this device.
        Active,
-       /// No model is loaded on this device, but the device is healthy.
-       Idle,
-       /// A model targeting this device is currently loading.
+       /// A model is currently loading onto this device (transferring VRAM).
        Loading,
        /// A model targeting this device is in failed state.
        Failed,
+       /// No model is loaded on this device, but the device is healthy.
+       Idle,
    }
    ```
+   Note: `Loading` takes precedence over `Failed` (a model that started loading but errored shows the most recent meaningful state — see `derive_device_state` logic below).
 
-2. Pure helper function (testable in isolation):
+2. Pure helper functions (testable in isolation):
    ```rust
+   /// Derive the device state from a list of models, given the target device_id
+   /// (the llama.cpp device name, e.g. "CUDA0", "ROCm0").
    pub fn derive_device_state(loaded_models: &[ModelStatus], device_id: &str) -> GpuDeviceState
+
+   /// Returns the display label for a GPU device, e.g. "GPU 0", "GPU 1".
+   /// This is the position in the `gpus: Vec<GpuDeviceStats>` array, NOT
+   /// the underlying `device_id` (e.g. "nvidia0"). The display label is
+   /// what the model row uses for "VRAM: Loaded (GPU 0)".
+   pub fn device_display_label(index: usize) -> String
+
+   /// Returns the index of the GPU device whose `device_id` matches the
+   /// given `gpu_device` value (e.g. "CUDA0"), or `None` if no match.
+   /// Used to convert from `ModelStatus.gpu_device` to a position-based label.
+   pub fn find_device_index(gpus: &[GpuDeviceStats], gpu_device: &str) -> Option<usize>
+
+   /// Returns the display label of the GPU a model is loaded on, e.g.
+   /// Some("GPU 0"). Returns None if the model has no `gpu_device` or no
+   /// matching device is found.
+   pub fn model_gpu_label(gpus: &[GpuDeviceStats], model: &ModelStatus) -> Option<String>
+
+   /// Returns the first model targeting `device_id` that is in `ready`,
+   /// `loading`, or `unloading` state, with a synthetic "TRANSFERRING…"
+   /// prefix when state is `loading`. Returns None if no such model exists.
+   pub fn loaded_model_display(
+       loaded_models: &[ModelStatus],
+       device_id: &str,
+   ) -> Option<LoadedModelDisplay>
    ```
-   Logic:
+   where:
+   ```rust
+   pub struct LoadedModelDisplay {
+       pub name: String,
+       pub transferring: bool,  // true → render as "TRANSFERRING… <name>"
+   }
+   ```
+   Logic for `derive_device_state`:
    - If any model with `gpu_device == Some(device_id)` has `state == "loading"` → `Loading`
+   - Else if any has `state == "ready" | "unloading"` → `Active`
    - Else if any has `state == "failed"` → `Failed`
-   - Else if any has `state == "ready" | "loading" | "unloading"` → `Active`
    - Else → `Idle`
 
-3. Helper to format loaded model display name on a device:
-   ```rust
-   pub fn first_loaded_model_display(loaded_models: &[ModelStatus], device_id: &str) -> Option<String>
-   ```
-   Returns the first model with `gpu_device == Some(device_id)` AND `state == "ready" | "loading" | "unloading"`, using `model_display_name()` from `dashboard::metrics`.
-
-4. Helper to format VRAM string (e.g. `"22.4 / 24 GB"`):
+3. Helper to format VRAM string (e.g. `"22.4 / 24 GB"`):
    ```rust
    pub fn format_vram_short(vram: &VramInfo) -> String
    ```
    Converts MiB to GB with 1 decimal, e.g. `22937 MiB / 24576 MiB` → `"22.4 / 24 GB"`.
 
-5. The component itself (`#[component] pub fn GpuDeviceCard(...)`):
-   - Props: `device: GpuDeviceStats`, `loaded_models: Vec<ModelStatus>`
-   - Computes `state` via `derive_device_state`, `loaded_model` via `first_loaded_model_display`
-   - Renders: header (device_id, status badge), two progress bars (utilization, VRAM), "LOADED MODEL" section with model name or "No model loaded", three telemetry cells (Temp °C, Power W, Fan %)
-   - Mirrors existing card structure (use `ListCard` or plain `div class="card gpu-device-card"`)
+4. The component itself (`#[component] pub fn GpuDeviceCard(...)`):
+   - Props: `device: GpuDeviceStats`, `display_label: String` (e.g. "GPU 0"), `loaded_models: Vec<ModelStatus>`
+   - Computes `state` via `derive_device_state(&loaded_models, &device.device_id)`
+   - Computes `loaded` via `loaded_model_display(&loaded_models, &device.device_id)`
+   - Renders:
+     - **Header:** `display_label` (e.g. "GPU 0") on the left, status badge on the right (badge text: `Active`→`ACTIVE`, `Loading`→`LOADING`, `Idle`→`IDLE`, `Failed`→`FAILED`)
+     - **Utilization row:** label "Utilization" + percentage + purple→pink gradient progress bar
+     - **VRAM row:** label is **dynamic** — `"VRAM"` for `Active`/`Idle`/`Failed` states, `"VRAM Allocation"` for `Loading` state. Value formatted via `format_vram_short`.
+     - **Model section:** sub-header is `"LOADED MODEL"` for non-Loading states, `"TRANSFERRING…"` for Loading. Body: model name, or "No model loaded" (Idle), or empty (Failed).
+     - **Telemetry row:** 3 cells (Temp °C, Power W, Fan %), each with a small label above the value
+   - Wraps in `div class="card gpu-device-card"`
 
-6. In `components/mod.rs`, add `pub mod gpu_device_card;` and `pub use gpu_device_card::*;`
+5. In `components/mod.rs`, add `pub mod gpu_device_card;` and `pub use gpu_device_card::*;`
 
-7. In `css/12-gpu-device-card.css`, add styles for the card. Match the existing Tama dark theme (NOT the mockup's forest-green theme — that's a separate scope). Use:
+6. In `css/12-gpu-device-card.css`, add styles. Match the existing Tama dark theme (NOT the mockup's forest-green theme). Use:
    - Background: `var(--bg-tertiary)`
    - Border: `var(--border-color)`
    - Border-radius: `var(--radius-lg)` (12px)
    - Status badge colors: reuse `var(--accent-green|yellow|red|gray)`
-   - Progress bars: use existing `.progress` or `.bar` classes from `07-gauges-charts.css`
+   - **Progress bars: purple→pink gradient** (matches the mockup's GPU section):
+     ```css
+     .gpu-device-card .bar-fill--gpu {
+       background: linear-gradient(90deg, var(--accent-purple) 0%, var(--accent-pink) 100%);
+     }
+     ```
    - Layout: CSS grid for the 3 telemetry cells, gap `var(--space-md)`
-   - Import the new file from wherever the other CSS files are bundled (check `index.html` / `lib.rs` for the CSS link list)
+   - Import the new file from wherever the other CSS files are bundled
 
-8. In `pages/dashboard/tests.rs` (or create), add unit tests:
+7. In `pages/dashboard/tests.rs` (or create), add unit tests:
    - `test_derive_state_active_when_ready_model` — one ready model on device → Active
-   - `test_derive_state_loading_takes_precedence` — loading + failed → Loading
-   - `test_derive_state_idle_when_no_models` — empty list → Idle
+   - `test_derive_state_loading_when_loading_model` — one loading model → Loading
    - `test_derive_state_failed_when_only_failed` — one failed model → Failed
-   - `test_first_loaded_model_prefers_ready_over_loading` — verify ordering
+   - `test_derive_state_idle_when_no_models` — empty list → Idle
+   - `test_derive_state_loading_overrides_ready` — both loading and ready → Loading
+   - `test_device_display_label_format` — index 0 → "GPU 0", index 3 → "GPU 3"
+   - `test_find_device_index_match` — gpus=[nvidia0, nvidia1], find "nvidia1" → Some(1)
+   - `test_find_device_index_no_match` — gpus=[nvidia0], find "ROCm0" → None
+   - `test_model_gpu_label_resolves_to_position` — model.gpu_device="nvidia0", gpus=[nvidia0, nvidia1] → Some("GPU 0")
+   - `test_loaded_model_display_transferring` — loading state → transferring=true
+   - `test_loaded_model_display_active` — ready state → transferring=false
+   - `test_loaded_model_display_none_when_idle` — empty list → None
    - `test_format_vram_short` — 22937/24576 → "22.4 / 24 GB"
 
 **Steps:**
@@ -317,10 +364,17 @@ The dashboard currently shows aggregate CPU/RAM/GPU/VRAM stat cards. The mockup 
 - [ ] Commit with message: "feat: add GpuDeviceCard component for dashboard"
 
 **Acceptance criteria:**
-- [ ] `GpuDeviceCard` renders device_id, status badge, two progress bars, loaded model, telemetry
+- [ ] `GpuDeviceCard` renders display label (e.g. "GPU 0"), status badge, two progress bars, loaded model section, telemetry
 - [ ] `derive_device_state()` handles all 4 states correctly
-- [ ] Status badge color matches the state (green=active, yellow=loading, red=failed, gray=idle)
-- [ ] All 6 unit tests pass
+- [ ] `device_display_label(idx)` returns "GPU N" format
+- [ ] `find_device_index()` matches `ModelStatus.gpu_device` to a position in the `gpus` array
+- [ ] `model_gpu_label()` returns position-based label
+- [ ] `loaded_model_display()` returns model name + transferring flag
+- [ ] Progress bars use purple→pink gradient
+- [ ] VRAM label is "VRAM Allocation" when state is `Loading`, else "VRAM"
+- [ ] Model section header is "TRANSFERRING…" when state is `Loading`, else "LOADED MODEL"
+- [ ] Idle device shows "No model loaded" placeholder
+- [ ] All 13+ unit tests pass
 - [ ] CSS scoped to the new component, doesn't affect other cards
 - [ ] `cargo clippy --workspace -- -D warnings` passes
 
@@ -347,14 +401,16 @@ With `GpuDeviceCard` built and `MetricSample.gpus` flowing, we need to render th
            view! {
                <section class="dashboard-gpus">
                    <div class="page-header">
-                       <h2>"GPU Devices"</h2>
+                       <h2>"GPU Cluster Nodes"</h2>
                        <span class="text-muted">{format!("{} device(s)", gpus.len())}</span>
                    </div>
                    <div class="gpu-device-grid">
-                       {gpus.into_iter().map(|gpu| {
+                       {gpus.into_iter().enumerate().map(|(idx, gpu)| {
+                           let label = device_display_label(idx);
                            view! {
                                <GpuDeviceCard
                                    device=gpu
+                                   display_label=label
                                    loaded_models=loaded_models.clone()
                                />
                            }
@@ -370,7 +426,13 @@ With `GpuDeviceCard` built and `MetricSample.gpus` flowing, we need to render th
    }}
    ```
 
-2. In `css/12-gpu-device-card.css`, add:
+2. Also update the existing **GPU stat card subtitle** (around line 175 in `dashboard/mod.rs`, where `"of 100%"` is hardcoded for the GPU card): when `latest.gpus` is non-empty, change the subtitle to:
+   ```rust
+   <div class="card-secondary">{format!("Aggregate Load · {} Nodes", latest.gpus.len())}</div>
+   ```
+   This mirrors the mockup's "GPU Total Utilization" card showing "Aggregate Load • 4 Nodes".
+
+3. In `css/12-gpu-device-card.css`, add:
    ```css
    .dashboard-gpus {
      margin: var(--space-lg) 0;
@@ -387,7 +449,7 @@ With `GpuDeviceCard` built and `MetricSample.gpus` flowing, we need to render th
    }
    ```
 
-3. Add a comment near the section explaining that the section is hidden when no GPUs are detected (laptops, CPU-only servers).
+4. Add a comment near the section explaining that the section is hidden when no GPUs are detected (laptops, CPU-only servers).
 
 **Steps:**
 - [ ] Add `use crate::components::gpu_device_card::GpuDeviceCard;` to `dashboard/mod.rs`
@@ -402,6 +464,9 @@ With `GpuDeviceCard` built and `MetricSample.gpus` flowing, we need to render th
 
 **Acceptance criteria:**
 - [ ] Section renders one `GpuDeviceCard` per detected GPU
+- [ ] Section header is "GPU Cluster Nodes" (matches mockup, not "GPU Devices")
+- [ ] Each card receives its position-based display label (e.g. "GPU 0")
+- [ ] Existing "GPU Total Utilization" stat card subtitle reads "Aggregate Load · N Nodes" when `gpus` is non-empty
 - [ ] Section is hidden when `latest.gpus` is empty
 - [ ] Grid is responsive (1-2 cards on mobile, 3-4 on desktop)
 - [ ] All existing tests still pass
@@ -423,37 +488,70 @@ The mockup shows each active model row with "VRAM: Loaded (Node 0/1)" — i.e. t
 
 1. In `components/model_card.rs::ModelPips`, add field:
    ```rust
-   pub gpu_device: Option<String>,
+   /// Position-based GPU display label, e.g. "GPU 0" (the index in the
+   /// `gpus` array), NOT the raw `gpu_device` value (e.g. "CUDA0").
+   /// Derived in the dashboard by `model_gpu_label(gpus, model)`.
+   pub gpu_label: Option<String>,
    ```
 
-2. In the `ModelCard` component's metadata line (or pip row, wherever `gpu_variant` is rendered), add:
+2. The `ModelCard` component already takes a `state: String` and renders a status badge. Refactor the row chrome so:
+   - The card gets a **left border colored by state**:
+     - `ready` → `var(--accent-green)`
+     - `loading` → `var(--accent-yellow)`
+     - `unloading` → `var(--accent-orange)` (or yellow — reuse existing)
+     - `failed` → `var(--accent-red)`
+     - `idle` (empty state) → `var(--border-color)` (no special color)
+   - Add an optional `error_message: Option<String>` prop; if `Some` and state is `failed`, render the error below the metadata line in `var(--accent-red)` small text (matches the mockup's "Error: OOM — Insufficient VRAM..." line).
+
+3. In the metadata line (where `Quant: Q4_K_M • Size: 42.4 GB • VRAM: Loaded (Node 0/1)` lives):
+   - The existing metadata composition is a free function or inline string. Locate it.
+   - Refactor to a helper `compose_model_metadata(model: &ModelStatus, gpu_label: Option<&str>) -> String` that returns:
+     - `Quant: <quant> • Size: <size> GB • VRAM: <vram_state> (<gpu_label>)` when model is ready/loading/unloading
+     - `Quant: <quant> • Size: <size> GB` when model is idle (no VRAM line, no GPU reference)
+     - `Quant: <quant> • Size: <size> GB • <error>` when state is `failed` (replace VRAM with error)
+   - The actual `vram_state` string is: `"Loaded"` for ready, `"Allocating"` for loading, `"Freeing"` for unloading. Use `gpu_label` like "GPU 0", omit parens if no label.
+
+4. In `pages/dashboard/mod.rs` (around line 410, where `ModelPips` is constructed):
    ```rust
-   {pips.gpu_device.as_ref().map(|d| view! {
-       <span class="model-pip" title="GPU Device">"GPU: " {d.clone()}</span>
-   })}
+   let gpu_label = model_gpu_label(&latest.gpus, &m);
+   let model_pips = ModelPips {
+       gpu_variant: m.gpu_variant.clone(),
+       cache_type_k: m.cache_type_k.clone(),
+       cache_type_v: m.cache_type_v.clone(),
+       spec_types: m.spec_types.clone(),
+       gpu_label: gpu_label.clone(),
+   };
    ```
-   Place it after `gpu_variant`. If `gpu_device` is `None`, don't render anything.
+   And pass `error_message: m.error_message.clone()` to `ModelCard`.
 
-3. In `pages/dashboard/mod.rs` (around line 410, where `ModelPips` is constructed), add:
-   ```rust
-   gpu_device: m.gpu_device.clone(),
-   ```
+5. In `pages/models.rs` (or wherever `ModelCard` is also used — search for `ModelPips {` and `gpu_variant:`), pass `gpu_label: None` and `error_message: None` (other pages don't have live metric data to derive these from).
 
-4. In `pages/models.rs` (or the equivalent file — search for `ModelPips {` and `gpu_variant:`), add the same field. Likely 1-3 sites.
-
-5. If no existing `.model-pip` class, add minimal CSS in `06-badges-list-card.css`:
+6. Add CSS for `.model-row--failed` and friends in `06-badges-list-card.css`:
    ```css
-   .model-pip {
-     display: inline-block;
-     padding: 2px 8px;
-     background: var(--bg-tertiary);
-     border: 1px solid var(--border-color);
-     border-radius: var(--radius-sm);
-     font-family: var(--font-mono);
-     font-size: 11px;
-     color: var(--text-secondary);
+   .model-row {
+     border-left: 4px solid var(--border-color);
+     transition: border-color var(--transition-fast);
+   }
+   .model-row--ready { border-left-color: var(--accent-green); }
+   .model-row--loading { border-left-color: var(--accent-yellow); }
+   .model-row--unloading { border-left-color: var(--accent-orange); }
+   .model-row--failed { border-left-color: var(--accent-red); }
+   .model-row__error {
+     color: var(--accent-red);
+     font-size: 12px;
+     margin-top: var(--space-xs);
    }
    ```
+   Apply the modifier class based on state in the ModelCard view.
+
+7. **Add `error_message: Option<String>` to `ModelStatus`** (in `gpu/system.rs`):
+   ```rust
+   /// Error message when `state == "failed"`, surfaced on the dashboard's
+   /// model row. None otherwise.
+   #[serde(default, skip_serializing_if = "Option::is_none")]
+   pub error_message: Option<String>,
+   ```
+   Populate it from the proxy's model lifecycle when a load fails (e.g. OOM, missing model file, backend crash). The web mirror (`tama-web/src/pages/dashboard/metrics.rs::ModelStatus`) gets the same field. Search `proxy/tama_handlers/models.rs` and `proxy/lifecycle/` for the failure path and set `error_message` from the captured error.
 
 **Steps:**
 - [ ] Add `gpu_device` to `ModelPips` struct
@@ -468,9 +566,12 @@ The mockup shows each active model row with "VRAM: Loaded (Node 0/1)" — i.e. t
 - [ ] Commit with message: "feat: show gpu_device pip on model cards"
 
 **Acceptance criteria:**
-- [ ] `ModelPips.gpu_device: Option<String>` field added
-- [ ] Model card shows "GPU: <device>" pip when `gpu_device` is set
-- [ ] No pip when `gpu_device` is `None`
+- [ ] `ModelPips.gpu_label: Option<String>` field added (display label, not raw device name)
+- [ ] `ModelStatus.error_message: Option<String>` field added in core and web, populated on failure
+- [ ] Model card left border color matches state (green/yellow/red/gray)
+- [ ] Model card shows "VRAM: Loaded (GPU 0)" (or state-equivalent) using position-based label
+- [ ] Model card shows "Error: <message>" in red when state is `failed` and `error_message` is set
+- [ ] Idle models show metadata WITHOUT VRAM line
 - [ ] All call sites updated (dashboard, models page, any others)
 - [ ] All existing tests still pass
 
@@ -490,11 +591,11 @@ Task 4 has a soft dependency on Task 3 (the `ModelStatus.gpu_device` field is us
 The mockup in `Downloads/stitch_tama_gpu_overview_redesign.zip` is broader than this plan covers. Items deferred to future plans:
 
 - **Full Material 3 Expressive theme** (forest-green palette, Karla + Noto Sans fonts, pill nav, gradient metric bars). This is a project-wide design system shift — separate plan.
-- **Multi-node / multi-host support** (NODE_0, NODE_1, NODE_2, NODE_3 in the mockup imply separate machines). Tama is single-process. The "Devices" framing acknowledges this.
-- **Per-device VRAM Allocation vs Total** (mockup shows "VRAM Allocation 12.4 / 24 GB" on loading node). The current data is used/total; can derive "allocation" later.
-- **Restart, Pull Model, notification bell buttons** — already exist in the dashboard, no changes needed.
-- **Sidebar restyle** (NaN% branding, rocket Deploy Instance CTA) — design system change.
-- **Spec card backgrounds** (different gradient per status) — visual polish.
+- **Multi-node / multi-host support** (NODE_0, NODE_1, NODE_2, NODE_3 in the mockup imply separate machines). Tama is single-process. The section header is "GPU Cluster Nodes" (preserved for design fidelity) but the cards represent devices on the single host.
+- **Sidebar restyle** (NaN% branding, rocket Deploy Instance CTA, Support/Help at bottom) — design system change.
+- **Gradient text/shadows on stat cards** (some metric cards have soft glows) — visual polish.
+- **Notification bell + cloud icon + user avatar in top-right** — partially exist (notification badge on Updates link), not all the way there.
+- **"System Online" green-dot badge in the page header** — the existing badge says "ok" or "error" with the wrong text; this plan leaves it as-is.
 
 ## Rollback
 
