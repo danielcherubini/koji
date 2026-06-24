@@ -517,7 +517,7 @@ impl Config {
                         .iter()
                         .any(|e| matches!(crate::config::flag_name(e), Some("--device")));
                     if !already_has_device {
-                        grouped.push(format!("--device {}", trimmed));
+                        grouped.push(format!("--device {}", crate::config::quote_value(trimmed)));
                     }
                 }
             }

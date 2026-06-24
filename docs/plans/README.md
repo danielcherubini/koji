@@ -29,8 +29,13 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 | Plan | Description | PR / Git References |
 |------|-------------|---------------------|
-| [GPU Device Selection](2025-06-24-gpu-device-selection.md) | Add per-model GPU device assignment (gpu_device field, --device flag injection, --gpu-device CLI flag) for multi-GPU setups | #119 `006638e3`, `6950c964`, `791457cf`, `3ac05a3a` ✅ COMPLETED |
 | [GPU Overview Dashboard](2025-06-24-gpu-overview-dashboard.md) | Per-GPU device cards on the dashboard (util, VRAM, loaded model, telemetry) powered by per-device nvidia-smi/AMD sysfs queries | 🚧 IN PROGRESS |
+
+### Recently Completed
+
+| Plan | Description | PR / Git References |
+|------|-------------|---------------------|
+| [GPU Device Selection](2025-06-24-gpu-device-selection.md) | Add per-model GPU device assignment (gpu_device field, --device flag injection, --gpu-device CLI flag) for multi-GPU setups | #119 `006638e3`, `6950c964`, `791457cf`, `3ac05a3a` ✅ COMPLETED |
 | [Compaction Backend Card](2026-06-09-compaction-backend-card.md) | Add compaction card to backends page with status and enable/disable toggle | #117 ✅ COMPLETED |
 | [Compaction Backend Lifecycle](2026-06-09-compaction-backend-lifecycle.md) | Route compaction server through existing backend lifecycle (Kokoro TTS pattern) instead of custom subprocess management | #116 ✅ COMPLETED |
 | [LLMLingua-2 Compaction Endpoint](2026-06-08-llmlingua-compaction.md) | Add `/v1/compaction` endpoint that compresses prompts via Microsoft LLMLingua-2 (XLM-RoBERTa-large) before they hit the main LLM | #111, #112, #113, #114 ✅ COMPLETED |

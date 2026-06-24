@@ -485,25 +485,32 @@ async fn test_evict_lru_if_needed_concurrent_no_double_eviction() {
     );
 }
 
-/// Test that resolve_gpu_device uses config value when set.
+/// Test that _resolve_gpu_device uses config value when set.
 #[test]
 fn test_resolve_gpu_device_config_takes_precedence() {
-    let result = super::resolve_gpu_device(Some("CUDA1".to_string()), Some("ROCm0".to_string()));
+    let result = super::_resolve_gpu_device(Some("CUDA1".to_string()), Some("ROCm0".to_string()));
     assert_eq!(result, Some("CUDA1".to_string()));
 }
 
-/// Test that resolve_gpu_device falls back to card default when config is None.
+/// Test that _resolve_gpu_device falls back to card default when config is None.
 #[test]
 fn test_resolve_gpu_device_falls_back_to_card() {
-    let result = super::resolve_gpu_device(None, Some("ROCm0".to_string()));
+    let result = super::_resolve_gpu_device(None, Some("ROCm0".to_string()));
     assert_eq!(result, Some("ROCm0".to_string()));
 }
 
-/// Test that resolve_gpu_device returns None when both are None.
+/// Test that _resolve_gpu_device returns None when both are None.
 #[test]
 fn test_resolve_gpu_device_both_none() {
-    let result = super::resolve_gpu_device(None, None);
+    let result = super::_resolve_gpu_device(None, None);
     assert_eq!(result, None);
+}
+
+/// Test that _resolve_gpu_device treats whitespace-only config as None and falls back to card default.
+#[test]
+fn test_resolve_gpu_device_whitespace_config_falls_back_to_card() {
+    let result = super::_resolve_gpu_device(Some("   ".to_string()), Some("ROCm0".to_string()));
+    assert_eq!(result, Some("ROCm0".to_string()));
 }
 
 /// Test that TTS backends are excluded from LRU eviction count.

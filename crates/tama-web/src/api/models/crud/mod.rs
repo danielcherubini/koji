@@ -650,6 +650,144 @@ mod tests {
         assert_eq!(result.display_name, Some("My Model".to_string()));
     }
 
+    /// Verify that body.gpu_device overrides base.gpu_device.
+    #[test]
+    fn test_apply_model_body_gpu_device_override() {
+        let body = ModelBody {
+            backend: "llama-cpp".to_string(),
+            gpu_variant: None,
+            gpu_device: Some("CUDA1".to_string()),
+            model: Some("model.gguf".to_string()),
+            quant: None,
+            mmproj: None,
+            mtp_model: None,
+            args: vec![],
+            sampling: None,
+            enabled: None,
+            context_length: None,
+            num_parallel: None,
+            port: None,
+            api_name: None,
+            gpu_layers: None,
+            quants: None,
+            modalities: None,
+            display_name: None,
+            kv_unified: None,
+            cache_type_k: None,
+            cache_type_v: None,
+            spec_decoding: None,
+        };
+
+        let existing = ModelConfig {
+            backend: "llama-cpp".into(),
+            gpu_variant: None,
+            gpu_device: Some("CUDA0".to_string()),
+            model: Some("model.gguf".into()),
+            quant: None,
+            mmproj: None,
+            mtp_model: None,
+            args: vec![],
+            sampling: None,
+            enabled: true,
+            context_length: None,
+            num_parallel: None,
+            port: None,
+            health_check: None,
+            profile: None,
+            api_name: None,
+            gpu_layers: None,
+            quants: std::collections::BTreeMap::new(),
+            modalities: None,
+            display_name: None,
+            kv_unified: false,
+            cache_type_k: None,
+            cache_type_v: None,
+            hf_format: None,
+            hf_base_model: None,
+            hf_pipeline_tag: None,
+            hf_total_params: None,
+            hf_active_params: None,
+            hf_architecture_type: None,
+            hf_context_length: None,
+            hf_num_layers: None,
+            hf_last_modified: None,
+            db_id: None,
+            spec_decoding: Default::default(),
+        };
+
+        let result = apply_model_body(body, Some(existing));
+        assert_eq!(result.gpu_device, Some("CUDA1".to_string()));
+    }
+
+    /// Verify that body.gpu_device = None preserves base.gpu_device.
+    #[test]
+    fn test_apply_model_body_gpu_device_preserves_base_when_omitted() {
+        let body = ModelBody {
+            backend: "llama-cpp".to_string(),
+            gpu_variant: None,
+            gpu_device: None,
+            model: Some("model.gguf".to_string()),
+            quant: None,
+            mmproj: None,
+            mtp_model: None,
+            args: vec![],
+            sampling: None,
+            enabled: None,
+            context_length: None,
+            num_parallel: None,
+            port: None,
+            api_name: None,
+            gpu_layers: None,
+            quants: None,
+            modalities: None,
+            display_name: None,
+            kv_unified: None,
+            cache_type_k: None,
+            cache_type_v: None,
+            spec_decoding: None,
+        };
+
+        let existing = ModelConfig {
+            backend: "llama-cpp".into(),
+            gpu_variant: None,
+            gpu_device: Some("CUDA0".to_string()),
+            model: Some("model.gguf".into()),
+            quant: None,
+            mmproj: None,
+            mtp_model: None,
+            args: vec![],
+            sampling: None,
+            enabled: true,
+            context_length: None,
+            num_parallel: None,
+            port: None,
+            health_check: None,
+            profile: None,
+            api_name: None,
+            gpu_layers: None,
+            quants: std::collections::BTreeMap::new(),
+            modalities: None,
+            display_name: None,
+            kv_unified: false,
+            cache_type_k: None,
+            cache_type_v: None,
+            hf_format: None,
+            hf_base_model: None,
+            hf_pipeline_tag: None,
+            hf_total_params: None,
+            hf_active_params: None,
+            hf_architecture_type: None,
+            hf_context_length: None,
+            hf_num_layers: None,
+            hf_last_modified: None,
+            db_id: None,
+            spec_decoding: Default::default(),
+        };
+
+        let result = apply_model_body(body, Some(existing));
+        assert_eq!(result.gpu_device, Some("CUDA0".to_string()));
+    }
+
     #[test]
     fn test_apply_model_body_context_length() {
         let body = ModelBody {

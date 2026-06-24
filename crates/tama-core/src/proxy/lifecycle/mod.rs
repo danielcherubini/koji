@@ -91,7 +91,7 @@ impl ProxyState {
         drop(listener); // Free the port for the backend to use
 
         // Resolve effective gpu_device: model config > model card default
-        let effective_gpu_device = resolve_gpu_device(
+        let effective_gpu_device = _resolve_gpu_device(
             server_config.gpu_device.clone(),
             model_card.and_then(|card| card.model.default_gpu_device.clone()),
         );
@@ -1379,8 +1379,18 @@ impl ProxyState {
 
 /// Resolve the effective GPU device from the fallback chain:
 /// model config > model card default.
-fn resolve_gpu_device(config: Option<String>, card_default: Option<String>) -> Option<String> {
-    config.or(card_default)
+fn _resolve_gpu_device(config: Option<String>, card_default: Option<String>) -> Option<String> {
+    let normalize = |s: Option<String>| {
+        s.and_then(|v| {
+            let t = v.trim().to_string();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t)
+            }
+        })
+    };
+    normalize(config).or_else(|| normalize(card_default))
 }
 
 #[cfg(test)]

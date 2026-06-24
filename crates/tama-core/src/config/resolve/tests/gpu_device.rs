@@ -1,7 +1,9 @@
-use super::super::*;
-use crate::config::types::QuantEntry;
 use std::collections::BTreeMap;
+
+use crate::config::types::QuantEntry;
 use tempfile::tempdir;
+
+use super::super::*;
 
 /// When `gpu_device = Some("ROCm0")` and backend is llama_cpp, `--device ROCm0` appears in built args.
 #[test]
