@@ -508,6 +508,21 @@ impl Config {
             }
         }
 
+        // Inject --device (GPU device selection) when configured.
+        if is_llama_cpp_backend {
+            if let Some(ref device) = server.gpu_device {
+                let trimmed = device.trim();
+                if !trimmed.is_empty() {
+                    let already_has_device = grouped
+                        .iter()
+                        .any(|e| matches!(crate::config::flag_name(e), Some("--device")));
+                    if !already_has_device {
+                        grouped.push(format!("--device {}", trimmed));
+                    }
+                }
+            }
+        }
+
         // Sampling: each sampling flag fully replaces the same flag in
         // anything injected so far.
         if let Some(sampling) = &server.sampling {
