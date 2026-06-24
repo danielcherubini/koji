@@ -250,6 +250,7 @@ async fn test_cmd_server_edit_valid_profile_succeeds() {
         let dummy_model = tama_core::config::ModelConfig {
             backend: "test".to_string(),
             gpu_variant: None,
+            gpu_device: None,
             args: vec![],
             profile: None,
             sampling: None,

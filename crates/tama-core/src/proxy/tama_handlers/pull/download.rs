@@ -772,6 +772,7 @@ pub(crate) async fn _setup_model_after_pull_with_config(
                 source: repo_id.to_string(),
                 default_context_length: None,
                 default_gpu_layers: None,
+                default_gpu_device: None,
             },
             sampling: std::collections::HashMap::new(),
             quants: std::collections::HashMap::new(),
@@ -875,6 +876,7 @@ pub(crate) async fn _setup_model_after_pull_with_config(
                 .or_insert_with(|| crate::config::ModelConfig {
                     backend: "llama_cpp".to_string(),
                     gpu_variant: None,
+                    gpu_device: None,
                     model: Some(repo_id.to_string()),
                     quant: Some(quant_key.clone()),
                     mmproj: None,
@@ -959,6 +961,7 @@ pub(crate) async fn _setup_model_after_pull_with_config(
                 .or_insert_with(|| crate::config::ModelConfig {
                     backend: "llama_cpp".to_string(),
                     gpu_variant: None,
+                    gpu_device: None,
                     model: Some(repo_id.to_string()),
                     quant: None,
                     mmproj: None,

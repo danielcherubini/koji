@@ -27,6 +27,11 @@ pub struct ModelMeta {
     pub default_context_length: Option<u32>,
     #[serde(default)]
     pub default_gpu_layers: Option<u32>,
+    /// Default GPU device for this model (e.g. "ROCm0", "CUDA1").
+    /// Passed as `--device` to llama.cpp backends when the model config
+    /// does not override it.
+    #[serde(default)]
+    pub default_gpu_device: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]

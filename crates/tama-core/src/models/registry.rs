@@ -152,6 +152,7 @@ mod tests {
                 source: format!("{}/{}", company, model),
                 default_context_length: Some(8192),
                 default_gpu_layers: Some(999),
+                default_gpu_device: None,
             },
             sampling: HashMap::new(),
             quants: {

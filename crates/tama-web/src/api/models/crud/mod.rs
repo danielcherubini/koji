@@ -31,6 +31,8 @@ pub struct ModelBody {
     #[serde(default)]
     pub gpu_variant: Option<String>,
     #[serde(default)]
+    pub gpu_device: Option<String>,
+    #[serde(default)]
     pub model: Option<String>,
     #[serde(default)]
     pub quant: Option<String>,
@@ -79,6 +81,7 @@ fn apply_model_body(
 
     let base = existing.unwrap_or_else(|| tama_core::config::ModelConfig {
         gpu_variant: None,
+        gpu_device: None,
         backend: String::new(),
         args: vec![],
         sampling: None,
@@ -119,6 +122,7 @@ fn apply_model_body(
     tama_core::config::ModelConfig {
         backend: body.backend,
         gpu_variant: body.gpu_variant.or(base.gpu_variant),
+        gpu_device: body.gpu_device.or(base.gpu_device),
         model: body.model.or(base.model),
         quant: body.quant.or(base.quant),
         mmproj: body.mmproj.or(base.mmproj),
@@ -295,6 +299,7 @@ mod tests {
         ModelBody {
             backend: "llama".to_string(),
             gpu_variant: None,
+            gpu_device: None,
             model: Some("org/repo".to_string()),
             quant: Some("Q4_K_M".to_string()),
             mmproj: None,
@@ -331,6 +336,7 @@ mod tests {
         ModelConfig {
             backend: "llama".into(),
             gpu_variant: None,
+            gpu_device: None,
             args: vec![],
             sampling: None,
             model: Some("org/repo".into()),
@@ -493,6 +499,7 @@ mod tests {
         let body = ModelBody {
             backend: "llama-cpp".to_string(),
             gpu_variant: None,
+            gpu_device: None,
             model: Some("model.gguf".to_string()),
             quant: None,
             mmproj: None,
@@ -523,6 +530,7 @@ mod tests {
         let body = ModelBody {
             backend: "llama-cpp".to_string(),
             gpu_variant: None,
+            gpu_device: None,
             model: Some("model.gguf".to_string()),
             quant: None,
             mmproj: None,
@@ -554,6 +562,7 @@ mod tests {
         let body = ModelBody {
             backend: "llama-cpp".to_string(),
             gpu_variant: None,
+            gpu_device: None,
             model: Some("model.gguf".to_string()),
             quant: None,
             mmproj: None,
@@ -584,6 +593,7 @@ mod tests {
         let body = ModelBody {
             backend: "llama-cpp".to_string(),
             gpu_variant: None,
+            gpu_device: None,
             model: Some("model.gguf".to_string()),
             quant: None,
             mmproj: None,
@@ -614,6 +624,7 @@ mod tests {
         let body = ModelBody {
             backend: "llama-cpp".to_string(),
             gpu_variant: None,
+            gpu_device: None,
             model: Some("model.gguf".to_string()),
             quant: None,
             mmproj: None,
@@ -644,6 +655,7 @@ mod tests {
         let body = ModelBody {
             backend: "llama-cpp".to_string(),
             gpu_variant: None,
+            gpu_device: None,
             model: Some("model.gguf".to_string()),
             quant: None,
             mmproj: None,
@@ -675,6 +687,7 @@ mod tests {
         let body = ModelBody {
             backend: "llama-cpp".to_string(),
             gpu_variant: None,
+            gpu_device: None,
             model: Some("model.gguf".to_string()),
             quant: None,
             mmproj: None,
@@ -705,6 +718,7 @@ mod tests {
         let body = ModelBody {
             backend: "llama-cpp".to_string(),
             gpu_variant: None,
+            gpu_device: None,
             model: Some("model.gguf".to_string()),
             quant: None,
             mmproj: None,
@@ -735,6 +749,7 @@ mod tests {
         let body = ModelBody {
             backend: "llama-cpp".to_string(),
             gpu_variant: None,
+            gpu_device: None,
             model: Some("model.gguf".to_string()),
             quant: None,
             mmproj: None,
@@ -770,6 +785,7 @@ mod tests {
         let body = ModelBody {
             backend: "llama".to_string(),
             gpu_variant: None,
+            gpu_device: None,
             model: Some("org/repo".to_string()),
             quant: None,
             mmproj: None,
@@ -805,6 +821,7 @@ mod tests {
         let body = ModelBody {
             backend: "llama".to_string(),
             gpu_variant: None,
+            gpu_device: None,
             model: Some("org/repo".to_string()),
             quant: None,
             mmproj: None,
@@ -839,6 +856,7 @@ mod tests {
         let body = ModelBody {
             backend: "llama-cpp".to_string(),
             gpu_variant: None,
+            gpu_device: None,
             model: Some("model.gguf".to_string()),
             quant: None,
             mmproj: None,
@@ -871,6 +889,7 @@ mod tests {
         let body = ModelBody {
             backend: "llama-cpp".to_string(),
             gpu_variant: None,
+            gpu_device: None,
             model: Some("model.gguf".to_string()),
             quant: None,
             mmproj: None,
@@ -902,6 +921,7 @@ mod tests {
         let body = ModelBody {
             backend: "llama-cpp".to_string(),
             gpu_variant: None,
+            gpu_device: None,
             model: Some("model.gguf".to_string()),
             quant: None,
             mmproj: None,
@@ -933,6 +953,7 @@ mod tests {
         let body = ModelBody {
             backend: "llama-cpp".to_string(),
             gpu_variant: None,
+            gpu_device: None,
             model: Some("model.gguf".to_string()),
             quant: None,
             mmproj: None,
@@ -962,6 +983,7 @@ mod tests {
         let body = ModelBody {
             backend: "llama-cpp".to_string(),
             gpu_variant: None,
+            gpu_device: None,
             model: Some("model.gguf".to_string()),
             quant: None,
             mmproj: None,
@@ -994,6 +1016,7 @@ mod tests {
         let body = ModelBody {
             backend: "llama-cpp".to_string(),
             gpu_variant: None,
+            gpu_device: None,
             model: Some("model.gguf".to_string()),
             quant: None,
             mmproj: None,
@@ -1032,6 +1055,7 @@ mod tests {
         let body = ModelBody {
             backend: "llama-cpp".to_string(),
             gpu_variant: None,
+            gpu_device: None,
             model: Some("model.gguf".to_string()),
             quant: None,
             mmproj: None,

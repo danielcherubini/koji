@@ -13,6 +13,7 @@ fn make_test_record(repo_id: &str) -> ModelConfigRecord {
         display_name: Some("Test Model".to_string()),
         backend: "llama.cpp".to_string(),
         gpu_variant: None,
+        gpu_device: None,
         enabled: true,
         selected_quant: None,
         selected_mmproj: None,

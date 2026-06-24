@@ -205,6 +205,11 @@ pub struct ModelConfig {
     pub backend: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu_variant: Option<String>,
+    /// GPU device name for this model (e.g. "ROCm0", "CUDA1").
+    /// Passed as `--device` to llama.cpp backends.
+    /// When None, the backend uses its default device selection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_device: Option<String>,
     #[serde(default)]
     pub args: Vec<String>,
     #[serde(default)]
@@ -323,6 +328,7 @@ impl ModelConfig {
             display_name: self.display_name.clone(),
             backend: self.backend.clone(),
             gpu_variant: self.gpu_variant.clone(),
+            gpu_device: self.gpu_device.clone(),
             enabled: self.enabled,
             selected_quant: self.quant.clone(),
             selected_mmproj: self.mmproj.clone(),
@@ -370,6 +376,7 @@ impl ModelConfig {
         Self {
             backend: record.backend.clone(),
             gpu_variant: record.gpu_variant.clone(),
+            gpu_device: record.gpu_device.clone(),
             enabled: record.enabled,
             display_name: record.display_name.clone(),
             api_name: record
@@ -790,6 +797,7 @@ backend = "llama.cpp"
             gpu_layers: Some(32),
             cache_type_k: None,
             cache_type_v: None,
+            gpu_device: Some("ROCm0".to_string()),
             hf_architecture_type: Some("MoE".to_string()),
             hf_total_params: Some("35B".to_string()),
             modalities: Some(ModelModalities {
@@ -819,6 +827,7 @@ backend = "llama.cpp"
         assert_eq!(round_trip.gpu_layers, mc.gpu_layers);
         assert_eq!(round_trip.cache_type_k, mc.cache_type_k);
         assert_eq!(round_trip.cache_type_v, mc.cache_type_v);
+        assert_eq!(round_trip.gpu_device, mc.gpu_device);
         assert_eq!(round_trip.modalities, mc.modalities);
         assert_eq!(round_trip.display_name, mc.display_name);
         assert_eq!(round_trip.kv_unified, mc.kv_unified);
