@@ -59,6 +59,7 @@ pub(super) async fn cmd_create(
     let model_config = tama_core::config::ModelConfig {
         backend: resolved_backend_key.clone(),
         gpu_variant: None,
+        gpu_device: None,
         args: vec![],
         profile: resolved_profile.map(|p| p.to_string()),
         sampling: None,

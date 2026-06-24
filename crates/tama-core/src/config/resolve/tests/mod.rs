@@ -3,6 +3,7 @@ use crate::config::BackendConfig;
 mod aliases;
 mod basic;
 mod context_np;
+mod gpu_device;
 mod kv_cache_types;
 mod path_resolution;
 mod server_resolution;

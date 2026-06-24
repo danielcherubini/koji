@@ -969,3 +969,22 @@ fn test_migration_v28_adds_selected_mtp_model_column() {
         .unwrap();
     assert_eq!(stored.as_deref(), Some("mtp-F16.gguf"));
 }
+
+/// Regression test: migration v29 must add the gpu_device column to model_configs.
+#[test]
+fn test_migration_v29_adds_gpu_device_column() {
+    let conn = Connection::open_in_memory().unwrap();
+    run(&conn).unwrap();
+
+    let col_exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('model_configs') WHERE name='gpu_device'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        col_exists, 1,
+        "gpu_device column must exist after migration v29"
+    );
+}

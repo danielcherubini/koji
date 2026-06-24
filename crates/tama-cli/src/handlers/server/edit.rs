@@ -53,6 +53,9 @@ pub async fn cmd_server_edit(config: &mut Config, name: &str, command: Vec<Strin
         if let Some(ctx) = extracted.context_length {
             srv.context_length = Some(ctx);
         }
+        if let Some(ref gpu_device) = extracted.gpu_device {
+            srv.gpu_device = Some(gpu_device.clone());
+        }
 
         srv.backend = backend_key.clone();
         srv.args = extracted.remaining_args.clone();

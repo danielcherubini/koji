@@ -18,6 +18,8 @@ pub struct ExtractedFlags {
     pub port: Option<u16>,
     /// Context length override
     pub context_length: Option<u32>,
+    /// GPU device name (e.g. "ROCm0", "CUDA1")
+    pub gpu_device: Option<String>,
     /// Arguments not recognized as tama flags (passed to backend)
     pub remaining_args: Vec<String>,
 }
@@ -50,6 +52,7 @@ pub fn extract_tama_flags(args: Vec<String>) -> Result<ExtractedFlags> {
     let mut profile: Option<String> = None;
     let mut port: Option<u16> = None;
     let mut context_length: Option<u32> = None;
+    let mut gpu_device: Option<String> = None;
     let mut remaining_args = Vec::new();
 
     let mut i = 0;
@@ -95,6 +98,10 @@ pub fn extract_tama_flags(args: Vec<String>) -> Result<ExtractedFlags> {
                     } else {
                         remaining_args.push(arg.clone());
                     }
+                    i += 1;
+                }
+                "--gpu-device" | "-gd" => {
+                    gpu_device = Some(value.to_string());
                     i += 1;
                 }
                 _ => {
@@ -158,6 +165,13 @@ pub fn extract_tama_flags(args: Vec<String>) -> Result<ExtractedFlags> {
                     context_length = Some(ctx_val);
                     i += 2;
                 }
+                "--gpu-device" | "-gd" => {
+                    if i + 1 >= args.len() {
+                        anyhow::bail!("--gpu-device/-gd flag requires a value");
+                    }
+                    gpu_device = Some(args[i + 1].clone());
+                    i += 2;
+                }
                 _ => {
                     remaining_args.push(arg.clone());
                     i += 1;
@@ -172,6 +186,7 @@ pub fn extract_tama_flags(args: Vec<String>) -> Result<ExtractedFlags> {
         profile,
         port,
         context_length,
+        gpu_device,
         remaining_args,
     })
 }

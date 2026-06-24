@@ -1,9 +1,13 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
 use super::download_queue::DownloadQueueService;
 use super::pull_jobs::PullJob;
+
+/// Cache entry for discovered GPU devices: (discovered_at, devices).
+type GpuDeviceCacheEntry = (Instant, Vec<crate::gpu::GpuDeviceInfo>);
 
 /// State for a model backend.
 #[derive(Debug, Clone)]
@@ -248,6 +252,10 @@ pub struct ProxyState {
     /// Watch channel for latest inference stats. Single-producer (intercept handler),
     /// multi-consumer (metrics task). `None` until first stats are received.
     pub inference_stats: tokio::sync::watch::Sender<Option<LatestInferenceStats>>,
+    /// Cache for discovered GPU devices, keyed by backend name.
+    /// Value is (discovered_at_instant, list_of_devices).
+    #[allow(clippy::type_complexity)]
+    pub gpu_devices_cache: Arc<tokio::sync::RwLock<HashMap<String, GpuDeviceCacheEntry>>>,
 
     // ── Web UI fields (only present when `web-ui` feature is enabled) ──
     /// Job manager for backend install/update/restore/benchmark operations.

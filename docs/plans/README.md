@@ -14,9 +14,9 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Quick Stats
 
-- **Total Plans**: 120
-- **Completed**: 118 ✅
-- **In Progress**: 0 🚧
+- **Total Plans**: 122
+- **Completed**: 119 ✅
+- **In Progress**: 1 🚧
 - **Remaining**: 2
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
@@ -29,7 +29,13 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 | Plan | Description | PR / Git References |
 |------|-------------|---------------------|
-| [MTP Draft Model File Support](2026-06-13-mtp-draft-model-files.md) | Add mtp-*.gguf draft model files as first-class auxiliary type — QuantKind::Mtp, pull wizard support, Spec Decoding dropdown, --mtp-model injection | #118 ✅ COMPLETED |
+| [GPU Overview Dashboard](2025-06-24-gpu-overview-dashboard.md) | Per-GPU device cards on the dashboard (util, VRAM, loaded model, telemetry) powered by per-device nvidia-smi/AMD sysfs queries | 🚧 IN PROGRESS |
+
+### Recently Completed
+
+| Plan | Description | PR / Git References |
+|------|-------------|---------------------|
+| [GPU Device Selection](2025-06-24-gpu-device-selection.md) | Add per-model GPU device assignment (gpu_device field, --device flag injection, --gpu-device CLI flag) for multi-GPU setups | #119 `006638e3`, `6950c964`, `791457cf`, `3ac05a3a` ✅ COMPLETED |
 | [Compaction Backend Card](2026-06-09-compaction-backend-card.md) | Add compaction card to backends page with status and enable/disable toggle | #117 ✅ COMPLETED |
 | [Compaction Backend Lifecycle](2026-06-09-compaction-backend-lifecycle.md) | Route compaction server through existing backend lifecycle (Kokoro TTS pattern) instead of custom subprocess management | #116 ✅ COMPLETED |
 | [LLMLingua-2 Compaction Endpoint](2026-06-08-llmlingua-compaction.md) | Add `/v1/compaction` endpoint that compresses prompts via Microsoft LLMLingua-2 (XLM-RoBERTa-large) before they hit the main LLM | #111, #112, #113, #114 ✅ COMPLETED |

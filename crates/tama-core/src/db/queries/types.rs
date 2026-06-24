@@ -10,6 +10,7 @@ pub struct ModelConfigRecord {
     pub display_name: Option<String>,
     pub backend: String,
     pub gpu_variant: Option<String>,
+    pub gpu_device: Option<String>,
     pub enabled: bool,
     pub selected_quant: Option<String>,
     pub selected_mmproj: Option<String>,

@@ -62,6 +62,11 @@ pub struct ModelDetail {
     pub id: i64,
     pub backend: String,
     pub gpu_variant: Option<String>,
+    /// GPU device name (e.g. "CUDA0", "ROCm0") for per-model GPU placement.
+    /// Passed as `--device` to llama.cpp backends. When None, the backend
+    /// uses its default device selection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_device: Option<String>,
     pub model: Option<String>,
     pub quant: Option<String>,
     #[serde(default)]
@@ -126,6 +131,11 @@ pub struct ModelForm {
     pub id: String,
     pub backend: String,
     pub gpu_variant: Option<String>,
+    /// GPU device name (e.g. "CUDA0", "ROCm0") for per-model GPU placement.
+    /// Passed as `--device` to llama.cpp backends. When None, the backend
+    /// uses its default device selection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_device: Option<String>,
     pub model: Option<String>,
     pub quant: Option<String>,
     pub mmproj: Option<String>,
@@ -199,4 +209,17 @@ pub struct FileRecordJson {
     pub verified_ok: Option<bool>,
     #[serde(default)]
     pub verify_error: Option<String>,
+}
+
+/// GPU device information returned by the backend discovery API.
+#[derive(Debug, Clone, Deserialize)]
+pub struct GpuDeviceInfo {
+    pub device_id: String,
+    pub name: String,
+    #[serde(default)]
+    pub vendor: String,
+    #[serde(default)]
+    pub vram_total_mib: Option<u64>,
+    #[serde(default)]
+    pub vram_free_mib: Option<u64>,
 }
