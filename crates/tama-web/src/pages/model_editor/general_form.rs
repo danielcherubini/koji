@@ -102,6 +102,10 @@ pub fn ModelEditorGeneralForm(
                     &f.gpu_layers.map(|v| v.to_string()).unwrap_or_default(),
                 );
                 set_input_value(
+                    "field-gpu-device",
+                    f.gpu_device.as_deref().unwrap_or_default(),
+                );
+                set_input_value(
                     "field-ctx",
                     &f.context_length.map(|v| v.to_string()).unwrap_or_default(),
                 );
@@ -219,6 +223,23 @@ pub fn ModelEditorGeneralForm(
                     form.update(|f| {
                         if let Some(form) = f {
                             form.gpu_layers = target_value(&ev).parse::<u32>().ok();
+                        }
+                    });
+                }
+            />
+
+            <label class="form-label" for="field-gpu-device">"GPU Device"</label>
+            <input
+                id="field-gpu-device"
+                class="form-input"
+                type="text"
+                placeholder="e.g. CUDA0, ROCm0 (leave blank for default)"
+                title="GPU device name passed as --device to llama.cpp backends. See llama-server --list-devices."
+                on:input=move |ev| {
+                    let val = target_value(&ev);
+                    form.update(|f| {
+                        if let Some(form) = f {
+                            form.gpu_device = if val.trim().is_empty() { None } else { Some(val) };
                         }
                     });
                 }

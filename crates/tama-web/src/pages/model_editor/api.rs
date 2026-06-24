@@ -19,6 +19,7 @@ pub async fn fetch_model(id: String) -> Option<ModelDetail> {
                 .map(|b| b.name.clone())
                 .unwrap_or_default(),
             gpu_variant: None,
+            gpu_device: None,
             model: None,
             quant: None,
             args: vec![],
@@ -124,6 +125,7 @@ pub async fn save_model(args: Vec<String>, form: ModelForm, is_new: bool) -> Res
         "id": form.id,
         "backend": form.backend,
         "gpu_variant": form.gpu_variant,
+        "gpu_device": form.gpu_device,
         "model": form.model,
         "quant": form.quant,
         "mmproj": form.mmproj,
