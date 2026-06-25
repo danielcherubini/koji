@@ -85,6 +85,11 @@
   color: #b478ff;
 }
 
+.badge-pill--gpu-device {
+  background: linear-gradient(135deg, var(--accent-purple), var(--accent-pink));
+  color: #fff;
+}
+
 /* List card — horizontal two-line card for dashboard and models page */
 .list-card {
   display: flex;

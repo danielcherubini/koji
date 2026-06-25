@@ -2,7 +2,7 @@ use leptos::prelude::*;
 use wasm_bindgen::prelude::*;
 
 use crate::components::alert_banner::{AlertBanner, AlertVariant};
-use crate::components::gpu_device_card::{device_display_label, GpuDeviceCard};
+use crate::components::gpu_device_card::{device_display_label, model_gpu_label, GpuDeviceCard};
 use crate::components::modal::Modal;
 use crate::components::model_card::{ModelCard, ModelPips};
 use crate::components::pull_quant_wizard::{CompletedQuant, PullQuantWizard};
@@ -163,6 +163,7 @@ pub fn Dashboard() -> impl IntoView {
             let vram_y_refs = vec![vram_max];
 
             let all_models: Vec<ModelStatus> = buf.last().map(|h| h.models.clone()).unwrap_or_default();
+            let gpus_for_labels = buf.last().map(|h| h.gpus.clone()).unwrap_or_default();
 
             view! {
                 <div class="grid-stats">
@@ -464,6 +465,7 @@ pub fn Dashboard() -> impl IntoView {
                                         let on_unload_cb = Callback::new(move |id: String| {
                                             unload_action.dispatch(id);
                                         });
+                                        let gpu_label = model_gpu_label(&gpus_for_labels, &m);
                                         view! {
                                             <ModelCard
                                                 id=m.id.clone()
@@ -478,6 +480,7 @@ pub fn Dashboard() -> impl IntoView {
                                                     cache_type_k: m.cache_type_k.clone(),
                                                     cache_type_v: m.cache_type_v.clone(),
                                                     spec_types: m.spec_types.clone(),
+                                                    gpu_label,
                                                 }
                                                 backend=m.backend.clone()
                                                 log_source=Some(format!("{}_{}", m.backend, m.id))
