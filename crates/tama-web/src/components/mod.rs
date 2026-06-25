@@ -1,6 +1,9 @@
 pub mod activity_panel;
 pub mod alert_banner;
 pub mod backend_card;
+pub mod gpu_device_card;
+#[allow(unused_imports)]
+pub use gpu_device_card::*;
 pub mod model_card;
 
 pub mod context_length_selector;
