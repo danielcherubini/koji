@@ -370,14 +370,15 @@ pub fn ModelEditorGeneralForm(
                 </option>
                 {move || {
                     let current = form.get().as_ref().and_then(|f| f.gpu_device.clone()).unwrap_or_default();
-                    gpu_devices.get().into_iter().map(|dev| {
-                        let selected = current == dev.device_id;
+                    gpu_devices.get().into_iter().enumerate().map(|(i, dev)| {
+                        let gpu_id = format!("GPU{i}");
+                        let selected = current == gpu_id;
                         let label = if dev.vram_total_mib.is_some() {
-                            format!("{} — {} ({} MiB)", dev.device_id, dev.name, dev.vram_total_mib.unwrap_or(0))
+                            format!("{} — {} ({} MiB)", gpu_id, dev.name, dev.vram_total_mib.unwrap_or(0))
                         } else {
-                            format!("{} — {}", dev.device_id, dev.name)
+                            format!("{} — {}", gpu_id, dev.name)
                         };
-                        view! { <option value=dev.device_id selected=selected>{label}</option> }
+                        view! { <option value=gpu_id.clone() selected=selected>{label}</option> }
                     }).collect::<Vec<_>>()
                 }}
             </select>

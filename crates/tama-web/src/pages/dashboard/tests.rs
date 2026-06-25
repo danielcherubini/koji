@@ -471,48 +471,39 @@ fn make_test_gpu(device_id: &str, vendor: &str) -> GpuDeviceStats {
 
 #[test]
 fn test_derive_state_active_when_ready_model() {
-    let models = vec![make_test_model("m1", "ready", Some("CUDA0"))];
-    assert_eq!(
-        derive_device_state(&models, "nvidia", 0),
-        GpuDeviceState::Active
-    );
+    let models = vec![make_test_model("m1", "ready", Some("GPU0"))];
+    assert_eq!(derive_device_state(&models, "GPU0"), GpuDeviceState::Active);
 }
 
 #[test]
 fn test_derive_state_loading_when_loading_model() {
-    let models = vec![make_test_model("m1", "loading", Some("CUDA0"))];
+    let models = vec![make_test_model("m1", "loading", Some("GPU0"))];
     assert_eq!(
-        derive_device_state(&models, "nvidia", 0),
+        derive_device_state(&models, "GPU0"),
         GpuDeviceState::Loading
     );
 }
 
 #[test]
 fn test_derive_state_failed_when_only_failed() {
-    let models = vec![make_test_model("m1", "failed", Some("CUDA0"))];
-    assert_eq!(
-        derive_device_state(&models, "nvidia", 0),
-        GpuDeviceState::Failed
-    );
+    let models = vec![make_test_model("m1", "failed", Some("GPU0"))];
+    assert_eq!(derive_device_state(&models, "GPU0"), GpuDeviceState::Failed);
 }
 
 #[test]
 fn test_derive_state_idle_when_no_models() {
     let models: Vec<ModelStatus> = vec![];
-    assert_eq!(
-        derive_device_state(&models, "nvidia", 0),
-        GpuDeviceState::Idle
-    );
+    assert_eq!(derive_device_state(&models, "GPU0"), GpuDeviceState::Idle);
 }
 
 #[test]
 fn test_derive_state_loading_overrides_ready() {
     let models = vec![
-        make_test_model("m1", "ready", Some("CUDA0")),
-        make_test_model("m2", "loading", Some("CUDA0")),
+        make_test_model("m1", "ready", Some("GPU0")),
+        make_test_model("m2", "loading", Some("GPU0")),
     ];
     assert_eq!(
-        derive_device_state(&models, "nvidia", 0),
+        derive_device_state(&models, "GPU0"),
         GpuDeviceState::Loading
     );
 }
@@ -526,44 +517,33 @@ fn test_device_display_label_format() {
 #[test]
 fn test_find_device_index_match() {
     let gpus = vec![
-        make_test_gpu("nvidia0", "nvidia"),
-        make_test_gpu("nvidia1", "nvidia"),
+        make_test_gpu("GPU0", "nvidia"),
+        make_test_gpu("GPU1", "nvidia"),
     ];
-    assert_eq!(find_device_index(&gpus, "nvidia0"), Some(0));
-    assert_eq!(find_device_index(&gpus, "nvidia1"), Some(1));
-}
-
-#[test]
-fn test_find_device_index_numeric_match() {
-    let gpus = vec![
-        make_test_gpu("nvidia0", "nvidia"),
-        make_test_gpu("nvidia1", "nvidia"),
-    ];
-    assert_eq!(find_device_index(&gpus, "CUDA0"), Some(0));
-    assert_eq!(find_device_index(&gpus, "CUDA1"), Some(1));
+    assert_eq!(find_device_index(&gpus, "GPU0"), Some(0));
+    assert_eq!(find_device_index(&gpus, "GPU1"), Some(1));
 }
 
 #[test]
 fn test_find_device_index_no_match() {
-    let gpus = vec![make_test_gpu("nvidia0", "nvidia")];
-    // ROCm targets AMD, not nvidia
-    assert_eq!(find_device_index(&gpus, "ROCm0"), None);
+    let gpus = vec![make_test_gpu("GPU0", "nvidia")];
+    assert_eq!(find_device_index(&gpus, "GPU1"), None);
 }
 
 #[test]
 fn test_model_gpu_label_resolves_to_position() {
     let gpus = vec![
-        make_test_gpu("nvidia0", "nvidia"),
-        make_test_gpu("nvidia1", "nvidia"),
+        make_test_gpu("GPU0", "nvidia"),
+        make_test_gpu("GPU1", "nvidia"),
     ];
-    let model = make_test_model("m1", "ready", Some("nvidia0"));
+    let model = make_test_model("m1", "ready", Some("GPU0"));
     assert_eq!(model_gpu_label(&gpus, &model), Some("GPU 0".to_string()));
 }
 
 #[test]
 fn test_loaded_model_display_transferring() {
-    let models = vec![make_test_model("m1", "loading", Some("CUDA0"))];
-    let display = loaded_model_display(&models, "nvidia", 0);
+    let models = vec![make_test_model("m1", "loading", Some("GPU0"))];
+    let display = loaded_model_display(&models, "GPU0");
     assert!(display.is_some());
     let d = display.unwrap();
     assert_eq!(d.name, "m1");
@@ -572,8 +552,8 @@ fn test_loaded_model_display_transferring() {
 
 #[test]
 fn test_loaded_model_display_active() {
-    let models = vec![make_test_model("m1", "ready", Some("CUDA0"))];
-    let display = loaded_model_display(&models, "nvidia", 0);
+    let models = vec![make_test_model("m1", "ready", Some("GPU0"))];
+    let display = loaded_model_display(&models, "GPU0");
     assert!(display.is_some());
     let d = display.unwrap();
     assert_eq!(d.name, "m1");
@@ -583,7 +563,7 @@ fn test_loaded_model_display_active() {
 #[test]
 fn test_loaded_model_display_none_when_idle() {
     let models: Vec<ModelStatus> = vec![];
-    assert_eq!(loaded_model_display(&models, "nvidia", 0), None);
+    assert_eq!(loaded_model_display(&models, "GPU0"), None);
 }
 
 #[test]

@@ -8,8 +8,11 @@ use super::vram::VramInfo;
 /// sorted by `index`, then AMD devices by `card` number.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GpuDeviceStats {
-    /// Stable device identifier reported by the driver (e.g. "nvidia0", "amd0").
-    /// Mirrors llama.cpp's `--device` flag value (e.g. "CUDA0", "ROCm0").
+    /// Position-based device identifier (e.g. "GPU0", "GPU1").
+    /// Independent of vendor — the Nth detected GPU across all vendors.
+    /// Used for display and model→GPU assignment in the UI.
+    /// At backend launch, mapped to the llama.cpp device name
+    /// (e.g. "CUDA0", "ROCm0", "Vulkan0") by the args builder.
     pub device_id: String,
     /// Human-readable vendor: "nvidia" | "amd".
     pub vendor: String,
@@ -153,12 +156,16 @@ pub fn collect_system_metrics_with(sys: &mut System) -> SystemMetrics {
     // Per-GPU device stats
     let mut gpus = query_nvidia_devices();
     gpus.extend(query_amd_devices());
-    // Sort by (vendor, device_id) for stable ordering
+    // Sort by (vendor, device_index) for stable ordering
     gpus.sort_by(|a, b| {
         a.vendor
             .cmp(&b.vendor)
             .then_with(|| a.device_id.cmp(&b.device_id))
     });
+    // Assign position-based device IDs (GPU0, GPU1, ...) after sorting.
+    for (i, gpu) in gpus.iter_mut().enumerate() {
+        gpu.device_id = format!("GPU{i}");
+    }
 
     // Aggregate metrics derived from per-device data
     let gpu_utilization_pct = aggregate_utilization_mean(&gpus);

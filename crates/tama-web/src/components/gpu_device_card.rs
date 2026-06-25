@@ -26,53 +26,20 @@ pub struct LoadedModelDisplay {
     pub transferring: bool,
 }
 
-/// Derive the device state from a list of models, given the target device
-/// (identified by vendor + index, e.g. vendor="nvidia", index=0).
+/// Derive the device state from a list of models targeting this device.
+/// Matches `model.gpu_device` (e.g. "GPU0") against `device_id` (e.g. "GPU0").
 /// Priority: Loading > Active > Failed > Idle.
-pub fn derive_device_state(
-    loaded_models: &[ModelStatus],
-    device_vendor: &str,
-    device_index: u32,
-) -> GpuDeviceState {
+pub fn derive_device_state(loaded_models: &[ModelStatus], device_id: &str) -> GpuDeviceState {
     let mut has_loading = false;
     let mut has_active = false;
     let mut has_failed = false;
 
     for model in loaded_models {
-        let targets_device = if let Some(ref gpu_device) = model.gpu_device {
-            // Determine if this model targets the same vendor as the device.
-            let gpu_lower = gpu_device.to_lowercase();
-            let is_nvidia = gpu_lower.contains("cuda");
-            let is_amd = gpu_lower.contains("rocm") || gpu_lower.contains("amd");
-
-            let vendor_matches = match device_vendor {
-                "nvidia" => is_nvidia,
-                "amd" => is_amd,
-                _ => false,
-            };
-            if !vendor_matches {
-                false
-            } else {
-                // Extract trailing numeric suffix from gpu_device (e.g. "CUDA0" → "0").
-                let chars: Vec<char> = gpu_device.chars().collect();
-                let mut suffix_start = chars.len();
-                for (i, c) in chars.iter().enumerate() {
-                    if c.is_ascii_digit() {
-                        suffix_start = i;
-                    } else if i > suffix_start {
-                        break;
-                    }
-                }
-                let suffix: String = chars[suffix_start..].iter().collect();
-                if let Ok(idx) = suffix.parse::<u32>() {
-                    idx == device_index
-                } else {
-                    false
-                }
-            }
-        } else {
-            // Fallback: models without gpu_device target the first GPU (index 0).
-            device_index == 0
+        let targets_device = match &model.gpu_device {
+            Some(gpu_device) if gpu_device == device_id => true,
+            // Fallback: models without gpu_device target the first GPU.
+            None if device_id == "GPU0" => true,
+            _ => false,
         };
 
         if !targets_device {
@@ -106,67 +73,9 @@ pub fn device_display_label(index: usize) -> String {
 }
 
 /// Returns the index of the GPU device whose `device_id` matches the given
-/// `gpu_device` value. Matches by:
-/// 1. Direct case-insensitive comparison of device_id against gpu_device.
-/// 2. Vendor-aware numeric suffix matching (e.g. "CUDA0" → nvidia index 0,
-///    "ROCm0" → amd index 0).
+/// `gpu_device` value. Direct string match (both are "GPU0", "GPU1", etc.).
 pub fn find_device_index(gpus: &[GpuDeviceStats], gpu_device: &str) -> Option<usize> {
-    // 1. Direct case-insensitive match
-    let gpu_lower = gpu_device.to_lowercase();
-    for (i, gpu) in gpus.iter().enumerate() {
-        if gpu.device_id.to_lowercase() == gpu_lower {
-            return Some(i);
-        }
-    }
-
-    // 2. Vendor-aware numeric suffix match
-    let is_nvidia = gpu_lower.contains("cuda");
-    let is_amd = gpu_lower.contains("rocm") || gpu_lower.contains("amd");
-
-    // Extract trailing numeric suffix from gpu_device
-    let chars: Vec<char> = gpu_device.chars().collect();
-    let mut suffix_start = chars.len();
-    for (i, c) in chars.iter().enumerate() {
-        if c.is_ascii_digit() {
-            suffix_start = i;
-        } else if i > suffix_start {
-            break;
-        }
-    }
-    let suffix: String = chars[suffix_start..].iter().collect();
-    let Ok(target_idx) = suffix.parse::<u32>() else {
-        return None;
-    };
-
-    for (i, gpu) in gpus.iter().enumerate() {
-        let vendor_matches = match gpu.vendor.as_str() {
-            "nvidia" => is_nvidia,
-            "amd" => is_amd,
-            _ => false,
-        };
-        if !vendor_matches {
-            continue;
-        }
-
-        // Extract trailing numeric suffix from device_id (e.g. "nvidia0" → 0).
-        let dev_chars: Vec<char> = gpu.device_id.chars().collect();
-        let mut dev_suffix_start = dev_chars.len();
-        for (i, c) in dev_chars.iter().enumerate() {
-            if c.is_ascii_digit() {
-                dev_suffix_start = i;
-            } else if i > dev_suffix_start {
-                break;
-            }
-        }
-        let dev_suffix: String = dev_chars[dev_suffix_start..].iter().collect();
-        if let Ok(dev_idx) = dev_suffix.parse::<u32>() {
-            if dev_idx == target_idx {
-                return Some(i);
-            }
-        }
-    }
-
-    None
+    gpus.iter().position(|g| g.device_id == gpu_device)
 }
 
 /// Returns the display label of the GPU a model is loaded on, e.g.
@@ -182,50 +91,20 @@ pub fn model_gpu_label(gpus: &[GpuDeviceStats], model: &ModelStatus) -> Option<S
     }
 }
 
-/// Returns the first model targeting `device_vendor` + `device_index` that is
+/// Returns the first model targeting `device_id` (e.g. "GPU0") that is
 /// in `ready`, `loading`, or `unloading` state, with a synthetic "TRANSFERRING…"
 /// prefix when state is `loading`. Returns None if no such model exists.
-/// Models without `gpu_device` set fall back to the first GPU (index 0).
+/// Models without `gpu_device` set fall back to the first GPU ("GPU0").
 pub fn loaded_model_display(
     loaded_models: &[ModelStatus],
-    device_vendor: &str,
-    device_index: u32,
+    device_id: &str,
 ) -> Option<LoadedModelDisplay> {
     for model in loaded_models {
-        let targets_device = if let Some(ref gpu_device) = model.gpu_device {
-            // Determine if this model targets the same vendor as the device.
-            let gpu_lower = gpu_device.to_lowercase();
-            let is_nvidia = gpu_lower.contains("cuda");
-            let is_amd = gpu_lower.contains("rocm") || gpu_lower.contains("amd");
-
-            let vendor_matches = match device_vendor {
-                "nvidia" => is_nvidia,
-                "amd" => is_amd,
-                _ => false,
-            };
-            if !vendor_matches {
-                false
-            } else {
-                // Extract trailing numeric suffix from gpu_device.
-                let chars: Vec<char> = gpu_device.chars().collect();
-                let mut suffix_start = chars.len();
-                for (i, c) in chars.iter().enumerate() {
-                    if c.is_ascii_digit() {
-                        suffix_start = i;
-                    } else if i > suffix_start {
-                        break;
-                    }
-                }
-                let suffix: String = chars[suffix_start..].iter().collect();
-                if let Ok(idx) = suffix.parse::<u32>() {
-                    idx == device_index
-                } else {
-                    false
-                }
-            }
-        } else {
-            // Fallback: models without gpu_device target the first GPU (index 0).
-            device_index == 0
+        let targets_device = match &model.gpu_device {
+            Some(gpu_device) if gpu_device == device_id => true,
+            // Fallback: models without gpu_device target the first GPU.
+            None if device_id == "GPU0" => true,
+            _ => false,
         };
 
         if !targets_device {
@@ -275,22 +154,8 @@ pub fn GpuDeviceCard(
     #[prop(default = None)]
     tps: Option<f32>,
 ) -> impl IntoView {
-    // Extract device index from device_id for matching.
-    let dev_chars: Vec<char> = device.device_id.chars().collect();
-    let mut suffix_start = dev_chars.len();
-    for (i, c) in dev_chars.iter().enumerate() {
-        if c.is_ascii_digit() {
-            suffix_start = i;
-        } else if i > suffix_start {
-            break;
-        }
-    }
-    let dev_suffix: String = dev_chars[suffix_start..].iter().collect();
-    let device_index: u32 = dev_suffix.parse().unwrap_or(0);
-    let vendor = device.vendor.clone();
-
-    let state = derive_device_state(&loaded_models, &vendor, device_index);
-    let loaded = loaded_model_display(&loaded_models, &vendor, device_index);
+    let state = derive_device_state(&loaded_models, &device.device_id);
+    let loaded = loaded_model_display(&loaded_models, &device.device_id);
 
     let badge_class = match state {
         GpuDeviceState::Active => "badge badge-success",
@@ -487,50 +352,54 @@ mod tests {
 
     #[test]
     fn test_derive_state_active_when_ready_model() {
-        let models = vec![make_model("m1", "ready", Some("CUDA0"))];
-        assert_eq!(
-            derive_device_state(&models, "nvidia", 0),
-            GpuDeviceState::Active
-        );
+        let models = vec![make_model("m1", "ready", Some("GPU0"))];
+        assert_eq!(derive_device_state(&models, "GPU0"), GpuDeviceState::Active);
     }
 
     #[test]
     fn test_derive_state_loading_when_loading_model() {
-        let models = vec![make_model("m1", "loading", Some("CUDA0"))];
+        let models = vec![make_model("m1", "loading", Some("GPU0"))];
         assert_eq!(
-            derive_device_state(&models, "nvidia", 0),
+            derive_device_state(&models, "GPU0"),
             GpuDeviceState::Loading
         );
     }
 
     #[test]
     fn test_derive_state_failed_when_only_failed() {
-        let models = vec![make_model("m1", "failed", Some("CUDA0"))];
-        assert_eq!(
-            derive_device_state(&models, "nvidia", 0),
-            GpuDeviceState::Failed
-        );
+        let models = vec![make_model("m1", "failed", Some("GPU0"))];
+        assert_eq!(derive_device_state(&models, "GPU0"), GpuDeviceState::Failed);
     }
 
     #[test]
     fn test_derive_state_idle_when_no_models() {
         let models: Vec<ModelStatus> = vec![];
-        assert_eq!(
-            derive_device_state(&models, "nvidia", 0),
-            GpuDeviceState::Idle
-        );
+        assert_eq!(derive_device_state(&models, "GPU0"), GpuDeviceState::Idle);
     }
 
     #[test]
     fn test_derive_state_loading_overrides_ready() {
         let models = vec![
-            make_model("m1", "ready", Some("CUDA0")),
-            make_model("m2", "loading", Some("CUDA0")),
+            make_model("m1", "ready", Some("GPU0")),
+            make_model("m2", "loading", Some("GPU0")),
         ];
         assert_eq!(
-            derive_device_state(&models, "nvidia", 0),
+            derive_device_state(&models, "GPU0"),
             GpuDeviceState::Loading
         );
+    }
+
+    #[test]
+    fn test_derive_state_idle_when_model_on_different_gpu() {
+        let models = vec![make_model("m1", "ready", Some("GPU1"))];
+        assert_eq!(derive_device_state(&models, "GPU0"), GpuDeviceState::Idle);
+    }
+
+    #[test]
+    fn test_derive_state_fallback_no_gpu_device_to_gpu0() {
+        let models = vec![make_model("m1", "ready", None)];
+        assert_eq!(derive_device_state(&models, "GPU0"), GpuDeviceState::Active);
+        assert_eq!(derive_device_state(&models, "GPU1"), GpuDeviceState::Idle);
     }
 
     #[test]
@@ -541,36 +410,35 @@ mod tests {
 
     #[test]
     fn test_find_device_index_direct_match() {
-        let gpus = vec![make_gpu("nvidia0", "nvidia"), make_gpu("nvidia1", "nvidia")];
-        assert_eq!(find_device_index(&gpus, "nvidia0"), Some(0));
-        assert_eq!(find_device_index(&gpus, "nvidia1"), Some(1));
+        let gpus = vec![make_gpu("GPU0", "nvidia"), make_gpu("GPU1", "nvidia")];
+        assert_eq!(find_device_index(&gpus, "GPU0"), Some(0));
+        assert_eq!(find_device_index(&gpus, "GPU1"), Some(1));
     }
 
     #[test]
-    fn test_find_device_index_numeric_match() {
-        let gpus = vec![make_gpu("nvidia0", "nvidia"), make_gpu("nvidia1", "nvidia")];
-        assert_eq!(find_device_index(&gpus, "CUDA0"), Some(0));
-        assert_eq!(find_device_index(&gpus, "CUDA1"), Some(1));
-    }
-
-    #[test]
-    fn test_find_device_index_no_match_different_vendor() {
-        let gpus = vec![make_gpu("nvidia0", "nvidia")];
-        // ROCm targets AMD, not nvidia
-        assert_eq!(find_device_index(&gpus, "ROCm0"), None);
+    fn test_find_device_index_no_match() {
+        let gpus = vec![make_gpu("GPU0", "nvidia"), make_gpu("GPU1", "nvidia")];
+        assert_eq!(find_device_index(&gpus, "GPU2"), None);
     }
 
     #[test]
     fn test_model_gpu_label_resolves_to_position() {
-        let gpus = vec![make_gpu("nvidia0", "nvidia"), make_gpu("nvidia1", "nvidia")];
-        let model = make_model("m1", "ready", Some("nvidia0"));
+        let gpus = vec![make_gpu("GPU0", "nvidia"), make_gpu("GPU1", "nvidia")];
+        let model = make_model("m1", "ready", Some("GPU0"));
+        assert_eq!(model_gpu_label(&gpus, &model), Some("GPU 0".to_string()));
+    }
+
+    #[test]
+    fn test_model_gpu_label_fallback_no_gpu_device() {
+        let gpus = vec![make_gpu("GPU0", "nvidia")];
+        let model = make_model("m1", "ready", None);
         assert_eq!(model_gpu_label(&gpus, &model), Some("GPU 0".to_string()));
     }
 
     #[test]
     fn test_loaded_model_display_transferring() {
-        let models = vec![make_model("m1", "loading", Some("CUDA0"))];
-        let display = loaded_model_display(&models, "nvidia", 0);
+        let models = vec![make_model("m1", "loading", Some("GPU0"))];
+        let display = loaded_model_display(&models, "GPU0");
         assert!(display.is_some());
         let d = display.unwrap();
         assert_eq!(d.name, "m1");
@@ -579,8 +447,8 @@ mod tests {
 
     #[test]
     fn test_loaded_model_display_active() {
-        let models = vec![make_model("m1", "ready", Some("CUDA0"))];
-        let display = loaded_model_display(&models, "nvidia", 0);
+        let models = vec![make_model("m1", "ready", Some("GPU0"))];
+        let display = loaded_model_display(&models, "GPU0");
         assert!(display.is_some());
         let d = display.unwrap();
         assert_eq!(d.name, "m1");
@@ -590,7 +458,14 @@ mod tests {
     #[test]
     fn test_loaded_model_display_none_when_idle() {
         let models: Vec<ModelStatus> = vec![];
-        assert_eq!(loaded_model_display(&models, "nvidia", 0), None);
+        assert_eq!(loaded_model_display(&models, "GPU0"), None);
+    }
+
+    #[test]
+    fn test_loaded_model_display_fallback_no_gpu_device_to_gpu0() {
+        let models = vec![make_model("m1", "ready", None)];
+        assert!(loaded_model_display(&models, "GPU0").is_some());
+        assert!(loaded_model_display(&models, "GPU1").is_none());
     }
 
     #[test]
