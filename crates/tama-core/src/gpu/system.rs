@@ -337,7 +337,7 @@ fn query_amd_devices() -> Vec<GpuDeviceStats> {
 
         // Also try hwmon subdirectory for temperature
         if stats.temperature_c.is_none() {
-            let hwmon_pattern = format!("{}/../hwmon/hwmon*/temp*_input", card_path.display());
+            let hwmon_pattern = format!("{}/hwmon/hwmon*/temp*_input", card_path.display());
             if let Ok(paths) = glob::glob(&hwmon_pattern) {
                 for path in paths.flatten() {
                     if let Ok(contents) = std::fs::read_to_string(&path) {
@@ -359,7 +359,7 @@ fn query_amd_devices() -> Vec<GpuDeviceStats> {
 
         // Also try hwmon for power
         if stats.power_w.is_none() {
-            let hwmon_pattern = format!("{}/../hwmon/hwmon*/power1_average", card_path.display());
+            let hwmon_pattern = format!("{}/hwmon/hwmon*/power1_average", card_path.display());
             if let Ok(paths) = glob::glob(&hwmon_pattern) {
                 for path in paths.flatten() {
                     if let Ok(contents) = std::fs::read_to_string(&path) {
@@ -372,15 +372,19 @@ fn query_amd_devices() -> Vec<GpuDeviceStats> {
             }
         }
 
-        // Fan: scan hwmon for fan1_input (RPM → best-effort %)
-        let fan_pattern = format!("{}/../hwmon/hwmon*/fan1_input", card_path.display());
+        // Fan: scan hwmon for fan1_input (RPM → %)
+        let fan_pattern = format!("{}/hwmon/hwmon*/fan1_input", card_path.display());
         if let Ok(paths) = glob::glob(&fan_pattern) {
             for path in paths.flatten() {
                 if let Ok(contents) = std::fs::read_to_string(&path) {
                     if let Ok(rpm) = contents.trim().parse::<u16>() {
-                        // Best-effort: assume max 3000 RPM = 100%
-                        let max_rpm: u16 = 3000;
-                        let pct = if rpm > 0 {
+                        // Read fan1_max from the same hwmon directory for accurate %
+                        let hwmon_dir = path.parent().unwrap();
+                        let max_rpm = std::fs::read_to_string(hwmon_dir.join("fan1_max"))
+                            .ok()
+                            .and_then(|s| s.trim().parse::<u16>().ok())
+                            .unwrap_or(3000);
+                        let pct = if max_rpm > 0 && rpm > 0 {
                             ((rpm as u32 * 100) / max_rpm as u32).min(100) as u8
                         } else {
                             0
