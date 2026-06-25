@@ -2,6 +2,7 @@ use leptos::prelude::*;
 use wasm_bindgen::prelude::*;
 
 use crate::components::alert_banner::{AlertBanner, AlertVariant};
+use crate::components::gpu_device_card::{device_display_label, GpuDeviceCard};
 use crate::components::modal::Modal;
 use crate::components::model_card::{ModelCard, ModelPips};
 use crate::components::pull_quant_wizard::{CompletedQuant, PullQuantWizard};
@@ -217,11 +218,18 @@ pub fn Dashboard() -> impl IntoView {
 
                     // GPU card — only rendered if GPU data is present
                     {if let Some(gpu_pct) = buf.last().and_then(|h| h.gpu_utilization_pct) {
+                        let h = buf.last().unwrap();
+                        let gpu_count = h.gpus.len();
+                        let gpu_subtitle = if gpu_count > 0 {
+                            format!("Aggregate Load · {} Nodes", gpu_count)
+                        } else {
+                            "of 100%".to_string()
+                        };
                         view! {
                             <div class="stat-card">
                                 <div class="card-header">"GPU"</div>
                                 <div class="card-value">{format!("{}%", gpu_pct)}</div>
-                                <div class="card-secondary">"of 100%"</div>
+                                <div class="card-secondary">{gpu_subtitle}</div>
                                 <div class="sparkline-container">
                                     <SparklineChart
                                         data=gpu_data
@@ -263,6 +271,43 @@ pub fn Dashboard() -> impl IntoView {
                         view! { <div></div> }.into_any()
                     }}
                 </div>
+
+                // GPU Devices section — only rendered if any GPU data is present
+                // Hidden when no GPUs are detected (laptops, CPU-only servers).
+                {move || {
+                    let buf = history.get();
+                    if let Some(latest) = buf.last() {
+                        if !latest.gpus.is_empty() {
+                            let loaded_models = latest.models.clone();
+                            let gpus = latest.gpus.clone();
+                            view! {
+                                <section class="dashboard-gpus">
+                                    <div class="page-header">
+                                        <h2>"GPU Cluster Nodes"</h2>
+                                        <span class="text-muted">{format!("{} device(s)", gpus.len())}</span>
+                                    </div>
+                                    <div class="gpu-device-grid">
+                                        {gpus.into_iter().enumerate().map(|(idx, gpu)| {
+                                            let label = device_display_label(idx);
+                                            let models = loaded_models.clone();
+                                            view! {
+                                                <GpuDeviceCard
+                                                    device=gpu
+                                                    display_label=label
+                                                    loaded_models=models
+                                                />
+                                            }
+                                        }).collect::<Vec<_>>()}
+                                    </div>
+                                </section>
+                            }.into_any()
+                        } else {
+                            view! { <div></div> }.into_any()
+                        }
+                    } else {
+                        view! { <div></div> }.into_any()
+                    }
+                }}
 
                 // Inference stats cards — always visible, show "—" until data arrives
                 {move || {

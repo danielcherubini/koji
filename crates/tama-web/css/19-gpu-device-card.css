@@ -1,4 +1,20 @@
 /* GPU Device Card — per-GPU stats card for the dashboard */
+
+.dashboard-gpus {
+  margin: var(--space-lg) 0;
+}
+
+.gpu-device-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: var(--space-md);
+}
+
+@media (min-width: 1200px) {
+  .gpu-device-grid {
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  }
+}
 .gpu-device-card {
   display: flex;
   flex-direction: column;
