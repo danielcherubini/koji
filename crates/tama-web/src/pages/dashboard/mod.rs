@@ -2,10 +2,11 @@ use leptos::prelude::*;
 use wasm_bindgen::prelude::*;
 
 use crate::components::alert_banner::{AlertBanner, AlertVariant};
+use crate::components::gpu_device_card::{device_display_label, model_gpu_label, GpuDeviceCard};
 use crate::components::modal::Modal;
 use crate::components::model_card::{ModelCard, ModelPips};
 use crate::components::pull_quant_wizard::{CompletedQuant, PullQuantWizard};
-use crate::components::sparkline::{format_relative_time, SparklineChart};
+use crate::components::sparkline::SparklineChart;
 use crate::utils::{post_request, rw_signal_to_signal};
 
 mod metrics;
@@ -162,6 +163,7 @@ pub fn Dashboard() -> impl IntoView {
             let vram_y_refs = vec![vram_max];
 
             let all_models: Vec<ModelStatus> = buf.last().map(|h| h.models.clone()).unwrap_or_default();
+            let gpus_for_labels = buf.last().map(|h| h.gpus.clone()).unwrap_or_default();
 
             view! {
                 <div class="grid-stats">
@@ -217,11 +219,18 @@ pub fn Dashboard() -> impl IntoView {
 
                     // GPU card — only rendered if GPU data is present
                     {if let Some(gpu_pct) = buf.last().and_then(|h| h.gpu_utilization_pct) {
+                        let h = buf.last().unwrap();
+                        let gpu_count = h.gpus.len();
+                        let gpu_subtitle = if gpu_count > 0 {
+                            format!("Aggregate Load · {} Nodes", gpu_count)
+                        } else {
+                            "of 100%".to_string()
+                        };
                         view! {
                             <div class="stat-card">
                                 <div class="card-header">"GPU"</div>
                                 <div class="card-value">{format!("{}%", gpu_pct)}</div>
-                                <div class="card-secondary">"of 100%"</div>
+                                <div class="card-secondary">{gpu_subtitle}</div>
                                 <div class="sparkline-container">
                                     <SparklineChart
                                         data=gpu_data
@@ -264,137 +273,47 @@ pub fn Dashboard() -> impl IntoView {
                     }}
                 </div>
 
-                // Inference stats cards — always visible, show "—" until data arrives
+                // GPU Devices section — only rendered if any GPU data is present
+                // Hidden when no GPUs are detected (laptops, CPU-only servers).
                 {move || {
                     let buf = history.get();
-                    let latest = buf.last();
-
-                    // Compute "time since" string for inference stats cards
-                    let inference_time_ago = latest
-                        .and_then(|s| s.inference_last_updated_ms)
-                        .map(format_relative_time)
-                        .unwrap_or_default();
-
-                    // Extract sparkline data from ALL samples (full 15-min window),
-                    // filling in 0.0 for samples where inference hasn't been observed yet.
-                    let timestamps: Vec<i64> = buf.iter().map(|s| s.ts_unix_ms).collect();
-                    let tps_data: Vec<f32> = buf.iter()
-                        .map(|s| s.tps.unwrap_or(0.0)).collect();
-                    let prompt_tps_data: Vec<f32> = buf.iter()
-                        .map(|s| s.prompt_tps.unwrap_or(0.0)).collect();
-                    let cache_data: Vec<f32> = buf.iter()
-                        .map(|s| s.cache_hit_pct.unwrap_or(0.0)).collect();
-                    let spec_data: Vec<f32> = buf.iter()
-                        .map(|s| s.spec_accept_pct.unwrap_or(0.0)).collect();
-
-                    // Determine max values for sparkline scaling
-                    let tps_max = tps_data.iter().cloned().fold(1.0f32, f32::max);
-                    let prompt_tps_max = prompt_tps_data.iter().cloned().fold(1.0f32, f32::max);
-
-                    view! {
-                        <div class="grid-stats grid-stats--inference">
-                            // Processing Speed card
-                            <div class="stat-card">
-                                <div class="card-header">"Processing Speed"</div>
-                                {match latest.and_then(|s| s.prompt_tps) {
-                                    Some(v) => view! {
-                                        <div class="card-value">{format!("{:.1} tok/s", v)}</div>
-                                        <div class="card-secondary">{inference_time_ago.clone()}</div>
-                                    }.into_any(),
-                                    None => view! {
-                                        <div class="card-value-empty">"—"</div>
-                                    }.into_any(),
-                                }}
-                                <div class="sparkline-container">
-                                    <SparklineChart
-                                        data=prompt_tps_data
-                                        max_value=prompt_tps_max
-                                        color="var(--accent-orange)".to_string()
-                                        height=60.0
-                                        timestamps=timestamps.clone()
-                                        unit_label="tok/s".to_string()
-                                        y_refs=vec![]
-                                    />
-                                </div>
-                            </div>
-
-                            // Gen Speed card
-                            <div class="stat-card">
-                                <div class="card-header">"Gen Speed"</div>
-                                {match latest.and_then(|s| s.tps) {
-                                    Some(v) => view! {
-                                        <div class="card-value">{format!("{:.1} tok/s", v)}</div>
-                                        <div class="card-secondary">{inference_time_ago.clone()}</div>
-                                    }.into_any(),
-                                    None => view! {
-                                        <div class="card-value-empty">"—"</div>
-                                    }.into_any(),
-                                }}
-                                <div class="sparkline-container">
-                                    <SparklineChart
-                                        data=tps_data
-                                        max_value=tps_max
-                                        color="var(--accent-cyan)".to_string()
-                                        height=60.0
-                                        timestamps=timestamps.clone()
-                                        unit_label="tok/s".to_string()
-                                        y_refs=vec![]
-                                    />
-                                </div>
-                            </div>
-
-                            // Cache Hits card
-                            <div class="stat-card">
-                                <div class="card-header">"Cache Hits"</div>
-                                {match latest.and_then(|s| s.cache_hit_pct) {
-                                    Some(v) => view! {
-                                        <div class="card-value">{format!("{:.1}%", v)}</div>
-                                        <div class="card-secondary">{inference_time_ago.clone()}</div>
-                                    }.into_any(),
-                                    None => view! {
-                                        <div class="card-value-empty">"—"</div>
-                                    }.into_any(),
-                                }}
-                                <div class="sparkline-container">
-                                    <SparklineChart
-                                        data=cache_data
-                                        max_value=100.0
-                                        color="var(--accent-green)".to_string()
-                                        height=60.0
-                                        timestamps=timestamps.clone()
-                                        unit_label="%".to_string()
-                                        y_refs=vec![0.0, 100.0]
-                                    />
-                                </div>
-                            </div>
-
-                            // Spec Accept card
-                            <div class="stat-card">
-                                <div class="card-header">"Spec Accept"</div>
-                                {match latest.and_then(|s| s.spec_accept_pct) {
-                                    Some(v) => view! {
-                                        <div class="card-value">{format!("{:.1}%", v)}</div>
-                                        <div class="card-secondary">{inference_time_ago.clone()}</div>
-                                    }.into_any(),
-                                    None => view! {
-                                        <div class="card-value-empty">"—"</div>
-                                    }.into_any(),
-                                }}
-                                <div class="sparkline-container">
-                                    <SparklineChart
-                                        data=spec_data
-                                        max_value=100.0
-                                        color="var(--accent-pink)".to_string()
-                                        height=60.0
-                                        timestamps=timestamps
-                                        unit_label="%".to_string()
-                                        y_refs=vec![0.0, 100.0]
-                                    />
-                                </div>
-                            </div>
-                        </div>
-                    }.into_any()
+                    if let Some(latest) = buf.last() {
+                        if !latest.gpus.is_empty() {
+                            let loaded_models = latest.models.clone();
+                            let gpus = latest.gpus.clone();
+                            let prompt_tps = latest.prompt_tps;
+                            let tps_val = latest.tps;
+                            view! {
+                                <section class="dashboard-gpus">
+                                    <div class="page-header">
+                                        <h2>"GPU Cluster Nodes"</h2>
+                                        <span class="text-muted">{format!("{} device(s)", gpus.len())}</span>
+                                    </div>
+                                    <div class="gpu-device-grid">
+                                        {gpus.into_iter().enumerate().map(|(idx, gpu)| {
+                                            let label = device_display_label(idx);
+                                            let models = loaded_models.clone();
+                                            view! {
+                                                <GpuDeviceCard
+                                                    device=gpu
+                                                    display_label=label
+                                                    loaded_models=models
+                                                    prompt_tps=prompt_tps
+                                                    tps=tps_val
+                                                />
+                                            }
+                                        }).collect::<Vec<_>>()}
+                                    </div>
+                                </section>
+                            }.into_any()
+                        } else {
+                            view! { <div></div> }.into_any()
+                        }
+                    } else {
+                        view! { <div></div> }.into_any()
+                    }
                 }}
+
 
                 // Models section
                 <section class="dashboard-models">
@@ -419,6 +338,7 @@ pub fn Dashboard() -> impl IntoView {
                                         let on_unload_cb = Callback::new(move |id: String| {
                                             unload_action.dispatch(id);
                                         });
+                                        let gpu_label = model_gpu_label(&gpus_for_labels, &m);
                                         view! {
                                             <ModelCard
                                                 id=m.id.clone()
@@ -433,12 +353,14 @@ pub fn Dashboard() -> impl IntoView {
                                                     cache_type_k: m.cache_type_k.clone(),
                                                     cache_type_v: m.cache_type_v.clone(),
                                                     spec_types: m.spec_types.clone(),
+                                                    gpu_label,
                                                 }
                                                 backend=m.backend.clone()
                                                 log_source=Some(format!("{}_{}", m.backend, m.id))
                                                 state=m.state.clone()
                                                 loaded=None
                                                 enabled=None
+                                                error_message=m.error_message.clone()
                                                 on_load=on_load_cb
                                                 on_unload=on_unload_cb
                                                 load_busy=load_busy

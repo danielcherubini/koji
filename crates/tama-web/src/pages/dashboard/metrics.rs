@@ -29,6 +29,21 @@ pub struct MetricSample {
     pub spec_decoding_active: bool,
     #[serde(default)]
     pub inference_last_updated_ms: Option<i64>,
+    /// Per-GPU device stats for this sample. Empty if no GPU is detected.
+    #[serde(default)]
+    pub gpus: Vec<GpuDeviceStats>,
+}
+
+/// Frontend mirror of `tama_core::gpu::GpuDeviceStats`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GpuDeviceStats {
+    pub device_id: String,
+    pub vendor: String,
+    pub utilization_pct: Option<u8>,
+    pub vram: Option<VramInfo>,
+    pub temperature_c: Option<u8>,
+    pub power_w: Option<u16>,
+    pub fan_pct: Option<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,6 +90,10 @@ pub struct ModelStatus {
     pub cache_type_v: Option<String>,
     #[serde(default)]
     pub spec_types: Vec<String>,
+    #[serde(default)]
+    pub gpu_device: Option<String>,
+    #[serde(default)]
+    pub error_message: Option<String>,
 }
 
 /// Format a number with comma separators (e.g. `8460` → `"8,460"`).

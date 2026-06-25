@@ -104,6 +104,7 @@ fn model_entry_json(
         "repo_id": record.repo_id,
         "backend": record.backend,
         "gpu_variant": record.gpu_variant,
+        "gpu_device": record.gpu_device,
         "model": m.model,
         "quant": m.quant,
         "mmproj": m.mmproj,

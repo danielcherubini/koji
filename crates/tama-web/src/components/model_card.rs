@@ -55,6 +55,10 @@ pub(crate) struct ModelPips {
     pub cache_type_k: Option<String>,
     pub cache_type_v: Option<String>,
     pub spec_types: Vec<String>,
+    /// Position-based GPU display label, e.g. "GPU 0" (the index in the
+    /// `gpus` array), NOT the raw `gpu_device` value (e.g. "CUDA0").
+    /// Derived in the dashboard by `model_gpu_label(gpus, model)`.
+    pub gpu_label: Option<String>,
 }
 
 // ── Helper functions (pub(crate) for use by dashboard.rs and models.rs) ──────
@@ -197,6 +201,7 @@ pub fn ModelCard(
     state: String,
     #[prop(default = None)] loaded: Option<bool>,
     #[prop(default = None)] enabled: Option<bool>,
+    #[prop(default = None)] error_message: Option<String>,
     #[prop(optional)] on_load: Option<Callback<String>>,
     #[prop(optional)] on_unload: Option<Callback<String>>,
     #[prop(optional)] load_busy: Option<RwSignal<bool>>,
@@ -245,6 +250,9 @@ pub fn ModelCard(
     let cache_type_k_clone = pips.cache_type_k.clone();
     let cache_type_v_clone = pips.cache_type_v.clone();
     let spec_types_clone = pips.spec_types.clone();
+    let gpu_label_clone = pips.gpu_label.clone();
+    let error_message_clone = error_message.clone();
+    let effective_state_clone = effective_state.to_string();
 
     view! {
         <ListCard
@@ -294,6 +302,14 @@ pub fn ModelCard(
                 }}
                 // Backend badge
                 <span class="badge-pill badge-pill--backend">{format_backend_with_variant(&backend_clone, gpu_variant_clone.as_deref())}</span>
+                // GPU Device badge (after backend badge)
+                {if let Some(gpu_lbl) = gpu_label_clone {
+                    view! {
+                        <span class="badge-pill badge-pill--gpu-device">{gpu_lbl}</span>
+                    }.into_any()
+                } else {
+                    view! { <span/> }.into_any()
+                }}
                 // Architecture badge
                 {if let Some(arch) = hf_architecture_type_clone {
                     view! {
@@ -323,6 +339,18 @@ pub fn ModelCard(
                     view! {
                         <span class="badge-pill badge-pill--base-model">{base}</span>
                     }.into_any()
+                } else {
+                    view! { <span/> }.into_any()
+                }}
+                // Error message for failed models
+                {if let Some(ref err) = error_message_clone {
+                    if effective_state_clone == "failed" {
+                        view! {
+                            <div class="model-row__error">"Error: " {err.clone()}</div>
+                        }.into_any()
+                    } else {
+                        view! { <span/> }.into_any()
+                    }
                 } else {
                     view! { <span/> }.into_any()
                 }}

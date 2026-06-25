@@ -85,6 +85,11 @@
   color: #b478ff;
 }
 
+.badge-pill--gpu-device {
+  background: linear-gradient(135deg, var(--accent-purple), var(--accent-pink));
+  color: #fff;
+}
+
 /* List card — horizontal two-line card for dashboard and models page */
 .list-card {
   display: flex;
@@ -239,6 +244,14 @@
 .list-card--update-available {
   border-left-color: var(--accent-yellow);
   box-shadow: -2px 0 6px rgba(210, 153, 34, 0.2);
+}
+
+/* Error message for failed model rows */
+.model-row__error {
+  color: var(--accent-red);
+  font-size: 12px;
+  margin-top: 4px;
+  padding-left: 4px; /* account for left border */
 }
 
 /* Responsive — wrap line 1 on narrow screens */

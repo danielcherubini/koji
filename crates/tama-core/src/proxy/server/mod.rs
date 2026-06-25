@@ -150,6 +150,7 @@ impl ProxyServer {
                     ram_total_mib: snapshot.ram_total_mib,
                     gpu_utilization_pct: snapshot.gpu_utilization_pct,
                     vram: snapshot.vram.clone(),
+                    gpus: snapshot.gpus.clone(),
                     models_loaded,
                     models: model_statuses,
                     tps: inference.as_ref().and_then(|i| i.tps),
@@ -336,6 +337,7 @@ impl ProxyServer {
             }),
             models_loaded: row.models_loaded.max(0) as u64,
             models: vec![], // Not stored in DB — seeded samples have no model status
+            gpus: vec![],   // historical rows don't store per-GPU; left empty
             tps: row.tps.map(|v| v as f32),
             prompt_tps: row.prompt_tps.map(|v| v as f32),
             cache_hit_pct: row.cache_hit_pct.map(|v| v as f32),
