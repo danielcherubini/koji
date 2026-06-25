@@ -246,7 +246,7 @@ pub fn format_vram_short(vram: &VramInfo) -> String {
 // ── Component ────────────────────────────────────────────────────────────────
 
 /// GpuDeviceCard — renders one card per detected GPU showing utilization,
-/// VRAM, the loaded model, and telemetry.
+/// VRAM, the loaded model, inference stats, and telemetry.
 #[component]
 pub fn GpuDeviceCard(
     /// The GPU device statistics.
@@ -255,6 +255,12 @@ pub fn GpuDeviceCard(
     display_label: String,
     /// All loaded models (used to derive state and loaded model).
     loaded_models: Vec<ModelStatus>,
+    /// Prompt throughput (tokens per second during prompt processing).
+    #[prop(default = None)]
+    prompt_tps: Option<f32>,
+    /// Generation throughput (tokens per second during generation).
+    #[prop(default = None)]
+    tps: Option<f32>,
 ) -> impl IntoView {
     // Extract device index from device_id for matching.
     let dev_chars: Vec<char> = device.device_id.chars().collect();
@@ -374,6 +380,33 @@ pub fn GpuDeviceCard(
                     }}
                 </div>
             </div>
+
+            // Inference stats — only for Active/Loading GPUs with data
+            {match state {
+                GpuDeviceState::Active | GpuDeviceState::Loading => {
+                    if prompt_tps.is_some() || tps.is_some() {
+                        view! {
+                            <div class="gpu-device-card__inference">
+                                <div class="gpu-device-card__inference-cell">
+                                    <div class="gpu-device-card__inference-value">
+                                        {prompt_tps.map(|v| format!("{v:.0} tok/s")).unwrap_or_else(|| "—".to_string())}
+                                    </div>
+                                    <div class="gpu-device-card__inference-label">"Processing"</div>
+                                </div>
+                                <div class="gpu-device-card__inference-cell">
+                                    <div class="gpu-device-card__inference-value">
+                                        {tps.map(|v| format!("{v:.0} tok/s")).unwrap_or_else(|| "—".to_string())}
+                                    </div>
+                                    <div class="gpu-device-card__inference-label">"Generation"</div>
+                                </div>
+                            </div>
+                        }.into_any()
+                    } else {
+                        view! { <span/> }.into_any()
+                    }
+                }
+                _ => view! { <span/> }.into_any()
+            }}
 
             // Telemetry row
             <div class="gpu-device-card__telemetry">
