@@ -55,6 +55,11 @@ pub struct MetricSample {
     pub ram_total_mib: u64,
     pub gpu_utilization_pct: Option<u8>,
     pub vram: Option<VramInfo>,
+    /// Per-GPU device stats for this sample. Empty if no GPU is detected
+    /// or the backend does not support per-device queries. Always present
+    /// (use `#[serde(default)]`) so older cached samples still deserialize.
+    #[serde(default)]
+    pub gpus: Vec<GpuDeviceStats>,
     pub models_loaded: u64,
     /// Per-model loaded/idle status, embedded in `MetricSample.models`.
     #[serde(default)]
