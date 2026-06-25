@@ -39,39 +39,43 @@ pub fn derive_device_state(
     let mut has_failed = false;
 
     for model in loaded_models {
-        let Some(ref gpu_device) = model.gpu_device else {
-            continue;
-        };
+        let targets_device = if let Some(ref gpu_device) = model.gpu_device {
+            // Determine if this model targets the same vendor as the device.
+            let gpu_lower = gpu_device.to_lowercase();
+            let is_nvidia = gpu_lower.contains("cuda");
+            let is_amd = gpu_lower.contains("rocm") || gpu_lower.contains("amd");
 
-        // Determine if this model targets the same vendor as the device.
-        let gpu_lower = gpu_device.to_lowercase();
-        let is_nvidia = gpu_lower.contains("cuda");
-        let is_amd = gpu_lower.contains("rocm") || gpu_lower.contains("amd");
-
-        let vendor_matches = match device_vendor {
-            "nvidia" => is_nvidia,
-            "amd" => is_amd,
-            _ => false,
-        };
-        if !vendor_matches {
-            continue;
-        }
-
-        // Extract trailing numeric suffix from gpu_device (e.g. "CUDA0" → "0").
-        let chars: Vec<char> = gpu_device.chars().collect();
-        let mut suffix_start = chars.len();
-        for (i, c) in chars.iter().enumerate() {
-            if c.is_ascii_digit() {
-                suffix_start = i;
-            } else if i > suffix_start {
-                break;
+            let vendor_matches = match device_vendor {
+                "nvidia" => is_nvidia,
+                "amd" => is_amd,
+                _ => false,
+            };
+            if !vendor_matches {
+                false
+            } else {
+                // Extract trailing numeric suffix from gpu_device (e.g. "CUDA0" → "0").
+                let chars: Vec<char> = gpu_device.chars().collect();
+                let mut suffix_start = chars.len();
+                for (i, c) in chars.iter().enumerate() {
+                    if c.is_ascii_digit() {
+                        suffix_start = i;
+                    } else if i > suffix_start {
+                        break;
+                    }
+                }
+                let suffix: String = chars[suffix_start..].iter().collect();
+                if let Ok(idx) = suffix.parse::<u32>() {
+                    idx == device_index
+                } else {
+                    false
+                }
             }
-        }
-        let suffix: String = chars[suffix_start..].iter().collect();
-        let Ok(idx) = suffix.parse::<u32>() else {
-            continue;
+        } else {
+            // Fallback: models without gpu_device target the first GPU (index 0).
+            device_index == 0
         };
-        if idx != device_index {
+
+        if !targets_device {
             continue;
         }
 
@@ -169,53 +173,62 @@ pub fn find_device_index(gpus: &[GpuDeviceStats], gpu_device: &str) -> Option<us
 /// Some("GPU 0"). Returns None if the model has no `gpu_device` or no
 /// matching device is found.
 pub fn model_gpu_label(gpus: &[GpuDeviceStats], model: &ModelStatus) -> Option<String> {
-    let gpu_device = model.gpu_device.as_deref()?;
-    let index = find_device_index(gpus, gpu_device)?;
-    Some(device_display_label(index))
+    if let Some(gpu_device) = model.gpu_device.as_deref() {
+        let index = find_device_index(gpus, gpu_device)?;
+        Some(device_display_label(index))
+    } else {
+        // Fallback: models without gpu_device target the first GPU.
+        (!gpus.is_empty()).then(|| device_display_label(0))
+    }
 }
 
 /// Returns the first model targeting `device_vendor` + `device_index` that is
 /// in `ready`, `loading`, or `unloading` state, with a synthetic "TRANSFERRING…"
 /// prefix when state is `loading`. Returns None if no such model exists.
+/// Models without `gpu_device` set fall back to the first GPU (index 0).
 pub fn loaded_model_display(
     loaded_models: &[ModelStatus],
     device_vendor: &str,
     device_index: u32,
 ) -> Option<LoadedModelDisplay> {
     for model in loaded_models {
-        let Some(ref gpu_device) = model.gpu_device else {
-            continue;
-        };
+        let targets_device = if let Some(ref gpu_device) = model.gpu_device {
+            // Determine if this model targets the same vendor as the device.
+            let gpu_lower = gpu_device.to_lowercase();
+            let is_nvidia = gpu_lower.contains("cuda");
+            let is_amd = gpu_lower.contains("rocm") || gpu_lower.contains("amd");
 
-        // Determine if this model targets the same vendor as the device.
-        let gpu_lower = gpu_device.to_lowercase();
-        let is_nvidia = gpu_lower.contains("cuda");
-        let is_amd = gpu_lower.contains("rocm") || gpu_lower.contains("amd");
-
-        let vendor_matches = match device_vendor {
-            "nvidia" => is_nvidia,
-            "amd" => is_amd,
-            _ => false,
-        };
-        if !vendor_matches {
-            continue;
-        }
-
-        // Extract trailing numeric suffix from gpu_device.
-        let chars: Vec<char> = gpu_device.chars().collect();
-        let mut suffix_start = chars.len();
-        for (i, c) in chars.iter().enumerate() {
-            if c.is_ascii_digit() {
-                suffix_start = i;
-            } else if i > suffix_start {
-                break;
+            let vendor_matches = match device_vendor {
+                "nvidia" => is_nvidia,
+                "amd" => is_amd,
+                _ => false,
+            };
+            if !vendor_matches {
+                false
+            } else {
+                // Extract trailing numeric suffix from gpu_device.
+                let chars: Vec<char> = gpu_device.chars().collect();
+                let mut suffix_start = chars.len();
+                for (i, c) in chars.iter().enumerate() {
+                    if c.is_ascii_digit() {
+                        suffix_start = i;
+                    } else if i > suffix_start {
+                        break;
+                    }
+                }
+                let suffix: String = chars[suffix_start..].iter().collect();
+                if let Ok(idx) = suffix.parse::<u32>() {
+                    idx == device_index
+                } else {
+                    false
+                }
             }
-        }
-        let suffix: String = chars[suffix_start..].iter().collect();
-        let Ok(idx) = suffix.parse::<u32>() else {
-            continue;
+        } else {
+            // Fallback: models without gpu_device target the first GPU (index 0).
+            device_index == 0
         };
-        if idx != device_index {
+
+        if !targets_device {
             continue;
         }
 
