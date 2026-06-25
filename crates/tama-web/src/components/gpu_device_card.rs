@@ -330,6 +330,23 @@ pub fn GpuDeviceCard(
                         {device.vram.as_ref().map(format_vram_short).unwrap_or_else(|| "—".to_string())}
                     </span>
                 </div>
+                {if let Some(vram) = &device.vram {
+                    let vram_pct = if vram.total_mib > 0 {
+                        (vram.used_mib as f64 / vram.total_mib as f64 * 100.0).min(100.0)
+                    } else {
+                        0.0
+                    };
+                    view! {
+                        <div class="progress-bar">
+                            <div
+                                class="progress-bar-fill gpu-device-card__bar-fill"
+                                style=format!("width: {:.1}%", vram_pct)
+                            />
+                        </div>
+                    }.into_any()
+                } else {
+                    view! { <span/> }.into_any()
+                }}
             </div>
 
             // Model section
