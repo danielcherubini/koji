@@ -126,6 +126,11 @@ pub struct ModelStatus {
     /// Speculative decoding types (e.g. ["draft-mtp", "ngram-simple"]). Display-only.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub spec_types: Vec<String>,
+    /// GPU device name this model is bound to (e.g. "CUDA0", "ROCm0"),
+    /// taken from `ModelConfig.gpu_device`. None if the model is idle,
+    /// unconfigured, or the backend is not llama.cpp. Display-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_device: Option<String>,
 }
 
 /// Collect a snapshot of system metrics using a caller-owned `System`.

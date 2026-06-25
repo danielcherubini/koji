@@ -62,6 +62,7 @@ impl ProxyState {
                 cache_type_k: model_cfg.cache_type_k.clone(),
                 cache_type_v: model_cfg.cache_type_v.clone(),
                 spec_types: model_cfg.spec_decoding.spec_types.clone(),
+                gpu_device: model_cfg.gpu_device.clone(),
             });
         }
         // Stable order so dashboard rows don't shuffle between samples.
