@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// VRAM usage in MiB.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct VramInfo {
     /// Currently used VRAM in MiB
     pub used_mib: u64,
@@ -85,6 +85,98 @@ fn query_amd_vram() -> Option<VramInfo> {
         used_mib: used_bytes / (1024 * 1024),
         total_mib: total_bytes / (1024 * 1024),
     })
+}
+
+/// Query VRAM for all detected GPU devices.
+///
+/// Returns one `VramInfo` per device, paired with a stable device_id
+/// matching `GpuDeviceStats::device_id`. Devices that fail to query
+/// are silently skipped (no VRAM data is not an error).
+///
+/// For NVIDIA, calls `nvidia-smi --query-gpu=index,memory.used,memory.total`.
+/// For AMD, walks `/sys/class/drm/card*/device/` and reads VRAM info per card.
+pub fn query_vram_per_device() -> Vec<(String, VramInfo)> {
+    let mut results = Vec::new();
+
+    // NVIDIA: multi-device query
+    let output = std::process::Command::new("nvidia-smi")
+        .args([
+            "--query-gpu=index,memory.used,memory.total",
+            "--format=csv,noheader,nounits",
+        ])
+        .output()
+        .ok();
+
+    if let Some(output) = output {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                let parts: Vec<&str> = line.split(", ").collect();
+                if parts.len() == 3 {
+                    if let (Ok(index), Ok(used), Ok(total)) = (
+                        parts[0].trim().parse::<u32>(),
+                        parts[1].trim().parse::<u64>(),
+                        parts[2].trim().parse::<u64>(),
+                    ) {
+                        results.push((
+                            format!("nvidia{index}"),
+                            VramInfo {
+                                used_mib: used,
+                                total_mib: total,
+                            },
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    // AMD: per-card sysfs
+    let pattern = "/sys/class/drm/card*/device";
+    if let Ok(paths) = glob::glob(pattern) {
+        for card_path in paths.flatten() {
+            // Verify this is an AMD device
+            let is_amd = std::fs::read_link(card_path.join("driver"))
+                .ok()
+                .map(|p| p.to_string_lossy().contains("amdgpu"))
+                .unwrap_or(false);
+            if !is_amd {
+                continue;
+            }
+
+            let card_name = card_path
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                .unwrap_or("");
+            let card_num = card_name
+                .strip_prefix("card")
+                .and_then(|n| n.parse::<u32>().ok());
+            let Some(card_num) = card_num else {
+                continue;
+            };
+
+            let used_bytes = std::fs::read_to_string(card_path.join("mem_info_vram_used"))
+                .ok()
+                .and_then(|s| s.trim().parse::<u64>().ok());
+            let total_bytes = std::fs::read_to_string(card_path.join("mem_info_vram_total"))
+                .ok()
+                .and_then(|s| s.trim().parse::<u64>().ok());
+
+            if let (Some(u), Some(t)) = (used_bytes, total_bytes) {
+                results.push((
+                    format!("amd{card_num}"),
+                    VramInfo {
+                        used_mib: u / (1024 * 1024),
+                        total_mib: t / (1024 * 1024),
+                    },
+                ));
+            }
+        }
+    }
+
+    results.sort_by_key(|(id, _)| id.clone());
+    results
 }
 
 #[cfg(test)]

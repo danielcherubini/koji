@@ -1,7 +1,29 @@
 use serde::{Deserialize, Serialize};
 use sysinfo::System;
 
-use super::vram::{query_vram, VramInfo};
+use super::vram::VramInfo;
+
+/// Per-GPU device statistics for a single tick. One entry per detected
+/// device (NVIDIA or AMD). Order is stable per-tick: NVIDIA devices
+/// sorted by `index`, then AMD devices by `card` number.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GpuDeviceStats {
+    /// Stable device identifier reported by the driver (e.g. "nvidia0", "amd0").
+    /// Mirrors llama.cpp's `--device` flag value (e.g. "CUDA0", "ROCm0").
+    pub device_id: String,
+    /// Human-readable vendor: "nvidia" | "amd".
+    pub vendor: String,
+    /// Utilization percentage (0–100), None if unavailable.
+    pub utilization_pct: Option<u8>,
+    /// VRAM usage in MiB, None if unavailable.
+    pub vram: Option<VramInfo>,
+    /// Edge temperature in °C, None if unavailable.
+    pub temperature_c: Option<u8>,
+    /// Power draw in watts, None if unavailable.
+    pub power_w: Option<u16>,
+    /// Fan speed percentage (0–100), None if unavailable.
+    pub fan_pct: Option<u8>,
+}
 
 /// A snapshot of system-level hardware metrics.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -12,10 +34,15 @@ pub struct SystemMetrics {
     pub ram_used_mib: u64,
     /// Total RAM (MiB)
     pub ram_total_mib: u64,
-    /// GPU utilization percentage (0–100), None if not available
+    /// GPU utilization percentage (0–100), None if not available.
+    /// Derived as the mean of per-device utilization.
     pub gpu_utilization_pct: Option<u8>,
-    /// VRAM usage, None if not available
+    /// VRAM usage, None if not available.
+    /// Derived as the sum of per-device VRAM.
     pub vram: Option<VramInfo>,
+    /// Per-GPU device stats, one entry per detected device.
+    #[serde(default)]
+    pub gpus: Vec<GpuDeviceStats>,
 }
 
 /// A timestamped snapshot of system + proxy metrics, suitable for persistence
@@ -110,11 +137,19 @@ pub fn collect_system_metrics_with(sys: &mut System) -> SystemMetrics {
     let ram_used_mib = sys.used_memory() / 1024 / 1024;
     let ram_total_mib = sys.total_memory() / 1024 / 1024;
 
-    // GPU utilization via nvidia-smi
-    let gpu_utilization_pct = query_gpu_utilization();
+    // Per-GPU device stats
+    let mut gpus = query_nvidia_devices();
+    gpus.extend(query_amd_devices());
+    // Sort by (vendor, device_id) for stable ordering
+    gpus.sort_by(|a, b| {
+        a.vendor
+            .cmp(&b.vendor)
+            .then_with(|| a.device_id.cmp(&b.device_id))
+    });
 
-    // VRAM via existing query_vram()
-    let vram = query_vram();
+    // Aggregate metrics derived from per-device data
+    let gpu_utilization_pct = aggregate_utilization_mean(&gpus);
+    let vram = aggregate_vram_sum(&gpus);
 
     SystemMetrics {
         cpu_usage_pct,
@@ -122,6 +157,7 @@ pub fn collect_system_metrics_with(sys: &mut System) -> SystemMetrics {
         ram_total_mib,
         gpu_utilization_pct,
         vram,
+        gpus,
     }
 }
 
@@ -140,193 +176,233 @@ pub fn collect_system_metrics() -> SystemMetrics {
     collect_system_metrics_with(&mut sys)
 }
 
-/// Query GPU utilization percentage via nvidia-smi.
-/// Returns None if nvidia-smi is unavailable or output cannot be parsed.
-fn query_gpu_utilization() -> Option<u8> {
-    // Try NVIDIA first
-    if let Some(pct) = query_nvidia_gpu_utilization() {
-        return Some(pct);
+// ── per-GPU device stats ───────────────────────────────────────────────
+
+/// Parse a single line of nvidia-smi CSV output into `GpuDeviceStats`.
+///
+/// Expected format (7 comma-separated fields, no units):
+/// `index, utilization.gpu, memory.used, memory.total, temperature.gpu, power.draw, fan.speed`
+///
+/// Returns `None` if the line is malformed or fields cannot be parsed.
+pub(crate) fn parse_nvidia_smi_csv_line(line: &str) -> Option<GpuDeviceStats> {
+    let parts: Vec<&str> = line.split(",").collect();
+    if parts.len() != 7 {
+        return None;
     }
-    // Fall back to AMD sysfs
-    query_amd_gpu_utilization()
+
+    let index: u32 = parts[0].trim().parse().ok()?;
+    let utilization: u8 = parts[1].trim().parse().ok()?;
+    let mem_used: u64 = parts[2].trim().parse().ok()?;
+    let mem_total: u64 = parts[3].trim().parse().ok()?;
+    let temperature: u8 = parts[4].trim().parse().ok()?;
+    let power: u16 = parts[5].trim().parse().ok()?;
+    let fan: u8 = parts[6].trim().parse().ok()?;
+
+    Some(GpuDeviceStats {
+        device_id: format!("nvidia{index}"),
+        vendor: "nvidia".to_string(),
+        utilization_pct: Some(utilization),
+        vram: Some(VramInfo {
+            used_mib: mem_used,
+            total_mib: mem_total,
+        }),
+        temperature_c: Some(temperature),
+        power_w: Some(power),
+        fan_pct: Some(fan),
+    })
 }
 
-fn query_nvidia_gpu_utilization() -> Option<u8> {
+/// Query all NVIDIA GPU devices via nvidia-smi.
+/// Returns one `GpuDeviceStats` per detected GPU.
+fn query_nvidia_devices() -> Vec<GpuDeviceStats> {
     let output = std::process::Command::new("nvidia-smi")
         .args([
-            "--query-gpu=utilization.gpu",
+            "--query-gpu=index,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,fan.speed",
             "--format=csv,noheader,nounits",
         ])
         .output()
-        .ok()?;
+        .ok();
+
+    let Some(output) = output else {
+        return vec![];
+    };
 
     if !output.status.success() {
-        return None;
+        return vec![];
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout.lines().next()?.trim().parse().ok()
+    stdout
+        .lines()
+        .filter_map(|line| parse_nvidia_smi_csv_line(line.trim()))
+        .collect()
 }
 
-/// Read GPU utilization from AMD AMDGPU sysfs interfaces.
-///
-/// Tries multiple sources in order:
-/// 1. `gpu_busy_percent` — simple text file, but returns `-EBUSY` when the
-///    GPU is in a low-power state (D3hot) and the SMU firmware is asleep.
-/// 2. `gpu_metrics` — binary blob defined in the kernel header
-///    `kgd_pp_interface.h`. Also returns `-EBUSY` when the GPU is asleep.
-/// 3. `power_state` — if the GPU is in a low-power state (D1–D3), the
-///    utilization is 0% by definition since the GPU is not processing work.
-fn query_amd_gpu_utilization() -> Option<u8> {
-    // 1. Try the simple text interface first.
-    let pattern = "/sys/class/drm/card*/device/gpu_busy_percent";
-    if let Ok(paths) = glob::glob(pattern) {
-        for path in paths.flatten() {
-            if let Ok(contents) = std::fs::read_to_string(&path) {
-                if let Ok(pct) = contents.trim().parse::<u8>() {
-                    return Some(pct);
-                }
-            }
-        }
-    }
-
-    // 2. Fallback: parse the gpu_metrics binary blob.
-    if let Some(pct) = query_amd_gpu_metrics_utilization() {
-        return Some(pct);
-    }
-
-    // 3. Fallback: check power state. If the GPU is in a low-power state,
-    //    it's not doing any work, so utilization is 0%.
-    query_amd_gpu_power_state_utilization()
-}
-
-/// Read GPU utilization from the AMD `gpu_metrics` sysfs binary blob.
-///
-/// The binary format is defined in the Linux kernel header
-/// `drivers/gpu/drm/amd/include/kgd_pp_interface.h`.  The header is a
-/// `metrics_table_header { uint16_t structure_size; uint8_t format_revision;
-/// uint8_t content_revision; }`, followed by format-specific fields.
-///
-/// Returns the average GFX activity as a percentage (0–100), or `None` if
-/// the file cannot be read or parsed.
-fn query_amd_gpu_metrics_utilization() -> Option<u8> {
-    let pattern = "/sys/class/drm/card*/device/gpu_metrics";
-    if let Ok(paths) = glob::glob(pattern) {
-        for path in paths.flatten() {
-            if let Ok(data) = std::fs::read(&path) {
-                if let Some(pct) = parse_amd_gpu_metrics_gfx_activity(&data) {
-                    return Some(pct);
-                }
-            }
-        }
-    }
-    None
-}
-
-/// Sentinel value used by the AMDGPU driver for "not available" fields.
-const AMD_GPU_METRICS_NA: u16 = 0xFFFF;
-
-/// Parse `average_gfx_activity` from an AMD `gpu_metrics` binary blob.
-///
-/// The offset of `average_gfx_activity` depends on the format revision
-/// (and, for some revisions, the content revision):
-///
-/// | format_rev | content_rev | Struct            | Offset |
-/// |------------|-------------|-------------------|--------|
-/// | 0          | any         | gpu_metrics_v1_0  | 24     |
-/// | 1          | 0–3         | gpu_metrics_v1_1+ | 16     |
-/// | 1          | ≥ 4         | gpu_metrics_v1_4+ | 12     |
-/// | 2          | 0           | gpu_metrics_v2_0  | 36     |
-/// | 2          | ≥ 1         | gpu_metrics_v2_1+ | 28     |
-/// | 3          | any         | gpu_metrics_v3_0  | 42     |
-///
-/// Some newer formats report utilization in **centi-percent** (0–10 000)
-/// rather than percent (0–100).  When the raw value exceeds 100 we assume
-/// centi-percent and divide by 100.
-/// Check AMD GPU power state via sysfs.
-///
-/// When the GPU is in a low-power state (D1, D2, D3hot, D3cold), the SMU
-/// firmware is asleep and `gpu_busy_percent`/`gpu_metrics` return `-EBUSY`.
-/// In these states the GPU is not processing any work, so utilization is 0%.
-///
-/// Returns `Some(0)` if the GPU is in a low-power state, `None` if the
-/// power state cannot be determined.
-fn query_amd_gpu_power_state_utilization() -> Option<u8> {
-    let pattern = "/sys/class/drm/card*/device/power_state";
-    if let Ok(paths) = glob::glob(pattern) {
-        for path in paths.flatten() {
-            if let Ok(state) = std::fs::read_to_string(&path) {
-                let state = state.trim();
-                // D0 = fully active, D1–D3 = low power / asleep
-                if state.starts_with('D') && state != "D0" {
-                    return Some(0);
-                }
-            }
-        }
-    }
-    None
-}
-
-fn parse_amd_gpu_metrics_gfx_activity(data: &[u8]) -> Option<u8> {
-    if data.len() < 4 {
-        return None;
-    }
-
-    let struct_size = u16::from_le_bytes([data[0], data[1]]) as usize;
-    let format_rev = data[2];
-    let content_rev = data[3];
-
-    // Validate that we have enough data for the declared struct.
-    if data.len() < struct_size {
-        return None;
-    }
-
-    let offset = match format_rev {
-        // gpu_metrics_v1_0: header(4) + system_clock_counter(8) + 6×temperature(12)
-        0 => 24,
-        // gpu_metrics_v1_1 / v1_2 / v1_3: header(4) + 6×temperature(12)
-        // gpu_metrics_v1_4 / v1_5: header(4) + 3×temperature(6) + curr_socket_power(2)
-        1 => {
-            if content_rev >= 4 {
-                12
-            } else {
-                16
-            }
-        }
-        // gpu_metrics_v2_0: header(4) + system_clock_counter(8) + temps(24)
-        // gpu_metrics_v2_1+: header(4) + temps(24)
-        2 => {
-            if content_rev == 0 {
-                36
-            } else {
-                28
-            }
-        }
-        // gpu_metrics_v3_0: header(4) + 2×temp(4) + 16×temp(32) + temp_skin(2)
-        3 => 42,
-        _ => return None,
+/// Query all AMD GPU devices via sysfs.
+/// Returns one `GpuDeviceStats` per detected GPU card.
+fn query_amd_devices() -> Vec<GpuDeviceStats> {
+    let pattern = "/sys/class/drm/card*/device";
+    let Ok(paths) = glob::glob(pattern) else {
+        return vec![];
     };
 
-    if data.len() < offset + 2 {
-        return None;
+    let mut devices = Vec::new();
+
+    for card_path in paths.flatten() {
+        // Extract card number from the path (e.g. /sys/class/drm/card1/device → 1)
+        let card_name = card_path
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        let card_num = card_name
+            .strip_prefix("card")
+            .and_then(|n| n.parse::<u32>().ok());
+        let Some(card_num) = card_num else {
+            continue;
+        };
+
+        // Verify this is an AMD device by checking the driver
+        let driver_path = card_path.join("driver");
+        let is_amd = std::fs::read_link(&driver_path)
+            .ok()
+            .map(|p| p.to_string_lossy().contains("amdgpu"))
+            .unwrap_or(false);
+        if !is_amd {
+            continue;
+        }
+
+        let mut stats = GpuDeviceStats {
+            device_id: format!("amd{card_num}"),
+            vendor: "amd".to_string(),
+            utilization_pct: None,
+            vram: None,
+            temperature_c: None,
+            power_w: None,
+            fan_pct: None,
+        };
+
+        // GPU utilization from gpu_busy_percent
+        if let Ok(contents) = std::fs::read_to_string(card_path.join("gpu_busy_percent")) {
+            if let Ok(pct) = contents.trim().parse::<u8>() {
+                stats.utilization_pct = Some(pct);
+            }
+        }
+
+        // VRAM from mem_info_vram_used / mem_info_vram_total
+        let used_bytes = std::fs::read_to_string(card_path.join("mem_info_vram_used"))
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok());
+        let total_bytes = std::fs::read_to_string(card_path.join("mem_info_vram_total"))
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok());
+        if let (Some(u), Some(t)) = (used_bytes, total_bytes) {
+            stats.vram = Some(VramInfo {
+                used_mib: u / (1024 * 1024),
+                total_mib: t / (1024 * 1024),
+            });
+        }
+
+        // Temperature: try temp1_input or temp2_input (hwmon path varies)
+        // Values are in millidegrees Celsius
+        let temp_path = card_path.parent().unwrap();
+        for temp_file in &["temp1_input", "temp2_input"] {
+            if let Ok(contents) = std::fs::read_to_string(temp_path.join(temp_file)) {
+                if let Ok(temp_milli) = contents.trim().parse::<i64>() {
+                    stats.temperature_c = Some((temp_milli / 1000) as u8);
+                    break;
+                }
+            }
+        }
+
+        // Also try hwmon subdirectory for temperature
+        if stats.temperature_c.is_none() {
+            let hwmon_pattern = format!("{}/../hwmon/hwmon*/temp*_input", card_path.display());
+            if let Ok(paths) = glob::glob(&hwmon_pattern) {
+                for path in paths.flatten() {
+                    if let Ok(contents) = std::fs::read_to_string(&path) {
+                        if let Ok(temp_milli) = contents.trim().parse::<i64>() {
+                            stats.temperature_c = Some((temp_milli / 1000) as u8);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Power: try power1_average (µW → W)
+        if let Ok(contents) = std::fs::read_to_string(temp_path.join("power1_average")) {
+            if let Ok(power_uw) = contents.trim().parse::<u64>() {
+                stats.power_w = Some((power_uw / 1_000_000) as u16);
+            }
+        }
+
+        // Also try hwmon for power
+        if stats.power_w.is_none() {
+            let hwmon_pattern = format!("{}/../hwmon/hwmon*/power1_average", card_path.display());
+            if let Ok(paths) = glob::glob(&hwmon_pattern) {
+                for path in paths.flatten() {
+                    if let Ok(contents) = std::fs::read_to_string(&path) {
+                        if let Ok(power_uw) = contents.trim().parse::<u64>() {
+                            stats.power_w = Some((power_uw / 1_000_000) as u16);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fan: scan hwmon for fan1_input (RPM → best-effort %)
+        let fan_pattern = format!("{}/../hwmon/hwmon*/fan1_input", card_path.display());
+        if let Ok(paths) = glob::glob(&fan_pattern) {
+            for path in paths.flatten() {
+                if let Ok(contents) = std::fs::read_to_string(&path) {
+                    if let Ok(rpm) = contents.trim().parse::<u16>() {
+                        // Best-effort: assume max 3000 RPM = 100%
+                        let max_rpm: u16 = 3000;
+                        let pct = if rpm > 0 {
+                            ((rpm as u32 * 100) / max_rpm as u32).min(100) as u8
+                        } else {
+                            0
+                        };
+                        stats.fan_pct = Some(pct);
+                        break;
+                    }
+                }
+            }
+        }
+
+        devices.push(stats);
     }
 
-    let val = u16::from_le_bytes([data[offset], data[offset + 1]]);
+    devices.sort_by_key(|d| d.device_id.clone());
+    devices
+}
 
-    // AMDGPU uses 0xFFFF as a sentinel for "not available".
-    if val == AMD_GPU_METRICS_NA {
+/// Compute the mean utilization across all GPU devices.
+/// Only counts devices with a non-None utilization.
+fn aggregate_utilization_mean(devices: &[GpuDeviceStats]) -> Option<u8> {
+    let values: Vec<u8> = devices.iter().filter_map(|d| d.utilization_pct).collect();
+    if values.is_empty() {
         return None;
     }
+    let sum: u32 = values.iter().map(|&v| v as u32).sum();
+    Some((sum / values.len() as u32) as u8)
+}
 
-    // Some formats report in centi-percent (0–10 000), others in percent (0–100).
-    // If the value exceeds 100, assume centi-percent and divide by 100.
-    let pct = if val > 100 {
-        (val / 100) as u8
-    } else {
-        val as u8
-    };
-
-    Some(pct)
+/// Sum VRAM across all GPU devices.
+/// Only sums devices with non-None vram.
+fn aggregate_vram_sum(devices: &[GpuDeviceStats]) -> Option<VramInfo> {
+    let vrams: Vec<&VramInfo> = devices.iter().filter_map(|d| d.vram.as_ref()).collect();
+    if vrams.is_empty() {
+        return None;
+    }
+    let used: u64 = vrams.iter().map(|v| v.used_mib).sum();
+    let total: u64 = vrams.iter().map(|v| v.total_mib).sum();
+    Some(VramInfo {
+        used_mib: used,
+        total_mib: total,
+    })
 }
 
 #[cfg(test)]
@@ -377,186 +453,159 @@ mod tests {
         );
     }
 
-    // ── gpu_metrics binary parsing tests ────────────────────────────────
+    // ── per-GPU device stats tests ──────────────────────────────────────
 
-    /// Helper: build a minimal gpu_metrics blob with a known
-    /// `average_gfx_activity` value at the correct offset.
-    fn build_gpu_metrics_blob(format_rev: u8, content_rev: u8, gfx_activity: u16) -> Vec<u8> {
-        let offset = match format_rev {
-            0 => 24,
-            1 => {
-                if content_rev >= 4 {
-                    12
-                } else {
-                    16
-                }
-            }
-            2 => {
-                if content_rev == 0 {
-                    36
-                } else {
-                    28
-                }
-            }
-            3 => 42,
-            _ => 50,
-        };
-        // Allocate enough bytes to cover the offset + 2 (u16), plus some
-        // trailing data so `struct_size` validation passes.
-        let struct_size = (offset + 2 + 16) as u16;
-        let mut data = vec![0u8; struct_size as usize];
-        // Header
-        data[0..2].copy_from_slice(&struct_size.to_le_bytes());
-        data[2] = format_rev;
-        data[3] = content_rev;
-        // average_gfx_activity
-        data[offset..offset + 2].copy_from_slice(&gfx_activity.to_le_bytes());
-        data
+    #[test]
+    fn test_parse_nvidia_smi_csv_line() {
+        // Simulated nvidia-smi output for one device:
+        // index, utilization.gpu, memory.used, memory.total, temperature.gpu, power.draw, fan.speed
+        let line = "0, 45, 4096, 8192, 62, 150, 70";
+        let stats = parse_nvidia_smi_csv_line(line);
+        assert!(stats.is_some());
+        let stats = stats.unwrap();
+        assert_eq!(stats.device_id, "nvidia0");
+        assert_eq!(stats.vendor, "nvidia");
+        assert_eq!(stats.utilization_pct, Some(45));
+        assert_eq!(stats.temperature_c, Some(62));
+        assert_eq!(stats.power_w, Some(150));
+        assert_eq!(stats.fan_pct, Some(70));
+        assert!(stats.vram.is_some());
+        let vram = stats.vram.unwrap();
+        assert_eq!(vram.used_mib, 4096);
+        assert_eq!(vram.total_mib, 8192);
     }
 
     #[test]
-    fn test_parse_gpu_metrics_v1_0_percent() {
-        let blob = build_gpu_metrics_blob(0, 0, 42);
-        assert_eq!(parse_amd_gpu_metrics_gfx_activity(&blob), Some(42));
+    fn test_parse_nvidia_smi_csv_line_high_index() {
+        let line = "12, 88, 2048, 24576, 75, 300, 85";
+        let stats = parse_nvidia_smi_csv_line(line);
+        assert!(stats.is_some());
+        let stats = stats.unwrap();
+        assert_eq!(stats.device_id, "nvidia12");
+        assert_eq!(stats.utilization_pct, Some(88));
     }
 
     #[test]
-    fn test_parse_gpu_metrics_v1_0_zero() {
-        let blob = build_gpu_metrics_blob(0, 0, 0);
-        assert_eq!(parse_amd_gpu_metrics_gfx_activity(&blob), Some(0));
+    fn test_nvidia_device_id_format() {
+        let line = "0, 10, 100, 200, 30, 50, 60";
+        let stats = parse_nvidia_smi_csv_line(line).unwrap();
+        assert_eq!(stats.device_id, "nvidia0");
+
+        let line = "12, 10, 100, 200, 30, 50, 60";
+        let stats = parse_nvidia_smi_csv_line(line).unwrap();
+        assert_eq!(stats.device_id, "nvidia12");
     }
 
     #[test]
-    fn test_parse_gpu_metrics_v1_0_full() {
-        let blob = build_gpu_metrics_blob(0, 0, 100);
-        assert_eq!(parse_amd_gpu_metrics_gfx_activity(&blob), Some(100));
+    fn test_parse_nvidia_smi_csv_malformed() {
+        // Too few fields
+        assert!(parse_nvidia_smi_csv_line("0, 45").is_none());
+        // Empty line
+        assert!(parse_nvidia_smi_csv_line("").is_none());
+        // Non-numeric fields
+        assert!(parse_nvidia_smi_csv_line("abc, 45, 100, 200, 30, 50, 60").is_none());
+        // Extra fields
+        assert!(parse_nvidia_smi_csv_line("0, 45, 100, 200, 30, 50, 60, 99").is_none());
     }
 
     #[test]
-    fn test_parse_gpu_metrics_v1_1_percent() {
-        let blob = build_gpu_metrics_blob(1, 1, 73);
-        assert_eq!(parse_amd_gpu_metrics_gfx_activity(&blob), Some(73));
+    fn test_aggregate_utilization_mean() {
+        let devices = vec![
+            build_test_device("nvidia0", Some(50)),
+            build_test_device("nvidia1", Some(60)),
+            build_test_device("nvidia2", Some(70)),
+            build_test_device("nvidia3", Some(80)),
+        ];
+        assert_eq!(aggregate_utilization_mean(&devices), Some(65));
     }
 
     #[test]
-    fn test_parse_gpu_metrics_v1_3_percent() {
-        // v1_3: format_revision=1, content_revision=3 → offset 16
-        let blob = build_gpu_metrics_blob(1, 3, 55);
-        assert_eq!(parse_amd_gpu_metrics_gfx_activity(&blob), Some(55));
+    fn test_aggregate_utilization_empty() {
+        let devices: Vec<GpuDeviceStats> = vec![];
+        assert_eq!(aggregate_utilization_mean(&devices), None);
     }
 
     #[test]
-    fn test_parse_gpu_metrics_v1_4_percent() {
-        // v1_4: format_revision=1, content_revision=4 → offset 12
-        let blob = build_gpu_metrics_blob(1, 4, 85);
-        assert_eq!(parse_amd_gpu_metrics_gfx_activity(&blob), Some(85));
+    fn test_aggregate_utilization_single() {
+        let devices = vec![build_test_device("nvidia0", Some(42))];
+        assert_eq!(aggregate_utilization_mean(&devices), Some(42));
     }
 
     #[test]
-    fn test_parse_gpu_metrics_v1_5_centi_percent() {
-        // v1_5 with centi-percent: 7400 → 74%
-        let blob = build_gpu_metrics_blob(1, 5, 7400);
-        assert_eq!(parse_amd_gpu_metrics_gfx_activity(&blob), Some(74));
+    fn test_aggregate_utilization_with_none() {
+        let devices = vec![
+            build_test_device("nvidia0", Some(80)),
+            build_test_device("nvidia1", None),
+        ];
+        assert_eq!(aggregate_utilization_mean(&devices), Some(80));
     }
 
     #[test]
-    fn test_parse_gpu_metrics_v2_0_percent() {
-        let blob = build_gpu_metrics_blob(2, 0, 30);
-        assert_eq!(parse_amd_gpu_metrics_gfx_activity(&blob), Some(30));
+    fn test_aggregate_vram_sum() {
+        let devices = vec![
+            build_test_device_with_vram("nvidia0", Some(4096), Some(8192)),
+            build_test_device_with_vram("nvidia1", Some(8192), Some(16384)),
+        ];
+        let sum = aggregate_vram_sum(&devices);
+        assert!(sum.is_some());
+        let vram = sum.unwrap();
+        assert_eq!(vram.used_mib, 12288); // 4096 + 8192
+        assert_eq!(vram.total_mib, 24576); // 8192 + 16384
     }
 
     #[test]
-    fn test_parse_gpu_metrics_v2_1_percent() {
-        let blob = build_gpu_metrics_blob(2, 1, 65);
-        assert_eq!(parse_amd_gpu_metrics_gfx_activity(&blob), Some(65));
+    fn test_aggregate_vram_empty() {
+        let devices: Vec<GpuDeviceStats> = vec![];
+        assert_eq!(aggregate_vram_sum(&devices), None);
     }
 
     #[test]
-    fn test_parse_gpu_metrics_v2_1_centi_percent() {
-        // v2_1 with centi-percent: 5550 → 55%
-        let blob = build_gpu_metrics_blob(2, 1, 5550);
-        assert_eq!(parse_amd_gpu_metrics_gfx_activity(&blob), Some(55));
+    fn test_aggregate_vram_one_none() {
+        let devices = vec![
+            build_test_device_with_vram("nvidia0", Some(2048), Some(4096)),
+            build_test_device("nvidia1", Some(30)),
+        ];
+        let sum = aggregate_vram_sum(&devices);
+        assert!(sum.is_some());
+        let vram = sum.unwrap();
+        assert_eq!(vram.used_mib, 2048);
+        assert_eq!(vram.total_mib, 4096);
     }
 
-    #[test]
-    fn test_parse_gpu_metrics_v2_4_centi_percent() {
-        // v2_4 explicitly uses centi-percent: 10000 → 100%
-        let blob = build_gpu_metrics_blob(2, 4, 10000);
-        assert_eq!(parse_amd_gpu_metrics_gfx_activity(&blob), Some(100));
-    }
+    // ── test helpers ────────────────────────────────────────────────────
 
-    #[test]
-    fn test_parse_gpu_metrics_v3_0_percent() {
-        let blob = build_gpu_metrics_blob(3, 0, 15);
-        assert_eq!(parse_amd_gpu_metrics_gfx_activity(&blob), Some(15));
-    }
-
-    #[test]
-    fn test_parse_gpu_metrics_na_sentinel() {
-        // 0xFFFF means "not available" → should return None
-        let blob = build_gpu_metrics_blob(1, 1, 0xFFFF);
-        assert_eq!(parse_amd_gpu_metrics_gfx_activity(&blob), None);
-    }
-
-    #[test]
-    fn test_parse_gpu_metrics_truncated_data() {
-        // Data shorter than declared struct_size → None
-        let mut blob = build_gpu_metrics_blob(1, 1, 50);
-        // Set struct_size larger than actual data
-        let big_size = (blob.len() + 100) as u16;
-        blob[0..2].copy_from_slice(&big_size.to_le_bytes());
-        assert_eq!(parse_amd_gpu_metrics_gfx_activity(&blob), None);
-    }
-
-    #[test]
-    fn test_parse_gpu_metrics_too_short() {
-        assert_eq!(parse_amd_gpu_metrics_gfx_activity(&[]), None);
-        assert_eq!(parse_amd_gpu_metrics_gfx_activity(&[0u8; 3]), None);
-    }
-
-    #[test]
-    fn test_parse_gpu_metrics_unknown_format() {
-        let blob = build_gpu_metrics_blob(99, 0, 50);
-        assert_eq!(parse_amd_gpu_metrics_gfx_activity(&blob), None);
-    }
-
-    // ── power state fallback tests ──────────────────────────────────────
-
-    #[test]
-    fn test_power_state_d3hot_returns_zero() {
-        let dir = tempfile::tempdir().unwrap();
-        let card_dir = dir.path().join("card1").join("device");
-        std::fs::create_dir_all(&card_dir).unwrap();
-        std::fs::write(card_dir.join("power_state"), "D3hot\n").unwrap();
-        // The function uses a hardcoded glob pattern, so we can't easily
-        // unit-test it with a temp dir. Instead, test the logic directly.
-        let state = "D3hot";
-        let is_low_power = state.starts_with('D') && state != "D0";
-        assert!(is_low_power);
-        if is_low_power {
-            // Would return Some(0)
-            assert_eq!(0u8, 0);
+    fn build_test_device(device_id: &str, util: Option<u8>) -> GpuDeviceStats {
+        GpuDeviceStats {
+            device_id: device_id.to_string(),
+            vendor: "nvidia".to_string(),
+            utilization_pct: util,
+            vram: None,
+            temperature_c: None,
+            power_w: None,
+            fan_pct: None,
         }
     }
 
-    #[test]
-    fn test_power_state_d0_is_not_low_power() {
-        let state = "D0";
-        let is_low_power = state.starts_with('D') && state != "D0";
-        assert!(!is_low_power);
-    }
-
-    #[test]
-    fn test_power_state_d3cold_is_low_power() {
-        let state = "D3cold";
-        let is_low_power = state.starts_with('D') && state != "D0";
-        assert!(is_low_power);
-    }
-
-    #[test]
-    fn test_power_state_d1_is_low_power() {
-        let state = "D1";
-        let is_low_power = state.starts_with('D') && state != "D0";
-        assert!(is_low_power);
+    fn build_test_device_with_vram(
+        device_id: &str,
+        used: Option<u64>,
+        total: Option<u64>,
+    ) -> GpuDeviceStats {
+        let vram = match (used, total) {
+            (Some(u), Some(t)) => Some(VramInfo {
+                used_mib: u,
+                total_mib: t,
+            }),
+            _ => None,
+        };
+        GpuDeviceStats {
+            device_id: device_id.to_string(),
+            vendor: "nvidia".to_string(),
+            utilization_pct: None,
+            vram,
+            temperature_c: None,
+            power_w: None,
+            fan_pct: None,
+        }
     }
 }
