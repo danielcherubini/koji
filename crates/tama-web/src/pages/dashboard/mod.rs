@@ -487,6 +487,7 @@ pub fn Dashboard() -> impl IntoView {
                                                 state=m.state.clone()
                                                 loaded=None
                                                 enabled=None
+                                                error_message=m.error_message.clone()
                                                 on_load=on_load_cb
                                                 on_unload=on_unload_cb
                                                 load_busy=load_busy

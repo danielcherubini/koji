@@ -201,6 +201,7 @@ pub fn ModelCard(
     state: String,
     #[prop(default = None)] loaded: Option<bool>,
     #[prop(default = None)] enabled: Option<bool>,
+    #[prop(default = None)] error_message: Option<String>,
     #[prop(optional)] on_load: Option<Callback<String>>,
     #[prop(optional)] on_unload: Option<Callback<String>>,
     #[prop(optional)] load_busy: Option<RwSignal<bool>>,
@@ -250,6 +251,8 @@ pub fn ModelCard(
     let cache_type_v_clone = pips.cache_type_v.clone();
     let spec_types_clone = pips.spec_types.clone();
     let gpu_label_clone = pips.gpu_label.clone();
+    let error_message_clone = error_message.clone();
+    let effective_state_clone = effective_state.to_string();
 
     view! {
         <ListCard
@@ -336,6 +339,18 @@ pub fn ModelCard(
                     view! {
                         <span class="badge-pill badge-pill--base-model">{base}</span>
                     }.into_any()
+                } else {
+                    view! { <span/> }.into_any()
+                }}
+                // Error message for failed models
+                {if let Some(ref err) = error_message_clone {
+                    if effective_state_clone == "failed" {
+                        view! {
+                            <div class="model-row__error">"Error: " {err.clone()}</div>
+                        }.into_any()
+                    } else {
+                        view! { <span/> }.into_any()
+                    }
                 } else {
                     view! { <span/> }.into_any()
                 }}

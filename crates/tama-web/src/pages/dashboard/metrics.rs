@@ -92,6 +92,8 @@ pub struct ModelStatus {
     pub spec_types: Vec<String>,
     #[serde(default)]
     pub gpu_device: Option<String>,
+    #[serde(default)]
+    pub error_message: Option<String>,
 }
 
 /// Format a number with comma separators (e.g. `8460` → `"8,460"`).

@@ -38,12 +38,14 @@ impl ProxyState {
                 }
             }
 
-            let (loaded, state_str) = match best_state {
-                Some(ModelState::Ready { .. }) => (true, "ready".to_string()),
-                Some(ModelState::Starting { .. }) => (false, "loading".to_string()),
-                Some(ModelState::Unloading { .. }) => (false, "unloading".to_string()),
-                Some(ModelState::Failed { .. }) => (false, "failed".to_string()),
-                None => (false, "idle".to_string()),
+            let (loaded, state_str, error_message) = match best_state {
+                Some(ModelState::Ready { .. }) => (true, "ready".to_string(), None),
+                Some(ModelState::Starting { .. }) => (false, "loading".to_string(), None),
+                Some(ModelState::Unloading { .. }) => (false, "unloading".to_string(), None),
+                Some(ModelState::Failed { error, .. }) => {
+                    (false, "failed".to_string(), Some(error.clone()))
+                }
+                None => (false, "idle".to_string(), None),
             };
 
             out.push(crate::gpu::ModelStatus {
@@ -63,6 +65,7 @@ impl ProxyState {
                 cache_type_v: model_cfg.cache_type_v.clone(),
                 spec_types: model_cfg.spec_decoding.spec_types.clone(),
                 gpu_device: model_cfg.gpu_device.clone(),
+                error_message,
             });
         }
         // Stable order so dashboard rows don't shuffle between samples.

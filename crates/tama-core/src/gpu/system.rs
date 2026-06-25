@@ -85,7 +85,7 @@ pub struct MetricSample {
 }
 
 /// Per-model loaded/idle status, embedded in `MetricSample.models`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ModelStatus {
     pub id: String,
     /// Integer database id of the model_configs row, if known. Emitted so the
@@ -131,6 +131,9 @@ pub struct ModelStatus {
     /// unconfigured, or the backend is not llama.cpp. Display-only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu_device: Option<String>,
+    /// Error message when `state == "failed"`, surfaced on the dashboard.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
 }
 
 /// Collect a snapshot of system metrics using a caller-owned `System`.

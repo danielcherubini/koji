@@ -423,6 +423,7 @@ mod tests {
             cache_type_v: None,
             spec_types: vec![],
             gpu_device: gpu_device.map(|s| s.to_string()),
+            error_message: None,
         }
     }
 
