@@ -33,6 +33,11 @@
   padding: 0.75rem 1rem;
 }
 
+/* When throughput column is absent (no inference data), redistribute to 3 columns */
+.gpu-device-card__internal:not(:has(.gpu-device-card__throughput)) {
+  grid-template-columns: 1.4fr 1.2fr 1fr;  /* identity | bars | telemetry */
+}
+
 /* Vertical dividers between columns */
 .gpu-device-card__identity {
   border-right: 1px solid var(--border-color);
