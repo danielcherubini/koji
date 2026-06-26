@@ -14,9 +14,9 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Quick Stats
 
-- **Total Plans**: 122
+- **Total Plans**: 123
 - **Completed**: 120 ✅
-- **In Progress**: 0 🚧
+- **In Progress**: 1 🚧
 - **Remaining**: 2
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
@@ -24,6 +24,12 @@ This directory contains implementation plans for the Tama project. Each plan doc
 ---
 
 ## Completed Plans
+
+### In Progress
+
+| Plan | Description | PR / Git References |
+|------|-------------|---------------------|
+| [Network Dashboard Card](2026-06-26-network-dashboard-card.md) | Replace GPU/VRAM stat cards with Network throughput card (↓/↑ MiB/s, dual-line sparkline) | 🚧 IN PROGRESS |
 
 ### Recently Completed
 

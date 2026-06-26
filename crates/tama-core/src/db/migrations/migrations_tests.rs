@@ -988,3 +988,22 @@ fn test_migration_v29_adds_gpu_device_column() {
         "gpu_device column must exist after migration v29"
     );
 }
+
+/// Regression test: migration v30 must add net_rx_bytes and net_tx_bytes
+/// columns to system_metrics_history.
+#[test]
+fn test_migration_v30_adds_network_columns() {
+    let conn = Connection::open_in_memory().unwrap();
+    run(&conn).unwrap();
+
+    for col in ["net_rx_bytes", "net_tx_bytes"] {
+        let exists: i64 = conn
+            .query_row(
+                &format!("SELECT COUNT(*) FROM pragma_table_info('system_metrics_history') WHERE name='{}'", col),
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(exists, 1, "{} column must exist after migration v30", col);
+    }
+}

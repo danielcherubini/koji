@@ -107,6 +107,21 @@ pub fn format_system_metrics(sys: &SystemMetrics) -> String {
         );
     }
 
+    if let Some(ref net) = sys.network {
+        push_gauge_f64(
+            &mut out,
+            "tama:net_rx_mibps",
+            "Network download throughput (MiB/s).",
+            net.download_mibps,
+        );
+        push_gauge_f64(
+            &mut out,
+            "tama:net_tx_mibps",
+            "Network upload throughput (MiB/s).",
+            net.upload_mibps,
+        );
+    }
+
     out
 }
 
@@ -142,6 +157,39 @@ fn push_gauge_f32(out: &mut String, name: &str, help: &str, value: f32) {
     let formatted = format_value(value);
     out.push_str(&formatted);
     out.push('\n');
+}
+
+/// Push a gauge metric line (f64 value) to the output buffer.
+fn push_gauge_f64(out: &mut String, name: &str, help: &str, value: f64) {
+    out.push_str("# HELP ");
+    out.push_str(name);
+    out.push(' ');
+    out.push_str(help);
+    out.push('\n');
+    out.push_str("# TYPE ");
+    out.push_str(name);
+    out.push_str(" gauge\n");
+    out.push_str(name);
+    out.push(' ');
+    // Format with enough precision, removing trailing zeros
+    let formatted = format_value_f64(value);
+    out.push_str(&formatted);
+    out.push('\n');
+}
+
+/// Format an f64 value, removing unnecessary trailing zeros.
+fn format_value_f64(value: f64) -> String {
+    if value == 0.0 {
+        return "0.0".to_string();
+    }
+    if value.abs() < 1.0 {
+        // Use 3 decimal places for small values to preserve precision
+        format!("{:.3}", value)
+    } else if value.fract() == 0.0 {
+        format!("{:.1}", value)
+    } else {
+        format!("{:.2}", value)
+    }
 }
 
 /// Format an f32 value, removing unnecessary trailing zeros.
