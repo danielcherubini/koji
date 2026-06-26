@@ -86,8 +86,10 @@ pub fn SparklineChart(
     #[prop(default = Vec::new())] timestamps: Vec<i64>,
     #[prop(default = String::new())] unit_label: String,
     #[prop(default = Vec::new())] y_refs: Vec<f32>,
+    #[prop(default = Vec::new())] data2: Vec<f32>,
+    #[prop(default = String::new())] color2: String,
 ) -> impl IntoView {
-    let hover = RwSignal::new(None::<HoverPoint>);
+    let hover = RwSignal::new(None::<(HoverPoint, Option<HoverPoint>)>);
 
     // Guard against division by zero
     let safe_max = if max_value > 0.0 { max_value } else { 1.0 };
@@ -96,9 +98,13 @@ pub fn SparklineChart(
     let has_data = !data.is_empty();
     let timestamps_valid = !timestamps.is_empty() && timestamps.len() == data.len();
 
+    // Clone data2 for the hover closure (used later for path computation too)
+    let data2_for_hover = data2.clone();
+
     // Store unit_label and color in signals so closures can read them reactively
     let unit_label_signal = RwSignal::new(unit_label);
     let color_signal = RwSignal::new(color);
+    let color2_signal = RwSignal::new(color2);
 
     // Build path data strings (only if data exists)
     let (fill_path, line_path) = if has_data {
@@ -200,13 +206,30 @@ pub fn SparklineChart(
             50.0
         };
 
-        hover.set(Some(HoverPoint {
+        // Primary hover point
+        let primary_hp = HoverPoint {
             x_pct: precise_x,
             y_pct,
             value,
             index,
             ts_unix_ms: ts,
-        }));
+        };
+
+        // Secondary hover point (same X, data2's Y)
+        let secondary_hp = if !data2_for_hover.is_empty() {
+            let y2 = height - (data2_for_hover[index] / safe_max * height).clamp(0.0, height);
+            Some(HoverPoint {
+                x_pct: precise_x,
+                y_pct: y2,
+                value: data2_for_hover[index],
+                index,
+                ts_unix_ms: ts,
+            })
+        } else {
+            None
+        };
+
+        hover.set(Some((primary_hp, secondary_hp)));
     };
 
     let on_mouse_leave = move |_ev: leptos::ev::MouseEvent| {
@@ -226,15 +249,15 @@ pub fn SparklineChart(
 
     // Render hover overlay elements (SVG elements: vertical line + dot)
     let hover_overlay = move || {
-        hover.get().map(|hp| {
+        hover.get().map(|(hp_primary, hp_secondary)| {
             let c1 = color_signal.get();
             let c2 = c1.clone();
             view! {
                 // Vertical indicator line
                 <line
-                    x1=hp.x_pct
+                    x1=hp_primary.x_pct
                     y1="0"
-                    x2=hp.x_pct
+                    x2=hp_primary.x_pct
                     y2=height
                     stroke=c1
                     stroke-opacity="0.4"
@@ -243,37 +266,62 @@ pub fn SparklineChart(
                 />
                 // Highlighted dot on the data line
                 <circle
-                    cx=hp.x_pct
-                    cy=hp.y_pct
+                    cx=hp_primary.x_pct
+                    cy=hp_primary.y_pct
                     r="2"
                     fill=c2
                     stroke="var(--bg-secondary)"
                     stroke-width="1"
                 />
+                // Secondary dot (when data2 is active)
+                {hp_secondary.map(|shp| {
+                    let c3 = color2_signal.get();
+                    view! {
+                        <circle
+                            cx=shp.x_pct
+                            cy=shp.y_pct
+                            r="2"
+                            fill=c3
+                            stroke="var(--bg-secondary)"
+                            stroke-width="1"
+                        />
+                    }.into_any()
+                })}
             }
         })
     };
 
     // Tooltip HTML element rendered outside SVG, positioned absolutely
     let tooltip_html = move || {
-        hover.get().map(|hp| {
+        hover.get().map(|(hp_primary, hp_secondary)| {
             let unit = unit_label_signal.get();
-            let tooltip_value = format!(
-                "{:.1}{}",
-                hp.value,
-                if unit.is_empty() { "" } else { &unit }
-            );
-            let tooltip_time = hp.ts_unix_ms.map(format_relative_time).unwrap_or_default();
-            let left_style = format!("left: {}%;", hp.x_pct);
+            let c1 = color_signal.get();
+            let c2 = if hp_secondary.is_some() {
+                color2_signal.get()
+            } else {
+                String::new()
+            };
+            let left_style = format!("left: {}%;", hp_primary.x_pct);
 
             view! {
                 <div class="sparkline-tooltip" style=left_style>
-                    <span class="sparkline-tooltip-value">{tooltip_value}</span>
-                    {if tooltip_time.is_empty() {
+                    <span class="sparkline-tooltip-value" style=format!("color: {}", c1)>
+                        {format!("↓ {:.1}{}", hp_primary.value, if unit.is_empty() { "" } else { &unit })}
+                    </span>
+                    {if let Some(ref secondary) = hp_secondary {
+                        view! {
+                            <span class="sparkline-tooltip-value" style=format!("color: {}", c2)>
+                                {format!("↑ {:.1}{}", secondary.value, if unit.is_empty() { "" } else { &unit })}
+                            </span>
+                        }.into_any()
+                    } else {
+                        ().into_any()
+                    }}
+                    {if hp_primary.ts_unix_ms.map(format_relative_time).unwrap_or_default().is_empty() {
                         ().into_any()
                     } else {
                         view! {
-                            <span class="sparkline-tooltip-time">{tooltip_time}</span>
+                            <span class="sparkline-tooltip-time">{format_relative_time(hp_primary.ts_unix_ms.unwrap_or(0))}</span>
                         }.into_any()
                     }}
                 </div>
@@ -284,6 +332,30 @@ pub fn SparklineChart(
     // Data path fill and stroke colors (read once at render, no reactivity needed)
     let fill_color = color_signal.get_untracked();
     let stroke_color = color_signal.get_untracked();
+
+    // Data2 fill and stroke paths (when data2 is active)
+    let (fill_path2, line_path2) = if !data2.is_empty() {
+        let points2 = if data2.len() == 1 {
+            vec![data2[0], data2[0]]
+        } else {
+            data2.clone()
+        };
+        let mut fill2 = String::new();
+        let mut line2 = String::new();
+        let first_y2 = height - (points2[0] / safe_max * height).clamp(0.0, height);
+        fill2.push_str(&format!("M 0,{first_y2}"));
+        line2.push_str(&format!("M 0,{first_y2}"));
+        for (i, &value) in points2.iter().enumerate().skip(1) {
+            let x = (i as f32 / (points2.len() - 1) as f32) * 100.0;
+            let y = height - (value / safe_max * height).clamp(0.0, height);
+            fill2.push_str(&format!(" L {x},{y}"));
+            line2.push_str(&format!(" L {x},{y}"));
+        }
+        fill2.push_str(&format!(" L 100,{height} L 0,{height} Z"));
+        (fill2, line2)
+    } else {
+        (String::new(), String::new())
+    };
 
     view! {
         <div class="sparkline-container">
@@ -304,6 +376,18 @@ pub fn SparklineChart(
                     view! {
                         <path d=fill_path stroke="none" fill=fill_color fill-opacity="0.15"/>
                         <path d=line_path fill="none" stroke=stroke_color stroke-width="1.5"/>
+                    }.into_any()
+                } else {
+                    ().into_any()
+                }}
+
+                // Data2 fill and stroke paths (when data2 is active)
+                {if !data2.is_empty() {
+                    let fill_color2 = color2_signal.get_untracked();
+                    let stroke_color2 = fill_color2.clone();
+                    view! {
+                        <path d=fill_path2 stroke="none" fill=fill_color2 fill-opacity="0.15"/>
+                        <path d=line_path2 fill="none" stroke=stroke_color2 stroke-width="1.5"/>
                     }.into_any()
                 } else {
                     ().into_any()
@@ -363,5 +447,10 @@ mod tests {
         // Negative values should still produce output (though unusual)
         let result = format_duration_label(-1);
         assert!(result.contains("-"));
+    }
+
+    #[test]
+    fn test_format_relative_time_zero_returns_empty() {
+        assert_eq!(format_relative_time(0), "");
     }
 }
