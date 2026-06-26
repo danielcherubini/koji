@@ -1,6 +1,12 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkStats {
+    pub download_mibps: f64,
+    pub upload_mibps: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetricSample {
     pub ts_unix_ms: i64,
     pub cpu_usage_pct: f32,
@@ -32,6 +38,8 @@ pub struct MetricSample {
     /// Per-GPU device stats for this sample. Empty if no GPU is detected.
     #[serde(default)]
     pub gpus: Vec<GpuDeviceStats>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<NetworkStats>,
 }
 
 /// Frontend mirror of `tama_core::gpu::GpuDeviceStats`.

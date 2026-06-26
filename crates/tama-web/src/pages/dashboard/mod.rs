@@ -157,10 +157,10 @@ pub fn Dashboard() -> impl IntoView {
             let cpu_y_refs = vec![0.0, 100.0];
             let mem_y_refs = vec![mem_max];
 
-            let gpu_data: Vec<f32> = buf.iter().map(|s| s.gpu_utilization_pct.unwrap_or(0) as f32).collect();
-            let vram_data: Vec<f32> = buf.iter().map(|s| s.vram.as_ref().map(|v| v.used_mib as f32).unwrap_or(0.0)).collect();
-            let vram_max = buf.last().and_then(|h| h.vram.as_ref().map(|v| v.total_mib as f32)).unwrap_or(1.0);
-            let vram_y_refs = vec![vram_max];
+            // Network data extraction
+            let net_download_data: Vec<f32> = buf.iter().map(|s| s.network.as_ref().map(|n| n.download_mibps as f32).unwrap_or(0.0)).collect();
+            let net_upload_data: Vec<f32> = buf.iter().map(|s| s.network.as_ref().map(|n| n.upload_mibps as f32).unwrap_or(0.0)).collect();
+            let net_max = net_download_data.iter().chain(net_upload_data.iter()).cloned().fold(0.0_f32, f32::max).max(1.0);
 
             let all_models: Vec<ModelStatus> = buf.last().map(|h| h.models.clone()).unwrap_or_default();
             let gpus_for_labels = buf.last().map(|h| h.gpus.clone()).unwrap_or_default();
@@ -217,59 +217,35 @@ pub fn Dashboard() -> impl IntoView {
                         </div>
                     </div>
 
-                    // GPU card — only rendered if GPU data is present
-                    {if let Some(gpu_pct) = buf.last().and_then(|h| h.gpu_utilization_pct) {
-                        let h = buf.last().unwrap();
-                        let gpu_count = h.gpus.len();
-                        let gpu_subtitle = if gpu_count > 0 {
-                            format!("Aggregate Load · {} Nodes", gpu_count)
-                        } else {
-                            "of 100%".to_string()
-                        };
-                        view! {
+                    // Network card
+                    {match buf.last().and_then(|h| h.network.as_ref()) {
+                        Some(net) => view! {
                             <div class="stat-card">
-                                <div class="card-header">"GPU"</div>
-                                <div class="card-value">{format!("{}%", gpu_pct)}</div>
-                                <div class="card-secondary">{gpu_subtitle}</div>
+                                <div class="card-header">"Network"</div>
+                                <div class="network-rates">
+                                    <span class="network-rate network-rate-down">{format!("↓ {:.1} MiB/s", net.download_mibps)}</span>
+                                    <span class="network-rate network-rate-up">{format!("↑ {:.1} MiB/s", net.upload_mibps)}</span>
+                                </div>
                                 <div class="sparkline-container">
                                     <SparklineChart
-                                        data=gpu_data
-                                        max_value=100.0
-                                        color="var(--accent-yellow)".to_string()
+                                        data=net_download_data
+                                        data2=net_upload_data
+                                        max_value=net_max
+                                        color="var(--accent-blue)".to_string()
+                                        color2="var(--accent-green)".to_string()
                                         height=60.0
                                         timestamps=timestamps.clone()
-                                        unit_label="%".to_string()
-                                        y_refs=vec![0.0_f32, 100.0_f32]
+                                        unit_label="MiB/s".to_string()
                                     />
                                 </div>
                             </div>
-                        }.into_any()
-                    } else {
-                        view! { <div></div> }.into_any()
-                    }}
-
-                    // VRAM card — only rendered if VRAM data is present
-                    {if let Some(vram_info) = buf.last().and_then(|h| h.vram.as_ref()) {
-                        view! {
+                        }.into_any(),
+                        None => view! {
                             <div class="stat-card">
-                                <div class="card-header">"VRAM"</div>
-                                <div class="card-value">{format_number(vram_info.used_mib)}</div>
-                                <div class="card-secondary">{format!("of {} MiB", format_number(vram_info.total_mib))}</div>
-                                <div class="sparkline-container">
-                                    <SparklineChart
-                                        data=vram_data
-                                        max_value=vram_max
-                                        color="var(--accent-purple)".to_string()
-                                        height=60.0
-                                        timestamps=timestamps
-                                        unit_label="MiB".to_string()
-                                        y_refs=vram_y_refs
-                                    />
-                                </div>
+                                <div class="card-header">"Network"</div>
+                                <div class="card-value-empty">"—"</div>
                             </div>
-                        }.into_any()
-                    } else {
-                        view! { <div></div> }.into_any()
+                        }.into_any(),
                     }}
                 </div>
 
