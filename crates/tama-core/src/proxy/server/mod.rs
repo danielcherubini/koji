@@ -118,12 +118,26 @@ impl ProxyServer {
 
             // Network detection — done once before the loop
             let primary_interface = crate::network::get_primary_interface();
+            if let Some(ref iface) = primary_interface {
+                tracing::info!("Using primary network interface: {}", iface);
+            }
+
+            // Before the loop: Create Networks instance and establish baseline
             let mut net = sysinfo::Networks::new_with_refreshed_list();
             let mut prev_rx: u64 = 0;
             let mut prev_tx: u64 = 0;
 
-            // First refresh to establish baseline (discard first tick)
+            // First refresh to establish baseline
             net.refresh();
+
+            // Capture baseline cumulative values so the first tick doesn't include
+            // all historical bytes since system boot
+            if let Some(ref iface) = primary_interface {
+                if let Some(iface_data) = net.get(iface) {
+                    prev_rx = iface_data.total_received();
+                    prev_tx = iface_data.total_transmitted();
+                }
+            }
 
             loop {
                 // 1. Collect system metrics (spawn_blocking, unchanged pattern)
@@ -372,7 +386,7 @@ impl ProxyServer {
             spec_accept_pct: row.spec_accept_pct.map(|v| v as f32),
             spec_decoding_active: false,     // Transient — not in DB
             inference_last_updated_ms: None, // Transient — not in DB
-            network: None,                   // Not persisted in DB
+            network: None,                   // Throughput not reconstructable from single row
         }
     }
 
@@ -1051,6 +1065,14 @@ mod tests {
         assert_eq!(
             sample.models_loaded, 0,
             "Expected models_loaded counter to be 0 when no model is loaded"
+        );
+
+        // The network field should deserialize correctly from the SSE stream.
+        // In the test environment, a network interface is available so network stats
+        // are populated and round-trip through JSON serialization.
+        assert!(
+            sample.network.is_some(),
+            "network should be Some when a network interface is available"
         );
     }
 

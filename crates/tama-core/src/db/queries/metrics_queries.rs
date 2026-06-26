@@ -372,5 +372,7 @@ mod tests {
         assert_eq!(metrics[0].prompt_tps, Some(150.0));
         assert_eq!(metrics[0].cache_hit_pct, Some(92.3));
         assert_eq!(metrics[0].spec_accept_pct, Some(67.8));
+        assert_eq!(metrics[0].net_rx_bytes, Some(1048576));
+        assert_eq!(metrics[0].net_tx_bytes, Some(524288));
     }
 }

@@ -179,7 +179,13 @@ fn push_gauge_f64(out: &mut String, name: &str, help: &str, value: f64) {
 
 /// Format an f64 value, removing unnecessary trailing zeros.
 fn format_value_f64(value: f64) -> String {
-    if value.fract() == 0.0 {
+    if value == 0.0 {
+        return "0.0".to_string();
+    }
+    if value.abs() < 1.0 {
+        // Use 3 decimal places for small values to preserve precision
+        format!("{:.3}", value)
+    } else if value.fract() == 0.0 {
         format!("{:.1}", value)
     } else {
         format!("{:.2}", value)
