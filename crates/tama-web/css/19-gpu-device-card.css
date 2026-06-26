@@ -24,12 +24,6 @@
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
 }
 
-@media (min-width: 1200px) {
-  .gpu-device-grid {
-    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  }
-}
-
 /* Internal Card Grid — Horizontal (default, 1-2 GPUs) */
 .gpu-device-card__internal {
   display: grid;
