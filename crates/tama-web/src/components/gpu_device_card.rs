@@ -264,52 +264,55 @@ pub fn GpuDeviceCard(
                     </div>
                 </div>
 
-                // Column 3: Throughput (inference stats) — CONDITIONALLY RENDERED
-                {match state {
-                    GpuDeviceState::Active | GpuDeviceState::Loading => {
-                        if prompt_tps.is_some() || tps.is_some() {
-                            view! {
-                                <div class="gpu-device-card__throughput">
-                                    <div class="gpu-device-card__inference-cell">
-                                        <div class="gpu-device-card__inference-value">
-                                            {prompt_tps.map(|v| format!("{v:.0} tok/s")).unwrap_or_else(|| "—".to_string())}
+                // Column 3: Combined Throughput + Telemetry (2 sub-columns)
+                <div class="gpu-device-card__combined">
+                    // Sub-column A: Throughput (inference stats) — CONDITIONALLY RENDERED
+                    {match state {
+                        GpuDeviceState::Active | GpuDeviceState::Loading => {
+                            if prompt_tps.is_some() || tps.is_some() {
+                                view! {
+                                    <div class="gpu-device-card__throughput">
+                                        <div class="gpu-device-card__inference-cell">
+                                            <div class="gpu-device-card__inference-value">
+                                                {prompt_tps.map(|v| format!("{v:.0} tok/s")).unwrap_or_else(|| "—".to_string())}
+                                            </div>
+                                            <div class="gpu-device-card__inference-label">"Processing"</div>
                                         </div>
-                                        <div class="gpu-device-card__inference-label">"Processing"</div>
-                                    </div>
-                                    <div class="gpu-device-card__inference-cell">
-                                        <div class="gpu-device-card__inference-value">
-                                            {tps.map(|v| format!("{v:.0} tok/s")).unwrap_or_else(|| "—".to_string())}
+                                        <div class="gpu-device-card__inference-cell">
+                                            <div class="gpu-device-card__inference-value">
+                                                {tps.map(|v| format!("{v:.0} tok/s")).unwrap_or_else(|| "—".to_string())}
+                                            </div>
+                                            <div class="gpu-device-card__inference-label">"Generation"</div>
                                         </div>
-                                        <div class="gpu-device-card__inference-label">"Generation"</div>
                                     </div>
-                                </div>
-                            }.into_any()
-                        } else {
-                            view! { <span/> }.into_any()
+                                }.into_any()
+                            } else {
+                                view! { <span/> }.into_any()
+                            }
                         }
-                    }
-                    _ => view! { <span/> }.into_any()
-                }}
+                        _ => view! { <span/> }.into_any()
+                    }}
 
-                // Column 4: Telemetry
-                <div class="gpu-device-card__telemetry">
-                    <div class="gpu-device-card__telemetry-cell">
-                        <div class="gpu-device-card__telemetry-value">
-                            {device.temperature_c.map(|t| format!("{t}°C")).unwrap_or_else(|| "—".to_string())}
+                    // Sub-column B: Telemetry
+                    <div class="gpu-device-card__telemetry">
+                        <div class="gpu-device-card__telemetry-cell">
+                            <div class="gpu-device-card__telemetry-value">
+                                {device.temperature_c.map(|t| format!("{t}°C")).unwrap_or_else(|| "—".to_string())}
+                            </div>
+                            <div class="gpu-device-card__telemetry-label">"Temp"</div>
                         </div>
-                        <div class="gpu-device-card__telemetry-label">"Temp"</div>
-                    </div>
-                    <div class="gpu-device-card__telemetry-cell">
-                        <div class="gpu-device-card__telemetry-value">
-                            {device.power_w.map(|p| format!("{p}W")).unwrap_or_else(|| "—".to_string())}
+                        <div class="gpu-device-card__telemetry-cell">
+                            <div class="gpu-device-card__telemetry-value">
+                                {device.power_w.map(|p| format!("{p}W")).unwrap_or_else(|| "—".to_string())}
+                            </div>
+                            <div class="gpu-device-card__telemetry-label">"Power"</div>
                         </div>
-                        <div class="gpu-device-card__telemetry-label">"Power"</div>
-                    </div>
-                    <div class="gpu-device-card__telemetry-cell">
-                        <div class="gpu-device-card__telemetry-value">
-                            {device.fan_pct.map(|f| format!("{f}%")).unwrap_or_else(|| "—".to_string())}
+                        <div class="gpu-device-card__telemetry-cell">
+                            <div class="gpu-device-card__telemetry-value">
+                                {device.fan_pct.map(|f| format!("{f}%")).unwrap_or_else(|| "—".to_string())}
+                            </div>
+                            <div class="gpu-device-card__telemetry-label">"Fan"</div>
                         </div>
-                        <div class="gpu-device-card__telemetry-label">"Fan"</div>
                     </div>
                 </div>
             </div>

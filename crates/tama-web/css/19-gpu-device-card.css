@@ -25,17 +25,14 @@
 }
 
 /* Internal Card Layout — Horizontal (default, 1-2 GPUs) */
-/* Uses flexbox so missing children (e.g. throughput when no inference data) */
-/* naturally cause remaining children to expand and fill the space. */
+/* 3 columns: identity | bars | combined(throughput + telemetry) */
 .gpu-device-card__internal {
   display: flex;
   align-items: stretch;
   padding: 0.75rem 1rem;
 }
 
-/* Column sizing — all columns get equal flex (1) so they're evenly distributed. */
-/* When throughput is absent, identity/bars/telemetry each get ~33% of the row. */
-/* When throughput is present, all 4 columns each get ~25%. */
+/* Column 1: Identity */
 .gpu-device-card__identity {
   flex: 1;
   border-right: 1px solid var(--border-color);
@@ -43,6 +40,7 @@
   min-width: 0;
 }
 
+/* Column 2: Bars */
 .gpu-device-card__bars {
   flex: 1;
   border-right: 1px solid var(--border-color);
@@ -51,30 +49,44 @@
   min-width: 0;
 }
 
-.gpu-device-card__throughput {
+/* Column 3: Combined Throughput + Telemetry */
+.gpu-device-card__combined {
   flex: 1;
-  border-right: 1px solid var(--border-color);
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0;
   padding-left: 1rem;
-  padding-right: 1rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
   min-width: 0;
 }
 
+/* Sub-column A: Throughput (inference stats) */
+.gpu-device-card__throughput {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  border-right: 1px solid var(--border-color);
+  padding-right: 1rem;
+  min-width: 0;
+}
+
+/* Sub-column B: Telemetry */
 .gpu-device-card__telemetry {
-  flex: 1;
-  padding-left: 1rem;
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  display: flex;
+  flex-direction: column;
   gap: 0.5rem;
   text-align: center;
+  padding-left: 1rem;
   min-width: 0;
 }
 
 /* Portrait Mode Overrides (3+ GPUs) — stack vertically */
 .gpu-device-grid:has(> :nth-child(3)) .gpu-device-card__internal {
   flex-direction: column;
+}
+
+/* In portrait mode, combined column switches to single column */
+.gpu-device-grid:has(> :nth-child(3)) .gpu-device-card__combined {
+  grid-template-columns: 1fr;
 }
 
 /* Remove vertical dividers in portrait mode */
@@ -93,17 +105,23 @@
 
 /* Add section separators in portrait mode */
 .gpu-device-grid:has(> :nth-child(3)) .gpu-device-card__bars,
-.gpu-device-grid:has(> :nth-child(3)) .gpu-device-card__throughput,
-.gpu-device-grid:has(> :nth-child(3)) .gpu-device-card__telemetry {
+.gpu-device-grid:has(> :nth-child(3)) .gpu-device-card__combined {
   border-top: 1px solid var(--border-color);
   padding-top: 0.75rem;
   margin-top: 0.75rem;
 }
 
-/* Throughput switches to 2-column grid in portrait mode */
+/* In portrait mode, throughput sub-column uses 2-column grid */
 .gpu-device-grid:has(> :nth-child(3)) .gpu-device-card__throughput {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
+  gap: 0.5rem;
+}
+
+/* In portrait mode, telemetry sub-column uses 3-column grid */
+.gpu-device-grid:has(> :nth-child(3)) .gpu-device-card__telemetry {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
   gap: 0.5rem;
 }
 
