@@ -115,6 +115,16 @@ impl ProxyServer {
         let metrics_handle = tokio::spawn(async move {
             use std::time::{SystemTime, UNIX_EPOCH};
             let mut sys = sysinfo::System::new();
+
+            // Network detection — done once before the loop
+            let primary_interface = crate::network::get_primary_interface();
+            let mut net = sysinfo::Networks::new_with_refreshed_list();
+            let mut prev_rx: u64 = 0;
+            let mut prev_tx: u64 = 0;
+
+            // First refresh to establish baseline (discard first tick)
+            net.refresh();
+
             loop {
                 // 1. Collect system metrics (spawn_blocking, unchanged pattern)
                 let (snapshot, returned_sys) = tokio::task::spawn_blocking(move || {
@@ -127,6 +137,21 @@ impl ProxyServer {
                     (crate::gpu::SystemMetrics::default(), sysinfo::System::new())
                 });
                 sys = returned_sys;
+
+                // 1b. Collect network stats
+                let (network_stats, cum_rx, cum_tx) = if let Some(ref iface) = primary_interface {
+                    let (stats, rx, tx) =
+                        crate::network::collect_network_stats(iface, &mut net, prev_rx, prev_tx);
+                    prev_rx = rx;
+                    prev_tx = tx;
+                    (stats, rx, tx)
+                } else {
+                    (None, 0, 0)
+                };
+
+                // 1c. Attach network stats to the system snapshot
+                let mut snapshot = snapshot;
+                snapshot.network = network_stats.clone();
 
                 // Update the cached snapshot read by /tama/v1/system/health.
                 *metrics_state.system_metrics.write().await = snapshot.clone();
@@ -161,6 +186,7 @@ impl ProxyServer {
                         .map(|i| i.spec_decoding_active)
                         .unwrap_or(false),
                     inference_last_updated_ms: inference.as_ref().map(|i| i.last_updated_ms),
+                    network: network_stats.clone(),
                 };
 
                 // 5. Persist to SQLite (include inference fields in SystemMetricsRow)
@@ -177,6 +203,8 @@ impl ProxyServer {
                     prompt_tps: sample.prompt_tps.map(|v| v as f64),
                     cache_hit_pct: sample.cache_hit_pct.map(|v| v as f64),
                     spec_accept_pct: sample.spec_accept_pct.map(|v| v as f64),
+                    net_rx_bytes: Some(cum_rx as i64),
+                    net_tx_bytes: Some(cum_tx as i64),
                 };
                 // Persist (spawn_blocking, unchanged pattern)
                 let retention_secs = metrics_state
@@ -344,6 +372,7 @@ impl ProxyServer {
             spec_accept_pct: row.spec_accept_pct.map(|v| v as f32),
             spec_decoding_active: false,     // Transient — not in DB
             inference_last_updated_ms: None, // Transient — not in DB
+            network: None,                   // Not persisted in DB
         }
     }
 

@@ -18,6 +18,8 @@ pub struct SystemMetricsRow {
     pub prompt_tps: Option<f64>,
     pub cache_hit_pct: Option<f64>,
     pub spec_accept_pct: Option<f64>,
+    pub net_rx_bytes: Option<i64>,
+    pub net_tx_bytes: Option<i64>,
 }
 
 /// Insert one sample and prune anything older than `cutoff_ms` in a single
@@ -33,8 +35,9 @@ pub fn insert_system_metric(
         "INSERT INTO system_metrics_history
              (ts_unix_ms, cpu_usage_pct, ram_used_mib, ram_total_mib,
               gpu_utilization_pct, vram_used_mib, vram_total_mib, models_loaded,
-              tps, prompt_tps, cache_hit_pct, spec_accept_pct)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+              tps, prompt_tps, cache_hit_pct, spec_accept_pct,
+              net_rx_bytes, net_tx_bytes)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         (
             row.ts_unix_ms,
             row.cpu_usage_pct as f64,
@@ -48,6 +51,8 @@ pub fn insert_system_metric(
             row.prompt_tps,
             row.cache_hit_pct,
             row.spec_accept_pct,
+            row.net_rx_bytes,
+            row.net_tx_bytes,
         ),
     )?;
     tx.execute(
@@ -63,7 +68,8 @@ pub fn get_system_metrics_since(conn: &Connection, since_ms: i64) -> Result<Vec<
     let mut stmt = conn.prepare(
         "SELECT ts_unix_ms, cpu_usage_pct, ram_used_mib, ram_total_mib,
                  gpu_utilization_pct, vram_used_mib, vram_total_mib, models_loaded,
-                 tps, prompt_tps, cache_hit_pct, spec_accept_pct
+                 tps, prompt_tps, cache_hit_pct, spec_accept_pct,
+                 net_rx_bytes, net_tx_bytes
           FROM system_metrics_history
           WHERE ts_unix_ms > ?1
           ORDER BY ts_unix_ms ASC",
@@ -82,6 +88,8 @@ pub fn get_system_metrics_since(conn: &Connection, since_ms: i64) -> Result<Vec<
             prompt_tps: row.get(9)?,
             cache_hit_pct: row.get(10)?,
             spec_accept_pct: row.get(11)?,
+            net_rx_bytes: row.get(12)?,
+            net_tx_bytes: row.get(13)?,
         })
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -96,7 +104,8 @@ pub fn get_recent_system_metrics(conn: &Connection, limit: i64) -> Result<Vec<Sy
     let mut stmt = conn.prepare(
         "SELECT ts_unix_ms, cpu_usage_pct, ram_used_mib, ram_total_mib,
                  gpu_utilization_pct, vram_used_mib, vram_total_mib, models_loaded,
-                 tps, prompt_tps, cache_hit_pct, spec_accept_pct
+                 tps, prompt_tps, cache_hit_pct, spec_accept_pct,
+                 net_rx_bytes, net_tx_bytes
           FROM system_metrics_history
           ORDER BY ts_unix_ms DESC
           LIMIT ?1",
@@ -115,6 +124,8 @@ pub fn get_recent_system_metrics(conn: &Connection, limit: i64) -> Result<Vec<Sy
             prompt_tps: row.get(9)?,
             cache_hit_pct: row.get(10)?,
             spec_accept_pct: row.get(11)?,
+            net_rx_bytes: row.get(12)?,
+            net_tx_bytes: row.get(13)?,
         })
     })?;
     let mut rows: Vec<SystemMetricsRow> = rows.collect::<rusqlite::Result<_>>()?;
@@ -142,7 +153,9 @@ mod tests {
                 tps REAL,
                 prompt_tps REAL,
                 cache_hit_pct REAL,
-                spec_accept_pct REAL
+                spec_accept_pct REAL,
+                net_rx_bytes BIGINT,
+                net_tx_bytes BIGINT
             )",
         )
         .unwrap();
@@ -164,6 +177,8 @@ mod tests {
             prompt_tps: None,
             cache_hit_pct: None,
             spec_accept_pct: None,
+            net_rx_bytes: None,
+            net_tx_bytes: None,
         }
     }
 
@@ -298,6 +313,8 @@ mod tests {
             prompt_tps: None,
             cache_hit_pct: None,
             spec_accept_pct: None,
+            net_rx_bytes: None,
+            net_tx_bytes: None,
         };
         insert_system_metric(&conn, &row, 0).unwrap();
 
@@ -343,6 +360,8 @@ mod tests {
             prompt_tps: Some(150.0),
             cache_hit_pct: Some(92.3),
             spec_accept_pct: Some(67.8),
+            net_rx_bytes: Some(1048576),
+            net_tx_bytes: Some(524288),
         };
         insert_system_metric(&conn, &row, 0).unwrap();
 

@@ -46,6 +46,9 @@ pub struct SystemMetrics {
     /// Per-GPU device stats, one entry per detected device.
     #[serde(default)]
     pub gpus: Vec<GpuDeviceStats>,
+    /// Network throughput statistics, None if no interface detected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<crate::network::NetworkStats>,
 }
 
 /// A timestamped snapshot of system + proxy metrics, suitable for persistence
@@ -85,6 +88,9 @@ pub struct MetricSample {
     /// Unix ms timestamp of the last inference update — transient, not persisted.
     #[serde(default)]
     pub inference_last_updated_ms: Option<i64>,
+    /// Network throughput statistics for this sample.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<crate::network::NetworkStats>,
 }
 
 /// Per-model loaded/idle status, embedded in `MetricSample.models`.
@@ -178,6 +184,7 @@ pub fn collect_system_metrics_with(sys: &mut System) -> SystemMetrics {
         gpu_utilization_pct,
         vram,
         gpus,
+        network: None,
     }
 }
 
