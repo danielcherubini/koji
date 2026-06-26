@@ -14,10 +14,10 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Quick Stats
 
-- **Total Plans**: 123
+- **Total Plans**: 124
 - **Completed**: 121 ✅
-- **In Progress**: 0
-- **Remaining**: 2
+- **In Progress**: 1
+- **Remaining**: 1
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
 
@@ -27,7 +27,9 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ### In Progress
 
-*(none)*
+| Plan | Description | PR / Git References |
+|------|-------------|---------------------|
+| [GPU Card Responsive Layout](2026-06-26-gpu-card-responsive-layout.md) | Horizontal strip cards for 1-2 GPUs, portrait grid for 3+ — single internal structure reconfigured by CSS `:has()` | 🚧 IN PROGRESS |
 
 ### Recently Completed
 
