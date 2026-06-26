@@ -49,33 +49,33 @@
   min-width: 0;
 }
 
-/* Column 3: Combined Throughput + Telemetry */
+/* Column 3: Combined Throughput + Telemetry (vertical stack of sub-rows) */
 .gpu-device-card__combined {
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding-left: 1rem;
+  min-width: 0;
+}
+
+/* Sub-row A: Throughput (inference stats) — horizontal 2-cell row */
+.gpu-device-card__throughput {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 0;
-  padding-left: 1rem;
-  min-width: 0;
-}
-
-/* Sub-column A: Throughput (inference stats) */
-.gpu-device-card__throughput {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  border-right: 1px solid var(--border-color);
-  padding-right: 1rem;
-  min-width: 0;
-}
-
-/* Sub-column B: Telemetry */
-.gpu-device-card__telemetry {
-  display: flex;
-  flex-direction: column;
   gap: 0.5rem;
   text-align: center;
-  padding-left: 1rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border-color);
+  min-width: 0;
+}
+
+/* Sub-row B: Telemetry — horizontal 3-cell row */
+.gpu-device-card__telemetry {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.5rem;
+  text-align: center;
   min-width: 0;
 }
 
@@ -84,22 +84,15 @@
   flex-direction: column;
 }
 
-/* In portrait mode, combined column switches to single column */
-.gpu-device-grid:has(> :nth-child(3)) .gpu-device-card__combined {
-  grid-template-columns: 1fr;
-}
-
 /* Remove vertical dividers in portrait mode */
 .gpu-device-grid:has(> :nth-child(3)) .gpu-device-card__identity,
-.gpu-device-grid:has(> :nth-child(3)) .gpu-device-card__bars,
-.gpu-device-grid:has(> :nth-child(3)) .gpu-device-card__throughput {
+.gpu-device-grid:has(> :nth-child(3)) .gpu-device-card__bars {
   border-right: none;
   padding-right: 0;
 }
 
 .gpu-device-grid:has(> :nth-child(3)) .gpu-device-card__bars,
-.gpu-device-grid:has(> :nth-child(3)) .gpu-device-card__throughput,
-.gpu-device-grid:has(> :nth-child(3)) .gpu-device-card__telemetry {
+.gpu-device-grid:has(> :nth-child(3)) .gpu-device-card__combined {
   padding-left: 0;
 }
 
@@ -109,20 +102,6 @@
   border-top: 1px solid var(--border-color);
   padding-top: 0.75rem;
   margin-top: 0.75rem;
-}
-
-/* In portrait mode, throughput sub-column uses 2-column grid */
-.gpu-device-grid:has(> :nth-child(3)) .gpu-device-card__throughput {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 0.5rem;
-}
-
-/* In portrait mode, telemetry sub-column uses 3-column grid */
-.gpu-device-grid:has(> :nth-child(3)) .gpu-device-card__telemetry {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 0.5rem;
 }
 
 /* Identity Column */
