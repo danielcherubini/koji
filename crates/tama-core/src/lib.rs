@@ -18,6 +18,7 @@ pub mod db;
 pub mod gpu;
 pub mod logging;
 pub mod models;
+pub mod network;
 pub mod platform;
 pub mod process;
 pub mod profiles;
