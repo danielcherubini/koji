@@ -33,10 +33,11 @@
   padding: 0.75rem 1rem;
 }
 
-/* Column sizing — each column gets a flex ratio. */
-/* When throughput is absent, identity/bars/telemetry expand to fill the row. */
+/* Column sizing — all columns get equal flex (1) so they're evenly distributed. */
+/* When throughput is absent, identity/bars/telemetry each get ~33% of the row. */
+/* When throughput is present, all 4 columns each get ~25%. */
 .gpu-device-card__identity {
-  flex: 1.4;
+  flex: 1;
   border-right: 1px solid var(--border-color);
   padding-right: 1rem;
   min-width: 0;
@@ -51,7 +52,7 @@
 }
 
 .gpu-device-card__throughput {
-  flex: 0.6;
+  flex: 1;
   border-right: 1px solid var(--border-color);
   padding-left: 1rem;
   padding-right: 1rem;
