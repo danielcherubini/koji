@@ -245,10 +245,9 @@ impl ProxyState {
             }
         });
 
-        // Wait for health check to pass
+        // Wait for health check to pass — single success is enough.
         let timeout = Duration::from_secs(self.config.read().await.proxy.startup_timeout_secs);
         let start = Instant::now();
-        let mut consecutive_successes: u32 = 0;
         let mut health_ok = false;
 
         loop {
@@ -270,26 +269,12 @@ impl ProxyState {
                 break;
             }
 
-            if let Ok(response) = super::process::check_health(&health_url, Some(30)).await {
+            if let Ok(response) = super::process::check_health(&health_url, Some(5)).await {
                 if response.status().is_success() {
-                    consecutive_successes += 1;
-                    if consecutive_successes >= 2 {
-                        debug!(
-                            "Health check confirmed for server '{}' ({} consecutive successes)",
-                            server_name, consecutive_successes
-                        );
-                        health_ok = true;
-                        break;
-                    }
-                    debug!(
-                        "Health check passed for server '{}' ({}/2 consecutive)",
-                        server_name, consecutive_successes
-                    );
-                } else {
-                    consecutive_successes = 0;
+                    debug!("Health check passed for server '{}'", server_name);
+                    health_ok = true;
+                    break;
                 }
-            } else {
-                consecutive_successes = 0;
             }
         }
 
@@ -1012,10 +997,9 @@ impl ProxyState {
             }
         });
 
-        // Health check: poll every 500ms, require 2 consecutive successes
+        // Health check: poll every 500ms, single success is enough.
         let timeout = Duration::from_secs(self.config.read().await.proxy.startup_timeout_secs);
         let start = Instant::now();
-        let mut consecutive_successes: u32 = 0;
         let mut health_ok = false;
 
         loop {
@@ -1036,26 +1020,12 @@ impl ProxyState {
                 break;
             }
 
-            if let Ok(response) = super::process::check_health(&health_url, Some(30)).await {
+            if let Ok(response) = super::process::check_health(&health_url, Some(5)).await {
                 if response.status().is_success() {
-                    consecutive_successes += 1;
-                    if consecutive_successes >= 2 {
-                        debug!(
-                            "Health check confirmed for TTS backend '{}' ({} consecutive successes)",
-                            backend_name, consecutive_successes
-                        );
-                        health_ok = true;
-                        break;
-                    }
-                    debug!(
-                        "Health check passed for TTS backend '{}' ({}/2 consecutive)",
-                        backend_name, consecutive_successes
-                    );
-                } else {
-                    consecutive_successes = 0;
+                    debug!("Health check passed for TTS backend '{}'", backend_name);
+                    health_ok = true;
+                    break;
                 }
-            } else {
-                consecutive_successes = 0;
             }
         }
 
@@ -1303,10 +1273,9 @@ impl ProxyState {
             }
         });
 
-        // 12. Health poll loop
+        // 12. Health poll loop — single success is enough.
         let timeout = Duration::from_secs(self.config.read().await.proxy.startup_timeout_secs);
         let start = Instant::now();
-        let mut consecutive_successes: u32 = 0;
 
         loop {
             tokio::time::sleep(Duration::from_millis(500)).await;
@@ -1337,21 +1306,11 @@ impl ProxyState {
                 ));
             }
 
-            if let Ok(response) = super::process::check_health(&health_url, Some(30)).await {
+            if let Ok(response) = super::process::check_health(&health_url, Some(5)).await {
                 if response.status().is_success() {
-                    consecutive_successes += 1;
-                    if consecutive_successes >= 2 {
-                        debug!(
-                            "Health check confirmed for compaction backend ({} consecutive successes)",
-                            consecutive_successes
-                        );
-                        break;
-                    }
-                } else {
-                    consecutive_successes = 0;
+                    debug!("Health check passed for compaction backend");
+                    break;
                 }
-            } else {
-                consecutive_successes = 0;
             }
         }
 

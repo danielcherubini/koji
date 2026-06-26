@@ -1,13 +1,27 @@
 /* GPU Device Card — per-GPU stats card for the dashboard */
 
+/* Card Container */
 .dashboard-gpus {
   margin: 1.5rem 0;
 }
 
+.gpu-device-card {
+  display: flex;
+  flex-direction: column;
+  /* Override .card padding (1.5rem) to avoid double padding with __internal */
+  padding: 0;
+}
+
+/* Outer Grid — Stack vs Multi-Column */
 .gpu-device-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  grid-template-columns: 1fr;       /* default: stacked (1-2 GPUs) */
   gap: 12px;
+}
+
+/* 3+ children → multi-column grid */
+.gpu-device-grid:has(> :nth-child(3)) {
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
 }
 
 @media (min-width: 1200px) {
@@ -15,16 +29,91 @@
     grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   }
 }
-.gpu-device-card {
-  display: flex;
-  flex-direction: column;
+
+/* Internal Card Grid — Horizontal (default, 1-2 GPUs) */
+.gpu-device-card__internal {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 0.6fr 1fr;  /* identity | bars | throughput | telemetry */
+  grid-template-rows: auto auto;
+  gap: 0;
+  padding: 0.75rem 1rem;
 }
 
+/* Vertical dividers between columns */
+.gpu-device-card__identity {
+  border-right: 1px solid var(--border-color);
+  padding-right: 1rem;
+}
+
+.gpu-device-card__bars {
+  border-right: 1px solid var(--border-color);
+  padding-left: 1rem;
+  padding-right: 1rem;
+}
+
+.gpu-device-card__throughput {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  border-right: 1px solid var(--border-color);
+  padding-left: 1rem;
+  padding-right: 1rem;
+}
+
+.gpu-device-card__throughput:empty {
+  display: none;
+}
+
+.gpu-device-card__telemetry {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.5rem;
+  text-align: center;
+  padding-left: 1rem;
+}
+
+/* Portrait Mode Overrides (3+ GPUs) */
+.gpu-device-grid:has(> :nth-child(3)) .gpu-device-card__internal {
+  grid-template-columns: 1fr;
+  grid-template-rows: auto;
+}
+
+/* Remove vertical dividers in portrait mode */
+.gpu-device-grid:has(> :nth-child(3)) .gpu-device-card__identity,
+.gpu-device-grid:has(> :nth-child(3)) .gpu-device-card__bars,
+.gpu-device-grid:has(> :nth-child(3)) .gpu-device-card__throughput {
+  border-right: none;
+  padding-right: 0;
+}
+
+.gpu-device-grid:has(> :nth-child(3)) .gpu-device-card__bars,
+.gpu-device-grid:has(> :nth-child(3)) .gpu-device-card__throughput,
+.gpu-device-grid:has(> :nth-child(3)) .gpu-device-card__telemetry {
+  padding-left: 0;
+}
+
+/* Add section separators in portrait mode */
+.gpu-device-grid:has(> :nth-child(3)) .gpu-device-card__bars,
+.gpu-device-grid:has(> :nth-child(3)) .gpu-device-card__throughput,
+.gpu-device-grid:has(> :nth-child(3)) .gpu-device-card__telemetry {
+  border-top: 1px solid var(--border-color);
+  padding-top: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+/* Throughput switches to 2-column grid in portrait mode */
+.gpu-device-grid:has(> :nth-child(3)) .gpu-device-card__throughput {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0.5rem;
+}
+
+/* Identity Column */
 .gpu-device-card__header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 0.75rem;
+  margin-bottom: 0.25rem;
 }
 
 .gpu-device-card__title {
@@ -33,6 +122,31 @@
   color: var(--text-primary);
 }
 
+.gpu-device-card__model-section {
+  margin-top: 0.25rem;
+}
+
+.gpu-device-card__model-header {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 0.25rem;
+}
+
+.gpu-device-card__model-body {
+  font-size: 0.8125rem;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  min-height: 1.2em;
+  /* Overflow handling */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Bars Column */
 .gpu-device-card__row {
   margin-bottom: 0.5rem;
 }
@@ -62,67 +176,7 @@
   background: linear-gradient(90deg, var(--accent-purple) 0%, var(--accent-pink) 100%);
 }
 
-.gpu-device-card__model-section {
-  margin-top: 0.75rem;
-  padding-top: 0.75rem;
-  border-top: 1px solid var(--border-color);
-}
-
-.gpu-device-card__model-header {
-  font-size: 0.7rem;
-  font-weight: 600;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  margin-bottom: 0.25rem;
-}
-
-.gpu-device-card__model-body {
-  font-size: 0.8125rem;
-  color: var(--text-primary);
-  font-family: var(--font-mono);
-  min-height: 1.2em;
-}
-
-.gpu-device-card__telemetry {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 0.5rem;
-  margin-top: 0.75rem;
-  padding-top: 0.75rem;
-  border-top: 1px solid var(--border-color);
-}
-
-.gpu-device-card__telemetry-cell {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  text-align: center;
-}
-
-.gpu-device-card__telemetry-value {
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--text-primary);
-  font-family: var(--font-mono);
-}
-
-.gpu-device-card__telemetry-label {
-  font-size: 11px;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.gpu-device-card__inference {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 0.5rem;
-  margin-top: 0.75rem;
-  padding-top: 0.75rem;
-  border-top: 1px solid var(--border-color);
-}
-
+/* Throughput Column — inference cell styles */
 .gpu-device-card__inference-cell {
   display: flex;
   flex-direction: column;
@@ -138,6 +192,27 @@
 }
 
 .gpu-device-card__inference-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Telemetry Column */
+.gpu-device-card__telemetry-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.gpu-device-card__telemetry-value {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+}
+
+.gpu-device-card__telemetry-label {
   font-size: 11px;
   color: var(--text-muted);
   text-transform: uppercase;

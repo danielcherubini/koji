@@ -175,7 +175,7 @@ async fn _start_backend(
             ));
         }
 
-        if let Ok(response) = check_health(&health_url, Some(30)).await {
+        if let Ok(response) = check_health(&health_url, Some(5)).await {
             if response.status().is_success() {
                 info!("Backend '{}' is healthy", server_name);
                 healthy = true;
