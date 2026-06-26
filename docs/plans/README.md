@@ -15,8 +15,8 @@ This directory contains implementation plans for the Tama project. Each plan doc
 ## Quick Stats
 
 - **Total Plans**: 124
-- **Completed**: 121 ✅
-- **In Progress**: 1
+- **Completed**: 122 ✅
+- **In Progress**: 0
 - **Remaining**: 1
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
@@ -27,14 +27,13 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ### In Progress
 
-| Plan | Description | PR / Git References |
-|------|-------------|---------------------|
-| [GPU Card Responsive Layout](2026-06-26-gpu-card-responsive-layout.md) | Horizontal strip cards for 1-2 GPUs, portrait grid for 3+ — single internal structure reconfigured by CSS `:has()` | 🚧 IN PROGRESS |
+*(none)*
 
 ### Recently Completed
 
 | Plan | Description | PR / Git References |
 |------|-------------|---------------------|
+| [GPU Card Responsive Layout](2026-06-26-gpu-card-responsive-layout.md) | Horizontal strip cards for 1-2 GPUs, portrait grid for 3+ — single internal structure reconfigured by CSS `:has()` | #123 `40b2969b` ✅ COMPLETED |
 | [Network Dashboard Card](2026-06-26-network-dashboard-card.md) | Replace GPU/VRAM stat cards with Network throughput card (↓/↑ MiB/s, dual-line sparkline) | #121 `d3f8ded5`, `64b16b55`, `faf483e8`, `b9847704`, `2cc6e44d` ✅ COMPLETED |
 | [GPU Overview Dashboard](2025-06-24-gpu-overview-dashboard.md) | Per-GPU device cards on the dashboard (util, VRAM, loaded model, telemetry) powered by per-device nvidia-smi/AMD sysfs queries | #120 ✅ COMPLETED |
 | [GPU Device Selection](2025-06-24-gpu-device-selection.md) | Add per-model GPU device assignment (gpu_device field, --device flag injection, --gpu-device CLI flag) for multi-GPU setups | #119 `006638e3`, `6950c964`, `791457cf`, `3ac05a3a` ✅ COMPLETED |
