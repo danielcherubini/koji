@@ -24,57 +24,56 @@
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
 }
 
-/* Internal Card Grid — Horizontal (default, 1-2 GPUs) */
+/* Internal Card Layout — Horizontal (default, 1-2 GPUs) */
+/* Uses flexbox so missing children (e.g. throughput when no inference data) */
+/* naturally cause remaining children to expand and fill the space. */
 .gpu-device-card__internal {
-  display: grid;
-  grid-template-columns: 1.4fr 1fr 0.6fr 1fr;  /* identity | bars | throughput | telemetry */
-  grid-template-rows: auto auto;
-  gap: 0;
+  display: flex;
+  align-items: stretch;
   padding: 0.75rem 1rem;
 }
 
-/* When throughput column is absent (no inference data), redistribute to 3 columns */
-.gpu-device-card__internal:not(:has(.gpu-device-card__throughput)) {
-  grid-template-columns: 1.4fr 1.2fr 1fr;  /* identity | bars | telemetry */
-}
-
-/* Vertical dividers between columns */
+/* Column sizing — each column gets a flex ratio. */
+/* When throughput is absent, identity/bars/telemetry expand to fill the row. */
 .gpu-device-card__identity {
+  flex: 1.4;
   border-right: 1px solid var(--border-color);
   padding-right: 1rem;
+  min-width: 0;
 }
 
 .gpu-device-card__bars {
+  flex: 1;
   border-right: 1px solid var(--border-color);
   padding-left: 1rem;
   padding-right: 1rem;
+  min-width: 0;
 }
 
 .gpu-device-card__throughput {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
+  flex: 0.6;
   border-right: 1px solid var(--border-color);
   padding-left: 1rem;
   padding-right: 1rem;
-}
-
-.gpu-device-card__throughput:empty {
-  display: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
 }
 
 .gpu-device-card__telemetry {
+  flex: 1;
+  padding-left: 1rem;
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 0.5rem;
   text-align: center;
-  padding-left: 1rem;
+  min-width: 0;
 }
 
-/* Portrait Mode Overrides (3+ GPUs) */
+/* Portrait Mode Overrides (3+ GPUs) — stack vertically */
 .gpu-device-grid:has(> :nth-child(3)) .gpu-device-card__internal {
-  grid-template-columns: 1fr;
-  grid-template-rows: auto;
+  flex-direction: column;
 }
 
 /* Remove vertical dividers in portrait mode */
