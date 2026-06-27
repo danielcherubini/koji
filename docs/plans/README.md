@@ -14,8 +14,8 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Quick Stats
 
-- **Total Plans**: 124
-- **Completed**: 122 ✅
+- **Total Plans**: 125
+- **Completed**: 123 ✅
 - **In Progress**: 0
 - **Remaining**: 1
 
@@ -33,6 +33,7 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 | Plan | Description | PR / Git References |
 |------|-------------|---------------------|
+| [Split Large Files](2026-06-27-split-large-files.md) | Split 4 files exceeding 1,000 LOC (lifecycle 1410, crud 1222, server 1172, download 1096) into focused sub-modules | #124 `bbca22cb`, `ed3fe8a6`, `55bf5769`, `3625b42f`, `5821ef43` ✅ COMPLETED |
 | [GPU Card Responsive Layout](2026-06-26-gpu-card-responsive-layout.md) | Horizontal strip cards for 1-2 GPUs, portrait grid for 3+ — single internal structure reconfigured by CSS `:has()` | #123 `40b2969b` ✅ COMPLETED |
 | [Network Dashboard Card](2026-06-26-network-dashboard-card.md) | Replace GPU/VRAM stat cards with Network throughput card (↓/↑ MiB/s, dual-line sparkline) | #121 `d3f8ded5`, `64b16b55`, `faf483e8`, `b9847704`, `2cc6e44d` ✅ COMPLETED |
 | [GPU Overview Dashboard](2025-06-24-gpu-overview-dashboard.md) | Per-GPU device cards on the dashboard (util, VRAM, loaded model, telemetry) powered by per-device nvidia-smi/AMD sysfs queries | #120 ✅ COMPLETED |
