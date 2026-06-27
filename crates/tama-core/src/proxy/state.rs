@@ -45,7 +45,7 @@ impl ProxyState {
             download_queue: download_queue.clone(),
             config_write_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
             backend_logs: crate::backends::log_stream::BackendLogManager::default(),
-            inference_stats: tokio::sync::watch::channel(None).0,
+            inference_stats: tokio::sync::watch::channel(std::collections::HashMap::new()).0,
             gpu_devices_cache: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             // ── Web UI fields ──
             #[cfg(feature = "web-ui")]

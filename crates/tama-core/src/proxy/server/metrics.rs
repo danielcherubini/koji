@@ -83,8 +83,18 @@ pub fn start_metrics_collector(
             // Update the cached snapshot read by /tama/v1/system/health.
             *metrics_state.system_metrics.write().await = snapshot.clone();
 
-            // 2. Read latest inference stats from watch channel
-            let inference = *metrics_state.inference_stats.borrow();
+            // 2. Read latest inference stats from watch channel (per-server HashMap)
+            // Aggregate across all servers: use the most recently updated server's stats
+            // for numeric fields; OR the spec_decoding_active flag across all servers.
+            // Clone out of the borrow guard so it doesn't live across the .await below.
+            let inference_map = metrics_state.inference_stats.borrow().clone();
+            let latest_server = inference_map.values().max_by_key(|s| s.last_updated_ms);
+            let tps = latest_server.and_then(|s| s.tps);
+            let prompt_tps = latest_server.and_then(|s| s.prompt_tps);
+            let cache_hit_pct = latest_server.and_then(|s| s.cache_hit_pct);
+            let spec_accept_pct = latest_server.and_then(|s| s.spec_accept_pct);
+            let spec_decoding_active = inference_map.values().any(|s| s.spec_decoding_active);
+            let inference_last_updated_ms = latest_server.map(|s| s.last_updated_ms);
 
             // 3. Collect model statuses
             let model_statuses = metrics_state.collect_model_statuses().await;
@@ -104,12 +114,12 @@ pub fn start_metrics_collector(
                 gpus: snapshot.gpus.clone(),
                 models_loaded,
                 models: model_statuses,
-                tps: inference.as_ref().and_then(|i| i.tps),
-                prompt_tps: inference.as_ref().and_then(|i| i.prompt_tps),
-                cache_hit_pct: inference.as_ref().and_then(|i| i.cache_hit_pct),
-                spec_accept_pct: inference.as_ref().and_then(|i| i.spec_accept_pct),
-                spec_decoding_active: inference.map(|i| i.spec_decoding_active).unwrap_or(false),
-                inference_last_updated_ms: inference.as_ref().map(|i| i.last_updated_ms),
+                tps,
+                prompt_tps,
+                cache_hit_pct,
+                spec_accept_pct,
+                spec_decoding_active,
+                inference_last_updated_ms,
                 network: network_stats.clone(),
             };
 

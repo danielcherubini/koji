@@ -8,6 +8,7 @@ use axum::{
 use bytes::Bytes;
 use futures_util::stream::StreamExt;
 use serde_json::Value as JsonValue;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::SystemTime;
 use tracing::info;
@@ -92,14 +93,15 @@ pub fn build_forward_uri(backend_url: &str, parts: &Parts) -> Option<String> {
 
 /// Process a complete SSE line, rewriting the `model` field in JSON data lines.
 /// If `inference_stats` is provided, also extracts `timings` from parsed JSON
-/// and updates the watch channel (streaming responses include timings in a
-/// final data chunk before `[DONE]`).
+/// and updates the per-server HashMap in the watch channel (streaming responses
+/// include timings in a final data chunk before `[DONE]`).
 fn process_sse_line(
     line: &str,
     model_name: Option<&str>,
+    server_name: &str,
     out: &mut String,
     inference_stats: Option<
-        &std::sync::Arc<tokio::sync::watch::Sender<Option<LatestInferenceStats>>>,
+        &std::sync::Arc<tokio::sync::watch::Sender<HashMap<String, LatestInferenceStats>>>,
     >,
 ) {
     if let Some(data_content) = line.strip_prefix("data: ") {
@@ -109,8 +111,8 @@ fn process_sse_line(
         } else if let Ok(mut json_value) = serde_json::from_str::<JsonValue>(trimmed) {
             // Extract inference stats from timings if sender is available
             if let Some(sender) = inference_stats {
-                if let Some(stats) = extract_inference_stats(&json_value, sender) {
-                    sender.send_replace(Some(stats));
+                if let Some(_stats) = extract_inference_stats(server_name, &json_value, sender) {
+                    // stats are already inserted into the HashMap inside extract_inference_stats
                 }
             }
             if let Some(name) = model_name {
@@ -134,12 +136,13 @@ fn process_sse_line(
 
 /// Extract inference stats from a llama_cpp `timings` object in a JSON response.
 ///
-/// Returns `None` if the response has no `timings` field or it cannot be parsed.
-/// Returns `Some(LatestInferenceStats)` with computed fields otherwise.
+/// Inserts the stats into the per-server HashMap keyed by `server_name` and sends
+/// the updated map via the watch channel. Returns the computed stats.
 /// Division by zero (prompt_n == 0, draft_n == 0) produces `None` for that field.
 pub fn extract_inference_stats(
+    server_name: &str,
     json: &serde_json::Value,
-    inference_stats: &tokio::sync::watch::Sender<Option<LatestInferenceStats>>,
+    inference_stats: &tokio::sync::watch::Sender<HashMap<String, LatestInferenceStats>>,
 ) -> Option<LatestInferenceStats> {
     let timings = json.get("timings")?;
 
@@ -161,13 +164,14 @@ pub fn extract_inference_stats(
         .unwrap_or_default()
         .as_millis() as i64;
 
-    // Read previous spec_decoding_active flag (sticky: once true, stays true)
+    // Read previous spec_decoding_active flag for THIS server (sticky: once true, stays true)
     let prev_active = inference_stats
         .borrow()
-        .and_then(|s| Some(s.spec_decoding_active))
+        .get(server_name)
+        .map(|s| s.spec_decoding_active)
         .unwrap_or(false);
 
-    Some(LatestInferenceStats {
+    let stats = LatestInferenceStats {
         tps: Some(predicted_per_second as f32),
         prompt_tps: Some(prompt_per_second as f32),
         cache_hit_pct: if prompt_n > 0 {
@@ -182,7 +186,14 @@ pub fn extract_inference_stats(
         },
         spec_decoding_active: draft_n > 0 || prev_active,
         last_updated_ms: now_ms,
-    })
+    };
+
+    // Insert into per-server HashMap and send updated map
+    let mut map = inference_stats.borrow().clone();
+    map.insert(server_name.to_string(), stats);
+    inference_stats.send_replace(map);
+
+    Some(stats)
 }
 
 pub async fn forward_request(
@@ -399,6 +410,7 @@ pub async fn forward_request(
                 // Streaming response — rewrite the model name in each SSE chunk.
                 // Uses unfold to own the partial-line buffer across chunks (Send-safe).
                 let model_name: Option<String> = model_name.map(|s| s.to_string());
+                let server_name_owned = server_name.to_string();
                 // Wrap inference_stats sender in Arc so it can be shared across
                 // async unfold iterations (watch::Sender is Clone but Arc avoids
                 // per-iteration cloning and keeps a single owned reference).
@@ -408,6 +420,7 @@ pub async fn forward_request(
                     (byte_stream, String::new()),
                     move |(mut stream, mut line_buf)| {
                         let model_name = model_name.clone();
+                        let server_name = server_name_owned.clone();
                         let inference_stats = inference_stats.clone();
                         async move {
                             let chunk_result = stream.next().await?;
@@ -424,6 +437,7 @@ pub async fn forward_request(
                                             process_sse_line(
                                                 &line,
                                                 model_name.as_deref(),
+                                                &server_name,
                                                 &mut out,
                                                 Some(&inference_stats),
                                             );
@@ -446,9 +460,8 @@ pub async fn forward_request(
                 let new_body = if let Ok(parsed) = serde_json::from_slice::<JsonValue>(&body_bytes)
                 {
                     // Extract inference stats from timings (before rewrite — timings unaffected by model name change)
-                    if let Some(stats) = extract_inference_stats(&parsed, &state.inference_stats) {
-                        state.inference_stats.send_replace(Some(stats));
-                    }
+                    let _stats =
+                        extract_inference_stats(server_name, &parsed, &state.inference_stats);
                     let rewritten = rewrite_json_model_name(parsed, model_name);
                     serde_json::to_vec(&rewritten).unwrap_or(body_bytes.to_vec())
                 } else {
@@ -535,8 +548,8 @@ mod tests {
 
     // ── extract_inference_stats tests ─────────────────────────────────────
 
-    fn make_sender() -> watch::Sender<Option<LatestInferenceStats>> {
-        watch::channel(None).0
+    fn make_sender() -> watch::Sender<HashMap<String, LatestInferenceStats>> {
+        watch::channel(HashMap::new()).0
     }
 
     #[test]
@@ -555,7 +568,7 @@ mod tests {
             }
         });
 
-        let result = extract_inference_stats(&json, &sender);
+        let result = extract_inference_stats("test-server", &json, &sender);
 
         assert!(result.is_some());
         let stats = result.unwrap();
@@ -565,6 +578,11 @@ mod tests {
         assert_eq!(stats.spec_accept_pct, Some(80.0f32)); // 8/10 * 100
         assert!(stats.spec_decoding_active);
         assert!(stats.last_updated_ms > 0);
+        // Verify stats are stored in the HashMap under the server key
+        let map = sender.borrow();
+        assert!(map.contains_key("test-server"));
+        let stored = map.get("test-server").unwrap();
+        assert_eq!(stored.tps, Some(50.5f32));
     }
 
     #[test]
@@ -575,7 +593,7 @@ mod tests {
             "choices": []
         });
 
-        let result = extract_inference_stats(&json, &sender);
+        let result = extract_inference_stats("test-server", &json, &sender);
 
         assert!(result.is_none());
     }
@@ -594,7 +612,7 @@ mod tests {
             }
         });
 
-        let result = extract_inference_stats(&json, &sender);
+        let result = extract_inference_stats("test-server", &json, &sender);
 
         assert!(result.is_some());
         let stats = result.unwrap();
@@ -617,7 +635,7 @@ mod tests {
             }
         });
 
-        let result = extract_inference_stats(&json, &sender);
+        let result = extract_inference_stats("test-server", &json, &sender);
 
         assert!(result.is_some());
         let stats = result.unwrap();
@@ -635,7 +653,7 @@ mod tests {
             }
         });
 
-        let result = extract_inference_stats(&json, &sender);
+        let result = extract_inference_stats("test-server", &json, &sender);
 
         assert!(result.is_some());
         let stats = result.unwrap();
@@ -648,15 +666,18 @@ mod tests {
 
     #[test]
     fn test_extract_inference_stats_spec_decoding_sticky() {
-        let (sender, _rx) =
-            watch::channel::<Option<LatestInferenceStats>>(Some(LatestInferenceStats {
+        let initial_map = HashMap::from_iter([(
+            "test-server".to_string(),
+            LatestInferenceStats {
                 tps: Some(10.0),
                 prompt_tps: None,
                 cache_hit_pct: None,
                 spec_accept_pct: None,
                 spec_decoding_active: true,
                 last_updated_ms: 100,
-            }));
+            },
+        )]);
+        let (sender, _rx) = watch::channel(initial_map);
         let json = serde_json::json!({
             "timings": {
                 "predicted_per_second": 40.0,
@@ -668,7 +689,7 @@ mod tests {
             }
         });
 
-        let result = extract_inference_stats(&json, &sender);
+        let result = extract_inference_stats("test-server", &json, &sender);
 
         assert!(result.is_some());
         let stats = result.unwrap();
@@ -900,6 +921,7 @@ mod tests {
         process_sse_line(
             "data: {\"model\": \"backend-model\", \"choices\": []}",
             Some("user-model"),
+            "test-server",
             &mut out,
             None,
         );
@@ -914,6 +936,7 @@ mod tests {
         process_sse_line(
             "data: {\"model\": \"backend-model\", \"choices\": []}",
             None,
+            "test-server",
             &mut out,
             None,
         );
@@ -925,7 +948,13 @@ mod tests {
     #[test]
     fn test_process_sse_line_passes_done_unchanged() {
         let mut out = String::new();
-        process_sse_line("data: [DONE]", Some("any-model"), &mut out, None);
+        process_sse_line(
+            "data: [DONE]",
+            Some("any-model"),
+            "test-server",
+            &mut out,
+            None,
+        );
         // DONE is pushed as-is (no trailing newline added by this function)
         assert_eq!(out, "data: [DONE]");
     }
@@ -933,28 +962,46 @@ mod tests {
     #[test]
     fn test_process_sse_line_passes_comment_unchanged() {
         let mut out = String::new();
-        process_sse_line(": heartbeat", Some("any-model"), &mut out, None);
+        process_sse_line(
+            ": heartbeat",
+            Some("any-model"),
+            "test-server",
+            &mut out,
+            None,
+        );
         assert_eq!(out, ": heartbeat");
     }
 
     #[test]
     fn test_process_sse_line_passes_empty_line_unchanged() {
         let mut out = String::new();
-        process_sse_line("", Some("any-model"), &mut out, None);
+        process_sse_line("", Some("any-model"), "test-server", &mut out, None);
         assert_eq!(out, "");
     }
 
     #[test]
     fn test_process_sse_line_handles_invalid_json() {
         let mut out = String::new();
-        process_sse_line("data: not valid json {", Some("any-model"), &mut out, None);
+        process_sse_line(
+            "data: not valid json {",
+            Some("any-model"),
+            "test-server",
+            &mut out,
+            None,
+        );
         assert_eq!(out, "data: not valid json {");
     }
 
     #[test]
     fn test_process_sse_line_handles_non_data_lines() {
         let mut out = String::new();
-        process_sse_line("event: message", Some("any-model"), &mut out, None);
+        process_sse_line(
+            "event: message",
+            Some("any-model"),
+            "test-server",
+            &mut out,
+            None,
+        );
         assert_eq!(out, "event: message");
     }
 
@@ -964,13 +1011,20 @@ mod tests {
         // Lines without trailing newline are not processed as complete SSE lines.
         let mut out = String::new();
         // First line with newline - should be processed
-        process_sse_line("data: {\"model\": \"a\"}\n", Some("user"), &mut out, None);
+        process_sse_line(
+            "data: {\"model\": \"a\"}\n",
+            Some("user"),
+            "test-server",
+            &mut out,
+            None,
+        );
         assert!(out.contains("user"), "output: {}", out);
     }
 
     #[test]
     fn test_process_sse_line_extracts_inference_stats() {
-        let (sender, mut rx) = watch::channel::<Option<LatestInferenceStats>>(None);
+        let (sender, mut rx) =
+            watch::channel::<HashMap<String, LatestInferenceStats>>(HashMap::new());
         let sender = std::sync::Arc::new(sender);
         let mut out = String::new();
 
@@ -978,17 +1032,18 @@ mod tests {
         process_sse_line(
             "data: {\"model\": \"test\", \"choices\": [], \"timings\": {\"predicted_per_second\": 42.5, \"prompt_per_second\": 100.0, \"cache_n\": 50, \"prompt_n\": 100, \"draft_n\": 0, \"draft_n_accepted\": 0}}",
             Some("user-model"),
+            "test-server",
             &mut out,
             Some(&sender),
         );
 
         // Verify the SSE output was rewritten
         assert!(out.contains("user-model"), "output: {}", out);
-        // Verify inference stats were extracted and sent
+        // Verify inference stats were extracted and stored in the HashMap
         assert!(rx.has_changed().is_ok());
-        let stats = rx.borrow_and_update();
-        assert!(stats.is_some());
-        let stats = stats.as_ref().unwrap();
+        let map = rx.borrow_and_update();
+        assert_eq!(map.len(), 1);
+        let stats = map.get("test-server").unwrap();
         assert_eq!(stats.tps, Some(42.5f32));
         assert_eq!(stats.cache_hit_pct, Some(50.0f32)); // 50/100 * 100
     }
