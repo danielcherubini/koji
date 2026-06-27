@@ -81,6 +81,7 @@ pub fn Dashboard() -> impl IntoView {
     // leaving buttons permanently disabled with "Loading…" text.
     let load_busy = RwSignal::new(false);
     let unload_busy = RwSignal::new(false);
+    let cancel_busy = RwSignal::new(false);
 
     // Pull Model modal
     let pull_modal_open = RwSignal::new(false);
@@ -107,6 +108,17 @@ pub fn Dashboard() -> impl IntoView {
                 .send()
                 .await;
             unload_busy.set(false);
+        }
+    });
+    let cancel_action: Action<String, (), LocalStorage> = Action::new_unsync(move |id: &String| {
+        let id = id.clone();
+        async move {
+            cancel_busy.set(true);
+            // Ignore errors — SSE will push updated model state.
+            let _ = post_request(&format!("/tama/v1/models/{}/cancel", id))
+                .send()
+                .await;
+            cancel_busy.set(false);
         }
     });
 
@@ -314,6 +326,9 @@ pub fn Dashboard() -> impl IntoView {
                                         let on_unload_cb = Callback::new(move |id: String| {
                                             unload_action.dispatch(id);
                                         });
+                                        let on_cancel_cb = Callback::new(move |id: String| {
+                                            cancel_action.dispatch(id);
+                                        });
                                         let gpu_label = model_gpu_label(&gpus_for_labels, &m);
                                         view! {
                                             <ModelCard
@@ -339,8 +354,10 @@ pub fn Dashboard() -> impl IntoView {
                                                 error_message=m.error_message.clone()
                                                 on_load=on_load_cb
                                                 on_unload=on_unload_cb
+                                                on_cancel=on_cancel_cb
                                                 load_busy=load_busy
                                                 unload_busy=unload_busy
+                                                cancel_busy=cancel_busy
                                             />
                                         }
                                     }).collect::<Vec<_>>()}

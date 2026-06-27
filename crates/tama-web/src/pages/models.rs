@@ -75,6 +75,19 @@ pub fn Models() -> impl IntoView {
         }
     });
 
+    let cancel_busy = RwSignal::new(false);
+    let cancel_action: Action<String, (), LocalStorage> = Action::new_unsync(move |id: &String| {
+        let id = id.clone();
+        async move {
+            cancel_busy.set(true);
+            let _ = post_request(&format!("/tama/v1/models/{}/cancel", id))
+                .send()
+                .await;
+            refresh.update(|n| *n += 1);
+            cancel_busy.set(false);
+        }
+    });
+
     // Fire POST /api/models/:id/refresh for every model sequentially. Safe to
     // run without progress streaming because refresh is a pair of small HTTP
     // calls per model (no downloads, no hashing).
@@ -202,6 +215,9 @@ pub fn Models() -> impl IntoView {
                                         let on_unload_cb = Callback::new(move |id: String| {
                                             unload_action.dispatch(id);
                                         });
+                                        let on_cancel_cb = Callback::new(move |id: String| {
+                                            cancel_action.dispatch(id);
+                                        });
                                         view! {
                                             <ModelCard
                                                 id=m.id.to_string()
@@ -217,6 +233,8 @@ pub fn Models() -> impl IntoView {
                                                 enabled=Some(m.enabled)
                                                 on_load=on_load_cb
                                                 on_unload=on_unload_cb
+                                                on_cancel=on_cancel_cb
+                                                cancel_busy=cancel_busy
                                             />
                                         }
                                     }).collect::<Vec<_>>()}

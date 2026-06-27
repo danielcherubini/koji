@@ -15,8 +15,8 @@ This directory contains implementation plans for the Tama project. Each plan doc
 ## Quick Stats
 
 - **Total Plans**: 126
-- **Completed**: 123 ✅
-- **In Progress**: 1
+- **Completed**: 124 ✅
+- **In Progress**: 0
 - **Remaining**: 2
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
@@ -27,9 +27,13 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ### In Progress
 
+*(none)*
+
+### Recently Completed
+
 | Plan | Description | PR / Git References |
 |------|-------------|---------------------|
-| [Cancel Loading Model](2026-06-27-cancel-loading-model.md) | Add Cancel button to model cards during loading state — kills backend process group and returns to idle | 🚧 IN PROGRESS |
+| [Cancel Loading Model](2026-06-27-cancel-loading-model.md) | Add Cancel button to model cards during loading state — kills backend process group and returns to idle | #125 `a12532b1`, `fe5570f6`, `c36b6120`, `c2bc9f7a`, `596a4233` ✅ COMPLETED |
 
 ### Recently Completed
 

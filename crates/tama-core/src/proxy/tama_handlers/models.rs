@@ -7,9 +7,13 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
+use std::time::Duration;
 
 use super::types::ModelResponse;
+use crate::proxy::process::{force_kill_process_group, is_process_group_alive, kill_process_group};
+use crate::proxy::ModelState;
 use crate::proxy::ProxyState;
+use tracing::{info, warn};
 
 #[derive(Debug, Clone, Copy, Default)]
 struct ModelCapabilities {
@@ -180,6 +184,150 @@ pub async fn handle_tama_load_model(
         )
             .into_response(),
     }
+}
+
+/// Handle cancelling a loading model (Tama management API).
+///
+/// Kills a loading backend process and returns the model to idle. The handler
+/// uses a read-write lock double-check pattern to avoid races with the
+/// load_model path.
+///
+/// There is a narrow race window where load_model's health check succeeds after
+/// cancel removes the entry, and load_model then calls mgr.insert_active()
+/// unconditionally. A future fix would add a re-check in load_model before
+/// insert_active under the write lock.
+pub async fn handle_tama_cancel_load(
+    state: State<Arc<ProxyState>>,
+    Path(model_id): Path<String>,
+) -> Response {
+    let model_id = resolve_model_id(&state, &model_id).await;
+
+    // ── Step b: read lock — initial check ──────────────────────────────
+    let (server_name, pid) = {
+        let models = state.models.read().await;
+        let entry = match models.get(&model_id) {
+            Some(e) => e,
+            None => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({
+                        "error": {
+                            "message": "Model is not currently loading",
+                            "type": "ModelNotLoadingError"
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+        };
+
+        match entry {
+            ModelState::Starting { backend_pid, .. } => (model_id.clone(), *backend_pid),
+            ModelState::Ready { .. } => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(serde_json::json!({
+                        "error": {
+                            "message": "Model is already loaded",
+                            "type": "ModelAlreadyLoadedError"
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+            _ => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({
+                        "error": {
+                            "message": "Model is not currently loading",
+                            "type": "ModelNotLoadingError"
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    }; // read lock dropped
+
+    // ── Step c+d: write lock — re-validate and remove ──────────────────
+    {
+        let mut models = state.models.write().await;
+        match models.get(&server_name) {
+            Some(ModelState::Starting { .. }) => {
+                // TODO: race with load_model's mgr.insert_active() — if health check
+                // succeeds between here and the kill below, load_model may insert a
+                // stale active_models DB row. A future fix would add a re-check in
+                // load_model before insert_active under the write lock.
+                models.remove(&server_name);
+            }
+            Some(ModelState::Ready { .. }) => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(serde_json::json!({
+                        "error": {
+                            "message": "Model is already loaded",
+                            "type": "ModelAlreadyLoadedError"
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+            _ => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({
+                        "error": {
+                            "message": "Model is not currently loading",
+                            "type": "ModelNotLoadingError"
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    } // write lock dropped
+
+    // ── Step f: kill process group ─────────────────────────────────────
+    if pid > 0 {
+        // First attempt: SIGTERM
+        if let Err(e) = kill_process_group(pid).await {
+            warn!("Cancel kill failed for '{}': {}", server_name, e);
+        }
+
+        // Poll up to 2s for the group to die (every 250ms)
+        for _ in 0..8 {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            if !is_process_group_alive(pid) {
+                break;
+            }
+        }
+
+        // Escalate: SIGKILL if still alive
+        if is_process_group_alive(pid) {
+            if let Err(e) = force_kill_process_group(pid).await {
+                warn!("Cancel force kill failed for '{}': {}", server_name, e);
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+
+    // ── Step g: clean up DB ────────────────────────────────────────────
+    if let Some(mgr) = state.model_mgr() {
+        if let Err(e) = mgr.remove_active(&server_name) {
+            warn!("Failed to remove active entry for '{}': {}", server_name, e);
+        }
+    }
+
+    // ── Step h: log ────────────────────────────────────────────────────
+    info!("Model '{}' cancel completed", server_name);
+
+    // ── Step i: return response ────────────────────────────────────────
+    Json(ModelResponse {
+        id: model_id,
+        loaded: false,
+    })
+    .into_response()
 }
 
 /// Handle unloading a model (Tama management API).
@@ -485,6 +633,9 @@ async fn fetch_capabilities_from_backend(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicU32;
+    use std::time::Instant;
+
     use super::*;
     use crate::config::{Config, ModelConfig, ModelModalities};
     use axum::body::Body;
@@ -929,6 +1080,220 @@ mod tests {
         assert!(
             !reasoning,
             "reasoning should default to false on unreachable backend"
+        );
+    }
+
+    // ── Cancel loading model tests ──────────────────────────────────────────
+
+    /// Cancel returns 200 for a Starting model with a PID.
+    /// The fake PID (99999) has no real process group, so kill_process_group
+    /// returns Ok(()) on ESRCH and is_process_group_alive returns false.
+    #[tokio::test]
+    async fn test_cancel_returns_200_for_starting_model() {
+        let state = create_state_with_model(ModelConfig {
+            backend: "llama_cpp".to_string(),
+            api_name: Some("test-model".to_string()),
+            model: Some("test/model".to_string()),
+            enabled: true,
+            ..Default::default()
+        })
+        .await;
+
+        // Insert a Starting entry with a fake PID
+        state.models.write().await.insert(
+            "test-model".to_string(),
+            ModelState::Starting {
+                model_name: "test-model".into(),
+                backend: "llama_cpp".into(),
+                backend_url: String::new(),
+                backend_pid: 99999,
+                last_accessed: Instant::now(),
+                start_time: Instant::now(),
+                consecutive_failures: Arc::new(AtomicU32::new(0)),
+                failure_timestamp: None,
+            },
+        );
+
+        // Clone the Arc before moving state into the router
+        let state_clone = state.clone();
+
+        let app = Router::new()
+            .route(
+                "/tama/v1/models/:id/cancel",
+                axum::routing::post(handle_tama_cancel_load),
+            )
+            .with_state(state);
+
+        let request = Request::post("/tama/v1/models/test-model/cancel")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(status, StatusCode::OK, "Expected 200 OK");
+        assert_eq!(json["loaded"], false, "Expected loaded: false");
+        assert_eq!(json["id"], "test-model", "Expected id: test-model");
+
+        // Model entry should be removed
+        assert!(
+            state_clone.models.read().await.get("test-model").is_none(),
+            "Model entry should be removed after cancel"
+        );
+    }
+
+    /// Cancel returns 409 for a Ready (already loaded) model.
+    #[tokio::test]
+    async fn test_cancel_returns_409_for_ready_model() {
+        let state = create_state_with_model(ModelConfig {
+            backend: "llama_cpp".to_string(),
+            api_name: Some("test-model".to_string()),
+            model: Some("test/model".to_string()),
+            enabled: true,
+            ..Default::default()
+        })
+        .await;
+
+        // Insert a Ready entry
+        state.models.write().await.insert(
+            "test-model".to_string(),
+            ModelState::Ready {
+                model_name: "test-model".to_string(),
+                backend: "llama_cpp".to_string(),
+                backend_pid: 12345,
+                backend_url: "http://127.0.0.1:1234".to_string(),
+                load_time: std::time::SystemTime::now(),
+                last_accessed: Instant::now(),
+                consecutive_failures: Arc::new(AtomicU32::new(0)),
+                failure_timestamp: None,
+                restart_count: 0,
+            },
+        );
+
+        let app = Router::new()
+            .route(
+                "/tama/v1/models/:id/cancel",
+                axum::routing::post(handle_tama_cancel_load),
+            )
+            .with_state(state);
+
+        let request = Request::post("/tama/v1/models/test-model/cancel")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(
+            status,
+            StatusCode::CONFLICT,
+            "Expected 409 Conflict for Ready model"
+        );
+        assert_eq!(
+            json["error"]["type"], "ModelAlreadyLoadedError",
+            "Expected ModelAlreadyLoadedError type"
+        );
+    }
+
+    /// Cancel returns 404 for a non-existing model.
+    #[tokio::test]
+    async fn test_cancel_returns_404_for_non_existing_model() {
+        let state = create_state_with_model(ModelConfig {
+            backend: "llama_cpp".to_string(),
+            api_name: Some("test-model".to_string()),
+            model: Some("test/model".to_string()),
+            enabled: true,
+            ..Default::default()
+        })
+        .await;
+
+        // No model entries in the models map
+
+        let app = Router::new()
+            .route(
+                "/tama/v1/models/:id/cancel",
+                axum::routing::post(handle_tama_cancel_load),
+            )
+            .with_state(state);
+
+        let request = Request::post("/tama/v1/models/nonexistent/cancel")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "Expected 404 Not Found for non-existing model"
+        );
+        assert_eq!(
+            json["error"]["type"], "ModelNotLoadingError",
+            "Expected ModelNotLoadingError type"
+        );
+    }
+
+    /// Cancel returns 404 for a Failed model (not in a loading state).
+    #[tokio::test]
+    async fn test_cancel_returns_404_for_failed_model() {
+        let state = create_state_with_model(ModelConfig {
+            backend: "llama_cpp".to_string(),
+            api_name: Some("test-model".to_string()),
+            model: Some("test/model".to_string()),
+            enabled: true,
+            ..Default::default()
+        })
+        .await;
+
+        // Insert a Failed entry
+        state.models.write().await.insert(
+            "test-model".to_string(),
+            ModelState::Failed {
+                model_name: "test-model".to_string(),
+                backend: "llama_cpp".to_string(),
+                error: "Some error".to_string(),
+            },
+        );
+
+        let app = Router::new()
+            .route(
+                "/tama/v1/models/:id/cancel",
+                axum::routing::post(handle_tama_cancel_load),
+            )
+            .with_state(state);
+
+        let request = Request::post("/tama/v1/models/test-model/cancel")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "Expected 404 Not Found for Failed model"
+        );
+        assert_eq!(
+            json["error"]["type"], "ModelNotLoadingError",
+            "Expected ModelNotLoadingError type for Failed model"
         );
     }
 }

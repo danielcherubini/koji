@@ -9,8 +9,9 @@ mod tests;
 
 pub use backend_logs::handle_backend_log_sse;
 pub use models::{
-    capitalize_first, generate_display_name, handle_opencode_list_models, handle_tama_get_model,
-    handle_tama_list_models, handle_tama_load_model, handle_tama_unload_model,
+    capitalize_first, generate_display_name, handle_opencode_list_models, handle_tama_cancel_load,
+    handle_tama_get_model, handle_tama_list_models, handle_tama_load_model,
+    handle_tama_unload_model,
 };
 pub use pull::{
     enqueue_download, handle_pull_job_stream, handle_tama_get_pull_job, handle_tama_pull_model,
