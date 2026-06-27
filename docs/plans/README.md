@@ -14,7 +14,7 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Quick Stats
 
-- **Total Plans**: 126
+- **Total Plans**: 127
 - **Completed**: 124 ✅
 - **In Progress**: 0
 - **Remaining**: 2
@@ -27,7 +27,9 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ### In Progress
 
-*(none)*
+| Plan | Description | Status |
+|------|-------------|--------|
+| [Per-Model Inference Stats](2026-06-27-per-model-inference-stats.md) | Per-model tok/s on GPU cards (HashMap keyed by server_name) + always show 0 tok/s when idle | 🚧 IN PROGRESS |
 
 ### Recently Completed
 
