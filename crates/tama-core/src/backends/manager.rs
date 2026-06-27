@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use rusqlite::Connection;
 
-use crate::backends::types::{BackendInfo, BackendSource, BackendType};
+use crate::backends::types::{BackendInfo, BackendSource};
 
 /// A single backend option for UI dropdowns (e.g. model editor backend selector).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
@@ -343,7 +343,13 @@ impl BackendManager {
             .context("Failed to deserialize source")?;
         Ok(BackendInfo {
             name: record.name,
-            backend_type: record.backend_type.parse().unwrap_or(BackendType::LlamaCpp),
+            backend_type: record.backend_type.parse().map_err(|e| {
+                anyhow::anyhow!(
+                    "Invalid backend_type '{}' in database: {}",
+                    record.backend_type,
+                    e
+                )
+            })?,
             version: record.version,
             path: std::path::PathBuf::from(record.path),
             installed_at: record.installed_at,
@@ -357,6 +363,7 @@ impl BackendManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backends::types::BackendType;
     use crate::db::queries::BackendInstallationRecord;
 
     fn insert_active_backend(

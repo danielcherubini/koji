@@ -609,6 +609,18 @@ fn default_compaction_request_timeout_ms() -> u64 {
 pub const MAX_REQUEST_BODY_SIZE: usize = 16 * 1024 * 1024;
 
 #[cfg(test)]
+impl ModelConfig {
+    /// Build a minimal `ModelConfig` for tests with the given backend name.
+    /// Use `..` syntax to override additional fields as needed.
+    pub fn test_config(backend: &str) -> Self {
+        Self {
+            backend: backend.to_string(),
+            ..Default::default()
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

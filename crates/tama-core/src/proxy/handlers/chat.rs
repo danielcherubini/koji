@@ -1,10 +1,11 @@
 use crate::config::MAX_REQUEST_BODY_SIZE;
+use crate::proxy::lifecycle::ensure_model_loaded;
 use crate::proxy::ProxyState;
 use anyhow::Context;
 use axum::{
     body::{to_bytes, Body},
     extract::{Request, State},
-    http::StatusCode,
+    http::{request::Parts, StatusCode},
     response::{IntoResponse, Json, Response},
 };
 use std::sync::Arc;
@@ -12,6 +13,52 @@ use tracing::info;
 
 use super::json_error_response;
 use crate::proxy::forward::forward_request;
+
+/// Resolve the model, find or load its server, and forward the request.
+///
+/// Both `handle_chat_completions` and `handle_stream_chat_completions`
+/// delegate to this helper.
+async fn resolve_and_load_server(
+    state: &Arc<ProxyState>,
+    model_name: &str,
+    parts: Parts,
+    body_bytes: &[u8],
+    log_msg: &str,
+) -> Response {
+    info!("{log_msg}: {}", model_name);
+
+    let resolved_model = state.resolve_alias(model_name).await;
+
+    let server_name = match ensure_model_loaded(state, model_name, |resolved, e| {
+        tracing::warn!("Failed to load model {}: {}", resolved, e);
+        Err(anyhow::anyhow!("Failed to load model: {}", e))
+    })
+    .await
+    {
+        Ok(name) => name,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": {
+                        "message": format!("Failed to load model: {}", e),
+                        "type": "LoadModelError"
+                    }
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    forward_request(
+        state,
+        &server_name,
+        &parts,
+        body_bytes,
+        Some(&resolved_model),
+    )
+    .await
+}
 
 #[axum::debug_handler]
 pub async fn handle_chat_completions(
@@ -56,42 +103,12 @@ pub async fn handle_chat_completions(
         }
     };
 
-    // Resolve alias before routing
-    let resolved_model = state.resolve_alias(model_name).await;
-    info!("Routing request for model: {}", resolved_model);
-
-    let server_name = match state.get_available_server_for_model(&resolved_model).await {
-        Some(name) => name,
-        None => {
-            let _ = state.evict_lru_if_needed().await;
-            let model_card = state.get_model_card(&resolved_model).await;
-            match state.load_model(&resolved_model, model_card.as_ref()).await {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!("Failed to load model {}: {}", resolved_model, e);
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({
-                            "error": {
-                                "message": format!("Failed to load model: {}", e),
-                                "type": "LoadModelError"
-                            }
-                        })),
-                    )
-                        .into_response();
-                }
-            }
-        }
-    };
-
-    state.update_last_accessed(&server_name).await;
-
-    forward_request(
-        &state,
-        &server_name,
-        &parts,
+    resolve_and_load_server(
+        &state.0,
+        model_name,
+        parts,
         &body_bytes,
-        Some(&resolved_model),
+        "Routing request for model",
     )
     .await
 }
@@ -140,41 +157,12 @@ pub async fn handle_stream_chat_completions(
         }
     };
 
-    // Resolve alias before routing
-    let resolved_model = state.resolve_alias(model_name).await;
-    info!("Streaming request for model: {}", resolved_model);
-
-    let server_name = match state.get_available_server_for_model(&resolved_model).await {
-        Some(name) => name,
-        None => {
-            let _ = state.evict_lru_if_needed().await;
-            let model_card = state.get_model_card(&resolved_model).await;
-            match state.load_model(&resolved_model, model_card.as_ref()).await {
-                Ok(s) => s,
-                Err(e) => {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({
-                            "error": {
-                                "message": format!("Failed to load model: {}", e),
-                                "type": "LoadModelError"
-                            }
-                        })),
-                    )
-                        .into_response();
-                }
-            }
-        }
-    };
-
-    state.update_last_accessed(&server_name).await;
-
-    forward_request(
-        &state,
-        &server_name,
-        &parts,
+    resolve_and_load_server(
+        &state.0,
+        model_name,
+        parts,
         &body_bytes,
-        Some(&resolved_model),
+        "Streaming request for model",
     )
     .await
 }

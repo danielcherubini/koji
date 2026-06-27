@@ -8,20 +8,6 @@ pub mod tts;
 
 pub(crate) mod helpers;
 
-// Re-exports for backward compatibility (flat imports via handlers::)
-#[allow(unused_imports)]
-pub use chat::{handle_chat_completions, handle_stream_chat_completions};
-#[allow(unused_imports)]
-pub use forward::{forward_to_backend, handle_fallback, handle_forward_get, handle_forward_post};
-#[allow(unused_imports)]
-pub use metrics::{
-    format_backend_metrics, format_system_metrics, format_tama_metrics, inject_server_label,
-};
-#[allow(unused_imports)]
-pub use models::{handle_get_model, handle_list_models};
-#[allow(unused_imports)]
-pub use status::{handle_health, handle_metrics, handle_reload_configs, handle_status};
-
 use axum::{
     http::StatusCode,
     response::{IntoResponse, Json, Response},
@@ -32,7 +18,7 @@ pub fn json_error_response() -> Response {
         StatusCode::BAD_REQUEST,
         Json(serde_json::json!({
             "error": {
-                "message": "Bad Request",
+                "message": "Request body too large",
                 "type": "BadRequestError"
             }
         })),

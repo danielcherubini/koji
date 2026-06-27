@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
+use tokio::task::JoinSet;
 
 use super::download_queue::DownloadQueueService;
 use super::pull_jobs::PullJob;
@@ -223,7 +224,46 @@ pub struct LatestInferenceStats {
 }
 
 /// Manages proxy state and model lifecycle.
-#[derive(Clone)]
+///
+/// TODO(2026-06-27): Consider splitting into sub-structs (ModelRegistry, MetricsCollector, DownloadManager)
+/// to reduce the 20+ public fields and improve cohesion.
+/// See docs/plans/README.md Code Quality Backlog.
+impl Clone for ProxyState {
+    fn clone(&self) -> Self {
+        Self {
+            config: Arc::clone(&self.config),
+            model_configs: Arc::clone(&self.model_configs),
+            aliases: Arc::clone(&self.aliases),
+            models: Arc::clone(&self.models),
+            client: self.client.clone(),
+            metrics: Arc::clone(&self.metrics),
+            db_dir: self.db_dir.clone(),
+            pull_jobs: Arc::clone(&self.pull_jobs),
+            system_metrics: Arc::clone(&self.system_metrics),
+            in_flight_downloads: Arc::clone(&self.in_flight_downloads),
+            metrics_tx: self.metrics_tx.clone(),
+            download_queue: self.download_queue.clone(),
+            config_write_semaphore: Arc::clone(&self.config_write_semaphore),
+            backend_logs: self.backend_logs.clone(),
+            inference_stats: self.inference_stats.clone(),
+            gpu_devices_cache: Arc::clone(&self.gpu_devices_cache),
+            model_tasks: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+            #[cfg(feature = "web-ui")]
+            web_jobs: self.web_jobs.clone(),
+            #[cfg(feature = "web-ui")]
+            web_capabilities: self.web_capabilities.clone(),
+            #[cfg(feature = "web-ui")]
+            web_update_checker: Arc::clone(&self.web_update_checker),
+            #[cfg(feature = "web-ui")]
+            web_binary_version: self.web_binary_version.clone(),
+            #[cfg(feature = "web-ui")]
+            web_update_tx: Arc::clone(&self.web_update_tx),
+            #[cfg(feature = "web-ui")]
+            web_upload_lock: Arc::clone(&self.web_upload_lock),
+        }
+    }
+}
+
 pub struct ProxyState {
     pub config: Arc<tokio::sync::RwLock<crate::config::Config>>,
     pub model_configs:
@@ -256,6 +296,9 @@ pub struct ProxyState {
     /// Value is (discovered_at_instant, list_of_devices).
     #[allow(clippy::type_complexity)]
     pub gpu_devices_cache: Arc<tokio::sync::RwLock<HashMap<String, GpuDeviceCacheEntry>>>,
+    /// Per-model JoinSets tracking spawned tasks (stdout/stderr readers, reaper).
+    /// Used for clean cancellation on unload.
+    pub model_tasks: tokio::sync::RwLock<HashMap<String, JoinSet<()>>>,
 
     // ── Web UI fields (only present when `web-ui` feature is enabled) ──
     /// Job manager for backend install/update/restore/benchmark operations.
@@ -305,6 +348,12 @@ impl ProxyState {
         // Clear all loaded models
         let mut models = self.models.write().await;
         models.clear();
+
+        // Abort all per-model task JoinSets (stdout/stderr readers, reapers)
+        let mut all_tasks = self.model_tasks.write().await;
+        for (_server, mut tasks) in all_tasks.drain() {
+            tasks.abort_all();
+        }
 
         // Clear active pull jobs
         let mut pull_jobs = self.pull_jobs.write().await;

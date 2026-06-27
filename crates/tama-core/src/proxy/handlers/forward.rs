@@ -1,4 +1,5 @@
 use crate::config::MAX_REQUEST_BODY_SIZE;
+use crate::proxy::lifecycle::ensure_model_loaded;
 use crate::proxy::ProxyState;
 use axum::{
     body::{to_bytes, Body},
@@ -55,26 +56,24 @@ pub async fn handle_forward_post(
     };
 
     let server_name = if let Some(ref model) = resolved_model {
-        match state.get_available_server_for_model(model).await {
-            Some(name) => name,
-            None => {
-                let _ = state.evict_lru_if_needed().await;
-                let card = state.get_model_card(model).await;
-                match state.load_model(model, card.as_ref()).await {
-                    Ok(s) => s,
-                    Err(e) => {
-                        return (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(serde_json::json!({
-                                "error": {
-                                    "message": format!("Failed to load model: {}", e),
-                                    "type": "LoadModelError"
-                                }
-                            })),
-                        )
-                            .into_response()
-                    }
-                }
+        match ensure_model_loaded(&state, model, |resolved, e| {
+            tracing::warn!("Failed to load model {}: {}", resolved, e);
+            Err(anyhow::anyhow!("Failed to load model: {}", e))
+        })
+        .await
+        {
+            Ok(name) => name,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "error": {
+                            "message": format!("Failed to load model: {}", e),
+                            "type": "LoadModelError"
+                        }
+                    })),
+                )
+                    .into_response();
             }
         }
     } else {
@@ -97,7 +96,6 @@ pub async fn handle_forward_post(
         }
     };
 
-    state.update_last_accessed(&server_name).await;
     forward_request(
         &state,
         &server_name,

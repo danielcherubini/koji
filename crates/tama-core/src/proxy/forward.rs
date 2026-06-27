@@ -458,7 +458,22 @@ pub async fn forward_request(
                 Body::from_stream(transformed_stream)
             } else {
                 // Non-streaming response - parse, rewrite, and re-serialize
-                let body_bytes = response.bytes().await.unwrap_or_default();
+                let body_bytes = match response.bytes().await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::error!("Failed to read backend response body: {}", e);
+                        return (
+                            StatusCode::BAD_GATEWAY,
+                            Json(serde_json::json!({
+                                "error": {
+                                    "message": "Failed to read backend response".to_string(),
+                                    "type": "BadGatewayError"
+                                }
+                            })),
+                        )
+                            .into_response();
+                    }
+                };
                 // Only attempt JSON rewrite if content is valid JSON
                 let new_body = if let Ok(parsed) = serde_json::from_slice::<JsonValue>(&body_bytes)
                 {

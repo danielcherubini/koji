@@ -3,6 +3,7 @@ use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::io::AsyncBufReadExt;
+use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
 use super::process::{
@@ -11,6 +12,40 @@ use super::process::{
 };
 use super::types::{ModelState, ProxyState};
 use crate::logging;
+
+/// Ensure a model is loaded and return its server name.
+///
+/// This encapsulates the shared flow used by multiple handlers:
+/// resolve alias → get available server → evict LRU if needed → get model card
+/// → load model → update last_accessed.
+///
+/// Callers provide an `on_load_error` closure to handle the case where loading
+/// fails (e.g., returning an error response or falling back to another server).
+/// The closure receives the resolved model name and the error, and returns the
+/// fallback server name (or an error if no fallback is possible).
+pub async fn ensure_model_loaded(
+    state: &Arc<ProxyState>,
+    model_name: &str,
+    on_load_error: impl FnOnce(&str, anyhow::Error) -> Result<String> + Send,
+) -> Result<String> {
+    // Resolve alias before routing
+    let resolved_model = state.resolve_alias(model_name).await;
+
+    let server_name = match state.get_available_server_for_model(&resolved_model).await {
+        Some(name) => name,
+        None => {
+            let _ = state.evict_lru_if_needed().await;
+            let model_card = state.get_model_card(&resolved_model).await;
+            match state.load_model(&resolved_model, model_card.as_ref()).await {
+                Ok(s) => s,
+                Err(e) => on_load_error(&resolved_model, e)?,
+            }
+        }
+    };
+
+    state.update_last_accessed(&server_name).await;
+    Ok(server_name)
+}
 
 mod compaction;
 mod idle_timeout;
@@ -94,7 +129,7 @@ impl ProxyState {
         drop(listener); // Free the port for the backend to use
 
         // Resolve effective gpu_device: model config > model card default
-        let effective_gpu_device = _resolve_gpu_device(
+        let effective_gpu_device = resolve_gpu_device(
             server_config.gpu_device.clone(),
             model_card.and_then(|card| card.model.default_gpu_device.clone()),
         );
@@ -198,6 +233,9 @@ impl ProxyState {
             tokio::spawn(async move {
                 let _ = stream.push(line.clone()).await;
                 if let Some(ref f) = file {
+                    // std::sync::Mutex is safe here: the critical section (lock + write + unlock)
+                    // is fully synchronous and takes microseconds. No .await is held while locked.
+                    // A tokio::sync::Mutex would add unnecessary overhead for this pattern.
                     let _ = f.lock().map(|mut fw| {
                         let _ = writeln!(fw, "{line}");
                     });
@@ -205,10 +243,15 @@ impl ProxyState {
             });
         });
 
+        // Track spawned tasks (stdout reader, stderr reader, reaper) for clean
+        // cancellation on unload. The per-line push_line tasks are too short-lived
+        // to track individually.
+        let mut model_tasks = JoinSet::new();
+
         // Stream stdout
         if let Some(stdout) = child.stdout.take() {
             let push = push_line.clone();
-            tokio::spawn(async move {
+            model_tasks.spawn(async move {
                 let reader = tokio::io::BufReader::new(stdout);
                 let mut lines = reader.lines();
                 while let Ok(Some(line)) = lines.next_line().await {
@@ -220,7 +263,7 @@ impl ProxyState {
         // Stream stderr
         if let Some(stderr) = child.stderr.take() {
             let push = push_line.clone();
-            tokio::spawn(async move {
+            model_tasks.spawn(async move {
                 let reader = tokio::io::BufReader::new(stderr);
                 let mut lines = reader.lines();
                 while let Ok(Some(line)) = lines.next_line().await {
@@ -231,7 +274,7 @@ impl ProxyState {
 
         // Spawn a reaper task so the child process is waited on and doesn't become a zombie
         let reaper_server = server_name.clone();
-        tokio::spawn(async move {
+        model_tasks.spawn(async move {
             match child.wait().await {
                 Ok(status) => {
                     debug!(
@@ -247,6 +290,12 @@ impl ProxyState {
                 }
             }
         });
+
+        // Register the JoinSet so unload_model can cancel these tasks
+        self.model_tasks
+            .write()
+            .await
+            .insert(server_name.clone(), model_tasks);
 
         // Wait for health check to pass — single success is enough.
         let timeout = Duration::from_secs(self.config.read().await.proxy.startup_timeout_secs);
@@ -282,6 +331,10 @@ impl ProxyState {
         }
 
         if !health_ok {
+            // Abort orphan task readers and reaper (JoinSet was already inserted above)
+            if let Some(mut tasks) = self.model_tasks.write().await.remove(&server_name) {
+                tasks.abort_all();
+            }
             // Clean up the Starting entry so future load_model calls don't short-circuit
             let mut models = self.models.write().await;
             models.remove(&server_name);
@@ -483,7 +536,13 @@ impl ProxyState {
                 backend_pid,
                 ..
             } => (backend.clone(), *backend_pid),
-            _ => unreachable!("already checked above"),
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "Server '{}' entered unexpected state during unload (state: {:?})",
+                    server_name,
+                    state
+                ));
+            }
         };
 
         info!(
@@ -515,6 +574,13 @@ impl ProxyState {
             }
         }
 
+        // Cancel and join any spawned tasks for this server (stdout/stderr readers, reaper)
+        if let Some(mut tasks) = self.model_tasks.write().await.remove(server_name) {
+            tasks.abort_all();
+            // Wait for all tasks to finish (they should exit quickly after abort)
+            while tasks.join_next().await.is_some() {}
+        }
+
         // Remove from models
         let mut models = self.models.write().await;
         models.remove(server_name);
@@ -539,7 +605,7 @@ impl ProxyState {
 
 /// Resolve the effective GPU device from the fallback chain:
 /// model config > model card default.
-fn _resolve_gpu_device(config: Option<String>, card_default: Option<String>) -> Option<String> {
+fn resolve_gpu_device(config: Option<String>, card_default: Option<String>) -> Option<String> {
     let normalize = |s: Option<String>| {
         s.and_then(|v| {
             let t = v.trim().to_string();

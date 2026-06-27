@@ -47,6 +47,7 @@ impl ProxyState {
             backend_logs: crate::backends::log_stream::BackendLogManager::default(),
             inference_stats: tokio::sync::watch::channel(std::collections::HashMap::new()).0,
             gpu_devices_cache: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            model_tasks: tokio::sync::RwLock::new(std::collections::HashMap::new()),
             // ── Web UI fields ──
             #[cfg(feature = "web-ui")]
             web_jobs: Some(Arc::new(crate::web_types::JobManager::new())),

@@ -239,6 +239,17 @@ This directory contains implementation plans for the Tama project. Each plan doc
 |------|-------------|--------|
 | [Split Remaining Long Files (draft)](todo/2026-05-06-split-remaining-files-spec.md) | Split args_building.rs (1,411), pull/download.rs (1,041), crud/mod.rs (1,007) | 📋 DRAFT |
 
+## Code Quality Backlog
+
+Ideas from codebase review (2026-06-27) — architectural improvements and refactors, not bugs:
+
+| Idea | Scope | Priority |
+|------|-------|----------|
+| **Use `strum`/`derive_more` for `BackendType`** | `backends/types.rs` — auto-derive `Display`, `FromStr`, `EnumString` to eliminate manual match boilerplate | Low |
+| **Split `ProxyState` god struct** | `proxy/types.rs` — 20+ public fields mixing config, runtime, web UI, and DB access. Split into focused sub-structs (`ModelRegistry`, `MetricsCollector`, `DownloadManager`) for encapsulation and testability | Medium |
+| **Extract `ensure_model_loaded` helper** | `proxy/handlers/` — The pattern `evict_lru_if_needed → get_model_card → load_model` appears in `chat.rs`, `forward.rs`, and `handle_forward_post`. Single shared function would centralize the flow | Medium |
+| **Track spawned tasks with `JoinSet`** | `proxy/lifecycle/mod.rs` — stdout/stderr readers and reaper are spawned but not tracked. `JoinSet` per model would allow clean cancellation on `unload_model` | Low |
+
 ## Roadmap
 
 Longer-term features that don't yet have implementation plans:
@@ -300,4 +311,4 @@ When implementing a new feature:
 
 ---
 
-**Last Updated**: 2026-06-08
+**Last Updated**: 2026-06-27

@@ -10,6 +10,8 @@ pub mod download;
 pub mod metadata;
 pub mod quant;
 
+// TODO(2026-06-27): Consider storing Api in ProxyState instead of global static.
+// This is tracked in the Code Quality Backlog in docs/plans/README.md.
 static HF_API: OnceCell<Api> = OnceCell::const_new();
 
 /// Resolve HF token from environment or token file.

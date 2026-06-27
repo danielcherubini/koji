@@ -156,39 +156,4 @@ mod tests {
             "Sink should have received the line"
         );
     }
-
-    /// Test that install_backend_parity_with_null_progress compiles and produces identical results.
-    /// This is a compile-time test to ensure the wrapper invariant holds.
-    #[test]
-    fn test_install_backend_parity_with_null_progress() {
-        // This test verifies that install_backend and install_backend_with_progress
-        // have compatible signatures and that the wrapper invariant holds.
-        // Full functional parity testing would require mocking the installer,
-        // which is complex. The compile-time check plus the emit test above
-        // provide sufficient coverage for the wrapper contract.
-        fn _assert_types() {
-            // install_backend takes InstallOptions -> Result<PathBuf>
-            // install_backend_with_progress takes (InstallOptions, Option<Arc<dyn ProgressSink>>, Option<&Client>) -> Result<PathBuf>
-            // These signatures must remain compatible.
-            use crate::backends::installer::ProgressSink;
-            use std::sync::Arc;
-
-            let _opts: InstallOptions = InstallOptions {
-                backend_type: BackendType::LlamaCpp,
-                source: BackendSource::Prebuilt {
-                    version: "test".to_string(),
-                },
-                target_dir: std::path::PathBuf::from("/tmp/test"),
-                gpu_type: None,
-                gpu_variant: "cpu".to_string(),
-                allow_overwrite: true,
-            };
-
-            // Both functions should accept these arguments
-            // We can't call them without a real installer, but we can verify types compile
-            let _sink: Option<Arc<dyn ProgressSink>> = None;
-            let _client: Option<&reqwest::Client> = None;
-        }
-        _assert_types();
-    }
 }

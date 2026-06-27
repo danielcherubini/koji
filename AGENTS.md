@@ -153,6 +153,20 @@ tama/
 └── target/              # Build artifacts (ignored)
 ```
 
+## Patterns
+
+### Metrics: `watch::Sender<HashMap>` for SP/MP
+
+Use `tokio::sync::watch::Sender<HashMap<K, V>>` for single-producer multi-consumer metrics distribution. The producer writes the full snapshot on each update; consumers receive the latest map without holding locks during iteration.
+
+Example: `ProxyState.inference_stats` — one writer (metrics loop) pushes per-server tok/s, multiple readers (SSE handlers, dashboard) consume without blocking the producer.
+
+### Version Management: `INSERT OR REPLACE` with unique index
+
+When managing versions of an entity (backends, models, etc.), use `INSERT OR REPLACE` with a unique index on the identifying columns and deactivate old versions on insert.
+
+Example: Backends use unique index on `(name, gpu_variant, version)` and `UPDATE ... SET active = 0 WHERE name = ? AND version != ?` to ensure only one active version per backend.
+
 ## Conventions
 
 ### TDD Approach

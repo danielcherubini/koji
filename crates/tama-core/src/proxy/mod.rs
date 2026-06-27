@@ -14,15 +14,16 @@ mod types;
 
 pub use forward::forward_request;
 pub use handlers::chat::{handle_chat_completions, handle_stream_chat_completions};
+pub use handlers::forward::{
+    forward_to_backend, handle_fallback, handle_forward_get, handle_forward_post,
+};
+pub use handlers::json_error_response;
 pub use handlers::models::{
     fetch_models_from_backend, handle_get_model, handle_list_models, parse_models_response,
 };
+pub use handlers::status::{handle_health, handle_metrics, handle_reload_configs, handle_status};
 pub use handlers::tts::{
     handle_audio_models, handle_audio_speech, handle_audio_stream, handle_audio_voices,
-};
-pub use handlers::{
-    forward_to_backend, handle_fallback, handle_forward_get, handle_forward_post, handle_health,
-    handle_metrics, handle_reload_configs, handle_status, json_error_response,
 };
 pub use process::{check_health, force_kill_process, is_process_alive, kill_process, override_arg};
 pub use server::ProxyServer;
@@ -144,30 +145,10 @@ mod tests {
             let mut model_configs = state.model_configs.write().await;
             model_configs.insert(
                 "old-name".to_string(),
-                crate::config::ModelConfig {
-                    backend: "llama_cpp".to_string(),
-                    args: vec![],
-                    sampling: None,
-                    model: None,
-                    quant: None,
-
-                    mmproj: None,
-                    port: None,
-                    health_check: None,
+                ModelConfig {
                     enabled: true,
-                    context_length: None,
                     num_parallel: Some(1),
-                    kv_unified: false,
-                    profile: None,
-                    api_name: None,
-                    gpu_layers: None,
-                    cache_type_k: None,
-                    cache_type_v: None,
-                    quants: std::collections::BTreeMap::new(),
-                    modalities: None,
-                    display_name: None,
-                    db_id: None,
-                    ..Default::default()
+                    ..ModelConfig::test_config("llama_cpp")
                 },
             );
         }
@@ -191,58 +172,18 @@ mod tests {
             let mut model_configs = state.model_configs.write().await;
             model_configs.insert(
                 "old-name".to_string(),
-                crate::config::ModelConfig {
-                    backend: "llama_cpp".to_string(),
-                    args: vec![],
-                    sampling: None,
-                    model: None,
-                    quant: None,
-
-                    mmproj: None,
-                    port: None,
-                    health_check: None,
+                ModelConfig {
                     enabled: true,
-                    context_length: None,
                     num_parallel: Some(1),
-                    kv_unified: false,
-                    profile: None,
-                    api_name: None,
-                    gpu_layers: None,
-                    cache_type_k: None,
-                    cache_type_v: None,
-                    quants: std::collections::BTreeMap::new(),
-                    modalities: None,
-                    display_name: None,
-                    db_id: None,
-                    ..Default::default()
+                    ..ModelConfig::test_config("llama_cpp")
                 },
             );
             model_configs.insert(
                 "new-name".to_string(),
-                crate::config::ModelConfig {
-                    backend: "llama_cpp".to_string(),
-                    args: vec![],
-                    sampling: None,
-                    model: None,
-                    quant: None,
-
-                    mmproj: None,
-                    port: None,
-                    health_check: None,
+                ModelConfig {
                     enabled: true,
-                    context_length: None,
                     num_parallel: Some(1),
-                    kv_unified: false,
-                    profile: None,
-                    api_name: None,
-                    gpu_layers: None,
-                    cache_type_k: None,
-                    cache_type_v: None,
-                    quants: std::collections::BTreeMap::new(),
-                    modalities: None,
-                    display_name: None,
-                    db_id: None,
-                    ..Default::default()
+                    ..ModelConfig::test_config("llama_cpp")
                 },
             );
         }
@@ -266,30 +207,10 @@ mod tests {
             let mut model_configs = state.model_configs.write().await;
             model_configs.insert(
                 "existing-name".to_string(),
-                crate::config::ModelConfig {
-                    backend: "llama_cpp".to_string(),
-                    args: vec![],
-                    sampling: None,
-                    model: None,
-                    quant: None,
-
-                    mmproj: None,
-                    port: None,
-                    health_check: None,
+                ModelConfig {
                     enabled: true,
-                    context_length: None,
                     num_parallel: Some(1),
-                    kv_unified: false,
-                    profile: None,
-                    api_name: None,
-                    gpu_layers: None,
-                    cache_type_k: None,
-                    cache_type_v: None,
-                    quants: std::collections::BTreeMap::new(),
-                    modalities: None,
-                    display_name: None,
-                    db_id: None,
-                    ..Default::default()
+                    ..ModelConfig::test_config("llama_cpp")
                 },
             );
         }
@@ -313,30 +234,10 @@ mod tests {
             let mut model_configs = state.model_configs.write().await;
             model_configs.insert(
                 "old-name".to_string(),
-                crate::config::ModelConfig {
-                    backend: "llama_cpp".to_string(),
-                    args: vec![],
-                    sampling: None,
-                    model: None,
-                    quant: None,
-
-                    mmproj: None,
-                    port: None,
-                    health_check: None,
+                ModelConfig {
                     enabled: true,
-                    context_length: None,
                     num_parallel: Some(1),
-                    kv_unified: false,
-                    profile: None,
-                    api_name: None,
-                    gpu_layers: None,
-                    cache_type_k: None,
-                    cache_type_v: None,
-                    quants: std::collections::BTreeMap::new(),
-                    modalities: None,
-                    display_name: None,
-                    db_id: None,
-                    ..Default::default()
+                    ..ModelConfig::test_config("llama_cpp")
                 },
             );
         }
@@ -357,30 +258,10 @@ mod tests {
             let mut model_configs = state.model_configs.write().await;
             model_configs.insert(
                 "same-name".to_string(),
-                crate::config::ModelConfig {
-                    backend: "llama_cpp".to_string(),
-                    args: vec![],
-                    sampling: None,
-                    model: None,
-                    quant: None,
-
-                    mmproj: None,
-                    port: None,
-                    health_check: None,
+                ModelConfig {
                     enabled: true,
-                    context_length: None,
                     num_parallel: Some(1),
-                    kv_unified: false,
-                    profile: None,
-                    api_name: None,
-                    gpu_layers: None,
-                    cache_type_k: None,
-                    cache_type_v: None,
-                    quants: std::collections::BTreeMap::new(),
-                    modalities: None,
-                    display_name: None,
-                    db_id: None,
-                    ..Default::default()
+                    ..ModelConfig::test_config("llama_cpp")
                 },
             );
         }

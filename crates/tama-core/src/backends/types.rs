@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
+use strum::{Display, EnumIs};
 
 use crate::gpu::GpuType;
 
@@ -41,25 +42,14 @@ pub enum BackendSource {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Display, EnumIs)]
+#[strum(serialize_all = "snake_case")]
 pub enum BackendType {
     LlamaCpp,
     IkLlama,
     TtsKokoro,
     Compaction,
     Custom,
-}
-
-impl std::fmt::Display for BackendType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            BackendType::LlamaCpp => write!(f, "llama_cpp"),
-            BackendType::IkLlama => write!(f, "ik_llama"),
-            BackendType::TtsKokoro => write!(f, "tts_kokoro"),
-            BackendType::Compaction => write!(f, "compaction"),
-            BackendType::Custom => write!(f, "custom"),
-        }
-    }
 }
 
 impl BackendType {
@@ -138,5 +128,102 @@ mod tests {
         assert!(!BackendType::LlamaCpp.is_non_inference_backend());
         assert!(!BackendType::IkLlama.is_non_inference_backend());
         assert!(!BackendType::Custom.is_non_inference_backend());
+    }
+
+    // --- Tests for derived Display / EnumIs ---
+
+    #[test]
+    fn test_display_all_variants() {
+        assert_eq!(BackendType::LlamaCpp.to_string(), "llama_cpp");
+        assert_eq!(BackendType::IkLlama.to_string(), "ik_llama");
+        assert_eq!(BackendType::TtsKokoro.to_string(), "tts_kokoro");
+        assert_eq!(BackendType::Compaction.to_string(), "compaction");
+        assert_eq!(BackendType::Custom.to_string(), "custom");
+    }
+
+    #[test]
+    fn test_enum_is_methods() {
+        let llama_cpp = BackendType::LlamaCpp;
+        let ik_llama = BackendType::IkLlama;
+        let tts_kokoro = BackendType::TtsKokoro;
+        let compaction = BackendType::Compaction;
+        let custom = BackendType::Custom;
+
+        assert!(llama_cpp.is_llama_cpp());
+        assert!(!llama_cpp.is_ik_llama());
+        assert!(!llama_cpp.is_tts_kokoro());
+        assert!(!llama_cpp.is_compaction());
+        assert!(!llama_cpp.is_custom());
+
+        assert!(ik_llama.is_ik_llama());
+        assert!(!ik_llama.is_llama_cpp());
+
+        assert!(tts_kokoro.is_tts_kokoro());
+        assert!(tts_kokoro.is_tts());
+
+        assert!(compaction.is_compaction());
+        assert!(compaction.is_non_inference_backend());
+
+        assert!(custom.is_custom());
+    }
+
+    #[test]
+    fn test_from_str_still_works_with_aliases() {
+        use std::str::FromStr;
+
+        assert_eq!(
+            BackendType::from_str("llama_cpp").unwrap(),
+            BackendType::LlamaCpp
+        );
+        assert_eq!(
+            BackendType::from_str("llamacpp").unwrap(),
+            BackendType::LlamaCpp
+        );
+        assert_eq!(
+            BackendType::from_str("ik_llama").unwrap(),
+            BackendType::IkLlama
+        );
+        assert_eq!(
+            BackendType::from_str("ik-llama").unwrap(),
+            BackendType::IkLlama
+        );
+        assert_eq!(
+            BackendType::from_str("tts_kokoro").unwrap(),
+            BackendType::TtsKokoro
+        );
+        assert_eq!(
+            BackendType::from_str("ttskokoro").unwrap(),
+            BackendType::TtsKokoro
+        );
+        assert_eq!(
+            BackendType::from_str("compaction").unwrap(),
+            BackendType::Compaction
+        );
+        assert_eq!(
+            BackendType::from_str("custom").unwrap(),
+            BackendType::Custom
+        );
+        assert!(BackendType::from_str("unknown").is_err());
+    }
+
+    #[test]
+    fn test_display_roundtrip() {
+        for variant in [
+            BackendType::LlamaCpp,
+            BackendType::IkLlama,
+            BackendType::TtsKokoro,
+            BackendType::Compaction,
+            BackendType::Custom,
+        ] {
+            let name = variant.to_string();
+            // Round-trip: Display → from_str → Display should match
+            let parsed =
+                BackendType::from_str(&name).expect("from_str should parse the display output");
+            assert_eq!(
+                parsed.to_string(),
+                name,
+                "round-trip failed for {variant:?}"
+            );
+        }
     }
 }
