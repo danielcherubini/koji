@@ -11,7 +11,7 @@ pub use detect::{
 };
 pub use discover::{discover_devices_via_binary, parse_llama_list_devices_output, GpuDeviceInfo};
 pub use system::{
-    collect_system_metrics, collect_system_metrics_with, GpuDeviceStats, MetricSample, ModelStatus,
-    SystemMetrics,
+    collect_system_metrics, collect_system_metrics_with, GpuDeviceStats, MetricCurrent,
+    MetricHistoryPoint, MetricSample, MetricsSnapshot, ModelStatus, SystemMetrics,
 };
 pub use vram::{query_vram, query_vram_per_device, VramInfo};

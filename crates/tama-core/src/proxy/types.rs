@@ -281,7 +281,7 @@ pub struct ProxyState {
     /// concurrent downloads writing to the same temp files, which would silently
     /// corrupt the assembled output.
     pub in_flight_downloads: Arc<tokio::sync::Mutex<std::collections::HashSet<std::path::PathBuf>>>,
-    pub metrics_tx: tokio::sync::broadcast::Sender<std::sync::Arc<[crate::gpu::MetricSample]>>,
+    pub metrics_tx: tokio::sync::broadcast::Sender<crate::gpu::MetricsSnapshot>,
     pub download_queue: Option<Arc<DownloadQueueService>>,
     /// Semaphore controlling concurrent post-pull config writes.
     /// Replaces the old global CONFIG_WRITE_LOCK to allow controlled
@@ -341,9 +341,7 @@ impl ProxyState {
     /// - Clears in-flight downloads
     pub async fn shutdown(&self) {
         // Close the metrics broadcast channel to stop the metrics stream
-        let _ = self
-            .metrics_tx
-            .send(Arc::<[crate::gpu::MetricSample]>::from(Vec::new()));
+        let _ = self.metrics_tx.send(crate::gpu::MetricsSnapshot::default());
 
         // Clear all loaded models
         let mut models = self.models.write().await;

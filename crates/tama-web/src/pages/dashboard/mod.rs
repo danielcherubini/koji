@@ -19,7 +19,8 @@ mod tests;
 
 #[component]
 pub fn Dashboard() -> impl IntoView {
-    let history = RwSignal::new(Vec::<MetricSample>::new());
+    let history = RwSignal::new(Vec::<MetricHistoryPoint>::new());
+    let current = RwSignal::new(MetricCurrent::default());
     let fetch_failed = RwSignal::new(false);
     // Incrementing this signal re-runs the Effect that opens the EventSource.
     let connect_trigger = RwSignal::new(0u32);
@@ -36,13 +37,15 @@ pub fn Dashboard() -> impl IntoView {
             }
         };
 
-        // Handler for "snapshot" events — replaces the entire history buffer.
+        // Handler for "snapshot" events — updates the history buffer (for sparklines)
+        // and the current state (for GPU cards, model list, inference stats).
         let on_snapshot =
             Closure::<dyn Fn(web_sys::MessageEvent)>::new(move |evt: web_sys::MessageEvent| {
                 if let Some(data_str) = evt.data().as_string() {
-                    if let Ok(samples) = serde_json::from_str::<Vec<MetricSample>>(&data_str) {
+                    if let Ok(snapshot) = serde_json::from_str::<MetricsSnapshot>(&data_str) {
                         fetch_failed.set(false);
-                        history.set(samples);
+                        history.set(snapshot.history);
+                        current.set(snapshot.current);
                     }
                 }
             });
@@ -176,8 +179,8 @@ pub fn Dashboard() -> impl IntoView {
             let net_upload_data: Vec<f32> = buf.iter().map(|s| s.network.as_ref().map(|n| n.upload_mibps as f32).unwrap_or(0.0)).collect();
             let net_max = net_download_data.iter().chain(net_upload_data.iter()).cloned().fold(0.0_f32, f32::max).max(1.0);
 
-            let all_models: Vec<ModelStatus> = buf.last().map(|h| h.models.clone()).unwrap_or_default();
-            let gpus_for_labels = buf.last().map(|h| h.gpus.clone()).unwrap_or_default();
+            let all_models: Vec<ModelStatus> = current.get().models.clone();
+            let gpus_for_labels = current.get().gpus.clone();
 
             view! {
                 <div class="grid-stats">
@@ -266,11 +269,10 @@ pub fn Dashboard() -> impl IntoView {
                 // GPU Devices section — only rendered if any GPU data is present
                 // Hidden when no GPUs are detected (laptops, CPU-only servers).
                 {move || {
-                    let buf = history.get();
-                    if let Some(latest) = buf.last() {
-                        if !latest.gpus.is_empty() {
-                            let loaded_models = latest.models.clone();
-                            let gpus = latest.gpus.clone();
+                    let cur = current.get();
+                    if !cur.gpus.is_empty() {
+                            let loaded_models = cur.models.clone();
+                            let gpus = cur.gpus.clone();
                             view! {
                                 <section class="dashboard-gpus">
                                     <div class="page-header">
@@ -297,9 +299,6 @@ pub fn Dashboard() -> impl IntoView {
                                     </div>
                                 </section>
                             }.into_any()
-                        } else {
-                            view! { <div></div> }.into_any()
-                        }
                     } else {
                         view! { <div></div> }.into_any()
                     }

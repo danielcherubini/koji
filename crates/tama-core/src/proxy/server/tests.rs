@@ -270,14 +270,14 @@ async fn test_metrics_task_broadcasts_samples() {
     let result = tokio::time::timeout(std::time::Duration::from_secs(4), rx.recv()).await;
     assert!(
         result.is_ok(),
-        "Expected to receive a MetricSample slice within 4s, but timeout occurred"
+        "Expected to receive a MetricsSnapshot within 4s, but timeout occurred"
     );
-    let arc = result.unwrap().unwrap();
+    let snapshot = result.unwrap().unwrap();
     assert!(
-        !arc.is_empty(),
-        "Expected at least one sample in the broadcast"
+        !snapshot.history.is_empty(),
+        "Expected at least one history point in the broadcast"
     );
-    let sample = &arc[0];
+    let sample = &snapshot.history[0];
     assert!(sample.ts_unix_ms > 0, "ts_unix_ms should be positive");
     assert!(
         sample.cpu_usage_pct >= 0.0,
@@ -340,23 +340,23 @@ async fn test_metric_sample_broadcast_populates_models_field() {
 
     let _server = ProxyServer::new(state.clone()).await;
 
-    let arc = tokio::time::timeout(std::time::Duration::from_secs(4), rx.recv())
+    let snapshot = tokio::time::timeout(std::time::Duration::from_secs(4), rx.recv())
         .await
-        .expect("Expected to receive a MetricSample slice within 4s, but timeout occurred")
+        .expect("Expected to receive a MetricsSnapshot within 4s, but timeout occurred")
         .expect("metrics_tx channel closed before any sample was broadcast");
 
-    // The metrics loop must populate `MetricSample.models` from
+    // The metrics loop must populate `MetricCurrent.models` from
     // `ProxyState::collect_model_statuses`, which reflects the current
     // configuration.
     assert!(
-        !arc.is_empty(),
-        "Expected at least one sample in the broadcast"
+        !snapshot.history.is_empty(),
+        "Expected at least one history point in the broadcast"
     );
-    let sample = &arc[0];
+    let sample = &snapshot.current;
     assert_eq!(
         sample.models.len(),
         1,
-        "Expected exactly one model in sample.models, got: {:?}",
+        "Expected exactly one model in current.models, got: {:?}",
         sample.models
     );
     assert_eq!(sample.models[0].id, "alpha");
@@ -426,11 +426,11 @@ async fn test_system_metrics_stream_emits_samples() {
             // Parse the data: line to extract data: line
             for line in data.lines() {
                 if let Some(data_line) = line.strip_prefix("data: ") {
-                    let samples: Vec<crate::gpu::MetricSample> =
+                    let snapshot: crate::gpu::MetricsSnapshot =
                         serde_json::from_str(data_line).unwrap();
-                    assert!(!samples.is_empty());
-                    assert!(samples[0].ts_unix_ms > 0);
-                    assert!(samples[0].ram_total_mib > 0);
+                    assert!(!snapshot.history.is_empty());
+                    assert!(snapshot.history[0].ts_unix_ms > 0);
+                    assert!(snapshot.history[0].ram_total_mib > 0);
                     found_snapshot = true;
                     break;
                 }
@@ -540,7 +540,7 @@ async fn test_system_metrics_stream_sample_models_round_trip() {
     assert!(content_type.contains("text/event-stream"));
 
     let mut stream = response.bytes_stream();
-    let mut parsed_sample: Option<crate::gpu::MetricSample> = None;
+    let mut parsed_snapshot: Option<crate::gpu::MetricsSnapshot> = None;
     let mut buf = String::new();
     while let Some(chunk) = tokio::time::timeout(std::time::Duration::from_secs(4), stream.next())
         .await
@@ -569,25 +569,24 @@ async fn test_system_metrics_stream_sample_models_round_trip() {
                 let data_line = data_line
                     .expect("snapshot event must include a data: line carrying the JSON payload");
                 // The critical assertion: the JSON produced by the
-                // server must deserialize cleanly into Vec<MetricSample>,
-                // including the `models` field.
-                let samples: Vec<crate::gpu::MetricSample> = serde_json::from_str(data_line)
-                    .expect(
-                        "MetricSample array JSON from SSE stream must deserialize without error",
-                    );
-                assert!(!samples.is_empty());
-                parsed_sample = Some(samples[0].clone());
+                // server must deserialize cleanly into MetricsSnapshot,
+                // including the `models` field in `current`.
+                let snapshot: crate::gpu::MetricsSnapshot = serde_json::from_str(data_line)
+                    .expect("MetricsSnapshot JSON from SSE stream must deserialize without error");
+                assert!(!snapshot.history.is_empty());
+                parsed_snapshot = Some(snapshot.clone());
                 break;
             }
         }
 
-        if parsed_sample.is_some() {
+        if parsed_snapshot.is_some() {
             break;
         }
     }
 
-    let sample =
-        parsed_sample.expect("Expected to receive a snapshot event within 4s, but none was found");
+    let snapshot = parsed_snapshot
+        .expect("Expected to receive a snapshot event within 4s, but none was found");
+    let sample = &snapshot.current;
 
     // Statically prove `sample.models` is a `Vec<crate::gpu::ModelStatus>`.
     // If the field's type ever changes, this binding will fail to
@@ -617,9 +616,14 @@ async fn test_system_metrics_stream_sample_models_round_trip() {
 
     // The network field should deserialize correctly from the SSE stream.
     // In the test environment, a network interface is available so network stats
-    // are populated and round-trip through JSON serialization.
+    // are populated and round-trip through JSON serialization. Network now lives
+    // in history points (for sparklines).
     assert!(
-        sample.network.is_some(),
+        snapshot
+            .history
+            .last()
+            .and_then(|h| h.network.as_ref())
+            .is_some(),
         "network should be Some when a network interface is available"
     );
 }
