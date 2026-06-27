@@ -6,11 +6,12 @@ use crate::proxy::ProxyState;
 
 pub mod download;
 pub mod handlers;
+mod verify;
 
-#[cfg(test)]
-pub(crate) use download::_setup_model_after_pull_with_config;
 pub use download::start_download_from_queue;
 pub use handlers::{handle_pull_job_stream, handle_tama_get_pull_job, handle_tama_pull_model};
+#[cfg(test)]
+pub(crate) use verify::_setup_model_after_pull_with_config;
 
 /// Enqueue a download in the database queue.
 ///
