@@ -166,13 +166,16 @@ Now that inference stats are tracked per-server, we need to surface them per-mod
    ```
    This prevents stale stats from persisting after a model is unloaded.
 
-4. **Global `MetricSample.tps`/`prompt_tps` rule**: In `proxy/server/metrics.rs`, the metrics collector reads `inference_stats` to populate the global `MetricSample.tps`/`prompt_tps` fields used by sparkline charts. With the HashMap, pick the most-recently-updated server's stats:
+4. **Global `MetricSample.tps`/`prompt_tps` rule**: In `proxy/server/metrics.rs`, the metrics collector reads `inference_stats` to populate the global `MetricSample.tps`/`prompt_tps` fields used by sparkline charts. With the HashMap, pick the most-recently-updated server's stats for numeric fields:
    ```rust
-   let inference = metrics_state.inference_stats.borrow();
-   let latest = inference.values()
-       .max_by_key(|s| s.last_updated_ms)
-       .copied();
-   // Then use latest.and_then(|s| s.tps) etc.
+   let inference_map = metrics_state.inference_stats.borrow().clone();
+   let latest_server = inference_map.values().max_by_key(|s| s.last_updated_ms);
+   let tps = latest_server.and_then(|s| s.tps);
+   // ... same for prompt_tps, cache_hit_pct, spec_accept_pct
+   ```
+   For `spec_decoding_active`, use `any()` across all servers (active if ANY server has spec decoding, not just the most recent):
+   ```rust
+   let spec_decoding_active = inference_map.values().any(|s| s.spec_decoding_active);
    ```
    This preserves backward compat for anything reading the global fields (sparklines, Prometheus), while the frontend uses per-model data from `ModelStatus`.
 
