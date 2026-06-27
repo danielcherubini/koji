@@ -91,6 +91,19 @@ pub fn model_gpu_label(gpus: &[GpuDeviceStats], model: &ModelStatus) -> Option<S
     }
 }
 
+/// Find the first model targeting `device_id` (e.g. "GPU0").
+/// Models without `gpu_device` set fall back to the first GPU ("GPU0").
+pub fn model_for_device<'a>(
+    loaded_models: &'a [ModelStatus],
+    device_id: &str,
+) -> Option<&'a ModelStatus> {
+    loaded_models.iter().find(|m| match &m.gpu_device {
+        Some(g) if g == device_id => true,
+        None if device_id == "GPU0" => true,
+        _ => false,
+    })
+}
+
 /// Returns the first model targeting `device_id` (e.g. "GPU0") that is
 /// in `ready`, `loading`, or `unloading` state, with a synthetic "TRANSFERRING…"
 /// prefix when state is `loading`. Returns None if no such model exists.
@@ -266,29 +279,25 @@ pub fn GpuDeviceCard(
 
                 // Column 3: Combined Throughput + Telemetry (2 sub-columns)
                 <div class="gpu-device-card__combined">
-                    // Sub-column A: Throughput (inference stats) — CONDITIONALLY RENDERED
+                    // Sub-column A: Throughput (inference stats)
                     {match state {
                         GpuDeviceState::Active | GpuDeviceState::Loading => {
-                            if prompt_tps.is_some() || tps.is_some() {
-                                view! {
-                                    <div class="gpu-device-card__throughput">
-                                        <div class="gpu-device-card__inference-cell">
-                                            <div class="gpu-device-card__inference-value">
-                                                {prompt_tps.map(|v| format!("{v:.0} tok/s")).unwrap_or_else(|| "—".to_string())}
-                                            </div>
-                                            <div class="gpu-device-card__inference-label">"Processing"</div>
+                            view! {
+                                <div class="gpu-device-card__throughput">
+                                    <div class="gpu-device-card__inference-cell">
+                                        <div class="gpu-device-card__inference-value">
+                                            {prompt_tps.map(|v| format!("{v:.0} tok/s")).unwrap_or_else(|| "0 tok/s".to_string())}
                                         </div>
-                                        <div class="gpu-device-card__inference-cell">
-                                            <div class="gpu-device-card__inference-value">
-                                                {tps.map(|v| format!("{v:.0} tok/s")).unwrap_or_else(|| "—".to_string())}
-                                            </div>
-                                            <div class="gpu-device-card__inference-label">"Generation"</div>
-                                        </div>
+                                        <div class="gpu-device-card__inference-label">"Processing"</div>
                                     </div>
-                                }.into_any()
-                            } else {
-                                view! { <span/> }.into_any()
-                            }
+                                    <div class="gpu-device-card__inference-cell">
+                                        <div class="gpu-device-card__inference-value">
+                                            {tps.map(|v| format!("{v:.0} tok/s")).unwrap_or_else(|| "0 tok/s".to_string())}
+                                        </div>
+                                        <div class="gpu-device-card__inference-label">"Generation"</div>
+                                    </div>
+                                </div>
+                            }.into_any()
                         }
                         _ => view! { <span/> }.into_any()
                     }}
@@ -343,6 +352,8 @@ mod tests {
             cache_type_v: None,
             spec_types: vec![],
             gpu_device: gpu_device.map(|s| s.to_string()),
+            tps: None,
+            prompt_tps: None,
             error_message: None,
         }
     }
@@ -484,5 +495,40 @@ mod tests {
             total_mib: 24576,
         };
         assert_eq!(format_vram_short(&vram), "22.4 / 24.0 GB");
+    }
+
+    #[test]
+    fn test_model_for_device_direct_match() {
+        let models = vec![
+            make_model("m1", "ready", Some("GPU0")),
+            make_model("m2", "ready", Some("GPU1")),
+        ];
+        assert!(model_for_device(&models, "GPU0").is_some());
+        assert!(model_for_device(&models, "GPU1").is_some());
+        assert_eq!(model_for_device(&models, "GPU0").unwrap().id, "m1");
+        assert_eq!(model_for_device(&models, "GPU1").unwrap().id, "m2");
+    }
+
+    #[test]
+    fn test_model_for_device_fallback_no_gpu_device() {
+        let models = vec![make_model("m1", "ready", None)];
+        assert!(model_for_device(&models, "GPU0").is_some());
+        assert!(model_for_device(&models, "GPU1").is_none());
+        assert_eq!(model_for_device(&models, "GPU0").unwrap().id, "m1");
+    }
+
+    #[test]
+    fn test_model_for_device_empty_models() {
+        let models: Vec<ModelStatus> = vec![];
+        assert!(model_for_device(&models, "GPU0").is_none());
+    }
+
+    #[test]
+    fn test_model_for_device_returns_first_match() {
+        let models = vec![
+            make_model("m1", "ready", Some("GPU0")),
+            make_model("m2", "ready", Some("GPU0")),
+        ];
+        assert_eq!(model_for_device(&models, "GPU0").unwrap().id, "m1");
     }
 }

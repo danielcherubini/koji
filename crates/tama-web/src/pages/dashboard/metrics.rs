@@ -101,6 +101,10 @@ pub struct ModelStatus {
     #[serde(default)]
     pub gpu_device: Option<String>,
     #[serde(default)]
+    pub tps: Option<f32>,
+    #[serde(default)]
+    pub prompt_tps: Option<f32>,
+    #[serde(default)]
     pub error_message: Option<String>,
 }
 
