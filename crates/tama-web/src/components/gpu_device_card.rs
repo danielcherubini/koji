@@ -279,28 +279,21 @@ pub fn GpuDeviceCard(
 
                 // Column 3: Combined Throughput + Telemetry (2 sub-columns)
                 <div class="gpu-device-card__combined">
-                    // Sub-column A: Throughput (inference stats)
-                    {match state {
-                        GpuDeviceState::Active | GpuDeviceState::Loading => {
-                            view! {
-                                <div class="gpu-device-card__throughput">
-                                    <div class="gpu-device-card__inference-cell">
-                                        <div class="gpu-device-card__inference-value">
-                                            {prompt_tps.map(|v| format!("{v:.0} tok/s")).unwrap_or_else(|| "0 tok/s".to_string())}
-                                        </div>
-                                        <div class="gpu-device-card__inference-label">"Processing"</div>
-                                    </div>
-                                    <div class="gpu-device-card__inference-cell">
-                                        <div class="gpu-device-card__inference-value">
-                                            {tps.map(|v| format!("{v:.0} tok/s")).unwrap_or_else(|| "0 tok/s".to_string())}
-                                        </div>
-                                        <div class="gpu-device-card__inference-label">"Generation"</div>
-                                    </div>
-                                </div>
-                            }.into_any()
-                        }
-                        _ => view! { <span/> }.into_any()
-                    }}
+                    // Sub-column A: Throughput (inference stats) — always shown
+                    <div class="gpu-device-card__throughput">
+                        <div class="gpu-device-card__inference-cell">
+                            <div class="gpu-device-card__inference-value">
+                                {prompt_tps.map(|v| format!("{v:.0} tok/s")).unwrap_or_else(|| "0 tok/s".to_string())}
+                            </div>
+                            <div class="gpu-device-card__inference-label">"Processing"</div>
+                        </div>
+                        <div class="gpu-device-card__inference-cell">
+                            <div class="gpu-device-card__inference-value">
+                                {tps.map(|v| format!("{v:.0} tok/s")).unwrap_or_else(|| "0 tok/s".to_string())}
+                            </div>
+                            <div class="gpu-device-card__inference-label">"Generation"</div>
+                        </div>
+                    </div>
 
                     // Sub-column B: Telemetry
                     <div class="gpu-device-card__telemetry">

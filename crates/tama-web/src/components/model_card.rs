@@ -394,28 +394,28 @@ pub fn ModelCard(
                 }
             } else if is_loading_or_unloading {
                 if is_loading {
-                    view! {
-                        <button
-                            class={button_class}
-                            prop:disabled=true
-                        >
-                            {button_label}
-                        </button>
-                        {if let Some(cb) = on_cancel {
-                            let id_cancel = id.clone();
-                            view! {
-                                <button
-                                    class="btn btn-warning btn-sm"
-                                    prop:disabled=is_cancel_disabled
-                                    on:click=move |_| { cb.run(id_cancel.clone()); }
-                                >
-                                    "Cancel"
-                                </button>
-                            }.into_any()
-                        } else {
-                            view! { <span/> }.into_any()
-                        }}
-                    }.into_any()
+                    // Show Cancel button if available, otherwise show disabled Loading…
+                    if let Some(cb) = on_cancel {
+                        let id_cancel = id.clone();
+                        view! {
+                            <button
+                                class="btn btn-warning btn-sm"
+                                prop:disabled=is_cancel_disabled
+                                on:click=move |_| { cb.run(id_cancel.clone()); }
+                            >
+                                "Cancel"
+                            </button>
+                        }.into_any()
+                    } else {
+                        view! {
+                            <button
+                                class={button_class}
+                                prop:disabled=true
+                            >
+                                {button_label}
+                            </button>
+                        }.into_any()
+                    }
                 } else {
                     view! {
                         <button
