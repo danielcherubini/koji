@@ -78,6 +78,13 @@ impl ProxyState {
             }
         }
 
+        // Migrate inference_stats entry from old name to new name
+        self.inference_stats.send_modify(|map| {
+            if let Some(stats) = map.remove(old_name) {
+                map.insert(new_name.to_string(), stats);
+            }
+        });
+
         // Best-effort DB update
         if let Some(mgr) = self.model_mgr() {
             let _ = mgr.rename_active(old_name, new_name);

@@ -481,6 +481,8 @@ fn make_test_model(id: &str, state: &str, gpu_device: Option<&str>) -> ModelStat
         cache_type_v: None,
         spec_types: vec![],
         gpu_device: gpu_device.map(|s| s.to_string()),
+        tps: None,
+        prompt_tps: None,
         error_message: None,
     }
 }

@@ -2,7 +2,9 @@ use leptos::prelude::*;
 use wasm_bindgen::prelude::*;
 
 use crate::components::alert_banner::{AlertBanner, AlertVariant};
-use crate::components::gpu_device_card::{device_display_label, model_gpu_label, GpuDeviceCard};
+use crate::components::gpu_device_card::{
+    device_display_label, model_for_device, model_gpu_label, GpuDeviceCard,
+};
 use crate::components::modal::Modal;
 use crate::components::model_card::{ModelCard, ModelPips};
 use crate::components::pull_quant_wizard::{CompletedQuant, PullQuantWizard};
@@ -269,8 +271,6 @@ pub fn Dashboard() -> impl IntoView {
                         if !latest.gpus.is_empty() {
                             let loaded_models = latest.models.clone();
                             let gpus = latest.gpus.clone();
-                            let prompt_tps = latest.prompt_tps;
-                            let tps_val = latest.tps;
                             view! {
                                 <section class="dashboard-gpus">
                                     <div class="page-header">
@@ -281,13 +281,16 @@ pub fn Dashboard() -> impl IntoView {
                                         {gpus.into_iter().enumerate().map(|(idx, gpu)| {
                                             let label = device_display_label(idx);
                                             let models = loaded_models.clone();
+                                            let loaded_for_gpu = model_for_device(&models, &gpu.device_id);
+                                            let gpu_prompt_tps = loaded_for_gpu.and_then(|m| m.prompt_tps);
+                                            let gpu_tps = loaded_for_gpu.and_then(|m| m.tps);
                                             view! {
                                                 <GpuDeviceCard
                                                     device=gpu
                                                     display_label=label
                                                     loaded_models=models
-                                                    prompt_tps=prompt_tps
-                                                    tps=tps_val
+                                                    prompt_tps=gpu_prompt_tps
+                                                    tps=gpu_tps
                                                 />
                                             }
                                         }).collect::<Vec<_>>()}

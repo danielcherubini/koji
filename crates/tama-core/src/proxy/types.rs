@@ -249,9 +249,9 @@ pub struct ProxyState {
     pub config_write_semaphore: Arc<tokio::sync::Semaphore>,
     /// Backend log stream manager — broadcasts backend stdout/stderr via SSE.
     pub backend_logs: crate::backends::log_stream::BackendLogManager,
-    /// Watch channel for latest inference stats. Single-producer (intercept handler),
-    /// multi-consumer (metrics task). `None` until first stats are received.
-    pub inference_stats: tokio::sync::watch::Sender<Option<LatestInferenceStats>>,
+    /// Watch channel for per-server inference stats. Keyed by server_name.
+    /// Single-producer (intercept handler), multi-consumer (metrics task).
+    pub inference_stats: tokio::sync::watch::Sender<HashMap<String, LatestInferenceStats>>,
     /// Cache for discovered GPU devices, keyed by backend name.
     /// Value is (discovered_at_instant, list_of_devices).
     #[allow(clippy::type_complexity)]
@@ -315,7 +315,7 @@ impl ProxyState {
         in_flight.clear();
 
         // Clear inference stats
-        let _ = self.inference_stats.send_replace(None);
+        let _ = self.inference_stats.send_replace(HashMap::new());
     }
 }
 
@@ -421,26 +421,80 @@ mod tests {
 
     #[test]
     fn test_inference_stats_watch_round_trip() {
-        let (tx, mut rx) = tokio::sync::watch::channel::<Option<LatestInferenceStats>>(None);
-        // Initial value is None
-        assert!(rx.borrow_and_update().is_none());
-        // Send some stats
-        let stats = Some(LatestInferenceStats {
-            tps: Some(42.0),
-            prompt_tps: Some(100.0),
-            cache_hit_pct: Some(75.0),
-            spec_accept_pct: Some(80.0),
-            spec_decoding_active: true,
-            last_updated_ms: 999,
-        });
-        tx.send_replace(stats);
-        // Subscribe and verify
+        let (tx, mut rx) =
+            tokio::sync::watch::channel::<HashMap<String, LatestInferenceStats>>(HashMap::new());
+        // Initial value is empty
+        assert!(rx.borrow_and_update().is_empty());
+        // Send stats for a server
+        let mut map = HashMap::new();
+        map.insert(
+            "server-a".to_string(),
+            LatestInferenceStats {
+                tps: Some(42.0),
+                prompt_tps: Some(100.0),
+                cache_hit_pct: Some(75.0),
+                spec_accept_pct: Some(80.0),
+                spec_decoding_active: true,
+                last_updated_ms: 999,
+            },
+        );
+        tx.send_replace(map);
+        // Verify
         let received = rx.borrow_and_update();
-        assert!(received.is_some());
-        let received = received.as_ref().unwrap();
-        assert_eq!(received.tps, Some(42.0));
-        assert_eq!(received.cache_hit_pct, Some(75.0));
-        assert!(received.spec_decoding_active);
-        assert_eq!(received.last_updated_ms, 999);
+        assert_eq!(received.len(), 1);
+        let stats = received.get("server-a").unwrap();
+        assert_eq!(stats.tps, Some(42.0));
+        assert_eq!(stats.cache_hit_pct, Some(75.0));
+        assert!(stats.spec_decoding_active);
+        assert_eq!(stats.last_updated_ms, 999);
+    }
+
+    #[test]
+    fn test_inference_stats_per_server_isolation() {
+        let (tx, mut rx) =
+            tokio::sync::watch::channel::<HashMap<String, LatestInferenceStats>>(HashMap::new());
+
+        // Insert stats for server-a
+        let mut map = HashMap::new();
+        map.insert(
+            "server-a".to_string(),
+            LatestInferenceStats {
+                tps: Some(50.0),
+                prompt_tps: Some(200.0),
+                cache_hit_pct: Some(85.0),
+                spec_accept_pct: Some(90.0),
+                spec_decoding_active: true,
+                last_updated_ms: 1000,
+            },
+        );
+        tx.send_replace(map);
+
+        // Insert stats for server-b
+        let mut map2 = rx.borrow_and_update().clone();
+        map2.insert(
+            "server-b".to_string(),
+            LatestInferenceStats {
+                tps: Some(30.0),
+                prompt_tps: Some(100.0),
+                cache_hit_pct: Some(50.0),
+                spec_accept_pct: None,
+                spec_decoding_active: false,
+                last_updated_ms: 2000,
+            },
+        );
+        tx.send_replace(map2);
+
+        // Verify both servers have independent stats
+        let received = rx.borrow_and_update();
+        assert_eq!(received.len(), 2);
+
+        let a = received.get("server-a").unwrap();
+        assert_eq!(a.tps, Some(50.0));
+        assert!(a.spec_decoding_active);
+
+        let b = received.get("server-b").unwrap();
+        assert_eq!(b.tps, Some(30.0));
+        assert!(!b.spec_decoding_active);
+        assert!(b.spec_accept_pct.is_none());
     }
 }

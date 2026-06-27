@@ -143,6 +143,13 @@ pub struct ModelStatus {
     /// Error message when `state == "failed"`, surfaced on the dashboard.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
+    /// Token generation speed for this model's backend (tokens per second).
+    /// None if the model is not actively generating or no stats observed yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tps: Option<f32>,
+    /// Prompt processing speed for this model's backend (tokens per second).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_tps: Option<f32>,
 }
 
 /// Collect a snapshot of system metrics using a caller-owned `System`.

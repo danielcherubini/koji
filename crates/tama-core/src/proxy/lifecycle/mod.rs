@@ -285,6 +285,9 @@ impl ProxyState {
             // Clean up the Starting entry so future load_model calls don't short-circuit
             let mut models = self.models.write().await;
             models.remove(&server_name);
+            self.inference_stats.send_modify(|map| {
+                map.remove(&server_name);
+            });
             return Err(anyhow::anyhow!(
                 "Backend '{}' failed to start for server '{}' (timeout after {}s)",
                 server_config.backend,
@@ -515,6 +518,11 @@ impl ProxyState {
         // Remove from models
         let mut models = self.models.write().await;
         models.remove(server_name);
+
+        // Clear stale inference stats for this server
+        self.inference_stats.send_modify(|map| {
+            map.remove(server_name);
+        });
 
         // Write to DB after model is unloaded (best-effort)
         if let Some(mgr) = self.model_mgr() {
