@@ -1,20 +1,3 @@
-#[allow(unused_imports)]
-use axum::{
-    extract::{Path, State},
-    http::StatusCode,
-    response::IntoResponse,
-    Json,
-};
-#[allow(unused_imports)]
-use std::sync::Arc;
-
-#[allow(unused_imports)]
-use super::resolve_model_id;
-#[allow(unused_imports)]
-use crate::api::{load_config_from_state, trigger_proxy_reload};
-#[allow(unused_imports)]
-use tama_core::proxy::ProxyState;
-
 /// Maximum lengths for ModelBody fields.
 const MAX_BACKEND: usize = 256;
 const MAX_MODEL: usize = 256;
