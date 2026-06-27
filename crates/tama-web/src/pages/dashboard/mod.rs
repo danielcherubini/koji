@@ -114,25 +114,10 @@ pub fn Dashboard() -> impl IntoView {
         let id = id.clone();
         async move {
             cancel_busy.set(true);
-            match post_request(&format!("/tama/v1/models/{}/cancel", id))
+            // Ignore errors — SSE will push updated model state.
+            let _ = post_request(&format!("/tama/v1/models/{}/cancel", id))
                 .send()
-                .await
-            {
-                Ok(resp) if resp.ok() => {
-                    // Success — SSE will push updated state
-                }
-                Ok(resp) => {
-                    // Model already loaded or state changed — SSE will push updated state
-                    tracing::debug!(
-                        "Cancel returned non-2xx for model {}: {}",
-                        id,
-                        resp.status()
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to cancel model {}: {}", id, e);
-                }
-            }
+                .await;
             cancel_busy.set(false);
         }
     });
