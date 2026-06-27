@@ -6,23 +6,27 @@ pub struct NetworkStats {
     pub upload_mibps: f64,
 }
 
+/// One history point for sparkline charts. Lightweight — carries only the
+/// fields that need a rolling history (CPU, RAM, Network).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MetricSample {
+pub struct MetricHistoryPoint {
     pub ts_unix_ms: i64,
     pub cpu_usage_pct: f32,
     pub ram_used_mib: u64,
     pub ram_total_mib: u64,
-    pub gpu_utilization_pct: Option<u8>,
-    pub vram: Option<VramInfo>,
-    pub models_loaded: u64,
-    /// Per-model loaded/idle status mirrored from `tama_core::gpu::MetricSample.models`.
-    ///
-    /// `#[serde(default)]` keeps the dashboard resilient if the backend is
-    /// slightly out of sync (e.g. during a partial rollout) or if older cached
-    /// payloads without this field are encountered — missing arrays decode as
-    /// an empty `Vec` rather than failing the whole sample.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<NetworkStats>,
+}
+
+/// Point-in-time current state broadcast once per snapshot. Carries GPU device
+/// stats, per-model statuses (with per-model tps/prompt_tps), and inference stats.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MetricCurrent {
+    #[serde(default)]
+    pub gpus: Vec<GpuDeviceStats>,
     #[serde(default)]
     pub models: Vec<ModelStatus>,
+    pub models_loaded: u64,
     #[serde(default)]
     pub tps: Option<f32>,
     #[serde(default)]
@@ -35,11 +39,17 @@ pub struct MetricSample {
     pub spec_decoding_active: bool,
     #[serde(default)]
     pub inference_last_updated_ms: Option<i64>,
-    /// Per-GPU device stats for this sample. Empty if no GPU is detected.
+}
+
+/// Full metrics snapshot broadcast over SSE every 2s. Splits a rolling history
+/// of graphable fields (CPU, RAM, Network) from point-in-time state (GPU
+/// devices, model statuses, inference stats).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MetricsSnapshot {
     #[serde(default)]
-    pub gpus: Vec<GpuDeviceStats>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub network: Option<NetworkStats>,
+    pub history: Vec<MetricHistoryPoint>,
+    #[serde(default)]
+    pub current: MetricCurrent,
 }
 
 /// Frontend mirror of `tama_core::gpu::GpuDeviceStats`.

@@ -152,7 +152,88 @@ pub struct ModelStatus {
     pub prompt_tps: Option<f32>,
 }
 
-/// Collect a snapshot of system metrics using a caller-owned `System`.
+/// One history point for sparkline charts. Lightweight — carries only the
+/// fields that need a rolling history (CPU, RAM, Network). GPU devices,
+/// model statuses, and inference stats are NOT included; those live in
+/// [`MetricCurrent`] and are sent once per snapshot.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetricHistoryPoint {
+    pub ts_unix_ms: i64,
+    pub cpu_usage_pct: f32,
+    pub ram_used_mib: u64,
+    pub ram_total_mib: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<crate::network::NetworkStats>,
+}
+
+/// Point-in-time current state broadcast once per snapshot (not repeated in
+/// the history array). Carries GPU device stats, per-model statuses (with
+/// per-model `tps`/`prompt_tps`), and aggregate inference stats.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MetricCurrent {
+    /// Per-GPU device stats for this sample. Empty if no GPU is detected.
+    #[serde(default)]
+    pub gpus: Vec<GpuDeviceStats>,
+    /// Per-model loaded/idle status (with per-model tps/prompt_tps).
+    #[serde(default)]
+    pub models: Vec<ModelStatus>,
+    pub models_loaded: u64,
+    /// Aggregate inference stats (most-recently-updated server) for
+    /// sparkline-free display. None if no inference observed yet.
+    #[serde(default)]
+    pub tps: Option<f32>,
+    #[serde(default)]
+    pub prompt_tps: Option<f32>,
+    #[serde(default)]
+    pub cache_hit_pct: Option<f32>,
+    #[serde(default)]
+    pub spec_accept_pct: Option<f32>,
+    #[serde(default)]
+    pub spec_decoding_active: bool,
+    #[serde(default)]
+    pub inference_last_updated_ms: Option<i64>,
+}
+
+impl MetricSample {
+    /// Split this sample into a lightweight history point (for sparklines)
+    /// and a current-state snapshot (for GPU cards, model list, inference).
+    pub fn split(self) -> (MetricHistoryPoint, MetricCurrent) {
+        let history = MetricHistoryPoint {
+            ts_unix_ms: self.ts_unix_ms,
+            cpu_usage_pct: self.cpu_usage_pct,
+            ram_used_mib: self.ram_used_mib,
+            ram_total_mib: self.ram_total_mib,
+            network: self.network,
+        };
+        let current = MetricCurrent {
+            gpus: self.gpus,
+            models: self.models,
+            models_loaded: self.models_loaded,
+            tps: self.tps,
+            prompt_tps: self.prompt_tps,
+            cache_hit_pct: self.cache_hit_pct,
+            spec_accept_pct: self.spec_accept_pct,
+            spec_decoding_active: self.spec_decoding_active,
+            inference_last_updated_ms: self.inference_last_updated_ms,
+        };
+        (history, current)
+    }
+}
+
+/// Full metrics snapshot broadcast over SSE every 2s. Splits a rolling
+/// history of graphable fields (CPU, RAM, Network) from point-in-time state
+/// (GPU devices, model statuses, inference stats) so the latter is not
+/// duplicated across every history entry.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MetricsSnapshot {
+    /// Rolling history of graphable fields (~450 samples) for sparklines.
+    /// CPU/RAM/Network current values are also read from the last entry.
+    #[serde(default)]
+    pub history: Vec<MetricHistoryPoint>,
+    /// Point-in-time state: GPU devices, model statuses, inference stats.
+    #[serde(default)]
+    pub current: MetricCurrent,
+}
 ///
 /// The caller is responsible for passing a `System` that persists across
 /// calls so that `sysinfo` can compute CPU deltas correctly. This function

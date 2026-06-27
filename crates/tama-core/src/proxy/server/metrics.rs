@@ -13,11 +13,11 @@ pub fn start_metrics_collector(
     state: Arc<crate::proxy::ProxyState>,
 ) -> tokio::task::JoinHandle<()> {
     // Seed in-memory history buffer from SQLite.
-    let mut history_buf: VecDeque<crate::gpu::MetricSample> = VecDeque::with_capacity(450);
+    let mut history_buf: VecDeque<crate::gpu::MetricHistoryPoint> = VecDeque::with_capacity(450);
     if let Some(seed_conn) = state.open_db() {
         if let Ok(rows) = crate::db::queries::get_recent_system_metrics(&seed_conn, 450) {
             for row in rows {
-                history_buf.push_back(row_into_sample(&row));
+                history_buf.push_back(row_into_sample(&row).split().0);
             }
         }
     }
@@ -159,15 +159,19 @@ pub fn start_metrics_collector(
             })
             .await;
 
-            // 6. Update in-memory buffer
-            history_buf.push_back(sample);
+            // 6. Update in-memory buffer (history points only — lightweight)
+            let (history_point, current) = sample.clone().split();
+            history_buf.push_back(history_point);
             while history_buf.len() > 450 {
                 history_buf.pop_front();
             }
 
-            // 7. Broadcast as Arc slice (no deep clone)
-            let arc: Arc<[crate::gpu::MetricSample]> = history_buf.make_contiguous().into();
-            let _ = metrics_state.metrics_tx.send(arc);
+            // 7. Broadcast split snapshot: history (graphable fields) + current (GPU/models/inference)
+            let snapshot = crate::gpu::MetricsSnapshot {
+                history: history_buf.make_contiguous().to_vec(),
+                current,
+            };
+            let _ = metrics_state.metrics_tx.send(snapshot);
 
             tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
         }

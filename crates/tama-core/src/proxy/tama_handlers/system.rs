@@ -111,9 +111,10 @@ pub async fn handle_tama_system_restart(state: State<Arc<ProxyState>>) -> Respon
 /// Stream live system metrics snapshots as SSE events.
 ///
 /// Subscribes to the `metrics_tx` broadcast channel in `ProxyState`. Each
-/// tick (every 2s), the metrics task broadcasts an `Arc<[MetricSample]>`
-/// containing the full history buffer. This handler serializes the array
-/// as JSON and emits it as `event: "snapshot"`.
+/// tick (every 2s), the metrics task broadcasts a [`MetricsSnapshot`] that
+/// splits a rolling history of graphable fields (CPU, RAM, Network) from
+/// point-in-time state (GPU devices, model statuses, inference stats). This
+/// handler serializes the snapshot as JSON and emits it as `event: "snapshot"`.
 ///
 /// On subscriber lag, the handler silently skips the missed tick — the next
 /// snapshot will contain the full history. On channel close (empty Arc
@@ -127,11 +128,12 @@ pub async fn handle_system_metrics_stream(
     let stream = async_stream::stream! {
         loop {
             match rx.recv().await {
-                Ok(samples) => {
-                    if samples.is_empty() { break; } // Shutdown sentinel
-                    match serde_json::to_string(samples.as_ref()) {
+                Ok(snapshot) => {
+                    // Shutdown sentinel: empty history signals stream end.
+                    if snapshot.history.is_empty() { break; }
+                    match serde_json::to_string(&snapshot) {
                         Ok(data) => yield Ok(Event::default().event("snapshot").data(data)),
-                        Err(e) => tracing::warn!("failed to serialize MetricSample slice: {}", e),
+                        Err(e) => tracing::warn!("failed to serialize MetricsSnapshot: {}", e),
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {

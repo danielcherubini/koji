@@ -4,58 +4,42 @@ use crate::components::gpu_device_card::{
     loaded_model_display, model_gpu_label, GpuDeviceState,
 };
 
-/// `MetricSample` must deserialize a payload that has no `models` field at
+/// `MetricCurrent` must deserialize a payload that has no `models` field at
 /// all (older backend builds, cached responses) by defaulting to an empty
 /// `Vec`. The `#[serde(default)]` attribute on the field is what makes this
 /// work — without it, deserialization would fail with a `missing field`
 /// error and break the dashboard during a partial rollout.
 #[test]
-fn metric_sample_deserializes_without_models_field() {
+fn metric_current_deserializes_without_models_field() {
     let json = r#"{
-        "ts_unix_ms": 1700000000000,
-        "cpu_usage_pct": 12.5,
-        "ram_used_mib": 2048,
-        "ram_total_mib": 16384,
-        "gpu_utilization_pct": null,
-        "vram": null,
         "models_loaded": 0
     }"#;
 
-    let sample: MetricSample = serde_json::from_str(json)
-        .expect("MetricSample without `models` must deserialize via #[serde(default)]");
+    let cur: MetricCurrent = serde_json::from_str(json)
+        .expect("MetricCurrent without `models` must deserialize via #[serde(default)]");
 
-    assert_eq!(sample.ts_unix_ms, 1_700_000_000_000);
-    assert_eq!(sample.cpu_usage_pct, 12.5);
-    assert_eq!(sample.ram_used_mib, 2048);
-    assert_eq!(sample.ram_total_mib, 16_384);
-    assert!(sample.gpu_utilization_pct.is_none());
-    assert!(sample.vram.is_none());
-    assert_eq!(sample.models_loaded, 0);
+    assert_eq!(cur.models_loaded, 0);
     assert!(
-        sample.models.is_empty(),
+        cur.models.is_empty(),
         "missing `models` field must default to an empty Vec"
     );
 }
 
-/// `MetricSample` must deserialize a payload that has no `network` field at
-/// all (older backend builds, cached responses) by defaulting to `None`.
-/// The `#[serde(default, skip_serializing_if = "Option::is_none")]` attributes
-/// on the field make this work.
+/// `MetricHistoryPoint` must deserialize a payload that has no `network`
+/// field at all (older backend builds, cached responses) by defaulting to
+/// `None`. The `#[serde(default, skip_serializing_if = "Option::is_none")]`
+/// attributes on the field make this work.
 #[test]
-fn metric_sample_deserializes_without_network_field() {
+fn metric_history_point_deserializes_without_network_field() {
     let json = r#"{
         "ts_unix_ms": 1700000000000,
         "cpu_usage_pct": 12.5,
         "ram_used_mib": 2048,
-        "ram_total_mib": 16384,
-        "gpu_utilization_pct": null,
-        "vram": null,
-        "models_loaded": 0,
-        "models": []
+        "ram_total_mib": 16384
     }"#;
 
-    let sample: MetricSample = serde_json::from_str(json)
-        .expect("MetricSample without `network` must deserialize via #[serde(default)]");
+    let sample: MetricHistoryPoint = serde_json::from_str(json)
+        .expect("MetricHistoryPoint without `network` must deserialize via #[serde(default)]");
 
     assert_eq!(sample.ts_unix_ms, 1_700_000_000_000);
     assert_eq!(sample.cpu_usage_pct, 12.5);
@@ -429,14 +413,8 @@ fn active_and_inactive_models_are_symmetric_complements() {
 /// When the backend includes a populated `models` array, every `ModelStatus`
 /// must round-trip with its `id`, `backend`, and `state` fields preserved.
 #[test]
-fn metric_sample_deserializes_models_field() {
+fn metric_current_deserializes_models_field() {
     let json = r#"{
-        "ts_unix_ms": 1700000000000,
-        "cpu_usage_pct": 0.0,
-        "ram_used_mib": 0,
-        "ram_total_mib": 0,
-        "gpu_utilization_pct": null,
-        "vram": null,
         "models_loaded": 1,
         "models": [
             { "id": "alpha", "api_name": "org/alpha", "backend": "llama_cpp", "loaded": true, "state": "ready" },
@@ -444,20 +422,20 @@ fn metric_sample_deserializes_models_field() {
         ]
     }"#;
 
-    let sample: MetricSample =
-        serde_json::from_str(json).expect("MetricSample with `models` must deserialize");
+    let cur: MetricCurrent =
+        serde_json::from_str(json).expect("MetricCurrent with `models` must deserialize");
 
-    assert_eq!(sample.models.len(), 2);
+    assert_eq!(cur.models.len(), 2);
 
-    assert_eq!(sample.models[0].id, "alpha");
-    assert_eq!(sample.models[0].api_name, Some("org/alpha".to_string()));
-    assert_eq!(sample.models[0].backend, "llama_cpp");
-    assert_eq!(sample.models[0].state, "ready");
+    assert_eq!(cur.models[0].id, "alpha");
+    assert_eq!(cur.models[0].api_name, Some("org/alpha".to_string()));
+    assert_eq!(cur.models[0].backend, "llama_cpp");
+    assert_eq!(cur.models[0].state, "ready");
 
-    assert_eq!(sample.models[1].id, "beta");
-    assert_eq!(sample.models[1].api_name, Some("org/beta".to_string()));
-    assert_eq!(sample.models[1].backend, "ik_llama");
-    assert_eq!(sample.models[1].state, "idle");
+    assert_eq!(cur.models[1].id, "beta");
+    assert_eq!(cur.models[1].api_name, Some("org/beta".to_string()));
+    assert_eq!(cur.models[1].backend, "ik_llama");
+    assert_eq!(cur.models[1].state, "idle");
 }
 
 // ── GpuDeviceCard helper tests ────────────────────────────────────────────
