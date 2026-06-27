@@ -23,9 +23,9 @@ use crate::proxy::handlers::{
 use crate::proxy::tama_handlers::{
     backend_logs::handle_all_logs, handle_backend_log_sse, handle_hf_list_quants,
     handle_opencode_list_models, handle_pull_job_stream, handle_system_metrics_stream,
-    handle_tama_get_model as handle_tama_get_model_fn, handle_tama_get_pull_job,
-    handle_tama_list_models, handle_tama_load_model, handle_tama_pull_model,
-    handle_tama_system_gpu_devices, handle_tama_system_gpu_devices_refresh,
+    handle_tama_cancel_load, handle_tama_get_model as handle_tama_get_model_fn,
+    handle_tama_get_pull_job, handle_tama_list_models, handle_tama_load_model,
+    handle_tama_pull_model, handle_tama_system_gpu_devices, handle_tama_system_gpu_devices_refresh,
     handle_tama_system_health, handle_tama_system_restart, handle_tama_unload_model,
 };
 use crate::proxy::ProxyState;
@@ -51,6 +51,7 @@ pub async fn build_router(state: Arc<ProxyState>) -> Router {
         .route("/tama/v1/models/:id", get(handle_tama_get_model_fn))
         .route("/tama/v1/models/:id/load", post(handle_tama_load_model))
         .route("/tama/v1/models/:id/unload", post(handle_tama_unload_model))
+        .route("/tama/v1/models/:id/cancel", post(handle_tama_cancel_load))
         // OpenCode plugin discovery API — returns rich model metadata
         .route("/v1/opencode/models", get(handle_opencode_list_models))
         // Pull jobs live under /tama/v1/pulls/ to avoid path conflict with /models/:id
@@ -144,6 +145,7 @@ pub async fn build_unified_router(
         // Tama management API — model lifecycle (specific routes before web catch-alls)
         .route("/tama/v1/models/:id/load", post(handle_tama_load_model))
         .route("/tama/v1/models/:id/unload", post(handle_tama_unload_model))
+        .route("/tama/v1/models/:id/cancel", post(handle_tama_cancel_load))
         // OpenCode plugin discovery API — returns rich model metadata
         .route("/v1/opencode/models", get(handle_opencode_list_models))
         // Pull jobs live under /tama/v1/pulls/ to avoid path conflict with /models/:id
@@ -298,6 +300,19 @@ mod tests {
             resp.status(),
             405,
             "Route priority failed: extra router caught /tama/v1/models/:id/unload instead of proxy handler"
+        );
+
+        // POST to /tama/v1/models/test/cancel — should be handled by proxy's
+        // handle_tama_cancel_load, not by extra router's catch-all.
+        let resp = client
+            .post(format!("http://{}/tama/v1/models/test/cancel", bound_addr))
+            .send()
+            .await
+            .unwrap();
+        assert_ne!(
+            resp.status(),
+            405,
+            "Route priority failed: extra router caught /tama/v1/models/:id/cancel instead of proxy handler"
         );
 
         // GET /health — proxy route

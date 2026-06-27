@@ -7,9 +7,13 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
+use std::time::Duration;
 
 use super::types::ModelResponse;
+use crate::proxy::process::{force_kill_process_group, is_process_group_alive, kill_process_group};
+use crate::proxy::ModelState;
 use crate::proxy::ProxyState;
+use tracing::{info, warn};
 
 #[derive(Debug, Clone, Copy, Default)]
 struct ModelCapabilities {
@@ -180,6 +184,146 @@ pub async fn handle_tama_load_model(
         )
             .into_response(),
     }
+}
+
+/// Handle cancelling a loading model (Tama management API).
+///
+/// Kills a loading backend process and returns the model to idle. The handler
+/// uses a read-write lock double-check pattern to avoid races with the
+/// load_model path.
+///
+/// There is a narrow race window where load_model's health check succeeds after
+/// cancel removes the entry, and load_model then calls mgr.insert_active()
+/// unconditionally. A future fix would add a re-check in load_model before
+/// insert_active under the write lock.
+pub async fn handle_tama_cancel_load(
+    state: State<Arc<ProxyState>>,
+    Path(model_id): Path<String>,
+) -> Response {
+    let model_id = resolve_model_id(&state, &model_id).await;
+
+    // ── Step b: read lock — initial check ──────────────────────────────
+    let (server_name, pid) = {
+        let models = state.models.read().await;
+        let entry = match models.get(&model_id) {
+            Some(e) => e,
+            None => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({
+                        "error": {
+                            "message": "Model is not currently loading",
+                            "type": "ModelNotLoadingError"
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+        };
+
+        match entry {
+            ModelState::Starting { backend_pid, .. } => (model_id.clone(), *backend_pid),
+            ModelState::Ready { .. } => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(serde_json::json!({
+                        "error": {
+                            "message": "Model is already loaded",
+                            "type": "ModelAlreadyLoadedError"
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+            _ => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({
+                        "error": {
+                            "message": "Model is not currently loading",
+                            "type": "ModelNotLoadingError"
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    }; // read lock dropped
+
+    // ── Step c+d: write lock — re-validate and remove ──────────────────
+    {
+        let mut models = state.models.write().await;
+        match models.get(&server_name) {
+            Some(ModelState::Starting { .. }) => {
+                models.remove(&server_name);
+            }
+            Some(ModelState::Ready { .. }) => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(serde_json::json!({
+                        "error": {
+                            "message": "Model is already loaded",
+                            "type": "ModelAlreadyLoadedError"
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+            _ => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({
+                        "error": {
+                            "message": "Model is not currently loading",
+                            "type": "ModelNotLoadingError"
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    } // write lock dropped
+
+    // ── Step f: kill process group ─────────────────────────────────────
+    if pid > 0 {
+        // First attempt: SIGTERM
+        if let Err(e) = kill_process_group(pid).await {
+            warn!("Cancel kill failed for '{}': {}", server_name, e);
+        }
+
+        // Poll up to 2s for the group to die (every 250ms)
+        for _ in 0..8 {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            if !is_process_group_alive(pid) {
+                break;
+            }
+        }
+
+        // Escalate: SIGKILL if still alive
+        if is_process_group_alive(pid) {
+            if let Err(e) = force_kill_process_group(pid).await {
+                warn!("Cancel force kill failed for '{}': {}", server_name, e);
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+
+    // ── Step g: clean up DB ────────────────────────────────────────────
+    if let Some(mgr) = state.model_mgr() {
+        if let Err(e) = mgr.remove_active(&server_name) {
+            warn!("Failed to remove active entry for '{}': {}", server_name, e);
+        }
+    }
+
+    // ── Step h: log ────────────────────────────────────────────────────
+    info!("Model '{}' cancel completed", server_name);
+
+    // ── Step i: return response ────────────────────────────────────────
+    Json(ModelResponse {
+        id: model_id,
+        loaded: false,
+    })
+    .into_response()
 }
 
 /// Handle unloading a model (Tama management API).
