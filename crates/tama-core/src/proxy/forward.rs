@@ -225,6 +225,9 @@ pub async fn forward_request(
             );
             let mut models = state.models.write().await;
             models.remove(server_name);
+            state.inference_stats.send_modify(|map| {
+                map.remove(server_name);
+            });
             if let Some(mgr) = state.model_mgr() {
                 let _ = mgr.remove_active(server_name);
             }
@@ -511,6 +514,9 @@ pub async fn forward_request(
                 );
                 let mut models = state.models.write().await;
                 models.remove(server_name);
+                state.inference_stats.send_modify(|map| {
+                    map.remove(server_name);
+                });
                 // Best-effort DB cleanup
                 if let Some(mgr) = state.model_mgr() {
                     let _ = mgr.remove_active(server_name);

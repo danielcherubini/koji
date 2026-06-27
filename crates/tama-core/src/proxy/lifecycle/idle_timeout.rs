@@ -154,6 +154,9 @@ impl ProxyState {
             let mut models = self.models.write().await;
             for server_name in &failed_to_remove {
                 models.remove(server_name);
+                self.inference_stats.send_modify(|map| {
+                    map.remove(server_name);
+                });
                 info!("Removed failed server '{}' from model map", server_name);
             }
         }
@@ -244,6 +247,9 @@ impl ProxyState {
 
                     if pid_matches.unwrap_or(false) {
                         models.remove(server_name);
+                        self.inference_stats.send_modify(|map| {
+                            map.remove(server_name);
+                        });
                         removed_servers.push(server_name.clone());
                         if *restart_count >= max_restarts {
                             models.insert(

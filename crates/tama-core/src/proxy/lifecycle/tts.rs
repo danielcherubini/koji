@@ -178,6 +178,9 @@ impl ProxyState {
         if !health_ok {
             let mut models = self.models.write().await;
             models.remove(backend_name);
+            self.inference_stats.send_modify(|map| {
+                map.remove(backend_name);
+            });
             return Err(anyhow::anyhow!(
                 "Kokoro-FastAPI failed to start for backend '{}' (timeout after {}s)",
                 backend_name,

@@ -14,14 +14,22 @@ impl ProxyState {
     pub async fn collect_model_statuses(&self) -> Vec<crate::gpu::ModelStatus> {
         let config = self.config.read().await;
         let model_configs = self.model_configs.read().await;
+
+        // Borrow inference_stats before acquiring runtime to avoid lock-order issues.
+        // Clone out of the borrow guard so it doesn't live across the .await below.
+        let inference_stats: std::collections::HashMap<
+            String,
+            crate::proxy::types::LatestInferenceStats,
+        > = self.inference_stats.borrow().clone();
+
         let runtime = self.models.read().await;
         let mut out: Vec<crate::gpu::ModelStatus> = Vec::with_capacity(model_configs.len());
         for (model_id, model_cfg) in model_configs.iter() {
             // Determine the model's lifecycle state from its server entries.
             let servers = config.resolve_servers_for_model(&model_configs, model_id);
             let mut best_state: Option<&ModelState> = None;
-            for (server_name, _, _) in servers {
-                if let Some(state) = runtime.get(&server_name) {
+            for (server_name, _, _) in servers.iter() {
+                if let Some(state) = runtime.get(server_name) {
                     match state {
                         ModelState::Ready { .. } => {
                             best_state = Some(state);
@@ -48,7 +56,12 @@ impl ProxyState {
                 None => (false, "idle".to_string(), None),
             };
 
-            out.push(crate::gpu::ModelStatus {
+            // Look up the first matching server's inference stats.
+            // first-server-wins: for the current usage (one server per model) this is sufficient.
+            let server_stats = servers
+                .iter()
+                .find_map(|(sn, _, _)| inference_stats.get(sn));
+            let status = crate::gpu::ModelStatus {
                 id: model_id.clone(),
                 db_id: model_cfg.db_id,
                 api_name: model_cfg.api_name.clone(),
@@ -66,7 +79,10 @@ impl ProxyState {
                 spec_types: model_cfg.spec_decoding.spec_types.clone(),
                 gpu_device: model_cfg.gpu_device.clone(),
                 error_message,
-            });
+                tps: server_stats.and_then(|s| s.tps),
+                prompt_tps: server_stats.and_then(|s| s.prompt_tps),
+            };
+            out.push(status);
         }
         // Stable order so dashboard rows don't shuffle between samples.
         out.sort_by(|a, b| a.id.cmp(&b.id));
