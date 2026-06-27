@@ -255,6 +255,10 @@ pub async fn handle_tama_cancel_load(
         let mut models = state.models.write().await;
         match models.get(&server_name) {
             Some(ModelState::Starting { .. }) => {
+                // TODO: race with load_model's mgr.insert_active() — if health check
+                // succeeds between here and the kill below, load_model may insert a
+                // stale active_models DB row. A future fix would add a re-check in
+                // load_model before insert_active under the write lock.
                 models.remove(&server_name);
             }
             Some(ModelState::Ready { .. }) => {
