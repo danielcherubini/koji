@@ -188,12 +188,10 @@ impl DownloadQueueService {
         bytes_downloaded: i64,
         total_bytes: Option<i64>,
     ) -> Result<()> {
-        self.model_mgr.lock().unwrap().queue_update_status(
+        self.model_mgr.lock().unwrap().queue_update_progress(
             job_id,
-            "progress",
             bytes_downloaded,
             total_bytes,
-            None,
         )?;
 
         let _ = self.events_tx.send(DownloadEvent::Progress {

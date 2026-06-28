@@ -294,6 +294,22 @@ impl ModelManager {
         )
     }
 
+    /// Update only progress fields (bytes_downloaded, total_bytes) without
+    /// changing the status. Used for real-time progress streaming via SSE.
+    pub fn queue_update_progress(
+        &self,
+        job_id: &str,
+        bytes_downloaded: i64,
+        total_bytes: Option<i64>,
+    ) -> Result<()> {
+        crate::db::queries::update_progress_only(
+            &self.conn,
+            job_id,
+            bytes_downloaded,
+            total_bytes,
+        )
+    }
+
     /// Cancel a queue item if it hasn't reached a terminal state.
     pub fn queue_cancel(&self, job_id: &str) -> Result<()> {
         crate::db::queries::cancel_queue_item(&self.conn, job_id)
