@@ -91,16 +91,20 @@ pub fn model_gpu_label(gpus: &[GpuDeviceStats], model: &ModelStatus) -> Option<S
     }
 }
 
-/// Find the first model targeting `device_id` (e.g. "GPU0").
+/// Find the first loaded model targeting `device_id` (e.g. "GPU0").
+/// Only considers models in `ready`, `loading`, or `unloading` state.
 /// Models without `gpu_device` set fall back to the first GPU ("GPU0").
 pub fn model_for_device<'a>(
     loaded_models: &'a [ModelStatus],
     device_id: &str,
 ) -> Option<&'a ModelStatus> {
-    loaded_models.iter().find(|m| match &m.gpu_device {
-        Some(g) if g == device_id => true,
-        None if device_id == "GPU0" => true,
-        _ => false,
+    loaded_models.iter().find(|m| {
+        let targets_device = match &m.gpu_device {
+            Some(g) if g == device_id => true,
+            None if device_id == "GPU0" => true,
+            _ => false,
+        };
+        targets_device && matches!(m.state.as_str(), "ready" | "loading" | "unloading")
     })
 }
 
