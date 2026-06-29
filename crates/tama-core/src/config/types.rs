@@ -97,10 +97,14 @@ pub struct ProxyConfig {
     /// Default is 2, minimum is 1.
     #[serde(default = "default_download_queue_poll_interval")]
     pub download_queue_poll_interval_secs: u64,
-    /// Maximum number of models that can be loaded simultaneously.
-    /// When a new model is requested and the limit is reached, the
-    /// least-recently-used (LRU) model is automatically unloaded first.
-    /// Set to 0 for unlimited (disabled). Default: 1.
+    /// Maximum number of models that can be loaded simultaneously **per GPU
+    /// device**. When a new model is requested and the limit is reached for
+    /// that GPU, the least-recently-used (LRU) model on that GPU is
+    /// automatically unloaded first. Set to 0 for unlimited (disabled).
+    /// Default: 1.
+    ///
+    /// For example, with `max_loaded_models = 1` and 2 GPUs (CUDA0, CUDA1),
+    /// you can have 1 model on CUDA0 AND 1 model on CUDA1 simultaneously.
     #[serde(default = "default_max_loaded_models")]
     pub max_loaded_models: u32,
     /// Authentik instance URL for bearer token validation.

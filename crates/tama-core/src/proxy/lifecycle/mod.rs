@@ -34,8 +34,11 @@ pub async fn ensure_model_loaded(
     let server_name = match state.get_available_server_for_model(&resolved_model).await {
         Some(name) => name,
         None => {
-            let _ = state.evict_lru_if_needed().await;
             let model_card = state.get_model_card(&resolved_model).await;
+            let target_gpu = state
+                .resolve_model_gpu_device(&resolved_model, model_card.as_ref())
+                .await;
+            let _ = state.evict_lru_if_needed(target_gpu).await;
             match state.load_model(&resolved_model, model_card.as_ref()).await {
                 Ok(s) => s,
                 Err(e) => on_load_error(&resolved_model, e)?,
@@ -398,13 +401,42 @@ impl ProxyState {
         Ok(server_name)
     }
 
-    /// Evict the least-recently-used Ready model if the proxy is at capacity.
+    /// Resolve the effective GPU device for a model.
+    ///
+    /// Uses the same resolution logic as `load_model`: checks the server config's
+    /// `gpu_device` first, then falls back to the model card's `default_gpu_device`.
+    /// Returns `None` if the model cannot be routed to any server.
+    pub async fn resolve_model_gpu_device(
+        &self,
+        model_name: &str,
+        model_card: Option<&crate::models::card::ModelCard>,
+    ) -> Option<String> {
+        let config = self.config.read().await.clone();
+        let model_configs = self.model_configs.read().await;
+        let servers = config.resolve_servers_for_model(&model_configs, model_name);
+        let server_name = servers.first().map(|(name, _, _)| name.clone())?;
+        let (server_config, _) = config.resolve_server(&model_configs, &server_name).ok()?;
+        resolve_gpu_device(
+            server_config.gpu_device.clone(),
+            model_card.and_then(|card| card.model.default_gpu_device.clone()),
+        )
+    }
+
+    /// Evict the least-recently-used Ready model on the target GPU if the proxy
+    /// is at capacity for that device.
+    ///
+    /// `target_gpu_device` is the GPU the new model will be loaded onto.
+    /// Only models on the same GPU (matching `Some(x) == Some(x)` or both `None`)
+    /// count against the limit and are candidates for eviction.
     ///
     /// This method atomically transitions a Ready model to Unloading (holding
     /// the write lock for only microseconds), then releases the lock before
     /// calling `unload_model()` (which can take up to 5 seconds). This design
     /// prevents both lock contention and race conditions.
-    pub async fn evict_lru_if_needed(&self) -> Result<Option<String>> {
+    pub async fn evict_lru_if_needed(
+        &self,
+        target_gpu_device: Option<String>,
+    ) -> Result<Option<String>> {
         let config = self.config.read().await;
         let max = config.proxy.max_loaded_models;
 
@@ -435,15 +467,25 @@ impl ProxyState {
         // Release the write lock before reading model_configs (avoids deadlock).
         drop(models);
 
-        // Only count LLM (non-TTS, non-compaction) models against the limit.
+        // Only count LLM (non-TTS, non-compaction) models on the same GPU
+        // against the limit.
         let model_configs = self.model_configs.read().await;
         let llm_count = ready_servers
             .iter()
             .filter(|server_name| {
-                !model_configs
+                // Skip non-inference backends (TTS, compaction)
+                if model_configs
                     .get(server_name.as_str())
                     .is_some_and(|mc| mc.backend.starts_with("tts_") || mc.backend == "compaction")
-                    && !non_inference_servers.contains(server_name.as_str())
+                    || non_inference_servers.contains(server_name.as_str())
+                {
+                    return false;
+                }
+                // Only count models on the same GPU device
+                let model_gpu = model_configs
+                    .get(server_name.as_str())
+                    .and_then(|mc| mc.gpu_device.as_ref());
+                model_gpu == target_gpu_device.as_ref()
             })
             .count();
 
@@ -451,15 +493,25 @@ impl ProxyState {
             return Ok(None);
         }
 
-        // Find LRU Ready model among LLM (non-TTS, non-compaction) models only.
+        // Find LRU Ready model among LLM (non-TTS, non-compaction) models
+        // on the same GPU only.
         let mut models = self.models.write().await;
         let lru_name = ready_servers
             .iter()
             .filter(|server_name| {
-                !model_configs
+                // Skip non-inference backends (TTS, compaction)
+                if model_configs
                     .get(server_name.as_str())
                     .is_some_and(|mc| mc.backend.starts_with("tts_") || mc.backend == "compaction")
-                    && !non_inference_servers.contains(server_name.as_str())
+                    || non_inference_servers.contains(server_name.as_str())
+                {
+                    return false;
+                }
+                // Only consider models on the same GPU device
+                let model_gpu = model_configs
+                    .get(server_name.as_str())
+                    .and_then(|mc| mc.gpu_device.as_ref());
+                model_gpu == target_gpu_device.as_ref()
             })
             .filter_map(|server_name| models.get(server_name).map(|s| (server_name, s)))
             .min_by_key(|(_, s)| s.last_accessed())
