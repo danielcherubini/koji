@@ -149,7 +149,16 @@ pub async fn install_backend(
         };
 
         // Capture config_dir for the background task
-        let config_dir = state.config.read().await.loaded_from.clone();
+        let config_dir = match tama_core::config::Config::config_dir() {
+            Ok(d) => d,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": format!("config_dir: {}", e)})),
+                )
+                    .into_response();
+            }
+        };
 
         let jobs_clone = jobs.clone();
         let job_clone = job.clone();
@@ -161,52 +170,18 @@ pub async fn install_backend(
             };
 
             // Open manager and run TTS installer
-            let result = match config_dir {
-                Some(ref config_dir) => {
-                    let config_dir_clone = config_dir.clone();
-                    let reg_result = tokio::task::spawn_blocking(move || {
-                        tama_core::backends::BackendManager::open(&config_dir_clone)
-                    })
-                    .await
-                    .map_err(|e| anyhow::anyhow!("spawn error: {}", e))
-                    .and_then(|r| r);
+            let config_dir_clone = config_dir.clone();
+            let reg_result = tokio::task::spawn_blocking(move || {
+                tama_core::backends::BackendManager::open(&config_dir_clone)
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("spawn error: {}", e))
+            .and_then(|r| r);
 
-                    let mgr = match reg_result {
-                        Ok(r) => r,
-                        Err(e) => {
-                            // Log the error and finish the job as failed
-                            jobs_clone
-                                .append_log(&job_clone, format!("Error: {}", e))
-                                .await;
-                            let _ = jobs_clone
-                                .finish(
-                                    &job_clone,
-                                    tama_core::web_types::JobStatus::Failed,
-                                    Some("Failed to open manager".to_string()),
-                                )
-                                .await;
-                            return;
-                        }
-                    };
-
-                    let progress = Box::new(adapter);
-                    match bt {
-                        tama_core::backends::BackendType::TtsKokoro => {
-                            tama_core::backends::install_tts_kokoro(mgr, progress).await
-                        }
-                        _ => unreachable!(),
-                    }
-                }
-                None => Err(anyhow::anyhow!("config_path not configured")),
-            };
-
-            match result {
-                Ok(()) => {
-                    let _ = jobs_clone
-                        .finish(&job_clone, tama_core::web_types::JobStatus::Succeeded, None)
-                        .await;
-                }
+            let mgr = match reg_result {
+                Ok(r) => r,
                 Err(e) => {
+                    // Log the error and finish the job as failed
                     jobs_clone
                         .append_log(&job_clone, format!("Error: {}", e))
                         .await;
@@ -214,11 +189,39 @@ pub async fn install_backend(
                         .finish(
                             &job_clone,
                             tama_core::web_types::JobStatus::Failed,
-                            Some(e.to_string()),
+                            Some("Failed to open manager".to_string()),
                         )
                         .await;
+                    return;
                 }
+            };
+
+            let progress = Box::new(adapter);
+            match bt {
+                tama_core::backends::BackendType::TtsKokoro => {
+                    match tama_core::backends::install_tts_kokoro(mgr, progress).await {
+                        Ok(()) => {}
+                        Err(e) => {
+                            jobs_clone
+                                .append_log(&job_clone, format!("Error: {}", e))
+                                .await;
+                            let _ = jobs_clone
+                                .finish(
+                                    &job_clone,
+                                    tama_core::web_types::JobStatus::Failed,
+                                    Some(e.to_string()),
+                                )
+                                .await;
+                            return;
+                        }
+                    }
+                }
+                _ => unreachable!(),
             }
+
+            let _ = jobs_clone
+                .finish(&job_clone, tama_core::web_types::JobStatus::Succeeded, None)
+                .await;
         });
 
         return Json(InstallResponse {
@@ -414,7 +417,7 @@ pub async fn install_backend(
         _ => "custom",
     }
     .to_string();
-    let reg_config_dir = state.config.read().await.loaded_from.clone();
+    // config_dir obtained inside the spawn closure via Config::config_dir()
 
     let options = tama_core::backends::InstallOptions {
         backend_type: backend_type.clone(),
@@ -448,7 +451,7 @@ pub async fn install_backend(
         match result {
             Ok(binary_path) => {
                 // Register the installation in the DB so `resolve_backend_path` can find it.
-                if let Some(config_dir) = reg_config_dir {
+                if let Ok(config_dir) = tama_core::config::Config::config_dir() {
                     let installed_at = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.as_secs() as i64)
@@ -521,15 +524,22 @@ pub async fn remove_backend(
         }
     };
 
-    let config_dir = match state.config.read().await.loaded_from.clone() {
-        Some(p) => p,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "config_dir not configured"})),
-            )
-                .into_response();
-        }
+    let config_dir = {
+        let dir = state
+            .db_dir
+            .clone()
+            .or_else(|| {
+                state
+                    .config
+                    .try_read()
+                    .ok()
+                    .and_then(|c| c.loaded_from.clone())
+            })
+            .unwrap_or_else(|| {
+                tama_core::config::Config::config_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            });
+        dir
     };
 
     // Open manager and get backend

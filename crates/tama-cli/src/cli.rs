@@ -192,9 +192,6 @@ pub enum Commands {
         /// Directory containing tama log files
         #[arg(long)]
         logs_dir: Option<std::path::PathBuf>,
-        /// Path to tama config file
-        #[arg(long)]
-        config_path: Option<std::path::PathBuf>,
     },
 }
 
@@ -302,8 +299,6 @@ pub enum ModelCommands {
         #[arg(long, default_value = "true")]
         verbose: bool,
     },
-    /// Migrate model entries from tama.toml to the database
-    Migrate,
 }
 
 #[derive(Parser, Debug)]
@@ -402,8 +397,4 @@ pub enum ServiceCommands {
 pub enum ConfigCommands {
     /// Print the current configuration
     Show,
-    /// Open config file in editor
-    Edit,
-    /// Show the config file path
-    Path,
 }

@@ -25,7 +25,7 @@ fn test_build_full_args_unified_n_slots() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    config.loaded_from = Some(temp_dir.path().to_path_buf());
+    // loaded_from removed — Config methods use Config::config_dir() (static)
 
     // kv_unified=true, num_parallel=4, context_length=8192 → -c 8192 (not 32768)
     let server = ModelConfig {
@@ -102,7 +102,7 @@ fn test_build_full_args_non_unified_n_slots() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    config.loaded_from = Some(temp_dir.path().to_path_buf());
+    // loaded_from removed — Config methods use Config::config_dir() (static)
 
     // kv_unified=false, num_parallel=4, context_length=8192 → -c 32768
     let server = ModelConfig {
@@ -179,7 +179,7 @@ fn test_build_full_args_unified_default() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    config.loaded_from = Some(temp_dir.path().to_path_buf());
+    // loaded_from removed — Config methods use Config::config_dir() (static)
 
     // kv_unified defaults to false via serde, num_parallel=2 → -c = 8192 * 2 = 16384
     let server = ModelConfig {
@@ -241,7 +241,7 @@ fn test_build_full_args_ctx_override_unified() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    config.loaded_from = Some(temp_dir.path().to_path_buf());
+    // loaded_from removed — Config methods use Config::config_dir() (static)
 
     // ctx_override=Some(4096), kv_unified=true, num_parallel=3 → -c 4096 (not 12288)
     let server = ModelConfig {
@@ -320,7 +320,7 @@ fn test_build_full_args_kv_unified_not_duplicated_when_in_user_args() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    config.loaded_from = Some(temp_dir.path().to_path_buf());
+    // loaded_from removed — Config methods use Config::config_dir() (static)
 
     // User manually added --kv-unified in args, AND kv_unified=true in config.
     // The flag should appear exactly once (not duplicated).

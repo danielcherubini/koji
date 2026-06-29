@@ -57,31 +57,11 @@ pub async fn get_logs(
 }
 
 pub async fn get_config(State(_state): State<Arc<ProxyState>>) -> impl IntoResponse {
-    let config_dir = match tama_core::config::Config::config_dir() {
-        Ok(p) => p,
-        Err(e) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": format!("config_dir not configured: {}", e)})),
-            )
-                .into_response()
-        }
-    };
-    let path = config_dir.join("config.toml");
-    // Use spawn_blocking for synchronous file I/O.
-    match tokio::task::spawn_blocking(move || std::fs::read_to_string(&path)).await {
-        Ok(Ok(content)) => Json(serde_json::json!({ "content": content })).into_response(),
-        Ok(Err(e)) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
-    }
+    (
+        StatusCode::GONE,
+        Json(serde_json::json!({"error": "TOML config is no longer used. Use GET /tama/v1/config/structured instead."})),
+    )
+        .into_response()
 }
 
 #[derive(serde::Deserialize)]
@@ -115,7 +95,7 @@ async fn trigger_proxy_reload(state: &ProxyState) -> Result<(), (StatusCode, ser
 /// Note: `models` is intentionally excluded — model configs are stored in the
 /// SQLite database and managed through the `/tama/v1/models/:id` CRUD endpoints.
 /// Only global config sections (general, backends, supervisor, proxy, etc.) are
-/// persisted to `config.toml` through this endpoint.
+/// persisted to the SQLite database through this endpoint.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct StructuredConfigBody {
     pub general: crate::types::config::General,
@@ -133,76 +113,22 @@ pub struct StructuredConfigBody {
 }
 
 pub async fn save_config(
-    State(state): State<Arc<ProxyState>>,
-    Json(body): Json<ConfigBody>,
+    State(_state): State<Arc<ProxyState>>,
+    _body: Json<ConfigBody>,
 ) -> impl IntoResponse {
-    let config_dir = match tama_core::config::Config::config_dir() {
-        Ok(p) => p,
-        Err(e) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": format!("config_dir not configured: {}", e)})),
-            )
-                .into_response()
-        }
-    };
-    let path = config_dir.join("config.toml");
-    // Validate TOML by parsing. Note: tama_core::config::Config has required fields
-    // (e.g. `general`), so a partial TOML that omits top-level tables will fail here.
-    // This is intentional — only fully valid config files are accepted.
-    if let Err(e) = toml::from_str::<tama_core::config::Config>(&body.content) {
-        return (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(serde_json::json!({"error": format!("Invalid TOML: {e}")})),
-        )
-            .into_response();
-    }
-    // Keep a copy of the validated content for syncing after the write.
-    let content_for_sync = body.content.clone();
-    // Use spawn_blocking for synchronous file I/O.
-    match tokio::task::spawn_blocking(move || std::fs::write(&path, &body.content)).await {
-        Ok(Ok(_)) => {
-            // Parse the validated TOML into a Config and sync the proxy's live config.
-            if let Ok(new_config) = toml::from_str::<tama_core::config::Config>(&content_for_sync) {
-                sync_proxy_config(&state, new_config).await;
-            }
-            Json(serde_json::json!({ "ok": true })).into_response()
-        }
-        Ok(Err(e)) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
-    }
+    (
+        StatusCode::GONE,
+        Json(serde_json::json!({"error": "TOML config is no longer used. Use POST /tama/v1/config/structured instead."})),
+    )
+        .into_response()
 }
 
 // ── Structured Config API (JSON-based for WASM) ─────────────────────────────────
 
 /// GET /api/config/structured — returns full Config as JSON.
 pub async fn get_structured_config(State(_state): State<Arc<ProxyState>>) -> impl IntoResponse {
-    let config_dir = match tama_core::config::Config::config_dir() {
-        Ok(d) => d,
-        Err(e) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": format!("config_dir not configured: {}", e)})),
-            )
-                .into_response();
-        }
-    };
-
-    // Load config from disk using tama_core (SSR-only path)
-    let cfg = match tokio::task::spawn_blocking(move || {
-        let db_path = config_dir.join("tama.db");
-        tama_core::config::Config::load_from(&db_path)
-    })
-    .await
-    {
+    // Load config from SQLite DB
+    let cfg = match tokio::task::spawn_blocking(tama_core::config::Config::load).await {
         Ok(Ok(cfg)) => cfg,
         Ok(Err(e)) => {
             return (
@@ -231,25 +157,12 @@ pub async fn save_structured_config(
     State(state): State<Arc<ProxyState>>,
     Json(body): Json<StructuredConfigBody>,
 ) -> impl IntoResponse {
-    let config_dir = match tama_core::config::Config::config_dir() {
-        Ok(d) => d,
-        Err(e) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": format!("config_dir not configured: {}", e)})),
-            )
-                .into_response();
-        }
-    };
-
     // Convert mirror types back to tama_core::Config
     let new_config: tama_core::config::Config = body.into();
 
-    // Persist to disk using tama_core's to_db (consistent with other endpoints)
-    let config_dir_clone = config_dir.clone();
-    let new_config_clone = new_config.clone();
-    let db_path = config_dir_clone.join("tama.db");
-    match tokio::task::spawn_blocking(move || new_config_clone.to_db(&db_path)).await {
+    // Persist to SQLite DB (spawn_blocking for synchronous DB write)
+    let new_config_for_save = new_config.clone();
+    match tokio::task::spawn_blocking(move || new_config_for_save.save()).await {
         Ok(Ok(_)) => {
             // Sync proxy config for hot-reload
             sync_proxy_config(&state, new_config).await;
@@ -270,40 +183,30 @@ pub async fn save_structured_config(
 
 // ── Shared helpers (used by both model and non-model endpoints) ──────────────
 
-/// Resolve the config directory with fallback: state.db_dir → config.loaded_from → Config::config_dir()
-fn resolve_config_dir(state: &ProxyState) -> std::path::PathBuf {
-    state
-        .db_dir
-        .clone()
-        .or_else(|| state.config.try_read().ok()?.loaded_from.clone())
-        .unwrap_or_else(|| {
-            tama_core::config::Config::config_dir()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."))
-        })
+/// Resolve the config directory from the default location.
+fn resolve_config_dir() -> std::path::PathBuf {
+    tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
 }
 
 /// Load config from the config directory derived from ProxyState.
 /// Returns (config, config_dir) on success.
 async fn load_config_from_state(
-    state: &ProxyState,
+    _state: &ProxyState,
 ) -> Result<(tama_core::config::Config, std::path::PathBuf), (StatusCode, serde_json::Value)> {
-    let config_dir = resolve_config_dir(state);
-    let db_path = config_dir.join("tama.db");
-    let db_path_clone = db_path.clone();
-    let cfg =
-        tokio::task::spawn_blocking(move || tama_core::config::Config::load_from(&db_path_clone))
-            .await
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    serde_json::json!({"error": e.to_string()}),
-                )
-            })?
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    serde_json::json!({"error": e.to_string()}),
-                )
-            })?;
+    let config_dir = resolve_config_dir();
+    let cfg = tokio::task::spawn_blocking(tama_core::config::Config::load)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                serde_json::json!({"error": e.to_string()}),
+            )
+        })?
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                serde_json::json!({"error": e.to_string()}),
+            )
+        })?;
     Ok((cfg, config_dir))
 }

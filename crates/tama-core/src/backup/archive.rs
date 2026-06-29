@@ -28,8 +28,6 @@ use crate::backup::manifest::{BackendEntry, BackupManifest, BackupModelEntry};
 pub struct ExtractResult {
     /// Parsed manifest from the archive
     pub manifest: BackupManifest,
-    /// Path to extracted config.toml
-    pub config_path: PathBuf,
     /// Path to extracted tama.db
     pub db_path: PathBuf,
     /// Paths to extracted model card TOML files
@@ -87,7 +85,7 @@ impl Write for StreamingHasher {
     }
 }
 
-/// Create a backup archive containing config.toml, configs/*.toml, and tama.db.
+/// Create a backup archive containing tama.db, configs/*.toml (model cards).
 ///
 /// **SHA-256 Contract:** The returned manifest's `sha256` field covers all archive
 /// entries **EXCEPT** `manifest.json` itself.
@@ -107,13 +105,6 @@ pub fn create_backup(config_dir: &Path, output_path: &Path) -> Result<BackupMani
             .with_context(|| format!("Failed to hash {}: {}", description, path.display()))?;
         Ok(())
     };
-
-    // Add config.toml
-    let config_path = config_dir.join("config.toml");
-    if !config_path.exists() {
-        anyhow::bail!("config.toml not found at {}", config_path.display());
-    }
-    add_file_to_hasher(&config_path, "config.toml")?;
 
     // Add all model card TOML files (sorted for consistent hashing)
     let configs_dir = config_dir.join("configs");
@@ -250,10 +241,6 @@ fn create_tar_gz_archive(
     tar.append(&header, manifest_json.as_bytes())
         .context("Failed to append manifest.json to archive")?;
 
-    let config_path = config_dir.join("config.toml");
-    add_file_to_archive(&mut tar, &config_path, "config.toml")
-        .context("Failed to add config.toml to archive")?;
-
     let configs_dir = config_dir.join("configs");
     if configs_dir.exists() {
         let mut entries: Vec<_> = fs::read_dir(&configs_dir)?
@@ -357,7 +344,6 @@ pub fn extract_backup(archive_path: &Path, target_dir: &Path) -> Result<ExtractR
     let mut archive = Archive::new(decoder);
 
     let mut hasher = StreamingHasher::new();
-    let mut extracted_config: Option<PathBuf> = None;
     let mut extracted_db: Option<PathBuf> = None;
     let mut extracted_cards: Vec<PathBuf> = Vec::new();
 
@@ -443,7 +429,6 @@ pub fn extract_backup(archive_path: &Path, target_dir: &Path) -> Result<ExtractR
             }
 
             match entry_name_owned.as_str() {
-                "config.toml" => extracted_config = Some(dest_path),
                 "tama.db" => extracted_db = Some(dest_path),
                 name if name.starts_with("configs/") => extracted_cards.push(dest_path),
                 _ => {}
@@ -468,7 +453,6 @@ pub fn extract_backup(archive_path: &Path, target_dir: &Path) -> Result<ExtractR
 
     Ok(ExtractResult {
         manifest,
-        config_path: extracted_config.context("config.toml not found in archive")?,
         db_path: extracted_db.context("tama.db not found in archive")?,
         card_paths: extracted_cards,
     })
@@ -488,18 +472,6 @@ mod tests {
         let extract_dir = temp_dir.path().join("extracted");
 
         fs::create_dir_all(config_dir.join("configs")).expect("create dirs");
-
-        let config_content = r#"
-[general]
-log_level = "info"
-
-[backends.llama_cpp]
-
-[models.test]
-backend = "llama_cpp"
-enabled = true
-"#;
-        fs::write(config_dir.join("config.toml"), config_content).expect("write config");
 
         let db_path = config_dir.join("tama.db");
         let conn = Connection::open(&db_path).expect("open db");
@@ -536,12 +508,18 @@ enabled = true
         );
 
         let extracted = extract_result.unwrap();
-        assert!(extracted.config_path.exists(), "config.toml should exist");
         assert!(extracted.db_path.exists(), "tama.db should exist");
 
-        let original_config = fs::read_to_string(config_dir.join("config.toml")).unwrap();
-        let extracted_config = fs::read_to_string(&extracted.config_path).unwrap();
-        assert_eq!(original_config, extracted_config);
+        // Verify DB content round-trips
+        let backup_conn = Connection::open(&extracted.db_path).expect("open extracted db");
+        let count: i64 = backup_conn
+            .query_row(
+                "SELECT COUNT(*) FROM model_pulls",
+                [],
+                |row: &rusqlite::Row| row.get(0),
+            )
+            .expect("count rows");
+        assert_eq!(count, 1, "backup should have 1 model_pull row");
     }
 
     #[test]
@@ -636,13 +614,6 @@ enabled = true
         let extract_dir = temp_dir.path().join("extracted");
 
         fs::create_dir_all(config_dir.join("configs")).expect("create dirs");
-
-        // Write a minimal config
-        let config_content = r#"
-[general]
-log_level = "info"
-"#;
-        fs::write(config_dir.join("config.toml"), config_content).expect("write config");
 
         // Create a minimal DB
         let db_path = config_dir.join("tama.db");

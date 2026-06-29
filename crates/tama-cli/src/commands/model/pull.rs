@@ -229,9 +229,12 @@ pub(super) async fn cmd_pull(config: &Config, repo_id: &str) -> Result<()> {
     };
 
     // Record all pull metadata in DB (sync, single connection, after all async work)
+    let db_dir: std::path::PathBuf = config.loaded_from.clone().unwrap_or_else(|| {
+        tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    });
+    let db_dir_ref = db_dir.as_path();
     let db_record_result: anyhow::Result<()> = (|| {
-        let db_dir = tama_core::config::Config::config_dir()?;
-        let mgr = ModelManager::open(&db_dir)?;
+        let mgr = ModelManager::open(db_dir_ref)?;
 
         // Look up model_id before DB writes
         let model_id = match mgr.get_config_by_repo_id(repo_id)? {
@@ -301,14 +304,9 @@ pub(super) async fn cmd_pull(config: &Config, repo_id: &str) -> Result<()> {
 pub(crate) fn cmd_scan(config: &Config) -> Result<()> {
     let models_dir = config.models_dir()?;
 
-    // Use the directory the config was loaded from as the base for the DB.
-    // This ensures that in tests (and Windows services), we use the temporary/specified
-    // directory instead of the default system config path.
-    let db_dir = match config.loaded_from {
-        Some(ref p) => p.clone(),
-        None => tama_core::config::Config::config_dir()
-            .map_err(|e| anyhow::anyhow!("Failed to determine config directory: {e}"))?,
-    };
+    let db_dir: std::path::PathBuf = config.loaded_from.clone().unwrap_or_else(|| {
+        tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    });
 
     let mgr = ModelManager::open(&db_dir)?;
 
@@ -449,6 +447,10 @@ mod tests {
     pub(super) async fn setup_test_env() -> (tempfile::TempDir, Config, OpenResult) {
         let dir = tempdir().unwrap();
         let config = Config {
+            general: tama_core::config::General {
+                models_dir: Some(dir.path().to_string_lossy().to_string()),
+                ..Default::default()
+            },
             loaded_from: Some(dir.path().to_path_buf()),
             ..Default::default()
         };

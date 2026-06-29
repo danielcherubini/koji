@@ -27,7 +27,7 @@ fn test_kv_cache_type_args_injected_when_set() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    config.loaded_from = Some(temp_dir.path().to_path_buf());
+    // loaded_from removed — Config methods use Config::config_dir() (static)
 
     let backend = BackendConfig {
         path: None,
@@ -103,7 +103,7 @@ fn test_kv_cache_type_args_not_injected_when_none() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    config.loaded_from = Some(temp_dir.path().to_path_buf());
+    // loaded_from removed — Config methods use Config::config_dir() (static)
 
     let backend = BackendConfig {
         path: None,
@@ -178,7 +178,7 @@ fn test_kv_cache_type_args_not_injected_for_non_llama_backend() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    config.loaded_from = Some(temp_dir.path().to_path_buf());
+    // loaded_from removed — Config methods use Config::config_dir() (static)
 
     let backend = BackendConfig {
         path: None,
@@ -253,7 +253,7 @@ fn test_kv_cache_type_args_no_duplicate_when_in_user_args() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    config.loaded_from = Some(temp_dir.path().to_path_buf());
+    // loaded_from removed — Config methods use Config::config_dir() (static)
 
     let backend = BackendConfig {
         path: None,
@@ -331,7 +331,7 @@ fn test_kv_cache_type_args_not_injected_for_empty_string() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    config.loaded_from = Some(temp_dir.path().to_path_buf());
+    // loaded_from removed — Config methods use Config::config_dir() (static)
 
     let backend = BackendConfig {
         path: None,

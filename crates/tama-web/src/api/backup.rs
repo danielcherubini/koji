@@ -65,15 +65,21 @@ pub struct BackendEntry {
 
 /// GET /tama/v1/backup - Create backup and return as file download
 pub async fn create_backup(State(state): State<Arc<ProxyState>>) -> impl IntoResponse {
-    let config_dir: std::path::PathBuf = match state.config.read().await.loaded_from.clone() {
-        Some(p) => p,
-        None => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "config_dir not configured"})),
-            )
-                .into_response();
-        }
+    let config_dir: std::path::PathBuf = {
+        state
+            .db_dir
+            .clone()
+            .or_else(|| {
+                state
+                    .config
+                    .try_read()
+                    .ok()
+                    .and_then(|c| c.loaded_from.clone())
+            })
+            .unwrap_or_else(|| {
+                tama_core::config::Config::config_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            })
     };
 
     // Spawn blocking task for backup
@@ -134,14 +140,9 @@ pub async fn restore_preview(
     mut multipart: Multipart,
 ) -> impl IntoResponse {
     // Save upload to temp file
-    let temp_dir = state
-        .config
-        .read()
-        .await
-        .loaded_from
-        .as_ref()
-        .map(|p| p.join("uploads"))
-        .unwrap_or_else(|| std::env::temp_dir().join("tama_uploads"));
+    let config_dir =
+        tama_core::config::Config::config_dir().unwrap_or_else(|_| std::env::temp_dir());
+    let temp_dir = config_dir.join("uploads");
     if let Err(e) = std::fs::create_dir_all(&temp_dir) {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -279,25 +280,18 @@ pub async fn start_restore(
     match job {
         Ok(job) => {
             // Spawn background task for restore with safe error handling
-            let config_dir = match state.config.read().await.loaded_from.as_ref() {
-                Some(path) => path.to_path_buf(),
-                None => {
-                    tracing::error!("Config dir not configured");
+            let config_dir = match tama_core::config::Config::config_dir() {
+                Ok(d) => d,
+                Err(e) => {
+                    tracing::error!("Config dir not configured: {}", e);
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({"error": "Config dir not configured"})),
+                        Json(serde_json::json!({"error": format!("Config dir not configured: {}", e)})),
                     )
                         .into_response();
                 }
             };
-            let temp_dir = state
-                .config
-                .read()
-                .await
-                .loaded_from
-                .as_ref()
-                .map(|p| p.join("uploads"))
-                .unwrap_or_else(|| std::env::temp_dir().join("tama_uploads"));
+            let temp_dir = config_dir.join("uploads");
             let job_id = job.id.clone();
 
             tokio::spawn(async move {

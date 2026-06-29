@@ -3,10 +3,10 @@ use super::*;
 // ── Handler: Get benchmark result ─────────────────────────────────────
 
 pub async fn get_benchmark_result(
-    State(_state): State<Arc<ProxyState>>,
+    State(state): State<Arc<ProxyState>>,
     Path(job_id): Path<String>,
 ) -> impl IntoResponse {
-    let jobs = match &_state.web_jobs {
+    let jobs = match &state.web_jobs {
         Some(j) => j.clone(),
         None => {
             return (
@@ -69,10 +69,10 @@ pub async fn get_benchmark_result(
 // ── Handler: SSE events for benchmark progress ────────────────────────
 
 pub async fn benchmark_events(
-    State(_state): State<Arc<ProxyState>>,
+    State(state): State<Arc<ProxyState>>,
     Path(job_id): Path<String>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, axum::Error>>>, StatusCode> {
-    let jobs = match &_state.web_jobs {
+    let jobs = match &state.web_jobs {
         Some(j) => j.clone(),
         None => {
             return Err(StatusCode::SERVICE_UNAVAILABLE);

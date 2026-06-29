@@ -8,10 +8,9 @@ pub async fn cmd_server_edit(config: &mut Config, name: &str, command: Vec<Strin
     }
 
     // Load model configs from DB — use the same config_dir the Config was loaded from
-    let db_dir = config
-        .loaded_from
-        .clone()
-        .unwrap_or_else(|| tama_core::config::Config::config_dir().unwrap());
+    let db_dir: std::path::PathBuf = config.loaded_from.clone().unwrap_or_else(|| {
+        tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    });
     let OpenResult { conn, .. } = tama_core::db::open(&db_dir)?;
     let mut model_configs = tama_core::db::load_model_configs(&conn)?;
 

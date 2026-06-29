@@ -4,31 +4,15 @@ pub async fn cmd_web(
     port: u16,
     _proxy_url: String,
     _logs_dir: Option<std::path::PathBuf>,
-    config_path: Option<std::path::PathBuf>,
 ) -> anyhow::Result<()> {
     use std::sync::Arc;
 
     let addr: std::net::SocketAddr = format!("0.0.0.0:{port}").parse()?;
 
-    // Build config from config_path or default
-    let config = if let Some(ref cp) = config_path {
-        let db_path = cp.parent().map(|p| p.join("tama.db"));
-        if let Some(dp) = db_path {
-            tama_core::config::Config::load_from(&dp).unwrap_or_default()
-        } else {
-            tama_core::config::Config::default()
-        }
-    } else {
-        tama_core::config::Config::default()
-    };
+    // Load config from the default SQLite database
+    let config = tama_core::config::Config::load().unwrap_or_default();
 
-    // Derive db_dir from config_path
-    let db_dir = config_path
-        .as_ref()
-        .and_then(|p| p.parent())
-        .map(|p| p.to_path_buf());
-
-    let state = Arc::new(tama_core::proxy::ProxyState::new(config, db_dir));
+    let state = Arc::new(tama_core::proxy::ProxyState::new(config, None));
 
     // Set web-specific fields
     let mut state_inner = (*state).clone();

@@ -57,7 +57,7 @@ pub struct BackendConfig {
 // Note: `default_args` and `health_check_url` are intentionally excluded.
 // These are per-backend settings stored in the SQLite `backend_configs` table
 // and managed through the /tama/v1/backends/:name/default-args endpoint,
-// not through the structured config (config.toml).
+// not through the structured config endpoint.
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Supervisor {

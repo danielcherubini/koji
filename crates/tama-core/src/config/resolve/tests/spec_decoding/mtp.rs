@@ -28,7 +28,7 @@ fn test_spec_decoding_flags_injected() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    config.loaded_from = Some(temp_dir.path().to_path_buf());
+    // loaded_from removed — Config methods use Config::config_dir() (static)
 
     let server = ModelConfig {
         backend: "llama_cpp".to_string(),
@@ -144,7 +144,7 @@ fn test_spec_decoding_no_duplicate_when_in_args() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    config.loaded_from = Some(temp_dir.path().to_path_buf());
+    // loaded_from removed — Config methods use Config::config_dir() (static)
 
     // User manually added --spec-type in args
     let server = ModelConfig {
@@ -233,7 +233,7 @@ fn test_spec_decoding_draft_ngl_only_for_mtp() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    config.loaded_from = Some(temp_dir.path().to_path_buf());
+    // loaded_from removed — Config methods use Config::config_dir() (static)
 
     // spec_types does NOT contain "draft-mtp", so draft_ngl should NOT be injected
     let server = ModelConfig {
@@ -316,7 +316,7 @@ fn test_spec_decoding_draft_ngl_value_99() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    config.loaded_from = Some(temp_dir.path().to_path_buf());
+    // loaded_from removed — Config methods use Config::config_dir() (static)
 
     let server = ModelConfig {
         backend: "llama_cpp".to_string(),
@@ -410,7 +410,7 @@ fn test_spec_decoding_empty_types_no_flags() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    config.loaded_from = Some(temp_dir.path().to_path_buf());
+    // loaded_from removed — Config methods use Config::config_dir() (static)
 
     // Empty spec_types → no spec decoding flags should be injected
     let server = ModelConfig {
@@ -513,7 +513,7 @@ fn test_mtp_model_injected_when_draft_mtp_enabled() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    config.loaded_from = Some(temp_dir.path().to_path_buf());
+    // loaded_from removed — Config methods use Config::config_dir() (static)
 
     let server = ModelConfig {
         backend: "llama_cpp".to_string(),
@@ -610,7 +610,7 @@ fn test_mtp_model_not_injected_without_draft_mtp() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    config.loaded_from = Some(temp_dir.path().to_path_buf());
+    // loaded_from removed — Config methods use Config::config_dir() (static)
 
     let server = ModelConfig {
         backend: "llama_cpp".to_string(),
@@ -699,7 +699,7 @@ fn test_mtp_model_no_duplicate_when_in_args() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    config.loaded_from = Some(temp_dir.path().to_path_buf());
+    // loaded_from removed — Config methods use Config::config_dir() (static)
 
     // User already has --spec-draft-model in args
     let server = ModelConfig {
@@ -778,7 +778,7 @@ fn test_mtp_model_not_injected_when_none() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    config.loaded_from = Some(temp_dir.path().to_path_buf());
+    // loaded_from removed — Config methods use Config::config_dir() (static)
 
     // mtp_model is None (default) but draft-mtp is in spec_types
     let server = ModelConfig {
@@ -859,7 +859,7 @@ fn test_mtp_model_warns_on_kind_mismatch() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    config.loaded_from = Some(temp_dir.path().to_path_buf());
+    // loaded_from removed — Config methods use Config::config_dir() (static)
 
     // mtp_model references a quant that has kind=Model (mismatched)
     let server = ModelConfig {

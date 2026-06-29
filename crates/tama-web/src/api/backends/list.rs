@@ -30,15 +30,22 @@ pub async fn list_backends(State(state): State<Arc<ProxyState>>) -> impl IntoRes
     };
 
     // Open registry
-    let config_dir = match state.config.read().await.loaded_from.clone() {
-        Some(p) => p,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "config_dir not configured"})),
-            )
-                .into_response();
-        }
+    let config_dir = {
+        let dir = state
+            .db_dir
+            .clone()
+            .or_else(|| {
+                state
+                    .config
+                    .try_read()
+                    .ok()
+                    .and_then(|c| c.loaded_from.clone())
+            })
+            .unwrap_or_else(|| {
+                tama_core::config::Config::config_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            });
+        dir
     };
 
     // Open registry (blocking call wrapped in spawn_blocking)
@@ -328,15 +335,22 @@ pub async fn check_backend_updates(State(state): State<Arc<ProxyState>>) -> impl
         })
         .map(|j| job_to_active_dto(&j));
 
-    let config_dir = match state.config.read().await.loaded_from.clone() {
-        Some(p) => p,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "config_dir not configured"})),
-            )
-                .into_response();
-        }
+    let config_dir = {
+        let dir = state
+            .db_dir
+            .clone()
+            .or_else(|| {
+                state
+                    .config
+                    .try_read()
+                    .ok()
+                    .and_then(|c| c.loaded_from.clone())
+            })
+            .unwrap_or_else(|| {
+                tama_core::config::Config::config_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            });
+        dir
     };
 
     // Open registry
@@ -558,7 +572,7 @@ pub async fn check_backend_updates(State(state): State<Arc<ProxyState>>) -> impl
 
 /// GET /tama/v1/backends/:name/versions
 pub async fn list_backend_versions(
-    State(state): State<Arc<ProxyState>>,
+    State(_state): State<Arc<ProxyState>>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
     // Validate name (prevent path traversal)
@@ -570,12 +584,12 @@ pub async fn list_backend_versions(
             .into_response();
     }
 
-    let config_dir = match state.config.read().await.loaded_from.clone() {
-        Some(p) => p,
-        None => {
+    let config_dir = match tama_core::config::Config::config_dir() {
+        Ok(d) => d,
+        Err(e) => {
             return (
                 StatusCode::NOT_FOUND,
-                Json(json!({"error": "config_dir not configured"})),
+                Json(json!({"error": format!("config_dir not configured: {}", e)})),
             )
                 .into_response();
         }

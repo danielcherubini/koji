@@ -289,8 +289,8 @@ pub struct Config {
     pub proxy: ProxyConfig,
     #[serde(default)]
     pub compaction: CompactionConfig,
-    /// The directory this config was loaded from.
-    /// Skipped in serialization (managed separately by backend).
+    /// Overrides for `configs_dir()` in tests.
+    /// Skipped in serialization.
     #[serde(skip)]
     pub loaded_from: Option<std::path::PathBuf>,
 }
@@ -731,7 +731,7 @@ impl From<CoreConfig> for Config {
                 .collect(),
             proxy: c.proxy.into(),
             compaction: c.compaction.into(),
-            loaded_from: c.loaded_from, // Preserved for internal use, not serialized
+            loaded_from: None,
         }
     }
 }
@@ -750,7 +750,7 @@ impl From<StructuredConfigBody> for CoreConfig {
                 .collect(),
             proxy: b.proxy.into(),
             compaction: b.compaction.into(),
-            loaded_from: None, // Will be restored from proxy config before save
+            loaded_from: None,
         }
     }
 }
@@ -769,7 +769,7 @@ impl From<Config> for CoreConfig {
                 .collect(),
             proxy: c.proxy.into(),
             compaction: c.compaction.into(),
-            loaded_from: c.loaded_from, // Preserved for internal use
+            loaded_from: c.loaded_from,
         }
     }
 }

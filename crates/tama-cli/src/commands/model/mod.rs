@@ -1,7 +1,6 @@
 pub mod create;
 pub mod enable_disable;
 pub mod list_rm;
-pub mod migrate;
 pub mod prune;
 pub mod pull;
 pub mod update;
@@ -58,6 +57,5 @@ pub async fn run(config: &tama_core::config::Config, command: ModelCommands) -> 
                 }
             }
         }
-        ModelCommands::Migrate => migrate::cmd_migrate(config),
     }
 }

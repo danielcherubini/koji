@@ -1,7 +1,5 @@
 use std::collections::{HashMap, HashSet};
 
-pub mod model_to_db;
-
 /// Check if an argument is a stale `--mmproj` flag.
 ///
 /// Matches three forms:

@@ -27,7 +27,7 @@ fn test_build_full_args_injects_alias_for_llama_cpp() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    config.loaded_from = Some(temp_dir.path().to_path_buf());
+    // loaded_from removed — Config methods use Config::config_dir() (static)
 
     let server = ModelConfig {
         backend: "llama_cpp".to_string(),
@@ -87,7 +87,7 @@ fn test_build_full_args_no_alias_for_non_llama_cpp() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    config.loaded_from = Some(temp_dir.path().to_path_buf());
+    // loaded_from removed — Config methods use Config::config_dir() (static)
 
     let server = ModelConfig {
         backend: "tts_kokoro".to_string(),
@@ -156,7 +156,7 @@ fn test_build_full_args_alias_falls_back_to_model() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    config.loaded_from = Some(temp_dir.path().to_path_buf());
+    // loaded_from removed — Config methods use Config::config_dir() (static)
 
     let server = ModelConfig {
         backend: "llama_cpp".to_string(),
@@ -233,7 +233,7 @@ fn test_build_full_args_respects_user_alias() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    config.loaded_from = Some(temp_dir.path().to_path_buf());
+    // loaded_from removed — Config methods use Config::config_dir() (static)
 
     let server = ModelConfig {
         backend: "llama_cpp".to_string(),

@@ -44,15 +44,22 @@ pub async fn update_backend(
         }
     };
 
-    let config_dir = match state.config.read().await.loaded_from.clone() {
-        Some(p) => p,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "config_dir not configured"})),
-            )
-                .into_response();
-        }
+    let config_dir = {
+        let dir = state
+            .db_dir
+            .clone()
+            .or_else(|| {
+                state
+                    .config
+                    .try_read()
+                    .ok()
+                    .and_then(|c| c.loaded_from.clone())
+            })
+            .unwrap_or_else(|| {
+                tama_core::config::Config::config_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            });
+        dir
     };
     let config_dir_clone = config_dir.clone();
 
@@ -511,15 +518,22 @@ pub async fn remove_backend_version(
             .into_response();
     }
 
-    let config_dir = match state.config.read().await.loaded_from.clone() {
-        Some(p) => p,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "config_dir not configured"})),
-            )
-                .into_response();
-        }
+    let config_dir = {
+        let dir = state
+            .db_dir
+            .clone()
+            .or_else(|| {
+                state
+                    .config
+                    .try_read()
+                    .ok()
+                    .and_then(|c| c.loaded_from.clone())
+            })
+            .unwrap_or_else(|| {
+                tama_core::config::Config::config_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            });
+        dir
     };
 
     // Open manager and get the specific version
@@ -700,15 +714,22 @@ pub async fn activate_backend_version(
             .into_response();
     }
 
-    let config_dir = match state.config.read().await.loaded_from.clone() {
-        Some(p) => p,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "config_dir not configured"})),
-            )
-                .into_response();
-        }
+    let config_dir = {
+        let dir = state
+            .db_dir
+            .clone()
+            .or_else(|| {
+                state
+                    .config
+                    .try_read()
+                    .ok()
+                    .and_then(|c| c.loaded_from.clone())
+            })
+            .unwrap_or_else(|| {
+                tama_core::config::Config::config_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            });
+        dir
     };
 
     // Determine gpu_variant: use explicit value or auto-infer from manager
@@ -866,15 +887,22 @@ pub async fn update_backend_default_args(
     axum::extract::Query(query): axum::extract::Query<DefaultArgsQuery>,
     Json(req): Json<UpdateDefaultArgsRequest>,
 ) -> impl IntoResponse {
-    let config_dir = match state.config.read().await.loaded_from.clone() {
-        Some(p) => p,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "config_dir not configured"})),
-            )
-                .into_response();
-        }
+    let config_dir = {
+        let dir = state
+            .db_dir
+            .clone()
+            .or_else(|| {
+                state
+                    .config
+                    .try_read()
+                    .ok()
+                    .and_then(|c| c.loaded_from.clone())
+            })
+            .unwrap_or_else(|| {
+                tama_core::config::Config::config_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            });
+        dir
     };
 
     let backend_name = backend_name.clone();
@@ -925,15 +953,22 @@ pub async fn update_backend_source(
             .into_response();
     }
 
-    let config_dir = match state.config.read().await.loaded_from.clone() {
-        Some(p) => p,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "config_dir not configured"})),
-            )
-                .into_response();
-        }
+    let config_dir = {
+        let dir = state
+            .db_dir
+            .clone()
+            .or_else(|| {
+                state
+                    .config
+                    .try_read()
+                    .ok()
+                    .and_then(|c| c.loaded_from.clone())
+            })
+            .unwrap_or_else(|| {
+                tama_core::config::Config::config_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            });
+        dir
     };
 
     // Open manager and determine gpu_variant

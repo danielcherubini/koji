@@ -31,7 +31,23 @@ pub async fn run_benchmark(
 
     let job_id = job.id.clone();
     let req_clone = req.clone();
-    let config_dir = state.config.read().await.loaded_from.clone();
+    let config_dir = {
+        let dir = state
+            .db_dir
+            .clone()
+            .or_else(|| {
+                state
+                    .config
+                    .try_read()
+                    .ok()
+                    .and_then(|c| c.loaded_from.clone())
+            })
+            .unwrap_or_else(|| {
+                tama_core::config::Config::config_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            });
+        dir
+    };
     let proxy_base_url = state.config.read().await.proxy_url();
     let client = state.client.clone();
 
@@ -41,7 +57,7 @@ pub async fn run_benchmark(
             jobs.clone(),
             &job,
             &req_clone,
-            config_dir,
+            Some(config_dir),
             proxy_base_url,
             client,
         )
