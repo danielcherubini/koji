@@ -47,27 +47,27 @@ pub struct MigrationResult {
 /// # Returns
 /// A `MigrationResult` with counts of migrated items per section.
 pub fn migrate_toml_to_db(config_dir: &Path, db_path: &Path) -> Result<MigrationResult> {
-    // ── Step 1: Idempotency check ──────────────────────────────────────
-    // Open the DB, run migrations, and check if app_general already has data.
-    {
-        let conn = Connection::open(db_path)
-            .with_context(|| format!("Failed to open DB at {}", db_path.display()))?;
-        crate::db::migrations::run(&conn)?;
+    // ── Step 1: Open DB once, run migrations, idempotency check ────────
+    // Use a single connection for the entire migration to avoid races.
+    // Check idempotency FIRST — if the DB is already populated, skip
+    // regardless of whether config.toml still exists (it may have been
+    // renamed by a prior call).
+    let conn = Connection::open(db_path)
+        .with_context(|| format!("Failed to open DB at {}", db_path.display()))?;
+    crate::db::migrations::run(&conn)?;
 
-        // Check if app_general has a row with id=1
-        let has_data: bool = conn.query_row(
-            "SELECT COUNT(*) > 0 FROM app_general WHERE id = 1",
-            [],
-            |row| row.get(0),
-        )?;
+    let has_data: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM app_general WHERE id = 1",
+        [],
+        |row| row.get(0),
+    )?;
 
-        if has_data {
-            tracing::info!("DB already populated — skipping TOML migration");
-            return Ok(MigrationResult {
-                already_migrated: true,
-                ..Default::default()
-            });
-        }
+    if has_data {
+        tracing::info!("DB already populated — skipping TOML migration");
+        return Ok(MigrationResult {
+            already_migrated: true,
+            ..Default::default()
+        });
     }
 
     // ── Step 2: Read and parse config.toml ─────────────────────────────
@@ -88,13 +88,10 @@ pub fn migrate_toml_to_db(config_dir: &Path, db_path: &Path) -> Result<Migration
     let raw_value: toml::Value = toml::from_str(&content)
         .with_context(|| format!("Failed to parse TOML value from {}", config_path.display()))?;
 
-    // ── Step 3: Open/create the SQLite DB and seed defaults ────────────
-    let conn = Connection::open(db_path)
-        .with_context(|| format!("Failed to open DB at {}", db_path.display()))?;
-    crate::db::migrations::run(&conn)?;
+    // ── Step 3: Seed defaults ──────────────────────────────────────────
     queries::seed_defaults(&conn)?;
 
-    // ── Step 4: Migrate [backends] section → backend_configs ───────────
+    // ── Step 4: Migrate [backends] section → backend_configs ────────────
     let backends_migrated = migrate_backends_section(&conn, &config.backends)?;
 
     // ── Step 5: Migrate [models] section → model_configs ───────────────

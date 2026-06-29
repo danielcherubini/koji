@@ -245,9 +245,9 @@ impl Config {
         }
 
         // Read backends from backend_configs table.
-        // Note: BackendConfig (TOML struct) and BackendConfigRecord (DB struct)
-        // have different fields. We map gpu_variant; path and version are
-        // not stored in the backend_configs table.
+        // Note: BackendConfig (TOML struct) fields `path` and `version` are
+        // not stored in the DB — backend resolution is exclusively DB-managed
+        // via backend_configs + backend_installations tables.
         let backend_rows = crate::db::queries::list_backend_configs(&conn)?;
         let mut backends: HashMap<String, BackendConfig> = HashMap::new();
         for record in &backend_rows {
