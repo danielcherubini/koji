@@ -14,9 +14,9 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Quick Stats
 
-- **Total Plans**: 128
+- **Total Plans**: 129
 - **Completed**: 126 ✅
-- **In Progress**: 0
+- **In Progress**: 1 🚧
 - **Remaining**: 1
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
@@ -27,7 +27,9 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ### In Progress
 
-*(none)*
+| Plan | Description | PR / Git References |
+|------|-------------|---------------------|
+| [Config TOML to SQLite](2026-06-29-config-to-db.md) | Eliminate config.toml — move all global settings to typed SQLite tables, unified TOML→DB migration, remove loaded_from, 410 Gone for raw TOML endpoints | 🚧 IN PROGRESS |
 
 ### Recently Completed
 
