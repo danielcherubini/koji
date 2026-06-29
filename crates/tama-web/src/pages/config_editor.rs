@@ -37,6 +37,8 @@ pub struct General {
     pub logs_dir: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hf_token: Option<String>,
+    #[serde(default)]
+    pub update_check_interval: u32,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -120,6 +122,8 @@ pub struct ProxyConfig {
     pub metrics_retention_secs: u64,
     #[serde(default)]
     pub max_loaded_models: u32,
+    #[serde(default)]
+    pub download_queue_poll_interval_secs: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -414,6 +418,23 @@ fn GeneralForm(config: RwSignal<Option<Config>>) -> impl IntoView {
                         "Get your token at " <a href="https://huggingface.co/settings/tokens" target="_blank" rel="noopener">"huggingface.co/settings/tokens"</a>
                     </p>
                 </div>
+
+                <div>
+                    <label>"Update Check Interval (hours)"</label>
+                    <input
+                        type="number"
+                        min="1"
+                        prop:value=move || get_general().update_check_interval.to_string()
+                        on:input=move |ev| {
+                            if let Ok(v) = target_value(&ev).parse::<u32>() {
+                                config.update(|c| if let Some(c) = c { c.general.update_check_interval = v; });
+                            }
+                        }
+                    />
+                    <p class="text-muted" style="font-size:0.85em;margin-top:0.25rem;">
+                        "How often to check for Tama updates (in hours). Default: 12."
+                    </p>
+                </div>
             </div>
         </SectionCard>
     }
@@ -558,6 +579,23 @@ fn ProxyForm(config: RwSignal<Option<Config>>) -> impl IntoView {
                     />
                     <p class="text-muted" style="font-size:0.85em;margin-top:0.25rem;">
                         "Maximum number of models loaded simultaneously per GPU device. Set to 0 for unlimited."
+                    </p>
+                </div>
+
+                <div>
+                    <label>"Download Queue Poll Interval (seconds)"</label>
+                    <input
+                        type="number"
+                        min="1"
+                        prop:value=move || get_proxy().download_queue_poll_interval_secs.to_string()
+                        on:input=move |ev| {
+                            if let Ok(v) = target_value(&ev).parse::<u64>() {
+                                config.update(|c| if let Some(c) = c { c.proxy.download_queue_poll_interval_secs = v; });
+                            }
+                        }
+                    />
+                    <p class="text-muted" style="font-size:0.85em;margin-top:0.25rem;">
+                        "How often the download queue checks for new items. Minimum: 1 second."
                     </p>
                 </div>
             </div>
