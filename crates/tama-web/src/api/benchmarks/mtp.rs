@@ -82,23 +82,9 @@ pub async fn run_mtp_benchmark(
 
     let job_id = job.id.clone();
     let req_clone = req.clone();
-    let config_dir = {
-        let dir = state
-            .db_dir
-            .clone()
-            .or_else(|| {
-                state
-                    .config
-                    .try_read()
-                    .ok()
-                    .and_then(|c| c.loaded_from.clone())
-            })
-            .unwrap_or_else(|| {
-                tama_core::config::Config::config_dir()
-                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
-            });
-        dir
-    };
+    let config_dir = state.db_dir.clone().unwrap_or_else(|| {
+        tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    });
     let proxy_base_url = state.config.read().await.proxy_url();
     let client = state.client.clone();
 

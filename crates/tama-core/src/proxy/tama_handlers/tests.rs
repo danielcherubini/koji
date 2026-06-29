@@ -21,7 +21,6 @@ async fn test_setup_model_creates_card() {
     // Write a dummy GGUF file
     std::fs::write(dest_dir.join(filename), b"dummy gguf content").unwrap();
 
-    // Build a config with loaded_from pointing to our temp dir
     let config = crate::config::Config {
         ..Default::default()
     };

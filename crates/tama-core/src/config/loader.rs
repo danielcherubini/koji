@@ -64,10 +64,7 @@ impl Config {
             std::fs::create_dir_all(parent).context("Failed to create config directory")?;
         }
 
-        let mut config = Self::from_db(db_path)?;
-        // Set loaded_from to the parent directory so callers (e.g. server edit)
-        // can find the DB directory.
-        config.loaded_from = db_path.parent().map(|p| p.to_path_buf());
+        let config = Self::from_db(db_path)?;
         Ok(config)
     }
 
@@ -156,7 +153,6 @@ impl Default for Config {
             proxy: ProxyConfig::default(),
             compaction: CompactionConfig::default(),
             sampling_templates,
-            loaded_from: None,
         }
     }
 }

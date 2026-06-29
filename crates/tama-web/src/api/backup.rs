@@ -66,20 +66,10 @@ pub struct BackendEntry {
 /// GET /tama/v1/backup - Create backup and return as file download
 pub async fn create_backup(State(state): State<Arc<ProxyState>>) -> impl IntoResponse {
     let config_dir: std::path::PathBuf = {
-        state
-            .db_dir
-            .clone()
-            .or_else(|| {
-                state
-                    .config
-                    .try_read()
-                    .ok()
-                    .and_then(|c| c.loaded_from.clone())
-            })
-            .unwrap_or_else(|| {
-                tama_core::config::Config::config_dir()
-                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
-            })
+        state.db_dir.clone().unwrap_or_else(|| {
+            tama_core::config::Config::config_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."))
+        })
     };
 
     // Spawn blocking task for backup

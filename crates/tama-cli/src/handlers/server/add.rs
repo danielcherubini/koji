@@ -7,6 +7,7 @@ pub async fn cmd_server_add(
     name: &str,
     command: Vec<String>,
     _overwrite: bool,
+    db_dir: &std::path::Path,
 ) -> Result<()> {
     if command.is_empty() {
         anyhow::bail!("No command provided");
@@ -23,11 +24,8 @@ pub async fn cmd_server_add(
     // Extract tama flags from args
     let extracted = crate::flags::extract_tama_flags(args)?;
 
-    // Check for duplicate server — use the same config_dir the Config was loaded from
-    let db_dir: std::path::PathBuf = config.loaded_from.clone().unwrap_or_else(|| {
-        tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-    });
-    let OpenResult { conn, .. } = tama_core::db::open(&db_dir)?;
+    // Check for duplicate server
+    let OpenResult { conn, .. } = tama_core::db::open(db_dir)?;
     // Note: get_model_config now takes integer ID, so we skip this pre-check
     // The database will reject duplicate inserts
 

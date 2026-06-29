@@ -3,11 +3,8 @@ use tama_core::config::Config;
 use tama_core::db::OpenResult;
 
 /// Remove a server
-pub fn cmd_server_rm(config: &Config, name: &str, force: bool) -> Result<()> {
-    let db_dir: std::path::PathBuf = config.loaded_from.clone().unwrap_or_else(|| {
-        tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-    });
-    let OpenResult { conn, .. } = tama_core::db::open(&db_dir)?;
+pub fn cmd_server_rm(name: &str, force: bool, db_dir: &std::path::Path) -> Result<()> {
+    let OpenResult { conn, .. } = tama_core::db::open(db_dir)?;
     let model_configs = tama_core::db::load_model_configs(&conn)?;
 
     if !model_configs.contains_key(name) {

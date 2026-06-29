@@ -66,12 +66,6 @@ pub struct Config {
     pub proxy: ProxyConfig,
     #[serde(default)]
     pub compaction: CompactionConfig,
-    /// Overrides for `configs_dir()` and `models_dir()` in tests.
-    /// Production code uses `Config::config_dir()` (static). This field is
-    /// kept for backward compatibility with test fixtures that need to
-    /// override the base directory.
-    #[serde(skip)]
-    pub loaded_from: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -142,23 +136,15 @@ impl Default for ProxyConfig {
 
 impl Config {
     /// Get the configs directory for model cards.
-    /// Uses `loaded_from` if set (tests), otherwise `<config_dir>/configs/`.
     pub fn configs_dir(&self) -> anyhow::Result<std::path::PathBuf> {
-        if let Some(loaded) = &self.loaded_from {
-            return Ok(loaded.join("configs"));
-        }
         Ok(Self::config_dir()?.join("configs"))
     }
 
     /// Get the models directory for this config.
-    /// Uses `general.models_dir` if set, otherwise `loaded_from/models/` if set,
-    /// otherwise `<config_dir>/models/`.
+    /// Uses `general.models_dir` if set, otherwise `<config_dir>/models/`.
     pub fn models_dir(&self) -> anyhow::Result<std::path::PathBuf> {
         if let Some(models_dir) = &self.general.models_dir {
             return Ok(std::path::PathBuf::from(models_dir));
-        }
-        if let Some(loaded) = &self.loaded_from {
-            return Ok(loaded.join("models"));
         }
         Ok(Self::config_dir()?.join("models"))
     }
@@ -265,7 +251,6 @@ impl Config {
             proxy,
             compaction,
             sampling_templates,
-            loaded_from: None,
         })
     }
 
@@ -840,15 +825,16 @@ mod tests {
     }
 
     #[test]
-    fn test_sampling_templates_toml_roundtrip() {
+    fn test_sampling_templates_db_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("tama.db");
+
         let config = Config::default();
-        let toml_str = toml::to_string_pretty(&config).unwrap();
+        config.to_db(&db_path).unwrap();
 
-        let loaded: Config = toml::from_str(&toml_str).unwrap();
-        let loaded_templates = &loaded.sampling_templates;
-        let default_templates = &config.sampling_templates;
+        let loaded = Config::from_db(&db_path).unwrap();
 
-        // Verify all profile values match after round-trip
+        // Verify all profile values match after DB round-trip
         let profile_names = vec![
             "coding".to_string(),
             "chat".to_string(),
@@ -856,14 +842,17 @@ mod tests {
             "creative".to_string(),
         ];
         for profile_name in profile_names {
-            let default = default_templates.get(&profile_name).unwrap();
-            let loaded = loaded_templates.get(&profile_name).unwrap();
+            let default = config.sampling_templates.get(&profile_name).unwrap();
+            let loaded = loaded.sampling_templates.get(&profile_name).unwrap();
             assert_eq!(default, loaded);
         }
     }
 
     #[test]
-    fn test_sampling_templates_serde_custom() {
+    fn test_sampling_templates_db_custom() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("tama.db");
+
         let mut templates = HashMap::new();
         let custom = SamplingParams {
             temperature: Some(0.5),
@@ -877,8 +866,8 @@ mod tests {
             ..Default::default()
         };
 
-        let toml_str = toml::to_string_pretty(&config).unwrap();
-        let loaded: Config = toml::from_str(&toml_str).unwrap();
+        config.to_db(&db_path).unwrap();
+        let loaded = Config::from_db(&db_path).unwrap();
 
         let loaded_custom = loaded.sampling_templates.get("custom").unwrap();
         assert_eq!(loaded_custom.temperature, Some(0.5));
@@ -1202,7 +1191,6 @@ backend = "llama.cpp"
                 request_timeout_ms: 60000,
             },
             sampling_templates,
-            loaded_from: None,
         };
 
         // Write to DB

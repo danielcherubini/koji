@@ -38,22 +38,11 @@ async fn test_restart_handler_exits_process() {
 
     eprintln!("Looking for binary at: {:?}", binary_path);
 
-    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-    let config_dir = temp_dir.path();
-
-    // Create a minimal config file
-    let config_path = config_dir.join("config.toml");
-    let config_content = r#"
-[proxy]
-port = 0
-
-[[models]]
-id = "test-model"
-backend = "llama_cpp"
-model = "test-model"
-enabled = true
-"#;
-    std::fs::write(&config_path, config_content).expect("Failed to write config");
+    // Seed a minimal DB in the default config location so the binary can start.
+    let config_dir = crate::config::Config::config_dir().expect("Failed to get config dir");
+    std::fs::create_dir_all(&config_dir).ok();
+    // Open the DB to run migrations and seed defaults.
+    crate::db::open(&config_dir).expect("Failed to open DB for restart test");
 
     // Spawn the tama binary using the serve subcommand (config loaded from default location)
     let mut child = Command::new(&binary_path)

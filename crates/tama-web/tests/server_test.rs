@@ -74,21 +74,21 @@ mod tests {
         );
     }
 
-    /// GET /tama/v1/config returns 200 with config content (config_dir is always available).
+    /// GET /tama/v1/config returns 410 Gone (raw TOML endpoint removed).
     #[tokio::test]
-    async fn test_api_config_returns_200_when_configured() {
+    async fn test_410_gone_for_raw_toml_config() {
         let (client, addr) = start_test_server().await;
         let resp = client
             .get(format!("http://{}/tama/v1/config", addr))
             .send()
             .await
             .unwrap();
-        assert_eq!(resp.status().as_u16(), 200);
+        assert_eq!(resp.status().as_u16(), 410);
     }
 
-    /// POST /tama/v1/config returns 422 for invalid TOML.
+    /// POST /tama/v1/config returns 410 Gone (raw TOML endpoint removed).
     #[tokio::test]
-    async fn test_api_config_save_returns_422_for_invalid_toml() {
+    async fn test_410_gone_for_raw_toml_config_save() {
         let (client, addr) = start_test_server().await;
         let resp = client
             .post(format!("http://{}/tama/v1/config", addr))
@@ -96,8 +96,8 @@ mod tests {
             .send()
             .await
             .unwrap();
-        // 422 because invalid TOML
-        assert_eq!(resp.status().as_u16(), 422);
+        // 410 Gone — raw TOML config endpoint removed
+        assert_eq!(resp.status().as_u16(), 410);
     }
 
     /// End-to-end test: CRUD operations via the web API update the proxy's in-memory config.
@@ -108,18 +108,16 @@ mod tests {
     #[tokio::test]
     async fn test_hot_reload_crud_updates_proxy_config() {
         // ── Setup ─────────────────────────────────────────────────────────────────
-        // Create a temporary config directory with a valid config.toml on disk.
+        // Create a temporary config directory with a DB.
         let temp_dir = tempfile::tempdir().unwrap();
         let config_dir = temp_dir.path().to_path_buf();
-        let config_path = config_dir.join("config.toml");
 
-        // Start from the default config.
-        let initial_config = tama_core::config::Config {
-            loaded_from: Some(config_dir.clone()),
-            ..Default::default()
-        };
-        let toml_str = toml::to_string_pretty(&initial_config).unwrap();
-        std::fs::write(&config_path, &toml_str).unwrap();
+        // Seed the DB with defaults.
+        {
+            let _open_result = tama_core::db::open(&config_dir).unwrap();
+        }
+
+        let initial_config = tama_core::config::Config::default();
 
         // The shared proxy config — this is what the proxy would hold in production.
         let proxy_config = Arc::new(tokio::sync::RwLock::new(initial_config));
@@ -327,20 +325,10 @@ mod tests {
         // Create temp dir for DB
         let temp_dir = tempfile::tempdir().unwrap();
         let config_dir = temp_dir.path().to_path_buf();
-        let config_path = config_dir.join("config.toml");
-
-        // Write minimal config
-        let initial_config = tama_core::config::Config {
-            loaded_from: Some(config_dir.clone()),
-            ..Default::default()
-        };
-        let toml_str = toml::to_string_pretty(&initial_config).unwrap();
-        std::fs::write(&config_path, &toml_str).unwrap();
 
         // Initialize DB (runs migrations)
         {
             let _open_result = tama_core::db::open(&config_dir).unwrap();
-            // DB is ready
         }
 
         // Seed backend_configs with test data for llama_cpp:cpu
@@ -364,16 +352,13 @@ mod tests {
             .unwrap();
         }
 
-        // Start server with config_path
+        // Start server
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         {
             let config_dir_server = config_dir.clone();
             tokio::spawn(async move {
-                let config = tama_core::config::Config {
-                    loaded_from: Some(config_dir_server.clone()),
-                    ..Default::default()
-                };
+                let config = tama_core::config::Config::default();
                 let state = Arc::new(tama_core::proxy::ProxyState::new(
                     config,
                     Some(config_dir_server.clone()),

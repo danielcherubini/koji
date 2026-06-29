@@ -19,10 +19,13 @@ pub async fn cmd_server(config: &Config, command: crate::cli::ServerCommands) ->
     match command {
         crate::cli::ServerCommands::Ls => cmd_server_ls(config).await,
         crate::cli::ServerCommands::Add { name, command } => {
-            cmd_server_add(config, &name, command, false).await
+            let db_dir = tama_core::config::Config::config_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            cmd_server_add(config, &name, command, false, &db_dir).await
         }
         crate::cli::ServerCommands::Edit { name, command } => {
-            let db_dir = tama_core::config::Config::config_dir()?;
+            let db_dir = tama_core::config::Config::config_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."));
             let OpenResult { conn, .. } = tama_core::db::open(&db_dir)?;
             let model_configs = tama_core::db::load_model_configs(&conn)?;
 
@@ -32,9 +35,13 @@ pub async fn cmd_server(config: &Config, command: crate::cli::ServerCommands) ->
                     name
                 );
             }
-            cmd_server_edit(&mut config.clone(), &name, command).await
+            cmd_server_edit(&mut config.clone(), &name, command, &db_dir).await
         }
-        crate::cli::ServerCommands::Rm { name, force } => cmd_server_rm(config, &name, force),
+        crate::cli::ServerCommands::Rm { name, force } => {
+            let db_dir = tama_core::config::Config::config_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            cmd_server_rm(&name, force, &db_dir)
+        }
     }
 }
 /// Resolve a backend path to a backend key in the config.

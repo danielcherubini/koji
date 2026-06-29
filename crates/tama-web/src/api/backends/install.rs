@@ -524,23 +524,9 @@ pub async fn remove_backend(
         }
     };
 
-    let config_dir = {
-        let dir = state
-            .db_dir
-            .clone()
-            .or_else(|| {
-                state
-                    .config
-                    .try_read()
-                    .ok()
-                    .and_then(|c| c.loaded_from.clone())
-            })
-            .unwrap_or_else(|| {
-                tama_core::config::Config::config_dir()
-                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
-            });
-        dir
-    };
+    let config_dir = state.db_dir.clone().unwrap_or_else(|| {
+        tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    });
 
     // Open manager and get backend
     if name.contains('/') || name.contains('\\') || name.contains("..") {

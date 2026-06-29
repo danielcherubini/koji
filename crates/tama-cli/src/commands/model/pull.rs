@@ -229,9 +229,8 @@ pub(super) async fn cmd_pull(config: &Config, repo_id: &str) -> Result<()> {
     };
 
     // Record all pull metadata in DB (sync, single connection, after all async work)
-    let db_dir: std::path::PathBuf = config.loaded_from.clone().unwrap_or_else(|| {
-        tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-    });
+    let db_dir: std::path::PathBuf =
+        tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let db_dir_ref = db_dir.as_path();
     let db_record_result: anyhow::Result<()> = (|| {
         let mgr = ModelManager::open(db_dir_ref)?;
@@ -301,14 +300,10 @@ pub(super) async fn cmd_pull(config: &Config, repo_id: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn cmd_scan(config: &Config) -> Result<()> {
+pub(crate) fn cmd_scan(config: &Config, db_dir: &std::path::Path) -> Result<()> {
     let models_dir = config.models_dir()?;
 
-    let db_dir: std::path::PathBuf = config.loaded_from.clone().unwrap_or_else(|| {
-        tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-    });
-
-    let mgr = ModelManager::open(&db_dir)?;
+    let mgr = ModelManager::open(db_dir)?;
 
     let mut added_files = 0;
     let mut removed_files = 0;
@@ -451,7 +446,6 @@ mod tests {
                 models_dir: Some(dir.path().to_string_lossy().to_string()),
                 ..Default::default()
             },
-            loaded_from: Some(dir.path().to_path_buf()),
             ..Default::default()
         };
 
@@ -470,7 +464,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_scan_adds_new_files() {
-        let (_dir, config, open_res) = setup_test_env().await;
+        let (dir, config, open_res) = setup_test_env().await;
         let conn = &open_res.conn;
 
         // Create a model file on disk
@@ -482,7 +476,7 @@ mod tests {
         fs::write(model_dir.join(filename), "dummy data").unwrap();
 
         // Run scan
-        cmd_scan(&config).unwrap();
+        cmd_scan(&config, dir.path()).unwrap();
 
         // Verify it was added to DB
         let configs = tama_core::db::queries::get_all_model_configs(conn).unwrap();
@@ -498,7 +492,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_scan_removes_missing_files() {
-        let (_dir, config, open_res) = setup_test_env().await;
+        let (dir, config, open_res) = setup_test_env().await;
         let conn = &open_res.conn;
 
         let repo_id = "test/model";
@@ -558,7 +552,7 @@ mod tests {
         .unwrap();
 
         // Run scan
-        cmd_scan(&config).unwrap();
+        cmd_scan(&config, dir.path()).unwrap();
 
         // Verify it was removed from DB
         let files = get_model_files(conn, model_id).unwrap();
@@ -567,7 +561,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_scan_removes_ghost_configs() {
-        let (_dir, config, open_res) = setup_test_env().await;
+        let (dir, config, open_res) = setup_test_env().await;
         let conn = &open_res.conn;
 
         let repo_id = "ghost/model";
@@ -613,7 +607,7 @@ mod tests {
         // No directory on disk
 
         // Run scan
-        cmd_scan(&config).unwrap();
+        cmd_scan(&config, dir.path()).unwrap();
 
         // Verify config was removed
         let configs = tama_core::db::queries::get_all_model_configs(conn).unwrap();
@@ -622,7 +616,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_scan_empty_dir_removes_everything() {
-        let (_dir, config, open_res) = setup_test_env().await;
+        let (dir, config, open_res) = setup_test_env().await;
         let conn = &open_res.conn;
 
         // Populate DB with some garbage (let DB assign IDs via AUTOINCREMENT)
@@ -768,7 +762,7 @@ mod tests {
         // Models dir is empty
 
         // Run scan
-        cmd_scan(&config).unwrap();
+        cmd_scan(&config, dir.path()).unwrap();
 
         // Verify DB is clean
         let files = get_model_files(conn, id1).unwrap();

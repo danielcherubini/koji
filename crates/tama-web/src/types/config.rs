@@ -289,10 +289,6 @@ pub struct Config {
     pub proxy: ProxyConfig,
     #[serde(default)]
     pub compaction: CompactionConfig,
-    /// Overrides for `configs_dir()` in tests.
-    /// Skipped in serialization.
-    #[serde(skip)]
-    pub loaded_from: Option<std::path::PathBuf>,
 }
 
 /// Configuration for the LLMLingua-2 compaction service.
@@ -731,7 +727,6 @@ impl From<CoreConfig> for Config {
                 .collect(),
             proxy: c.proxy.into(),
             compaction: c.compaction.into(),
-            loaded_from: None,
         }
     }
 }
@@ -750,7 +745,6 @@ impl From<StructuredConfigBody> for CoreConfig {
                 .collect(),
             proxy: b.proxy.into(),
             compaction: b.compaction.into(),
-            loaded_from: None,
         }
     }
 }
@@ -769,7 +763,6 @@ impl From<Config> for CoreConfig {
                 .collect(),
             proxy: c.proxy.into(),
             compaction: c.compaction.into(),
-            loaded_from: c.loaded_from,
         }
     }
 }

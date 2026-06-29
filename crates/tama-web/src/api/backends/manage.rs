@@ -44,23 +44,9 @@ pub async fn update_backend(
         }
     };
 
-    let config_dir = {
-        let dir = state
-            .db_dir
-            .clone()
-            .or_else(|| {
-                state
-                    .config
-                    .try_read()
-                    .ok()
-                    .and_then(|c| c.loaded_from.clone())
-            })
-            .unwrap_or_else(|| {
-                tama_core::config::Config::config_dir()
-                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
-            });
-        dir
-    };
+    let config_dir = state.db_dir.clone().unwrap_or_else(|| {
+        tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    });
     let config_dir_clone = config_dir.clone();
 
     // Open manager and get backend
@@ -518,23 +504,9 @@ pub async fn remove_backend_version(
             .into_response();
     }
 
-    let config_dir = {
-        let dir = state
-            .db_dir
-            .clone()
-            .or_else(|| {
-                state
-                    .config
-                    .try_read()
-                    .ok()
-                    .and_then(|c| c.loaded_from.clone())
-            })
-            .unwrap_or_else(|| {
-                tama_core::config::Config::config_dir()
-                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
-            });
-        dir
-    };
+    let config_dir = state.db_dir.clone().unwrap_or_else(|| {
+        tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    });
 
     // Open manager and get the specific version
     let config_dir_clone = config_dir.clone();
@@ -714,23 +686,9 @@ pub async fn activate_backend_version(
             .into_response();
     }
 
-    let config_dir = {
-        let dir = state
-            .db_dir
-            .clone()
-            .or_else(|| {
-                state
-                    .config
-                    .try_read()
-                    .ok()
-                    .and_then(|c| c.loaded_from.clone())
-            })
-            .unwrap_or_else(|| {
-                tama_core::config::Config::config_dir()
-                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
-            });
-        dir
-    };
+    let config_dir = state.db_dir.clone().unwrap_or_else(|| {
+        tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    });
 
     // Determine gpu_variant: use explicit value or auto-infer from manager
     let gpu_variant = match query.gpu_variant {
@@ -887,23 +845,9 @@ pub async fn update_backend_default_args(
     axum::extract::Query(query): axum::extract::Query<DefaultArgsQuery>,
     Json(req): Json<UpdateDefaultArgsRequest>,
 ) -> impl IntoResponse {
-    let config_dir = {
-        let dir = state
-            .db_dir
-            .clone()
-            .or_else(|| {
-                state
-                    .config
-                    .try_read()
-                    .ok()
-                    .and_then(|c| c.loaded_from.clone())
-            })
-            .unwrap_or_else(|| {
-                tama_core::config::Config::config_dir()
-                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
-            });
-        dir
-    };
+    let config_dir = state.db_dir.clone().unwrap_or_else(|| {
+        tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    });
 
     let backend_name = backend_name.clone();
     let gpu_variant = query.gpu_variant.clone();
@@ -953,23 +897,9 @@ pub async fn update_backend_source(
             .into_response();
     }
 
-    let config_dir = {
-        let dir = state
-            .db_dir
-            .clone()
-            .or_else(|| {
-                state
-                    .config
-                    .try_read()
-                    .ok()
-                    .and_then(|c| c.loaded_from.clone())
-            })
-            .unwrap_or_else(|| {
-                tama_core::config::Config::config_dir()
-                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
-            });
-        dir
-    };
+    let config_dir = state.db_dir.clone().unwrap_or_else(|| {
+        tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    });
 
     // Open manager and determine gpu_variant
     let config_dir_clone = config_dir.clone();

@@ -30,23 +30,9 @@ pub async fn list_backends(State(state): State<Arc<ProxyState>>) -> impl IntoRes
     };
 
     // Open registry
-    let config_dir = {
-        let dir = state
-            .db_dir
-            .clone()
-            .or_else(|| {
-                state
-                    .config
-                    .try_read()
-                    .ok()
-                    .and_then(|c| c.loaded_from.clone())
-            })
-            .unwrap_or_else(|| {
-                tama_core::config::Config::config_dir()
-                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
-            });
-        dir
-    };
+    let config_dir = state.db_dir.clone().unwrap_or_else(|| {
+        tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    });
 
     // Open registry (blocking call wrapped in spawn_blocking)
     let config_dir_clone = config_dir.clone();
@@ -335,23 +321,9 @@ pub async fn check_backend_updates(State(state): State<Arc<ProxyState>>) -> impl
         })
         .map(|j| job_to_active_dto(&j));
 
-    let config_dir = {
-        let dir = state
-            .db_dir
-            .clone()
-            .or_else(|| {
-                state
-                    .config
-                    .try_read()
-                    .ok()
-                    .and_then(|c| c.loaded_from.clone())
-            })
-            .unwrap_or_else(|| {
-                tama_core::config::Config::config_dir()
-                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
-            });
-        dir
-    };
+    let config_dir = state.db_dir.clone().unwrap_or_else(|| {
+        tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    });
 
     // Open registry
     let config_dir_clone = config_dir.clone();

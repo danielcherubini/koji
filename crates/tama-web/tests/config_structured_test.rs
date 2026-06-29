@@ -3,7 +3,7 @@
 //! These tests verify:
 //! - GET returns valid JSON Config
 //! - POST persists and round-trips without field loss
-//! - loaded_from is restored from proxy config
+//! - Config loads from DB via Config::config_dir()
 //! - All ModelConfig/Supervisor/BackendConfig/ProxyConfig fields preserved
 //! - Standalone mode works (no proxy_config)
 //! - Equivalence with /tama/v1/config (TOML) endpoint
@@ -230,7 +230,7 @@ async fn test_400_on_invalid_json() {
 }
 
 #[tokio::test]
-async fn test_get_structured_config_without_loaded_from() {
+async fn test_get_structured_config_without_db_dir() {
     let config = tama_core::config::Config::default();
     let state = Arc::new(ProxyState::new(config, None));
     let router = build_web_routes().with_state(state);

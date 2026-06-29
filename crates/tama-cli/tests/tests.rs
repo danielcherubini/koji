@@ -198,6 +198,7 @@ async fn test_cmd_server_add_nonexistent_model_errors() {
             "nonexistent/model".to_string(),
         ],
         false,
+        temp_dir.path(),
     )
     .await;
     assert!(result.is_err());
@@ -224,6 +225,7 @@ async fn test_cmd_server_edit_nonexistent_server_errors() {
             "--profile".to_string(),
             "coding".to_string(),
         ],
+        temp_dir.path(),
     )
     .await;
     assert!(result.is_err());
@@ -308,6 +310,7 @@ async fn test_cmd_server_edit_valid_profile_succeeds() {
             // But we can verify the edit actually applies the profile.
             "coding".to_string(),
         ],
+        temp_dir.path(),
     )
     .await;
     // Cleanup: remove the test model from the DB

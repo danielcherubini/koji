@@ -327,7 +327,6 @@ mod tests {
                 models_dir: Some(tmp.path().to_string_lossy().to_string()),
                 ..Default::default()
             },
-            loaded_from: Some(tmp.path().to_path_buf()),
             ..Default::default()
         };
 
