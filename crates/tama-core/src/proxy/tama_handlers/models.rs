@@ -162,8 +162,12 @@ pub async fn handle_tama_load_model(
     Path(model_id): Path<String>,
 ) -> Response {
     let model_id = resolve_model_id(&state, &model_id).await;
-    let _ = state.evict_lru_if_needed().await;
-    match state.load_model(&model_id, None).await {
+    let model_card = state.get_model_card(&model_id).await;
+    let target_gpu = state
+        .resolve_model_gpu_device(&model_id, model_card.as_ref())
+        .await;
+    let _ = state.evict_lru_if_needed(target_gpu).await;
+    match state.load_model(&model_id, model_card.as_ref()).await {
         Ok(server_name) => {
             let model_state = state.get_model_state(&server_name).await;
             let loaded = model_state.as_ref().is_some_and(|ms| ms.is_ready());

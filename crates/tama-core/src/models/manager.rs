@@ -302,12 +302,7 @@ impl ModelManager {
         bytes_downloaded: i64,
         total_bytes: Option<i64>,
     ) -> Result<()> {
-        crate::db::queries::update_progress_only(
-            &self.conn,
-            job_id,
-            bytes_downloaded,
-            total_bytes,
-        )
+        crate::db::queries::update_progress_only(&self.conn, job_id, bytes_downloaded, total_bytes)
     }
 
     /// Cancel a queue item if it hasn't reached a terminal state.

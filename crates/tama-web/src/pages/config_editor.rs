@@ -118,6 +118,8 @@ pub struct ProxyConfig {
     pub circuit_breaker_cooldown_seconds: u64,
     #[serde(default)]
     pub metrics_retention_secs: u64,
+    #[serde(default)]
+    pub max_loaded_models: u32,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -540,6 +542,23 @@ fn ProxyForm(config: RwSignal<Option<Config>>) -> impl IntoView {
                             }
                         }
                     />
+                </div>
+
+                <div>
+                    <label>"Max Loaded Models (per GPU)"</label>
+                    <input
+                        type="number"
+                        min="0"
+                        prop:value=move || get_proxy().max_loaded_models.to_string()
+                        on:input=move |ev| {
+                            if let Ok(v) = target_value(&ev).parse::<u32>() {
+                                config.update(|c| if let Some(c) = c { c.proxy.max_loaded_models = v; });
+                            }
+                        }
+                    />
+                    <p class="text-muted" style="font-size:0.85em;margin-top:0.25rem;">
+                        "Maximum number of models loaded simultaneously per GPU device. Set to 0 for unlimited."
+                    </p>
                 </div>
             </div>
         </SectionCard>

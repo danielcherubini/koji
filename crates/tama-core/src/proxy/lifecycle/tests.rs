@@ -293,7 +293,7 @@ async fn test_evict_lru_if_needed_zero_is_unlimited() {
         make_ready_state("model.gguf", "llama-cpp"),
     );
 
-    let result = state.evict_lru_if_needed().await;
+    let result = state.evict_lru_if_needed(None).await;
     assert!(
         result.is_ok(),
         "evict_lru_if_needed should succeed with unlimited config"
@@ -318,7 +318,7 @@ async fn test_evict_lru_if_needed_under_limit_no_eviction() {
         make_ready_state("model.gguf", "llama-cpp"),
     );
 
-    let result = state.evict_lru_if_needed().await;
+    let result = state.evict_lru_if_needed(None).await;
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), None, "Should return None when under limit");
 
@@ -348,7 +348,7 @@ async fn test_evict_lru_if_needed_at_limit_evicts_lru() {
         .await
         .insert("server1".to_string(), ready_state);
 
-    let result = state.evict_lru_if_needed().await;
+    let result = state.evict_lru_if_needed(None).await;
     assert!(result.is_ok());
     assert_eq!(
         result.unwrap(),
@@ -376,7 +376,7 @@ async fn test_evict_lru_if_needed_skips_starting_models() {
         make_starting_state("model.gguf", "llama-cpp"),
     );
 
-    let result = state.evict_lru_if_needed().await;
+    let result = state.evict_lru_if_needed(None).await;
     assert!(result.is_ok());
     assert_eq!(
         result.unwrap(),
@@ -405,7 +405,7 @@ async fn test_evict_lru_if_needed_skips_failed_models() {
         .await
         .insert("server1".to_string(), make_failed_state());
 
-    let result = state.evict_lru_if_needed().await;
+    let result = state.evict_lru_if_needed(None).await;
     assert!(result.is_ok());
     assert_eq!(
         result.unwrap(),
@@ -454,8 +454,8 @@ async fn test_evict_lru_if_needed_concurrent_no_double_eviction() {
     // Run two evict calls concurrently
     let state_a = state.clone();
     let state_b = state.clone();
-    let handle_a = tokio::spawn(async move { state_a.evict_lru_if_needed().await });
-    let handle_b = tokio::spawn(async move { state_b.evict_lru_if_needed().await });
+    let handle_a = tokio::spawn(async move { state_a.evict_lru_if_needed(None).await });
+    let handle_b = tokio::spawn(async move { state_b.evict_lru_if_needed(None).await });
 
     let result_a = handle_a.await.unwrap();
     let result_b = handle_b.await.unwrap();
@@ -541,12 +541,203 @@ async fn test_evict_lru_excludes_tts_backends() {
         .insert("tts-server".to_string(), tts_state);
 
     // Verify no eviction happens (TTS doesn't count)
-    let result = state.evict_lru_if_needed().await.unwrap();
+    let result = state.evict_lru_if_needed(None).await.unwrap();
     assert_eq!(result, None, "TTS backends should not trigger eviction");
 
     // Verify the TTS model is still in the map
     assert!(
         state.models.read().await.contains_key("tts-server"),
         "TTS backend should remain loaded"
+    );
+}
+
+/// Test that models on different GPUs don't count against each other.
+/// With max_loaded_models=1, a model on CUDA0 should NOT trigger eviction
+/// when loading a model on CUDA1.
+#[tokio::test]
+async fn test_evict_lru_per_gpu_isolation() {
+    use crate::config::ModelConfig;
+
+    let mut config = Config::default();
+    config.proxy.max_loaded_models = 1;
+    let state = ProxyState::new(config, None);
+
+    // Register CUDA0 server in model_configs with gpu_device = "CUDA0"
+    state.model_configs.write().await.insert(
+        "cuda0-server".to_string(),
+        ModelConfig {
+            backend: "llama-cpp".to_string(),
+            gpu_device: Some("CUDA0".to_string()),
+            ..Default::default()
+        },
+    );
+
+    // Register CUDA1 server in model_configs with gpu_device = "CUDA1"
+    state.model_configs.write().await.insert(
+        "cuda1-server".to_string(),
+        ModelConfig {
+            backend: "llama-cpp".to_string(),
+            gpu_device: Some("CUDA1".to_string()),
+            ..Default::default()
+        },
+    );
+
+    // Add a Ready model on CUDA0
+    let mut ready_cuda0 = make_ready_state("model-cuda0.gguf", "llama-cpp");
+    if let ModelState::Ready { last_accessed, .. } = &mut ready_cuda0 {
+        *last_accessed = Instant::now() - Duration::from_secs(300);
+    }
+    state
+        .models
+        .write()
+        .await
+        .insert("cuda0-server".to_string(), ready_cuda0);
+
+    // Evict for CUDA1 target — should NOT evict the CUDA0 model
+    let result = state
+        .evict_lru_if_needed(Some("CUDA1".to_string()))
+        .await
+        .unwrap();
+    assert_eq!(
+        result, None,
+        "Should NOT evict CUDA0 model when targeting CUDA1"
+    );
+
+    // Verify CUDA0 model is still in the map
+    assert!(
+        state.models.read().await.contains_key("cuda0-server"),
+        "CUDA0 model should still be loaded"
+    );
+}
+
+/// Test that models on the same GPU DO count against each other.
+/// With max_loaded_models=1, a second model on CUDA0 should evict the first.
+#[tokio::test]
+async fn test_evict_lru_same_gpu_counts_together() {
+    use crate::config::ModelConfig;
+
+    let mut config = Config::default();
+    config.proxy.max_loaded_models = 1;
+    let state = ProxyState::new(config, None);
+
+    // Register two servers both targeting CUDA0
+    state.model_configs.write().await.insert(
+        "cuda0-server1".to_string(),
+        ModelConfig {
+            backend: "llama-cpp".to_string(),
+            gpu_device: Some("CUDA0".to_string()),
+            ..Default::default()
+        },
+    );
+    state.model_configs.write().await.insert(
+        "cuda0-server2".to_string(),
+        ModelConfig {
+            backend: "llama-cpp".to_string(),
+            gpu_device: Some("CUDA0".to_string()),
+            ..Default::default()
+        },
+    );
+
+    // Add first Ready model on CUDA0 (older last_accessed = LRU)
+    let mut ready1 = make_ready_state("model1.gguf", "llama-cpp");
+    if let ModelState::Ready { last_accessed, .. } = &mut ready1 {
+        *last_accessed = Instant::now() - Duration::from_secs(600);
+    }
+    state
+        .models
+        .write()
+        .await
+        .insert("cuda0-server1".to_string(), ready1);
+
+    // Add second Ready model on CUDA0 (newer last_accessed)
+    let mut ready2 = make_ready_state("model2.gguf", "llama-cpp");
+    if let ModelState::Ready { last_accessed, .. } = &mut ready2 {
+        *last_accessed = Instant::now() - Duration::from_secs(100);
+    }
+    state
+        .models
+        .write()
+        .await
+        .insert("cuda0-server2".to_string(), ready2);
+
+    // Evict for CUDA0 target — should evict the LRU (server1)
+    let result = state
+        .evict_lru_if_needed(Some("CUDA0".to_string()))
+        .await
+        .unwrap();
+    assert_eq!(
+        result,
+        Some("cuda0-server1".to_string()),
+        "Should evict the LRU model on the same GPU"
+    );
+
+    // Verify the LRU model was removed
+    assert!(
+        !state.models.read().await.contains_key("cuda0-server1"),
+        "Evicted LRU model should be removed"
+    );
+    // Verify the newer model is still there
+    assert!(
+        state.models.read().await.contains_key("cuda0-server2"),
+        "Newer model on same GPU should remain"
+    );
+}
+
+/// Test that models with no gpu_device (None) are grouped together.
+/// Two models both with gpu_device=None on the same "default" GPU should count together.
+#[tokio::test]
+async fn test_evict_lru_none_gpu_grouped() {
+    use crate::config::ModelConfig;
+
+    let mut config = Config::default();
+    config.proxy.max_loaded_models = 1;
+    let state = ProxyState::new(config, None);
+
+    // Register two servers without gpu_device (None)
+    state.model_configs.write().await.insert(
+        "default-server1".to_string(),
+        ModelConfig {
+            backend: "llama-cpp".to_string(),
+            gpu_device: None,
+            ..Default::default()
+        },
+    );
+    state.model_configs.write().await.insert(
+        "default-server2".to_string(),
+        ModelConfig {
+            backend: "llama-cpp".to_string(),
+            gpu_device: None,
+            ..Default::default()
+        },
+    );
+
+    // Add first Ready model with no gpu_device (older)
+    let mut ready1 = make_ready_state("model1.gguf", "llama-cpp");
+    if let ModelState::Ready { last_accessed, .. } = &mut ready1 {
+        *last_accessed = Instant::now() - Duration::from_secs(600);
+    }
+    state
+        .models
+        .write()
+        .await
+        .insert("default-server1".to_string(), ready1);
+
+    // Add second Ready model with no gpu_device (newer)
+    let mut ready2 = make_ready_state("model2.gguf", "llama-cpp");
+    if let ModelState::Ready { last_accessed, .. } = &mut ready2 {
+        *last_accessed = Instant::now() - Duration::from_secs(100);
+    }
+    state
+        .models
+        .write()
+        .await
+        .insert("default-server2".to_string(), ready2);
+
+    // Evict for None target — should evict the LRU (server1, both are None group)
+    let result = state.evict_lru_if_needed(None).await.unwrap();
+    assert_eq!(
+        result,
+        Some("default-server1".to_string()),
+        "Should evict the LRU model in the None group"
     );
 }
