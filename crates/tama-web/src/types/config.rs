@@ -570,6 +570,17 @@ impl From<CoreModelConfig> for ModelConfig {
 }
 
 /// Convert from mirror ModelConfig to CoreModelConfig.
+///
+/// This conversion is intentionally lossy — the following fields are NOT
+/// carried through because they are DB-only metadata populated by the model
+/// pull/verify pipeline, not editable through the config:
+/// - `hf_*` fields (format, base_model, pipeline_tag, params, etc.)
+/// - `db_id` (auto-generated primary key)
+/// - `spec_decoding` (managed through the model CRUD endpoints)
+///
+/// In practice, this conversion path is only used for the structured config
+/// save endpoint, which does NOT persist models (models are DB-only).
+/// The model CRUD endpoints use `ModelBody` → `apply_model_body()` instead.
 impl From<ModelConfig> for CoreModelConfig {
     fn from(m: ModelConfig) -> Self {
         Self {
@@ -596,7 +607,8 @@ impl From<ModelConfig> for CoreModelConfig {
             kv_unified: m.kv_unified,
             cache_type_k: m.cache_type_k,
             cache_type_v: m.cache_type_v,
-            hf_format: None, // DB-only metadata, not carried through mirror types
+            // DB-only metadata — not editable through config, populated by pull/verify pipeline
+            hf_format: None,
             hf_base_model: None,
             hf_pipeline_tag: None,
             hf_total_params: None,
@@ -605,8 +617,8 @@ impl From<ModelConfig> for CoreModelConfig {
             hf_context_length: None,
             hf_num_layers: None,
             hf_last_modified: None,
-            db_id: None, // not carried through mirror types
-            spec_decoding: Default::default(),
+            db_id: None,                       // Auto-generated primary key
+            spec_decoding: Default::default(), // Managed through model CRUD endpoints
         }
     }
 }

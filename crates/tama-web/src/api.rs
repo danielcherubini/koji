@@ -110,13 +110,16 @@ async fn trigger_proxy_reload(state: &ProxyState) -> Result<(), (StatusCode, ser
 }
 
 /// Body for structured config save.
+///
+/// Note: `models` is intentionally excluded — model configs are stored in the
+/// SQLite database and managed through the `/tama/v1/models/:id` CRUD endpoints.
+/// Only global config sections (general, backends, supervisor, proxy, etc.) are
+/// persisted to `config.toml` through this endpoint.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct StructuredConfigBody {
     pub general: crate::types::config::General,
     #[serde(default)]
     pub backends: std::collections::BTreeMap<String, crate::types::config::BackendConfig>,
-    #[serde(default)]
-    pub models: std::collections::BTreeMap<String, crate::types::config::ModelConfig>,
     #[serde(default)]
     pub supervisor: crate::types::config::Supervisor,
     #[serde(default)]

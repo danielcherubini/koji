@@ -16,8 +16,6 @@ pub struct Config {
     #[serde(default)]
     pub backends: BTreeMap<String, BackendConfig>,
     #[serde(default)]
-    pub models: BTreeMap<String, ModelConfig>,
-    #[serde(default)]
     pub supervisor: Supervisor,
     #[serde(default)]
     pub sampling_templates: BTreeMap<String, SamplingParams>,
@@ -26,6 +24,11 @@ pub struct Config {
     #[serde(default)]
     pub compaction: CompactionConfig,
 }
+
+// Note: `models` is intentionally excluded from this Config struct.
+// Model configs are stored in the SQLite database and managed through
+// the /tama/v1/models/:id CRUD endpoints (pages/model_editor/), not
+// through the structured config endpoint.
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct General {
@@ -46,45 +49,15 @@ pub struct BackendConfig {
     #[serde(default)]
     pub path: Option<String>,
     #[serde(default)]
-    pub default_args: Vec<String>,
-    #[serde(default)]
-    pub health_check_url: Option<String>,
-    #[serde(default)]
     pub version: Option<String>,
+    #[serde(default)]
+    pub gpu_variant: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ModelConfig {
-    #[serde(default)]
-    pub backend: String,
-    #[serde(default)]
-    pub args: Vec<String>,
-    #[serde(default)]
-    pub sampling: Option<SamplingParams>,
-    #[serde(default)]
-    pub model: Option<String>,
-    #[serde(default)]
-    pub quant: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mmproj: Option<String>,
-    #[serde(default)]
-    pub port: Option<u16>,
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
-    #[serde(default)]
-    pub context_length: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub api_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gpu_layers: Option<u32>,
-    /// Forward-compat: preserve any additional fields we don't know about
-    #[serde(flatten)]
-    pub extra: serde_json::Map<String, serde_json::Value>,
-}
-
-fn default_enabled() -> bool {
-    true
-}
+// Note: `default_args` and `health_check_url` are intentionally excluded.
+// These are per-backend settings stored in the SQLite `backend_configs` table
+// and managed through the /tama/v1/backends/:name/default-args endpoint,
+// not through the structured config (config.toml).
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Supervisor {
