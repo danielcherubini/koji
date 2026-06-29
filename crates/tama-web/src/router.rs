@@ -143,7 +143,10 @@ pub fn build_web_routes() -> Router<Arc<tama_core::proxy::ProxyState>> {
         .route("/tama/v1/backends/jobs/:id/events", get(job_events_sse))
         .route("/tama/v1/backends/compaction", post(update_compaction))
         // Restore routes (CSRF-protected)
-        .route("/tama/v1/restore/preview", post(restore_preview))
+        .route(
+            "/tama/v1/restore/preview",
+            post(restore_preview).layer(axum::extract::DefaultBodyLimit::max(100 * 1024 * 1024)),
+        )
         .route("/tama/v1/restore", post(start_restore))
         // Self-update POST is inside backend_routes for CSRF protection
         .route(

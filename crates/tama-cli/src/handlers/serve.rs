@@ -72,6 +72,11 @@ async fn start_proxy_server(
     );
 
     let db_dir = tama_core::config::Config::config_dir().ok();
+    // Note: Config::load() already runs migrations, but the serve handler needs its own
+    // DB connection for the proxy's long-lived use (backfill checks, backend registry
+    // migration, TOML→DB migration). Running migrations again is harmless (they are
+    // idempotent) but intentional — the serve path requires an independent connection
+    // that outlives the config's internal DB handle.
     // Trigger backfill if DB is fresh (best-effort: log failures but don't abort)
     if let Some(ref dir) = db_dir {
         match tama_core::db::open(dir) {

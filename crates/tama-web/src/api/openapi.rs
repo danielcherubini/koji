@@ -510,26 +510,26 @@ pub fn spec() -> serde_json::Value {
         ),
         (
             "/tama/v1/config",
-            op(
-                "get",
-                "getConfig",
-                "Get config file contents",
-                "Returns the raw TOML content of the Tama config file.",
-                &["web-api"],
-                None,
-                None,
-            ),
+            serde_json::json!({
+                "operationId": "getConfig",
+                "summary": "Get config file contents",
+                "description": "Removed — use /tama/v1/config/structured",
+                "deprecated": true,
+                "tags": ["web-api"],
+                "responses": {"200": {"description": "Success"}}
+            }),
         ),
         (
             "/tama/v1/config",
-            post_op(
-                "saveConfig",
-                "Save config file contents",
-                "Validates and saves the provided TOML as the Tama config file.",
-                &["web-api"],
-                Some(("ConfigBody", "application/json")),
-                None,
-            ),
+            serde_json::json!({
+                "operationId": "saveConfig",
+                "summary": "Save config file contents",
+                "description": "Removed — use /tama/v1/config/structured",
+                "deprecated": true,
+                "tags": ["web-api"],
+                "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ConfigBody"}}}},
+                "responses": {"200": {"description": "Success"}}
+            }),
         ),
         (
             "/tama/v1/config/structured",

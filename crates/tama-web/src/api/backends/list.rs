@@ -44,18 +44,19 @@ pub async fn list_backends(State(state): State<Arc<ProxyState>>) -> impl IntoRes
         .map_err(|e| anyhow::anyhow!("spawn error: {}", e))
         .and_then(|r| r);
 
-    // Load backend configs from DB (keyed by (name, gpu_variant))
-    let backend_configs_map: std::collections::HashMap<(String, String), Vec<String>> =
-        tama_core::backends::BackendManager::open(&config_dir)
-            .ok()
-            .and_then(|mgr| mgr.list_configs().ok())
-            .map(|configs| {
-                configs
-                    .into_iter()
-                    .map(|c| ((c.name, c.gpu_variant), c.default_args))
-                    .collect()
-            })
-            .unwrap_or_default();
+    // Load backend configs from DB (keyed by (name, gpu_variant)), reusing the manager
+    // opened above to avoid opening the DB twice.
+    let backend_configs_map: std::collections::HashMap<(String, String), Vec<String>> = mgr_result
+        .as_ref()
+        .ok()
+        .and_then(|mgr| mgr.list_configs().ok())
+        .map(|configs| {
+            configs
+                .into_iter()
+                .map(|c| ((c.name, c.gpu_variant), c.default_args))
+                .collect()
+        })
+        .unwrap_or_default();
 
     // Load cached update checks from DB (keyed by "name:variant")
     let update_checks: std::collections::HashMap<

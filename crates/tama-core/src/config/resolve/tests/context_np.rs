@@ -25,7 +25,6 @@ fn test_build_full_args_context_multiplied_by_num_parallel() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    // loaded_from removed — Config methods use Config::config_dir() (static)
 
     // context_length=4096, num_parallel=2 → effective ctx = 8192
     let server = ModelConfig {
@@ -102,7 +101,6 @@ fn test_build_full_args_context_saturating_overflow() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    // loaded_from removed — Config methods use Config::config_dir() (static)
 
     // context_length=1_000_000, num_parallel=10_000
     // 1_000_000 * 10_000 = 10_000_000_000 > u32::MAX (4_294_967_295)
@@ -176,7 +174,6 @@ fn test_build_full_args_context_no_num_parallel_defaults_to_one() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    // loaded_from removed — Config methods use Config::config_dir() (static)
 
     // num_parallel is None → should default to 1, so ctx stays at 8192
     let server = ModelConfig {
@@ -243,7 +240,6 @@ fn test_build_full_args_injects_np_flag() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    // loaded_from removed — Config methods use Config::config_dir() (static)
 
     // num_parallel=2 → should inject -np 2
     let server = ModelConfig {
@@ -325,7 +321,6 @@ fn test_build_full_args_no_np_when_auto() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    // loaded_from removed — Config methods use Config::config_dir() (static)
 
     // num_parallel=0 → should NOT inject -np (0 = auto)
     let server = ModelConfig {
@@ -395,7 +390,6 @@ fn test_build_full_args_np_when_one() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    // loaded_from removed — Config methods use Config::config_dir() (static)
 
     // num_parallel=1 → should inject -np 1
     let server = ModelConfig {

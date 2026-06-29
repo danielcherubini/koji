@@ -27,7 +27,6 @@ fn test_spec_decoding_multi_type_comma_separated() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    // loaded_from removed — Config methods use Config::config_dir() (static)
 
     let server = ModelConfig {
         backend: "llama_cpp".to_string(),
@@ -111,7 +110,6 @@ fn test_spec_decoding_non_llama_backend_no_flags() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    // loaded_from removed — Config methods use Config::config_dir() (static)
 
     // Use a non-llama backend
     let server = ModelConfig {
@@ -203,7 +201,6 @@ fn test_spec_decoding_all_already_has_checks() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    // loaded_from removed — Config methods use Config::config_dir() (static)
 
     // User already has all 4 flags in args
     let server = ModelConfig {

@@ -239,7 +239,7 @@ pub async fn start_restore(
 ) -> impl IntoResponse {
     // Look up upload
     let uploads = state.web_upload_lock.read().await;
-    let _upload_path = match uploads.get(&body.upload_id) {
+    let upload_path = match uploads.get(&body.upload_id) {
         Some(entry) => entry.path.clone(),
         None => {
             return (
@@ -284,6 +284,7 @@ pub async fn start_restore(
             let temp_dir = config_dir.join("uploads");
             let job_id = job.id.clone();
 
+            let cleanup_path = upload_path.clone();
             tokio::spawn(async move {
                 let result = tokio::task::spawn_blocking(move || {
                     // TODO: Implement actual restore logic
@@ -295,6 +296,11 @@ pub async fn start_restore(
 
                 if let Err(e) = result {
                     tracing::error!("Restore task panicked: {:?}", e);
+                }
+
+                // Clean up the uploaded archive after restore completes
+                if let Err(e) = std::fs::remove_file(&cleanup_path) {
+                    tracing::warn!("Failed to delete upload file: {}", e);
                 }
             });
 
