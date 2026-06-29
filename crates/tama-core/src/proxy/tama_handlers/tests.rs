@@ -23,11 +23,10 @@ async fn test_setup_model_creates_card() {
 
     // Build a config with loaded_from pointing to our temp dir
     let config = crate::config::Config {
-        loaded_from: Some(config_dir.clone()),
         ..Default::default()
     };
     // Save it so Config::load_from can find it
-    config.save_to(&config_dir).unwrap();
+    config.to_db(&config_dir.join("tama.db")).unwrap();
 
     let spec = super::types::QuantDownloadSpec {
         filename: filename.to_string(),
@@ -88,10 +87,9 @@ async fn test_mmproj_pull_auto_enables_vision_on_parent() {
     let configs_dir = config_dir.join("configs");
     std::fs::create_dir_all(&configs_dir).unwrap();
     let config = crate::config::Config {
-        loaded_from: Some(config_dir.clone()),
         ..Default::default()
     };
-    config.save_to(&config_dir).unwrap();
+    config.to_db(&config_dir.join("tama.db")).unwrap();
 
     // Pull 1: parent quant.
     let parent_spec = super::types::QuantDownloadSpec {
@@ -163,10 +161,9 @@ async fn test_mmproj_pull_before_parent_creates_stub_then_promotes() {
     std::fs::create_dir_all(&dest_dir).unwrap();
 
     let config = crate::config::Config {
-        loaded_from: Some(config_dir.clone()),
         ..Default::default()
     };
-    config.save_to(&config_dir).unwrap();
+    config.to_db(&config_dir.join("tama.db")).unwrap();
 
     // Pull 1: mmproj first, no parent exists yet.
     let mmproj_spec = super::types::QuantDownloadSpec {

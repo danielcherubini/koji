@@ -74,26 +74,21 @@ mod tests {
         );
     }
 
-    /// GET /tama/v1/config returns 404 when config_path is None (not configured).
+    /// GET /tama/v1/config returns 200 with config content (config_dir is always available).
     #[tokio::test]
-    async fn test_api_config_returns_404_when_unconfigured() {
+    async fn test_api_config_returns_200_when_configured() {
         let (client, addr) = start_test_server().await;
         let resp = client
             .get(format!("http://{}/tama/v1/config", addr))
             .send()
             .await
             .unwrap();
-        assert_eq!(resp.status().as_u16(), 404);
-        let body: serde_json::Value = resp.json().await.unwrap();
-        assert!(
-            body.get("error").is_some(),
-            "Expected error field in response"
-        );
+        assert_eq!(resp.status().as_u16(), 200);
     }
 
-    /// POST /tama/v1/config returns 404 when config_path is None (checked before TOML validation).
+    /// POST /tama/v1/config returns 422 for invalid TOML.
     #[tokio::test]
-    async fn test_api_config_save_returns_403_when_unauthenticated() {
+    async fn test_api_config_save_returns_422_for_invalid_toml() {
         let (client, addr) = start_test_server().await;
         let resp = client
             .post(format!("http://{}/tama/v1/config", addr))
@@ -101,8 +96,8 @@ mod tests {
             .send()
             .await
             .unwrap();
-        // 404 because config_path is None (checked before CSRF)
-        assert_eq!(resp.status().as_u16(), 404);
+        // 422 because invalid TOML
+        assert_eq!(resp.status().as_u16(), 422);
     }
 
     /// End-to-end test: CRUD operations via the web API update the proxy's in-memory config.
@@ -137,8 +132,10 @@ mod tests {
             let config_dir_server = config_dir.clone();
             tokio::spawn(async move {
                 let mut config = (*proxy_config_server.read().await).clone();
-                config.loaded_from = Some(config_dir_server);
-                let state = Arc::new(tama_core::proxy::ProxyState::new(config, None));
+                let state = Arc::new(tama_core::proxy::ProxyState::new(
+                    config,
+                    Some(config_dir_server.clone()),
+                ));
                 axum::serve(
                     listener,
                     tama_web::router::build_web_routes().with_state(state),
@@ -374,10 +371,13 @@ mod tests {
             let config_dir_server = config_dir.clone();
             tokio::spawn(async move {
                 let config = tama_core::config::Config {
-                    loaded_from: Some(config_dir_server),
+                    loaded_from: Some(config_dir_server.clone()),
                     ..Default::default()
                 };
-                let state = Arc::new(tama_core::proxy::ProxyState::new(config, None));
+                let state = Arc::new(tama_core::proxy::ProxyState::new(
+                    config,
+                    Some(config_dir_server.clone()),
+                ));
                 axum::serve(
                     listener,
                     tama_web::router::build_web_routes().with_state(state),

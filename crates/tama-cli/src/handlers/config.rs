@@ -13,15 +13,15 @@ pub fn cmd_config(config: &Config, command: crate::cli::ConfigCommands) -> Resul
             println!("{}", toml_str);
         }
         crate::cli::ConfigCommands::Edit => {
-            let path = Config::config_path()?;
-            let editor = std::env::var("EDITOR").unwrap_or_else(|_| "notepad".to_string());
-            std::process::Command::new(&editor)
-                .arg(&path)
-                .status()
-                .map_err(|e| anyhow::anyhow!("Failed to open editor '{}': {}", editor, e))?;
+            let db_path = Config::config_dir()?.join("tama.db");
+            println!(
+                "Configuration is stored in the SQLite database at: {}",
+                db_path.display()
+            );
+            println!("Use `tama config set <key> <value>` to modify individual settings.");
         }
         crate::cli::ConfigCommands::Path => {
-            let path = Config::config_path()?;
+            let path = Config::config_dir()?.join("tama.db");
             println!("{}", path.display());
         }
     }

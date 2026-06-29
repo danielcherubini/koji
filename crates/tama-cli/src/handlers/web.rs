@@ -12,9 +12,9 @@ pub async fn cmd_web(
 
     // Build config from config_path or default
     let config = if let Some(ref cp) = config_path {
-        let config_dir = cp.parent().map(|p| p.to_path_buf());
-        if let Some(cd) = config_dir {
-            tama_core::config::Config::load_from(&cd).unwrap_or_default()
+        let db_path = cp.parent().map(|p| p.join("tama.db"));
+        if let Some(dp) = db_path {
+            tama_core::config::Config::load_from(&dp).unwrap_or_default()
         } else {
             tama_core::config::Config::default()
         }

@@ -123,7 +123,6 @@ fn build_test_state(config_content: &str) -> (Arc<ProxyState>, TempDir) {
     std::fs::write(&config_path, config_content).expect("write config");
 
     let config = tama_core::config::Config {
-        loaded_from: Some(config_path),
         ..Default::default()
     };
 
@@ -231,7 +230,7 @@ async fn test_400_on_invalid_json() {
 }
 
 #[tokio::test]
-async fn test_404_when_config_path_not_configured() {
+async fn test_get_structured_config_without_loaded_from() {
     let config = tama_core::config::Config::default();
     let state = Arc::new(ProxyState::new(config, None));
     let router = build_web_routes().with_state(state);
@@ -243,7 +242,8 @@ async fn test_404_when_config_path_not_configured() {
         .unwrap();
     let response: axum::http::Response<axum::body::Body> =
         router.clone().oneshot(req).await.unwrap();
-    assert_eq!(response.status(), 404);
+    // Returns 200 — config_dir is always available via Config::config_dir()
+    assert_eq!(response.status(), 200);
 
     // POST with config_path=None and missing required fields returns 422
     // (but first needs CSRF — we skip CSRF here since config_path is None)

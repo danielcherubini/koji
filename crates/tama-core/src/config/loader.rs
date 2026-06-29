@@ -1,9 +1,7 @@
-use super::migrate::rename_legacy_directories;
 use super::types::{CompactionConfig, Config, General, ProxyConfig, Supervisor};
 use crate::profiles::Profile;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
-use std::fs;
 use std::path::PathBuf;
 
 impl Config {
@@ -36,63 +34,48 @@ impl Config {
         Self::base_dir()
     }
 
-    pub fn config_path() -> Result<PathBuf> {
-        Ok(Self::config_dir()?.join("config.toml"))
-    }
-
+    /// Load config from the default SQLite database.
+    ///
+    /// If `config.toml` exists in the config directory, it is migrated to the
+    /// SQLite database in a single pass (backends, models, and global config),
+    /// then renamed to `config.toml.migrated`.
+    ///
+    /// If no TOML exists and the DB is empty, defaults are seeded.
     pub fn load() -> Result<Self> {
         let config_dir = Self::config_dir()?;
-        Self::load_from(&config_dir)
+        let db_path = config_dir.join("tama.db");
+
+        // Run one-time TOML → DB migration if config.toml exists
+        if config_dir.join("config.toml").exists() {
+            crate::db::backfill::migrate_toml_to_db(&config_dir, &db_path)?;
+        }
+
+        // Load from DB
+        Self::from_db(&db_path)
     }
 
-    /// Load config from an explicit directory path.
-    /// Used by tests which need to load from a non-standard location.
-    pub fn load_from(config_dir: &std::path::Path) -> Result<Self> {
-        fs::create_dir_all(config_dir).context("Failed to create config directory")?;
+    /// Load config from an explicit SQLite database path.
+    ///
+    /// Used by `tama web` CLI handler and tests which need to load from a
+    /// non-standard DB location.
+    pub fn load_from(db_path: &std::path::Path) -> Result<Self> {
+        // Ensure parent directory exists
+        if let Some(parent) = db_path.parent() {
+            std::fs::create_dir_all(parent).context("Failed to create config directory")?;
+        }
 
-        // Rename legacy .d directories if they exist
-        let _ = rename_legacy_directories(config_dir);
-
-        let config_path = config_dir.join("config.toml");
-
-        let mut config = if config_path.exists() {
-            let contents =
-                fs::read_to_string(&config_path).context("Failed to read config file")?;
-            let c: Config = toml::from_str(&contents).context("Failed to parse config file")?;
-            c
-        } else {
-            let default = Self::default();
-            let toml_str =
-                toml::to_string_pretty(&default).context("Failed to serialize default config")?;
-            fs::write(&config_path, &toml_str).context("Failed to write default config")?;
-            tracing::info!("Created default config at {}", config_path.display());
-            default
-        };
-
-        config.loaded_from = Some(config_dir.to_path_buf());
-
+        let mut config = Self::from_db(db_path)?;
+        // Set loaded_from to the parent directory so callers (e.g. server edit)
+        // can find the DB directory.
+        config.loaded_from = db_path.parent().map(|p| p.to_path_buf());
         Ok(config)
     }
 
-    /// Save config to the location it was loaded from, or the default location.
+    /// Save config to the default SQLite database.
     pub fn save(&self) -> Result<()> {
-        if let Some(ref loaded) = self.loaded_from {
-            return self.save_to(loaded);
-        }
-        let config_path = Self::config_path()?;
-        let toml_str = toml::to_string_pretty(self).context("Failed to serialize config")?;
-        fs::write(&config_path, &toml_str).context("Failed to write config")?;
-        Ok(())
-    }
-
-    /// Save config to a specific directory path.
-    /// Used by tests which need to save to non-standard locations.
-    pub fn save_to(&self, config_dir: &std::path::Path) -> Result<()> {
-        let config_path = config_dir.join("config.toml");
-        fs::create_dir_all(config_dir).context("Failed to create config directory")?;
-        let toml_str = toml::to_string_pretty(self).context("Failed to serialize config")?;
-        fs::write(&config_path, &toml_str).context("Failed to write config")?;
-        Ok(())
+        let config_dir = Self::config_dir()?;
+        let db_path = config_dir.join("tama.db");
+        self.to_db(&db_path)
     }
 
     /// Resolve the logs directory path.
@@ -101,8 +84,6 @@ impl Config {
     pub fn logs_dir(&self) -> Result<PathBuf> {
         if let Some(ref dir) = self.general.logs_dir {
             Ok(PathBuf::from(dir))
-        } else if let Some(ref loaded) = self.loaded_from {
-            Ok(loaded.join("logs"))
         } else {
             Ok(Self::base_dir()?.join("logs"))
         }

@@ -183,7 +183,10 @@ use tama::{cmd_server_add, cmd_server_edit};
 async fn test_cmd_server_add_nonexistent_model_errors() {
     let temp_dir = tempfile::tempdir().unwrap();
     let config = tama_core::config::Config {
-        loaded_from: Some(temp_dir.path().to_path_buf()),
+        general: tama_core::config::General {
+            models_dir: Some(temp_dir.path().to_string_lossy().to_string()),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let result: anyhow::Result<()> = cmd_server_add(
@@ -211,7 +214,6 @@ async fn test_cmd_server_add_nonexistent_model_errors() {
 async fn test_cmd_server_edit_nonexistent_server_errors() {
     let temp_dir = tempfile::tempdir().unwrap();
     let mut config = tama_core::config::Config {
-        loaded_from: Some(temp_dir.path().to_path_buf()),
         ..Default::default()
     };
     let result: anyhow::Result<()> = cmd_server_edit(
@@ -238,8 +240,9 @@ async fn test_cmd_server_edit_nonexistent_server_errors() {
 async fn test_cmd_server_edit_valid_profile_succeeds() {
     let temp_dir = tempfile::tempdir().unwrap();
 
-    // Use Config::load_from() which creates the default config file
-    let mut config = tama_core::config::Config::load_from(temp_dir.path())
+    // Use Config::load_from() with a DB path to create the default config
+    let db_path = temp_dir.path().join("tama.db");
+    let mut config = tama_core::config::Config::load_from(&db_path)
         .expect("Failed to load/create default config");
     // Insert the dummy server into the DB (cmd_server_edit loads model configs from DB)
     // Use the same temp_dir for both config and DB to ensure isolation
