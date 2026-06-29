@@ -80,7 +80,7 @@ pub async fn get_updates(State(state): State<Arc<ProxyState>>) -> impl IntoRespo
         None => {
             return (
                 StatusCode::NOT_FOUND,
-                Json(serde_json::json!({ "error": "config_path not configured" })),
+                Json(serde_json::json!({ "error": "config directory not configured" })),
             )
                 .into_response()
         }
@@ -182,7 +182,7 @@ pub async fn trigger_check(State(state): State<Arc<ProxyState>>) -> impl IntoRes
         None => {
             return (
                 StatusCode::NOT_FOUND,
-                Json(serde_json::json!({ "error": "config_path not configured" })),
+                Json(serde_json::json!({ "error": "config directory not configured" })),
             )
                 .into_response()
         }
@@ -225,7 +225,7 @@ pub async fn check_single(
         None => {
             return (
                 StatusCode::NOT_FOUND,
-                Json(serde_json::json!({ "error": "config_path not configured" })),
+                Json(serde_json::json!({ "error": "config directory not configured" })),
             )
                 .into_response()
         }
@@ -415,7 +415,7 @@ pub async fn apply_backend_update(
         None => {
             return (
                 StatusCode::NOT_FOUND,
-                Json(serde_json::json!({ "error": "config_path not configured" })),
+                Json(serde_json::json!({ "error": "config directory not configured" })),
             )
                 .into_response()
         }
@@ -646,7 +646,7 @@ pub async fn apply_model_update(
         None => {
             return (
                 StatusCode::NOT_FOUND,
-                Json(serde_json::json!({ "error": "config_path not configured" })),
+                Json(serde_json::json!({ "error": "config directory not configured" })),
             )
                 .into_response()
         }

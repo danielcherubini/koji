@@ -183,30 +183,40 @@ pub async fn save_structured_config(
 
 // ── Shared helpers (used by both model and non-model endpoints) ──────────────
 
-/// Resolve the config directory from the default location.
-fn resolve_config_dir() -> std::path::PathBuf {
-    tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-}
-
 /// Load config from the config directory derived from ProxyState.
 /// Returns (config, config_dir) on success.
+/// Prefer db_dir (set at startup to Config::config_dir()) to ensure we
+/// always open the correct database. Fall back to the system default
+/// when db_dir is None (e.g. in tests that create ProxyState without a db_dir).
 async fn load_config_from_state(
-    _state: &ProxyState,
+    state: &ProxyState,
 ) -> Result<(tama_core::config::Config, std::path::PathBuf), (StatusCode, serde_json::Value)> {
-    let config_dir = resolve_config_dir();
-    let cfg = tokio::task::spawn_blocking(tama_core::config::Config::load)
-        .await
-        .map_err(|e| {
+    let config_dir = state
+        .db_dir
+        .clone()
+        .or_else(|| tama_core::config::Config::config_dir().ok())
+        .ok_or_else(|| {
             (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                serde_json::json!({"error": e.to_string()}),
-            )
-        })?
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                serde_json::json!({"error": e.to_string()}),
+                StatusCode::NOT_FOUND,
+                serde_json::json!({"error": "config directory not configured"}),
             )
         })?;
+    let db_path = config_dir.join("tama.db");
+    let cfg = tokio::task::spawn_blocking(move || {
+        tama_core::config::Config::from_db(&db_path)
+    })
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            serde_json::json!({"error": e.to_string()}),
+        )
+    })?
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            serde_json::json!({"error": e.to_string()}),
+        )
+    })?;
     Ok((cfg, config_dir))
 }
