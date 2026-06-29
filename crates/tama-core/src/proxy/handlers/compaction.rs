@@ -136,7 +136,7 @@ pub async fn handle_compaction(state: State<Arc<ProxyState>>, req: Request<Body>
                 StatusCode::NOT_IMPLEMENTED,
                 Json(serde_json::json!({
                     "error": {
-                        "message": "Compaction is not enabled. Add [compaction] section to config.toml.",
+                        "message": "Compaction is not enabled. Enable it in the Configuration page or CLI.",
                         "type": "NotImplementedError"
                     }
                 })),

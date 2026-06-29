@@ -4,9 +4,11 @@
 
 mod hf_metadata;
 mod initial_backfill;
+mod migrate_toml_to_db;
 
 pub use hf_metadata::*;
 pub use initial_backfill::*;
+pub use migrate_toml_to_db::*;
 
 // ---------------------------------------------------------------------------
 // Private legacy deserialization structs (for one-time TOML migration only)

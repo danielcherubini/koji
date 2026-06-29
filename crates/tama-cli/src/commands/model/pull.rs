@@ -229,9 +229,11 @@ pub(super) async fn cmd_pull(config: &Config, repo_id: &str) -> Result<()> {
     };
 
     // Record all pull metadata in DB (sync, single connection, after all async work)
+    let db_dir: std::path::PathBuf =
+        tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let db_dir_ref = db_dir.as_path();
     let db_record_result: anyhow::Result<()> = (|| {
-        let db_dir = tama_core::config::Config::config_dir()?;
-        let mgr = ModelManager::open(&db_dir)?;
+        let mgr = ModelManager::open(db_dir_ref)?;
 
         // Look up model_id before DB writes
         let model_id = match mgr.get_config_by_repo_id(repo_id)? {
@@ -298,19 +300,10 @@ pub(super) async fn cmd_pull(config: &Config, repo_id: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn cmd_scan(config: &Config) -> Result<()> {
+pub(crate) fn cmd_scan(config: &Config, db_dir: &std::path::Path) -> Result<()> {
     let models_dir = config.models_dir()?;
 
-    // Use the directory the config was loaded from as the base for the DB.
-    // This ensures that in tests (and Windows services), we use the temporary/specified
-    // directory instead of the default system config path.
-    let db_dir = match config.loaded_from {
-        Some(ref p) => p.clone(),
-        None => tama_core::config::Config::config_dir()
-            .map_err(|e| anyhow::anyhow!("Failed to determine config directory: {e}"))?,
-    };
-
-    let mgr = ModelManager::open(&db_dir)?;
+    let mgr = ModelManager::open(db_dir)?;
 
     let mut added_files = 0;
     let mut removed_files = 0;
@@ -449,7 +442,10 @@ mod tests {
     pub(super) async fn setup_test_env() -> (tempfile::TempDir, Config, OpenResult) {
         let dir = tempdir().unwrap();
         let config = Config {
-            loaded_from: Some(dir.path().to_path_buf()),
+            general: tama_core::config::General {
+                models_dir: Some(dir.path().to_string_lossy().to_string()),
+                ..Default::default()
+            },
             ..Default::default()
         };
 
@@ -468,7 +464,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_scan_adds_new_files() {
-        let (_dir, config, open_res) = setup_test_env().await;
+        let (dir, config, open_res) = setup_test_env().await;
         let conn = &open_res.conn;
 
         // Create a model file on disk
@@ -480,7 +476,7 @@ mod tests {
         fs::write(model_dir.join(filename), "dummy data").unwrap();
 
         // Run scan
-        cmd_scan(&config).unwrap();
+        cmd_scan(&config, dir.path()).unwrap();
 
         // Verify it was added to DB
         let configs = tama_core::db::queries::get_all_model_configs(conn).unwrap();
@@ -496,7 +492,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_scan_removes_missing_files() {
-        let (_dir, config, open_res) = setup_test_env().await;
+        let (dir, config, open_res) = setup_test_env().await;
         let conn = &open_res.conn;
 
         let repo_id = "test/model";
@@ -556,7 +552,7 @@ mod tests {
         .unwrap();
 
         // Run scan
-        cmd_scan(&config).unwrap();
+        cmd_scan(&config, dir.path()).unwrap();
 
         // Verify it was removed from DB
         let files = get_model_files(conn, model_id).unwrap();
@@ -565,7 +561,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_scan_removes_ghost_configs() {
-        let (_dir, config, open_res) = setup_test_env().await;
+        let (dir, config, open_res) = setup_test_env().await;
         let conn = &open_res.conn;
 
         let repo_id = "ghost/model";
@@ -611,7 +607,7 @@ mod tests {
         // No directory on disk
 
         // Run scan
-        cmd_scan(&config).unwrap();
+        cmd_scan(&config, dir.path()).unwrap();
 
         // Verify config was removed
         let configs = tama_core::db::queries::get_all_model_configs(conn).unwrap();
@@ -620,7 +616,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_scan_empty_dir_removes_everything() {
-        let (_dir, config, open_res) = setup_test_env().await;
+        let (dir, config, open_res) = setup_test_env().await;
         let conn = &open_res.conn;
 
         // Populate DB with some garbage (let DB assign IDs via AUTOINCREMENT)
@@ -766,7 +762,7 @@ mod tests {
         // Models dir is empty
 
         // Run scan
-        cmd_scan(&config).unwrap();
+        cmd_scan(&config, dir.path()).unwrap();
 
         // Verify DB is clean
         let files = get_model_files(conn, id1).unwrap();

@@ -1,4 +1,5 @@
 use crate::profiles::SamplingParams;
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 
@@ -65,10 +66,6 @@ pub struct Config {
     pub proxy: ProxyConfig,
     #[serde(default)]
     pub compaction: CompactionConfig,
-    /// The directory this config was loaded from. Used to resolve models_dir
-    /// when running as a service (where %APPDATA% differs from the installing user).
-    #[serde(skip)]
-    pub loaded_from: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,24 +136,218 @@ impl Default for ProxyConfig {
 
 impl Config {
     /// Get the configs directory for model cards.
-    /// Returns `<loaded_from>/configs/`.
     pub fn configs_dir(&self) -> anyhow::Result<std::path::PathBuf> {
-        self.loaded_from
-            .as_deref()
-            .map(|p| p.join("configs"))
-            .ok_or_else(|| anyhow::anyhow!("Config has no loaded_from path"))
+        Ok(Self::config_dir()?.join("configs"))
     }
 
     /// Get the models directory for this config.
-    /// Uses `general.models_dir` if set, otherwise `<loaded_from>/models/`.
+    /// Uses `general.models_dir` if set, otherwise `<config_dir>/models/`.
     pub fn models_dir(&self) -> anyhow::Result<std::path::PathBuf> {
         if let Some(models_dir) = &self.general.models_dir {
             return Ok(std::path::PathBuf::from(models_dir));
         }
-        self.loaded_from
-            .as_deref()
-            .map(|p| p.join("models"))
-            .ok_or_else(|| anyhow::anyhow!("Config has no loaded_from path"))
+        Ok(Self::config_dir()?.join("models"))
+    }
+
+    /// Load a complete `Config` from a SQLite database at the given path.
+    ///
+    /// If the database is empty (no rows in any config table), seeds defaults
+    /// via `app_config_queries::seed_defaults` before reading.
+    /// Runs migrations if the database has not been initialized yet.
+    pub fn from_db(db_path: &std::path::Path) -> anyhow::Result<Self> {
+        let conn = rusqlite::Connection::open(db_path)
+            .with_context(|| format!("Failed to open DB at {}", db_path.display()))?;
+
+        // Run migrations if needed (skips quickly if already at latest version)
+        crate::db::migrations::run(&conn)?;
+
+        // Seed defaults if tables are empty (idempotent — no-op if rows exist)
+        crate::db::queries::seed_defaults(&conn)?;
+
+        // Read general
+        let general_row = crate::db::queries::get_general(&conn)?
+            .ok_or_else(|| anyhow::anyhow!("app_general row not found after seeding"))?;
+        let general = General {
+            log_level: general_row.0,
+            models_dir: general_row.1,
+            logs_dir: general_row.2,
+            hf_token: general_row.3,
+            update_check_interval: general_row.4,
+        };
+
+        // Read proxy
+        let proxy_row = crate::db::queries::get_proxy(&conn)?
+            .ok_or_else(|| anyhow::anyhow!("app_proxy row not found after seeding"))?;
+        let proxy = ProxyConfig {
+            host: proxy_row.0,
+            port: proxy_row.1,
+            auto_unload: proxy_row.2,
+            idle_timeout_secs: proxy_row.3,
+            startup_timeout_secs: proxy_row.4,
+            circuit_breaker_threshold: proxy_row.5,
+            circuit_breaker_cooldown_seconds: proxy_row.6,
+            metrics_retention_secs: proxy_row.7,
+            download_queue_poll_interval_secs: proxy_row.8,
+            max_loaded_models: proxy_row.9,
+            authenticator_url: proxy_row.10,
+            authenticator_skip_paths: proxy_row.11,
+        };
+
+        // Read supervisor
+        let supervisor_row = crate::db::queries::get_supervisor(&conn)?
+            .ok_or_else(|| anyhow::anyhow!("app_supervisor row not found after seeding"))?;
+        let supervisor = Supervisor {
+            restart_policy: supervisor_row.0,
+            max_restarts: supervisor_row.1,
+            restart_delay_ms: supervisor_row.2,
+            health_check_interval_ms: supervisor_row.3,
+            health_check_timeout_ms: supervisor_row.4,
+            health_check_retries: supervisor_row.5,
+        };
+
+        // Read compaction
+        let compaction_row = crate::db::queries::get_compaction(&conn)?
+            .ok_or_else(|| anyhow::anyhow!("app_compaction row not found after seeding"))?;
+        let compaction = CompactionConfig {
+            enabled: compaction_row.0,
+            server_path: compaction_row.1,
+            device: compaction_row.2,
+            port: compaction_row.3,
+            request_timeout_ms: compaction_row.4,
+        };
+
+        // Read sampling templates
+        let template_rows = crate::db::queries::get_all_sampling_templates(&conn)?;
+        let mut sampling_templates = HashMap::new();
+        for (
+            name,
+            temperature,
+            top_k,
+            top_p,
+            min_p,
+            presence_penalty,
+            frequency_penalty,
+            repeat_penalty,
+        ) in &template_rows
+        {
+            sampling_templates.insert(
+                name.clone(),
+                SamplingParams {
+                    temperature: *temperature,
+                    top_k: *top_k,
+                    top_p: *top_p,
+                    min_p: *min_p,
+                    presence_penalty: *presence_penalty,
+                    frequency_penalty: *frequency_penalty,
+                    repeat_penalty: *repeat_penalty,
+                },
+            );
+        }
+
+        // Read backends from backend_configs table.
+        // Note: BackendConfig (TOML struct) fields `path` and `version` are
+        // not stored in the DB — backend resolution is exclusively DB-managed
+        // via backend_configs + backend_installations tables.
+        let backend_rows = crate::db::queries::list_backend_configs(&conn)?;
+        let mut backends: HashMap<String, BackendConfig> = HashMap::new();
+        for record in &backend_rows {
+            backends.insert(
+                record.name.clone(),
+                BackendConfig {
+                    path: None,
+                    version: None,
+                    gpu_variant: Some(record.gpu_variant.clone()),
+                },
+            );
+        }
+
+        Ok(Config {
+            general,
+            backends,
+            supervisor,
+            proxy,
+            compaction,
+            sampling_templates,
+        })
+    }
+
+    /// Persist a `Config` to a SQLite database at the given path.
+    ///
+    /// Upserts each config section into its corresponding table. Sampling
+    /// templates are deleted first then re-inserted to ensure a clean state.
+    /// Runs migrations if the database has not been initialized yet.
+    pub fn to_db(&self, db_path: &std::path::Path) -> anyhow::Result<()> {
+        let conn = rusqlite::Connection::open(db_path)
+            .with_context(|| format!("Failed to open DB at {}", db_path.display()))?;
+
+        // Run migrations to ensure tables exist
+        crate::db::migrations::run(&conn)?;
+
+        // Upsert general
+        crate::db::queries::upsert_general(
+            &conn,
+            &self.general.log_level,
+            self.general.models_dir.as_deref(),
+            self.general.logs_dir.as_deref(),
+            self.general.hf_token.as_deref(),
+            self.general.update_check_interval,
+        )?;
+
+        // Upsert proxy
+        crate::db::queries::upsert_proxy(
+            &conn,
+            &self.proxy.host,
+            self.proxy.port,
+            self.proxy.auto_unload,
+            self.proxy.idle_timeout_secs,
+            self.proxy.startup_timeout_secs,
+            self.proxy.circuit_breaker_threshold,
+            self.proxy.circuit_breaker_cooldown_seconds,
+            self.proxy.metrics_retention_secs,
+            self.proxy.download_queue_poll_interval_secs,
+            self.proxy.max_loaded_models,
+            self.proxy.authenticator_url.as_deref(),
+            &self.proxy.authenticator_skip_paths,
+        )?;
+
+        // Upsert supervisor
+        crate::db::queries::upsert_supervisor(
+            &conn,
+            &self.supervisor.restart_policy,
+            self.supervisor.max_restarts,
+            self.supervisor.restart_delay_ms,
+            self.supervisor.health_check_interval_ms,
+            self.supervisor.health_check_timeout_ms,
+            self.supervisor.health_check_retries,
+        )?;
+
+        // Upsert compaction
+        crate::db::queries::upsert_compaction(
+            &conn,
+            self.compaction.enabled,
+            self.compaction.server_path.as_deref(),
+            &self.compaction.device,
+            self.compaction.port,
+            self.compaction.request_timeout_ms,
+        )?;
+
+        // Upsert sampling templates (delete all first, then re-insert)
+        crate::db::queries::delete_all_sampling_templates(&conn)?;
+        for (name, params) in &self.sampling_templates {
+            crate::db::queries::upsert_sampling_template(
+                &conn,
+                name,
+                params.temperature,
+                params.top_k,
+                params.top_p,
+                params.min_p,
+                params.presence_penalty,
+                params.frequency_penalty,
+                params.repeat_penalty,
+            )?;
+        }
+
+        Ok(())
     }
 }
 
@@ -257,7 +448,7 @@ pub struct ModelConfig {
     #[serde(default)]
     pub kv_unified: bool,
     /// DEPRECATED — kept for migration deserialization only.
-    /// When present in an old config.toml, the migration reads this, resolves it to
+    /// When present in a legacy config, the migration reads this, resolves it to
     /// concrete SamplingParams, writes those into `sampling`, and clears this field.
     /// Must NOT be serialized back (skip_serializing).
     #[serde(default, skip_serializing)]
@@ -441,7 +632,7 @@ impl ModelConfig {
 }
 
 /// Configuration for the LLMLingua-2 compaction service.
-/// When absent from config.toml, compaction is disabled.
+/// When absent from the configuration, compaction is disabled.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompactionConfig {
     /// Whether compaction is enabled. Default: false.
@@ -651,15 +842,16 @@ mod tests {
     }
 
     #[test]
-    fn test_sampling_templates_toml_roundtrip() {
+    fn test_sampling_templates_db_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("tama.db");
+
         let config = Config::default();
-        let toml_str = toml::to_string_pretty(&config).unwrap();
+        config.to_db(&db_path).unwrap();
 
-        let loaded: Config = toml::from_str(&toml_str).unwrap();
-        let loaded_templates = &loaded.sampling_templates;
-        let default_templates = &config.sampling_templates;
+        let loaded = Config::from_db(&db_path).unwrap();
 
-        // Verify all profile values match after round-trip
+        // Verify all profile values match after DB round-trip
         let profile_names = vec![
             "coding".to_string(),
             "chat".to_string(),
@@ -667,14 +859,17 @@ mod tests {
             "creative".to_string(),
         ];
         for profile_name in profile_names {
-            let default = default_templates.get(&profile_name).unwrap();
-            let loaded = loaded_templates.get(&profile_name).unwrap();
+            let default = config.sampling_templates.get(&profile_name).unwrap();
+            let loaded = loaded.sampling_templates.get(&profile_name).unwrap();
             assert_eq!(default, loaded);
         }
     }
 
     #[test]
-    fn test_sampling_templates_serde_custom() {
+    fn test_sampling_templates_db_custom() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("tama.db");
+
         let mut templates = HashMap::new();
         let custom = SamplingParams {
             temperature: Some(0.5),
@@ -688,8 +883,8 @@ mod tests {
             ..Default::default()
         };
 
-        let toml_str = toml::to_string_pretty(&config).unwrap();
-        let loaded: Config = toml::from_str(&toml_str).unwrap();
+        config.to_db(&db_path).unwrap();
+        let loaded = Config::from_db(&db_path).unwrap();
 
         let loaded_custom = loaded.sampling_templates.get("custom").unwrap();
         assert_eq!(loaded_custom.temperature, Some(0.5));
@@ -911,6 +1106,241 @@ backend = "llama.cpp"
     fn test_compaction_config_disabled_by_default() {
         let config = CompactionConfig::default();
         assert!(!config.enabled, "compaction should be disabled by default");
+    }
+
+    /// Test that Config round-trips through the SQLite DB: write all fields, read back, verify equality.
+    #[test]
+    fn test_config_db_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("tama.db");
+
+        // Build a Config with all fields set to non-default values
+        let mut sampling_templates = HashMap::new();
+        sampling_templates.insert(
+            "coding".to_string(),
+            SamplingParams {
+                temperature: Some(0.3),
+                top_k: Some(50),
+                top_p: Some(0.9),
+                min_p: Some(0.05),
+                presence_penalty: Some(0.1),
+                frequency_penalty: None,
+                repeat_penalty: None,
+            },
+        );
+        sampling_templates.insert(
+            "chat".to_string(),
+            SamplingParams {
+                temperature: Some(0.7),
+                top_k: Some(40),
+                top_p: Some(0.95),
+                min_p: Some(0.05),
+                presence_penalty: Some(0.0),
+                frequency_penalty: None,
+                repeat_penalty: None,
+            },
+        );
+        sampling_templates.insert(
+            "analysis".to_string(),
+            SamplingParams {
+                temperature: Some(0.3),
+                top_k: Some(20),
+                top_p: Some(0.9),
+                min_p: Some(0.05),
+                presence_penalty: Some(0.0),
+                frequency_penalty: None,
+                repeat_penalty: None,
+            },
+        );
+        sampling_templates.insert(
+            "creative".to_string(),
+            SamplingParams {
+                temperature: Some(0.9),
+                top_k: Some(50),
+                top_p: Some(0.95),
+                min_p: Some(0.02),
+                presence_penalty: Some(0.0),
+                frequency_penalty: None,
+                repeat_penalty: None,
+            },
+        );
+
+        let config = Config {
+            general: General {
+                log_level: "debug".to_string(),
+                models_dir: Some("/data/models".to_string()),
+                logs_dir: Some("/var/log/tama".to_string()),
+                hf_token: Some("hf_test123".to_string()),
+                update_check_interval: 24,
+            },
+            backends: HashMap::new(),
+            supervisor: Supervisor {
+                restart_policy: "on-failure".to_string(),
+                max_restarts: 5,
+                restart_delay_ms: 5000,
+                health_check_interval_ms: 3000,
+                health_check_timeout_ms: 10000,
+                health_check_retries: 2,
+            },
+            proxy: ProxyConfig {
+                host: "127.0.0.1".to_string(),
+                port: 8080,
+                auto_unload: true,
+                idle_timeout_secs: 600,
+                startup_timeout_secs: 180,
+                circuit_breaker_threshold: 5,
+                circuit_breaker_cooldown_seconds: 120,
+                metrics_retention_secs: 43200,
+                download_queue_poll_interval_secs: 5,
+                max_loaded_models: 2,
+                authenticator_url: Some("http://auth:8080".to_string()),
+                authenticator_skip_paths: vec![
+                    "/health".to_string(),
+                    "/metrics".to_string(),
+                    "/custom".to_string(),
+                ],
+            },
+            compaction: CompactionConfig {
+                enabled: true,
+                server_path: Some("/opt/compaction/main.py".to_string()),
+                device: "cuda".to_string(),
+                port: Some(8888),
+                request_timeout_ms: 60000,
+            },
+            sampling_templates,
+        };
+
+        // Write to DB
+        config.to_db(&db_path).unwrap();
+
+        // Read back
+        let loaded = Config::from_db(&db_path).unwrap();
+
+        // Verify general
+        assert_eq!(loaded.general.log_level, "debug");
+        assert_eq!(loaded.general.models_dir, Some("/data/models".to_string()));
+        assert_eq!(loaded.general.logs_dir, Some("/var/log/tama".to_string()));
+        assert_eq!(loaded.general.hf_token, Some("hf_test123".to_string()));
+        assert_eq!(loaded.general.update_check_interval, 24);
+
+        // Verify supervisor
+        assert_eq!(loaded.supervisor.restart_policy, "on-failure");
+        assert_eq!(loaded.supervisor.max_restarts, 5);
+        assert_eq!(loaded.supervisor.restart_delay_ms, 5000);
+        assert_eq!(loaded.supervisor.health_check_interval_ms, 3000);
+        assert_eq!(loaded.supervisor.health_check_timeout_ms, 10000);
+        assert_eq!(loaded.supervisor.health_check_retries, 2);
+
+        // Verify proxy
+        assert_eq!(loaded.proxy.host, "127.0.0.1");
+        assert_eq!(loaded.proxy.port, 8080);
+        assert!(loaded.proxy.auto_unload);
+        assert_eq!(loaded.proxy.idle_timeout_secs, 600);
+        assert_eq!(loaded.proxy.startup_timeout_secs, 180);
+        assert_eq!(loaded.proxy.circuit_breaker_threshold, 5);
+        assert_eq!(loaded.proxy.circuit_breaker_cooldown_seconds, 120);
+        assert_eq!(loaded.proxy.metrics_retention_secs, 43200);
+        assert_eq!(loaded.proxy.download_queue_poll_interval_secs, 5);
+        assert_eq!(loaded.proxy.max_loaded_models, 2);
+        assert_eq!(
+            loaded.proxy.authenticator_url,
+            Some("http://auth:8080".to_string())
+        );
+        assert_eq!(
+            loaded.proxy.authenticator_skip_paths,
+            vec![
+                "/health".to_string(),
+                "/metrics".to_string(),
+                "/custom".to_string()
+            ]
+        );
+
+        // Verify compaction
+        assert!(loaded.compaction.enabled);
+        assert_eq!(
+            loaded.compaction.server_path,
+            Some("/opt/compaction/main.py".to_string())
+        );
+        assert_eq!(loaded.compaction.device, "cuda");
+        assert_eq!(loaded.compaction.port, Some(8888));
+        assert_eq!(loaded.compaction.request_timeout_ms, 60000);
+
+        // Verify sampling templates
+        assert_eq!(loaded.sampling_templates.len(), 4);
+        let coding = loaded.sampling_templates.get("coding").unwrap();
+        assert_eq!(coding.temperature, Some(0.3));
+        assert_eq!(coding.top_k, Some(50));
+        assert_eq!(coding.top_p, Some(0.9));
+        assert_eq!(coding.min_p, Some(0.05));
+        assert_eq!(coding.presence_penalty, Some(0.1));
+        let creative = loaded.sampling_templates.get("creative").unwrap();
+        assert_eq!(creative.temperature, Some(0.9));
+        assert_eq!(creative.top_p, Some(0.95));
+        assert_eq!(creative.min_p, Some(0.02));
+    }
+
+    /// Test that loading from an empty DB seeds all defaults.
+    #[test]
+    fn test_config_from_empty_db_seeds_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("tama.db");
+
+        // Load from empty DB — should seed defaults
+        let config = Config::from_db(&db_path).unwrap();
+
+        // Verify general defaults
+        assert_eq!(config.general.log_level, "info");
+        assert_eq!(config.general.models_dir, None);
+        assert_eq!(config.general.logs_dir, None);
+        assert_eq!(config.general.hf_token, None);
+        assert_eq!(config.general.update_check_interval, 12);
+
+        // Verify supervisor defaults
+        assert_eq!(config.supervisor.restart_policy, "always");
+        assert_eq!(config.supervisor.max_restarts, 10);
+        assert_eq!(config.supervisor.restart_delay_ms, 3000);
+        assert_eq!(config.supervisor.health_check_interval_ms, 5000);
+        assert_eq!(config.supervisor.health_check_timeout_ms, 30000);
+        assert_eq!(config.supervisor.health_check_retries, 3);
+
+        // Verify proxy defaults
+        assert_eq!(config.proxy.host, "0.0.0.0");
+        assert_eq!(config.proxy.port, 11434);
+        assert!(!config.proxy.auto_unload);
+        assert_eq!(config.proxy.idle_timeout_secs, 300);
+        assert_eq!(config.proxy.startup_timeout_secs, 120);
+        assert_eq!(config.proxy.circuit_breaker_threshold, 3);
+        assert_eq!(config.proxy.circuit_breaker_cooldown_seconds, 60);
+        assert_eq!(config.proxy.metrics_retention_secs, 86400);
+        assert_eq!(config.proxy.download_queue_poll_interval_secs, 2);
+        assert_eq!(config.proxy.max_loaded_models, 1);
+        assert_eq!(config.proxy.authenticator_url, None);
+        assert_eq!(
+            config.proxy.authenticator_skip_paths,
+            vec!["/health".to_string(), "/metrics".to_string()]
+        );
+
+        // Verify compaction defaults
+        assert!(!config.compaction.enabled);
+        assert_eq!(config.compaction.server_path, None);
+        assert_eq!(config.compaction.device, "cpu");
+        assert_eq!(config.compaction.port, None);
+        assert_eq!(config.compaction.request_timeout_ms, 30000);
+
+        // Verify 4 sampling templates seeded
+        assert_eq!(config.sampling_templates.len(), 4);
+        assert!(config.sampling_templates.contains_key("coding"));
+        assert!(config.sampling_templates.contains_key("chat"));
+        assert!(config.sampling_templates.contains_key("analysis"));
+        assert!(config.sampling_templates.contains_key("creative"));
+
+        // Verify coding template values
+        let coding = config.sampling_templates.get("coding").unwrap();
+        assert_eq!(coding.temperature, Some(0.3));
+        assert_eq!(coding.top_k, Some(50));
+        assert_eq!(coding.top_p, Some(0.9));
+        assert_eq!(coding.min_p, Some(0.05));
+        assert_eq!(coding.presence_penalty, Some(0.1));
     }
 
     /// Test that SpecDecodingConfig serializes to camelCase JSON and deserializes back.

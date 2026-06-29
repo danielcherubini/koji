@@ -24,16 +24,6 @@ impl ProxyServer {
     pub async fn new(state: Arc<ProxyState>) -> Self {
         // Populate in-memory model registry from DB
         if let Some(conn) = state.open_db() {
-            // First, run migration from tama.toml to DB if needed.
-            {
-                let mut config = state.config.write().await;
-                if let Err(e) =
-                    crate::config::migrate::model_to_db::migrate_models_to_db(&conn, &mut config)
-                {
-                    tracing::error!("Failed to migrate models from tama.toml to DB: {}", e);
-                }
-            }
-
             // Repair model_configs rows whose model_files were wiped by the
             // v9 FK-cascade bug. No-op when rows are intact.
             {

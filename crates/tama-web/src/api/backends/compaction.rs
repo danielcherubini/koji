@@ -41,25 +41,20 @@ pub async fn update_compaction(
         let was_enabled = config.compaction.enabled;
         config.compaction.enabled = req.enabled;
 
-        // Persist config to disk — follow existing pattern from save_structured_config
-        if let Some(ref config_path) = config.loaded_from {
-            let config_dir = config_path.parent().unwrap_or(config_path);
-            let toml_path = config_dir.join("config.toml");
-            if let Ok(toml_str) = toml::to_string_pretty(&*config) {
-                let _ = tokio::fs::write(&toml_path, toml_str).await;
-            }
+        // Persist config to DB (clone to release the write guard)
+        let config_to_save = (*config).clone();
+        drop(config);
+        if let Err(e) = config_to_save.save() {
+            tracing::warn!(error = %e, "Failed to persist compaction config to database");
         }
 
         // If enabling and not already running, try to start
         if req.enabled && !was_enabled {
-            drop(config);
             // Try to load compaction backend (best effort — don't fail the toggle)
             if let Err(e) = state.load_compaction_backend().await {
                 tracing::warn!("Failed to start compaction backend: {}", e);
             }
         }
-        // If disabling and was running, we could stop it but there's no unload_compaction_backend()
-        // The compaction backend will be cleaned up on shutdown. For now, just update config.
     }
 
     // Check current running status

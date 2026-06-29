@@ -325,7 +325,7 @@ pub fn spec() -> serde_json::Value {
                 "get",
                 "listModels",
                 "List all model configs",
-                "Returns all model entries from config.toml plus available backends.",
+                "Returns all model entries from the database plus available backends.",
                 &["models"],
                 None,
                 Some("ModelsResponse"),
@@ -336,7 +336,7 @@ pub fn spec() -> serde_json::Value {
             post_op(
                 "createModel",
                 "Create a new model config",
-                "Adds a new `[models.<id>]` entry to config.toml.",
+                "Adds a new `[models.<id>]` entry to the database.",
                 &["models"],
                 Some(("ModelBody", "application/json")),
                 Some("OkResponse"),
@@ -359,7 +359,7 @@ pub fn spec() -> serde_json::Value {
             put_op_p(
                 "updateModel",
                 "Update a model config",
-                "Replaces the `[models.<id>]` entry in config.toml.",
+                "Replaces the `[models.<id>]` entry in the database.",
                 &["models"],
                 &[("id", "path")],
                 Some(("ModelBody", "application/json")),
@@ -371,7 +371,7 @@ pub fn spec() -> serde_json::Value {
             delete_op_p(
                 "deleteModel",
                 "Delete a model config",
-                "Removes the `[models.<id>]` entry from config.toml.",
+                "Removes the `[models.<id>]` entry from the database.",
                 &["models"],
                 &[("id", "path")],
                 Some("OkResponse"),
@@ -382,7 +382,7 @@ pub fn spec() -> serde_json::Value {
             post_op_p(
                 "renameModel",
                 "Rename a model config",
-                "Renames a model config entry by moving its key in config.toml.",
+                "Renames a model config entry in the database.",
                 &["models"],
                 &[("id", "path")],
                 Some(("RenameRequest", "application/json")),
@@ -510,26 +510,26 @@ pub fn spec() -> serde_json::Value {
         ),
         (
             "/tama/v1/config",
-            op(
-                "get",
-                "getConfig",
-                "Get config file contents",
-                "Returns the raw TOML content of the Tama config file.",
-                &["web-api"],
-                None,
-                None,
-            ),
+            serde_json::json!({
+                "operationId": "getConfig",
+                "summary": "Get config file contents",
+                "description": "Removed — use /tama/v1/config/structured",
+                "deprecated": true,
+                "tags": ["web-api"],
+                "responses": {"200": {"description": "Success"}}
+            }),
         ),
         (
             "/tama/v1/config",
-            post_op(
-                "saveConfig",
-                "Save config file contents",
-                "Validates and saves the provided TOML as the Tama config file.",
-                &["web-api"],
-                Some(("ConfigBody", "application/json")),
-                None,
-            ),
+            serde_json::json!({
+                "operationId": "saveConfig",
+                "summary": "Save config file contents",
+                "description": "Removed — use /tama/v1/config/structured",
+                "deprecated": true,
+                "tags": ["web-api"],
+                "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ConfigBody"}}}},
+                "responses": {"200": {"description": "Success"}}
+            }),
         ),
         (
             "/tama/v1/config/structured",

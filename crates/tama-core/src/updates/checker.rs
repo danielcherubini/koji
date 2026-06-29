@@ -831,8 +831,8 @@ impl UpdateChecker {
     /// Check if enough time has passed since last check (based on interval).
     pub async fn should_check(&self, config_dir: &std::path::Path) -> anyhow::Result<bool> {
         let config_dir_for_config = config_dir.to_path_buf();
-        let config = tokio::task::spawn_blocking(move || Config::load_from(&config_dir_for_config))
-            .await??;
+        let db_path = config_dir_for_config.join("tama.db");
+        let config = tokio::task::spawn_blocking(move || Config::load_from(&db_path)).await??;
 
         let interval_hours = config.general.update_check_interval as i64;
         let interval_secs = interval_hours * 3600;

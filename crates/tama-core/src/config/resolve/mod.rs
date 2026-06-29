@@ -622,7 +622,7 @@ impl Config {
     /// 1. If `config.backends[name].version` is pinned, look up that exact version
     ///    in the BackendManager for the resolved variant.
     /// 2. Otherwise, use the active (latest) installation for that variant.
-    /// 3. Fallback to `path` field in `config.toml` [backends] section.
+    /// 3. Fallback to `path` field in the [backends] section.
     pub fn resolve_backend_path(
         &self,
         name: &str,

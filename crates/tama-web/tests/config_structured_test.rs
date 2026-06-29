@@ -3,10 +3,10 @@
 //! These tests verify:
 //! - GET returns valid JSON Config
 //! - POST persists and round-trips without field loss
-//! - loaded_from is restored from proxy config
+//! - Config loads from DB via Config::from_db()
 //! - All ModelConfig/Supervisor/BackendConfig/ProxyConfig fields preserved
 //! - Standalone mode works (no proxy_config)
-//! - Equivalence with /tama/v1/config (TOML) endpoint
+//! - 410 Gone for raw TOML endpoints
 
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -58,84 +58,22 @@ async fn post_with_csrf(
     router.oneshot(req).await.unwrap()
 }
 
-/// Create a minimal valid tama.toml config for testing.
-fn create_test_config() -> String {
-    r#"
-log_level = "info"
-models_dir = "./models"
-logs_dir = "./logs"
-
-[proxy]
-enabled = true
-host = "0.0.0.0"
-port = 11434
-idle_timeout_secs = 300
-startup_timeout_secs = 120
-circuit_breaker_threshold = 3
-circuit_breaker_cooldown_seconds = 60
-metrics_retention_secs = 86400
-
-[supervisor]
-restart_policy = "always"
-max_restarts = 10
-restart_delay_ms = 3000
-health_check_interval_ms = 5000
-health_check_timeout_ms = 30000
-health_check_retries = 3
-
-[general]
-log_level = "info"
-models_dir = "./models"
-logs_dir = "./logs"
-
-[backends.llama_cpp]
-path = "/usr/local/bin/llama-server"
-default_args = ["--port", "8080"]
-health_check_url = "http://localhost:8080/health"
-version = "1.0.0"
-
-[models.test_model]
-backend = "llama_cpp"
-model = "mistralai/Mistral-7B-Instruct-v0.3"
-quant = "Q4_K_M"
-args = []
-enabled = true
-context_length = 32768
-api_name = "Test Model"
-gpu_layers = 35
-
-[sampling_templates.coding]
-temperature = 0.7
-top_k = 40
-top_p = 0.9
-min_p = 0.05
-presence_penalty = 0.0
-frequency_penalty = 0.0
-repeat_penalty = 1.1
-"#
-    .to_string()
-}
-
 /// Build test ProxyState with config in temp dir.
-fn build_test_state(config_content: &str) -> (Arc<ProxyState>, TempDir) {
+fn build_test_state(_config_content: &str) -> (Arc<ProxyState>, TempDir) {
     let temp_dir = TempDir::new().expect("create temp dir");
-    let config_path = temp_dir.path().join("tama.toml");
-    std::fs::write(&config_path, config_content).expect("write config");
 
-    let config = tama_core::config::Config {
-        loaded_from: Some(config_path),
-        ..Default::default()
-    };
+    // Seed a DB in the temp dir so handlers don't fall back to the user's real config dir.
+    let _open_result = tama_core::db::open(temp_dir.path()).expect("open test DB");
 
-    let state = Arc::new(ProxyState::new(config, None));
+    let config = tama_core::config::Config::default();
+    let state = Arc::new(ProxyState::new(config, Some(temp_dir.path().to_path_buf())));
 
     (state, temp_dir)
 }
 
 #[tokio::test]
 async fn test_get_structured_config_returns_valid_json() {
-    let config_content = create_test_config();
-    let (state, _temp_dir) = build_test_state(&config_content);
+    let (state, _temp_dir) = build_test_state("");
     let router = build_web_routes().with_state(state);
 
     let req = axum::extract::Request::builder()
@@ -161,8 +99,7 @@ async fn test_get_structured_config_returns_valid_json() {
 
 #[tokio::test]
 async fn test_post_structured_config_persists_and_round_trips() {
-    let config_content = create_test_config();
-    let (state, _temp_dir) = build_test_state(&config_content);
+    let (state, _temp_dir) = build_test_state("");
     let router = build_web_routes().with_state(state);
 
     // Get CSRF token first
@@ -214,8 +151,7 @@ async fn test_post_structured_config_persists_and_round_trips() {
 
 #[tokio::test]
 async fn test_400_on_invalid_json() {
-    let config_content = create_test_config();
-    let (state, _temp_dir) = build_test_state(&config_content);
+    let (state, _temp_dir) = build_test_state("");
     let router = build_web_routes().with_state(state);
 
     let csrf_token = get_csrf_token(&router).await;
@@ -231,9 +167,13 @@ async fn test_400_on_invalid_json() {
 }
 
 #[tokio::test]
-async fn test_404_when_config_path_not_configured() {
+async fn test_get_structured_config_without_db_dir() {
+    // Use a temp dir so we don't read/write the user's real config.
+    let temp_dir = TempDir::new().expect("create temp dir");
+    let _open_result = tama_core::db::open(temp_dir.path()).expect("open test DB");
+
     let config = tama_core::config::Config::default();
-    let state = Arc::new(ProxyState::new(config, None));
+    let state = Arc::new(ProxyState::new(config, Some(temp_dir.path().to_path_buf())));
     let router = build_web_routes().with_state(state);
 
     let req = axum::extract::Request::builder()
@@ -243,7 +183,8 @@ async fn test_404_when_config_path_not_configured() {
         .unwrap();
     let response: axum::http::Response<axum::body::Body> =
         router.clone().oneshot(req).await.unwrap();
-    assert_eq!(response.status(), 404);
+    // Returns 200 — config_dir is always available via Config::config_dir()
+    assert_eq!(response.status(), 200);
 
     // POST with config_path=None and missing required fields returns 422
     // (but first needs CSRF — we skip CSRF here since config_path is None)

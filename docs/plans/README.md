@@ -15,7 +15,7 @@ This directory contains implementation plans for the Tama project. Each plan doc
 ## Quick Stats
 
 - **Total Plans**: 128
-- **Completed**: 126 ✅
+- **Completed**: 127 ✅
 - **In Progress**: 0
 - **Remaining**: 1
 
@@ -24,6 +24,12 @@ This directory contains implementation plans for the Tama project. Each plan doc
 ---
 
 ## Completed Plans
+
+### Recently Completed
+
+| Plan | Description | PR / Git References |
+|------|-------------|---------------------|
+| [Config TOML to SQLite](2026-06-29-config-to-db.md) | Eliminate config.toml — move all global settings to typed SQLite tables, unified TOML→DB migration, remove loaded_from, 410 Gone for raw TOML endpoints | #128 ✅ COMPLETED |
 
 ### In Progress
 

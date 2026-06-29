@@ -1,7 +1,6 @@
 pub mod create;
 pub mod enable_disable;
 pub mod list_rm;
-pub mod migrate;
 pub mod prune;
 pub mod pull;
 pub mod update;
@@ -28,7 +27,11 @@ pub async fn run(config: &tama_core::config::Config, command: ModelCommands) -> 
             backend,
         } => create::cmd_create(config, name, &model, quant, profile, backend).await,
         ModelCommands::Rm { model } => list_rm::cmd_rm(config, &model),
-        ModelCommands::Scan => pull::cmd_scan(config),
+        ModelCommands::Scan => {
+            let db_dir = tama_core::config::Config::config_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            pull::cmd_scan(config, &db_dir)
+        }
         ModelCommands::Prune { dry_run, yes } => prune::cmd_prune(config, dry_run, yes),
         ModelCommands::Update {
             model,
@@ -58,6 +61,5 @@ pub async fn run(config: &tama_core::config::Config, command: ModelCommands) -> 
                 }
             }
         }
-        ModelCommands::Migrate => migrate::cmd_migrate(config),
     }
 }

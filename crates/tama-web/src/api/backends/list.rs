@@ -30,16 +30,9 @@ pub async fn list_backends(State(state): State<Arc<ProxyState>>) -> impl IntoRes
     };
 
     // Open registry
-    let config_dir = match state.config.read().await.loaded_from.clone() {
-        Some(p) => p,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "config_dir not configured"})),
-            )
-                .into_response();
-        }
-    };
+    let config_dir = state.db_dir.clone().unwrap_or_else(|| {
+        tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    });
 
     // Open registry (blocking call wrapped in spawn_blocking)
     let config_dir_clone = config_dir.clone();
@@ -51,18 +44,19 @@ pub async fn list_backends(State(state): State<Arc<ProxyState>>) -> impl IntoRes
         .map_err(|e| anyhow::anyhow!("spawn error: {}", e))
         .and_then(|r| r);
 
-    // Load backend configs from DB (keyed by (name, gpu_variant))
-    let backend_configs_map: std::collections::HashMap<(String, String), Vec<String>> =
-        tama_core::backends::BackendManager::open(&config_dir)
-            .ok()
-            .and_then(|mgr| mgr.list_configs().ok())
-            .map(|configs| {
-                configs
-                    .into_iter()
-                    .map(|c| ((c.name, c.gpu_variant), c.default_args))
-                    .collect()
-            })
-            .unwrap_or_default();
+    // Load backend configs from DB (keyed by (name, gpu_variant)), reusing the manager
+    // opened above to avoid opening the DB twice.
+    let backend_configs_map: std::collections::HashMap<(String, String), Vec<String>> = mgr_result
+        .as_ref()
+        .ok()
+        .and_then(|mgr| mgr.list_configs().ok())
+        .map(|configs| {
+            configs
+                .into_iter()
+                .map(|c| ((c.name, c.gpu_variant), c.default_args))
+                .collect()
+        })
+        .unwrap_or_default();
 
     // Load cached update checks from DB (keyed by "name:variant")
     let update_checks: std::collections::HashMap<
@@ -328,16 +322,9 @@ pub async fn check_backend_updates(State(state): State<Arc<ProxyState>>) -> impl
         })
         .map(|j| job_to_active_dto(&j));
 
-    let config_dir = match state.config.read().await.loaded_from.clone() {
-        Some(p) => p,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "config_dir not configured"})),
-            )
-                .into_response();
-        }
-    };
+    let config_dir = state.db_dir.clone().unwrap_or_else(|| {
+        tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    });
 
     // Open registry
     let config_dir_clone = config_dir.clone();
@@ -570,16 +557,9 @@ pub async fn list_backend_versions(
             .into_response();
     }
 
-    let config_dir = match state.config.read().await.loaded_from.clone() {
-        Some(p) => p,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": "config_dir not configured"})),
-            )
-                .into_response();
-        }
-    };
+    let config_dir = state.db_dir.clone().unwrap_or_else(|| {
+        tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    });
 
     let config_dir_clone = config_dir.clone();
     let mgr_result: Result<tama_core::backends::BackendManager, _> =

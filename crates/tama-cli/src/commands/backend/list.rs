@@ -75,9 +75,8 @@ pub async fn cmd_list(_config: &tama_core::config::Config) -> Result<()> {
 
     // Tip using first backend as example
     if let Some(first) = active_backends.first() {
-        println!("To pin a version in config.toml, add:");
-        println!("  [backends.{}]", first.name);
-        println!("  version = \"{}\"", first.version);
+        println!("To pin a version:");
+        println!("  tama backend switch {} {}", first.name, first.version);
     }
 
     Ok(())

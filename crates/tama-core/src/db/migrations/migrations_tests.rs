@@ -1007,3 +1007,391 @@ fn test_migration_v30_adds_network_columns() {
         assert_eq!(exists, 1, "{} column must exist after migration v30", col);
     }
 }
+
+/// Migration v31 must create all five app config tables.
+#[test]
+fn test_migration_v31_creates_app_config_tables() {
+    let conn = Connection::open_in_memory().unwrap();
+    run(&conn).unwrap();
+
+    let tables = [
+        "app_general",
+        "app_proxy",
+        "app_supervisor",
+        "app_compaction",
+        "sampling_templates",
+    ];
+    for table in &tables {
+        let count: i64 = conn
+            .query_row(
+                &format!(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='{}'",
+                    table
+                ),
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "{} must exist after migration v31", table);
+    }
+}
+
+/// Migration v31 must create all expected columns in app_general.
+#[test]
+fn test_migration_v31_app_general_columns() {
+    let conn = Connection::open_in_memory().unwrap();
+    run(&conn).unwrap();
+
+    let columns = [
+        "id",
+        "log_level",
+        "models_dir",
+        "logs_dir",
+        "hf_token",
+        "update_check_interval",
+    ];
+    for col in &columns {
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('app_general') WHERE name=?",
+                [col],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(exists, 1, "column '{}' must exist in app_general", col);
+    }
+}
+
+/// Migration v31 must create all expected columns in app_proxy.
+#[test]
+fn test_migration_v31_app_proxy_columns() {
+    let conn = Connection::open_in_memory().unwrap();
+    run(&conn).unwrap();
+
+    let columns = [
+        "id",
+        "host",
+        "port",
+        "auto_unload",
+        "idle_timeout_secs",
+        "startup_timeout_secs",
+        "circuit_breaker_threshold",
+        "circuit_breaker_cooldown_seconds",
+        "metrics_retention_secs",
+        "download_queue_poll_interval_secs",
+        "max_loaded_models",
+        "authenticator_url",
+        "authenticator_skip_paths",
+    ];
+    for col in &columns {
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('app_proxy') WHERE name=?",
+                [col],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(exists, 1, "column '{}' must exist in app_proxy", col);
+    }
+}
+
+/// Migration v31 must create all expected columns in app_supervisor.
+#[test]
+fn test_migration_v31_app_supervisor_columns() {
+    let conn = Connection::open_in_memory().unwrap();
+    run(&conn).unwrap();
+
+    let columns = [
+        "id",
+        "restart_policy",
+        "max_restarts",
+        "restart_delay_ms",
+        "health_check_interval_ms",
+        "health_check_timeout_ms",
+        "health_check_retries",
+    ];
+    for col in &columns {
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('app_supervisor') WHERE name=?",
+                [col],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(exists, 1, "column '{}' must exist in app_supervisor", col);
+    }
+}
+
+/// Migration v31 must create all expected columns in app_compaction.
+#[test]
+fn test_migration_v31_app_compaction_columns() {
+    let conn = Connection::open_in_memory().unwrap();
+    run(&conn).unwrap();
+
+    let columns = [
+        "id",
+        "enabled",
+        "server_path",
+        "device",
+        "port",
+        "request_timeout_ms",
+    ];
+    for col in &columns {
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('app_compaction') WHERE name=?",
+                [col],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(exists, 1, "column '{}' must exist in app_compaction", col);
+    }
+}
+
+/// Migration v31 must create all expected columns in sampling_templates.
+#[test]
+fn test_migration_v31_sampling_templates_columns() {
+    let conn = Connection::open_in_memory().unwrap();
+    run(&conn).unwrap();
+
+    let columns = [
+        "id",
+        "name",
+        "temperature",
+        "top_k",
+        "top_p",
+        "min_p",
+        "presence_penalty",
+        "frequency_penalty",
+        "repeat_penalty",
+    ];
+    for col in &columns {
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('sampling_templates') WHERE name=?",
+                [col],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            exists, 1,
+            "column '{}' must exist in sampling_templates",
+            col
+        );
+    }
+}
+
+/// CHECK (id = 1) constraint on app_general must reject id != 1.
+#[test]
+fn test_migration_v31_app_general_check_constraint() {
+    let conn = Connection::open_in_memory().unwrap();
+    run(&conn).unwrap();
+
+    // Valid insert with id = 1
+    conn.execute(
+        "INSERT INTO app_general (id, log_level) VALUES (1, 'info')",
+        [],
+    )
+    .unwrap();
+
+    // Invalid insert with id = 2 must fail
+    let err = conn.execute(
+        "INSERT INTO app_general (id, log_level) VALUES (2, 'debug')",
+        [],
+    );
+    assert!(
+        err.is_err(),
+        "id != 1 must fail CHECK constraint on app_general"
+    );
+}
+
+/// CHECK (id = 1) constraint on app_proxy must reject id != 1.
+#[test]
+fn test_migration_v31_app_proxy_check_constraint() {
+    let conn = Connection::open_in_memory().unwrap();
+    run(&conn).unwrap();
+
+    conn.execute(
+        "INSERT INTO app_proxy (id, host, port) VALUES (1, '0.0.0.0', 11434)",
+        [],
+    )
+    .unwrap();
+
+    let err = conn.execute(
+        "INSERT INTO app_proxy (id, host, port) VALUES (2, '127.0.0.1', 8080)",
+        [],
+    );
+    assert!(
+        err.is_err(),
+        "id != 1 must fail CHECK constraint on app_proxy"
+    );
+}
+
+/// CHECK (id = 1) constraint on app_supervisor must reject id != 1.
+#[test]
+fn test_migration_v31_app_supervisor_check_constraint() {
+    let conn = Connection::open_in_memory().unwrap();
+    run(&conn).unwrap();
+
+    conn.execute(
+        "INSERT INTO app_supervisor (id, restart_policy) VALUES (1, 'always')",
+        [],
+    )
+    .unwrap();
+
+    let err = conn.execute(
+        "INSERT INTO app_supervisor (id, restart_policy) VALUES (2, 'never')",
+        [],
+    );
+    assert!(
+        err.is_err(),
+        "id != 1 must fail CHECK constraint on app_supervisor"
+    );
+}
+
+/// CHECK (id = 1) constraint on app_compaction must reject id != 1.
+#[test]
+fn test_migration_v31_app_compaction_check_constraint() {
+    let conn = Connection::open_in_memory().unwrap();
+    run(&conn).unwrap();
+
+    conn.execute(
+        "INSERT INTO app_compaction (id, enabled, device) VALUES (1, 0, 'cpu')",
+        [],
+    )
+    .unwrap();
+
+    let err = conn.execute(
+        "INSERT INTO app_compaction (id, enabled, device) VALUES (2, 1, 'cuda')",
+        [],
+    );
+    assert!(
+        err.is_err(),
+        "id != 1 must fail CHECK constraint on app_compaction"
+    );
+}
+
+/// UNIQUE constraint on sampling_templates.name must reject duplicate names.
+#[test]
+fn test_migration_v31_sampling_templates_unique_name() {
+    let conn = Connection::open_in_memory().unwrap();
+    run(&conn).unwrap();
+
+    conn.execute(
+        "INSERT INTO sampling_templates (name, temperature) VALUES ('coding', 0.3)",
+        [],
+    )
+    .unwrap();
+
+    // Duplicate name must fail
+    let err = conn.execute(
+        "INSERT INTO sampling_templates (name, temperature) VALUES ('coding', 0.7)",
+        [],
+    );
+    assert!(
+        err.is_err(),
+        "duplicate name must fail UNIQUE constraint on sampling_templates"
+    );
+}
+
+/// sampling_templates uses AUTOINCREMENT for id.
+#[test]
+fn test_migration_v31_sampling_templates_autoincrement() {
+    let conn = Connection::open_in_memory().unwrap();
+    run(&conn).unwrap();
+
+    conn.execute(
+        "INSERT INTO sampling_templates (name) VALUES ('coding')",
+        [],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO sampling_templates (name) VALUES ('chat')", [])
+        .unwrap();
+
+    // Autoincremented ids should be 1 and 2
+    let id1: i64 = conn
+        .query_row(
+            "SELECT id FROM sampling_templates WHERE name = 'coding'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let id2: i64 = conn
+        .query_row(
+            "SELECT id FROM sampling_templates WHERE name = 'chat'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(id1, 1);
+    assert_eq!(id2, 2);
+}
+
+/// Singleton tables must use default values when no explicit values are given.
+#[test]
+fn test_migration_v31_singleton_defaults() {
+    let conn = Connection::open_in_memory().unwrap();
+    run(&conn).unwrap();
+
+    // Insert with only id (let defaults fill the rest)
+    conn.execute("INSERT INTO app_general (id) VALUES (1)", [])
+        .unwrap();
+    let log_level: String = conn
+        .query_row(
+            "SELECT log_level FROM app_general WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(log_level, "info");
+
+    let update_interval: i32 = conn
+        .query_row(
+            "SELECT update_check_interval FROM app_general WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(update_interval, 12);
+
+    // app_proxy defaults
+    conn.execute("INSERT INTO app_proxy (id) VALUES (1)", [])
+        .unwrap();
+    let host: String = conn
+        .query_row("SELECT host FROM app_proxy WHERE id = 1", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(host, "0.0.0.0");
+
+    let port: i32 = conn
+        .query_row("SELECT port FROM app_proxy WHERE id = 1", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(port, 11434);
+
+    // app_supervisor defaults
+    conn.execute("INSERT INTO app_supervisor (id) VALUES (1)", [])
+        .unwrap();
+    let policy: String = conn
+        .query_row(
+            "SELECT restart_policy FROM app_supervisor WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(policy, "always");
+
+    // app_compaction defaults
+    conn.execute("INSERT INTO app_compaction (id) VALUES (1)", [])
+        .unwrap();
+    let device: String = conn
+        .query_row(
+            "SELECT device FROM app_compaction WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(device, "cpu");
+}

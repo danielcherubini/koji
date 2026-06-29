@@ -47,8 +47,7 @@ pub async fn handle_all_logs(
     let mut logs_dirs: Vec<std::path::PathBuf> = Vec::new();
     if let Ok(d) = state.config.read().await.logs_dir() {
         logs_dirs.push(d.clone());
-        // Also try base_dir/logs as fallback (handles cases where config is at
-        // /etc/tama/config.toml but logs are at ~/.config/tama/logs/)
+        // Also try base_dir/logs as fallback (handles custom log directory)
         if let Ok(base) = crate::config::Config::base_dir() {
             let fallback = base.join("logs");
             if fallback != d && !logs_dirs.contains(&fallback) {

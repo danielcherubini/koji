@@ -16,7 +16,7 @@ async fn test_get_results() {
     let config_dir = dir.path().to_path_buf();
 
     let config = Config::default();
-    config.save_to(&config_dir).unwrap();
+    config.to_db(&config_dir.join("tama.db")).unwrap();
 
     let open = crate::db::open(&config_dir).unwrap();
     upsert_update_check(
@@ -53,7 +53,7 @@ async fn test_should_check() {
 
     let mut config = Config::default();
     config.general.update_check_interval = 1;
-    config.save_to(&config_dir).unwrap();
+    config.to_db(&config_dir.join("tama.db")).unwrap();
 
     let open = crate::db::open(&config_dir).unwrap();
     // No records yet, should return true

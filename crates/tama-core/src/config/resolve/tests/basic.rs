@@ -27,7 +27,6 @@ fn test_build_full_args_unified() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    config.loaded_from = Some(temp_dir.path().to_path_buf());
 
     let server = ModelConfig {
         backend: "llama_cpp".to_string(),
@@ -110,7 +109,6 @@ fn test_build_full_args_ctx_override() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    config.loaded_from = Some(temp_dir.path().to_path_buf());
 
     let server = ModelConfig {
         backend: "llama_cpp".to_string(),
@@ -179,7 +177,6 @@ fn test_build_full_args_no_sampling() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    config.loaded_from = Some(temp_dir.path().to_path_buf());
 
     let server = ModelConfig {
         backend: "llama_cpp".to_string(),
@@ -229,7 +226,6 @@ fn test_build_full_args_no_quants() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    config.loaded_from = Some(temp_dir.path().to_path_buf());
 
     let server = ModelConfig {
         backend: "llama_cpp".to_string(),
@@ -356,7 +352,6 @@ fn test_build_full_args_returns_flat_tokens_with_quoted_path() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    config.loaded_from = Some(temp_dir.path().to_path_buf());
 
     let server = ModelConfig {
         backend: "llama_cpp".to_string(),
