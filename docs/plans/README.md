@@ -14,9 +14,9 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Quick Stats
 
-- **Total Plans**: 127
+- **Total Plans**: 128
 - **Completed**: 125 ✅
-- **In Progress**: 0
+- **In Progress**: 1 🚧
 - **Remaining**: 1
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
@@ -27,7 +27,9 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ### In Progress
 
-*(none)*
+| Plan | Description | PR / Git References |
+|------|-------------|---------------------|
+| [Config Page Missing Fields](2026-06-29-config-page-missing-fields.md) | Add 4 missing config fields to web UI config editor: update_check_interval, download_queue_poll_interval_secs, authenticator_url, authenticator_skip_paths | 🚧 IN PROGRESS |
 
 ### Recently Completed
 
