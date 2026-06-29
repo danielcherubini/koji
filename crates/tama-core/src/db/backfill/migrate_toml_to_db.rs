@@ -257,8 +257,9 @@ fn migrate_global_config(conn: &Connection, config: &Config) -> Result<()> {
         config.compaction.request_timeout_ms,
     )?;
 
-    // Sampling templates (delete all first, then re-insert)
-    queries::delete_all_sampling_templates(conn)?;
+    // Sampling templates — use INSERT OR IGNORE to preserve any user-added
+    // templates that might already exist in the DB (e.g. from seed_defaults).
+    // Templates from TOML take precedence via upsert.
     for (name, params) in &config.sampling_templates {
         queries::upsert_sampling_template(
             conn,

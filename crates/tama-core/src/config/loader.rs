@@ -45,7 +45,9 @@ impl Config {
         let config_dir = Self::config_dir()?;
         let db_path = config_dir.join("tama.db");
 
-        // Run one-time TOML → DB migration if config.toml exists
+        // Run one-time TOML → DB migration if config.toml exists.
+        // The migration is idempotent (checks app_general row), so concurrent
+        // callers are safe — the second will skip.
         if config_dir.join("config.toml").exists() {
             crate::db::backfill::migrate_toml_to_db(&config_dir, &db_path)?;
         }

@@ -126,24 +126,10 @@ pub async fn save_config(
 // ── Structured Config API (JSON-based for WASM) ─────────────────────────────────
 
 /// GET /api/config/structured — returns full Config as JSON.
-pub async fn get_structured_config(State(_state): State<Arc<ProxyState>>) -> impl IntoResponse {
-    // Load config from SQLite DB
-    let cfg = match tokio::task::spawn_blocking(tama_core::config::Config::load).await {
-        Ok(Ok(cfg)) => cfg,
-        Ok(Err(e)) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": e.to_string()})),
-            )
-                .into_response();
-        }
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": e.to_string()})),
-            )
-                .into_response();
-        }
+pub async fn get_structured_config(State(state): State<Arc<ProxyState>>) -> impl IntoResponse {
+    let (cfg, _) = match load_config_from_state(&state).await {
+        Ok(result) => result,
+        Err((status, err)) => return (status, Json(err)).into_response(),
     };
 
     // Convert to mirror types for JSON serialization
@@ -152,17 +138,35 @@ pub async fn get_structured_config(State(_state): State<Arc<ProxyState>>) -> imp
     Json(structured).into_response()
 }
 
-/// POST /api/config/structured — accept JSON Config, persist as TOML.
+/// POST /api/config/structured — accept JSON Config, persist to SQLite DB.
 pub async fn save_structured_config(
     State(state): State<Arc<ProxyState>>,
     Json(body): Json<StructuredConfigBody>,
 ) -> impl IntoResponse {
+    // Resolve the correct DB path from state
+    let config_dir = match state
+        .db_dir
+        .clone()
+        .or_else(|| tama_core::config::Config::config_dir().ok())
+    {
+        Some(d) => d,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "config directory not configured"})),
+            )
+                .into_response();
+        }
+    };
+    let db_path = config_dir.join("tama.db");
+
     // Convert mirror types back to tama_core::Config
     let new_config: tama_core::config::Config = body.into();
 
     // Persist to SQLite DB (spawn_blocking for synchronous DB write)
+    let db_path_for_save = db_path.clone();
     let new_config_for_save = new_config.clone();
-    match tokio::task::spawn_blocking(move || new_config_for_save.save()).await {
+    match tokio::task::spawn_blocking(move || new_config_for_save.to_db(&db_path_for_save)).await {
         Ok(Ok(_)) => {
             // Sync proxy config for hot-reload
             sync_proxy_config(&state, new_config).await;

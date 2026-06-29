@@ -11,8 +11,9 @@ pub async fn cmd_web(
 
     // Load config from the default SQLite database
     let config = tama_core::config::Config::load().unwrap_or_default();
+    let db_dir = tama_core::config::Config::config_dir().ok();
 
-    let state = Arc::new(tama_core::proxy::ProxyState::new(config, None));
+    let state = Arc::new(tama_core::proxy::ProxyState::new(config, db_dir));
 
     // Set web-specific fields
     let mut state_inner = (*state).clone();

@@ -158,10 +158,10 @@ impl Config {
         let conn = rusqlite::Connection::open(db_path)
             .with_context(|| format!("Failed to open DB at {}", db_path.display()))?;
 
-        // Run migrations to ensure tables exist
+        // Run migrations if needed (skips quickly if already at latest version)
         crate::db::migrations::run(&conn)?;
 
-        // Seed defaults if tables are empty
+        // Seed defaults if tables are empty (idempotent — no-op if rows exist)
         crate::db::queries::seed_defaults(&conn)?;
 
         // Read general
@@ -244,9 +244,26 @@ impl Config {
             );
         }
 
+        // Read backends from backend_configs table.
+        // Note: BackendConfig (TOML struct) and BackendConfigRecord (DB struct)
+        // have different fields. We map gpu_variant; path and version are
+        // not stored in the backend_configs table.
+        let backend_rows = crate::db::queries::list_backend_configs(&conn)?;
+        let mut backends: HashMap<String, BackendConfig> = HashMap::new();
+        for record in &backend_rows {
+            backends.insert(
+                record.name.clone(),
+                BackendConfig {
+                    path: None,
+                    version: None,
+                    gpu_variant: Some(record.gpu_variant.clone()),
+                },
+            );
+        }
+
         Ok(Config {
             general,
-            backends: HashMap::new(),
+            backends,
             supervisor,
             proxy,
             compaction,

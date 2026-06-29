@@ -405,7 +405,7 @@ pub fn seed_defaults(conn: &Connection) -> Result<()> {
     )
     .context("Failed to seed app_compaction defaults")?;
 
-    // Built-in sampling templates
+    // Built-in sampling templates — must match Config::default() in loader.rs
     let templates = [
         (
             "coding",
