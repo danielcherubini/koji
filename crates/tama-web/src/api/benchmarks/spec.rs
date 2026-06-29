@@ -71,9 +71,14 @@ pub async fn run_spec_benchmark(
 
     let job_id = job.id.clone();
     let req_clone = req.clone();
-    let config_dir = state.db_dir.clone().unwrap_or_else(|| {
-        tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-    });
+    let db_path = state
+        .db_dir
+        .clone()
+        .unwrap_or_else(|| {
+            tama_core::config::Config::config_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."))
+        })
+        .join("tama.db");
     let proxy_base_url = state.config.read().await.proxy_url();
     let client = state.client.clone();
 
@@ -83,7 +88,7 @@ pub async fn run_spec_benchmark(
             jobs.clone(),
             &job,
             &req_clone,
-            Some(config_dir),
+            Some(db_path),
             proxy_base_url,
             client,
         )
@@ -109,7 +114,7 @@ pub async fn run_spec_benchmark_inner(
     jobs: Arc<JobManager>,
     job: &Arc<tama_core::web_types::Job>,
     req: &SpecBenchmarkRunRequest,
-    config_dir: Option<std::path::PathBuf>,
+    db_path: Option<std::path::PathBuf>,
     proxy_base_url: String,
     client: reqwest::Client,
 ) -> Result<()> {
@@ -118,16 +123,18 @@ pub async fn run_spec_benchmark_inner(
     // Unload any active server for this model before running the benchmark.
     unload_model_before_benchmark(&client, &proxy_base_url, &req.model_id, &job.id).await;
 
-    // Load config
-    let config_dir: std::path::PathBuf = config_dir.context("Cannot determine config directory")?;
+    // Load config - clone db_path for the blocking task
+    let db_path: std::path::PathBuf = db_path.context("Cannot determine db path")?;
+    let db_path_for_load = db_path.clone();
 
-    let config =
-        tokio::task::spawn_blocking(move || tama_core::config::Config::load_from(&config_dir))
-            .await??;
+    let config = tokio::task::spawn_blocking(move || {
+        tama_core::config::Config::load_from(&db_path_for_load)
+    })
+    .await??;
 
     // Resolve model path (same pattern as llama_bench)
-    let db_dir = tama_core::config::Config::config_dir()?;
-    let tama_core::db::OpenResult { conn, .. } = tama_core::db::open(&db_dir)?;
+    let db_dir = db_path.parent().context("db_path has no parent")?;
+    let tama_core::db::OpenResult { conn, .. } = tama_core::db::open(db_dir)?;
     let model_configs = tama_core::db::load_model_configs(&conn)?;
 
     // If model_id is an integer db_id, resolve it to the config key first.
@@ -147,7 +154,7 @@ pub async fn run_spec_benchmark_inner(
 
     let model_path = resolve_model_path(
         &config,
-        &db_dir,
+        db_dir,
         &conn,
         &model_configs,
         resolved_id,
@@ -228,7 +235,7 @@ pub async fn run_spec_benchmark_inner(
         .backend_name
         .as_deref()
         .unwrap_or(&server_config.backend);
-    let manager = tama_core::backends::BackendManager::open(&db_dir)?;
+    let manager = tama_core::backends::BackendManager::open(db_dir)?;
     let backend_path =
         config.resolve_backend_path(target_backend, req.gpu_variant.as_deref(), &manager)?;
 
@@ -260,8 +267,8 @@ pub async fn run_spec_benchmark_inner(
         llama_cli_spec::run_spec_bench(&spec_config, Some(server_binary), sink.clone()).await?;
 
     // Store results in database
-    let db_dir = tama_core::config::Config::config_dir()?;
-    let tama_core::db::OpenResult { conn, .. } = tama_core::db::open(&db_dir)?;
+    let db_dir = db_path.parent().context("db_path has no parent")?;
+    let tama_core::db::OpenResult { conn, .. } = tama_core::db::open(db_dir)?;
 
     // Serialize the full result for storage
     let results_json =

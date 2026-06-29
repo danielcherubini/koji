@@ -14,7 +14,7 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Quick Stats
 
-- **Total Plans**: 129
+- **Total Plans**: 128
 - **Completed**: 127 ✅
 - **In Progress**: 0
 - **Remaining**: 1

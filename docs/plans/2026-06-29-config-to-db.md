@@ -14,7 +14,7 @@
 
 ---
 
-### Task 1: Create SQLite schema and migration
+## Task 1: Create SQLite schema and migration
 
 **Context:**
 The foundation — five typed tables that replace the TOML config file. Each singleton table (`app_general`, `app_proxy`, `app_supervisor`, `app_compaction`) has a single row with `id = 1`. The `sampling_templates` table has one row per template (coding, chat, analysis, creative). This follows the existing pattern used by `model_configs` and `backend_configs`.

@@ -473,6 +473,24 @@ mod tests {
 
         fs::create_dir_all(config_dir.join("configs")).expect("create dirs");
 
+        // Write a model card TOML file to verify it round-trips through the archive
+        let model_card = r#"
+[model]
+id = "test/model"
+name = "Test Model"
+backend = "llama_cpp"
+
+[[files]]
+filename = "model.gguf"
+quant = "Q4_K_M"
+size_bytes = 1000
+"#;
+        fs::write(
+            config_dir.join("configs").join("test_config.toml"),
+            model_card,
+        )
+        .expect("write model card");
+
         let db_path = config_dir.join("tama.db");
         let conn = Connection::open(&db_path).expect("open db");
         conn.execute_batch(
@@ -509,6 +527,23 @@ mod tests {
 
         let extracted = extract_result.unwrap();
         assert!(extracted.db_path.exists(), "tama.db should exist");
+
+        // Verify model card round-trips
+        assert!(
+            !extracted.card_paths.is_empty(),
+            "model card should round-trip through archive"
+        );
+        let card_path = &extracted.card_paths[0];
+        assert!(
+            card_path.exists(),
+            "model card should exist at {:?}",
+            card_path
+        );
+        let card_content = fs::read_to_string(card_path).expect("read model card");
+        assert!(
+            card_content.contains("test/model"),
+            "model card should contain the original model id"
+        );
 
         // Verify DB content round-trips
         let backup_conn = Connection::open(&extracted.db_path).expect("open extracted db");

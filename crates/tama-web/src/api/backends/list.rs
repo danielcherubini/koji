@@ -545,7 +545,7 @@ pub async fn check_backend_updates(State(state): State<Arc<ProxyState>>) -> impl
 
 /// GET /tama/v1/backends/:name/versions
 pub async fn list_backend_versions(
-    State(_state): State<Arc<ProxyState>>,
+    State(state): State<Arc<ProxyState>>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
     // Validate name (prevent path traversal)
@@ -557,16 +557,9 @@ pub async fn list_backend_versions(
             .into_response();
     }
 
-    let config_dir = match tama_core::config::Config::config_dir() {
-        Ok(d) => d,
-        Err(e) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": format!("config_dir not configured: {}", e)})),
-            )
-                .into_response();
-        }
-    };
+    let config_dir = state.db_dir.clone().unwrap_or_else(|| {
+        tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    });
 
     let config_dir_clone = config_dir.clone();
     let mgr_result: Result<tama_core::backends::BackendManager, _> =

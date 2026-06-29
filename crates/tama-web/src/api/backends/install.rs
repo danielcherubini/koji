@@ -145,7 +145,13 @@ pub async fn install_backend(
 
         let backend_name = match &backend_type {
             tama_core::backends::BackendType::TtsKokoro => "tts_kokoro",
-            _ => unreachable!(),
+            _ => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": "Unsupported backend type for TTS install"})),
+                )
+                    .into_response();
+            }
         };
 
         // Capture config_dir for the background task
@@ -216,7 +222,22 @@ pub async fn install_backend(
                         }
                     }
                 }
-                _ => unreachable!(),
+                _ => {
+                    jobs_clone
+                        .append_log(
+                            &job_clone,
+                            "Error: Unsupported backend type for TTS install".to_string(),
+                        )
+                        .await;
+                    let _ = jobs_clone
+                        .finish(
+                            &job_clone,
+                            tama_core::web_types::JobStatus::Failed,
+                            Some("Unsupported backend type for TTS install".to_string()),
+                        )
+                        .await;
+                    return;
+                }
             }
 
             let _ = jobs_clone
@@ -469,7 +490,9 @@ pub async fn install_backend(
                             source: Some(reg_source),
                         })
                     })
-                    .await;
+                    .await
+                    .map_err(|e| anyhow::anyhow!("spawn error: {}", e))
+                    .and_then(|r| r);
                     if let Err(e) = reg_result {
                         tracing::warn!("Failed to register backend in DB: {}", e);
                     }

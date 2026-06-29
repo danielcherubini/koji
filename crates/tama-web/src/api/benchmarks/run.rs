@@ -31,9 +31,14 @@ pub async fn run_benchmark(
 
     let job_id = job.id.clone();
     let req_clone = req.clone();
-    let config_dir = state.db_dir.clone().unwrap_or_else(|| {
-        tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-    });
+    let db_path = state
+        .db_dir
+        .clone()
+        .unwrap_or_else(|| {
+            tama_core::config::Config::config_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."))
+        })
+        .join("tama.db");
     let proxy_base_url = state.config.read().await.proxy_url();
     let client = state.client.clone();
 
@@ -43,7 +48,7 @@ pub async fn run_benchmark(
             jobs.clone(),
             &job,
             &req_clone,
-            Some(config_dir),
+            Some(db_path),
             proxy_base_url,
             client,
         )
@@ -63,7 +68,7 @@ pub async fn run_benchmark_inner(
     jobs: Arc<JobManager>,
     job: &Arc<tama_core::web_types::Job>,
     req: &BenchmarkRunRequest,
-    config_dir: Option<std::path::PathBuf>,
+    db_path: Option<std::path::PathBuf>,
     proxy_base_url: String,
     client: reqwest::Client,
 ) -> Result<()> {
@@ -73,12 +78,14 @@ pub async fn run_benchmark_inner(
     // This prevents GPU memory conflicts when the model is already loaded.
     unload_model_before_benchmark(&client, &proxy_base_url, &req.model_id, &job.id).await;
 
-    // Load config - clone config_dir for the blocking task
-    let config_dir: std::path::PathBuf = config_dir.context("Cannot determine config directory")?;
+    // Load config - clone db_path for the blocking task
+    let db_path: std::path::PathBuf = db_path.context("Cannot determine db path")?;
+    let db_path_for_load = db_path.clone();
 
-    let config =
-        tokio::task::spawn_blocking(move || tama_core::config::Config::load_from(&config_dir))
-            .await??;
+    let config = tokio::task::spawn_blocking(move || {
+        tama_core::config::Config::load_from(&db_path_for_load)
+    })
+    .await??;
 
     // Create progress sink adapter (same pattern as backend install)
     let job_clone = job.clone();
@@ -162,8 +169,8 @@ pub async fn run_benchmark_inner(
     .await?;
 
     // Store results in database
-    let db_dir = tama_core::config::Config::config_dir()?;
-    let tama_core::db::OpenResult { conn, .. } = tama_core::db::open(&db_dir)?;
+    let db_dir = db_path.parent().context("db_path has no parent")?;
+    let tama_core::db::OpenResult { conn, .. } = tama_core::db::open(db_dir)?;
 
     // Get model display name from config. The request carries the db_id as a
     // string (e.g. "4") because that's what the model dropdown submits, so we
