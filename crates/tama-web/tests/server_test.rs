@@ -129,7 +129,7 @@ mod tests {
             let proxy_config_server = proxy_config.clone();
             let config_dir_server = config_dir.clone();
             tokio::spawn(async move {
-                let mut config = (*proxy_config_server.read().await).clone();
+                let config = (*proxy_config_server.read().await).clone();
                 let state = Arc::new(tama_core::proxy::ProxyState::new(
                     config,
                     Some(config_dir_server.clone()),
