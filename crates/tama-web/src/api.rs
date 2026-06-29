@@ -202,21 +202,19 @@ async fn load_config_from_state(
             )
         })?;
     let db_path = config_dir.join("tama.db");
-    let cfg = tokio::task::spawn_blocking(move || {
-        tama_core::config::Config::from_db(&db_path)
-    })
-    .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            serde_json::json!({"error": e.to_string()}),
-        )
-    })?
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            serde_json::json!({"error": e.to_string()}),
-        )
-    })?;
+    let cfg = tokio::task::spawn_blocking(move || tama_core::config::Config::from_db(&db_path))
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                serde_json::json!({"error": e.to_string()}),
+            )
+        })?
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                serde_json::json!({"error": e.to_string()}),
+            )
+        })?;
     Ok((cfg, config_dir))
 }
