@@ -15,8 +15,8 @@ This directory contains implementation plans for the Tama project. Each plan doc
 ## Quick Stats
 
 - **Total Plans**: 128
-- **Completed**: 125 ✅
-- **In Progress**: 1 🚧
+- **Completed**: 126 ✅
+- **In Progress**: 0
 - **Remaining**: 1
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
@@ -27,14 +27,13 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ### In Progress
 
-| Plan | Description | PR / Git References |
-|------|-------------|---------------------|
-| [Config Page Missing Fields](2026-06-29-config-page-missing-fields.md) | Add 4 missing config fields to web UI config editor: update_check_interval, download_queue_poll_interval_secs, authenticator_url, authenticator_skip_paths | 🚧 IN PROGRESS |
+*(none)*
 
 ### Recently Completed
 
 | Plan | Description | PR / Git References |
 |------|-------------|---------------------|
+| [Config Page Missing Fields](2026-06-29-config-page-missing-fields.md) | Add 4 missing config fields to web UI config editor: update_check_interval, download_queue_poll_interval_secs, authenticator_url, authenticator_skip_paths | #127 ✅ COMPLETED |
 | [Per-Model Inference Stats](2026-06-27-per-model-inference-stats.md) | Per-model tok/s on GPU cards (HashMap keyed by server_name) + always show 0 tok/s when idle | #126 `36456320`, `ec459321`, `b04ec5b9`, `858ac05e` ✅ COMPLETED |
 | [Cancel Loading Model](2026-06-27-cancel-loading-model.md) | Add Cancel button to model cards during loading state — kills backend process group and returns to idle | #125 `a12532b1`, `fe5570f6`, `c36b6120`, `c2bc9f7a`, `596a4233` ✅ COMPLETED |
 
