@@ -72,6 +72,11 @@ async fn start_proxy_server(
     );
 
     let db_dir = tama_core::config::Config::config_dir().ok();
+    // Note: Config::load() already runs migrations, but the serve handler needs its own
+    // DB connection for the proxy's long-lived use (backfill checks, backend registry
+    // migration, TOML→DB migration). Running migrations again is harmless (they are
+    // idempotent) but intentional — the serve path requires an independent connection
+    // that outlives the config's internal DB handle.
     // Trigger backfill if DB is fresh (best-effort: log failures but don't abort)
     if let Some(ref dir) = db_dir {
         match tama_core::db::open(dir) {
@@ -95,11 +100,10 @@ async fn start_proxy_server(
                     tracing::error!("Backend registry TOML migration failed: {}", e);
                 }
 
-                // Always run the backend config TOML migration (runs once, then clears [backends])
-                if let Err(e) =
-                    tama_core::db::backfill::migrate_backend_config_from_toml(&db_result.conn, dir)
-                {
-                    tracing::error!("Backend config TOML migration failed: {}", e);
+                // Run unified TOML → DB migration (absorbs backend config + global config + models)
+                let db_path = dir.join("tama.db");
+                if let Err(e) = tama_core::db::backfill::migrate_toml_to_db(dir, &db_path) {
+                    tracing::error!("TOML → DB migration failed: {}", e);
                 }
             }
             Err(e) => tracing::error!("Failed to open DB for backfill check: {}", e),

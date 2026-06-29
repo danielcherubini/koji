@@ -197,9 +197,8 @@ pub fn BackupSection() -> impl IntoView {
                         "Backup includes:"
                     </p>
                     <ul class="list-disc list-inside text-sm text-gray-600 mb-4 space-y-1">
-                        <li>"config.toml"</li>
+                        <li>"tama.db (all settings)"</li>
                         <li>"configs/ (model cards)"</li>
-                        <li>"tama.db (SQLite database)"</li>
                     </ul>
                     <p class="text-sm text-amber-600 mb-4">
                         "Note: Model files and backend binaries are NOT included in the backup."

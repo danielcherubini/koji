@@ -74,26 +74,21 @@ mod tests {
         );
     }
 
-    /// GET /tama/v1/config returns 404 when config_path is None (not configured).
+    /// GET /tama/v1/config returns 410 Gone (raw TOML endpoint removed).
     #[tokio::test]
-    async fn test_api_config_returns_404_when_unconfigured() {
+    async fn test_410_gone_for_raw_toml_config() {
         let (client, addr) = start_test_server().await;
         let resp = client
             .get(format!("http://{}/tama/v1/config", addr))
             .send()
             .await
             .unwrap();
-        assert_eq!(resp.status().as_u16(), 404);
-        let body: serde_json::Value = resp.json().await.unwrap();
-        assert!(
-            body.get("error").is_some(),
-            "Expected error field in response"
-        );
+        assert_eq!(resp.status().as_u16(), 410);
     }
 
-    /// POST /tama/v1/config returns 404 when config_path is None (checked before TOML validation).
+    /// POST /tama/v1/config returns 410 Gone (raw TOML endpoint removed).
     #[tokio::test]
-    async fn test_api_config_save_returns_403_when_unauthenticated() {
+    async fn test_410_gone_for_raw_toml_config_save() {
         let (client, addr) = start_test_server().await;
         let resp = client
             .post(format!("http://{}/tama/v1/config", addr))
@@ -101,8 +96,8 @@ mod tests {
             .send()
             .await
             .unwrap();
-        // 404 because config_path is None (checked before CSRF)
-        assert_eq!(resp.status().as_u16(), 404);
+        // 410 Gone — raw TOML config endpoint removed
+        assert_eq!(resp.status().as_u16(), 410);
     }
 
     /// End-to-end test: CRUD operations via the web API update the proxy's in-memory config.
@@ -113,18 +108,16 @@ mod tests {
     #[tokio::test]
     async fn test_hot_reload_crud_updates_proxy_config() {
         // ── Setup ─────────────────────────────────────────────────────────────────
-        // Create a temporary config directory with a valid config.toml on disk.
+        // Create a temporary config directory with a DB.
         let temp_dir = tempfile::tempdir().unwrap();
         let config_dir = temp_dir.path().to_path_buf();
-        let config_path = config_dir.join("config.toml");
 
-        // Start from the default config.
-        let initial_config = tama_core::config::Config {
-            loaded_from: Some(config_dir.clone()),
-            ..Default::default()
-        };
-        let toml_str = toml::to_string_pretty(&initial_config).unwrap();
-        std::fs::write(&config_path, &toml_str).unwrap();
+        // Seed the DB with defaults.
+        {
+            let _open_result = tama_core::db::open(&config_dir).unwrap();
+        }
+
+        let initial_config = tama_core::config::Config::default();
 
         // The shared proxy config — this is what the proxy would hold in production.
         let proxy_config = Arc::new(tokio::sync::RwLock::new(initial_config));
@@ -136,9 +129,11 @@ mod tests {
             let proxy_config_server = proxy_config.clone();
             let config_dir_server = config_dir.clone();
             tokio::spawn(async move {
-                let mut config = (*proxy_config_server.read().await).clone();
-                config.loaded_from = Some(config_dir_server);
-                let state = Arc::new(tama_core::proxy::ProxyState::new(config, None));
+                let config = (*proxy_config_server.read().await).clone();
+                let state = Arc::new(tama_core::proxy::ProxyState::new(
+                    config,
+                    Some(config_dir_server.clone()),
+                ));
                 axum::serve(
                     listener,
                     tama_web::router::build_web_routes().with_state(state),
@@ -330,20 +325,10 @@ mod tests {
         // Create temp dir for DB
         let temp_dir = tempfile::tempdir().unwrap();
         let config_dir = temp_dir.path().to_path_buf();
-        let config_path = config_dir.join("config.toml");
-
-        // Write minimal config
-        let initial_config = tama_core::config::Config {
-            loaded_from: Some(config_dir.clone()),
-            ..Default::default()
-        };
-        let toml_str = toml::to_string_pretty(&initial_config).unwrap();
-        std::fs::write(&config_path, &toml_str).unwrap();
 
         // Initialize DB (runs migrations)
         {
             let _open_result = tama_core::db::open(&config_dir).unwrap();
-            // DB is ready
         }
 
         // Seed backend_configs with test data for llama_cpp:cpu
@@ -367,17 +352,17 @@ mod tests {
             .unwrap();
         }
 
-        // Start server with config_path
+        // Start server
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         {
             let config_dir_server = config_dir.clone();
             tokio::spawn(async move {
-                let config = tama_core::config::Config {
-                    loaded_from: Some(config_dir_server),
-                    ..Default::default()
-                };
-                let state = Arc::new(tama_core::proxy::ProxyState::new(config, None));
+                let config = tama_core::config::Config::default();
+                let state = Arc::new(tama_core::proxy::ProxyState::new(
+                    config,
+                    Some(config_dir_server.clone()),
+                ));
                 axum::serve(
                     listener,
                     tama_web::router::build_web_routes().with_state(state),

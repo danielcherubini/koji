@@ -41,14 +41,11 @@ pub struct RestoreArgs {
 
 /// Create a backup of the Tama configuration.
 pub fn cmd_backup(
-    config: &tama_core::config::Config,
+    _config: &tama_core::config::Config,
     output: Option<PathBuf>,
     dry_run: bool,
 ) -> Result<()> {
-    let config_dir = config
-        .loaded_from
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("Config has no loaded_from path"))?;
+    let config_dir = tama_core::config::Config::config_dir()?;
 
     let output_path = if let Some(path) = output {
         path
@@ -63,7 +60,7 @@ pub fn cmd_backup(
             output_path.display()
         );
         println!("\nFiles to be backed up:");
-        println!("  - config.toml");
+        println!("  - tama.db (all settings)");
         if let Ok(entries) = std::fs::read_dir(config_dir.join("configs")) {
             for entry in entries.flatten() {
                 if entry.path().extension().is_some_and(|e| e == "toml") {
@@ -71,14 +68,13 @@ pub fn cmd_backup(
                 }
             }
         }
-        println!("  - tama.db");
         println!("\nNote: Model files and backend binaries are NOT included.");
         return Ok(());
     }
 
     let start = Instant::now();
 
-    let manifest = tama_core::backup::create_backup(config_dir, &output_path)
+    let manifest = tama_core::backup::create_backup(&config_dir, &output_path)
         .context("Failed to create backup")?;
 
     let size = std::fs::metadata(&output_path)
@@ -95,12 +91,8 @@ pub fn cmd_backup(
 }
 
 /// Restore from a backup archive.
-pub async fn cmd_restore(config: &mut tama_core::config::Config, args: RestoreArgs) -> Result<()> {
-    let config_dir = config
-        .loaded_from
-        .as_ref()
-        .map(|p| p.to_path_buf())
-        .ok_or_else(|| anyhow::anyhow!("Config has no loaded_from path"))?;
+pub async fn cmd_restore(_config: &mut tama_core::config::Config, args: RestoreArgs) -> Result<()> {
+    let config_dir = tama_core::config::Config::config_dir()?;
 
     if args.dry_run {
         println!("Dry run - would restore from: {}", args.archive.display());
@@ -110,13 +102,8 @@ pub async fn cmd_restore(config: &mut tama_core::config::Config, args: RestoreAr
         println!("  Created: {}", manifest.created_at);
         println!("  Tama version: {}", manifest.tama_version);
         println!("\nWould restore:");
-        println!("  - config.toml");
+        println!("  - tama.db (all settings)");
         println!("  - {} model cards", manifest.models.len());
-        println!("  - tama.db");
-        println!("\nWould install:");
-        println!("  - {} backends", manifest.backends.len());
-        println!("Would download:");
-        println!("  - {} models", manifest.models.len());
         return Ok(());
     }
 
@@ -128,66 +115,28 @@ pub async fn cmd_restore(config: &mut tama_core::config::Config, args: RestoreAr
 
     println!("Backup extracted successfully");
 
-    // Merge config
-    let backup_config = toml::from_str::<tama_core::config::Config>(&std::fs::read_to_string(
-        &extract_result.config_path,
-    )?)
-    .context("Failed to parse backup config")?;
+    // Replace the local database with the backup database
+    let local_db_path = config_dir.join("tama.db");
+    std::fs::copy(&extract_result.db_path, &local_db_path)
+        .context("Failed to copy database from backup")?;
+    println!("Database restored from backup");
 
-    let merge_stats = tama_core::backup::merge_config(&mut *config, &backup_config);
-
-    println!(
-        "Config merged: {} new backends, {} new sampling templates",
-        merge_stats.new_backends.len(),
-        merge_stats.new_sampling_templates.len()
-    );
-
-    // Persist merged config to real config location (not temp)
-    let config_content =
-        toml::to_string_pretty(&config).context("Failed to serialize merged config")?;
-    let real_config_path = config_dir.join("config.toml");
-    std::fs::write(&real_config_path, config_content).context("Failed to write merged config")?;
-
-    // Merge model cards
+    // Merge model cards (copy any that don't exist locally)
     let card_paths = tama_core::backup::merge_model_cards(
         &config_dir.join("configs"),
         &temp_dir.path().join("configs"),
     )
     .context("Failed to merge model cards")?;
 
-    println!("Model cards: {} copied", card_paths.len());
-
-    // Merge database
-    let local_conn = tama_core::db::open(&config_dir)
-        .context("Failed to open local database")?
-        .conn;
-
-    let db_stats = tama_core::backup::merge_database(&local_conn, &extract_result.db_path)
-        .context("Failed to merge database")?;
-
-    println!(
-        "Database merged: {} new pulls, {} new files, {} new backends",
-        db_stats.new_model_pulls, db_stats.new_model_files, db_stats.new_backend_installations,
-    );
-
-    // Install backends (if not skipped)
-    if !args.skip_backends {
-        println!("\nInstalling backends...");
-        // TODO: Implement backend installation from DB records
-        println!("Backend installation skipped (not yet implemented)");
-    }
-
-    // Download models (if not skipped)
-    if !args.skip_models {
-        println!("\nDownloading models...");
-        // TODO: Implement model download from DB records
-        println!("Model download skipped (not yet implemented)");
+    if !card_paths.is_empty() {
+        println!("Model cards: {} restored", card_paths.len());
     }
 
     // Cleanup
     drop(temp_dir);
 
     println!("\nRestore complete!");
+    println!("Note: Restart the proxy to load the restored configuration.");
 
     Ok(())
 }

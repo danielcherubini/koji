@@ -66,15 +66,19 @@ pub async fn main() -> Result<()> {
             }
         }
         Commands::Add { name, command } => {
-            server::cmd_server_add(&config, &name, command, false).await
+            let db_dir = tama_core::config::Config::config_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            server::cmd_server_add(&config, &name, command, false, &db_dir).await
         }
         Commands::Update { name, command } => {
-            server::cmd_server_edit(&mut config.clone(), &name, command).await
+            let db_dir = tama_core::config::Config::config_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            server::cmd_server_edit(&mut config.clone(), &name, command, &db_dir).await
         }
         Commands::Server { command } => server::cmd_server(&config, command).await,
         Commands::Status => status::cmd_status(&config).await,
         Commands::Profile { command } => profile::cmd_profile(&config, command),
-        Commands::Config { command } => config::cmd_config(&config, command),
+        Commands::Config { command } => config::cmd_config(command),
         Commands::Model { command } => commands::model::run(&config, command).await,
         Commands::Backend { command } => {
             commands::backend::run(&config, crate::commands::backend::BackendArgs { command }).await
@@ -140,12 +144,11 @@ pub async fn main() -> Result<()> {
             port,
             proxy_url,
             logs_dir,
-            config_path,
         } => {
             eprintln!(
                 "WARNING: `tama web` is deprecated. Use `tama serve` instead, which now includes the web UI."
             );
-            handlers::web::cmd_web(port, proxy_url, logs_dir, config_path).await
+            handlers::web::cmd_web(port, proxy_url, logs_dir).await
         }
     }
 }

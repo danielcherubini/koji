@@ -29,7 +29,6 @@ fn test_gpu_device_injected_for_rocm() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    config.loaded_from = Some(temp_dir.path().to_path_buf());
 
     let backend = BackendConfig {
         path: None,
@@ -98,7 +97,6 @@ fn test_gpu_device_none_no_injection() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    config.loaded_from = Some(temp_dir.path().to_path_buf());
 
     let backend = BackendConfig {
         path: None,
@@ -167,7 +165,6 @@ fn test_gpu_device_no_duplicate_when_already_set() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    config.loaded_from = Some(temp_dir.path().to_path_buf());
 
     let backend = BackendConfig {
         path: None,
@@ -243,7 +240,6 @@ fn test_gpu_device_not_injected_for_non_llama_cpp() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    config.loaded_from = Some(temp_dir.path().to_path_buf());
 
     let backend = BackendConfig {
         path: None,
@@ -312,7 +308,6 @@ fn test_gpu_device_empty_string_no_injection() {
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-    config.loaded_from = Some(temp_dir.path().to_path_buf());
 
     let backend = BackendConfig {
         path: None,

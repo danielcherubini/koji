@@ -236,12 +236,11 @@ pub async fn cmd_install(
     println!("  Version: {}", version);
     println!("  Binary:  {}", binary_path.display());
     println!(
-        "\nThe backend is already referenced in config.toml as '{}'.",
+        "\nThe backend has been registered in the database as '{}'.",
         backend_name
     );
-    println!("To pin this exact version, add to config.toml:");
-    println!("  [backends.{}]", backend_name);
-    println!("  version = \"{}\"", version);
+    println!("To activate this version:");
+    println!("  tama backend switch {} {}", backend_name, version);
 
     Ok(())
 }
