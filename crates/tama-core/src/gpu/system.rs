@@ -4,18 +4,20 @@ use sysinfo::System;
 
 use super::vram::VramInfo;
 
-/// Cached map of card number → GPU product name from rocm-smi.
+/// Cached map of PCI bus address → GPU product name from rocm-smi.
 /// Populated on first call to `query_amd_device_names` and reused thereafter
 /// to avoid spawning rocm-smi on every metrics tick.
-static AMD_DEVICE_NAMES: OnceLock<std::collections::HashMap<u32, String>> = OnceLock::new();
+/// Uses PCI bus (e.g. "0000:03:00.0") as the key since sysfs card numbers
+/// may not match rocm-smi's card indices.
+static AMD_DEVICE_NAMES: OnceLock<std::collections::HashMap<String, String>> = OnceLock::new();
 
 /// Query rocm-smi for GPU product names and cache the result.
-/// Returns a map of card number (e.g. 0, 1) → product name (e.g. "Radeon AI PRO R9700").
-fn query_amd_device_names() -> std::collections::HashMap<u32, String> {
+/// Returns a map of PCI bus address (e.g. "0000:03:00.0") → product name (e.g. "Radeon AI PRO R9700").
+fn query_amd_device_names() -> std::collections::HashMap<String, String> {
     AMD_DEVICE_NAMES
         .get_or_init(|| {
             let output = std::process::Command::new("rocm-smi")
-                .args(["--showproductname", "--json"])
+                .args(["--showbus", "--showproductname", "--json"])
                 .output()
                 .ok();
 
@@ -37,8 +39,8 @@ fn query_amd_device_names() -> std::collections::HashMap<u32, String> {
 
             parsed
                 .into_iter()
-                .filter_map(|(card_key, info)| {
-                    let card_num = card_key.strip_prefix("card")?.parse::<u32>().ok()?;
+                .filter_map(|(_card_key, info)| {
+                    let pci_bus = info.get("PCI Bus")?.clone();
                     let series = info.get("Card Series")?.clone();
                     // Extract short name: "AMD Radeon AI PRO R9700" → "Radeon AI PRO R9700"
                     let name = series
@@ -46,7 +48,7 @@ fn query_amd_device_names() -> std::collections::HashMap<u32, String> {
                         .skip_while(|w| *w == "AMD")
                         .collect::<Vec<_>>()
                         .join(" ");
-                    Some((card_num, if name.is_empty() { series } else { name }))
+                    Some((pci_bus, if name.is_empty() { series } else { name }))
                 })
                 .collect()
         })
@@ -443,10 +445,18 @@ fn query_amd_devices() -> Vec<GpuDeviceStats> {
             continue;
         }
 
-        // GPU name from cached rocm-smi query (populated once on first call)
-        let name = query_amd_device_names()
-            .get(&card_num)
-            .cloned()
+        // GPU name from cached rocm-smi query, keyed by PCI bus address.
+        // Read PCI_SLOT_NAME from uevent to match against rocm-smi's PCI Bus field.
+        let pci_bus = std::fs::read_to_string(card_path.join("uevent"))
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find_map(|l| l.strip_prefix("PCI_SLOT_NAME="))
+                    .map(String::from)
+            });
+        let name = pci_bus
+            .as_ref()
+            .and_then(|pci| query_amd_device_names().get(pci).cloned())
             .unwrap_or_else(|| {
                 // Fallback: try sysfs name file (not available on all systems)
                 std::fs::read_to_string(card_path.join("name"))
