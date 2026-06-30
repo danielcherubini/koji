@@ -32,31 +32,88 @@
   padding: 0.75rem 1rem;
 }
 
-/* Column 1: Identity */
+/* Column 1: Identity — two equal halves with separator */
 .gpu-device-card__identity {
   flex: 1;
+  display: flex;
+  flex-direction: column;
   border-right: 1px solid var(--border-color);
   padding-right: 1rem;
   min-width: 0;
 }
 
-/* Column 2: Bars */
+.gpu-device-card__identity-top,
+.gpu-device-card__identity-bottom {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.gpu-device-card__identity-top {
+  justify-content: flex-start;
+}
+
+.gpu-device-card__identity-bottom {
+  justify-content: flex-start;
+  border-top: 1px solid var(--border-color);
+  padding-top: 0.5rem;
+}
+
+/* Column 2: Bars — two equal halves with separator */
 .gpu-device-card__bars {
   flex: 1;
+  display: flex;
+  flex-direction: column;
   border-right: 1px solid var(--border-color);
   padding-left: 1rem;
   padding-right: 1rem;
   min-width: 0;
 }
 
-/* Column 3: Combined Throughput + Telemetry (vertical stack of sub-rows) */
+.gpu-device-card__bars-top,
+.gpu-device-card__bars-bottom {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.gpu-device-card__bars-top {
+  justify-content: flex-start;
+}
+
+.gpu-device-card__bars-bottom {
+  justify-content: flex-start;
+  border-top: 1px solid var(--border-color);
+  padding-top: 0.75rem;
+}
+
+/* Column 3: Combined Throughput + Telemetry — two equal halves with separator */
 .gpu-device-card__combined {
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
   padding-left: 1rem;
   min-width: 0;
+}
+
+.gpu-device-card__combined-top,
+.gpu-device-card__combined-bottom {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.gpu-device-card__combined-top {
+  justify-content: flex-start;
+}
+
+.gpu-device-card__combined-bottom {
+  justify-content: flex-start;
+  border-top: 1px solid var(--border-color);
+  padding-top: 0.5rem;
 }
 
 /* Sub-row A: Throughput (inference stats) — horizontal 2-cell row */
@@ -65,8 +122,6 @@
   grid-template-columns: 1fr 1fr;
   gap: 0.5rem;
   text-align: center;
-  padding-bottom: 0.5rem;
-  border-bottom: 1px solid var(--border-color);
   min-width: 0;
 }
 
@@ -96,12 +151,28 @@
   padding-left: 0;
 }
 
-/* Add section separators in portrait mode */
+/* In portrait mode, columns get top separators instead of the internal half-separators */
+.gpu-device-grid:has(> :nth-child(3)) .gpu-device-card__identity,
 .gpu-device-grid:has(> :nth-child(3)) .gpu-device-card__bars,
 .gpu-device-grid:has(> :nth-child(3)) .gpu-device-card__combined {
   border-top: 1px solid var(--border-color);
   padding-top: 0.75rem;
   margin-top: 0.75rem;
+  display: block;
+}
+
+/* Remove the internal half-separators in portrait mode (columns themselves are separated) */
+.gpu-device-grid:has(> :nth-child(3)) .gpu-device-card__identity-bottom,
+.gpu-device-grid:has(> :nth-child(3)) .gpu-device-card__bars-bottom,
+.gpu-device-grid:has(> :nth-child(3)) .gpu-device-card__combined-bottom {
+  border-top: none;
+  padding-top: 0;
+}
+
+.gpu-device-grid:has(> :nth-child(3)) .gpu-device-card__identity,
+.gpu-device-grid:has(> :nth-child(3)) .gpu-device-card__bars,
+.gpu-device-grid:has(> :nth-child(3)) .gpu-device-card__combined {
+  display: block;
 }
 
 /* Identity Column */
@@ -146,9 +217,6 @@
   font-size: 0.8rem;
   color: var(--text-muted);
   font-family: var(--font-mono);
-  margin-bottom: 0.5rem;
-  padding-bottom: 0.5rem;
-  border-bottom: 1px solid var(--border-color);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -157,12 +225,6 @@
 /* Bars Column */
 .gpu-device-card__row {
   margin-bottom: 0.5rem;
-}
-
-.gpu-device-card__bars > .gpu-device-card__row:first-child {
-  border-bottom: 1px solid var(--border-color);
-  padding-bottom: 0.75rem;
-  margin-bottom: 0.75rem;
 }
 
 .gpu-device-card__row-header {

@@ -1,7 +1,57 @@
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 use sysinfo::System;
 
 use super::vram::VramInfo;
+
+/// Cached map of card number → GPU product name from rocm-smi.
+/// Populated on first call to `query_amd_device_names` and reused thereafter
+/// to avoid spawning rocm-smi on every metrics tick.
+static AMD_DEVICE_NAMES: OnceLock<std::collections::HashMap<u32, String>> = OnceLock::new();
+
+/// Query rocm-smi for GPU product names and cache the result.
+/// Returns a map of card number (e.g. 0, 1) → product name (e.g. "Radeon AI PRO R9700").
+fn query_amd_device_names() -> std::collections::HashMap<u32, String> {
+    AMD_DEVICE_NAMES
+        .get_or_init(|| {
+            let output = std::process::Command::new("rocm-smi")
+                .args(["--showproductname", "--json"])
+                .output()
+                .ok();
+
+            let Some(output) = output else {
+                return std::collections::HashMap::new();
+            };
+
+            if !output.status.success() {
+                return std::collections::HashMap::new();
+            }
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let Ok(parsed): Result<
+                std::collections::HashMap<String, std::collections::HashMap<String, String>>,
+                serde_json::Error,
+            > = serde_json::from_str(&stdout) else {
+                return std::collections::HashMap::new();
+            };
+
+            parsed
+                .into_iter()
+                .filter_map(|(card_key, info)| {
+                    let card_num = card_key.strip_prefix("card")?.parse::<u32>().ok()?;
+                    let series = info.get("Card Series")?.clone();
+                    // Extract short name: "AMD Radeon AI PRO R9700" → "Radeon AI PRO R9700"
+                    let name = series
+                        .split_whitespace()
+                        .skip_while(|w| *w == "AMD")
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    Some((card_num, if name.is_empty() { series } else { name }))
+                })
+                .collect()
+        })
+        .clone()
+}
 
 /// Per-GPU device statistics for a single tick. One entry per detected
 /// device (NVIDIA or AMD). Order is stable per-tick: NVIDIA devices
@@ -393,19 +443,26 @@ fn query_amd_devices() -> Vec<GpuDeviceStats> {
             continue;
         }
 
-        // Add name to the GpuDeviceStats constructor
-        let name = std::fs::read_to_string(card_path.join("name"))
-            .ok()
-            .map(|s| {
-                let trimmed = s.trim().to_string();
-                // Extract text between [ and ] if present, e.g. "Navi 48 [Radeon AI PRO R9700]"
-                if let (Some(start), Some(end)) = (trimmed.find('['), trimmed.find(']')) {
-                    trimmed[start + 1..end].to_string()
-                } else {
-                    trimmed
-                }
-            })
-            .unwrap_or_else(|| "AMD GPU".to_string());
+        // GPU name from cached rocm-smi query (populated once on first call)
+        let name = query_amd_device_names()
+            .get(&card_num)
+            .cloned()
+            .unwrap_or_else(|| {
+                // Fallback: try sysfs name file (not available on all systems)
+                std::fs::read_to_string(card_path.join("name"))
+                    .ok()
+                    .and_then(|s| {
+                        let trimmed = s.trim().to_string();
+                        if let (Some(start), Some(end)) = (trimmed.find('['), trimmed.find(']')) {
+                            Some(trimmed[start + 1..end].to_string())
+                        } else if !trimmed.is_empty() {
+                            Some(trimmed)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_else(|| "AMD GPU".to_string())
+            });
 
         let mut stats = GpuDeviceStats {
             device_id: format!("amd{card_num}"),

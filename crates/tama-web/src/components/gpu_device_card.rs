@@ -211,127 +211,137 @@ pub fn GpuDeviceCard(
             <div class="gpu-device-card__internal">
                 // Column 1: Identity
                 <div class="gpu-device-card__identity">
-                    <div class="gpu-device-card__header">
-                        <span class="gpu-device-card__title">{display_label}</span>
-                        <span class={badge_class}>{badge_text}</span>
+                    <div class="gpu-device-card__identity-top">
+                        <div class="gpu-device-card__header">
+                            <span class="gpu-device-card__title">{display_label}</span>
+                            <span class={badge_class}>{badge_text}</span>
+                        </div>
+                        <div class="gpu-device-card__subtitle">
+                            {if let Some(vram) = &device.vram {
+                                format_card_subtitle(&device.name, vram)
+                            } else {
+                                device.name.clone()
+                            }}
+                        </div>
                     </div>
-                    <div class="gpu-device-card__subtitle">
-                        {if let Some(vram) = &device.vram {
-                            format_card_subtitle(&device.name, vram)
-                        } else {
-                            device.name.clone()
-                        }}
-                    </div>
-                    <div class="gpu-device-card__model-section">
-                        <div class="gpu-device-card__model-header">{model_section_header}</div>
-                        <div class="gpu-device-card__model-body">
-                            {match state {
-                                GpuDeviceState::Idle => {
-                                    view! { <span class="text-muted">"No model loaded"</span> }.into_any()
-                                }
-                                GpuDeviceState::Failed => {
-                                    view! { <span></span> }.into_any()
-                                }
-                                _ => {
-                                    if let Some(model) = loaded.as_ref() {
-                                        if model.transferring {
-                                            view! {
-                                                <span title={model.name.clone()}>"TRANSFERRING… " {model.name.clone()}</span>
-                                            }.into_any()
-                                        } else {
-                                            view! {
-                                                <span title={model.name.clone()}>{model.name.clone()}</span>
-                                            }.into_any()
-                                        }
-                                    } else {
+                    <div class="gpu-device-card__identity-bottom">
+                        <div class="gpu-device-card__model-section">
+                            <div class="gpu-device-card__model-header">{model_section_header}</div>
+                            <div class="gpu-device-card__model-body">
+                                {match state {
+                                    GpuDeviceState::Idle => {
                                         view! { <span class="text-muted">"No model loaded"</span> }.into_any()
                                     }
-                                }
-                            }}
+                                    GpuDeviceState::Failed => {
+                                        view! { <span></span> }.into_any()
+                                    }
+                                    _ => {
+                                        if let Some(model) = loaded.as_ref() {
+                                            if model.transferring {
+                                                view! {
+                                                    <span title={model.name.clone()}>"TRANSFERRING… " {model.name.clone()}</span>
+                                                }.into_any()
+                                            } else {
+                                                view! {
+                                                    <span title={model.name.clone()}>{model.name.clone()}</span>
+                                                }.into_any()
+                                            }
+                                        } else {
+                                            view! { <span class="text-muted">"No model loaded"</span> }.into_any()
+                                        }
+                                    }
+                                }}
+                            </div>
                         </div>
                     </div>
                 </div>
 
                 // Column 2: Bars (utilization + vram)
                 <div class="gpu-device-card__bars">
-                    <div class="gpu-device-card__row">
-                        <div class="gpu-device-card__row-header">
-                            <span class="gpu-device-card__label">"Utilization"</span>
-                            <span class="gpu-device-card__value">
-                                {device.utilization_pct.map(|p| format!("{p}%")).unwrap_or_else(|| "—".to_string())}
-                            </span>
-                        </div>
-                        <div class="progress-bar">
-                            <div
-                                class="progress-bar-fill gpu-device-card__bar-fill"
-                                style=format!("width: {}%", device.utilization_pct.unwrap_or(0))
-                            />
+                    <div class="gpu-device-card__bars-top">
+                        <div class="gpu-device-card__row">
+                            <div class="gpu-device-card__row-header">
+                                <span class="gpu-device-card__label">"Utilization"</span>
+                                <span class="gpu-device-card__value">
+                                    {device.utilization_pct.map(|p| format!("{p}%")).unwrap_or_else(|| "—".to_string())}
+                                </span>
+                            </div>
+                            <div class="progress-bar">
+                                <div
+                                    class="progress-bar-fill gpu-device-card__bar-fill"
+                                    style=format!("width: {}%", device.utilization_pct.unwrap_or(0))
+                                />
+                            </div>
                         </div>
                     </div>
-                    <div class="gpu-device-card__row">
-                        <div class="gpu-device-card__row-header">
-                            <span class="gpu-device-card__label">{vram_label}</span>
-                            <span class="gpu-device-card__value">
-                                {device.vram.as_ref().map(format_vram_short).unwrap_or_else(|| "—".to_string())}
-                            </span>
-                        </div>
-                        {if let Some(vram) = &device.vram {
-                            let vram_pct = if vram.total_mib > 0 {
-                                (vram.used_mib as f64 / vram.total_mib as f64 * 100.0).min(100.0)
+                    <div class="gpu-device-card__bars-bottom">
+                        <div class="gpu-device-card__row">
+                            <div class="gpu-device-card__row-header">
+                                <span class="gpu-device-card__label">{vram_label}</span>
+                                <span class="gpu-device-card__value">
+                                    {device.vram.as_ref().map(format_vram_short).unwrap_or_else(|| "—".to_string())}
+                                </span>
+                            </div>
+                            {if let Some(vram) = &device.vram {
+                                let vram_pct = if vram.total_mib > 0 {
+                                    (vram.used_mib as f64 / vram.total_mib as f64 * 100.0).min(100.0)
+                                } else {
+                                    0.0
+                                };
+                                view! {
+                                    <div class="progress-bar">
+                                        <div
+                                            class="progress-bar-fill gpu-device-card__bar-fill"
+                                            style=format!("width: {:.1}%", vram_pct)
+                                        />
+                                    </div>
+                                }.into_any()
                             } else {
-                                0.0
-                            };
-                            view! {
-                                <div class="progress-bar">
-                                    <div
-                                        class="progress-bar-fill gpu-device-card__bar-fill"
-                                        style=format!("width: {:.1}%", vram_pct)
-                                    />
-                                </div>
-                            }.into_any()
-                        } else {
-                            view! { <span/> }.into_any()
-                        }}
+                                view! { <span/> }.into_any()
+                            }}
+                        </div>
                     </div>
                 </div>
 
                 // Column 3: Combined Throughput + Telemetry (2 sub-columns)
                 <div class="gpu-device-card__combined">
-                    // Sub-column A: Throughput (inference stats) — always shown
-                    <div class="gpu-device-card__throughput">
-                        <div class="gpu-device-card__inference-cell">
-                            <div class="gpu-device-card__inference-value">
-                                {prompt_tps.map(|v| format!("{v:.0} tok/s")).unwrap_or_else(|| "0 tok/s".to_string())}
+                    <div class="gpu-device-card__combined-top">
+                        <div class="gpu-device-card__throughput">
+                            <div class="gpu-device-card__inference-cell">
+                                <div class="gpu-device-card__inference-value">
+                                    {prompt_tps.map(|v| format!("{v:.0} tok/s")).unwrap_or_else(|| "0 tok/s".to_string())}
+                                </div>
+                                <div class="gpu-device-card__inference-label">"Processing"</div>
                             </div>
-                            <div class="gpu-device-card__inference-label">"Processing"</div>
-                        </div>
-                        <div class="gpu-device-card__inference-cell">
-                            <div class="gpu-device-card__inference-value">
-                                {tps.map(|v| format!("{v:.0} tok/s")).unwrap_or_else(|| "0 tok/s".to_string())}
+                            <div class="gpu-device-card__inference-cell">
+                                <div class="gpu-device-card__inference-value">
+                                    {tps.map(|v| format!("{v:.0} tok/s")).unwrap_or_else(|| "0 tok/s".to_string())}
+                                </div>
+                                <div class="gpu-device-card__inference-label">"Generation"</div>
                             </div>
-                            <div class="gpu-device-card__inference-label">"Generation"</div>
                         </div>
                     </div>
 
-                    // Sub-column B: Telemetry
-                    <div class="gpu-device-card__telemetry">
-                        <div class="gpu-device-card__telemetry-cell">
-                            <div class="gpu-device-card__telemetry-value">
-                                {device.temperature_c.map(|t| format!("{t}°C")).unwrap_or_else(|| "—".to_string())}
+                    <div class="gpu-device-card__combined-bottom">
+                        <div class="gpu-device-card__telemetry">
+                            <div class="gpu-device-card__telemetry-cell">
+                                <div class="gpu-device-card__telemetry-value">
+                                    {device.temperature_c.map(|t| format!("{t}°C")).unwrap_or_else(|| "—".to_string())}
+                                </div>
+                                <div class="gpu-device-card__telemetry-label">"Temp"</div>
                             </div>
-                            <div class="gpu-device-card__telemetry-label">"Temp"</div>
-                        </div>
-                        <div class="gpu-device-card__telemetry-cell">
-                            <div class="gpu-device-card__telemetry-value">
-                                {device.power_w.map(|p| format!("{p}W")).unwrap_or_else(|| "—".to_string())}
+                            <div class="gpu-device-card__telemetry-cell">
+                                <div class="gpu-device-card__telemetry-value">
+                                    {device.power_w.map(|p| format!("{p}W")).unwrap_or_else(|| "—".to_string())}
+                                </div>
+                                <div class="gpu-device-card__telemetry-label">"Power"</div>
                             </div>
-                            <div class="gpu-device-card__telemetry-label">"Power"</div>
-                        </div>
-                        <div class="gpu-device-card__telemetry-cell">
-                            <div class="gpu-device-card__telemetry-value">
-                                {device.fan_pct.map(|f| format!("{f}%")).unwrap_or_else(|| "—".to_string())}
+                            <div class="gpu-device-card__telemetry-cell">
+                                <div class="gpu-device-card__telemetry-value">
+                                    {device.fan_pct.map(|f| format!("{f}%")).unwrap_or_else(|| "—".to_string())}
+                                </div>
+                                <div class="gpu-device-card__telemetry-label">"Fan"</div>
                             </div>
-                            <div class="gpu-device-card__telemetry-label">"Fan"</div>
                         </div>
                     </div>
                 </div>
