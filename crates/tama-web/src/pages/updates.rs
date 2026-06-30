@@ -163,6 +163,7 @@ fn patch_list(list: &mut Vec<UpdateCheckDto>, dto: &UpdateCheckDto) {
 }
 
 #[cfg(not(feature = "ssr"))]
+#[allow(clippy::too_many_arguments)]
 fn handle_update_event(
     event_type: &str,
     data: &serde_json::Value,
