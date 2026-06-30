@@ -558,4 +558,13 @@ mod tests {
             "Radeon AI PRO R9700 \u{00B7} 32 GB"
         );
     }
+
+    #[test]
+    fn test_model_for_device_returns_first_match() {
+        let models = vec![
+            make_model("m1", "ready", Some("GPU0")),
+            make_model("m2", "ready", Some("GPU0")),
+        ];
+        assert_eq!(model_for_device(&models, "GPU0").unwrap().id, "m1");
+    }
 }

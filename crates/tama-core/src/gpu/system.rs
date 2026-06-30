@@ -17,6 +17,8 @@ pub struct GpuDeviceStats {
     /// Human-readable vendor: "nvidia" | "amd".
     pub vendor: String,
     /// Human-readable GPU name (e.g. "Radeon AI PRO R9700", "GeForce RTX 4090").
+    /// Defaults to empty string for backwards compatibility with cached samples.
+    #[serde(default)]
     pub name: String,
     /// Utilization percentage (0–100), None if unavailable.
     pub utilization_pct: Option<u8>,
