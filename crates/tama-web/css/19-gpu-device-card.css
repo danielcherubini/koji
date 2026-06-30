@@ -142,9 +142,27 @@
   text-overflow: ellipsis;
 }
 
+.gpu-device-card__subtitle {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  margin-bottom: 0.5rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border-color);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Bars Column */
 .gpu-device-card__row {
   margin-bottom: 0.5rem;
+}
+
+.gpu-device-card__bars > .gpu-device-card__row:first-child {
+  border-bottom: 1px solid var(--border-color);
+  padding-bottom: 0.75rem;
+  margin-bottom: 0.75rem;
 }
 
 .gpu-device-card__row-header {

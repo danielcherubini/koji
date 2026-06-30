@@ -16,6 +16,10 @@ pub struct GpuDeviceStats {
     pub device_id: String,
     /// Human-readable vendor: "nvidia" | "amd".
     pub vendor: String,
+    /// Human-readable GPU name (e.g. "Radeon AI PRO R9700", "GeForce RTX 4090").
+    /// Defaults to empty string for backwards compatibility with cached samples.
+    #[serde(default)]
+    pub name: String,
     /// Utilization percentage (0–100), None if unavailable.
     pub utilization_pct: Option<u8>,
     /// VRAM usage in MiB, None if unavailable.
@@ -295,27 +299,29 @@ pub fn collect_system_metrics() -> SystemMetrics {
 
 /// Parse a single line of nvidia-smi CSV output into `GpuDeviceStats`.
 ///
-/// Expected format (7 comma-separated fields, no units):
-/// `index, utilization.gpu, memory.used, memory.total, temperature.gpu, power.draw, fan.speed`
+/// Expected format (8 comma-separated fields, no units):
+/// `index,name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,fan.speed`
 ///
 /// Returns `None` if the line is malformed or fields cannot be parsed.
 pub(crate) fn parse_nvidia_smi_csv_line(line: &str) -> Option<GpuDeviceStats> {
     let parts: Vec<&str> = line.split(",").collect();
-    if parts.len() != 7 {
+    if parts.len() != 8 {
         return None;
     }
 
     let index: u32 = parts[0].trim().parse().ok()?;
-    let utilization: u8 = parts[1].trim().parse().ok()?;
-    let mem_used: u64 = parts[2].trim().parse().ok()?;
-    let mem_total: u64 = parts[3].trim().parse().ok()?;
-    let temperature: u8 = parts[4].trim().parse().ok()?;
-    let power: u16 = parts[5].trim().parse().ok()?;
-    let fan: u8 = parts[6].trim().parse().ok()?;
+    let name = parts[1].trim().to_string();
+    let utilization: u8 = parts[2].trim().parse().ok()?;
+    let mem_used: u64 = parts[3].trim().parse().ok()?;
+    let mem_total: u64 = parts[4].trim().parse().ok()?;
+    let temperature: u8 = parts[5].trim().parse().ok()?;
+    let power: u16 = parts[6].trim().parse().ok()?;
+    let fan: u8 = parts[7].trim().parse().ok()?;
 
     Some(GpuDeviceStats {
         device_id: format!("nvidia{index}"),
         vendor: "nvidia".to_string(),
+        name,
         utilization_pct: Some(utilization),
         vram: Some(VramInfo {
             used_mib: mem_used,
@@ -332,7 +338,7 @@ pub(crate) fn parse_nvidia_smi_csv_line(line: &str) -> Option<GpuDeviceStats> {
 fn query_nvidia_devices() -> Vec<GpuDeviceStats> {
     let output = std::process::Command::new("nvidia-smi")
         .args([
-            "--query-gpu=index,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,fan.speed",
+            "--query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,fan.speed",
             "--format=csv,noheader,nounits",
         ])
         .output()
@@ -387,9 +393,24 @@ fn query_amd_devices() -> Vec<GpuDeviceStats> {
             continue;
         }
 
+        // Add name to the GpuDeviceStats constructor
+        let name = std::fs::read_to_string(card_path.join("name"))
+            .ok()
+            .map(|s| {
+                let trimmed = s.trim().to_string();
+                // Extract text between [ and ] if present, e.g. "Navi 48 [Radeon AI PRO R9700]"
+                if let (Some(start), Some(end)) = (trimmed.find('['), trimmed.find(']')) {
+                    trimmed[start + 1..end].to_string()
+                } else {
+                    trimmed
+                }
+            })
+            .unwrap_or_else(|| "AMD GPU".to_string());
+
         let mut stats = GpuDeviceStats {
             device_id: format!("amd{card_num}"),
             vendor: "amd".to_string(),
+            name,
             utilization_pct: None,
             vram: None,
             temperature_c: None,
@@ -577,13 +598,14 @@ mod tests {
     #[test]
     fn test_parse_nvidia_smi_csv_line() {
         // Simulated nvidia-smi output for one device:
-        // index, utilization.gpu, memory.used, memory.total, temperature.gpu, power.draw, fan.speed
-        let line = "0, 45, 4096, 8192, 62, 150, 70";
+        // index,name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,fan.speed
+        let line = "0, GeForce RTX 4090, 45, 4096, 8192, 62, 150, 70";
         let stats = parse_nvidia_smi_csv_line(line);
         assert!(stats.is_some());
         let stats = stats.unwrap();
         assert_eq!(stats.device_id, "nvidia0");
         assert_eq!(stats.vendor, "nvidia");
+        assert_eq!(stats.name, "GeForce RTX 4090");
         assert_eq!(stats.utilization_pct, Some(45));
         assert_eq!(stats.temperature_c, Some(62));
         assert_eq!(stats.power_w, Some(150));
@@ -596,23 +618,26 @@ mod tests {
 
     #[test]
     fn test_parse_nvidia_smi_csv_line_high_index() {
-        let line = "12, 88, 2048, 24576, 75, 300, 85";
+        let line = "12, GeForce RTX 4090, 88, 2048, 24576, 75, 300, 85";
         let stats = parse_nvidia_smi_csv_line(line);
         assert!(stats.is_some());
         let stats = stats.unwrap();
         assert_eq!(stats.device_id, "nvidia12");
+        assert_eq!(stats.name, "GeForce RTX 4090");
         assert_eq!(stats.utilization_pct, Some(88));
     }
 
     #[test]
     fn test_nvidia_device_id_format() {
-        let line = "0, 10, 100, 200, 30, 50, 60";
+        let line = "0, GeForce RTX 4090, 10, 100, 200, 30, 50, 60";
         let stats = parse_nvidia_smi_csv_line(line).unwrap();
         assert_eq!(stats.device_id, "nvidia0");
+        assert_eq!(stats.name, "GeForce RTX 4090");
 
-        let line = "12, 10, 100, 200, 30, 50, 60";
+        let line = "12, GeForce RTX 4090, 10, 100, 200, 30, 50, 60";
         let stats = parse_nvidia_smi_csv_line(line).unwrap();
         assert_eq!(stats.device_id, "nvidia12");
+        assert_eq!(stats.name, "GeForce RTX 4090");
     }
 
     #[test]
@@ -622,9 +647,9 @@ mod tests {
         // Empty line
         assert!(parse_nvidia_smi_csv_line("").is_none());
         // Non-numeric fields
-        assert!(parse_nvidia_smi_csv_line("abc, 45, 100, 200, 30, 50, 60").is_none());
+        assert!(parse_nvidia_smi_csv_line("abc, 45, 100, 200, 30, 50, 60, 70").is_none());
         // Extra fields
-        assert!(parse_nvidia_smi_csv_line("0, 45, 100, 200, 30, 50, 60, 99").is_none());
+        assert!(parse_nvidia_smi_csv_line("0, name, 45, 100, 200, 30, 50, 60, 99").is_none());
     }
 
     #[test]
@@ -697,6 +722,7 @@ mod tests {
         GpuDeviceStats {
             device_id: device_id.to_string(),
             vendor: "nvidia".to_string(),
+            name: "Test GPU".to_string(),
             utilization_pct: util,
             vram: None,
             temperature_c: None,
@@ -720,6 +746,7 @@ mod tests {
         GpuDeviceStats {
             device_id: device_id.to_string(),
             vendor: "nvidia".to_string(),
+            name: "Test GPU".to_string(),
             utilization_pct: None,
             vram,
             temperature_c: None,

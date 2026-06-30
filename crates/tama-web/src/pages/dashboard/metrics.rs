@@ -57,6 +57,9 @@ pub struct MetricsSnapshot {
 pub struct GpuDeviceStats {
     pub device_id: String,
     pub vendor: String,
+    /// Human-readable GPU name (e.g. "Radeon AI PRO R9700", "GeForce RTX 4090").
+    #[serde(default)]
+    pub name: String,
     pub utilization_pct: Option<u8>,
     pub vram: Option<VramInfo>,
     pub temperature_c: Option<u8>,

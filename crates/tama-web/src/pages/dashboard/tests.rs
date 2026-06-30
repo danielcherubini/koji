@@ -468,6 +468,7 @@ fn make_test_model(id: &str, state: &str, gpu_device: Option<&str>) -> ModelStat
 fn make_test_gpu(device_id: &str, vendor: &str) -> GpuDeviceStats {
     GpuDeviceStats {
         device_id: device_id.to_string(),
+        name: "Test GPU".to_string(),
         vendor: vendor.to_string(),
         utilization_pct: None,
         vram: None,

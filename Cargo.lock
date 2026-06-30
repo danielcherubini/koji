@@ -3797,7 +3797,7 @@ dependencies = [
 
 [[package]]
 name = "tama"
-version = "1.56.0"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "axum-server",
@@ -3818,7 +3818,7 @@ dependencies = [
 
 [[package]]
 name = "tama-core"
-version = "1.56.0"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -3871,7 +3871,7 @@ dependencies = [
 
 [[package]]
 name = "tama-mock"
-version = "1.56.0"
+version = "2.0.0"
 dependencies = [
  "tokio",
  "tracing",
@@ -3880,7 +3880,7 @@ dependencies = [
 
 [[package]]
 name = "tama-web"
-version = "1.56.0"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "async-stream",
