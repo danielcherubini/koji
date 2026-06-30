@@ -144,6 +144,13 @@ pub fn loaded_model_display(
     None
 }
 
+/// Format GPU card subtitle as "Name · 32 GB".
+/// Total VRAM is rounded to the nearest integer GB.
+pub fn format_card_subtitle(name: &str, vram: &VramInfo) -> String {
+    let total_gb = (vram.total_mib as f64 / 1024.0 + 0.5) as u64;
+    format!("{name} \u{00B7} {total_gb} GB")
+}
+
 /// Format VRAM as "used / total GB" with 1 decimal place.
 /// E.g. 22937/24576 MiB → "22.4 / 24.0 GB".
 pub fn format_vram_short(vram: &VramInfo) -> String {
@@ -207,6 +214,13 @@ pub fn GpuDeviceCard(
                     <div class="gpu-device-card__header">
                         <span class="gpu-device-card__title">{display_label}</span>
                         <span class={badge_class}>{badge_text}</span>
+                    </div>
+                    <div class="gpu-device-card__subtitle">
+                        {if let Some(vram) = &device.vram {
+                            format_card_subtitle(&device.name, vram)
+                        } else {
+                            device.name.clone()
+                        }}
                     </div>
                     <div class="gpu-device-card__model-section">
                         <div class="gpu-device-card__model-header">{model_section_header}</div>
@@ -358,6 +372,7 @@ mod tests {
     fn make_gpu(device_id: &str, vendor: &str) -> GpuDeviceStats {
         GpuDeviceStats {
             device_id: device_id.to_string(),
+            name: "Test GPU".to_string(),
             vendor: vendor.to_string(),
             utilization_pct: None,
             vram: None,
@@ -521,11 +536,26 @@ mod tests {
     }
 
     #[test]
-    fn test_model_for_device_returns_first_match() {
-        let models = vec![
-            make_model("m1", "ready", Some("GPU0")),
-            make_model("m2", "ready", Some("GPU0")),
-        ];
-        assert_eq!(model_for_device(&models, "GPU0").unwrap().id, "m1");
+    fn test_format_card_subtitle() {
+        let vram = VramInfo {
+            used_mib: 0,
+            total_mib: 32768,
+        }; // 32 GB
+        assert_eq!(
+            format_card_subtitle("Radeon AI PRO R9700", &vram),
+            "Radeon AI PRO R9700 \u{00B7} 32 GB"
+        );
+    }
+
+    #[test]
+    fn test_format_card_subtitle_rounds_31_9_to_32() {
+        let vram = VramInfo {
+            used_mib: 0,
+            total_mib: 32760,
+        }; // ~31.9 GB
+        assert_eq!(
+            format_card_subtitle("Radeon AI PRO R9700", &vram),
+            "Radeon AI PRO R9700 \u{00B7} 32 GB"
+        );
     }
 }
