@@ -327,9 +327,8 @@ pub fn ModelEditorGeneralForm(
             />
 
             <label class="form-label" for="field-gpu-device">
-                "GPU Device"
-                <span class="form-actions-inline">
-                    <button
+                "GPU Isolation"
+                <button
                         class="form-icon-button"
                         title="Refresh GPU devices"
                         disabled=move || gpu_fetching.get()
@@ -345,8 +344,7 @@ pub fn ModelEditorGeneralForm(
                             }
                         }}
                     </button>
-                </span>
-            </label>
+                </label>
             <select
                 id="field-gpu-device"
                 class="form-select"
@@ -362,9 +360,9 @@ pub fn ModelEditorGeneralForm(
                 <option value="">
                     {move || {
                         if gpu_devices.get().is_empty() && !gpu_fetching.get() {
-                            "Default (could not list devices)"
+                            "None (could not list devices)"
                         } else {
-                            "Default (backend default)"
+                            "None"
                         }
                     }}
                 </option>

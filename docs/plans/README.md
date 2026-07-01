@@ -14,8 +14,8 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Quick Stats
 
-- **Total Plans**: 131
-- **Completed**: 129 ✅
+- **Total Plans**: 132
+- **Completed**: 130 ✅
 - **In Progress**: 0 🚧
 - **Remaining**: 1
 
@@ -29,6 +29,7 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 | Plan | Description | PR / Git References |
 |------|-------------|---------------------|
+| [Model Editor GPU Isolation Polish](2026-07-01-model-editor-gpu-isolation-polish.md) | Rename "GPU Device" to "GPU Isolation", change default to "None", style refresh button | #131 ✅ COMPLETED |
 | [GPU Env-Var Isolation (UUID)](2026-07-01-gpu-env-var-isolation.md) | Replace --device CLI flag with driver-level GPU isolation via env vars (ROCR/CUDA_VISIBLE_DEVICES) using hardware UUIDs; also fix mtp_model API response | #130 ✅ COMPLETED |
 | [GPU Card Name + Separators](2026-06-30-gpu-card-name-separators.md) | Add GPU product name + total VRAM subtitle under GPU label, horizontal separators in left/middle columns | #129 ✅ COMPLETED |
 | [Config TOML to SQLite](2026-06-29-config-to-db.md) | Eliminate config.toml — move all global settings to typed SQLite tables, unified TOML→DB migration, remove loaded_from, 410 Gone for raw TOML endpoints | #128 ✅ COMPLETED |
