@@ -21,6 +21,14 @@ pub async fn cmd_run(config: &Config, server_name: &str, ctx_override: Option<u3
     let default_args = manager.get_default_args(&server.backend, gpu_variant);
     let args = config.build_full_args(server, backend, ctx_override, &default_args)?;
 
+    // Resolve GPU isolation env var for tama run (same as proxy spawn).
+    let gpu_env = server.gpu_device.as_deref().and_then(|device| {
+        if matches!(gpu_variant, "cpu") {
+            return None;
+        }
+        tama_core::gpu::env::resolve_gpu_device_env(device)
+    });
+
     // Resolve backend binary path from DB (priority) or config.path (fallback)
     let backend_path =
         config.resolve_backend_path(&server.backend, server.gpu_variant.as_deref(), &manager)?;
@@ -46,7 +54,8 @@ pub async fn cmd_run(config: &Config, server_name: &str, ctx_override: Option<u3
         health_check,
         config.supervisor.max_restarts,
         config.supervisor.restart_delay_ms,
-    );
+    )
+    .with_gpu_env(gpu_env);
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ProcessEvent>();
 
