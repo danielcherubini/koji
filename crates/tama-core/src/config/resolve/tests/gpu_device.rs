@@ -5,9 +5,10 @@ use tempfile::tempdir;
 
 use super::super::*;
 
-/// When `gpu_device = Some("ROCm0")` and backend is llama_cpp, `--device ROCm0` appears in built args.
+/// When `gpu_device = Some("ROCm0")` and backend is llama_cpp, `--device` is NOT injected by
+/// `build_full_args` — GPU isolation is now handled via env vars at spawn time instead.
 #[test]
-fn test_gpu_device_injected_for_rocm() {
+fn test_gpu_device_not_injected_as_cli_arg() {
     let temp_dir = tempdir().expect("Failed to create temp dir");
     let models_dir = temp_dir.path().join("models");
     let org_dir = models_dir.join("org").join("repo");
@@ -67,8 +68,8 @@ fn test_gpu_device_injected_for_rocm() {
         .expect("build_full_args failed");
 
     assert!(
-        args.windows(2).any(|w| w == ["--device", "ROCm0"]),
-        "Expected --device ROCm0 in args, got: {:?}",
+        !args.iter().any(|a| *a == "--device"),
+        "Expected no --device in args (env-var isolation used instead), got: {:?}",
         args
     );
 }
@@ -141,9 +142,10 @@ fn test_gpu_device_none_no_injection() {
     );
 }
 
-/// When `--device` is already in `server.args`, it is NOT duplicated.
+/// When `--device` is in `server.args` (user-provided), it is preserved by `build_full_args`.
+/// The `gpu_device` config field no longer causes injection — only user-provided flags survive.
 #[test]
-fn test_gpu_device_no_duplicate_when_already_set() {
+fn test_user_device_flag_preserved() {
     let temp_dir = tempdir().expect("Failed to create temp dir");
     let models_dir = temp_dir.path().join("models");
     let org_dir = models_dir.join("org").join("repo");
@@ -202,17 +204,18 @@ fn test_gpu_device_no_duplicate_when_already_set() {
         .build_full_args(&server, &backend, None, &[])
         .expect("build_full_args failed");
 
-    let device_count = args.iter().filter(|a| *a == "--device").count();
-    assert_eq!(
-        device_count, 1,
-        "Expected exactly one --device (no duplicate), got {} in: {:?}",
-        device_count, args
-    );
-    // The user's value should be preserved
+    // The user's --device cuda0 (from server.args) should be preserved
     assert!(
         args.windows(2).any(|w| w == ["--device", "cuda0"]),
         "User's --device cuda0 should be preserved, got: {:?}",
         args
+    );
+    // gpu_device should NOT cause an additional --device injection
+    let device_count = args.iter().filter(|a| *a == "--device").count();
+    assert_eq!(
+        device_count, 1,
+        "Expected exactly one --device (user's only, no injection from gpu_device), got {} in: {:?}",
+        device_count, args
     );
 }
 
