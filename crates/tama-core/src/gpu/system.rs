@@ -38,8 +38,8 @@ fn query_amd_device_names() -> std::collections::HashMap<String, String> {
             };
 
             parsed
-                .into_iter()
-                .filter_map(|(_card_key, info)| {
+                .into_values()
+                .filter_map(|info| {
                     let pci_bus = info.get("PCI Bus")?.clone();
                     let series = info.get("Card Series")?.clone();
                     // Extract short name: "AMD Radeon AI PRO R9700" → "Radeon AI PRO R9700"
