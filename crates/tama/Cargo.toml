@@ -6,6 +6,7 @@ edition.workspace = true
 [[bin]]
 name = "tama"
 path = "src/main.rs"
+required-features = ["ssr"]
 
 [lib]
 name = "tama_web"

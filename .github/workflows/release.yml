@@ -53,7 +53,7 @@ jobs:
 
       - name: Build Leptos WASM frontend
         working-directory: crates/tama
-        run: trunk build --release
+        run: trunk build --release --no-default-features --features csr
 
       - name: Build release
         run: cargo build --release

@@ -59,7 +59,7 @@ jobs:
 
       - name: Build Leptos WASM frontend
         working-directory: crates/tama
-        run: trunk build
+        run: trunk build --no-default-features --features csr
 
       - name: Clippy (workspace)
         run: cargo clippy --workspace --all-targets -- -D warnings
