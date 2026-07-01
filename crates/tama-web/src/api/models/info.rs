@@ -276,7 +276,7 @@ mod tests {
     use tama_core::config::ModelConfig;
     use tama_core::db::queries::ModelConfigRecord;
 
-    fn make_record(mtp_model: Option<String>) -> ModelConfigRecord {
+    fn make_record() -> ModelConfigRecord {
         ModelConfigRecord {
             id: 1,
             repo_id: "test/repo".to_string(),
@@ -287,7 +287,7 @@ mod tests {
             enabled: true,
             selected_quant: None,
             selected_mmproj: None,
-            selected_mtp_model: mtp_model,
+            selected_mtp_model: None,
             context_length: None,
             num_parallel: None,
             kv_unified: false,
@@ -317,14 +317,15 @@ mod tests {
     }
 
     fn make_config(mtp_model: Option<String>) -> ModelConfig {
-        let mut cfg = ModelConfig::default();
-        cfg.mtp_model = mtp_model;
-        cfg
+        ModelConfig {
+            mtp_model,
+            ..Default::default()
+        }
     }
 
     #[test]
     fn test_model_entry_json_includes_mtp_model() {
-        let record = make_record(Some("mtp-test.gguf".to_string()));
+        let record = make_record();
         let config = make_config(Some("mtp-test.gguf".to_string()));
         let tmp = std::path::Path::new("/tmp");
 
@@ -338,7 +339,7 @@ mod tests {
         );
 
         // None case: mtp_model should be null
-        let record_none = make_record(None);
+        let record_none = make_record();
         let config_none = make_config(None);
         let result_none = model_entry_json(1, &record_none, &config_none, tmp, None);
         assert!(
