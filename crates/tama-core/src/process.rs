@@ -92,6 +92,9 @@ pub struct ProcessSupervisor {
     max_restarts: u32,
     restart_delay_ms: u64,
     log_dir: Option<std::path::PathBuf>,
+    /// Optional (env_var_name, value) for driver-level GPU isolation,
+    /// resolved from the model's `gpu_device` before constructing the supervisor.
+    gpu_env: Option<(String, String)>,
 }
 
 impl ProcessSupervisor {
@@ -109,11 +112,18 @@ impl ProcessSupervisor {
             max_restarts,
             restart_delay_ms,
             log_dir: None,
+            gpu_env: None,
         }
     }
 
     pub fn with_log_dir(mut self, log_dir: std::path::PathBuf) -> Self {
         self.log_dir = Some(log_dir);
+        self
+    }
+
+    /// Set the GPU isolation env var applied at spawn.
+    pub fn with_gpu_env(mut self, env: Option<(String, String)>) -> Self {
+        self.gpu_env = env;
         self
     }
 
@@ -135,6 +145,11 @@ impl ProcessSupervisor {
                 .kill_on_drop(true);
 
             configure_backend_command(&mut cmd, exe);
+
+            // Apply GPU isolation env var if configured.
+            if let Some((ref k, ref v)) = self.gpu_env {
+                cmd.env(k, v);
+            }
 
             let mut child = cmd
                 .spawn()
@@ -284,5 +299,54 @@ impl ProcessSupervisor {
 
             tokio::time::sleep(Duration::from_millis(self.restart_delay_ms)).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_process_supervisor_gpu_env_defaults_none() {
+        let supervisor = ProcessSupervisor::new(
+            "test_exe".to_string(),
+            vec![],
+            HealthCheck::default(),
+            3,
+            1000,
+        );
+        assert!(supervisor.gpu_env.is_none());
+    }
+
+    #[test]
+    fn test_process_supervisor_with_gpu_env_sets_value() {
+        let supervisor = ProcessSupervisor::new(
+            "test_exe".to_string(),
+            vec![],
+            HealthCheck::default(),
+            3,
+            1000,
+        )
+        .with_gpu_env(Some((
+            "CUDA_VISIBLE_DEVICES".to_string(),
+            "GPU-abc123".to_string(),
+        )));
+        assert_eq!(
+            supervisor.gpu_env,
+            Some(("CUDA_VISIBLE_DEVICES".to_string(), "GPU-abc123".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_process_supervisor_with_gpu_env_none() {
+        let supervisor = ProcessSupervisor::new(
+            "test_exe".to_string(),
+            vec![],
+            HealthCheck::default(),
+            3,
+            1000,
+        )
+        .with_gpu_env(None);
+        assert!(supervisor.gpu_env.is_none());
     }
 }

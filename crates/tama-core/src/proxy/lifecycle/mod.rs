@@ -154,16 +154,6 @@ impl ProxyState {
         let mut args =
             config.build_full_args(&server_config, backend_config, None, &default_args)?;
 
-        // Map position-based GPU device (e.g. "GPU0") to backend device name
-        // (e.g. "CUDA0", "ROCm0", "Vulkan0") via --list-devices discovery.
-        if let Some(mapped_device) =
-            resolve_gpu_device_to_backend_name(&backend_path, &server_config.gpu_device)
-                .ok()
-                .flatten()
-        {
-            override_arg(&mut args, "--device", &mapped_device);
-        }
-
         override_arg(&mut args, "--host", "127.0.0.1");
         override_arg(&mut args, "--port", &port.to_string());
 
@@ -180,6 +170,13 @@ impl ProxyState {
 
         let mut child = tokio::process::Command::new(&backend_path);
         crate::process::configure_backend_command(&mut child, &backend_path);
+        // Inject GPU isolation env var (ROCR_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES)
+        // only for GPU backends — skip cpu variant. Unknown variants are safe:
+        // resolve_gpu_device_env returns None for unrecognized vendors, making
+        // inject_gpu_env a no-op.
+        if !matches!(gpu_variant, "cpu") {
+            crate::gpu::env::inject_gpu_env(&mut child, &server_config.gpu_device);
+        }
         configure_process_group(&mut child);
         child
             .args(&args)
@@ -669,49 +666,6 @@ fn resolve_gpu_device(config: Option<String>, card_default: Option<String>) -> O
         })
     };
     normalize(config).or_else(|| normalize(card_default))
-}
-
-/// Map a position-based GPU device ID (e.g. "GPU0") to the backend's actual
-/// device name (e.g. "CUDA0", "ROCm0", "Vulkan0") by discovering devices
-/// via `<backend-binary> --list-devices`.
-///
-/// Returns None if:
-/// - `gpu_device` is None or not in "GPU_N" format
-/// - Device discovery fails
-/// - The requested index is out of range
-fn resolve_gpu_device_to_backend_name(
-    backend_path: &std::path::Path,
-    gpu_device: &Option<String>,
-) -> Result<Option<String>> {
-    let Some(device) = gpu_device else {
-        return Ok(None);
-    };
-    let device = device.trim();
-
-    // Only map position-based IDs (GPU0, GPU1, ...). Pass through raw names.
-    let Some(stripped) = device.strip_prefix("GPU") else {
-        // Not a position-based ID — pass through as-is (e.g. "CUDA0").
-        return Ok(Some(device.to_string()));
-    };
-    let Ok(index) = stripped.parse::<usize>() else {
-        return Ok(Some(device.to_string()));
-    };
-
-    // Discover devices via backend binary.
-    let devices = crate::gpu::discover_devices_via_binary(backend_path)?;
-    let count = devices.len();
-
-    // Find the device at the requested index.
-    let Some(device_info) = devices.into_iter().nth(index) else {
-        tracing::warn!(
-            "GPU{} requested but only {} device(s) discovered",
-            index,
-            count
-        );
-        return Ok(None);
-    };
-
-    Ok(Some(device_info.device_id))
 }
 
 #[cfg(test)]

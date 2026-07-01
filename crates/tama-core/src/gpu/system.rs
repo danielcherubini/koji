@@ -11,6 +11,10 @@ use super::vram::VramInfo;
 /// may not match rocm-smi's card indices.
 static AMD_DEVICE_NAMES: OnceLock<std::collections::HashMap<String, String>> = OnceLock::new();
 
+/// Cached map of PCI bus address → GPU hardware UUID from rocm-smi.
+/// Populated on first call to `query_amd_device_uuids` and reused thereafter.
+static AMD_DEVICE_UUIDS: OnceLock<std::collections::HashMap<String, String>> = OnceLock::new();
+
 /// Query rocm-smi for GPU product names and cache the result.
 /// Returns a map of PCI bus address (e.g. "0000:03:00.0") → product name (e.g. "Radeon AI PRO R9700").
 fn query_amd_device_names() -> std::collections::HashMap<String, String> {
@@ -38,8 +42,8 @@ fn query_amd_device_names() -> std::collections::HashMap<String, String> {
             };
 
             parsed
-                .into_iter()
-                .filter_map(|(_card_key, info)| {
+                .into_values()
+                .filter_map(|info| {
                     let pci_bus = info.get("PCI Bus")?.clone();
                     let series = info.get("Card Series")?.clone();
                     // Extract short name: "AMD Radeon AI PRO R9700" → "Radeon AI PRO R9700"
@@ -49,6 +53,44 @@ fn query_amd_device_names() -> std::collections::HashMap<String, String> {
                         .collect::<Vec<_>>()
                         .join(" ");
                     Some((pci_bus, if name.is_empty() { series } else { name }))
+                })
+                .collect()
+        })
+        .clone()
+}
+
+/// Query rocm-smi for GPU hardware UUIDs and cache the result.
+/// Returns a map of PCI bus address (e.g. "0000:03:00.0") → UUID (e.g. "rocm-xxxx-xxxx").
+fn query_amd_device_uuids() -> std::collections::HashMap<String, String> {
+    AMD_DEVICE_UUIDS
+        .get_or_init(|| {
+            let output = std::process::Command::new("rocm-smi")
+                .args(["--showbus", "--showuniqueid", "--json"])
+                .output()
+                .ok();
+
+            let Some(output) = output else {
+                return std::collections::HashMap::new();
+            };
+
+            if !output.status.success() {
+                return std::collections::HashMap::new();
+            }
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let Ok(parsed): Result<
+                std::collections::HashMap<String, std::collections::HashMap<String, String>>,
+                serde_json::Error,
+            > = serde_json::from_str(&stdout) else {
+                return std::collections::HashMap::new();
+            };
+
+            parsed
+                .into_values()
+                .filter_map(|info| {
+                    let pci_bus = info.get("PCI Bus")?.clone();
+                    let unique_id = info.get("Unique ID")?.clone();
+                    Some((pci_bus, unique_id))
                 })
                 .collect()
         })
@@ -82,6 +124,14 @@ pub struct GpuDeviceStats {
     pub power_w: Option<u16>,
     /// Fan speed percentage (0–100), None if unavailable.
     pub fan_pct: Option<u8>,
+    /// PCI bus address (e.g. "0000:03:00.0") used for vendor-tool correlation.
+    /// None for NVIDIA (uses index directly) or when unavailable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pci_bus: Option<String>,
+    /// Hardware UUID for env-var GPU isolation (e.g. "GPU-4b2c1a9f-...").
+    /// None when unavailable (Vulkan/Metal/no tooling).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uuid: Option<String>,
 }
 
 /// A snapshot of system-level hardware metrics.
@@ -291,6 +341,33 @@ pub struct MetricsSnapshot {
     pub current: MetricCurrent,
 }
 ///
+/// Sort devices by (vendor, device_index) and assign position-based IDs (GPU0, GPU1, ...).
+/// Extracted so it can be tested without subprocesses.
+fn assign_position_ids(gpus: &mut [GpuDeviceStats]) {
+    gpus.sort_by(|a, b| {
+        let extract_index = |id: &str| {
+            let numeric_part: String = id.chars().skip_while(|c| c.is_alphabetic()).collect();
+            numeric_part.parse::<usize>().unwrap_or(usize::MAX)
+        };
+        a.vendor
+            .cmp(&b.vendor)
+            .then_with(|| extract_index(&a.device_id).cmp(&extract_index(&b.device_id)))
+    });
+    for (i, gpu) in gpus.iter_mut().enumerate() {
+        gpu.device_id = format!("GPU{i}");
+    }
+}
+
+/// Detect all GPU devices and assign position-based IDs (GPU0, GPU1, ...).
+/// Returns devices sorted by (vendor, device_index) with UUIDs populated.
+/// Blocks on subprocesses (nvidia-smi, sysfs reads); call via `tokio::task::spawn_blocking`.
+pub fn detect_gpu_devices() -> Vec<GpuDeviceStats> {
+    let mut gpus = query_nvidia_devices();
+    gpus.extend(query_amd_devices());
+    assign_position_ids(&mut gpus);
+    gpus
+}
+
 /// The caller is responsible for passing a `System` that persists across
 /// calls so that `sysinfo` can compute CPU deltas correctly. This function
 /// calls `refresh_cpu_usage` and `refresh_memory` once — no internal sleep.
@@ -304,18 +381,7 @@ pub fn collect_system_metrics_with(sys: &mut System) -> SystemMetrics {
     let ram_total_mib = sys.total_memory() / 1024 / 1024;
 
     // Per-GPU device stats
-    let mut gpus = query_nvidia_devices();
-    gpus.extend(query_amd_devices());
-    // Sort by (vendor, device_index) for stable ordering
-    gpus.sort_by(|a, b| {
-        a.vendor
-            .cmp(&b.vendor)
-            .then_with(|| a.device_id.cmp(&b.device_id))
-    });
-    // Assign position-based device IDs (GPU0, GPU1, ...) after sorting.
-    for (i, gpu) in gpus.iter_mut().enumerate() {
-        gpu.device_id = format!("GPU{i}");
-    }
+    let gpus = detect_gpu_devices();
 
     // Aggregate metrics derived from per-device data
     let gpu_utilization_pct = aggregate_utilization_mean(&gpus);
@@ -351,24 +417,29 @@ pub fn collect_system_metrics() -> SystemMetrics {
 
 /// Parse a single line of nvidia-smi CSV output into `GpuDeviceStats`.
 ///
-/// Expected format (8 comma-separated fields, no units):
-/// `index,name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,fan.speed`
+/// Expected format (9 comma-separated fields, no units):
+/// `index,name,uuid,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,fan.speed`
 ///
 /// Returns `None` if the line is malformed or fields cannot be parsed.
 pub(crate) fn parse_nvidia_smi_csv_line(line: &str) -> Option<GpuDeviceStats> {
     let parts: Vec<&str> = line.split(",").collect();
-    if parts.len() != 8 {
+    if parts.len() != 9 {
         return None;
     }
 
     let index: u32 = parts[0].trim().parse().ok()?;
     let name = parts[1].trim().to_string();
-    let utilization: u8 = parts[2].trim().parse().ok()?;
-    let mem_used: u64 = parts[3].trim().parse().ok()?;
-    let mem_total: u64 = parts[4].trim().parse().ok()?;
-    let temperature: u8 = parts[5].trim().parse().ok()?;
-    let power: u16 = parts[6].trim().parse().ok()?;
-    let fan: u8 = parts[7].trim().parse().ok()?;
+    let uuid = if parts[2].trim().is_empty() {
+        None
+    } else {
+        Some(parts[2].trim().to_string())
+    };
+    let utilization: u8 = parts[3].trim().parse().ok()?;
+    let mem_used: u64 = parts[4].trim().parse().ok()?;
+    let mem_total: u64 = parts[5].trim().parse().ok()?;
+    let temperature: u8 = parts[6].trim().parse().ok()?;
+    let power: u16 = parts[7].trim().parse().ok()?;
+    let fan: u8 = parts[8].trim().parse().ok()?;
 
     Some(GpuDeviceStats {
         device_id: format!("nvidia{index}"),
@@ -382,6 +453,8 @@ pub(crate) fn parse_nvidia_smi_csv_line(line: &str) -> Option<GpuDeviceStats> {
         temperature_c: Some(temperature),
         power_w: Some(power),
         fan_pct: Some(fan),
+        pci_bus: None,
+        uuid,
     })
 }
 
@@ -390,7 +463,7 @@ pub(crate) fn parse_nvidia_smi_csv_line(line: &str) -> Option<GpuDeviceStats> {
 fn query_nvidia_devices() -> Vec<GpuDeviceStats> {
     let output = std::process::Command::new("nvidia-smi")
         .args([
-            "--query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,fan.speed",
+            "--query-gpu=index,name,uuid,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,fan.speed",
             "--format=csv,noheader,nounits",
         ])
         .output()
@@ -474,6 +547,11 @@ fn query_amd_devices() -> Vec<GpuDeviceStats> {
                     .unwrap_or_else(|| "AMD GPU".to_string())
             });
 
+        // Look up UUID from cached rocm-smi query, keyed by PCI bus address.
+        let uuid = pci_bus
+            .as_ref()
+            .and_then(|pci| query_amd_device_uuids().get(pci).cloned());
+
         let mut stats = GpuDeviceStats {
             device_id: format!("amd{card_num}"),
             vendor: "amd".to_string(),
@@ -483,6 +561,8 @@ fn query_amd_devices() -> Vec<GpuDeviceStats> {
             temperature_c: None,
             power_w: None,
             fan_pct: None,
+            pci_bus: pci_bus.clone(),
+            uuid,
         };
 
         // GPU utilization from gpu_busy_percent
@@ -665,14 +745,15 @@ mod tests {
     #[test]
     fn test_parse_nvidia_smi_csv_line() {
         // Simulated nvidia-smi output for one device:
-        // index,name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,fan.speed
-        let line = "0, GeForce RTX 4090, 45, 4096, 8192, 62, 150, 70";
+        // index,name,uuid,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,fan.speed
+        let line = "0, GeForce RTX 4090, GPU-abc123, 45, 4096, 8192, 62, 150, 70";
         let stats = parse_nvidia_smi_csv_line(line);
         assert!(stats.is_some());
         let stats = stats.unwrap();
         assert_eq!(stats.device_id, "nvidia0");
         assert_eq!(stats.vendor, "nvidia");
         assert_eq!(stats.name, "GeForce RTX 4090");
+        assert_eq!(stats.uuid, Some("GPU-abc123".to_string()));
         assert_eq!(stats.utilization_pct, Some(45));
         assert_eq!(stats.temperature_c, Some(62));
         assert_eq!(stats.power_w, Some(150));
@@ -685,26 +766,29 @@ mod tests {
 
     #[test]
     fn test_parse_nvidia_smi_csv_line_high_index() {
-        let line = "12, GeForce RTX 4090, 88, 2048, 24576, 75, 300, 85";
+        let line = "12, GeForce RTX 4090, GPU-def456, 88, 2048, 24576, 75, 300, 85";
         let stats = parse_nvidia_smi_csv_line(line);
         assert!(stats.is_some());
         let stats = stats.unwrap();
         assert_eq!(stats.device_id, "nvidia12");
         assert_eq!(stats.name, "GeForce RTX 4090");
+        assert_eq!(stats.uuid, Some("GPU-def456".to_string()));
         assert_eq!(stats.utilization_pct, Some(88));
     }
 
     #[test]
     fn test_nvidia_device_id_format() {
-        let line = "0, GeForce RTX 4090, 10, 100, 200, 30, 50, 60";
+        let line = "0, GeForce RTX 4090, GPU-xyz, 10, 100, 200, 30, 50, 60";
         let stats = parse_nvidia_smi_csv_line(line).unwrap();
         assert_eq!(stats.device_id, "nvidia0");
         assert_eq!(stats.name, "GeForce RTX 4090");
+        assert_eq!(stats.uuid, Some("GPU-xyz".to_string()));
 
-        let line = "12, GeForce RTX 4090, 10, 100, 200, 30, 50, 60";
+        let line = "12, GeForce RTX 4090, GPU-uvw, 10, 100, 200, 30, 50, 60";
         let stats = parse_nvidia_smi_csv_line(line).unwrap();
         assert_eq!(stats.device_id, "nvidia12");
         assert_eq!(stats.name, "GeForce RTX 4090");
+        assert_eq!(stats.uuid, Some("GPU-uvw".to_string()));
     }
 
     #[test]
@@ -714,9 +798,9 @@ mod tests {
         // Empty line
         assert!(parse_nvidia_smi_csv_line("").is_none());
         // Non-numeric fields
-        assert!(parse_nvidia_smi_csv_line("abc, 45, 100, 200, 30, 50, 60, 70").is_none());
-        // Extra fields
-        assert!(parse_nvidia_smi_csv_line("0, name, 45, 100, 200, 30, 50, 60, 99").is_none());
+        assert!(parse_nvidia_smi_csv_line("abc, name, uuid, 45, 100, 200, 30, 50, 60").is_none());
+        // Extra fields (10 instead of 9)
+        assert!(parse_nvidia_smi_csv_line("0, name, uuid, 45, 100, 200, 30, 50, 60, 99").is_none());
     }
 
     #[test]
@@ -795,6 +879,8 @@ mod tests {
             temperature_c: None,
             power_w: None,
             fan_pct: None,
+            pci_bus: None,
+            uuid: None,
         }
     }
 
@@ -819,6 +905,137 @@ mod tests {
             temperature_c: None,
             power_w: None,
             fan_pct: None,
+            pci_bus: None,
+            uuid: None,
         }
+    }
+
+    // ── assign_position_ids tests ──────────────────────────────────────
+
+    #[test]
+    fn test_assign_position_ids_sorts_and_assigns() {
+        let mut gpus = vec![
+            GpuDeviceStats {
+                device_id: "nvidia10".to_string(),
+                vendor: "nvidia".to_string(),
+                name: "RTX 4090".to_string(),
+                utilization_pct: None,
+                vram: None,
+                temperature_c: None,
+                power_w: None,
+                fan_pct: None,
+                pci_bus: None,
+                uuid: None,
+            },
+            GpuDeviceStats {
+                device_id: "nvidia2".to_string(),
+                vendor: "nvidia".to_string(),
+                name: "RTX 3090".to_string(),
+                utilization_pct: None,
+                vram: None,
+                temperature_c: None,
+                power_w: None,
+                fan_pct: None,
+                pci_bus: None,
+                uuid: None,
+            },
+        ];
+        assign_position_ids(&mut gpus);
+        // nvidia2 should come before nvidia10
+        assert_eq!(gpus.len(), 2);
+        assert_eq!(gpus[0].device_id, "GPU0");
+        assert_eq!(gpus[0].vendor, "nvidia");
+        assert_eq!(gpus[0].name, "RTX 3090");
+        assert_eq!(gpus[1].device_id, "GPU1");
+        assert_eq!(gpus[1].vendor, "nvidia");
+        assert_eq!(gpus[1].name, "RTX 4090");
+    }
+
+    #[test]
+    fn test_assign_position_ids_multiple_per_vendor() {
+        let mut gpus = vec![
+            GpuDeviceStats {
+                device_id: "nvidia1".to_string(),
+                vendor: "nvidia".to_string(),
+                name: "RTX 4090".to_string(),
+                utilization_pct: None,
+                vram: None,
+                temperature_c: None,
+                power_w: None,
+                fan_pct: None,
+                pci_bus: None,
+                uuid: None,
+            },
+            GpuDeviceStats {
+                device_id: "amd0".to_string(),
+                vendor: "amd".to_string(),
+                name: "Radeon RX 7900".to_string(),
+                utilization_pct: None,
+                vram: None,
+                temperature_c: None,
+                power_w: None,
+                fan_pct: None,
+                pci_bus: None,
+                uuid: None,
+            },
+            GpuDeviceStats {
+                device_id: "nvidia0".to_string(),
+                vendor: "nvidia".to_string(),
+                name: "RTX 3090".to_string(),
+                utilization_pct: None,
+                vram: None,
+                temperature_c: None,
+                power_w: None,
+                fan_pct: None,
+                pci_bus: None,
+                uuid: None,
+            },
+            GpuDeviceStats {
+                device_id: "amd1".to_string(),
+                vendor: "amd".to_string(),
+                name: "Radeon RX 6900".to_string(),
+                utilization_pct: None,
+                vram: None,
+                temperature_c: None,
+                power_w: None,
+                fan_pct: None,
+                pci_bus: None,
+                uuid: None,
+            },
+        ];
+        assign_position_ids(&mut gpus);
+        // Expected order: amd0, amd1, nvidia0, nvidia1
+        assert_eq!(gpus.len(), 4);
+        assert_eq!(gpus[0].device_id, "GPU0");
+        assert_eq!(gpus[0].vendor, "amd");
+        assert_eq!(gpus[0].name, "Radeon RX 7900");
+        assert_eq!(gpus[1].device_id, "GPU1");
+        assert_eq!(gpus[1].vendor, "amd");
+        assert_eq!(gpus[1].name, "Radeon RX 6900");
+        assert_eq!(gpus[2].device_id, "GPU2");
+        assert_eq!(gpus[2].vendor, "nvidia");
+        assert_eq!(gpus[2].name, "RTX 3090");
+        assert_eq!(gpus[3].device_id, "GPU3");
+        assert_eq!(gpus[3].vendor, "nvidia");
+        assert_eq!(gpus[3].name, "RTX 4090");
+    }
+
+    #[test]
+    fn test_assign_position_ids_empty() {
+        let mut gpus: Vec<GpuDeviceStats> = vec![];
+        assign_position_ids(&mut gpus);
+        assert!(gpus.is_empty());
+    }
+
+    #[test]
+    fn test_parse_nvidia_smi_csv_empty_uuid() {
+        // Some older nvidia-smi versions return empty UUID field
+        let line = "0, GeForce RTX 4090, , 45, 4096, 8192, 62, 150, 70";
+        let stats = parse_nvidia_smi_csv_line(line);
+        assert!(stats.is_some());
+        let stats = stats.unwrap();
+        assert_eq!(stats.uuid, None);
+        assert_eq!(stats.device_id, "nvidia0");
+        assert_eq!(stats.utilization_pct, Some(45));
     }
 }

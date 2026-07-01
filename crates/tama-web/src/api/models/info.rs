@@ -108,6 +108,7 @@ fn model_entry_json(
         "model": m.model,
         "quant": m.quant,
         "mmproj": m.mmproj,
+        "mtp_model": m.mtp_model,
         "args": m.args,
         "sampling": m.sampling,
         "enabled": record.enabled,
@@ -266,5 +267,84 @@ pub async fn get_model(
             }
         }
         Err((status, body)) => (status, Json(body)).into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tama_core::config::ModelConfig;
+    use tama_core::db::queries::ModelConfigRecord;
+
+    fn make_record() -> ModelConfigRecord {
+        ModelConfigRecord {
+            id: 1,
+            repo_id: "test/repo".to_string(),
+            display_name: None,
+            backend: "llama-cpp".to_string(),
+            gpu_variant: None,
+            gpu_device: None,
+            enabled: true,
+            selected_quant: None,
+            selected_mmproj: None,
+            selected_mtp_model: None,
+            context_length: None,
+            num_parallel: None,
+            kv_unified: false,
+            gpu_layers: None,
+            cache_type_k: None,
+            cache_type_v: None,
+            port: None,
+            args: None,
+            sampling: None,
+            modalities: None,
+            profile: None,
+            api_name: None,
+            health_check: None,
+            hf_format: None,
+            hf_base_model: None,
+            hf_pipeline_tag: None,
+            hf_total_params: None,
+            hf_active_params: None,
+            hf_architecture_type: None,
+            hf_context_length: None,
+            hf_num_layers: None,
+            hf_last_modified: None,
+            spec_decoding: None,
+            created_at: "2025-01-01T00:00:00Z".to_string(),
+            updated_at: "2025-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    fn make_config(mtp_model: Option<String>) -> ModelConfig {
+        ModelConfig {
+            mtp_model,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_model_entry_json_includes_mtp_model() {
+        let record = make_record();
+        let config = make_config(Some("mtp-test.gguf".to_string()));
+        let tmp = std::path::Path::new("/tmp");
+
+        let result = model_entry_json(1, &record, &config, tmp, None);
+
+        // Some case: mtp_model should be present
+        assert_eq!(
+            result.get("mtp_model").and_then(|v| v.as_str()),
+            Some("mtp-test.gguf"),
+            "mtp_model should be included in API JSON when set"
+        );
+
+        // None case: mtp_model should be null
+        let record_none = make_record();
+        let config_none = make_config(None);
+        let result_none = model_entry_json(1, &record_none, &config_none, tmp, None);
+        assert!(
+            result_none["mtp_model"].is_null(),
+            "mtp_model should be null in API JSON when not set"
+        );
     }
 }
