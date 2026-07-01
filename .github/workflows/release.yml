@@ -52,7 +52,7 @@ jobs:
           version: latest
 
       - name: Build Leptos WASM frontend
-        working-directory: crates/tama-web
+        working-directory: crates/tama
         run: trunk build --release
 
       - name: Build release
@@ -79,7 +79,7 @@ jobs:
       - name: Build .rpm package
         run: |
           strip -s target/release/tama
-          cargo generate-rpm -p crates/tama-cli
+          cargo generate-rpm -p crates/tama
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -125,10 +125,8 @@ jobs:
 
             ## After install
 
-            1. Edit your config: `tama config edit`
-            2. Set your backend path and model
-            3. Start the service: `tama service install`
-            4. Open the web UI: http://localhost:11435
+            1. Open the web UI: http://localhost:11435
+            2. Configure your backends and models from the dashboard
           files: |
             linux/**/tama
             linux/**/tama-x86_64-unknown-linux-gnu.tar.gz
