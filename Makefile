@@ -6,39 +6,39 @@ run: build-frontend-dev
 
 # Run Leptos frontend dev server with hot reload on http://localhost:8080
 dev: wasm-target
-	cd crates/tama-web && trunk serve --port 8080 --public-url /tama
+	cd crates/tama && trunk serve --port 8080 --public-url /tama
 
 # Ensure the wasm32 target is installed (idempotent — safe to run multiple times)
 wasm-target:
 	rustup target add wasm32-unknown-unknown
 
-# Build the Leptos WASM frontend into crates/tama-web/dist/ (required before any Rust release build)
+# Build the Leptos WASM frontend into crates/tama/dist/ (required before any Rust release build)
 build-frontend: wasm-target
-	cd crates/tama-web && trunk build --release --public-url /tama
+	cd crates/tama && trunk build --release --public-url /tama
 
 # Development WASM build (unoptimised, faster iteration)
 build-frontend-dev: wasm-target
-	cd crates/tama-web && trunk build --public-url /tama
+	cd crates/tama && trunk build --public-url /tama
 
 # Full release build: frontend first, then the Rust workspace
 build: build-frontend
 	cargo build --release --workspace
 
-# Install tama CLI (includes web UI via default feature)
+# Install tama binary (includes web UI via default feature)
 install: build-frontend
-	cargo install --path crates/tama-cli --force
+	cargo install --path crates/tama --force
 
 # Stop service, rebuild + reinstall (frontend + backend), restart service
 update: build-frontend
 	cargo build --release --workspace
 	tama service stop || true
-	cargo install --path crates/tama-cli --force
+	cargo install --path crates/tama --force
 	tama service start
 
-# Run all tests including the tama-web SSR integration tests
+# Run all tests including the tama SSR integration tests
 test: build-frontend-dev
 	cargo test --workspace
-	cargo test --package tama-web --features ssr
+	cargo test --package tama --features ssr
 
 check: fmt-check clippy test
 
@@ -48,14 +48,14 @@ fmt:
 fmt-check:
 	cargo fmt --all --check
 
-# Lint everything including the server-side tama-web code
+# Lint everything including the server-side tama code
 clippy:
 	cargo clippy --workspace --all-targets -- -D warnings
-	cargo clippy --package tama-web --features ssr -- -D warnings
+	cargo clippy --package tama --features ssr -- -D warnings
 
 clean:
 	cargo clean
-	rm -rf crates/tama-web/dist
+	rm -rf crates/tama/dist
 
 # Aliases kept for backwards compat — both now build the main tama binary
 build-web: build

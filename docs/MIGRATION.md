@@ -55,9 +55,9 @@ existing user data on first run.
   `kronk` / `Kronk`).
 - **Windows firewall rule** is labelled `Tama: <name>` (was `Kronk: <name>`).
 - **Deprecated `kronk proxy start` subcommand** has been removed. Use
-  `tama serve` instead.
-- **Project layout:** crates are now `tama-core`, `tama-cli`, `tama-mock`,
-  `tama-web` (were `kronk-*`).
+  `tama service start` instead.
+- **Project layout:** crates are now `tama-core`, `tama`, `tama-mock`
+  (were `kronk-*`).
 - **Repository URL:** `https://github.com/danielcherubini/tama`.
 
 ### Automatic data directory migration

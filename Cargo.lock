@@ -3839,27 +3839,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tama-cli"
-version = "2.0.0"
-dependencies = [
- "anyhow",
- "axum-server",
- "chrono",
- "clap",
- "directories",
- "inquire",
- "reqwest 0.12.28",
- "serde_json",
- "tama",
- "tama-core",
- "tempfile",
- "tokio",
- "toml 0.8.23",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "tama-core"
 version = "2.0.0"
 dependencies = [
