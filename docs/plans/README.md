@@ -14,9 +14,9 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Quick Stats
 
-- **Total Plans**: 129
+- **Total Plans**: 130
 - **Completed**: 128 ✅
-- **In Progress**: 0
+- **In Progress**: 1 🚧
 - **Remaining**: 1
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
@@ -24,6 +24,12 @@ This directory contains implementation plans for the Tama project. Each plan doc
 ---
 
 ## Completed Plans
+
+### In Progress
+
+| Plan | Description | PR / Git References |
+|------|-------------|---------------------|
+| [MTP Draft Model Fixes](2026-07-01-mtp-draft-model-fixes.md) | Fix MTP Draft Model selector returning "(none)" + mirror --device to --device-draft | 🚧 IN PROGRESS |
 
 ### Recently Completed
 
