@@ -1,5 +1,6 @@
 pub mod detect;
 pub mod discover;
+pub mod env;
 pub mod system;
 pub mod vram;
 
