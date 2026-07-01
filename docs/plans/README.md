@@ -15,9 +15,9 @@ This directory contains implementation plans for the Tama project. Each plan doc
 ## Quick Stats
 
 - **Total Plans**: 131
-- **Completed**: 128 ✅
-- **In Progress**: 1 🚧
-- **Remaining**: 2
+- **Completed**: 129 ✅
+- **In Progress**: 0 🚧
+- **Remaining**: 1
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
 
@@ -25,16 +25,11 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Completed Plans
 
-### In Progress
-
-| Plan | Description | PR / Git References |
-|------|-------------|---------------------|
-| [GPU Env-Var Isolation (UUID)](2026-07-01-gpu-env-var-isolation.md) | Replace --device CLI flag with driver-level GPU isolation via env vars (ROCR/CUDA_VISIBLE_DEVICES) using hardware UUIDs; also fix mtp_model API response | 🚧 IN PROGRESS |
-
 ### Recently Completed
 
 | Plan | Description | PR / Git References |
 |------|-------------|---------------------|
+| [GPU Env-Var Isolation (UUID)](2026-07-01-gpu-env-var-isolation.md) | Replace --device CLI flag with driver-level GPU isolation via env vars (ROCR/CUDA_VISIBLE_DEVICES) using hardware UUIDs; also fix mtp_model API response | #130 ✅ COMPLETED |
 | [GPU Card Name + Separators](2026-06-30-gpu-card-name-separators.md) | Add GPU product name + total VRAM subtitle under GPU label, horizontal separators in left/middle columns | #129 ✅ COMPLETED |
 | [Config TOML to SQLite](2026-06-29-config-to-db.md) | Eliminate config.toml — move all global settings to typed SQLite tables, unified TOML→DB migration, remove loaded_from, 410 Gone for raw TOML endpoints | #128 ✅ COMPLETED |
 
@@ -275,6 +270,7 @@ Longer-term features that don't yet have implementation plans:
 | [Dashboard Time Series Graphs](2026-04-06-dashboard-time-series-graphs.md) | Superseded by persist-dashboard-metrics and dashboard-redesign | 🔁 SUPERSEDED |
 | [Wildcard Model Routing (whatevers-hot-n-fresh)](2026-05-19-whatevers-hot-n-fresh.md) | Superseded by Model Aliases (2026-05-26) | 🔁 SUPERSEDED |
 | [Split Remaining Long Files (draft)](todo/2026-05-06-split-remaining-files-spec.md) | Superseded by updated plan (2026-05-27) | 🔁 SUPERSEDED |
+| [MTP Draft Model Fixes](2026-07-01-mtp-draft-model-fixes.md) | Superseded by GPU Env-Var Isolation (UUID) plan (2026-07-01) | 🔁 SUPERSEDED |
 
 ## Early Drafts & Specs
 
