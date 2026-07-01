@@ -25,9 +25,54 @@ pub fn resolve_gpu_device_env_from(
     if device.is_empty() {
         return None;
     }
-    let gpu = gpus.iter().find(|g| g.device_id == device)?;
-    let uuid = gpu.uuid.as_ref()?;
-    vendor_env_var(&gpu.vendor, uuid)
+    // Primary: match position-based ID (GPU0, GPU1, ...)
+    if let Some(gpu) = gpus.iter().find(|g| g.device_id == device) {
+        if let Some(uuid) = gpu.uuid.as_ref() {
+            return vendor_env_var(&gpu.vendor, uuid);
+        }
+    }
+    // Fallback: match legacy vendor-prefixed ID (ROCm0, CUDA0, nvidia0, amd0)
+    if let Some(gpu) = resolve_legacy_device_id(device, gpus) {
+        if let Some(uuid) = gpu.uuid.as_ref() {
+            return vendor_env_var(&gpu.vendor, uuid);
+        }
+    }
+    None
+}
+
+/// Resolve a legacy vendor-prefixed device ID (e.g. "ROCm0", "CUDA0") to a GPU.
+fn resolve_legacy_device_id<'a>(
+    device: &str,
+    gpus: &'a [GpuDeviceStats],
+) -> Option<&'a GpuDeviceStats> {
+    // Try to split into vendor prefix + numeric index
+    let mut chars = device.chars().peekable();
+    let first = chars.next()?;
+    if !first.is_alphabetic() {
+        return None;
+    }
+    let mut vendor_str = String::new();
+    vendor_str.push(first);
+    while let Some(&c) = chars.peek() {
+        if c.is_alphabetic() {
+            vendor_str.push(c);
+            chars.next();
+        } else {
+            break;
+        }
+    }
+    let index_str: String = chars.collect();
+    let index: usize = index_str.parse().ok()?;
+
+    // Map vendor string to our internal vendor name
+    let vendor = match vendor_str.to_lowercase().as_str() {
+        "rocm" | "amd" => "amd",
+        "cuda" | "nvidia" => "nvidia",
+        _ => return None,
+    };
+
+    // Find the (index)th device of this vendor in the sorted list
+    gpus.iter().filter(|g| g.vendor == vendor).nth(index)
 }
 
 /// Resolve a `gpu_device` string (e.g. "GPU1") to (env_var_name, value) for
@@ -148,6 +193,49 @@ mod tests {
     fn test_resolve_gpu_device_env_from_whitespace() {
         let gpus = vec![build_test_gpu("GPU0", "nvidia", Some("GPU-uuid"))];
         let result = resolve_gpu_device_env_from("  ", &gpus);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_resolve_legacy_device_id_rocm0() {
+        let gpus = vec![
+            build_test_gpu("GPU0", "amd", Some("rocm-uuid-0")),
+            build_test_gpu("GPU1", "nvidia", Some("cuda-uuid-0")),
+            build_test_gpu("GPU2", "amd", Some("rocm-uuid-1")),
+        ];
+        // ROCm0 should resolve to the first AMD device
+        let result = resolve_gpu_device_env_from("ROCm0", &gpus);
+        assert_eq!(
+            result,
+            Some((
+                "ROCR_VISIBLE_DEVICES".to_string(),
+                "rocm-uuid-0".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn test_resolve_legacy_device_id_cuda1() {
+        let gpus = vec![
+            build_test_gpu("GPU0", "amd", Some("rocm-uuid-0")),
+            build_test_gpu("GPU1", "nvidia", Some("cuda-uuid-0")),
+            build_test_gpu("GPU2", "nvidia", Some("cuda-uuid-1")),
+        ];
+        // CUDA1 should resolve to the second NVIDIA device
+        let result = resolve_gpu_device_env_from("CUDA1", &gpus);
+        assert_eq!(
+            result,
+            Some((
+                "CUDA_VISIBLE_DEVICES".to_string(),
+                "cuda-uuid-1".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn test_resolve_legacy_device_id_invalid() {
+        let gpus = vec![build_test_gpu("GPU0", "nvidia", Some("GPU-uuid"))];
+        let result = resolve_gpu_device_env_from("InvalidID", &gpus);
         assert_eq!(result, None);
     }
 }
