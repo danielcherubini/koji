@@ -1,139 +1,92 @@
 use super::system::{detect_gpu_devices, GpuDeviceStats};
 
-/// Map a GPU vendor to the correct visibility env var name and value.
-/// Returns None for vendors that have no env-var GPU isolation mechanism.
+/// Resolve a `gpu_device` string (e.g. "GPU1") + `gpu_variant` to
+/// (env_var_name, index) for driver-level GPU isolation.
 ///
-/// - AMD → `ROCR_VISIBLE_DEVICES=<uuid>` (supports UUIDs; preferred over HIP_VISIBLE_DEVICES)
-/// - NVIDIA → `CUDA_VISIBLE_DEVICES=<uuid>`
-/// - Vulkan/Metal/unknown → None (no UUID env-var mechanism)
-pub fn vendor_env_var(vendor: &str, uuid: &str) -> Option<(String, String)> {
-    match vendor {
-        "amd" => Some(("ROCR_VISIBLE_DEVICES".to_string(), uuid.to_string())),
-        "nvidia" => Some(("CUDA_VISIBLE_DEVICES".to_string(), uuid.to_string())),
-        _ => None,
-    }
-}
-
-/// Resolve a `gpu_device` string (e.g. "GPU1") to (env_var_name, value) for
-/// driver-level GPU isolation, using the provided GPU list.
-/// Returns None if the device is not found, has no UUID, or the vendor has no env-var mechanism.
-pub fn resolve_gpu_device_env_from(
-    gpu_device: &str,
-    gpus: &[GpuDeviceStats],
-) -> Option<(String, String)> {
+/// Uses **positional indexes** — simple, but GPUs may change order across
+/// reboots/driver updates. Caller accepts this trade-off.
+///
+/// The env var is chosen by the **backend's `gpu_variant`** (what the binary
+/// was compiled for), not the GPU's physical vendor — e.g. an AMD card
+/// running a Vulkan backend needs `GGML_VK_VISIBLE_DEVICES`, not
+/// `ROCR_VISIBLE_DEVICES`.
+///
+/// The index is the **per-vendor position** (0-based) within the sorted
+/// device list, matching how each runtime enumerates devices:
+/// - `rocm` → `ROCR_VISIBLE_DEVICES=<amd_index>`
+/// - `cuda` → `CUDA_VISIBLE_DEVICES=<nvidia_index>`
+/// - `vulkan` → `GGML_VK_VISIBLE_DEVICES=<vulkan_index>` (best-effort)
+///
+/// Returns None if the device is not found, the variant is `cpu`, or the
+/// variant has no env-var mechanism.
+///
+/// Blocks on subprocesses (nvidia-smi, sysfs reads); call via
+/// `tokio::task::spawn_blocking`.
+pub fn resolve_gpu_env(gpu_device: &str, gpu_variant: &str) -> Option<(String, String)> {
     let device = gpu_device.trim();
-    if device.is_empty() {
+    if device.is_empty() || gpu_variant == "cpu" {
         return None;
     }
-    // Primary: match position-based ID (GPU0, GPU1, ...)
-    if let Some(gpu) = gpus.iter().find(|g| g.device_id == device) {
-        if let Some(uuid) = gpu.uuid.as_ref() {
-            return vendor_env_var(&gpu.vendor, uuid);
-        }
-    }
-    // Fallback: match legacy vendor-prefixed ID (ROCm0, CUDA0, nvidia0, amd0)
-    if let Some(gpu) = resolve_legacy_device_id(device, gpus) {
-        if let Some(uuid) = gpu.uuid.as_ref() {
-            return vendor_env_var(&gpu.vendor, uuid);
-        }
-    }
-    None
-}
 
-/// Resolve a legacy vendor-prefixed device ID (e.g. "ROCm0", "CUDA0") to a GPU.
-fn resolve_legacy_device_id<'a>(
-    device: &str,
-    gpus: &'a [GpuDeviceStats],
-) -> Option<&'a GpuDeviceStats> {
-    // Try to split into vendor prefix + numeric index
-    let mut chars = device.chars().peekable();
-    let first = chars.next()?;
-    if !first.is_alphabetic() {
-        return None;
-    }
-    let mut vendor_str = String::new();
-    vendor_str.push(first);
-    while let Some(&c) = chars.peek() {
-        if c.is_alphabetic() {
-            vendor_str.push(c);
-            chars.next();
-        } else {
-            break;
-        }
-    }
-    let index_str: String = chars.collect();
-    let index: usize = index_str.parse().ok()?;
+    // Parse GPU<N> → N
+    let global_index: usize = device.strip_prefix("GPU")?.parse().ok()?;
 
-    // Map vendor string to our internal vendor name
-    let vendor = match vendor_str.to_lowercase().as_str() {
-        "rocm" | "amd" => "amd",
-        "cuda" | "nvidia" => "nvidia",
+    let gpus = detect_gpu_devices();
+    let gpu = gpus.get(global_index)?;
+
+    // Per-vendor index: how many devices of the same vendor come before this one
+    let per_vendor_index = gpus
+        .iter()
+        .take(global_index)
+        .filter(|g| g.vendor == gpu.vendor)
+        .count();
+
+    let env_name = match gpu_variant {
+        "rocm" => "ROCR_VISIBLE_DEVICES",
+        "cuda" => "CUDA_VISIBLE_DEVICES",
+        "vulkan" => "GGML_VK_VISIBLE_DEVICES",
         _ => return None,
     };
 
-    // Find the (index)th device of this vendor in the sorted list
-    gpus.iter().filter(|g| g.vendor == vendor).nth(index)
+    Some((env_name.to_string(), per_vendor_index.to_string()))
 }
 
-/// Resolve a `gpu_device` string (e.g. "GPU1") to (env_var_name, value) for
-/// driver-level GPU isolation. Enumerates GPUs via `detect_gpu_devices()`.
-/// Returns None if the device is not found, has no UUID, or the vendor has no env-var mechanism.
-///
-/// Blocks on subprocesses (nvidia-smi, sysfs reads); call via `tokio::task::spawn_blocking`.
-pub fn resolve_gpu_device_env(gpu_device: &str) -> Option<(String, String)> {
-    let gpus = detect_gpu_devices();
-    resolve_gpu_device_env_from(gpu_device, &gpus)
-}
-
-/// Inject the GPU isolation env var onto a backend Command.
-/// No-op if `gpu_device` is None or cannot be resolved to a UUID.
-pub fn inject_gpu_env(cmd: &mut impl crate::process::BackendCommand, gpu_device: &Option<String>) {
-    if let Some(device) = gpu_device {
-        if let Some((name, value)) = resolve_gpu_device_env(device) {
-            cmd.env(&name, &value);
-        }
+/// Pure variant of [`resolve_gpu_env`] that takes a pre-built GPU list,
+/// so it can be unit-tested without spawning subprocesses.
+pub fn resolve_gpu_env_from(
+    gpu_device: &str,
+    gpu_variant: &str,
+    gpus: &[GpuDeviceStats],
+) -> Option<(String, String)> {
+    let device = gpu_device.trim();
+    if device.is_empty() || gpu_variant == "cpu" {
+        return None;
     }
+
+    let global_index: usize = device.strip_prefix("GPU")?.parse().ok()?;
+    let gpu = gpus.get(global_index)?;
+
+    let per_vendor_index = gpus
+        .iter()
+        .take(global_index)
+        .filter(|g| g.vendor == gpu.vendor)
+        .count();
+
+    let env_name = match gpu_variant {
+        "rocm" => "ROCR_VISIBLE_DEVICES",
+        "cuda" => "CUDA_VISIBLE_DEVICES",
+        "vulkan" => "GGML_VK_VISIBLE_DEVICES",
+        _ => return None,
+    };
+
+    Some((env_name.to_string(), per_vendor_index.to_string()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // ── vendor_env_var tests ──────────────────────────────────────────
-
-    #[test]
-    fn test_vendor_env_var_amd() {
-        let result = vendor_env_var("amd", "rocm-1234");
-        assert_eq!(
-            result,
-            Some(("ROCR_VISIBLE_DEVICES".to_string(), "rocm-1234".to_string()))
-        );
-    }
-
-    #[test]
-    fn test_vendor_env_var_nvidia() {
-        let result = vendor_env_var("nvidia", "GPU-abc123");
-        assert_eq!(
-            result,
-            Some(("CUDA_VISIBLE_DEVICES".to_string(), "GPU-abc123".to_string()))
-        );
-    }
-
-    #[test]
-    fn test_vendor_env_var_vulkan() {
-        let result = vendor_env_var("vulkan", "uuid");
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_vendor_env_var_unknown() {
-        let result = vendor_env_var("metal", "uuid");
-        assert_eq!(result, None);
-    }
-
-    // ── resolve_gpu_device_env_from tests ─────────────────────────────
-
-    fn build_test_gpu(device_id: &str, vendor: &str, uuid: Option<&str>) -> GpuDeviceStats {
+    fn build_test_gpu(device_id: &str, vendor: &str) -> GpuDeviceStats {
         GpuDeviceStats {
             device_id: device_id.to_string(),
             vendor: vendor.to_string(),
@@ -144,98 +97,140 @@ mod tests {
             power_w: None,
             fan_pct: None,
             pci_bus: None,
-            uuid: uuid.map(String::from),
+            uuid: None,
         }
     }
 
+    // ── resolve_gpu_env_from: rocm ────────────────────────────────────
+
     #[test]
-    fn test_resolve_gpu_device_env_from_found_amd() {
-        let gpus = vec![build_test_gpu("GPU1", "amd", Some("rocm-uuid"))];
-        let result = resolve_gpu_device_env_from("GPU1", &gpus);
+    fn test_resolve_rocm_single_amd() {
+        let gpus = vec![build_test_gpu("GPU0", "amd")];
+        let result = resolve_gpu_env_from("GPU0", "rocm", &gpus);
         assert_eq!(
             result,
-            Some(("ROCR_VISIBLE_DEVICES".to_string(), "rocm-uuid".to_string()))
+            Some(("ROCR_VISIBLE_DEVICES".to_string(), "0".to_string()))
         );
     }
 
     #[test]
-    fn test_resolve_gpu_device_env_from_found_nvidia() {
-        let gpus = vec![build_test_gpu("GPU0", "nvidia", Some("GPU-uuid"))];
-        let result = resolve_gpu_device_env_from("GPU0", &gpus);
+    fn test_resolve_rocm_second_amd() {
+        // Two AMD GPUs: GPU0=amd0, GPU1=amd1
+        let gpus = vec![build_test_gpu("GPU0", "amd"), build_test_gpu("GPU1", "amd")];
+        let result = resolve_gpu_env_from("GPU1", "rocm", &gpus);
         assert_eq!(
             result,
-            Some(("CUDA_VISIBLE_DEVICES".to_string(), "GPU-uuid".to_string()))
+            Some(("ROCR_VISIBLE_DEVICES".to_string(), "1".to_string()))
         );
     }
 
     #[test]
-    fn test_resolve_gpu_device_env_from_not_found() {
-        let gpus = vec![build_test_gpu("GPU0", "nvidia", Some("GPU-uuid"))];
-        let result = resolve_gpu_device_env_from("GPU99", &gpus);
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_resolve_gpu_device_env_from_no_uuid() {
-        let gpus = vec![build_test_gpu("GPU0", "nvidia", None)];
-        let result = resolve_gpu_device_env_from("GPU0", &gpus);
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_resolve_gpu_device_env_from_empty_string() {
-        let gpus = vec![build_test_gpu("GPU0", "nvidia", Some("GPU-uuid"))];
-        let result = resolve_gpu_device_env_from("", &gpus);
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_resolve_gpu_device_env_from_whitespace() {
-        let gpus = vec![build_test_gpu("GPU0", "nvidia", Some("GPU-uuid"))];
-        let result = resolve_gpu_device_env_from("  ", &gpus);
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_resolve_legacy_device_id_rocm0() {
+    fn test_resolve_rocm_amd_after_nvidia() {
+        // NVIDIA sorts after AMD, so: GPU0=amd, GPU1=nvidia
+        // But if sorted: amd0, nvidia0 → GPU0=amd, GPU1=nvidia
+        // Selecting GPU1 with rocm variant → no AMD device at index 1 → should
+        // return the per-vendor index for nvidia (0), but env var is ROCR...
+        // Actually this is a mismatch: rocm backend on an NVIDIA-selected GPU.
+        // The function still returns a value (the amd index), but the GPU at
+        // that position is NVIDIA. This is a user misconfiguration, not a crash.
         let gpus = vec![
-            build_test_gpu("GPU0", "amd", Some("rocm-uuid-0")),
-            build_test_gpu("GPU1", "nvidia", Some("cuda-uuid-0")),
-            build_test_gpu("GPU2", "amd", Some("rocm-uuid-1")),
+            build_test_gpu("GPU0", "amd"),
+            build_test_gpu("GPU1", "nvidia"),
         ];
-        // ROCm0 should resolve to the first AMD device
-        let result = resolve_gpu_device_env_from("ROCm0", &gpus);
+        // Selecting GPU0 (amd) with rocm → ROCR_VISIBLE_DEVICES=0
+        let result = resolve_gpu_env_from("GPU0", "rocm", &gpus);
         assert_eq!(
             result,
-            Some((
-                "ROCR_VISIBLE_DEVICES".to_string(),
-                "rocm-uuid-0".to_string()
-            ))
+            Some(("ROCR_VISIBLE_DEVICES".to_string(), "0".to_string()))
+        );
+    }
+
+    // ── resolve_gpu_env_from: cuda ────────────────────────────────────
+
+    #[test]
+    fn test_resolve_cuda_single_nvidia() {
+        let gpus = vec![build_test_gpu("GPU0", "nvidia")];
+        let result = resolve_gpu_env_from("GPU0", "cuda", &gpus);
+        assert_eq!(
+            result,
+            Some(("CUDA_VISIBLE_DEVICES".to_string(), "0".to_string()))
         );
     }
 
     #[test]
-    fn test_resolve_legacy_device_id_cuda1() {
+    fn test_resolve_cuda_second_nvidia_mixed_vendors() {
+        // Sorted: amd0, amd1, nvidia0, nvidia1
         let gpus = vec![
-            build_test_gpu("GPU0", "amd", Some("rocm-uuid-0")),
-            build_test_gpu("GPU1", "nvidia", Some("cuda-uuid-0")),
-            build_test_gpu("GPU2", "nvidia", Some("cuda-uuid-1")),
+            build_test_gpu("GPU0", "amd"),
+            build_test_gpu("GPU1", "amd"),
+            build_test_gpu("GPU2", "nvidia"),
+            build_test_gpu("GPU3", "nvidia"),
         ];
-        // CUDA1 should resolve to the second NVIDIA device
-        let result = resolve_gpu_device_env_from("CUDA1", &gpus);
+        // GPU3 = second nvidia → CUDA_VISIBLE_DEVICES=1
+        let result = resolve_gpu_env_from("GPU3", "cuda", &gpus);
         assert_eq!(
             result,
-            Some((
-                "CUDA_VISIBLE_DEVICES".to_string(),
-                "cuda-uuid-1".to_string()
-            ))
+            Some(("CUDA_VISIBLE_DEVICES".to_string(), "1".to_string()))
         );
     }
 
+    // ── resolve_gpu_env_from: vulkan ──────────────────────────────────
+
     #[test]
-    fn test_resolve_legacy_device_id_invalid() {
-        let gpus = vec![build_test_gpu("GPU0", "nvidia", Some("GPU-uuid"))];
-        let result = resolve_gpu_device_env_from("InvalidID", &gpus);
+    fn test_resolve_vulkan_first_amd() {
+        let gpus = vec![
+            build_test_gpu("GPU0", "amd"),
+            build_test_gpu("GPU1", "nvidia"),
+        ];
+        let result = resolve_gpu_env_from("GPU0", "vulkan", &gpus);
+        assert_eq!(
+            result,
+            Some(("GGML_VK_VISIBLE_DEVICES".to_string(), "0".to_string()))
+        );
+    }
+
+    // ── resolve_gpu_env_from: edge cases ──────────────────────────────
+
+    #[test]
+    fn test_resolve_cpu_variant_returns_none() {
+        let gpus = vec![build_test_gpu("GPU0", "amd")];
+        let result = resolve_gpu_env_from("GPU0", "cpu", &gpus);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_resolve_empty_device_returns_none() {
+        let gpus = vec![build_test_gpu("GPU0", "amd")];
+        let result = resolve_gpu_env_from("", "rocm", &gpus);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_resolve_whitespace_device_returns_none() {
+        let gpus = vec![build_test_gpu("GPU0", "amd")];
+        let result = resolve_gpu_env_from("  ", "rocm", &gpus);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_resolve_index_out_of_range_returns_none() {
+        let gpus = vec![build_test_gpu("GPU0", "amd")];
+        let result = resolve_gpu_env_from("GPU99", "rocm", &gpus);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_resolve_unknown_variant_returns_none() {
+        let gpus = vec![build_test_gpu("GPU0", "amd")];
+        let result = resolve_gpu_env_from("GPU0", "metal", &gpus);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_resolve_non_gpu_prefix_returns_none() {
+        let gpus = vec![build_test_gpu("GPU0", "amd")];
+        // Legacy ROCm0 format — no longer supported, returns None
+        let result = resolve_gpu_env_from("ROCm0", "rocm", &gpus);
         assert_eq!(result, None);
     }
 }

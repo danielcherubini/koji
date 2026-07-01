@@ -170,22 +170,23 @@ impl ProxyState {
 
         let mut child = tokio::process::Command::new(&backend_path);
         crate::process::configure_backend_command(&mut child, &backend_path);
-        // Inject GPU isolation env var (ROCR_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES)
-        // only for GPU backends — skip cpu variant. Unknown variants are safe:
-        // resolve_gpu_device_env returns None for unrecognized vendors, making
-        // inject_gpu_env a no-op.
+        // Inject GPU isolation env var (ROCR/CUDA/GGML_VK_VISIBLE_DEVICES)
+        // keyed off the backend's gpu_variant. Uses positional indexes.
         if !matches!(gpu_variant, "cpu") {
             if let Some(ref device) = server_config.gpu_device {
-                match crate::gpu::env::resolve_gpu_device_env(device) {
+                match crate::gpu::env::resolve_gpu_env(device, gpu_variant) {
                     Some((name, value)) => {
-                        info!("GPU isolation: setting {} for device {}", name, device);
+                        info!(
+                            "GPU isolation: setting {}={} for device {} (variant {})",
+                            name, value, device, gpu_variant
+                        );
                         child.env(&name, &value);
                     }
                     None => {
                         warn!(
-                            "GPU isolation: could not resolve device '{}' to a UUID; \
-                             no env var set (GPU selection will have no effect)",
-                            device
+                            "GPU isolation: could not resolve device '{}' \
+                             (variant {}); no env var set",
+                            device, gpu_variant
                         );
                     }
                 }

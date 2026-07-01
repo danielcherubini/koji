@@ -22,12 +22,10 @@ pub async fn cmd_run(config: &Config, server_name: &str, ctx_override: Option<u3
     let args = config.build_full_args(server, backend, ctx_override, &default_args)?;
 
     // Resolve GPU isolation env var for tama run (same as proxy spawn).
-    let gpu_env = server.gpu_device.as_deref().and_then(|device| {
-        if matches!(gpu_variant, "cpu") {
-            return None;
-        }
-        tama_core::gpu::env::resolve_gpu_device_env(device)
-    });
+    let gpu_env = server
+        .gpu_device
+        .as_deref()
+        .and_then(|device| tama_core::gpu::env::resolve_gpu_env(device, gpu_variant));
 
     // Resolve backend binary path from DB (priority) or config.path (fallback)
     let backend_path =
