@@ -127,11 +127,6 @@ impl ProcessSupervisor {
         self
     }
 
-    /// Return a reference to the GPU isolation env var, if set.
-    pub fn gpu_env(&self) -> Option<&(String, String)> {
-        self.gpu_env.as_ref()
-    }
-
     /// Run the supervisor. Listens for shutdown on `shutdown_rx`.
     /// If `shutdown_rx` is None, listens for ctrl-c instead.
     pub async fn run(
@@ -320,7 +315,7 @@ mod tests {
             3,
             1000,
         );
-        assert!(supervisor.gpu_env().is_none());
+        assert!(supervisor.gpu_env.is_none());
     }
 
     #[test]
@@ -337,8 +332,8 @@ mod tests {
             "GPU-abc123".to_string(),
         )));
         assert_eq!(
-            supervisor.gpu_env(),
-            Some(&("CUDA_VISIBLE_DEVICES".to_string(), "GPU-abc123".to_string()))
+            supervisor.gpu_env,
+            Some(("CUDA_VISIBLE_DEVICES".to_string(), "GPU-abc123".to_string()))
         );
     }
 
@@ -352,6 +347,6 @@ mod tests {
             1000,
         )
         .with_gpu_env(None);
-        assert!(supervisor.gpu_env().is_none());
+        assert!(supervisor.gpu_env.is_none());
     }
 }
