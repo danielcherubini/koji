@@ -1,3 +1,5 @@
+name: PR Agent (Auto Review & Describe)
+
 on:
   pull_request:
     types: [opened, reopened, ready_for_review]
