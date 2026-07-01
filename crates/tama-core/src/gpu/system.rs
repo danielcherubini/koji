@@ -345,9 +345,13 @@ pub struct MetricsSnapshot {
 /// Extracted so it can be tested without subprocesses.
 fn assign_position_ids(gpus: &mut [GpuDeviceStats]) {
     gpus.sort_by(|a, b| {
+        let extract_index = |id: &str| {
+            let numeric_part: String = id.chars().skip_while(|c| c.is_alphabetic()).collect();
+            numeric_part.parse::<usize>().unwrap_or(usize::MAX)
+        };
         a.vendor
             .cmp(&b.vendor)
-            .then_with(|| a.device_id.cmp(&b.device_id))
+            .then_with(|| extract_index(&a.device_id).cmp(&extract_index(&b.device_id)))
     });
     for (i, gpu) in gpus.iter_mut().enumerate() {
         gpu.device_id = format!("GPU{i}");
@@ -912,7 +916,7 @@ mod tests {
     fn test_assign_position_ids_sorts_and_assigns() {
         let mut gpus = vec![
             GpuDeviceStats {
-                device_id: "nvidia0".to_string(),
+                device_id: "nvidia10".to_string(),
                 vendor: "nvidia".to_string(),
                 name: "RTX 4090".to_string(),
                 utilization_pct: None,
@@ -924,9 +928,9 @@ mod tests {
                 uuid: None,
             },
             GpuDeviceStats {
-                device_id: "amd0".to_string(),
-                vendor: "amd".to_string(),
-                name: "Radeon RX 7900".to_string(),
+                device_id: "nvidia2".to_string(),
+                vendor: "nvidia".to_string(),
+                name: "RTX 3090".to_string(),
                 utilization_pct: None,
                 vram: None,
                 temperature_c: None,
@@ -937,12 +941,14 @@ mod tests {
             },
         ];
         assign_position_ids(&mut gpus);
-        // AMD sorts before NVIDIA (alphabetical by vendor)
+        // nvidia2 should come before nvidia10
         assert_eq!(gpus.len(), 2);
         assert_eq!(gpus[0].device_id, "GPU0");
-        assert_eq!(gpus[0].vendor, "amd");
+        assert_eq!(gpus[0].vendor, "nvidia");
+        assert_eq!(gpus[0].name, "RTX 3090");
         assert_eq!(gpus[1].device_id, "GPU1");
         assert_eq!(gpus[1].vendor, "nvidia");
+        assert_eq!(gpus[1].name, "RTX 4090");
     }
 
     #[test]
