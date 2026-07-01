@@ -149,3 +149,30 @@
   padding: 0.35rem 0.5rem;
 }
 
+
+.form-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.4rem;
+  height: 1.4rem;
+  padding: 0;
+  margin-left: 0.35rem;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: color var(--transition-fast), border-color var(--transition-fast);
+  vertical-align: middle;
+}
+.form-icon-button:hover {
+  color: var(--text-primary);
+  border-color: var(--border-color);
+}
+.form-icon-button:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
