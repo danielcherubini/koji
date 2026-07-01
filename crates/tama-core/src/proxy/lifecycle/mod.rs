@@ -175,7 +175,21 @@ impl ProxyState {
         // resolve_gpu_device_env returns None for unrecognized vendors, making
         // inject_gpu_env a no-op.
         if !matches!(gpu_variant, "cpu") {
-            crate::gpu::env::inject_gpu_env(&mut child, &server_config.gpu_device);
+            if let Some(ref device) = server_config.gpu_device {
+                match crate::gpu::env::resolve_gpu_device_env(device) {
+                    Some((name, value)) => {
+                        info!("GPU isolation: setting {} for device {}", name, device);
+                        child.env(&name, &value);
+                    }
+                    None => {
+                        warn!(
+                            "GPU isolation: could not resolve device '{}' to a UUID; \
+                             no env var set (GPU selection will have no effect)",
+                            device
+                        );
+                    }
+                }
+            }
         }
         configure_process_group(&mut child);
         child

@@ -59,8 +59,24 @@ fn query_amd_device_names() -> std::collections::HashMap<String, String> {
         .clone()
 }
 
+/// Normalize an AMD GPU UUID from rocm-smi format to ROCR_VISIBLE_DEVICES format.
+///
+/// `rocm-smi --showuniqueid` returns `0xb3780db0a262809e` (0x-prefixed hex),
+/// but `ROCR_VISIBLE_DEVICES` expects the `rocminfo` format `GPU-b3780db0a262809e`
+/// (GPU- prefix, no 0x). Without this transformation, ROCR does not recognize
+/// the UUID and hides all devices → "no ROCm-capable device is detected".
+///
+/// Values already in `GPU-...` format pass through unchanged.
+fn normalize_amd_uuid(raw: &str) -> String {
+    if let Some(hex) = raw.strip_prefix("0x") {
+        format!("GPU-{hex}")
+    } else {
+        raw.to_string()
+    }
+}
+
 /// Query rocm-smi for GPU hardware UUIDs and cache the result.
-/// Returns a map of PCI bus address (e.g. "0000:03:00.0") → UUID (e.g. "rocm-xxxx-xxxx").
+/// Returns a map of PCI bus address (e.g. "0000:03:00.0") → UUID (e.g. "GPU-b3780db0a262809e").
 fn query_amd_device_uuids() -> std::collections::HashMap<String, String> {
     AMD_DEVICE_UUIDS
         .get_or_init(|| {
@@ -90,7 +106,10 @@ fn query_amd_device_uuids() -> std::collections::HashMap<String, String> {
                 .filter_map(|info| {
                     let pci_bus = info.get("PCI Bus")?.clone();
                     let unique_id = info.get("Unique ID")?.clone();
-                    Some((pci_bus, unique_id))
+                    // rocm-smi returns "0xb3780db0a262809e" but ROCR_VISIBLE_DEVICES
+                    // expects the rocminfo format "GPU-b3780db0a262809e".
+                    let uuid = normalize_amd_uuid(&unique_id);
+                    Some((pci_bus, uuid))
                 })
                 .collect()
         })
@@ -1037,5 +1056,31 @@ mod tests {
         assert_eq!(stats.uuid, None);
         assert_eq!(stats.device_id, "nvidia0");
         assert_eq!(stats.utilization_pct, Some(45));
+    }
+
+    // ── normalize_amd_uuid tests ─────────────────────────────────────
+
+    #[test]
+    fn test_normalize_amd_uuid_0x_prefix() {
+        // rocm-smi format → rocminfo format
+        assert_eq!(
+            normalize_amd_uuid("0xb3780db0a262809e"),
+            "GPU-b3780db0a262809e"
+        );
+    }
+
+    #[test]
+    fn test_normalize_amd_uuid_already_gpu_prefix() {
+        // Already in rocminfo format — pass through unchanged
+        assert_eq!(
+            normalize_amd_uuid("GPU-b3780db0a262809e"),
+            "GPU-b3780db0a262809e"
+        );
+    }
+
+    #[test]
+    fn test_normalize_amd_uuid_unknown_format() {
+        // Unknown format — pass through unchanged
+        assert_eq!(normalize_amd_uuid("some-weird-id"), "some-weird-id");
     }
 }
