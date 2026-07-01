@@ -21,6 +21,7 @@ jobs:
           OPENAI__KEY: ${{ secrets.OPENAI_KEY }}
           config.model: ${{ secrets.MODEL_NAME }}
           config.fallback_models: '${{ secrets.MODEL_NAME }}'
+          config.custom_model_max_tokens: "128000"
           github_action_config.auto_review: "true"
           github_action_config.auto_describe: "true"
           github_action_config.auto_improve: "false"
