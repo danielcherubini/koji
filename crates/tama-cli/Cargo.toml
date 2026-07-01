@@ -1,11 +1,14 @@
 [package]
-name = "tama"
+name = "tama-cli"
 version = "2.0.0"
 edition.workspace = true
 description = "Tama — local AI service manager and process supervisor"
 license = "MIT"
 authors = ["Daniel Cherubini <daniel@cherubini.casa>"]
 repository = "https://github.com/danielcherubini/tama"
+
+[lib]
+name = "tama"
 
 [[bin]]
 name = "tama"
@@ -17,11 +20,11 @@ path = "tests/tests.rs"
 
 [features]
 default = ["web-ui"]
-web-ui = ["dep:tama-web", "dep:axum-server", "tama-core/web-ui"]
+web-ui = ["dep:tama_web", "dep:axum-server", "tama-core/web-ui"]
 
 [dependencies]
 tama-core = { path = "../tama-core" }
-tama-web = { path = "../tama-web", features = ["ssr"], optional = true }
+tama_web = { package = "tama", path = "../tama", features = ["ssr"], optional = true }
 axum-server = { workspace = true, optional = true }
 tokio.workspace = true
 clap.workspace = true
