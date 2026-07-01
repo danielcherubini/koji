@@ -15,6 +15,11 @@ static AMD_DEVICE_NAMES: OnceLock<std::collections::HashMap<String, String>> = O
 /// Populated on first call to `query_amd_device_uuids` and reused thereafter.
 static AMD_DEVICE_UUIDS: OnceLock<std::collections::HashMap<String, String>> = OnceLock::new();
 
+/// Cached result of GPU device enumeration. Populated on first call to
+/// `detect_gpu_devices()` and reused thereafter to avoid re-running
+/// nvidia-smi / rocm-smi on every model load.
+static DETECTED_GPUS: OnceLock<Vec<GpuDeviceStats>> = OnceLock::new();
+
 /// Query rocm-smi for GPU product names and cache the result.
 /// Returns a map of PCI bus address (e.g. "0000:03:00.0") → product name (e.g. "Radeon AI PRO R9700").
 fn query_amd_device_names() -> std::collections::HashMap<String, String> {
@@ -357,11 +362,16 @@ fn assign_position_ids(gpus: &mut [GpuDeviceStats]) {
 /// Detect all GPU devices and assign position-based IDs (GPU0, GPU1, ...).
 /// Returns devices sorted by (vendor, device_index) with UUIDs populated.
 /// Blocks on subprocesses (nvidia-smi, sysfs reads); call via `tokio::task::spawn_blocking`.
+/// Results are cached on first call to avoid repeated expensive subprocess execution.
 pub fn detect_gpu_devices() -> Vec<GpuDeviceStats> {
-    let mut gpus = query_nvidia_devices();
-    gpus.extend(query_amd_devices());
-    assign_position_ids(&mut gpus);
-    gpus
+    DETECTED_GPUS
+        .get_or_init(|| {
+            let mut gpus = query_nvidia_devices();
+            gpus.extend(query_amd_devices());
+            assign_position_ids(&mut gpus);
+            gpus
+        })
+        .clone()
 }
 
 /// The caller is responsible for passing a `System` that persists across
@@ -1031,5 +1041,12 @@ mod tests {
         assert_eq!(stats.uuid, None);
         assert_eq!(stats.device_id, "nvidia0");
         assert_eq!(stats.utilization_pct, Some(45));
+    }
+
+    #[test]
+    fn test_detect_gpu_devices_caches_result() {
+        let first = detect_gpu_devices();
+        let second = detect_gpu_devices();
+        assert_eq!(first, second);
     }
 }
