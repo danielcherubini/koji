@@ -33,3 +33,5 @@ pub mod web_types;
 mod tests {
     mod mmproj_detection_test;
 }
+
+// TODO: Add module documentation
