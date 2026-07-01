@@ -171,7 +171,9 @@ impl ProxyState {
         let mut child = tokio::process::Command::new(&backend_path);
         crate::process::configure_backend_command(&mut child, &backend_path);
         // Inject GPU isolation env var (ROCR_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES)
-        // only for GPU backends — skip cpu variant.
+        // only for GPU backends — skip cpu variant. Unknown variants are safe:
+        // resolve_gpu_device_env returns None for unrecognized vendors, making
+        // inject_gpu_env a no-op.
         if !matches!(gpu_variant, "cpu") {
             crate::gpu::env::inject_gpu_env(&mut child, &server_config.gpu_device);
         }
