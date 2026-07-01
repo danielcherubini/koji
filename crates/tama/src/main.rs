@@ -1,23 +1,15 @@
-//! Serve command handler
+//! Tama server binary
 //!
-//! Handles `tama serve` for starting the proxy server.
+//! Starts the proxy server with web UI. All configuration is loaded from the
+//! config file — no CLI arguments are accepted.
 
 use anyhow::Result;
+use std::net::SocketAddr;
+use std::sync::Arc;
 use tama_core::config::Config;
-
-/// Start the tama server (proxy) with the given host, port, auto_unload setting, and idle timeout.
-pub async fn cmd_serve(
-    config: &Config,
-    host: String,
-    port: u16,
-    auto_unload: bool,
-    idle_timeout: u64,
-) -> Result<()> {
-    start_proxy_server(config, host, port, auto_unload, idle_timeout).await
-}
+use tama_core::proxy::{ProxyServer, ProxyState};
 
 /// Set up HF_TOKEN environment variable from config if present.
-/// This must be called before any hf_hub API usage.
 fn setup_hf_token(config: &Config) {
     if let Some(token) = &config.general.hf_token {
         if !token.is_empty() {
@@ -27,30 +19,25 @@ fn setup_hf_token(config: &Config) {
     }
 }
 
-/// Start the tama server (proxy) with the given host, port, auto_unload setting, and idle timeout.
-async fn start_proxy_server(
-    config: &Config,
-    host: String,
-    port: u16,
-    auto_unload: bool,
-    idle_timeout: u64,
-) -> Result<()> {
-    use std::net::SocketAddr;
-    use std::sync::Arc;
-    use tama_core::proxy::ProxyServer;
-    use tama_core::proxy::ProxyState;
+#[tokio::main]
+async fn main() -> Result<()> {
+    // Initialize tracing
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
 
-    // Apply CLI overrides to config
-    let mut updated_config = config.clone();
-    updated_config.proxy.host = host.clone();
-    updated_config.proxy.port = port;
-    updated_config.proxy.auto_unload = auto_unload;
-    updated_config.proxy.idle_timeout_secs = idle_timeout;
+    // Load configuration
+    let config = Config::load()?;
 
     // Set up HF_TOKEN from config before any hf_hub usage
-    setup_hf_token(&updated_config);
+    setup_hf_token(&config);
 
-    // Parse host and port
+    // Parse host and port from config
+    let host = config.proxy.host.clone();
+    let port = config.proxy.port;
+    let auto_unload = config.proxy.auto_unload;
+    let idle_timeout = config.proxy.idle_timeout_secs;
+
     let (host_addr, warning) = match host.parse::<std::net::IpAddr>() {
         Ok(addr) => (addr, false),
         Err(_) => (
@@ -71,23 +58,16 @@ async fn start_proxy_server(
         idle_timeout
     );
 
-    let db_dir = tama_core::config::Config::config_dir().ok();
-    // Note: Config::load() already runs migrations, but the serve handler needs its own
-    // DB connection for the proxy's long-lived use (backfill checks, backend registry
-    // migration, TOML→DB migration). Running migrations again is harmless (they are
-    // idempotent) but intentional — the serve path requires an independent connection
-    // that outlives the config's internal DB handle.
-    // Trigger backfill if DB is fresh (best-effort: log failures but don't abort)
+    // Database setup and migrations
+    let db_dir = Config::config_dir().ok();
     if let Some(ref dir) = db_dir {
         match tama_core::db::open(dir) {
             Ok(db_result) => {
                 if db_result.needs_backfill {
                     tracing::info!("Running initial backfill...");
-                    if let Err(e) = tama_core::db::backfill::run_initial_backfill(
-                        &db_result.conn,
-                        &updated_config,
-                    )
-                    .await
+                    if let Err(e) =
+                        tama_core::db::backfill::run_initial_backfill(&db_result.conn, &config)
+                            .await
                     {
                         tracing::error!("Initial backfill failed: {}", e);
                     }
@@ -100,7 +80,7 @@ async fn start_proxy_server(
                     tracing::error!("Backend registry TOML migration failed: {}", e);
                 }
 
-                // Run unified TOML → DB migration (absorbs backend config + global config + models)
+                // Run unified TOML → DB migration
                 let db_path = dir.join("tama.db");
                 if let Err(e) = tama_core::db::backfill::migrate_toml_to_db(dir, &db_path) {
                     tracing::error!("TOML → DB migration failed: {}", e);
@@ -109,14 +89,15 @@ async fn start_proxy_server(
             Err(e) => tracing::error!("Failed to open DB for backfill check: {}", e),
         }
     }
-    let state = Arc::new(ProxyState::new(updated_config.clone(), db_dir));
 
-    #[cfg(feature = "web-ui")]
+    // Create shared proxy state
+    let state = Arc::new(ProxyState::new(config.clone(), db_dir));
+
+    #[cfg(feature = "ssr")]
     {
-        let logs_dir = updated_config.logs_dir().ok();
-        // Ensure logs directory exists (creates if missing)
-        if let Some(ref dir) = logs_dir {
-            let _ = std::fs::create_dir_all(dir);
+        // Ensure logs directory exists
+        if let Ok(logs_dir) = config.logs_dir() {
+            let _ = std::fs::create_dir_all(&logs_dir);
         }
 
         // Set the binary version for the web UI
@@ -125,7 +106,6 @@ async fn start_proxy_server(
         let state = Arc::new(state_inner);
 
         // Build the unified router: proxy routes + web UI routes on a single server.
-        // The proxy handles OS signals (SIGTERM/SIGINT) and graceful shutdown.
         let web_routes = tama_web::router::build_web_routes();
         let server = ProxyServer::new(state.clone()).await;
         let app = server.into_unified_router(web_routes).await;
@@ -159,7 +139,7 @@ async fn start_proxy_server(
         tama_core::proxy::server::listener::run(app, addr, Some(on_shutdown), None).await
     }
 
-    #[cfg(not(feature = "web-ui"))]
+    #[cfg(not(feature = "ssr"))]
     {
         let server = ProxyServer::new(state.clone()).await;
         server.run(addr, None).await

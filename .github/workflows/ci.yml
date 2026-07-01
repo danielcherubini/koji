@@ -58,14 +58,14 @@ jobs:
           fi
 
       - name: Build Leptos WASM frontend
-        working-directory: crates/tama-web
-        run: trunk build
+        working-directory: crates/tama
+        run: trunk build --no-default-features --features csr
 
       - name: Clippy (workspace)
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Clippy (tama-web SSR)
-        run: cargo clippy --package tama-web --features ssr --all-targets -- -D warnings
+      - name: Clippy (tama SSR)
+        run: cargo clippy --package tama --features ssr --all-targets -- -D warnings
 
       - name: Run tests (workspace)
         run: cargo test --workspace -- --nocapture

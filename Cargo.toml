@@ -1,9 +1,8 @@
 [workspace]
 members = [
     "crates/tama-core",
-    "crates/tama-cli",
     "crates/tama-mock",
-    "crates/tama-web",
+    "crates/tama",
 ]
 resolver = "2"
 

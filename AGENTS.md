@@ -39,11 +39,13 @@ cargo test --workspace
 
 ```bash
 make build        # Release build
-make install      # Install CLI
+make install      # Install binary
 make test         # Run all tests
 make check        # fmt + clippy + test
 make clippy       # Lint with -D warnings
 make fmt          # Format all code
+make run          # Run in dev mode (proxy + web UI)
+make dev          # Leptos frontend dev server with hot reload
 ```
 
 ## Code Style
@@ -145,7 +147,7 @@ fn test_concurrent_access() {
 tama/
 ├── crates/
 │   ├── tama-core/      # Core library (types, models, logic)
-│   ├── tama-cli/       # CLI application
+│   ├── tama/           # Main binary with web control plane (WASM + SSR)
 │   └── tama-mock/      # Mock utilities for testing
 ├── config/              # Configuration templates
 ├── docs/                # Documentation
@@ -201,9 +203,8 @@ When bumping the version, update **all** of these files:
 |------|-------|
 | `Cargo.toml` | `[workspace.package] version` |
 | `crates/tama-core/Cargo.toml` | `[package] version` |
-| `crates/tama-cli/Cargo.toml` | `[package] version` |
+| `crates/tama/Cargo.toml` | `[package] version` |
 | `crates/tama-mock/Cargo.toml` | `[package] version` |
-| `crates/tama-web/Cargo.toml` | `[package] version` |
 
 After bumping, run `cargo fmt --all` before committing — CI will fail on formatting errors.
 

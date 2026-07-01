@@ -1,9 +1,16 @@
 [package]
-name = "tama-web"
+name = "tama"
 version = "2.0.0"
 edition.workspace = true
 
+[[bin]]
+name = "tama"
+path = "src/main.rs"
+required-features = ["ssr"]
+
 [lib]
+name = "tama_web"
+path = "src/lib.rs"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
@@ -46,6 +53,7 @@ chrono = "0.4.44"
 tempfile.workspace = true
 
 [features]
+default = ["ssr"]
 csr = []
 ssr = [
   "dep:axum", "dep:axum-server", "dep:tokio", "dep:async-stream", "dep:anyhow", "dep:include_dir",
@@ -78,3 +86,17 @@ serde_json = { workspace = true }
 axum = { workspace = true }
 tempfile = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
+
+[package.metadata.deb]
+maintainer = "Daniel Cherubini <daniel@cherubini.casa>"
+section = "utils"
+priority = "optional"
+assets = [
+    ["target/release/tama", "usr/bin/", "755"],
+]
+extended-description = "Tama is a local AI service manager that wraps llama.cpp and similar backends into supervised system services with health checks, auto-restart, and easy configuration."
+
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/tama", dest = "/usr/bin/tama", mode = "755" },
+]
