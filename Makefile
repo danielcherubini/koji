@@ -2,7 +2,7 @@
 
 # Run tama in dev mode: proxy (:11434) + web UI (:11435) as a single foreground process
 run: build-frontend-dev
-	cargo run --bin tama serve
+	cargo run --bin tama
 
 # Run Leptos frontend dev server with hot reload on http://localhost:8080
 dev: wasm-target

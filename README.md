@@ -79,7 +79,7 @@ The web server starts automatically alongside the proxy when using `tama service
 For development or manual startup:
 
 ```bash
-cargo run --package tama -- web --port 11435
+cargo run --package tama
 ```
 
 Open [http://localhost:11435](http://localhost:11435) to access the dashboard.
@@ -107,8 +107,6 @@ Open [http://localhost:11435](http://localhost:11435) to access the dashboard.
 - **Model editor** — Full model configuration editing with quantization selector, context length, sampling templates, and pull wizard
 
 ---
-
-## CLI Reference
 
 ## Configuration
 
