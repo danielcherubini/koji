@@ -1,0 +1,7 @@
+[pr_reviewer]
+extra_instructions = "Focus on Rust idioms, proper error handling with anyhow/thiserror, Clippy compliance, lifetime ownership patterns, and performance."
+require_tests_review = false
+
+[pr_code_suggestions]
+num_code_suggestions = 4
+suggestions_score_threshold = 7
