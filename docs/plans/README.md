@@ -15,9 +15,9 @@ This directory contains implementation plans for the Tama project. Each plan doc
 ## Quick Stats
 
 - **Total Plans**: 132
-- **Completed**: 129 ✅
-- **In Progress**: 1 🚧
-- **Remaining**: 2
+- **Completed**: 130 ✅
+- **In Progress**: 0 🚧
+- **Remaining**: 1
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
 
@@ -29,6 +29,7 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 | Plan | Description | PR / Git References |
 |------|-------------|---------------------|
+| [Model Editor GPU Isolation Polish](2026-07-01-model-editor-gpu-isolation-polish.md) | Rename "GPU Device" to "GPU Isolation", change default to "None", style refresh button | #131 ✅ COMPLETED |
 | [GPU Env-Var Isolation (UUID)](2026-07-01-gpu-env-var-isolation.md) | Replace --device CLI flag with driver-level GPU isolation via env vars (ROCR/CUDA_VISIBLE_DEVICES) using hardware UUIDs; also fix mtp_model API response | #130 ✅ COMPLETED |
 | [GPU Card Name + Separators](2026-06-30-gpu-card-name-separators.md) | Add GPU product name + total VRAM subtitle under GPU label, horizontal separators in left/middle columns | #129 ✅ COMPLETED |
 | [Config TOML to SQLite](2026-06-29-config-to-db.md) | Eliminate config.toml — move all global settings to typed SQLite tables, unified TOML→DB migration, remove loaded_from, 410 Gone for raw TOML endpoints | #128 ✅ COMPLETED |
@@ -100,12 +101,6 @@ This directory contains implementation plans for the Tama project. Each plan doc
 | [Shared Activity Panel + SSE Core](2026-05-06-shared-activity-panel-and-sse-core.md) | Extract duplicated SSE reconnection logic into shared utility, create generic ActivityPanel UI shell | `ca711f2` ✅ COMPLETED |
 | [Metrics Snapshot Stream](2026-05-07-metrics-snapshot-stream.md) | Replace delta SSE with full snapshot delivery every 2s, unify inference stats into same pipeline, eliminate frontend desync | #86 `309c895`, `5d920b7`, `aff3c15`, `b024266` ✅ COMPLETED |
 | [Remove Windows Support](todo/2026-05-08-remove-windows-support.md) | Remove all Windows-specific code, CI, build targets, dependencies, and documentation | #87 `091b11f`, `5f6a1c4`, `91559b3`, `918e2dd`, `9d7dbf4`, `f1af925`, `8f30f52`, `3b8419f` ✅ COMPLETED |
-
-### In Progress
-
-| Plan | Description | Status |
-|------|-------------|--------|
-| [Model Editor GPU Isolation Polish](2026-07-01-model-editor-gpu-isolation-polish.md) | Polish the GPU Device selector — rename label to "GPU Isolation", change default to "None", style refresh button | 🚧 IN PROGRESS |
 
 ### Draft
 
