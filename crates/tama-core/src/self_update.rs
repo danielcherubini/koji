@@ -601,7 +601,7 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
-            err.contains("Invalid current version") || err.contains("Failed to fetch"),
+            err.contains("Invalid current version"),
             "Unexpected error: {err}"
         );
     }
@@ -609,6 +609,10 @@ mod tests {
     #[test]
     fn test_check_for_update_sync_empty_string() {
         let result = check_for_update_sync("");
-        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Invalid current version"),
+            "Unexpected error: {err}"
+        );
     }
 }
