@@ -60,3 +60,9 @@ Run Tama in Docker on any platform.
 * Good, because truly cross-platform
 * Bad, because adds Docker dependency and complexity
 * Bad, because GPU passthrough through containers is platform-specific anyway
+
+## More Information
+
+* Commit `7d98d315` — removed Windows platform module, installer, and all Windows-specific code
+* [ADR-0007](./0007-gpu-isolation-via-positional-indexes.md) — Linux-only scope simplifies GPU enumeration (no Windows WSL edge cases)
+* [ADR-0009](./0009-parallel-chunked-downloads-for-huggingface.md) — Linux-native features (inotify, signals) used by download tooling

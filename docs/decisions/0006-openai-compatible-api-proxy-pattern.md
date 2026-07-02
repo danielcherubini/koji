@@ -19,7 +19,7 @@ Tama manages multiple local AI backends (llama.cpp, ik_llama) running on differe
 
 ## Decision Outcome
 
-Chosen option: "OpenAI-compatible proxy", because it allows any OpenAI client to work with Tama without modification. The proxy listens on a single port (default 11435), parses the `model` field from incoming requests, looks up the correct backend, forwards the request, and streams the response back. Model names are rewritten transparently — users can set friendly names that map to backend paths.
+Chosen option: "OpenAI-compatible proxy", because it allows any OpenAI client to work with Tama without modification. The proxy listens on a single port (default 11434, `DEFAULT_PROXY_PORT`), parses the `model` field from incoming requests, looks up the correct backend, forwards the request, and streams the response back. Model names are rewritten transparently — users can set friendly names that map to backend paths.
 
 ### Consequences
 
@@ -62,3 +62,11 @@ Proprietary API, not OpenAI-compatible.
 * Good, because full control over API design
 * Bad, because no existing clients work without adapters
 * Bad, because users must learn a new API
+
+## More Information
+
+* Module: `crates/tama-core/src/proxy/` — `forward` (request routing, SSE streaming, model rewriting) and `lifecycle` (backend process management)
+* Config: `crates/tama-core/src/config/types.rs` — `DEFAULT_PROXY_PORT` (11434)
+* [ADR-0002](./0002-use-sqlite-for-all-persistent-state.md) — SQLite stores backend/model config the proxy routes on
+* [ADR-0005](./0005-web-ui-as-primary-interface-remove-cli.md) — Web UI manages backends through the proxy's control plane
+* [ADR-0007](./0007-gpu-isolation-via-positional-indexes.md) — Proxy uses GPU env vars at spawn time

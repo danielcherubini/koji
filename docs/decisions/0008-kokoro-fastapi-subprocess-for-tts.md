@@ -14,7 +14,7 @@ Tama needed text-to-speech synthesis to support OpenAI-compatible `/v1/audio/spe
 ## Considered Options
 
 * Kokoro-FastAPI subprocess (Python + pip)
-* kokoro-micro (Rust ONNX binding) — status quo at the time
+* kokoro-micro (Rust ONNX binding) — initial approach
 * Piper TTS (C++ ONNX, fully Rust-bindable)
 
 ## Decision Outcome
@@ -72,3 +72,4 @@ C++ ONNX-based TTS with Rust bindings.
 ## More Information
 
 * PR #70: [add Kokoro TTS backend via subprocess](https://github.com/danielcherubini/tama/pull/70)
+* [ADR-0006](./0006-openai-compatible-api-proxy-pattern.md) — Kokoro is managed as a backend by the proxy (lifecycle, `/v1/audio/*` routes)

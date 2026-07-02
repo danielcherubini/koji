@@ -69,5 +69,6 @@ No SSR, client-side rendering only.
 
 ## More Information
 
-* Commit: `c6da0fee` — complete SvelteKit migration
-* Scaffold: `86ebb4a4` — SvelteKit frontend with layout shell, API client, and stores
+* Commit [`c6da0fee`](https://github.com/danielcherubini/tama/commit/c6da0fee) — complete SvelteKit migration
+* Commit [`86ebb4a4`](https://github.com/danielcherubini/tama/commit/86ebb4a4) — SvelteKit frontend with layout shell, API client, and stores
+* [ADR-0005](./0005-web-ui-as-primary-interface-remove-cli.md) — Web UI is built with SvelteKit

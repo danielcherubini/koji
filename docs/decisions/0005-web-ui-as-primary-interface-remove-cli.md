@@ -66,3 +66,6 @@ Remove web UI, keep CLI as the sole interface.
 
 * PR #135: [remove CLI, promote web UI to binary](https://github.com/danielcherubini/tama/pull/135)
 * Implementation plan: `docs/plans/2026-07-01-remove-cli-promote-web.md`
+* [ADR-0002](./0002-use-sqlite-for-all-persistent-state.md) — SQLite stores the config the Web UI manages
+* [ADR-0003](./0003-use-sveltekit-over-leptos-wasm.md) — Web UI is built with SvelteKit
+* [ADR-0006](./0006-openai-compatible-api-proxy-pattern.md) — Web UI manages backends through the proxy's control plane

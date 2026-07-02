@@ -68,3 +68,4 @@ Delegate to an external download manager.
 
 * PR #99: [faster HF downloads with parallel downloader](https://github.com/danielcherubini/tama/pull/99)
 * Implementation plan: `docs/plans/2026-05-29-faster-hf-downloads.md`
+* [ADR-0004](./0004-linux-only-drop-windows-support.md) — Linux-only scope simplifies download tooling (inotify, signals)

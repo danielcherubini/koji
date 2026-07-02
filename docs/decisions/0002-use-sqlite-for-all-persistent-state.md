@@ -76,3 +76,5 @@ Full-featured but overkill for a single-user local app.
 
 * PR #128: [migrate global config from TOML to SQLite](https://github.com/danielcherubini/tama/pull/128)
 * Implementation plan: `docs/plans/2026-06-29-config-to-db.md`
+* [ADR-0005](./0005-web-ui-as-primary-interface-remove-cli.md) — Web UI manages backends through SQLite config
+* [ADR-0006](./0006-openai-compatible-api-proxy-pattern.md) — Proxy routes on backend/model config stored in SQLite
