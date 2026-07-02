@@ -1,5 +1,9 @@
+use std::collections::BTreeMap;
+
 use leptos::prelude::*;
 use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
+use web_sys::window;
 
 use crate::components::alert_banner::{AlertBanner, AlertVariant};
 use crate::components::gpu_device_card::{
@@ -13,6 +17,202 @@ use crate::utils::{post_request, rw_signal_to_signal};
 
 mod metrics;
 pub use metrics::*;
+
+// ── Sort/Group enums ─────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum SortBy {
+    #[default]
+    Name,
+    Gpu,
+    Family,
+    Vendor,
+    Status,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GroupBy {
+    Gpu,
+    Family,
+    Vendor,
+    Status,
+}
+
+// ── localStorage keys ────────────────────────────────────────────────────────
+
+const SORT_KEY: &str = "tama-models-sort-by";
+const GROUP_KEY: &str = "tama-models-group-by";
+
+// ── Sort/Group helpers (adapted for ModelStatus) ─────────────────────────────
+
+/// Extract trailing numeric index from a GPU device string (e.g. "CUDA10" → 10).
+fn extract_gpu_index(device: &str) -> Option<u32> {
+    let mut digits = String::new();
+    for c in device.chars().rev() {
+        if c.is_ascii_digit() {
+            digits.push(c);
+        } else {
+            break;
+        }
+    }
+    if digits.is_empty() {
+        None
+    } else {
+        let num_str = digits.chars().rev().collect::<String>();
+        num_str.parse::<u32>().ok()
+    }
+}
+
+/// Extract vendor from a ModelStatus using a chain of fallbacks.
+fn extract_vendor_model_status(m: &ModelStatus) -> String {
+    for (field, separator) in &[
+        (&m.display_name, ':'),
+        (&m.api_name, ':'),
+        (&m.hf_base_model, '/'),
+    ] {
+        if let Some(name) = field {
+            if let Some(vendor) = name.split(*separator).next() {
+                let vendor = vendor.trim();
+                if !vendor.is_empty() {
+                    return vendor.to_string();
+                }
+            }
+        }
+    }
+    "other".to_string()
+}
+
+/// Returns `(priority, index)` for GPU sorting.
+fn extract_gpu_sort_key_model_status(gpu_device: &Option<String>) -> (u32, u32) {
+    match gpu_device {
+        Some(device) => {
+            let index = extract_gpu_index(device).unwrap_or(0);
+            (0, index)
+        }
+        None => (1, 0),
+    }
+}
+
+/// Human-readable GPU label for grouping.
+fn gpu_group_label_model_status(gpu_device: &Option<String>) -> String {
+    match gpu_device {
+        Some(device) => {
+            if let Some(index) = extract_gpu_index(device) {
+                format!("GPU {}", index)
+            } else {
+                device.clone()
+            }
+        }
+        None => "No GPU".to_string(),
+    }
+}
+
+/// Capitalizes the first letter of a string.
+fn capitalize_first(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(c) => c.to_uppercase().next().unwrap_or(c).to_string() + chars.as_str(),
+    }
+}
+
+/// Returns a comparable string for sorting (all non-GPU sorts).
+fn extract_sort_key_model_status(m: &ModelStatus, sort_by: SortBy) -> String {
+    match sort_by {
+        SortBy::Name => metrics::model_display_name(m),
+        SortBy::Family => m.hf_architecture_type.clone().unwrap_or_default(),
+        SortBy::Vendor => extract_vendor_model_status(m),
+        SortBy::Status => m.state.clone(),
+        SortBy::Gpu => String::new(), // GPU sort handled separately in sort_models_status
+    }
+}
+
+/// Returns the grouping key for a model.
+fn extract_group_key_model_status(m: &ModelStatus, group_by: GroupBy) -> String {
+    match group_by {
+        GroupBy::Gpu => gpu_group_label_model_status(&m.gpu_device),
+        GroupBy::Family => m
+            .hf_architecture_type
+            .clone()
+            .unwrap_or_else(|| String::from("Unknown")),
+        GroupBy::Vendor => extract_vendor_model_status(m),
+        GroupBy::Status => match m.state.as_str() {
+            "ready" => "Loaded",
+            "loading" => "Loading",
+            "unloading" => "Unloading",
+            "failed" => "Failed",
+            _ => "Idle",
+        }
+        .to_string(),
+    }
+}
+
+/// Returns display order for group headers.
+fn group_display_order(group_by: GroupBy, key: &str) -> u32 {
+    match group_by {
+        GroupBy::Gpu => {
+            if key == "No GPU" {
+                return u32::MAX;
+            }
+            extract_gpu_index(key).unwrap_or(0)
+        }
+        _ => 0,
+    }
+}
+
+/// Sort models in place by the given sort criterion.
+fn sort_models_status(models: &mut [ModelStatus], sort_by: SortBy) {
+    match sort_by {
+        SortBy::Gpu => {
+            models.sort_by(|a, b| {
+                let ka = extract_gpu_sort_key_model_status(&a.gpu_device);
+                let kb = extract_gpu_sort_key_model_status(&b.gpu_device);
+                ka.cmp(&kb)
+            });
+        }
+        _ => {
+            models.sort_by_key(|a| extract_sort_key_model_status(a, sort_by));
+        }
+    }
+}
+
+/// Parse a string into a SortBy enum.
+fn parse_sort_by(s: &str) -> SortBy {
+    match s {
+        "gpu" => SortBy::Gpu,
+        "family" => SortBy::Family,
+        "vendor" => SortBy::Vendor,
+        "status" => SortBy::Status,
+        _ => SortBy::Name,
+    }
+}
+
+/// Parse a string into an Option<GroupBy> enum.
+fn parse_group_by(s: &str) -> Option<GroupBy> {
+    match s {
+        "gpu" => Some(GroupBy::Gpu),
+        "family" => Some(GroupBy::Family),
+        "vendor" => Some(GroupBy::Vendor),
+        "status" => Some(GroupBy::Status),
+        _ => None,
+    }
+}
+
+/// Read a value from localStorage.
+fn read_local_storage(key: &str) -> Option<String> {
+    window()
+        .and_then(|w| w.local_storage().ok())
+        .flatten()
+        .and_then(|ls| ls.get(key).ok())
+        .flatten()
+}
+
+/// Write a value to localStorage.
+fn write_local_storage(key: &str, value: &str) {
+    if let Some(ls) = window().and_then(|w| w.local_storage().ok()).flatten() {
+        let _ = ls.set(key, value);
+    }
+}
 
 #[cfg(test)]
 mod tests;
@@ -125,6 +325,42 @@ pub fn Dashboard() -> impl IntoView {
                 .await;
             cancel_busy.set(false);
         }
+    });
+
+    // Sort/group state with localStorage persistence
+    let sort_by = RwSignal::new({
+        let stored = read_local_storage(SORT_KEY);
+        stored.as_deref().map(parse_sort_by).unwrap_or(SortBy::Name)
+    });
+    let group_by = RwSignal::new({
+        let stored = read_local_storage(GROUP_KEY);
+        stored.as_deref().map(parse_group_by).unwrap_or(None)
+    });
+
+    // Persist sort preference
+    Effect::new(move || {
+        let val = sort_by.get();
+        let key_str = match val {
+            SortBy::Name => "name",
+            SortBy::Gpu => "gpu",
+            SortBy::Family => "family",
+            SortBy::Vendor => "vendor",
+            SortBy::Status => "status",
+        };
+        write_local_storage(SORT_KEY, key_str);
+    });
+
+    // Persist group preference
+    Effect::new(move || {
+        let val = group_by.get();
+        let key_str = match val {
+            Some(GroupBy::Gpu) => "gpu",
+            Some(GroupBy::Family) => "family",
+            Some(GroupBy::Vendor) => "vendor",
+            Some(GroupBy::Status) => "status",
+            None => "none",
+        };
+        write_local_storage(GROUP_KEY, key_str);
     });
 
     view! {
@@ -319,48 +555,132 @@ pub fn Dashboard() -> impl IntoView {
                                 </div>
                             }.into_any()
                         } else {
+                            // Clone, sort, and optionally group the models
+                            let mut sorted_models = all_models.clone();
+                            sort_models_status(&mut sorted_models, sort_by.get());
+
+                            // Build grouped output
+                            let groups: Vec<(Option<String>, Vec<ModelStatus>)> = {
+                                let group_by_val = group_by.get();
+                                if let Some(group_by_type) = group_by_val {
+                                    let mut groups_map: BTreeMap<String, Vec<ModelStatus>> = BTreeMap::new();
+                                    let mut group_order: Vec<String> = Vec::new();
+                                    for m in &sorted_models {
+                                        let key = extract_group_key_model_status(m, group_by_type);
+                                        if !groups_map.contains_key(&key) {
+                                            group_order.push(key.clone());
+                                        }
+                                        groups_map.entry(key).or_default().push(m.clone());
+                                    }
+                                    group_order.sort_by(|a, b| {
+                                        let oa = group_display_order(group_by_type, a.as_str());
+                                        let ob = group_display_order(group_by_type, b.as_str());
+                                        oa.cmp(&ob).then_with(|| a.cmp(b))
+                                    });
+                                    group_order.into_iter()
+                                        .map(|key| {
+                                            let models_in_group = groups_map.remove(&key).unwrap();
+                                            (Some(capitalize_first(&key)), models_in_group)
+                                        })
+                                        .collect()
+                                } else {
+                                    vec![(None, sorted_models)]
+                                }
+                            };
+
                             view! {
+                                // Sort/group toolbar
+                                <div class="models-toolbar">
+                                    <div class="models-toolbar__controls">
+                                        <select
+                                            class="btn btn-secondary btn-sm"
+                                            on:change=move |e| {
+                                                let val = e.target()
+                                                    .and_then(|t| t.dyn_into::<web_sys::HtmlSelectElement>().ok())
+                                                    .map(|s| s.value())
+                                                    .unwrap_or_default();
+                                                sort_by.set(parse_sort_by(&val));
+                                            }
+                                        >
+                                            <option value="name" selected=move || sort_by.get() == SortBy::Name>"Name"</option>
+                                            <option value="gpu" selected=move || sort_by.get() == SortBy::Gpu>"GPU"</option>
+                                            <option value="family" selected=move || sort_by.get() == SortBy::Family>"Family"</option>
+                                            <option value="vendor" selected=move || sort_by.get() == SortBy::Vendor>"Vendor"</option>
+                                            <option value="status" selected=move || sort_by.get() == SortBy::Status>"Status"</option>
+                                        </select>
+                                        <select
+                                            class="btn btn-secondary btn-sm"
+                                            on:change=move |e| {
+                                                let val = e.target()
+                                                    .and_then(|t| t.dyn_into::<web_sys::HtmlSelectElement>().ok())
+                                                    .map(|s| s.value())
+                                                    .unwrap_or_default();
+                                                group_by.set(parse_group_by(&val));
+                                            }
+                                        >
+                                            <option value="none" selected=move || group_by.get().is_none()>"None"</option>
+                                            <option value="gpu" selected=move || group_by.get() == Some(GroupBy::Gpu)>"GPU"</option>
+                                            <option value="family" selected=move || group_by.get() == Some(GroupBy::Family)>"Family"</option>
+                                            <option value="vendor" selected=move || group_by.get() == Some(GroupBy::Vendor)>"Vendor"</option>
+                                            <option value="status" selected=move || group_by.get() == Some(GroupBy::Status)>"Status"</option>
+                                        </select>
+                                    </div>
+                                </div>
                                 <div class="models-list">
-                                    {all_models.into_iter().map(|m| {
-                                        let on_load_cb = Callback::new(move |id: String| {
-                                            load_action.dispatch(id);
-                                        });
-                                        let on_unload_cb = Callback::new(move |id: String| {
-                                            unload_action.dispatch(id);
-                                        });
-                                        let on_cancel_cb = Callback::new(move |id: String| {
-                                            cancel_action.dispatch(id);
-                                        });
-                                        let gpu_label = model_gpu_label(&gpus_for_labels, &m);
-                                        view! {
-                                            <ModelCard
-                                                id=m.id.clone()
-                                                db_id=m.db_id
-                                                display_name=model_display_name(&m)
-                                                quant=m.quant.clone()
-                                                context_length=m.context_length
-                                                hf_architecture_type=m.hf_architecture_type.clone()
-                                                hf_base_model=m.hf_base_model.clone()
-                                                pips=ModelPips {
-                                                    gpu_variant: m.gpu_variant.clone(),
-                                                    cache_type_k: m.cache_type_k.clone(),
-                                                    cache_type_v: m.cache_type_v.clone(),
-                                                    spec_types: m.spec_types.clone(),
-                                                    gpu_label,
-                                                }
-                                                backend=m.backend.clone()
-                                                log_source=Some(format!("{}_{}", m.backend, m.id))
-                                                state=m.state.clone()
-                                                loaded=None
-                                                enabled=None
-                                                error_message=m.error_message.clone()
-                                                on_load=on_load_cb
-                                                on_unload=on_unload_cb
-                                                on_cancel=on_cancel_cb
-                                                load_busy=load_busy
-                                                unload_busy=unload_busy
-                                                cancel_busy=cancel_busy
-                                            />
+                                    {groups.into_iter().flat_map(|(label, models_in_group)| {
+                                        let group_len = models_in_group.len();
+                                        let cards: Vec<AnyView> = models_in_group.into_iter().map(|m| {
+                                            let on_load_cb = Callback::new(move |id: String| {
+                                                load_action.dispatch(id);
+                                            });
+                                            let on_unload_cb = Callback::new(move |id: String| {
+                                                unload_action.dispatch(id);
+                                            });
+                                            let on_cancel_cb = Callback::new(move |id: String| {
+                                                cancel_action.dispatch(id);
+                                            });
+                                            let gpu_label = model_gpu_label(&gpus_for_labels, &m);
+                                            view! {
+                                                <ModelCard
+                                                    id=m.id.clone()
+                                                    db_id=m.db_id
+                                                    display_name=model_display_name(&m)
+                                                    quant=m.quant.clone()
+                                                    context_length=m.context_length
+                                                    hf_architecture_type=m.hf_architecture_type.clone()
+                                                    hf_base_model=m.hf_base_model.clone()
+                                                    pips=ModelPips {
+                                                        gpu_variant: m.gpu_variant.clone(),
+                                                        cache_type_k: m.cache_type_k.clone(),
+                                                        cache_type_v: m.cache_type_v.clone(),
+                                                        spec_types: m.spec_types.clone(),
+                                                        gpu_label,
+                                                    }
+                                                    backend=m.backend.clone()
+                                                    log_source=Some(format!("{}_{}", m.backend, m.id))
+                                                    state=m.state.clone()
+                                                    loaded=None
+                                                    enabled=None
+                                                    error_message=m.error_message.clone()
+                                                    on_load=on_load_cb
+                                                    on_unload=on_unload_cb
+                                                    on_cancel=on_cancel_cb
+                                                    load_busy=load_busy
+                                                    unload_busy=unload_busy
+                                                    cancel_busy=cancel_busy
+                                                />
+                                            }.into_any()
+                                        }).collect();
+
+                                        if let Some(l) = label {
+                                            let header: AnyView = view! {
+                                                <div class="model-section__title">
+                                                    {l} " (" {group_len} " " {if group_len == 1 { "model" } else { "models" }} ")"
+                                                </div>
+                                            }.into_any();
+                                            std::iter::once(header).chain(cards.into_iter()).collect::<Vec<AnyView>>().into_iter()
+                                        } else {
+                                            cards.into_iter()
                                         }
                                     }).collect::<Vec<_>>()}
                                 </div>
