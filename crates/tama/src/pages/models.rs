@@ -105,27 +105,17 @@ fn extract_gpu_index(device: &str) -> Option<u32> {
 /// 3. `hf_base_model` — split on `/`, take first segment
 /// 4. Fallback: `"other"`
 fn extract_vendor(entry: &ModelEntry) -> String {
-    if let Some(ref name) = entry.display_name {
-        if let Some(vendor) = name.split(':').next() {
-            let vendor = vendor.trim();
-            if !vendor.is_empty() {
-                return vendor.to_string();
-            }
-        }
-    }
-    if let Some(ref name) = entry.api_name {
-        if let Some(vendor) = name.split(':').next() {
-            let vendor = vendor.trim();
-            if !vendor.is_empty() {
-                return vendor.to_string();
-            }
-        }
-    }
-    if let Some(ref base) = entry.hf_base_model {
-        if let Some(vendor) = base.split('/').next() {
-            let vendor = vendor.trim();
-            if !vendor.is_empty() {
-                return vendor.to_string();
+    for (field, separator) in &[
+        (&entry.display_name, ':'),
+        (&entry.api_name, ':'),
+        (&entry.hf_base_model, '/'),
+    ] {
+        if let Some(name) = field {
+            if let Some(vendor) = name.split(*separator).next() {
+                let vendor = vendor.trim();
+                if !vendor.is_empty() {
+                    return vendor.to_string();
+                }
             }
         }
     }
@@ -165,7 +155,7 @@ fn capitalize_first(s: &str) -> String {
     let mut chars = s.chars();
     match chars.next() {
         None => String::new(),
-        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+        Some(c) => c.to_uppercase().next().unwrap_or(c).to_string() + chars.as_str(),
     }
 }
 
