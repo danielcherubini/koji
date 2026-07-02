@@ -61,6 +61,10 @@ pub async fn check_for_update(current_version: &str) -> Result<UpdateInfo> {
 
 /// Synchronous implementation of update checking.
 fn check_for_update_sync(current_version: &str) -> Result<UpdateInfo> {
+    // Validate the current version before hitting the network.
+    let current_semver = semver::Version::parse(current_version)
+        .with_context(|| format!("Invalid current version: {current_version}"))?;
+
     let mut builder = self_update::backends::github::ReleaseList::configure();
     builder.repo_owner(REPO_OWNER);
     builder.repo_name(REPO_NAME);
@@ -88,8 +92,6 @@ fn check_for_update_sync(current_version: &str) -> Result<UpdateInfo> {
         }
     };
 
-    let current_semver = semver::Version::parse(current_version)
-        .with_context(|| format!("Invalid current version: {current_version}"))?;
     let latest_semver = semver::Version::parse(&latest.version)
         .with_context(|| format!("Invalid release version: {}", latest.version))?;
 
