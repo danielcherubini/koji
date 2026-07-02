@@ -124,22 +124,14 @@
   font-size: 0.875rem;
 }
 
-/* Models sort/group toolbar */
+/* Models sort/group toolbar — inline with section header */
 .models-toolbar {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  margin-bottom: 0.75rem;
-  gap: 0.5rem;
-}
-
-.models-toolbar__controls {
-  display: flex;
   gap: 0.4rem;
-  align-items: center;
 }
 
-.models-toolbar__controls select {
+.models-toolbar select {
   padding: 0.2rem 1.5rem 0.2rem 0.5rem;
   font-size: 0.75rem;
   line-height: 1.4;
@@ -151,8 +143,7 @@
   min-width: 0;
 }
 
-.models-toolbar__count {
-  font-size: 0.85rem;
-  color: var(--text-muted);
+.models-toolbar .text-muted {
+  margin-left: 0.25rem;
 }
 
