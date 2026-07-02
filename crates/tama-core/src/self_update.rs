@@ -139,6 +139,10 @@ fn perform_update_sync(
     current_version: &str,
     on_progress: impl Fn(String),
 ) -> Result<UpdateResult> {
+    // Validate current version before any network calls
+    let current_semver = semver::Version::parse(current_version)
+        .with_context(|| format!("Invalid current version: {current_version}"))?;
+
     on_progress("Checking for latest release...".to_string());
 
     // 1. Fetch release list
@@ -161,8 +165,6 @@ fn perform_update_sync(
         .ok_or_else(|| anyhow!("No releases found on GitHub"))?;
 
     // 2. Compare versions
-    let current_semver = semver::Version::parse(current_version)
-        .with_context(|| format!("Invalid current version: {current_version}"))?;
     let latest_semver = semver::Version::parse(&latest.version)
         .with_context(|| format!("Invalid release version: {}", latest.version))?;
 
