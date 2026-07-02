@@ -14,16 +14,22 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Quick Stats
 
-- **Total Plans**: 133
+- **Total Plans**: 134
 - **Completed**: 131 ✅
-- **In Progress**: 0 🚧
-- **Remaining**: 1
+- **In Progress**: 1 🚧
+- **Remaining**: 2
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
 
 ---
 
 ## Completed Plans
+
+### In Progress
+
+| Plan | Description | Status |
+|------|-------------|--------|
+| [Model Sort + Group](2026-07-02-model-sort-group.md) | Add sort and group controls to the Models page (GPU, Family, Vendor, Status) with localStorage persistence | 🚧 IN PROGRESS |
 
 ### Recently Completed
 
