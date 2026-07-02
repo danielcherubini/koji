@@ -27,3 +27,5 @@ jobs:
           github_action_config.auto_review: "true"
           github_action_config.auto_describe: "true"
           github_action_config.auto_improve: "true"
+          github_action_config.require_score_review: "true"
+          github_action_config.num_max_findings: "69420"
