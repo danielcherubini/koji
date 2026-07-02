@@ -583,3 +583,232 @@ fn test_format_vram_short() {
     };
     assert_eq!(format_vram_short(&vram), "22.4 / 24.0 GB");
 }
+
+// ── Sort/Group helper tests ────────────────────────────────────────────────
+
+fn make_sort_model(
+    display_name: Option<&str>,
+    api_name: Option<&str>,
+    hf_base_model: Option<&str>,
+    gpu_device: Option<&str>,
+    state: &str,
+) -> ModelStatus {
+    ModelStatus {
+        id: "test".to_string(),
+        db_id: None,
+        api_name: api_name.map(|s| s.to_string()),
+        display_name: display_name.map(|s| s.to_string()),
+        backend: "test".to_string(),
+        #[allow(deprecated)]
+        loaded: false,
+        state: state.to_string(),
+        quant: None,
+        context_length: None,
+        hf_architecture_type: None,
+        hf_base_model: hf_base_model.map(|s| s.to_string()),
+        gpu_variant: None,
+        cache_type_k: None,
+        cache_type_v: None,
+        spec_types: vec![],
+        gpu_device: gpu_device.map(|s| s.to_string()),
+        tps: None,
+        prompt_tps: None,
+        error_message: None,
+    }
+}
+
+// ── extract_vendor_model_status tests ─────────────────────────────────────
+
+#[test]
+fn test_extract_vendor_from_display_name() {
+    let m = make_sort_model(Some("Unsloth: Qwen3.6 27B"), None, None, None, "idle");
+    assert_eq!(extract_vendor_model_status(&m), "Unsloth");
+}
+
+#[test]
+fn test_extract_vendor_from_api_name() {
+    let m = make_sort_model(None, Some("vendor:model-name"), None, None, "idle");
+    assert_eq!(extract_vendor_model_status(&m), "vendor");
+}
+
+#[test]
+fn test_extract_vendor_from_hf_base_model() {
+    let m = make_sort_model(None, None, Some("Qwen/Qwen3.6-27B"), None, "idle");
+    assert_eq!(extract_vendor_model_status(&m), "Qwen");
+}
+
+#[test]
+fn test_extract_vendor_fallback_other() {
+    let m = make_sort_model(None, None, None, None, "idle");
+    assert_eq!(extract_vendor_model_status(&m), "other");
+}
+
+// ── extract_gpu_sort_key_model_status tests ───────────────────────────────
+
+#[test]
+fn test_extract_gpu_sort_key_cuda() {
+    let m = make_sort_model(None, None, None, Some("CUDA1"), "idle");
+    assert_eq!(extract_gpu_sort_key_model_status(&m.gpu_device), (0, 1));
+}
+
+#[test]
+fn test_extract_gpu_sort_key_rocm() {
+    let m = make_sort_model(None, None, None, Some("ROCm0"), "idle");
+    assert_eq!(extract_gpu_sort_key_model_status(&m.gpu_device), (0, 0));
+}
+
+#[test]
+fn test_extract_gpu_sort_key_none() {
+    let m = make_sort_model(None, None, None, None, "idle");
+    assert_eq!(extract_gpu_sort_key_model_status(&m.gpu_device), (1, 0));
+}
+
+#[test]
+fn test_extract_gpu_sort_key_multidigit() {
+    let m = make_sort_model(None, None, None, Some("CUDA10"), "idle");
+    assert_eq!(extract_gpu_sort_key_model_status(&m.gpu_device), (0, 10));
+}
+
+#[test]
+fn test_extract_gpu_sort_key_no_number() {
+    let m = make_sort_model(None, None, None, Some("GPU"), "idle");
+    assert_eq!(extract_gpu_sort_key_model_status(&m.gpu_device), (0, 0));
+}
+
+// ── gpu_group_label_model_status tests ────────────────────────────────────
+
+#[test]
+fn test_gpu_group_label_cuda() {
+    let m = make_sort_model(None, None, None, Some("CUDA0"), "idle");
+    assert_eq!(gpu_group_label_model_status(&m.gpu_device), "GPU 0");
+}
+
+#[test]
+fn test_gpu_group_label_rocm() {
+    let m = make_sort_model(None, None, None, Some("ROCm1"), "idle");
+    assert_eq!(gpu_group_label_model_status(&m.gpu_device), "GPU 1");
+}
+
+#[test]
+fn test_gpu_group_label_none() {
+    let m = make_sort_model(None, None, None, None, "idle");
+    assert_eq!(gpu_group_label_model_status(&m.gpu_device), "No GPU");
+}
+
+#[test]
+fn test_gpu_group_label_no_number() {
+    let m = make_sort_model(None, None, None, Some("GPU"), "idle");
+    assert_eq!(gpu_group_label_model_status(&m.gpu_device), "GPU");
+}
+
+// ── capitalize_first tests ────────────────────────────────────────────────
+
+#[test]
+fn test_capitalize_first() {
+    assert_eq!(capitalize_first("qwen35"), "Qwen35");
+    assert_eq!(capitalize_first(""), "");
+}
+
+// ── parse_sort_by tests ───────────────────────────────────────────────────
+
+#[test]
+fn test_parse_sort_by() {
+    assert_eq!(parse_sort_by("name"), SortBy::Name);
+    assert_eq!(parse_sort_by("gpu"), SortBy::Gpu);
+    assert_eq!(parse_sort_by("unknown"), SortBy::Name);
+}
+
+// ── parse_group_by tests ──────────────────────────────────────────────────
+
+#[test]
+fn test_parse_group_by() {
+    assert_eq!(parse_group_by("gpu"), Some(GroupBy::Gpu));
+    assert_eq!(parse_group_by("none"), None);
+    assert_eq!(parse_group_by("unknown"), None);
+}
+
+// ── extract_group_key_model_status tests ──────────────────────────────────
+
+#[test]
+fn test_extract_group_key_gpu() {
+    let m = make_sort_model(None, None, None, Some("CUDA1"), "idle");
+    assert_eq!(extract_group_key_model_status(&m, GroupBy::Gpu), "GPU 1");
+}
+
+#[test]
+fn test_extract_group_key_status_loaded() {
+    let m = make_sort_model(None, None, None, None, "ready");
+    assert_eq!(
+        extract_group_key_model_status(&m, GroupBy::Status),
+        "Loaded"
+    );
+}
+
+#[test]
+fn test_extract_group_key_status_idle() {
+    let m = make_sort_model(None, None, None, None, "idle");
+    assert_eq!(extract_group_key_model_status(&m, GroupBy::Status), "Idle");
+}
+
+// ── group_display_order tests ─────────────────────────────────────────────
+
+#[test]
+fn test_group_display_order_gpu_no_gpu_last() {
+    assert_eq!(group_display_order(GroupBy::Gpu, "No GPU"), u32::MAX);
+    assert_eq!(group_display_order(GroupBy::Gpu, "GPU 0"), 0);
+    assert_eq!(group_display_order(GroupBy::Gpu, "GPU 1"), 1);
+}
+
+#[test]
+fn test_group_display_order_non_gpu_zero() {
+    assert_eq!(group_display_order(GroupBy::Family, "qwen35"), 0);
+    assert_eq!(group_display_order(GroupBy::Vendor, "Unsloth"), 0);
+}
+
+// ── sort_models_status integration tests ──────────────────────────────────
+
+#[test]
+fn test_sort_models_by_name() {
+    let mut models = vec![
+        make_sort_model(Some("Zebra"), None, None, None, "idle"),
+        make_sort_model(Some("Alpha"), None, None, None, "idle"),
+    ];
+    sort_models_status(&mut models, SortBy::Name);
+    assert_eq!(
+        models[0].display_name,
+        Some("Alpha".to_string()),
+        "Alpha should sort before Zebra"
+    );
+}
+
+#[test]
+fn test_sort_models_by_gpu_gpu_first() {
+    let mut models = vec![
+        make_sort_model(None, None, None, None, "idle"),
+        make_sort_model(None, None, None, Some("CUDA0"), "idle"),
+        make_sort_model(None, None, None, Some("CUDA1"), "idle"),
+    ];
+    sort_models_status(&mut models, SortBy::Gpu);
+    assert!(
+        models[0].gpu_device.is_some(),
+        "GPU models should sort first"
+    );
+    assert!(
+        models[1].gpu_device.is_some(),
+        "GPU models should sort first"
+    );
+    assert!(models[2].gpu_device.is_none(), "Non-GPU should sort last");
+}
+
+#[test]
+fn test_sort_models_by_gpu_numeric_order() {
+    let mut models = vec![
+        make_sort_model(None, None, None, Some("CUDA1"), "idle"),
+        make_sort_model(None, None, None, Some("CUDA0"), "idle"),
+        make_sort_model(None, None, None, Some("CUDA10"), "idle"),
+    ];
+    sort_models_status(&mut models, SortBy::Gpu);
+    assert_eq!(models[0].gpu_device, Some("CUDA0".to_string()));
+    assert_eq!(models[1].gpu_device, Some("CUDA1".to_string()));
+    assert_eq!(models[2].gpu_device, Some("CUDA10".to_string()));
+}
