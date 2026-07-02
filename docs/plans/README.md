@@ -29,7 +29,7 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 | Plan | Description | PR / Git References |
 |------|-------------|---------------------|
-| [Model Sort + Group](2026-07-02-model-sort-group.md) | Add sort and group controls to the Models page (GPU, Family, Vendor, Status) with localStorage persistence | #136 ✅ COMPLETED |
+| [Model Sort + Group](2026-07-02-model-sort-group.md) | Add sort and group controls to the dashboard Models section (GPU, Family, Vendor, Status) with localStorage persistence | #136, #137 ✅ COMPLETED |
 | [Model Editor GPU Isolation Polish](2026-07-01-model-editor-gpu-isolation-polish.md) | Rename "GPU Device" to "GPU Isolation", change default to "None", style refresh button | #131 ✅ COMPLETED |
 | [GPU Env-Var Isolation (UUID)](2026-07-01-gpu-env-var-isolation.md) | Replace --device CLI flag with driver-level GPU isolation via env vars (ROCR/CUDA_VISIBLE_DEVICES) using hardware UUIDs; also fix mtp_model API response | #130 ✅ COMPLETED |
 | [GPU Card Name + Separators](2026-06-30-gpu-card-name-separators.md) | Add GPU product name + total VRAM subtitle under GPU label, horizontal separators in left/middle columns | #129 ✅ COMPLETED |
