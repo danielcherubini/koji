@@ -123,7 +123,7 @@ fn extract_sort_key_model_status(m: &ModelStatus, sort_by: SortBy) -> String {
         SortBy::Family => m.hf_architecture_type.clone().unwrap_or_default(),
         SortBy::Vendor => extract_vendor_model_status(m),
         SortBy::Status => m.state.clone(),
-        SortBy::Gpu => unreachable!("GPU sort handled separately"),
+        SortBy::Gpu => String::new(), // GPU sort handled separately in sort_models_status
     }
 }
 
