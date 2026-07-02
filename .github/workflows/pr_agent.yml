@@ -26,4 +26,4 @@ jobs:
           config.custom_model_max_tokens: "256000"
           github_action_config.auto_review: "true"
           github_action_config.auto_describe: "true"
-          github_action_config.auto_improve: "false"
+          github_action_config.auto_improve: "true"
