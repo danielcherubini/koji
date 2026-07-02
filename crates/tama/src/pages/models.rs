@@ -23,6 +23,14 @@ struct ModelEntry {
     api_name: Option<String>,
     #[serde(default)]
     display_name: Option<String>,
+    #[serde(default)]
+    gpu_device: Option<String>,
+    #[serde(default)]
+    gpu_variant: Option<String>,
+    #[serde(default)]
+    hf_architecture_type: Option<String>,
+    #[serde(default)]
+    hf_base_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
