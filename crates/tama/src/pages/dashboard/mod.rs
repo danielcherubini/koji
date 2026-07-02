@@ -545,7 +545,41 @@ pub fn Dashboard() -> impl IntoView {
                 <section class="dashboard-models">
                     <div class="page-header">
                         <h2>"Models"</h2>
-                        <span class="text-muted">{format!("{} models", all_models.len())}</span>
+                        <div class="models-toolbar">
+                            <select
+                                class="btn btn-secondary btn-sm"
+                                on:change=move |e| {
+                                    let val = e.target()
+                                        .and_then(|t| t.dyn_into::<web_sys::HtmlSelectElement>().ok())
+                                        .map(|s| s.value())
+                                        .unwrap_or_default();
+                                    sort_by.set(parse_sort_by(&val));
+                                }
+                            >
+                                <option value="name" selected=move || sort_by.get() == SortBy::Name>"Name"</option>
+                                <option value="gpu" selected=move || sort_by.get() == SortBy::Gpu>"GPU"</option>
+                                <option value="family" selected=move || sort_by.get() == SortBy::Family>"Family"</option>
+                                <option value="vendor" selected=move || sort_by.get() == SortBy::Vendor>"Vendor"</option>
+                                <option value="status" selected=move || sort_by.get() == SortBy::Status>"Status"</option>
+                            </select>
+                            <select
+                                class="btn btn-secondary btn-sm"
+                                on:change=move |e| {
+                                    let val = e.target()
+                                        .and_then(|t| t.dyn_into::<web_sys::HtmlSelectElement>().ok())
+                                        .map(|s| s.value())
+                                        .unwrap_or_default();
+                                    group_by.set(parse_group_by(&val));
+                                }
+                            >
+                                <option value="none" selected=move || group_by.get().is_none()>"None"</option>
+                                <option value="gpu" selected=move || group_by.get() == Some(GroupBy::Gpu)>"GPU"</option>
+                                <option value="family" selected=move || group_by.get() == Some(GroupBy::Family)>"Family"</option>
+                                <option value="vendor" selected=move || group_by.get() == Some(GroupBy::Vendor)>"Vendor"</option>
+                                <option value="status" selected=move || group_by.get() == Some(GroupBy::Status)>"Status"</option>
+                            </select>
+                            <span class="text-muted">{format!("{} models", all_models.len())}</span>
+                        </div>
                     </div>
                     {
                         if all_models.is_empty() {
@@ -589,43 +623,6 @@ pub fn Dashboard() -> impl IntoView {
                             };
 
                             view! {
-                                // Sort/group toolbar
-                                <div class="models-toolbar">
-                                    <div class="models-toolbar__controls">
-                                        <select
-                                            class="btn btn-secondary btn-sm"
-                                            on:change=move |e| {
-                                                let val = e.target()
-                                                    .and_then(|t| t.dyn_into::<web_sys::HtmlSelectElement>().ok())
-                                                    .map(|s| s.value())
-                                                    .unwrap_or_default();
-                                                sort_by.set(parse_sort_by(&val));
-                                            }
-                                        >
-                                            <option value="name" selected=move || sort_by.get() == SortBy::Name>"Name"</option>
-                                            <option value="gpu" selected=move || sort_by.get() == SortBy::Gpu>"GPU"</option>
-                                            <option value="family" selected=move || sort_by.get() == SortBy::Family>"Family"</option>
-                                            <option value="vendor" selected=move || sort_by.get() == SortBy::Vendor>"Vendor"</option>
-                                            <option value="status" selected=move || sort_by.get() == SortBy::Status>"Status"</option>
-                                        </select>
-                                        <select
-                                            class="btn btn-secondary btn-sm"
-                                            on:change=move |e| {
-                                                let val = e.target()
-                                                    .and_then(|t| t.dyn_into::<web_sys::HtmlSelectElement>().ok())
-                                                    .map(|s| s.value())
-                                                    .unwrap_or_default();
-                                                group_by.set(parse_group_by(&val));
-                                            }
-                                        >
-                                            <option value="none" selected=move || group_by.get().is_none()>"None"</option>
-                                            <option value="gpu" selected=move || group_by.get() == Some(GroupBy::Gpu)>"GPU"</option>
-                                            <option value="family" selected=move || group_by.get() == Some(GroupBy::Family)>"Family"</option>
-                                            <option value="vendor" selected=move || group_by.get() == Some(GroupBy::Vendor)>"Vendor"</option>
-                                            <option value="status" selected=move || group_by.get() == Some(GroupBy::Status)>"Status"</option>
-                                        </select>
-                                    </div>
-                                </div>
                                 <div class="models-list">
                                     {groups.into_iter().flat_map(|(label, models_in_group)| {
                                         let group_len = models_in_group.len();
