@@ -122,6 +122,8 @@ fn model_entry_json(
         "cache_type_k": record.cache_type_k,
         "cache_type_v": record.cache_type_v,
         "hf_context_length": record.hf_context_length,
+        "hf_architecture_type": record.hf_architecture_type,
+        "hf_base_model": record.hf_base_model,
         "quants": quants_json,
         "modalities": m.modalities,
         "spec_decoding": serde_json::to_value(&m.spec_decoding).unwrap_or_default(),
@@ -321,6 +323,41 @@ mod tests {
             mtp_model,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn test_model_entry_json_includes_hf_fields() {
+        let mut record = make_record();
+        record.hf_architecture_type = Some("text-generation".to_string());
+        record.hf_base_model = Some("meta-llama/Llama-3.1-8B".to_string());
+        let config = make_config(None);
+        let tmp = std::path::Path::new("/tmp");
+
+        let result = model_entry_json(1, &record, &config, tmp, None);
+
+        assert_eq!(
+            result.get("hf_architecture_type").and_then(|v| v.as_str()),
+            Some("text-generation"),
+            "hf_architecture_type should be included in API JSON when set"
+        );
+        assert_eq!(
+            result.get("hf_base_model").and_then(|v| v.as_str()),
+            Some("meta-llama/Llama-3.1-8B"),
+            "hf_base_model should be included in API JSON when set"
+        );
+
+        // None case: both should be null when not set
+        let record_none = make_record();
+        let config_none = make_config(None);
+        let result_none = model_entry_json(1, &record_none, &config_none, tmp, None);
+        assert!(
+            result_none["hf_architecture_type"].is_null(),
+            "hf_architecture_type should be null when not set"
+        );
+        assert!(
+            result_none["hf_base_model"].is_null(),
+            "hf_base_model should be null when not set"
+        );
     }
 
     #[test]

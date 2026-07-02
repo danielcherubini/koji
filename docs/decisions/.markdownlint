@@ -1,0 +1,8 @@
+# Markdownlint configuration for ADRs
+# Reference: https://github.com/DavidAnson/markdownlint
+
+MD007: {indent: 4}
+MD013: false
+MD026: false
+MD033: {allowed_elements: ['a', 'code', 'kbd', 'pre', 'sub', 'sup']}
+MD036: false
