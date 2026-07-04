@@ -3,52 +3,6 @@ use wasm_bindgen::JsCast;
 
 use crate::utils::chart_utils::{format_duration_label, format_relative_time};
 
-/// Bucket raw data into 30-second windows using timestamps.
-///
-/// If `timestamps` is provided and valid (non-empty, same length as `data`),
-/// groups data points into 30-second buckets starting from the oldest timestamp.
-/// Each bucket collects all points whose timestamp falls within
-/// `[bucket_start, bucket_start + 30000ms)` and computes the average.
-/// Empty buckets are skipped.
-///
-/// If `timestamps` is empty or length doesn't match, returns `data` unchanged
-/// (each point becomes its own bar).
-fn bucket_data(data: &[f32], timestamps: &[i64]) -> Vec<f32> {
-    if timestamps.is_empty() || timestamps.len() != data.len() {
-        return data.to_vec();
-    }
-
-    let oldest = *timestamps.iter().min().unwrap_or(&0);
-    let bucket_size_ms = 30_000i64;
-
-    // Collect (bucket_index, sum, count) for each bucket
-    let mut buckets: std::collections::HashMap<usize, (f64, usize)> =
-        std::collections::HashMap::new();
-
-    for (ts, &val) in timestamps.iter().zip(data.iter()) {
-        let bucket_idx = ((ts - oldest) / bucket_size_ms) as usize;
-        let entry = buckets.entry(bucket_idx).or_insert((0.0, 0));
-        entry.0 += val as f64;
-        entry.1 += 1;
-    }
-
-    // Sort by bucket index and compute averages, skipping empty buckets
-    let mut sorted_keys: Vec<usize> = buckets.keys().cloned().collect();
-    sorted_keys.sort();
-
-    sorted_keys
-        .into_iter()
-        .filter_map(|k| {
-            let (sum, count) = buckets[&k];
-            if count > 0 {
-                Some((sum / count as f64) as f32)
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
 /// Compute the CSS fill-opacity for a bar based on its value relative to max.
 /// Returns a value in [0.25, 1.0].
 fn compute_opacity(value: f32, safe_max: f32) -> f32 {
@@ -131,40 +85,34 @@ pub fn BarChart(
 ) -> impl IntoView {
     let hover = RwSignal::new(None::<(usize, Option<usize>)>);
 
-    // Bucket data into 30-second windows
-    let bucketed = bucket_data(&data, &timestamps);
-    let bucketed2 = if !data2.is_empty() {
-        bucket_data(&data2, &timestamps)
-    } else {
-        Vec::new()
-    };
+    // Data is pre-aggregated by the backend into 30s buckets — the frontend
+    // renders it directly with no transformation. `data` is one value per bar.
+    //
+    // Determine the Y-axis scale: when the caller passes a fixed max_value > 0
+    // (CPU = 100, memory = RAM total), use it directly. When max_value <= 0
+    // (network has no natural ceiling), auto-scale to a stable "nice" number
+    // derived from the data. The 10% headroom in `nice_max` absorbs per-tick
+    // noise so the scale only steps to a clean value when the data genuinely
+    // crosses a nice boundary.
+    let num_buckets = data.len();
+    let has_data = num_buckets > 0;
+    let timestamps_valid = !timestamps.is_empty() && timestamps.len() == data.len();
+    let has_paired = !data2.is_empty();
 
-    // Determine the Y-axis scale. When the caller passes a fixed max_value > 0
-    // (CPU = 100, memory = RAM total), use it directly so the scale is
-    // meaningful regardless of observed values. When max_value <= 0 (network
-    // has no natural ceiling), auto-scale to a stable "nice" number derived from
-    // the bucketed data. The 10% headroom in `nice_max` absorbs per-tick noise so
-    // the scale doesn't jitter every 2s — it only steps to a clean value when the
-    // data genuinely moves past a nice boundary.
     let safe_max = if max_value > 0.0 {
         max_value
     } else {
-        let observed = bucketed
+        let observed = data
             .iter()
-            .chain(bucketed2.iter())
+            .chain(data2.iter())
             .copied()
             .fold(0.0_f32, f32::max);
         nice_max(observed).max(1.0)
     };
 
-    let num_buckets = bucketed.len();
-    let has_data = num_buckets > 0;
-    let timestamps_valid = !timestamps.is_empty() && timestamps.len() == data.len();
-    let has_paired = !bucketed2.is_empty();
-
     // Store values in signals for reactive access in closures
-    let bucketed_signal = RwSignal::new(bucketed.clone());
-    let bucketed2_signal = RwSignal::new(bucketed2.clone());
+    let data_signal = RwSignal::new(data.clone());
+    let data2_signal = RwSignal::new(data2.clone());
     let color_signal = RwSignal::new(color);
     let color2_signal = RwSignal::new(color2);
     let unit_label_signal = RwSignal::new(unit_label);
@@ -234,7 +182,7 @@ pub fn BarChart(
         let index = find_nearest_bucket(x_pct);
 
         // Check if there's a paired bucket at this index
-        let paired_index = if has_paired && index < bucketed2_signal.get_untracked().len() {
+        let paired_index = if has_paired && index < data2_signal.get_untracked().len() {
             Some(index)
         } else {
             None
@@ -253,8 +201,8 @@ pub fn BarChart(
             return ().into_any();
         }
 
-        let buckets = bucketed_signal.get();
-        let buckets2 = bucketed2_signal.get();
+        let buckets = data_signal.get();
+        let buckets2 = data2_signal.get();
         let c1 = color_signal.get();
         let c2 = color2_signal.get();
         let paired = !buckets2.is_empty();
@@ -359,8 +307,8 @@ pub fn BarChart(
     // Tooltip HTML element
     let tooltip_html = move || {
         hover.get().map(|(idx, _paired)| {
-            let buckets = bucketed_signal.get();
-            let buckets2 = bucketed2_signal.get();
+            let buckets = data_signal.get();
+            let buckets2 = data2_signal.get();
             let unit = unit_label_signal.get();
             let c1 = color_signal.get();
             let c2 = color2_signal.get();
@@ -453,70 +401,6 @@ pub fn BarChart(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_bucket_data_no_timestamps_returns_original() {
-        let data = vec![1.0, 2.0, 3.0, 4.0];
-        let result = bucket_data(&data, &[]);
-        assert_eq!(result, vec![1.0, 2.0, 3.0, 4.0]);
-    }
-
-    #[test]
-    fn test_bucket_data_length_mismatch_returns_original() {
-        let data = vec![1.0, 2.0, 3.0, 4.0];
-        let timestamps = vec![1000, 2000]; // wrong length
-        let result = bucket_data(&data, &timestamps);
-        assert_eq!(result, vec![1.0, 2.0, 3.0, 4.0]);
-    }
-
-    #[test]
-    fn test_bucket_data_groups_into_30_second_windows() {
-        // 4 data points within a 60-second span -> should bucket into 2 buckets
-        let data = vec![10.0, 20.0, 30.0, 40.0];
-        // First two in [0, 30s), last two in [30s, 60s)
-        let timestamps = vec![0, 15_000, 30_000, 45_000];
-        let result = bucket_data(&data, &timestamps);
-        assert_eq!(result.len(), 2);
-        assert!((result[0] - 15.0).abs() < 0.01); // avg of 10 and 20
-        assert!((result[1] - 35.0).abs() < 0.01); // avg of 30 and 40
-    }
-
-    #[test]
-    fn test_bucket_data_single_point() {
-        let data = vec![42.0];
-        let timestamps = vec![1000];
-        let result = bucket_data(&data, &timestamps);
-        assert_eq!(result, vec![42.0]);
-    }
-
-    #[test]
-    fn test_bucket_data_skips_empty_buckets() {
-        // Points only in first and third 30s bucket, second is empty
-        let data = vec![10.0, 30.0];
-        let timestamps = vec![0, 60_000];
-        let result = bucket_data(&data, &timestamps);
-        assert_eq!(result.len(), 2);
-        assert!((result[0] - 10.0).abs() < 0.01);
-        assert!((result[1] - 30.0).abs() < 0.01);
-    }
-
-    #[test]
-    fn test_bucket_data_all_same_bucket() {
-        // All points within 30 seconds
-        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-        let timestamps = vec![0, 5_000, 10_000, 20_000, 25_000];
-        let result = bucket_data(&data, &timestamps);
-        assert_eq!(result.len(), 1);
-        assert!((result[0] - 3.0).abs() < 0.01); // avg of 1+2+3+4+5 = 15/5
-    }
-
-    #[test]
-    fn test_empty_data() {
-        let data: Vec<f32> = vec![];
-        let timestamps: Vec<i64> = vec![];
-        let result = bucket_data(&data, &timestamps);
-        assert!(result.is_empty());
-    }
 
     #[test]
     fn test_compute_opacity_min() {

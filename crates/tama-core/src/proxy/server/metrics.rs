@@ -2,6 +2,114 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Width of each aggregation bucket in milliseconds (30 seconds).
+const BUCKET_MS: i64 = 30_000;
+
+/// Maximum number of frozen (complete) buckets to retain in the ring.
+/// Together with the trailing in-progress bucket this yields ~31 bars for
+/// a 15-minute window.
+const MAX_FROZEN_BUCKETS: usize = 30;
+
+/// Floor a Unix millisecond timestamp to the start of its 30s wall-clock
+/// bucket. Stable across ticks — the boundary depends only on the timestamp,
+/// not on when the collector started.
+fn bucket_start(ts_ms: i64) -> i64 {
+    (ts_ms / BUCKET_MS) * BUCKET_MS
+}
+
+/// Accumulator for the in-progress 30s bucket. Sums each 2s sample's fields
+/// and produces a [`MetricBucket`] with averaged values when frozen or polled.
+///
+/// When a new sample's timestamp falls in a different 30s window than the
+/// accumulator's, the caller freezes the old bucket (via [`to_bucket`]) and
+/// starts a fresh accumulator for the new window. This guarantees completed
+/// buckets are immutable — only the trailing in-progress bucket changes as
+/// new samples arrive.
+struct BucketAccumulator {
+    bucket_start_ms: i64,
+    cpu_sum: f64,
+    ram_used_sum: f64,
+    ram_total_last: u64,
+    network_dl_sum: f64,
+    network_ul_sum: f64,
+    has_network: bool,
+    count: usize,
+}
+
+impl BucketAccumulator {
+    fn new(bucket_start_ms: i64) -> Self {
+        Self {
+            bucket_start_ms,
+            cpu_sum: 0.0,
+            ram_used_sum: 0.0,
+            ram_total_last: 0,
+            network_dl_sum: 0.0,
+            network_ul_sum: 0.0,
+            has_network: false,
+            count: 0,
+        }
+    }
+
+    /// Add a 2s sample's graphable fields to this bucket's running sums.
+    fn add(&mut self, sample: &crate::gpu::MetricSample) {
+        self.cpu_sum += sample.cpu_usage_pct as f64;
+        self.ram_used_sum += sample.ram_used_mib as f64;
+        self.ram_total_last = sample.ram_total_mib;
+        if let Some(ref net) = sample.network {
+            self.network_dl_sum += net.download_mibps;
+            self.network_ul_sum += net.upload_mibps;
+            self.has_network = true;
+        }
+        self.count += 1;
+    }
+
+    /// Produce a [`MetricBucket`] from the accumulated sums. `complete`
+    /// should be `true` when the 30s window has elapsed (frozen) or `false`
+    /// for the trailing in-progress bucket.
+    fn to_bucket(&self, complete: bool) -> crate::gpu::MetricBucket {
+        let n = self.count.max(1) as f64;
+        crate::gpu::MetricBucket {
+            ts_unix_ms: self.bucket_start_ms,
+            cpu_usage_pct: (self.cpu_sum / n) as f32,
+            ram_used_mib: (self.ram_used_sum / n) as u64,
+            ram_total_mib: self.ram_total_last,
+            network: if self.has_network {
+                Some(crate::network::NetworkStats {
+                    download_mibps: self.network_dl_sum / n,
+                    upload_mibps: self.network_ul_sum / n,
+                })
+            } else {
+                None
+            },
+            complete,
+        }
+    }
+}
+
+/// Feed a sample into the accumulator, freezing the previous bucket when the
+/// sample crosses a 30s boundary. Shared between DB-seed replay and the live
+/// collection loop so both paths produce identical bucket structure.
+fn feed_sample(
+    frozen: &mut VecDeque<crate::gpu::MetricBucket>,
+    accum: &mut Option<BucketAccumulator>,
+    sample: &crate::gpu::MetricSample,
+) {
+    let bs = bucket_start(sample.ts_unix_ms);
+    if let Some(a) = accum.as_mut() {
+        if bs > a.bucket_start_ms {
+            // Sample crossed into a new 30s window — freeze the old bucket.
+            frozen.push_back(a.to_bucket(true));
+            while frozen.len() > MAX_FROZEN_BUCKETS {
+                frozen.pop_front();
+            }
+            *a = BucketAccumulator::new(bs);
+        }
+    } else {
+        *accum = Some(BucketAccumulator::new(bs));
+    }
+    accum.as_mut().unwrap().add(sample);
+}
+
 /// Start the system metrics collection background task.
 ///
 /// Creates an in-memory history buffer seeded from SQLite, then spawns
@@ -12,12 +120,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub fn start_metrics_collector(
     state: Arc<crate::proxy::ProxyState>,
 ) -> tokio::task::JoinHandle<()> {
-    // Seed in-memory history buffer from SQLite.
-    let mut history_buf: VecDeque<crate::gpu::MetricHistoryPoint> = VecDeque::with_capacity(450);
+    // Seed in-memory bucket accumulator from SQLite. Replay the most recent
+    // raw rows through the same feed_sample() path used by the live loop so
+    // the seeded buckets have identical structure to live ones.
+    let mut frozen_buckets: VecDeque<crate::gpu::MetricBucket> =
+        VecDeque::with_capacity(MAX_FROZEN_BUCKETS + 1);
+    let mut accum: Option<BucketAccumulator> = None;
     if let Some(seed_conn) = state.open_db() {
         if let Ok(rows) = crate::db::queries::get_recent_system_metrics(&seed_conn, 450) {
             for row in rows {
-                history_buf.push_back(row_into_sample(&row).split().0);
+                let sample = row_into_sample(&row);
+                feed_sample(&mut frozen_buckets, &mut accum, &sample);
             }
         }
     }
@@ -159,16 +272,23 @@ pub fn start_metrics_collector(
             })
             .await;
 
-            // 6. Update in-memory buffer (history points only — lightweight)
-            let (history_point, current) = sample.clone().split();
-            history_buf.push_back(history_point);
-            while history_buf.len() > 450 {
-                history_buf.pop_front();
-            }
+            // 6. Feed this sample into the bucket accumulator. This freezes
+            // the previous bucket when the sample crosses a 30s boundary,
+            // guaranteeing completed buckets are immutable thereafter.
+            feed_sample(&mut frozen_buckets, &mut accum, &sample);
 
-            // 7. Broadcast split snapshot: history (graphable fields) + current (GPU/models/inference)
+            // Derive the trailing in-progress bucket from the accumulator.
+            let in_progress = accum.as_ref().map(|a| a.to_bucket(false));
+
+            // 7. Broadcast: frozen buckets + in-progress last + current
+            //    (instantaneous CPU/RAM/Network + GPU/model/inference state).
+            let mut all_buckets = frozen_buckets.make_contiguous().to_vec();
+            if let Some(b) = in_progress {
+                all_buckets.push(b);
+            }
+            let current = sample.clone().into_current();
             let snapshot = crate::gpu::MetricsSnapshot {
-                history: history_buf.make_contiguous().to_vec(),
+                buckets: all_buckets,
                 current,
             };
             let _ = metrics_state.metrics_tx.send(snapshot);

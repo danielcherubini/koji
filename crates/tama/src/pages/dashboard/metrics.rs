@@ -6,22 +6,46 @@ pub struct NetworkStats {
     pub upload_mibps: f64,
 }
 
-/// One history point for sparkline charts. Lightweight — carries only the
-/// fields that need a rolling history (CPU, RAM, Network).
+/// One 30-second aggregated bucket for bar charts. Produced by the backend's
+/// bucket accumulator — the frontend renders these directly with no
+/// transformation. Frozen buckets (`complete = true`) never change; only the
+/// trailing in-progress bucket (`complete = false`) updates as new samples
+/// arrive.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MetricHistoryPoint {
+pub struct MetricBucket {
+    /// Wall-clock start of this 30s window (floored to a 30s boundary).
     pub ts_unix_ms: i64,
+    /// Average CPU usage % over samples in this bucket.
     pub cpu_usage_pct: f32,
+    /// Average RAM used (MiB) over samples in this bucket.
     pub ram_used_mib: u64,
+    /// RAM total (MiB) — from the last sample in this bucket.
     pub ram_total_mib: u64,
+    /// Average network throughput over samples in this bucket.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network: Option<NetworkStats>,
+    /// Whether this 30s window has elapsed (frozen) or is still accumulating.
+    #[serde(default)]
+    pub complete: bool,
 }
 
 /// Point-in-time current state broadcast once per snapshot. Carries GPU device
-/// stats, per-model statuses (with per-model tps/prompt_tps), and inference stats.
+/// stats, per-model statuses (with per-model tps/prompt_tps), inference stats,
+/// AND the instantaneous CPU/RAM/Network values for the big-number displays.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MetricCurrent {
+    /// Instantaneous CPU usage % (latest 2s sample) for big-number display.
+    #[serde(default)]
+    pub cpu_usage_pct: f32,
+    /// Instantaneous RAM used (MiB) for big-number display.
+    #[serde(default)]
+    pub ram_used_mib: u64,
+    /// Instantaneous RAM total (MiB).
+    #[serde(default)]
+    pub ram_total_mib: u64,
+    /// Instantaneous network throughput for big-number display.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<NetworkStats>,
     #[serde(default)]
     pub gpus: Vec<GpuDeviceStats>,
     #[serde(default)]
@@ -41,13 +65,14 @@ pub struct MetricCurrent {
     pub inference_last_updated_ms: Option<i64>,
 }
 
-/// Full metrics snapshot broadcast over SSE every 2s. Splits a rolling history
-/// of graphable fields (CPU, RAM, Network) from point-in-time state (GPU
-/// devices, model statuses, inference stats).
+/// Full metrics snapshot broadcast over SSE every 2s. `buckets` carries
+/// ~31 pre-aggregated 30s windows for the bar charts; `current` carries
+/// instantaneous values + point-in-time state for the big-number displays
+/// and detail cards.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MetricsSnapshot {
     #[serde(default)]
-    pub history: Vec<MetricHistoryPoint>,
+    pub buckets: Vec<MetricBucket>,
     #[serde(default)]
     pub current: MetricCurrent,
 }

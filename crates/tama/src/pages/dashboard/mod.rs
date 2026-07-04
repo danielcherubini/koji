@@ -219,7 +219,7 @@ mod tests;
 
 #[component]
 pub fn Dashboard() -> impl IntoView {
-    let history = RwSignal::new(Vec::<MetricHistoryPoint>::new());
+    let buckets = RwSignal::new(Vec::<MetricBucket>::new());
     let current = RwSignal::new(MetricCurrent::default());
     let fetch_failed = RwSignal::new(false);
     // Incrementing this signal re-runs the Effect that opens the EventSource.
@@ -237,14 +237,15 @@ pub fn Dashboard() -> impl IntoView {
             }
         };
 
-        // Handler for "snapshot" events — updates the history buffer (for sparklines)
-        // and the current state (for GPU cards, model list, inference stats).
+        // Handler for "snapshot" events — updates the buckets array (for bar
+        // charts) and the current state (for big-number displays, GPU cards,
+        // model list, inference stats).
         let on_snapshot =
             Closure::<dyn Fn(web_sys::MessageEvent)>::new(move |evt: web_sys::MessageEvent| {
                 if let Some(data_str) = evt.data().as_string() {
                     if let Ok(snapshot) = serde_json::from_str::<MetricsSnapshot>(&data_str) {
                         fetch_failed.set(false);
-                        history.set(snapshot.history);
+                        buckets.set(snapshot.buckets);
                         current.set(snapshot.current);
                     }
                 }
@@ -369,7 +370,7 @@ pub fn Dashboard() -> impl IntoView {
             <div class="page-header-actions">
                 // Existing status badge + Restart (inside conditional, only shown after SSE data arrives)
                 {move || {
-                    history.get().last().cloned().map(|_h| {
+                    buckets.get().last().cloned().map(|_h| {
                         let badge_class = if fetch_failed.get() { "badge badge-danger" } else { "badge badge-success" };
                         let badge_text = if fetch_failed.get() { "error" } else { "ok" };
                         view! {
@@ -391,7 +392,8 @@ pub fn Dashboard() -> impl IntoView {
 
 
         {move || {
-            let buf = history.get();
+            let buf = buckets.get();
+            let cur = current.get();
             if fetch_failed.get() && buf.is_empty() {
                 // Network error, no data yet — show error with retry button
                 return view! {
@@ -402,12 +404,12 @@ pub fn Dashboard() -> impl IntoView {
                 }.into_any();
             }
 
-            // Extract data for sparkline charts
+            // Extract chart data from pre-aggregated 30s buckets (no frontend
+            // transformation — the backend owns the aggregation).
             let cpu_data: Vec<f32> = buf.iter().map(|s| s.cpu_usage_pct).collect();
             let mem_data: Vec<f32> = buf.iter().map(|s| s.ram_used_mib as f32).collect();
             let timestamps: Vec<i64> = buf.iter().map(|s| s.ts_unix_ms).collect();
-            let mem_max = buf.last().map(|h| h.ram_total_mib as f32).unwrap_or(1.0);
-
+            let mem_max = cur.ram_total_mib as f32;
 
             // Network data extraction
             let net_download_data: Vec<f32> = buf.iter().map(|s| s.network.as_ref().map(|n| n.download_mibps as f32).unwrap_or(0.0)).collect();
@@ -416,22 +418,24 @@ pub fn Dashboard() -> impl IntoView {
             // auto-scales to a stable nice number (see BarChart::nice_max).
             // A dynamic max computed from live data would rescale every 2s.
 
-            let all_models: Vec<ModelStatus> = current.get().models.clone();
-            let gpus_for_labels = current.get().gpus.clone();
+            let all_models: Vec<ModelStatus> = cur.models.clone();
+            let gpus_for_labels = cur.gpus.clone();
+            let has_data = !buf.is_empty();
 
             view! {
                 <div class="grid-stats">
                     // CPU card
                     <div class="stat-card">
                         <div class="card-header">"CPU Usage"</div>
-                        {match buf.last() {
-                            Some(h) => view! {
-                                <div class="card-value">{format!("{:.1}%", h.cpu_usage_pct)}</div>
+                        {if has_data {
+                            view! {
+                                <div class="card-value">{format!("{:.1}%", cur.cpu_usage_pct)}</div>
                                 <div class="card-secondary">"of 100%"</div>
-                            }.into_any(),
-                            None => view! {
+                            }.into_any()
+                        } else {
+                            view! {
                                 <div class="card-value-empty">"—"</div>
-                            }.into_any(),
+                            }.into_any()
                         }}
                         <div class="sparkline-container">
                             <BarChart
@@ -448,14 +452,15 @@ pub fn Dashboard() -> impl IntoView {
                     // Memory card
                     <div class="stat-card">
                         <div class="card-header">"Memory"</div>
-                        {match buf.last() {
-                            Some(h) => view! {
-                                <div class="card-value">{format_number(h.ram_used_mib)}</div>
-                                <div class="card-secondary">{format!("of {} MiB", format_number(h.ram_total_mib))}</div>
-                            }.into_any(),
-                            None => view! {
+                        {if has_data {
+                            view! {
+                                <div class="card-value">{format_number(cur.ram_used_mib)}</div>
+                                <div class="card-secondary">{format!("of {} MiB", format_number(cur.ram_total_mib))}</div>
+                            }.into_any()
+                        } else {
+                            view! {
                                 <div class="card-value-empty">"—"</div>
-                            }.into_any(),
+                            }.into_any()
                         }}
                         <div class="sparkline-container">
                             <BarChart
@@ -470,7 +475,7 @@ pub fn Dashboard() -> impl IntoView {
                     </div>
 
                     // Network card
-                    {match buf.last().and_then(|h| h.network.as_ref()) {
+                    {match cur.network.as_ref() {
                         Some(net) => view! {
                             <div class="stat-card">
                                 <div class="card-header">"Network"</div>

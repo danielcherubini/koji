@@ -129,8 +129,8 @@ pub async fn handle_system_metrics_stream(
         loop {
             match rx.recv().await {
                 Ok(snapshot) => {
-                    // Shutdown sentinel: empty history signals stream end.
-                    if snapshot.history.is_empty() { break; }
+                    // Shutdown sentinel: empty buckets signals stream end.
+                    if snapshot.buckets.is_empty() { break; }
                     match serde_json::to_string(&snapshot) {
                         Ok(data) => yield Ok(Event::default().event("snapshot").data(data)),
                         Err(e) => tracing::warn!("failed to serialize MetricsSnapshot: {}", e),
