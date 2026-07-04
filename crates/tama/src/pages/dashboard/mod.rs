@@ -412,7 +412,9 @@ pub fn Dashboard() -> impl IntoView {
             // Network data extraction
             let net_download_data: Vec<f32> = buf.iter().map(|s| s.network.as_ref().map(|n| n.download_mibps as f32).unwrap_or(0.0)).collect();
             let net_upload_data: Vec<f32> = buf.iter().map(|s| s.network.as_ref().map(|n| n.upload_mibps as f32).unwrap_or(0.0)).collect();
-            let net_max = net_download_data.iter().chain(net_upload_data.iter()).cloned().fold(0.0_f32, f32::max).max(1.0);
+            // Network has no natural ceiling — pass max_value=0 so BarChart
+            // auto-scales to a stable nice number (see BarChart::nice_max).
+            // A dynamic max computed from live data would rescale every 2s.
 
             let all_models: Vec<ModelStatus> = current.get().models.clone();
             let gpus_for_labels = current.get().gpus.clone();
@@ -480,7 +482,7 @@ pub fn Dashboard() -> impl IntoView {
                                     <BarChart
                                         data=net_download_data
                                         data2=net_upload_data
-                                        max_value=net_max
+                                        max_value=0.0
                                         color="var(--accent-blue)".to_string()
                                         color2="var(--accent-green)".to_string()
                                         height=60.0

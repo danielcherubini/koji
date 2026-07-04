@@ -55,6 +55,34 @@ fn compute_opacity(value: f32, safe_max: f32) -> f32 {
     (0.25 + 0.75 * (value / safe_max)).clamp(0.25, 1.0)
 }
 
+/// Round an observed max value up to a "nice" number (1-2-5-10 sequence) with
+/// ~10% headroom. Used for auto-scaling the network chart so the Y-axis stays
+/// stable across 2s updates instead of jittering with every new data point.
+///
+/// Returns the smallest value from the [1, 2, 5, 10, 20, 50, ...] sequence that
+/// is >= `observed * 1.1`, with a floor of 1.0. The 10% headroom absorbs per-tick
+/// noise so the scale only steps to a new clean value when the data genuinely
+/// moves past a nice boundary (preventing jitter near boundaries like 9.5 vs 10.5
+/// both rounding to 10).
+fn nice_max(observed: f32) -> f32 {
+    const NICE: [f32; 15] = [
+        1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10000.0,
+        20000.0, 50000.0,
+    ];
+    let target = (observed * 1.1).max(1.0);
+    for &n in NICE.iter() {
+        if n >= target {
+            return n;
+        }
+    }
+    // Above the table — scale up in 2x steps
+    let mut n = 50000.0_f32;
+    while n < target {
+        n *= 2.0;
+    }
+    n
+}
+
 /// Compute the hover opacity (base + 0.15, capped at 1.0).
 fn compute_hover_opacity(value: f32, safe_max: f32) -> f32 {
     (compute_opacity(value, safe_max) + 0.15).clamp(0.25, 1.0)
@@ -103,15 +131,30 @@ pub fn BarChart(
 ) -> impl IntoView {
     let hover = RwSignal::new(None::<(usize, Option<usize>)>);
 
-    // Guard against division by zero
-    let safe_max = max_value.max(1.0);
-
     // Bucket data into 30-second windows
     let bucketed = bucket_data(&data, &timestamps);
     let bucketed2 = if !data2.is_empty() {
         bucket_data(&data2, &timestamps)
     } else {
         Vec::new()
+    };
+
+    // Determine the Y-axis scale. When the caller passes a fixed max_value > 0
+    // (CPU = 100, memory = RAM total), use it directly so the scale is
+    // meaningful regardless of observed values. When max_value <= 0 (network
+    // has no natural ceiling), auto-scale to a stable "nice" number derived from
+    // the bucketed data. The 10% headroom in `nice_max` absorbs per-tick noise so
+    // the scale doesn't jitter every 2s — it only steps to a clean value when the
+    // data genuinely moves past a nice boundary.
+    let safe_max = if max_value > 0.0 {
+        max_value
+    } else {
+        let observed = bucketed
+            .iter()
+            .chain(bucketed2.iter())
+            .copied()
+            .fold(0.0_f32, f32::max);
+        nice_max(observed).max(1.0)
     };
 
     let num_buckets = bucketed.len();
@@ -157,7 +200,17 @@ pub fn BarChart(
             return;
         }
 
-        let target = ev.target().unwrap();
+        // Use current_target (the <svg> element the listener is attached to)
+        // rather than target (the actual element under the cursor, e.g. a
+        // <rect> bar). Casting a rect to SvgsvgElement fails, which previously
+        // caused hover to only activate on the bar perimeter/gaps.
+        let target = match ev.current_target() {
+            Some(t) => t,
+            None => {
+                hover.set(None);
+                return;
+            }
+        };
         let svg_el: web_sys::SvgsvgElement = match target.dyn_into() {
             Ok(el) => el,
             Err(_) => {
@@ -546,5 +599,40 @@ mod tests {
     #[test]
     fn test_bucket_x_pct_zero_buckets() {
         assert!((bucket_x_pct(0, 0) - 50.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_nice_max_floor() {
+        // Zero/negative observed → floor of 1.0
+        assert!((nice_max(0.0) - 1.0).abs() < 0.01);
+        assert!((nice_max(-5.0) - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_nice_max_rounds_up_with_headroom() {
+        // 9.0 * 1.1 = 9.9 → next nice >= 9.9 is 10
+        assert!((nice_max(9.0) - 10.0).abs() < 0.01);
+        // 10.0 * 1.1 = 11.0 → next nice >= 11.0 is 20
+        assert!((nice_max(10.0) - 20.0).abs() < 0.01);
+        // 18.0 * 1.1 = 19.8 → 20
+        assert!((nice_max(18.0) - 20.0).abs() < 0.01);
+        // 20.0 * 1.1 = 22.0 → 50
+        assert!((nice_max(20.0) - 50.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_nice_max_no_boundary_jitter() {
+        // Values straddling the 10 boundary should BOTH round to 20 (not 10),
+        // preventing per-tick scale flips when data hovers near a nice number.
+        assert!((nice_max(9.5) - 20.0).abs() < 0.01);
+        assert!((nice_max(10.5) - 20.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_nice_max_large_values() {
+        // 100 * 1.1 = 110 → 200
+        assert!((nice_max(100.0) - 200.0).abs() < 0.01);
+        // Above the table scales in 2x steps: 60000 * 1.1 = 66000 → 100000
+        assert!((nice_max(60000.0) - 100000.0).abs() < 0.01);
     }
 }
