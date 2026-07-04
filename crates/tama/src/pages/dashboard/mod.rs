@@ -12,7 +12,7 @@ use crate::components::gpu_device_card::{
 use crate::components::modal::Modal;
 use crate::components::model_card::{ModelCard, ModelPips};
 use crate::components::pull_quant_wizard::{CompletedQuant, PullQuantWizard};
-use crate::components::sparkline::SparklineChart;
+use crate::components::BarChart;
 use crate::utils::{post_request, rw_signal_to_signal};
 
 mod metrics;
@@ -407,8 +407,7 @@ pub fn Dashboard() -> impl IntoView {
             let mem_data: Vec<f32> = buf.iter().map(|s| s.ram_used_mib as f32).collect();
             let timestamps: Vec<i64> = buf.iter().map(|s| s.ts_unix_ms).collect();
             let mem_max = buf.last().map(|h| h.ram_total_mib as f32).unwrap_or(1.0);
-            let cpu_y_refs = vec![0.0, 100.0];
-            let mem_y_refs = vec![mem_max];
+
 
             // Network data extraction
             let net_download_data: Vec<f32> = buf.iter().map(|s| s.network.as_ref().map(|n| n.download_mibps as f32).unwrap_or(0.0)).collect();
@@ -433,14 +432,13 @@ pub fn Dashboard() -> impl IntoView {
                             }.into_any(),
                         }}
                         <div class="sparkline-container">
-                            <SparklineChart
+                            <BarChart
                                 data=cpu_data
                                 max_value=100.0
                                 color="var(--accent-green)".to_string()
                                 height=60.0
                                 timestamps=timestamps.clone()
                                 unit_label="%".to_string()
-                                y_refs=cpu_y_refs
                             />
                         </div>
                     </div>
@@ -458,14 +456,13 @@ pub fn Dashboard() -> impl IntoView {
                             }.into_any(),
                         }}
                         <div class="sparkline-container">
-                            <SparklineChart
+                            <BarChart
                                 data=mem_data
                                 max_value=mem_max
                                 color="var(--accent-blue)".to_string()
                                 height=60.0
                                 timestamps=timestamps.clone()
                                 unit_label="MiB".to_string()
-                                y_refs=mem_y_refs
                             />
                         </div>
                     </div>
@@ -480,7 +477,7 @@ pub fn Dashboard() -> impl IntoView {
                                     <span class="network-rate network-rate-up">{format!("↑ {:.1} MiB/s", net.upload_mibps)}</span>
                                 </div>
                                 <div class="sparkline-container">
-                                    <SparklineChart
+                                    <BarChart
                                         data=net_download_data
                                         data2=net_upload_data
                                         max_value=net_max
