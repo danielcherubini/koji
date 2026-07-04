@@ -25,28 +25,30 @@ fn metric_current_deserializes_without_models_field() {
     );
 }
 
-/// `MetricHistoryPoint` must deserialize a payload that has no `network`
+/// `MetricBucket` must deserialize a payload that has no `network`
 /// field at all (older backend builds, cached responses) by defaulting to
 /// `None`. The `#[serde(default, skip_serializing_if = "Option::is_none")]`
 /// attributes on the field make this work.
 #[test]
-fn metric_history_point_deserializes_without_network_field() {
+fn metric_bucket_deserializes_without_network_field() {
     let json = r#"{
         "ts_unix_ms": 1700000000000,
         "cpu_usage_pct": 12.5,
         "ram_used_mib": 2048,
-        "ram_total_mib": 16384
+        "ram_total_mib": 16384,
+        "complete": true
     }"#;
 
-    let sample: MetricHistoryPoint = serde_json::from_str(json)
-        .expect("MetricHistoryPoint without `network` must deserialize via #[serde(default)]");
+    let bucket: MetricBucket = serde_json::from_str(json)
+        .expect("MetricBucket without `network` must deserialize via #[serde(default)]");
 
-    assert_eq!(sample.ts_unix_ms, 1_700_000_000_000);
-    assert_eq!(sample.cpu_usage_pct, 12.5);
+    assert_eq!(bucket.ts_unix_ms, 1_700_000_000_000);
+    assert_eq!(bucket.cpu_usage_pct, 12.5);
     assert!(
-        sample.network.is_none(),
+        bucket.network.is_none(),
         "missing `network` field must default to None"
     );
+    assert!(bucket.complete, "complete field must deserialize");
 }
 
 /// The `format_number` helper must produce comma-separated thousands.

@@ -195,13 +195,33 @@ mod tests {
                     collect_network_stats(iface, &mut fresh_networks, baseline_rx, baseline_tx);
 
                 if let Some(s) = stats {
-                    // With zero delta, throughput should be 0.0
-                    assert_eq!(s.download_mibps, 0.0);
-                    assert_eq!(s.upload_mibps, 0.0);
+                    // Near-zero delta — throughput should be ~0.0 (small background traffic is normal)
+                    assert!(
+                        s.download_mibps < 0.01,
+                        "download_mibps {:.4} should be near 0",
+                        s.download_mibps
+                    );
+                    assert!(
+                        s.upload_mibps < 0.01,
+                        "upload_mibps {:.4} should be near 0",
+                        s.upload_mibps
+                    );
                 }
-                // Cumulative should be unchanged when delta is 0
-                assert_eq!(new_rx, baseline_rx);
-                assert_eq!(new_tx, baseline_tx);
+                // Cumulative should be ~unchanged (small background traffic is normal)
+                assert!(
+                    (new_rx as i128 - baseline_rx as i128).unsigned_abs() < 1024,
+                    "new_rx {} should be ~baseline_rx {} (diff {} bytes)",
+                    new_rx,
+                    baseline_rx,
+                    new_rx.saturating_sub(baseline_rx)
+                );
+                assert!(
+                    (new_tx as i128 - baseline_tx as i128).unsigned_abs() < 1024,
+                    "new_tx {} should be ~baseline_tx {} (diff {} bytes)",
+                    new_tx,
+                    baseline_tx,
+                    new_tx.saturating_sub(baseline_tx)
+                );
             }
         }
     }

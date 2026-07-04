@@ -8,6 +8,7 @@ pub mod model_card;
 
 pub mod context_length_selector;
 // pub mod backup_section; // TODO: Fix compilation
+pub mod bar_chart;
 pub mod form_validation;
 pub mod general_section;
 pub mod install_modal;
@@ -19,6 +20,7 @@ pub mod pull_wizard;
 pub mod sampling_templates_section;
 pub mod section_card;
 pub mod self_update_section;
+pub use bar_chart::{BarChart, ChartSeries};
 pub mod sidebar;
 pub mod sparkline;
 pub mod supervisor_section;

@@ -12,7 +12,7 @@ use crate::components::gpu_device_card::{
 use crate::components::modal::Modal;
 use crate::components::model_card::{ModelCard, ModelPips};
 use crate::components::pull_quant_wizard::{CompletedQuant, PullQuantWizard};
-use crate::components::sparkline::SparklineChart;
+use crate::components::{BarChart, ChartSeries};
 use crate::utils::{post_request, rw_signal_to_signal};
 
 mod metrics;
@@ -219,7 +219,7 @@ mod tests;
 
 #[component]
 pub fn Dashboard() -> impl IntoView {
-    let history = RwSignal::new(Vec::<MetricHistoryPoint>::new());
+    let buckets = RwSignal::new(Vec::<MetricBucket>::new());
     let current = RwSignal::new(MetricCurrent::default());
     let fetch_failed = RwSignal::new(false);
     // Incrementing this signal re-runs the Effect that opens the EventSource.
@@ -237,14 +237,15 @@ pub fn Dashboard() -> impl IntoView {
             }
         };
 
-        // Handler for "snapshot" events — updates the history buffer (for sparklines)
-        // and the current state (for GPU cards, model list, inference stats).
+        // Handler for "snapshot" events — updates the buckets array (for bar
+        // charts) and the current state (for big-number displays, GPU cards,
+        // model list, inference stats).
         let on_snapshot =
             Closure::<dyn Fn(web_sys::MessageEvent)>::new(move |evt: web_sys::MessageEvent| {
                 if let Some(data_str) = evt.data().as_string() {
                     if let Ok(snapshot) = serde_json::from_str::<MetricsSnapshot>(&data_str) {
                         fetch_failed.set(false);
-                        history.set(snapshot.history);
+                        buckets.set(snapshot.buckets);
                         current.set(snapshot.current);
                     }
                 }
@@ -369,7 +370,7 @@ pub fn Dashboard() -> impl IntoView {
             <div class="page-header-actions">
                 // Existing status badge + Restart (inside conditional, only shown after SSE data arrives)
                 {move || {
-                    history.get().last().cloned().map(|_h| {
+                    buckets.get().last().cloned().map(|_h| {
                         let badge_class = if fetch_failed.get() { "badge badge-danger" } else { "badge badge-success" };
                         let badge_text = if fetch_failed.get() { "error" } else { "ok" };
                         view! {
@@ -391,7 +392,8 @@ pub fn Dashboard() -> impl IntoView {
 
 
         {move || {
-            let buf = history.get();
+            let buf = buckets.get();
+            let cur = current.get();
             if fetch_failed.get() && buf.is_empty() {
                 // Network error, no data yet — show error with retry button
                 return view! {
@@ -402,103 +404,127 @@ pub fn Dashboard() -> impl IntoView {
                 }.into_any();
             }
 
-            // Extract data for sparkline charts
+            // Extract chart data from pre-aggregated 30s buckets (no frontend
+            // transformation — the backend owns the aggregation).
             let cpu_data: Vec<f32> = buf.iter().map(|s| s.cpu_usage_pct).collect();
             let mem_data: Vec<f32> = buf.iter().map(|s| s.ram_used_mib as f32).collect();
             let timestamps: Vec<i64> = buf.iter().map(|s| s.ts_unix_ms).collect();
-            let mem_max = buf.last().map(|h| h.ram_total_mib as f32).unwrap_or(1.0);
-            let cpu_y_refs = vec![0.0, 100.0];
-            let mem_y_refs = vec![mem_max];
+            let mem_max = cur.ram_total_mib as f32;
 
-            // Network data extraction
-            let net_download_data: Vec<f32> = buf.iter().map(|s| s.network.as_ref().map(|n| n.download_mibps as f32).unwrap_or(0.0)).collect();
-            let net_upload_data: Vec<f32> = buf.iter().map(|s| s.network.as_ref().map(|n| n.upload_mibps as f32).unwrap_or(0.0)).collect();
-            let net_max = net_download_data.iter().chain(net_upload_data.iter()).cloned().fold(0.0_f32, f32::max).max(1.0);
+            // GPU series: one ChartSeries per GPU device, drawing the per-bucket
+            // averaged utilization from the backend's pre-aggregated gpu_utils.
+            // BarChart renders N paired bars per bucket. Hidden entirely when
+            // there are no GPUs (CPU-only servers/laptops).
+            let gpus = cur.gpus.clone();
+            let num_gpus = gpus.len();
+            let gpu_series: Vec<ChartSeries> = (0..num_gpus)
+                .map(|i| ChartSeries {
+                    label: format!("GPU {}", i),
+                    color: gpu_series_color(i).to_string(),
+                    data: buf.iter().map(|b| b.gpu_utils.get(i).copied().unwrap_or(0.0)).collect(),
+                })
+                .collect();
 
-            let all_models: Vec<ModelStatus> = current.get().models.clone();
-            let gpus_for_labels = current.get().gpus.clone();
+            let all_models: Vec<ModelStatus> = cur.models.clone();
+            let gpus_for_labels = gpus.clone();
+            let has_data = !buf.is_empty();
 
             view! {
                 <div class="grid-stats">
                     // CPU card
                     <div class="stat-card">
-                        <div class="card-header">"CPU Usage"</div>
-                        {match buf.last() {
-                            Some(h) => view! {
-                                <div class="card-value">{format!("{:.1}%", h.cpu_usage_pct)}</div>
-                                <div class="card-secondary">"of 100%"</div>
-                            }.into_any(),
-                            None => view! {
-                                <div class="card-value-empty">"—"</div>
-                            }.into_any(),
-                        }}
+                        <div class="stat-card-head">
+                            <div class="card-header">"CPU Usage"</div>
+                            <div class="stat-card-value-group">
+                                {if has_data {
+                                    view! {
+                                        <div class="card-value">{format!("{:.1}%", cur.cpu_usage_pct)}</div>
+                                        <div class="card-secondary">"of 100%"</div>
+                                    }.into_any()
+                                } else {
+                                    view! {
+                                        <div class="card-value-empty">"—"</div>
+                                    }.into_any()
+                                }}
+                            </div>
+                        </div>
                         <div class="sparkline-container">
-                            <SparklineChart
+                            <BarChart
                                 data=cpu_data
                                 max_value=100.0
                                 color="var(--accent-green)".to_string()
                                 height=60.0
                                 timestamps=timestamps.clone()
                                 unit_label="%".to_string()
-                                y_refs=cpu_y_refs
                             />
                         </div>
                     </div>
 
                     // Memory card
                     <div class="stat-card">
-                        <div class="card-header">"Memory"</div>
-                        {match buf.last() {
-                            Some(h) => view! {
-                                <div class="card-value">{format_number(h.ram_used_mib)}</div>
-                                <div class="card-secondary">{format!("of {} MiB", format_number(h.ram_total_mib))}</div>
-                            }.into_any(),
-                            None => view! {
-                                <div class="card-value-empty">"—"</div>
-                            }.into_any(),
-                        }}
+                        <div class="stat-card-head">
+                            <div class="card-header">"Memory"</div>
+                            <div class="stat-card-value-group">
+                                {if has_data {
+                                    view! {
+                                        <div class="card-value">{format_number(cur.ram_used_mib)}</div>
+                                        <div class="card-secondary">{format!("of {} MiB", format_number(cur.ram_total_mib))}</div>
+                                    }.into_any()
+                                } else {
+                                    view! {
+                                        <div class="card-value-empty">"—"</div>
+                                    }.into_any()
+                                }}
+                            </div>
+                        </div>
                         <div class="sparkline-container">
-                            <SparklineChart
+                            <BarChart
                                 data=mem_data
                                 max_value=mem_max
                                 color="var(--accent-blue)".to_string()
                                 height=60.0
                                 timestamps=timestamps.clone()
                                 unit_label="MiB".to_string()
-                                y_refs=mem_y_refs
                             />
                         </div>
                     </div>
 
-                    // Network card
-                    {match buf.last().and_then(|h| h.network.as_ref()) {
-                        Some(net) => view! {
+                    // GPU Usage card — hidden entirely when no GPUs are detected
+                    // (CPU-only servers, laptops). One series per GPU device,
+                    // color-coded from the accent palette.
+                    {if !gpus.is_empty() {
+                        view! {
                             <div class="stat-card">
-                                <div class="card-header">"Network"</div>
-                                <div class="network-rates">
-                                    <span class="network-rate network-rate-down">{format!("↓ {:.1} MiB/s", net.download_mibps)}</span>
-                                    <span class="network-rate network-rate-up">{format!("↑ {:.1} MiB/s", net.upload_mibps)}</span>
+                                <div class="stat-card-head">
+                                    <div class="card-header">"GPU Usage"</div>
+                                    <div class="stat-card-value-group">
+                                        <div class="network-rates">
+                                            {gpus.iter().enumerate().map(|(i, gpu)| {
+                                                let color = gpu_series_color(i).to_string();
+                                                let util = gpu.utilization_pct.unwrap_or(0);
+                                                view! {
+                                                    <span class="network-rate" style=format!("color: {}", color)>
+                                                        {format!("GPU {}  {:.0}%", i, util)}
+                                                    </span>
+                                                }
+                                            }).collect::<Vec<_>>()}
+                                        </div>
+                                    </div>
                                 </div>
                                 <div class="sparkline-container">
-                                    <SparklineChart
-                                        data=net_download_data
-                                        data2=net_upload_data
-                                        max_value=net_max
-                                        color="var(--accent-blue)".to_string()
-                                        color2="var(--accent-green)".to_string()
+                                    <BarChart
+                                        series=gpu_series.clone()
+                                        max_value=100.0
+                                        color=String::new()
                                         height=60.0
                                         timestamps=timestamps.clone()
-                                        unit_label="MiB/s".to_string()
+                                        unit_label="%".to_string()
                                     />
                                 </div>
                             </div>
-                        }.into_any(),
-                        None => view! {
-                            <div class="stat-card">
-                                <div class="card-header">"Network"</div>
-                                <div class="card-value-empty">"—"</div>
-                            </div>
-                        }.into_any(),
+                        }.into_any()
+                    } else {
+                        ().into_any()
                     }}
                 </div>
 

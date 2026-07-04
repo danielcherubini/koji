@@ -274,10 +274,10 @@ async fn test_metrics_task_broadcasts_samples() {
     );
     let snapshot = result.unwrap().unwrap();
     assert!(
-        !snapshot.history.is_empty(),
-        "Expected at least one history point in the broadcast"
+        !snapshot.buckets.is_empty(),
+        "Expected at least one bucket in the broadcast"
     );
-    let sample = &snapshot.history[0];
+    let sample = &snapshot.buckets[0];
     assert!(sample.ts_unix_ms > 0, "ts_unix_ms should be positive");
     assert!(
         sample.cpu_usage_pct >= 0.0,
@@ -349,8 +349,8 @@ async fn test_metric_sample_broadcast_populates_models_field() {
     // `ProxyState::collect_model_statuses`, which reflects the current
     // configuration.
     assert!(
-        !snapshot.history.is_empty(),
-        "Expected at least one history point in the broadcast"
+        !snapshot.buckets.is_empty(),
+        "Expected at least one bucket in the broadcast"
     );
     let sample = &snapshot.current;
     assert_eq!(
@@ -428,9 +428,9 @@ async fn test_system_metrics_stream_emits_samples() {
                 if let Some(data_line) = line.strip_prefix("data: ") {
                     let snapshot: crate::gpu::MetricsSnapshot =
                         serde_json::from_str(data_line).unwrap();
-                    assert!(!snapshot.history.is_empty());
-                    assert!(snapshot.history[0].ts_unix_ms > 0);
-                    assert!(snapshot.history[0].ram_total_mib > 0);
+                    assert!(!snapshot.buckets.is_empty());
+                    assert!(snapshot.buckets[0].ts_unix_ms > 0);
+                    assert!(snapshot.buckets[0].ram_total_mib > 0);
                     found_snapshot = true;
                     break;
                 }
@@ -573,7 +573,7 @@ async fn test_system_metrics_stream_sample_models_round_trip() {
                 // including the `models` field in `current`.
                 let snapshot: crate::gpu::MetricsSnapshot = serde_json::from_str(data_line)
                     .expect("MetricsSnapshot JSON from SSE stream must deserialize without error");
-                assert!(!snapshot.history.is_empty());
+                assert!(!snapshot.buckets.is_empty());
                 parsed_snapshot = Some(snapshot.clone());
                 break;
             }
@@ -617,10 +617,10 @@ async fn test_system_metrics_stream_sample_models_round_trip() {
     // The network field should deserialize correctly from the SSE stream.
     // In the test environment, a network interface is available so network stats
     // are populated and round-trip through JSON serialization. Network now lives
-    // in history points (for sparklines).
+    // in 30s buckets (for bar charts).
     assert!(
         snapshot
-            .history
+            .buckets
             .last()
             .and_then(|h| h.network.as_ref())
             .is_some(),

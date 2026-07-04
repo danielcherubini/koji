@@ -277,25 +277,57 @@ pub struct ModelStatus {
     pub prompt_tps: Option<f32>,
 }
 
-/// One history point for sparkline charts. Lightweight — carries only the
-/// fields that need a rolling history (CPU, RAM, Network). GPU devices,
-/// model statuses, and inference stats are NOT included; those live in
-/// [`MetricCurrent`] and are sent once per snapshot.
+/// One 30-second aggregated bucket for bar charts.
+///
+/// Produced by the metrics collector's bucket accumulator. Each bucket
+/// averages all 2s samples that fell within a 30-second wall-clock window
+/// (timestamp floored to a 30s boundary). Once a sample crosses into the
+/// next window, the previous bucket is frozen (`complete = true`) and never
+/// changes — only the trailing in-progress bucket (`complete = false`)
+/// updates as new samples arrive.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MetricHistoryPoint {
+pub struct MetricBucket {
+    /// Wall-clock start of this 30s window (floored to a 30s boundary).
     pub ts_unix_ms: i64,
+    /// Average CPU usage % over samples in this bucket.
     pub cpu_usage_pct: f32,
+    /// Average RAM used (MiB) over samples in this bucket.
     pub ram_used_mib: u64,
+    /// RAM total (MiB) — taken from the last sample in this bucket, since
+    /// total RAM is effectively constant within a 30s window.
     pub ram_total_mib: u64,
+    /// Average network throughput over samples in this bucket.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network: Option<crate::network::NetworkStats>,
+    /// Average utilization % per GPU device over samples in this bucket.
+    /// Index aligns with `MetricCurrent.gpus` order. Empty when no GPUs
+    /// are detected (CPU-only servers, laptops).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gpu_utils: Vec<f32>,
+    /// Whether this 30s window has elapsed (frozen) or is still accumulating.
+    /// The last bucket in the array is typically `false` (in-progress).
+    #[serde(default)]
+    pub complete: bool,
 }
 
-/// Point-in-time current state broadcast once per snapshot (not repeated in
-/// the history array). Carries GPU device stats, per-model statuses (with
-/// per-model `tps`/`prompt_tps`), and aggregate inference stats.
+/// Point-in-time current state broadcast once per snapshot. Carries GPU
+/// device stats, per-model statuses (with per-model `tps`/`prompt_tps`),
+/// aggregate inference stats, AND the instantaneous CPU/RAM/Network values
+/// for the big-number displays on the dashboard.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MetricCurrent {
+    /// Instantaneous CPU usage % (latest 2s sample) for big-number display.
+    #[serde(default)]
+    pub cpu_usage_pct: f32,
+    /// Instantaneous RAM used (MiB) for big-number display.
+    #[serde(default)]
+    pub ram_used_mib: u64,
+    /// Instantaneous RAM total (MiB).
+    #[serde(default)]
+    pub ram_total_mib: u64,
+    /// Instantaneous network throughput for big-number display.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<crate::network::NetworkStats>,
     /// Per-GPU device stats for this sample. Empty if no GPU is detected.
     #[serde(default)]
     pub gpus: Vec<GpuDeviceStats>,
@@ -320,17 +352,17 @@ pub struct MetricCurrent {
 }
 
 impl MetricSample {
-    /// Split this sample into a lightweight history point (for sparklines)
-    /// and a current-state snapshot (for GPU cards, model list, inference).
-    pub fn split(self) -> (MetricHistoryPoint, MetricCurrent) {
-        let history = MetricHistoryPoint {
-            ts_unix_ms: self.ts_unix_ms,
+    /// Convert this sample into a [`MetricCurrent`] for broadcast. The
+    /// bucket accumulator in the metrics task handles the 30s time-series
+    /// aggregation separately — this method only extracts the
+    /// point-in-time state plus the instantaneous CPU/RAM/Network values
+    /// used by the dashboard's big-number displays.
+    pub fn into_current(self) -> MetricCurrent {
+        MetricCurrent {
             cpu_usage_pct: self.cpu_usage_pct,
             ram_used_mib: self.ram_used_mib,
             ram_total_mib: self.ram_total_mib,
             network: self.network,
-        };
-        let current = MetricCurrent {
             gpus: self.gpus,
             models: self.models,
             models_loaded: self.models_loaded,
@@ -340,22 +372,25 @@ impl MetricSample {
             spec_accept_pct: self.spec_accept_pct,
             spec_decoding_active: self.spec_decoding_active,
             inference_last_updated_ms: self.inference_last_updated_ms,
-        };
-        (history, current)
+        }
     }
 }
 
-/// Full metrics snapshot broadcast over SSE every 2s. Splits a rolling
-/// history of graphable fields (CPU, RAM, Network) from point-in-time state
-/// (GPU devices, model statuses, inference stats) so the latter is not
-/// duplicated across every history entry.
+/// Full metrics snapshot broadcast over SSE every 2s.
+///
+/// `buckets` carries ~31 pre-aggregated 30-second windows (30 frozen + 1
+/// in-progress) for the bar charts — the frontend renders these directly
+/// with no transformation. `current` carries the instantaneous values and
+/// point-in-time state (GPU devices, model statuses, inference stats) for
+/// the big-number displays and detail cards.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MetricsSnapshot {
-    /// Rolling history of graphable fields (~450 samples) for sparklines.
-    /// CPU/RAM/Network current values are also read from the last entry.
+    /// Pre-aggregated 30s buckets for bar charts (~31 entries: 30 frozen +
+    /// 1 in-progress). Frozen buckets never change once sealed; only the
+    /// trailing in-progress bucket updates as new 2s samples arrive.
     #[serde(default)]
-    pub history: Vec<MetricHistoryPoint>,
-    /// Point-in-time state: GPU devices, model statuses, inference stats.
+    pub buckets: Vec<MetricBucket>,
+    /// Point-in-time state + instantaneous values for big-number displays.
     #[serde(default)]
     pub current: MetricCurrent,
 }

@@ -52,6 +52,26 @@
   border-color: var(--border-hover);
 }
 
+/* Stat card header row: label left, big value right-aligned. Both columns
+   take 50% width; the bar chart sits at the bottom via
+   `.sparkline-container { margin-top: auto }`. Scoped to .stat-card-head so
+   the global .card-header (used by backup_section) is unaffected. */
+.stat-card-head {
+  display: flex;
+  flex-direction: row;
+}
+.stat-card-head .card-header {
+  width: 50%;
+  margin-bottom: 1rem;
+}
+.stat-card-value-group {
+  text-align: right;
+  width: 50%;
+}
+.stat-card-value-group .network-rates {
+  margin-bottom: 0;
+}
+
 /* 5. Grid layouts */
 .grid-stats {
   display: grid;
