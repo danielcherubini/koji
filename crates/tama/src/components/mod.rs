@@ -21,7 +21,7 @@ pub mod sampling_templates_section;
 pub mod section_card;
 pub mod self_update_section;
 #[allow(unused_imports)]
-pub use bar_chart::BarChart;
+pub use bar_chart::{BarChart, ChartSeries};
 pub mod sidebar;
 pub mod sparkline;
 pub mod supervisor_section;

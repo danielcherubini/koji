@@ -33,6 +33,10 @@ struct BucketAccumulator {
     network_dl_sum: f64,
     network_ul_sum: f64,
     has_network: bool,
+    /// Per-GPU running utilization sum. Index aligns with the order GPUs
+    /// appear in `MetricSample.gpus`. Resized as new GPUs appear; a missing
+    /// index is treated as 0.0 utilization.
+    gpu_util_sums: Vec<f64>,
     count: usize,
 }
 
@@ -46,6 +50,7 @@ impl BucketAccumulator {
             network_dl_sum: 0.0,
             network_ul_sum: 0.0,
             has_network: false,
+            gpu_util_sums: Vec::new(),
             count: 0,
         }
     }
@@ -59,6 +64,14 @@ impl BucketAccumulator {
             self.network_dl_sum += net.download_mibps;
             self.network_ul_sum += net.upload_mibps;
             self.has_network = true;
+        }
+        // Track per-GPU utilization sums. Resize to fit the highest GPU index
+        // seen so far; missing indices stay 0.0 (treated as 0% util).
+        for (i, gpu) in sample.gpus.iter().enumerate() {
+            if i >= self.gpu_util_sums.len() {
+                self.gpu_util_sums.resize(i + 1, 0.0);
+            }
+            self.gpu_util_sums[i] += gpu.utilization_pct.unwrap_or(0) as f64;
         }
         self.count += 1;
     }
@@ -81,6 +94,7 @@ impl BucketAccumulator {
             } else {
                 None
             },
+            gpu_utils: self.gpu_util_sums.iter().map(|s| (s / n) as f32).collect(),
             complete,
         }
     }

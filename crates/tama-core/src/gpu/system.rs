@@ -299,6 +299,11 @@ pub struct MetricBucket {
     /// Average network throughput over samples in this bucket.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network: Option<crate::network::NetworkStats>,
+    /// Average utilization % per GPU device over samples in this bucket.
+    /// Index aligns with `MetricCurrent.gpus` order. Empty when no GPUs
+    /// are detected (CPU-only servers, laptops).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gpu_utils: Vec<f32>,
     /// Whether this 30s window has elapsed (frozen) or is still accumulating.
     /// The last bucket in the array is typically `false` (in-progress).
     #[serde(default)]

@@ -12,7 +12,7 @@ use crate::components::gpu_device_card::{
 use crate::components::modal::Modal;
 use crate::components::model_card::{ModelCard, ModelPips};
 use crate::components::pull_quant_wizard::{CompletedQuant, PullQuantWizard};
-use crate::components::BarChart;
+use crate::components::{BarChart, ChartSeries};
 use crate::utils::{post_request, rw_signal_to_signal};
 
 mod metrics;
@@ -411,15 +411,22 @@ pub fn Dashboard() -> impl IntoView {
             let timestamps: Vec<i64> = buf.iter().map(|s| s.ts_unix_ms).collect();
             let mem_max = cur.ram_total_mib as f32;
 
-            // Network data extraction
-            let net_download_data: Vec<f32> = buf.iter().map(|s| s.network.as_ref().map(|n| n.download_mibps as f32).unwrap_or(0.0)).collect();
-            let net_upload_data: Vec<f32> = buf.iter().map(|s| s.network.as_ref().map(|n| n.upload_mibps as f32).unwrap_or(0.0)).collect();
-            // Network has no natural ceiling — pass max_value=0 so BarChart
-            // auto-scales to a stable nice number (see BarChart::nice_max).
-            // A dynamic max computed from live data would rescale every 2s.
+            // GPU series: one ChartSeries per GPU device, drawing the per-bucket
+            // averaged utilization from the backend's pre-aggregated gpu_utils.
+            // BarChart renders N paired bars per bucket. Hidden entirely when
+            // there are no GPUs (CPU-only servers/laptops).
+            let gpus = cur.gpus.clone();
+            let num_gpus = gpus.len();
+            let gpu_series: Vec<ChartSeries> = (0..num_gpus)
+                .map(|i| ChartSeries {
+                    label: format!("GPU {}", i),
+                    color: gpu_series_color(i).to_string(),
+                    data: buf.iter().map(|b| b.gpu_utils.get(i).copied().unwrap_or(0.0)).collect(),
+                })
+                .collect();
 
             let all_models: Vec<ModelStatus> = cur.models.clone();
-            let gpus_for_labels = cur.gpus.clone();
+            let gpus_for_labels = gpus.clone();
             let has_data = !buf.is_empty();
 
             view! {
@@ -482,39 +489,42 @@ pub fn Dashboard() -> impl IntoView {
                         </div>
                     </div>
 
-                    // Network card
-                    {match cur.network.as_ref() {
-                        Some(net) => view! {
+                    // GPU Usage card — hidden entirely when no GPUs are detected
+                    // (CPU-only servers, laptops). One series per GPU device,
+                    // color-coded from the accent palette.
+                    {if !gpus.is_empty() {
+                        view! {
                             <div class="stat-card">
                                 <div class="stat-card-head">
-                                    <div class="card-header">"Network"</div>
+                                    <div class="card-header">"GPU Usage"</div>
                                     <div class="stat-card-value-group">
                                         <div class="network-rates">
-                                            <span class="network-rate network-rate-down">{format!("↓ {:.1} MiB/s", net.download_mibps)}</span>
-                                            <span class="network-rate network-rate-up">{format!("↑ {:.1} MiB/s", net.upload_mibps)}</span>
+                                            {gpus.iter().enumerate().map(|(i, gpu)| {
+                                                let color = gpu_series_color(i).to_string();
+                                                let util = gpu.utilization_pct.unwrap_or(0);
+                                                view! {
+                                                    <span class="network-rate" style=format!("color: {}", color)>
+                                                        {format!("GPU {}  {:.0}%", i, util)}
+                                                    </span>
+                                                }
+                                            }).collect::<Vec<_>>()}
                                         </div>
                                     </div>
                                 </div>
                                 <div class="sparkline-container">
                                     <BarChart
-                                        data=net_download_data
-                                        data2=net_upload_data
-                                        max_value=0.0
-                                        color="var(--accent-blue)".to_string()
-                                        color2="var(--accent-green)".to_string()
+                                        series=gpu_series.clone()
+                                        max_value=100.0
+                                        color=String::new()
                                         height=60.0
                                         timestamps=timestamps.clone()
-                                        unit_label="MiB/s".to_string()
+                                        unit_label="%".to_string()
                                     />
                                 </div>
                             </div>
-                        }.into_any(),
-                        None => view! {
-                            <div class="stat-card">
-                                <div class="card-header">"Network"</div>
-                                <div class="card-value-empty">"—"</div>
-                            </div>
-                        }.into_any(),
+                        }.into_any()
+                    } else {
+                        ().into_any()
                     }}
                 </div>
 

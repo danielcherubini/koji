@@ -3,6 +3,19 @@ use wasm_bindgen::JsCast;
 
 use crate::utils::chart_utils::{format_duration_label, format_relative_time};
 
+/// One data series for a [`BarChart`]. Multiple series render as paired
+/// side-by-side bars within each bucket (e.g. per-GPU utilization).
+#[derive(Debug, Clone)]
+pub struct ChartSeries {
+    /// Label shown in the tooltip (e.g. "GPU 0").
+    pub label: String,
+    /// CSS color string (e.g. `"var(--accent-blue)"`).
+    pub color: String,
+    /// One value per bucket. Must match `timestamps.len()` when timestamps are
+    /// provided; otherwise one bar per value.
+    pub data: Vec<f32>,
+}
+
 /// Compute the CSS fill-opacity for a bar based on its value relative to max.
 /// Returns a value in [0.25, 1.0].
 fn compute_opacity(value: f32, safe_max: f32) -> f32 {
@@ -57,24 +70,31 @@ fn bucket_x_pct(index: usize, num_buckets: usize) -> f32 {
 /// A responsive SVG bar chart component for displaying time-series data.
 ///
 /// Renders vertical bars with opacity proportional to value, interactive
-/// hover highlighting, and time axis labels. Supports paired (dual) data
-/// sets rendered side-by-side.
+/// hover highlighting, and time axis labels. Two input modes:
+///
+/// - **Single/dual series** (default): pass `data` (and optionally `data2` +
+///   `color`/`color2`). Used by the CPU and Memory cards.
+/// - **N series**: pass `series: Vec<ChartSeries>`. Renders N paired bars per
+///   bucket, N-way hover highlight, and a tooltip listing all N values
+///   color-coded. Used by the GPU card (one series per GPU device).
+///
+/// When `series` is non-empty it takes precedence over `data`/`data2`.
 ///
 /// ## Parameters
 ///
-/// * `data` — Sample values to plot. Each value is expected to be in
-///   the range `[0, max_value]`. Empty vectors render an empty chart.
-/// * `max_value` — Maximum expected Y-axis value. Must be > 0; defaults to 1.0.
-/// * `color` — CSS color string for the chart (e.g. `"var(--accent-green)"`).
+/// * `data` — Primary values to plot (one bar per value).
+/// * `max_value` — Y-axis ceiling. > 0 = fixed (CPU = 100, memory = RAM total);
+///   <= 0 = auto-scale to a stable "nice" number (network-style).
+/// * `color` / `color2` — CSS colors for the primary/secondary single-series bars.
 /// * `height` — SVG height in pixels. Recommended range: 30–150.
-/// * `timestamps` — Optional Unix ms timestamps for each data point. If provided
-///   and matching `data.len()`, enables 30-second bucketing and time axis labels.
+/// * `timestamps` — Optional Unix ms timestamps for each bar. Enables time
+///   axis labels (`-15m` / `now`) and bucket-relative tooltip times.
 /// * `unit_label` — Unit string shown in tooltip (e.g. `"%"`, `"MiB"`).
-/// * `data2` — Optional secondary data set for paired bar rendering.
-/// * `color2` — CSS color string for the secondary data set.
+/// * `data2` / `color2` — Optional secondary series for paired single-mode bars.
+/// * `series` — Optional N-series list. When non-empty, overrides the above.
 #[component]
 pub fn BarChart(
-    data: Vec<f32>,
+    #[prop(default = Vec::new())] data: Vec<f32>,
     max_value: f32,
     color: String,
     height: f32,
@@ -82,39 +102,55 @@ pub fn BarChart(
     #[prop(default = String::new())] unit_label: String,
     #[prop(default = Vec::new())] data2: Vec<f32>,
     #[prop(default = String::new())] color2: String,
+    #[prop(default = Vec::new())] series: Vec<ChartSeries>,
 ) -> impl IntoView {
-    let hover = RwSignal::new(None::<(usize, Option<usize>)>);
+    let hover = RwSignal::new(None::<usize>);
 
-    // Data is pre-aggregated by the backend into 30s buckets — the frontend
-    // renders it directly with no transformation. `data` is one value per bar.
-    //
-    // Determine the Y-axis scale: when the caller passes a fixed max_value > 0
-    // (CPU = 100, memory = RAM total), use it directly. When max_value <= 0
-    // (network has no natural ceiling), auto-scale to a stable "nice" number
-    // derived from the data. The 10% headroom in `nice_max` absorbs per-tick
-    // noise so the scale only steps to a clean value when the data genuinely
-    // crosses a nice boundary.
-    let num_buckets = data.len();
-    let has_data = num_buckets > 0;
-    let timestamps_valid = !timestamps.is_empty() && timestamps.len() == data.len();
-    let has_paired = !data2.is_empty();
+    // Normalize to an internal series representation so the rest of the
+    // component has a single code path. The `series` prop wins when non-empty;
+    // otherwise we synthesize 1 (or 2, when data2 is present) series from the
+    // legacy data/data2/color/color2 props.
+    let use_series: Vec<ChartSeries> = if !series.is_empty() {
+        series
+    } else {
+        let mut v = Vec::with_capacity(2);
+        v.push(ChartSeries {
+            label: String::new(),
+            color: color.clone(),
+            data: data.clone(),
+        });
+        if !data2.is_empty() {
+            v.push(ChartSeries {
+                label: String::new(),
+                color: color2.clone(),
+                data: data2.clone(),
+            });
+        }
+        v
+    };
 
+    let num_series = use_series.len();
+    let num_buckets = use_series.first().map(|s| s.data.len()).unwrap_or(0);
+    let has_data = num_buckets > 0 && num_series > 0;
+    let timestamps_valid = !timestamps.is_empty() && timestamps.len() == num_buckets;
+
+    // Determine the Y-axis scale. Fixed when max_value > 0 (CPU = 100, memory =
+    // RAM total); otherwise auto-scale to a stable "nice" number from the
+    // observed max across all series. The 10% headroom in `nice_max` absorbs
+    // per-tick noise so the scale only steps to a clean value when the data
+    // genuinely crosses a nice boundary.
     let safe_max = if max_value > 0.0 {
         max_value
     } else {
-        let observed = data
+        let observed = use_series
             .iter()
-            .chain(data2.iter())
-            .copied()
+            .flat_map(|s| s.data.iter().copied())
             .fold(0.0_f32, f32::max);
         nice_max(observed).max(1.0)
     };
 
-    // Store values in signals for reactive access in closures
-    let data_signal = RwSignal::new(data.clone());
-    let data2_signal = RwSignal::new(data2.clone());
-    let color_signal = RwSignal::new(color);
-    let color2_signal = RwSignal::new(color2);
+    // Store series + unit in signals for reactive access in closures.
+    let series_signal = RwSignal::new(use_series);
     let unit_label_signal = RwSignal::new(unit_label);
 
     // Compute time axis labels
@@ -122,9 +158,7 @@ pub fn BarChart(
         let oldest_ts = *timestamps.first().unwrap();
         let now_ms = js_sys::Date::now() as i64;
         let diff_secs = (now_ms - oldest_ts) / 1_000;
-        let left = format_duration_label(diff_secs.max(0));
-        let right = "now".to_string();
-        (left, right)
+        (format_duration_label(diff_secs.max(0)), "now".to_string())
     } else {
         (String::new(), String::new())
     };
@@ -148,10 +182,10 @@ pub fn BarChart(
             return;
         }
 
-        // Use current_target (the <svg> element the listener is attached to)
-        // rather than target (the actual element under the cursor, e.g. a
-        // <rect> bar). Casting a rect to SvgsvgElement fails, which previously
-        // caused hover to only activate on the bar perimeter/gaps.
+        // Use current_target (the <svg> the listener is attached to) rather
+        // than target (the element under the cursor, e.g. a <rect> bar).
+        // Casting a rect to SvgsvgElement fails, which previously caused
+        // hover to only activate on the bar perimeter/gaps.
         let target = match ev.current_target() {
             Some(t) => t,
             None => {
@@ -169,120 +203,66 @@ pub fn BarChart(
 
         let rect = svg_el.get_bounding_client_rect();
         let svg_width = rect.width();
-
         if svg_width <= 0.0 {
             hover.set(None);
             return;
         }
 
         let mouse_x = ev.client_x() as f64 - rect.left();
-        let x_pct = ((mouse_x / svg_width) * 100.0) as f32;
-        let x_pct = x_pct.clamp(0.0, 100.0);
-
-        let index = find_nearest_bucket(x_pct);
-
-        // Check if there's a paired bucket at this index
-        let paired_index = if has_paired && index < data2_signal.get_untracked().len() {
-            Some(index)
-        } else {
-            None
-        };
-
-        hover.set(Some((index, paired_index)));
+        let x_pct = (((mouse_x / svg_width) * 100.0) as f32).clamp(0.0, 100.0);
+        hover.set(Some(find_nearest_bucket(x_pct)));
     };
 
     let on_mouse_leave = move |_ev: leptos::ev::MouseEvent| {
         hover.set(None);
     };
 
-    // Render bars
+    // Render bars. For N series, each bucket's slot is divided into N equal
+    // sub-slots (minus a small gap between pairs); single-series buckets use
+    // the full slot with side padding.
     let bars = move || {
         if !has_data {
             return ().into_any();
         }
 
-        let buckets = data_signal.get();
-        let buckets2 = data2_signal.get();
-        let c1 = color_signal.get();
-        let c2 = color2_signal.get();
-        let paired = !buckets2.is_empty();
+        let series = series_signal.get();
+        let slot_width = 100.0 / num_buckets as f32;
 
-        let slot_width = 100.0 / buckets.len() as f32;
-
-        let rects: Vec<AnyView> = buckets
+        let rects: Vec<AnyView> = series
             .iter()
             .enumerate()
-            .map(|(i, &val)| {
-                let bar_height = (val / safe_max * height).max(1.0).clamp(1.0, height);
-                let bar_y = (height - bar_height).clamp(0.0, height);
-                let base_opacity = compute_opacity(val, safe_max);
-
-                let (bar_width, bar_x) = if paired {
-                    let half_slot = slot_width / 2.0;
-                    let gap = 1.0_f32.max(slot_width * 0.05);
-                    let w = (half_slot - gap).max(1.0);
-                    (w, (i as f32 * slot_width) + gap)
-                } else {
-                    let gap = slot_width * 0.15;
-                    let w = (slot_width - gap * 2.0).max(1.0);
-                    (w, (i as f32 * slot_width) + gap)
-                };
-
-                let is_hovered = hover.get().map(|(idx, _)| idx == i).unwrap_or(false);
-                let opacity = if is_hovered {
-                    compute_hover_opacity(val, safe_max)
-                } else {
-                    base_opacity
-                };
-
-                let fill = c1.clone();
-                view! {
-                    <rect
-                        x=bar_x
-                        y=bar_y
-                        width=bar_width
-                        height=bar_height
-                        fill=fill
-                        fill-opacity=opacity
-                        rx="2"
-                        class="bar-rect"
-                    />
-                }
-                .into_any()
-            })
-            .collect();
-
-        // Paired bars (data2)
-        let rects2: Vec<AnyView> = if paired {
-            buckets2
-                .iter()
-                .enumerate()
-                .map(|(i, &val)| {
+            .flat_map(|(s_idx, s)| {
+                let color = s.color.clone();
+                s.data.iter().enumerate().map(move |(i, &val)| {
                     let bar_height = (val / safe_max * height).max(1.0).clamp(1.0, height);
                     let bar_y = (height - bar_height).clamp(0.0, height);
                     let base_opacity = compute_opacity(val, safe_max);
 
-                    let half_slot = slot_width / 2.0;
-                    let gap = 1.0_f32.max(slot_width * 0.05);
-                    let w = (half_slot - gap).max(1.0);
-                    let x = (i as f32 * slot_width) + half_slot;
+                    let (bar_width, bar_x) = if num_series == 1 {
+                        let gap = slot_width * 0.15;
+                        let w = (slot_width - gap * 2.0).max(1.0);
+                        (w, (i as f32 * slot_width) + gap)
+                    } else {
+                        let sub_slot = slot_width / num_series as f32;
+                        let gap = 1.0_f32.max(sub_slot * 0.1);
+                        let w = (sub_slot - gap).max(1.0);
+                        let x = (i as f32 * slot_width) + (s_idx as f32 * sub_slot) + (gap / 2.0);
+                        (w, x)
+                    };
 
-                    let is_hovered = hover
-                        .get()
-                        .map(|(_, pidx)| pidx == Some(i))
-                        .unwrap_or(false);
+                    let is_hovered = hover.get().map(|idx| idx == i).unwrap_or(false);
                     let opacity = if is_hovered {
                         compute_hover_opacity(val, safe_max)
                     } else {
                         base_opacity
                     };
 
-                    let fill = c2.clone();
+                    let fill = color.clone();
                     view! {
                         <rect
-                            x=x
+                            x=bar_x
                             y=bar_y
-                            width=w
+                            width=bar_width
                             height=bar_height
                             fill=fill
                             fill-opacity=opacity
@@ -292,69 +272,61 @@ pub fn BarChart(
                     }
                     .into_any()
                 })
-                .collect()
-        } else {
-            Vec::new()
-        };
+            })
+            .collect();
 
-        view! {
-            {rects}
-            {rects2}
-        }
-        .into_any()
+        view! { {rects} }.into_any()
     };
 
-    // Tooltip HTML element
+    // Tooltip HTML element. Lists every series' value at the hovered bucket,
+    // color-coded. When a series has a label, it's shown before the value.
     let tooltip_html = move || {
-        hover.get().map(|(idx, _paired)| {
-            let buckets = data_signal.get();
-            let buckets2 = data2_signal.get();
+        hover.get().map(|idx| {
+            let series = series_signal.get();
             let unit = unit_label_signal.get();
-            let c1 = color_signal.get();
-            let c2 = color2_signal.get();
-
-            if idx >= buckets.len() {
-                return ().into_any();
-            }
-
-            let val = buckets[idx];
-            let x_pct = bucket_x_pct(idx, buckets.len());
+            let x_pct = bucket_x_pct(idx, num_buckets);
             let left_style = format!("left: {}%;", x_pct);
 
             // Get timestamp for this bucket
             let ts = if timestamps_valid && idx < timestamps.len() {
                 Some(timestamps[idx])
             } else if timestamps_valid {
-                // Map bucket index to approximate timestamp
                 let oldest = *timestamps.first().unwrap_or(&0);
-                let bucket_ms = 30_000i64;
-                Some(oldest + (idx as i64) * bucket_ms)
+                Some(oldest + (idx as i64) * 30_000)
             } else {
                 None
             };
-
             let time_str = ts.map(format_relative_time).unwrap_or_default();
 
-            let secondary = if !buckets2.is_empty() && idx < buckets2.len() {
-                Some(buckets2[idx])
-            } else {
-                None
-            };
+            let value_spans: Vec<AnyView> = series
+                .iter()
+                .filter_map(|s| {
+                    if idx >= s.data.len() {
+                        return None;
+                    }
+                    let val = s.data[idx];
+                    let color = s.color.clone();
+                    let label = s.label.clone();
+                    let unit_part = if unit.is_empty() { "" } else { &unit };
+                    let text = if label.is_empty() {
+                        format!("{:.1}{}", val, unit_part)
+                    } else {
+                        format!("{} {:.1}{}", label, val, unit_part)
+                    };
+                    Some(
+                        view! {
+                            <span class="sparkline-tooltip-value" style=format!("color: {}", color)>
+                                {text}
+                            </span>
+                        }
+                        .into_any(),
+                    )
+                })
+                .collect();
 
             view! {
                 <div class="sparkline-tooltip" style=left_style>
-                    <span class="sparkline-tooltip-value" style=format!("color: {}", c1)>
-                        {format!("{:.1}{}", val, if unit.is_empty() { "" } else { &unit })}
-                    </span>
-                    {if let Some(sec_val) = secondary {
-                        view! {
-                            <span class="sparkline-tooltip-value" style=format!("color: {}", c2)>
-                                {format!("{:.1}{}", sec_val, if unit.is_empty() { "" } else { &unit })}
-                            </span>
-                        }.into_any()
-                    } else {
-                        ().into_any()
-                    }}
+                    {value_spans}
                     {if time_str.is_empty() {
                         ().into_any()
                     } else {

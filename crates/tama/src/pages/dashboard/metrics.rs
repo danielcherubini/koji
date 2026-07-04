@@ -24,6 +24,10 @@ pub struct MetricBucket {
     /// Average network throughput over samples in this bucket.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network: Option<NetworkStats>,
+    /// Average utilization % per GPU device over samples in this bucket.
+    /// Index aligns with `MetricCurrent.gpus` order. Empty when no GPUs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gpu_utils: Vec<f32>,
     /// Whether this 30s window has elapsed (frozen) or is still accumulating.
     #[serde(default)]
     pub complete: bool,
@@ -203,4 +207,21 @@ pub fn model_sort_key(m: &ModelStatus) -> (String, String) {
         .unwrap_or_else(|| model_display_name(m));
     let secondary = model_display_name(m);
     (primary, secondary)
+}
+
+/// CSS color for a GPU bar series by device index. Cycles through the accent
+/// palette so GPU0/GPU1/GPU2... get distinct, stable colors: blue, green,
+/// purple, amber, cyan, orange, pink, red. Indices beyond the table wrap.
+pub fn gpu_series_color(index: usize) -> &'static str {
+    const PALETTE: [&str; 8] = [
+        "var(--accent-blue)",
+        "var(--accent-green)",
+        "var(--accent-purple)",
+        "var(--accent-yellow)",
+        "var(--accent-cyan)",
+        "var(--accent-orange)",
+        "var(--accent-pink)",
+        "var(--accent-red)",
+    ];
+    PALETTE[index % PALETTE.len()]
 }
