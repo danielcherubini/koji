@@ -426,17 +426,21 @@ pub fn Dashboard() -> impl IntoView {
                 <div class="grid-stats">
                     // CPU card
                     <div class="stat-card">
-                        <div class="card-header">"CPU Usage"</div>
-                        {if has_data {
-                            view! {
-                                <div class="card-value">{format!("{:.1}%", cur.cpu_usage_pct)}</div>
-                                <div class="card-secondary">"of 100%"</div>
-                            }.into_any()
-                        } else {
-                            view! {
-                                <div class="card-value-empty">"—"</div>
-                            }.into_any()
-                        }}
+                        <div class="stat-card-head">
+                            <div class="card-header">"CPU Usage"</div>
+                            <div class="stat-card-value-group">
+                                {if has_data {
+                                    view! {
+                                        <div class="card-value">{format!("{:.1}%", cur.cpu_usage_pct)}</div>
+                                        <div class="card-secondary">"of 100%"</div>
+                                    }.into_any()
+                                } else {
+                                    view! {
+                                        <div class="card-value-empty">"—"</div>
+                                    }.into_any()
+                                }}
+                            </div>
+                        </div>
                         <div class="sparkline-container">
                             <BarChart
                                 data=cpu_data
@@ -451,17 +455,21 @@ pub fn Dashboard() -> impl IntoView {
 
                     // Memory card
                     <div class="stat-card">
-                        <div class="card-header">"Memory"</div>
-                        {if has_data {
-                            view! {
-                                <div class="card-value">{format_number(cur.ram_used_mib)}</div>
-                                <div class="card-secondary">{format!("of {} MiB", format_number(cur.ram_total_mib))}</div>
-                            }.into_any()
-                        } else {
-                            view! {
-                                <div class="card-value-empty">"—"</div>
-                            }.into_any()
-                        }}
+                        <div class="stat-card-head">
+                            <div class="card-header">"Memory"</div>
+                            <div class="stat-card-value-group">
+                                {if has_data {
+                                    view! {
+                                        <div class="card-value">{format_number(cur.ram_used_mib)}</div>
+                                        <div class="card-secondary">{format!("of {} MiB", format_number(cur.ram_total_mib))}</div>
+                                    }.into_any()
+                                } else {
+                                    view! {
+                                        <div class="card-value-empty">"—"</div>
+                                    }.into_any()
+                                }}
+                            </div>
+                        </div>
                         <div class="sparkline-container">
                             <BarChart
                                 data=mem_data
@@ -478,10 +486,14 @@ pub fn Dashboard() -> impl IntoView {
                     {match cur.network.as_ref() {
                         Some(net) => view! {
                             <div class="stat-card">
-                                <div class="card-header">"Network"</div>
-                                <div class="network-rates">
-                                    <span class="network-rate network-rate-down">{format!("↓ {:.1} MiB/s", net.download_mibps)}</span>
-                                    <span class="network-rate network-rate-up">{format!("↑ {:.1} MiB/s", net.upload_mibps)}</span>
+                                <div class="stat-card-head">
+                                    <div class="card-header">"Network"</div>
+                                    <div class="stat-card-value-group">
+                                        <div class="network-rates">
+                                            <span class="network-rate network-rate-down">{format!("↓ {:.1} MiB/s", net.download_mibps)}</span>
+                                            <span class="network-rate network-rate-up">{format!("↑ {:.1} MiB/s", net.upload_mibps)}</span>
+                                        </div>
+                                    </div>
                                 </div>
                                 <div class="sparkline-container">
                                     <BarChart
