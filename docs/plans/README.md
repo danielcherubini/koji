@@ -14,9 +14,9 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Quick Stats
 
-- **Total Plans**: 134
+- **Total Plans**: 135
 - **Completed**: 132 ✅
-- **In Progress**: 0 🚧
+- **In Progress**: 1 🚧
 - **Remaining**: 2
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
@@ -24,6 +24,12 @@ This directory contains implementation plans for the Tama project. Each plan doc
 ---
 
 ## Completed Plans
+
+### In Progress
+
+| Plan | Description | PR / Git References |
+|------|-------------|---------------------|
+| [Dashboard Bar Charts](2026-07-04-dashboard-bar-charts.md) | Replace dense sparkline area charts with vertical bar charts on dashboard stat cards (CPU, Memory, Network) — 30s buckets, avg aggregation, opacity-scaled bars | 🚧 IN PROGRESS |
 
 ### Recently Completed
 
