@@ -63,11 +63,13 @@ fn compute_hover_opacity(value: f32, safe_max: f32) -> f32 {
 /// Compute the x-position percentage for a given bucket index.
 /// Centers the position on the bar.
 fn bucket_x_pct(index: usize, num_buckets: usize) -> f32 {
-    if num_buckets > 1 {
-        (index as f32 / (num_buckets as f32 - 1.0)) * 100.0 + (100.0 / num_buckets as f32) / 2.0
-    } else {
-        50.0
+    if num_buckets == 0 {
+        return 50.0;
     }
+    if num_buckets == 1 {
+        return 50.0;
+    }
+    (index as f32 + 0.5) * (100.0 / num_buckets as f32)
 }
 
 /// A responsive SVG bar chart component for displaying time-series data.
@@ -144,7 +146,8 @@ pub fn BarChart(
         if num_buckets == 1 {
             return 0;
         }
-        let raw_index = (x_pct / 100.0 * (num_buckets as f32 - 1.0)).round() as usize;
+        let slot_width = 100.0 / num_buckets as f32;
+        let raw_index = ((x_pct / slot_width) - 0.5).round().max(0.0) as usize;
         raw_index.clamp(0, num_buckets - 1)
     };
 
@@ -521,20 +524,27 @@ mod tests {
 
     #[test]
     fn test_bucket_x_pct_two_buckets() {
-        // First bucket: (0/1)*100 + (100/2)/2 = 0 + 25 = 25
+        // Two buckets: each slot is 50% wide, centers at 25% and 75%
         assert!((bucket_x_pct(0, 2) - 25.0).abs() < 0.01);
-        // Second bucket: (1/1)*100 + (100/2)/2 = 100 + 25 = 125
-        assert!((bucket_x_pct(1, 2) - 125.0).abs() < 0.01);
+        assert!((bucket_x_pct(1, 2) - 75.0).abs() < 0.01);
     }
 
     #[test]
     fn test_bucket_x_pct_multiple_buckets() {
-        // 3 buckets: positions at 0, 50, 100 with offset
-        // Bucket 0: (0/2)*100 + (100/3)/2 = 0 + 16.67 = 16.67
+        // 3 buckets: each slot is 33.33% wide
+        // Bucket 0 center: (0 + 0.5) * 33.33 = 16.67
         let x0 = bucket_x_pct(0, 3);
         assert!((x0 - 16.67).abs() < 0.1);
-        // Bucket 2: (2/2)*100 + (100/3)/2 = 100 + 16.67 = 116.67
+        // Bucket 1 center: (1 + 0.5) * 33.33 = 50.0
+        let x1 = bucket_x_pct(1, 3);
+        assert!((x1 - 50.0).abs() < 0.01);
+        // Bucket 2 center: (2 + 0.5) * 33.33 = 83.33
         let x2 = bucket_x_pct(2, 3);
-        assert!((x2 - 116.67).abs() < 0.1);
+        assert!((x2 - 83.33).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_bucket_x_pct_zero_buckets() {
+        assert!((bucket_x_pct(0, 0) - 50.0).abs() < 0.01);
     }
 }
