@@ -20,7 +20,6 @@ pub mod pull_wizard;
 pub mod sampling_templates_section;
 pub mod section_card;
 pub mod self_update_section;
-#[allow(unused_imports)]
 pub use bar_chart::{BarChart, ChartSeries};
 pub mod sidebar;
 pub mod sparkline;
