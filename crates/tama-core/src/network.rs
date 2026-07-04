@@ -207,9 +207,21 @@ mod tests {
                         s.upload_mibps
                     );
                 }
-                // Cumulative should be unchanged when delta is 0
-                assert_eq!(new_rx, baseline_rx);
-                assert_eq!(new_tx, baseline_tx);
+                // Cumulative should be ~unchanged (small background traffic is normal)
+                assert!(
+                    (new_rx as i128 - baseline_rx as i128).unsigned_abs() < 1024,
+                    "new_rx {} should be ~baseline_rx {} (diff {} bytes)",
+                    new_rx,
+                    baseline_rx,
+                    new_rx.saturating_sub(baseline_rx)
+                );
+                assert!(
+                    (new_tx as i128 - baseline_tx as i128).unsigned_abs() < 1024,
+                    "new_tx {} should be ~baseline_tx {} (diff {} bytes)",
+                    new_tx,
+                    baseline_tx,
+                    new_tx.saturating_sub(baseline_tx)
+                );
             }
         }
     }
