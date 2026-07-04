@@ -1,3 +1,4 @@
+pub mod chart_utils;
 pub mod self_update;
 
 #[cfg(not(feature = "ssr"))]
