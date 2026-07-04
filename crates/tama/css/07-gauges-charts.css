@@ -72,3 +72,8 @@
   margin-left: 0.35rem;
 }
 
+/* Bar chart — bars use SVG rects, add smooth opacity transition */
+.bar-rect {
+  transition: fill-opacity 0.15s ease;
+}
+
