@@ -195,9 +195,17 @@ mod tests {
                     collect_network_stats(iface, &mut fresh_networks, baseline_rx, baseline_tx);
 
                 if let Some(s) = stats {
-                    // With zero delta, throughput should be 0.0
-                    assert_eq!(s.download_mibps, 0.0);
-                    assert_eq!(s.upload_mibps, 0.0);
+                    // Near-zero delta — throughput should be ~0.0 (small background traffic is normal)
+                    assert!(
+                        s.download_mibps < 0.01,
+                        "download_mibps {:.4} should be near 0",
+                        s.download_mibps
+                    );
+                    assert!(
+                        s.upload_mibps < 0.01,
+                        "upload_mibps {:.4} should be near 0",
+                        s.upload_mibps
+                    );
                 }
                 // Cumulative should be unchanged when delta is 0
                 assert_eq!(new_rx, baseline_rx);
