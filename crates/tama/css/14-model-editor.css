@@ -9,69 +9,15 @@
 
 .model-editor-layout {
   display: flex;
-  gap: 1.5rem;
-  align-items: flex-start;
+  flex-direction: column;
 }
 
-.model-editor-nav {
-  width: 200px;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  position: sticky;
-  top: 0;
-}
+
 
 .model-editor-main {
-  flex: 1;
-  min-width: 0;
 }
 
-.nav-btn {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  width: 100%;
-  padding: 0.5rem 0.75rem;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  background: var(--bg-secondary);
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-size: 0.9rem;
-  transition:
-    background var(--transition-fast),
-    color var(--transition-fast),
-    border-color var(--transition-fast);
-}
 
-.nav-btn:hover {
-  background: var(--bg-tertiary);
-  color: var(--text-primary);
-  border-color: var(--border-hover);
-}
-
-.nav-btn--active {
-  background: var(--accent-blue);
-  color: #fff;
-  border-color: var(--accent-blue);
-}
-
-.nav-btn--active:hover {
-  background: var(--accent-blue);
-  color: #fff;
-  border-color: var(--accent-blue);
-}
-
-.nav-btn__icon {
-  font-size: 1.1rem;
-  line-height: 1;
-}
-
-.nav-btn__text {
-  font-weight: 500;
-}
 
 .page-header-actions {
   display: flex;
@@ -175,4 +121,77 @@
 .form-icon-button:disabled {
   opacity: 0.3;
   cursor: not-allowed;
+}
+
+/* ── Pill-style tabs ───────────────────────────────────────────────── */
+
+.model-editor-pills {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1.5rem;
+  flex-wrap: wrap;
+}
+
+.model-editor-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.9rem;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 500;
+  transition: all var(--transition-fast);
+}
+
+.model-editor-pill:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border-color: var(--border-hover);
+}
+
+.model-editor-pill--active {
+  background: var(--accent-blue);
+  color: #fff;
+  border-color: var(--accent-blue);
+}
+
+.model-editor-pill--active:hover {
+  background: var(--accent-blue);
+  color: #fff;
+}
+
+/* ── Sticky save bar ───────────────────────────────────────────────── */
+
+.model-editor-save-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border-color);
+  margin-top: 2rem;
+}
+
+.model-editor-save-bar__status {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.model-editor-save-bar__status--dirty {
+  color: var(--accent-yellow);
+}
+
+.model-editor-save-bar__status--saved {
+  color: var(--accent-green);
 }
