@@ -1,11 +1,10 @@
+mod advanced_form;
 mod api;
-mod extra_args_form;
 mod files_form;
 mod hardware_form;
 mod sampling_form;
 mod sections;
 mod settings_form;
-mod spec_decoding_form;
 mod types;
 
 use leptos::prelude::*;
@@ -16,13 +15,12 @@ use crate::components::modal::Modal;
 use crate::components::pull_quant_wizard::{CompletedQuant, PullQuantWizard};
 use crate::utils::rw_signal_to_signal;
 
+use self::advanced_form::ModelEditorAdvancedForm;
 use self::api::*;
-use self::extra_args_form::ModelEditorExtraArgsForm;
 use self::files_form::ModelEditorFilesForm;
 use self::hardware_form::ModelEditorHardwareForm;
 use self::sampling_form::ModelEditorSamplingForm;
 use self::settings_form::ModelEditorSettingsForm;
-use self::spec_decoding_form::ModelEditorSpecDecodingForm;
 use self::types::*;
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -710,10 +708,7 @@ pub fn ModelEditor() -> impl IntoView {
                                     Section::Advanced => view! {
                                         <div class="card mt-2">
                                             <h2 class="card__title">"Advanced"</h2>
-                                            <ModelEditorSpecDecodingForm form=form />
-                                            <div class="mt-2">
-                                                <ModelEditorExtraArgsForm form=form />
-                                            </div>
+                                            <ModelEditorAdvancedForm form=form />
                                         </div>
                                     }.into_any(),
                                 }}
