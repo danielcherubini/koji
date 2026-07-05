@@ -181,25 +181,16 @@ pub async fn delete_model(
             })?;
         let _model_config = tama_core::config::ModelConfig::from_db_record(&model_record);
 
-        // Step 1: Delete DB records within a transaction — all-or-nothing semantics.
+        // Step 1: Delete model config within a transaction — all-or-nothing semantics.
         // This ensures that if the transaction fails, no files are touched yet
-        // and the DB remains consistent.
+        // and the DB remains consistent. CASCADE handles model_files and model_pulls.
         {
-            // Run atomic delete operations via ModelManager transaction
             tracing::debug!("Deleting model config for id={}", model_id);
             let result = mgr.transaction(|tx| {
-                // Delete the model config record — CASCADE handles model_files and model_pulls.
                 tx.execute(
                     "DELETE FROM model_configs WHERE id = ?1",
                     rusqlite::params![model_id],
                 )?;
-
-                // Delete update check record (best-effort, non-fatal)
-                let _ = tx.execute(
-                    "DELETE FROM update_checks WHERE item_type = ?1 AND item_id = ?2",
-                    rusqlite::params!["model", model_id.to_string()],
-                );
-
                 Ok(())
             });
 
@@ -210,6 +201,19 @@ pub async fn delete_model(
                     serde_json::json!({"error": "Failed to delete model records from database"}),
                 ));
             }
+        }
+
+        // Step 1b: Delete the update check record (best-effort, separate from transaction).
+        // Kept outside the transaction so a missing or corrupted update_checks table
+        // doesn't block model deletion. Errors are logged for visibility.
+        if let Err(e) =
+            tama_core::db::queries::delete_update_check(mgr.conn(), "model", &model_id.to_string())
+        {
+            tracing::warn!(
+                "Failed to delete update check record for model {}: {}",
+                model_id,
+                e
+            );
         }
 
         // Step 2: File cleanup (best-effort) — after successful DB commit.

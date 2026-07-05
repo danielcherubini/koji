@@ -528,18 +528,21 @@ fn EditAliasForm(
                 <label for="edit-alias-model">"Model"</label>
                 <select
                     id="edit-alias-model"
-                    prop:value=move || model_id.get().to_string()
                     on:change=move |ev| {
                         if let Ok(val) = target_value(&ev).parse::<i64>() {
                             model_id.set(val);
                         }
                     }
                 >
-                    <option value="0">"-- Select a model --"</option>
+                    <option value="0" selected=move || model_id.get() == 0>"-- Select a model --"</option>
                     {move || {
-                        models.get().into_iter().map(|m| {
+                        let current_id = model_id.get();
+                        models.get().into_iter().map(move |m| {
                             view! {
-                                <option value={m.id.to_string()}>{m.label}</option>
+                                <option
+                                    value={m.id.to_string()}
+                                    selected=move || current_id == m.id
+                                >{m.label}</option>
                             }
                         }).collect::<Vec<_>>()
                     }}
