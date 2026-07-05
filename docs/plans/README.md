@@ -15,8 +15,8 @@ This directory contains implementation plans for the Tama project. Each plan doc
 ## Quick Stats
 
 - **Total Plans**: 136
-- **Completed**: 134 ✅
-- **In Progress**: 1 🚧
+- **Completed**: 135 ✅
+- **In Progress**: 0 🚧
 - **Remaining**: 1
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
@@ -25,16 +25,11 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Completed Plans
 
-### In Progress
-
-| Plan | Description | PR / Git References |
-|------|-------------|---------------------|
-| [Model Editor Redesign](2026-07-05-model-editor-redesign.md) | Replace side nav with pill-style tabs, sticky save bar, compact expandable sampling, reorganized sections (Settings/Hardware/Sampling/Files/Advanced), preset management | 🚧 IN PROGRESS |
-
 ### Recently Completed
 
 | Plan | Description | PR / Git References |
 |------|-------------|---------------------|
+| [Model Editor Redesign](2026-07-05-model-editor-redesign.md) | Replace side nav with pill-style tabs, sticky save bar, compact expandable sampling, reorganized sections (Settings/Hardware/Sampling/Files/Advanced), preset management | #142 ✅ COMPLETED |
 | [Dashboard Bar Charts](2026-07-04-dashboard-bar-charts.md) | Replace dense sparkline area charts with vertical bar charts on dashboard stat cards (CPU, Memory, Network) — 30s buckets, avg aggregation, opacity-scaled bars | #141 ✅ COMPLETED |
 | [Model Sort + Group](2026-07-02-model-sort-group.md) | Add sort and group controls to the dashboard Models section (GPU, Family, Vendor, Status) with localStorage persistence | #136, #137, #138, #139, #140 ✅ COMPLETED |
 | [Model Editor GPU Isolation Polish](2026-07-01-model-editor-gpu-isolation-polish.md) | Rename "GPU Device" to "GPU Isolation", change default to "None", style refresh button | #131 ✅ COMPLETED |
