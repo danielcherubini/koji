@@ -1,7 +1,7 @@
 mod api;
 mod extra_args_form;
+mod files_form;
 mod hardware_form;
-mod quants_vision_form;
 mod sampling_form;
 mod sections;
 mod settings_form;
@@ -18,8 +18,8 @@ use crate::utils::rw_signal_to_signal;
 
 use self::api::*;
 use self::extra_args_form::ModelEditorExtraArgsForm;
+use self::files_form::ModelEditorFilesForm;
 use self::hardware_form::ModelEditorHardwareForm;
-use self::quants_vision_form::ModelEditorQuantsVisionForm;
 use self::sampling_form::ModelEditorSamplingForm;
 use self::settings_form::ModelEditorSettingsForm;
 use self::spec_decoding_form::ModelEditorSpecDecodingForm;
@@ -691,7 +691,7 @@ pub fn ModelEditor() -> impl IntoView {
                                     Section::Files => view! {
                                         <div class="card mt-2">
                                             <h2 class="card__title">"Files"</h2>
-                                            <ModelEditorQuantsVisionForm
+                                            <ModelEditorFilesForm
                                                 form=form
                                                 repo_commit_sha=repo_commit_sha
                                                 repo_pulled_at=repo_pulled_at
