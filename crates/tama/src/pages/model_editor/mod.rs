@@ -38,9 +38,15 @@ pub fn ModelEditor() -> impl IntoView {
         async move { fetch_model(id).await }
     });
 
+    // Refresh trigger for templates LocalResource
+    let templates_refresh = RwSignal::new(0u32);
+
     // Use LocalResource for templates
     let templates: LocalResource<Option<std::collections::HashMap<String, serde_json::Value>>> =
-        LocalResource::new(|| async move { fetch_sampling_templates().await });
+        LocalResource::new(move || {
+            let _ = templates_refresh.get();
+            async move { fetch_sampling_templates().await }
+        });
 
     // Consolidated form signal
     let form = RwSignal::new(Option::<ModelForm>::None);
@@ -66,6 +72,9 @@ pub fn ModelEditor() -> impl IntoView {
 
     // Active navigation section
     let active_section = RwSignal::new(Section::Settings);
+
+    // Active preset name (tracks which preset was last loaded)
+    let active_preset = RwSignal::new(String::new());
 
     // Dirty tracking via snapshot comparison
     let last_saved_form = RwSignal::new(Option::<String>::None);
@@ -333,9 +342,48 @@ pub fn ModelEditor() -> impl IntoView {
                         }
                     }
                 }
+                active_preset.set(preset_name_clone);
             }
         });
 
+    // Save preset action — collects enabled sampling values and persists via config API
+    let save_preset_action: Action<String, (), LocalStorage> =
+        Action::new_unsync(move |name: &String| {
+            let name_clone = name.clone();
+            async move {
+                let form_val = form.get();
+                let Some(initial_form) = form_val else {
+                    save_status.set(Some((false, "❌ Form not loaded.".into())));
+                    return;
+                };
+
+                // Collect enabled sampling values into a JSON object
+                let mut map = serde_json::Map::new();
+                for (key, field) in &initial_form.sampling {
+                    if field.enabled {
+                        let val: serde_json::Value = if let Ok(v) = field.value.parse::<f64>() {
+                            serde_json::json!(v)
+                        } else if let Ok(v) = field.value.parse::<u64>() {
+                            serde_json::json!(v)
+                        } else {
+                            serde_json::json!(field.value)
+                        };
+                        map.insert(key.clone(), val);
+                    }
+                }
+
+                match save_sampling_template(&name_clone, &serde_json::Value::Object(map)).await {
+                    Ok(()) => {
+                        save_status.set(Some((true, "✅ Preset saved".into())));
+                        active_preset.set(name_clone.clone());
+                        templates_refresh.update(|n| *n += 1);
+                    }
+                    Err(e) => {
+                        save_status.set(Some((false, format!("❌ Preset save failed: {}", e))));
+                    }
+                }
+            }
+        });
     // Actions
     let save_action: Action<(), (), LocalStorage> = Action::new_unsync(move |_: &()| {
         let form_val = form.get();
@@ -683,6 +731,8 @@ pub fn ModelEditor() -> impl IntoView {
                                                 form=form
                                                 templates=templates
                                                 load_preset_action=load_preset_action
+                                                active_preset=active_preset
+                                                save_preset_action=save_preset_action
                                             />
                                         </div>
                                     }.into_any(),
