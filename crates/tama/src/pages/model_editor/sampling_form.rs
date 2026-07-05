@@ -1,9 +1,9 @@
+use std::sync::Arc;
+
 use leptos::prelude::*;
 
 use super::types::{ModelForm, SamplingField};
 use crate::utils::target_value;
-
-use leptos::ev::{KeyboardEvent, MouseEvent};
 
 // ── Sampling field definitions ───────────────────────────────────────────────
 
@@ -91,22 +91,6 @@ pub fn ModelEditorSamplingForm(
 
     // ── Helpers ──────────────────────────────────────────────────────────
 
-    // Get or default the enabled state for a field.
-    let is_enabled = move |key: &str| -> bool {
-        form.get()
-            .and_then(|f| f.sampling.get(key).cloned())
-            .map(|field| field.enabled)
-            .unwrap_or(false)
-    };
-
-    // Get or default the value for a field.
-    let get_value = move |key: &str| -> String {
-        form.get()
-            .and_then(|f| f.sampling.get(key).cloned())
-            .map(|field| field.value)
-            .unwrap_or_default()
-    };
-
     // Toggle enabled/disabled for a field.
     let toggle_enabled = move |key: &str, enabled: bool| {
         form.update(|f| {
@@ -138,24 +122,6 @@ pub fn ModelEditorSamplingForm(
         });
     };
 
-    // Expand a field (enable it if disabled).
-    let expand_field = move |key: &str| {
-        if !is_enabled(key) {
-            toggle_enabled(key, true);
-        }
-        field_expanded.update(|map| {
-            map.insert(key.to_string(), true);
-        });
-    };
-
-    // Collapse a field (disable it).
-    let collapse_field = move |key: &str| {
-        toggle_enabled(key, false);
-        field_expanded.update(|map| {
-            map.insert(key.to_string(), false);
-        });
-    };
-
     // ── Preset save handler ──────────────────────────────────────────────
 
     let save_preset_action_inner = move || {
@@ -167,51 +133,54 @@ pub fn ModelEditorSamplingForm(
         }
     };
 
-    let handle_save_preset = move |_e: MouseEvent| {
-        save_preset_action_inner();
-    };
-
-    let save_preset_on_enter = move |e: KeyboardEvent| {
-        if e.key() == "Enter" {
-            save_preset_action_inner();
-        } else if e.key() == "Escape" {
-            show_preset_input.set(false);
-        }
-    };
-
     // ── Field rendering ──────────────────────────────────────────────────
 
     let render_fields = move || {
         FieldDef::all()
             .iter()
             .map(|field| {
-                let key = field.key;
-                let label = field.label;
-                let placeholder = field.placeholder;
-                let step = field.step;
-                let enabled = is_enabled(key);
-                let value = get_value(key);
+                let key = Arc::new(field.key.to_string());
+                let label = field.label.to_string();
+                let placeholder = field.placeholder.to_string();
+                let step = field.step.to_string();
 
-                // Track expanded state on toggle
-                let on_expand = move |_| {
-                    expand_field(key);
-                };
-                let on_collapse = move |_| {
-                    collapse_field(key);
-                };
+                // Clone Arc for each closure that needs it
+                let k_enabled = Arc::clone(&key);
+                let k_value = Arc::clone(&key);
+                let k_expand = Arc::clone(&key);
+                let k_checkbox = Arc::clone(&key);
+                let k_collapse = Arc::clone(&key);
+                let k_input = Arc::clone(&key);
+
+                // Reactive signals for this field's state
+                let enabled_signal = Signal::derive(move || {
+                    form.get()
+                        .and_then(|f| f.sampling.get(&*k_enabled).cloned())
+                        .map(|f| f.enabled)
+                        .unwrap_or(false)
+                });
+                let value_signal = Signal::derive(move || {
+                    form.get()
+                        .and_then(|f| f.sampling.get(&*k_value).cloned())
+                        .map(|f| f.value)
+                        .unwrap_or_default()
+                });
 
                 view! {
                     // ── Disabled state: compact row ──────────────────────
                     <div
                         class="sampling-field-row"
-                        class:sampling-field-row--hidden=move || enabled
+                        class:sampling-field-row--hidden=move || enabled_signal.get()
                     >
-                        <span class="sampling-field-row__label">{label}</span>
-                        <span class="sampling-field-row__status">[off]</span>
+                        <span class="sampling-field-row__label">{label.clone()}</span>
+                        <span class="sampling-field-row__status">"[off]"</span>
                         <button
                             type="button"
                             class="sampling-toggle-btn sampling-toggle-btn--expand"
-                            on:click=on_expand
+                            on:click=move |_| {
+                                toggle_enabled(&k_expand, true);
+                                field_expanded.update(|map| { map.insert((*k_expand).clone(), true); });
+                            }
                             title="Enable and expand"
                         >
                             "(+)"
@@ -221,33 +190,36 @@ pub fn ModelEditorSamplingForm(
                     // ── Enabled state: expanded card ─────────────────────
                     <div
                         class="sampling-field-expanded"
-                        class:sampling-field-expanded--hidden=move || !enabled
+                        class:sampling-field-expanded--hidden=move || !enabled_signal.get()
                     >
                         <div class="sampling-field-expanded__header">
                             <label class="form-check">
                                 <input
                                     type="checkbox"
-                                    prop:checked=enabled
+                                    prop:checked=move || enabled_signal.get()
                                     on:change=move |e| {
                                         use wasm_bindgen::JsCast;
                                         let checked = e.target()
                                             .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
                                             .map(|el| el.checked())
                                             .unwrap_or(false);
-                                        toggle_enabled(key, checked);
+                                        toggle_enabled(&k_checkbox, checked);
                                         if !checked {
                                             field_expanded.update(|map| {
-                                                map.insert(key.to_string(), false);
+                                                map.insert((*k_checkbox).clone(), false);
                                             });
                                         }
                                     }
                                 />
-                                <span class="form-check-label">{label}</span>
+                                <span class="form-check-label">{label.clone()}</span>
                             </label>
                             <button
                                 type="button"
                                 class="sampling-toggle-btn sampling-toggle-btn--collapse"
-                                on:click=on_collapse
+                                on:click=move |_| {
+                                    toggle_enabled(&k_collapse, false);
+                                    field_expanded.update(|map| { map.insert((*k_collapse).clone(), false); });
+                                }
                                 title="Disable and collapse"
                             >
                                 "(×)"
@@ -257,11 +229,11 @@ pub fn ModelEditorSamplingForm(
                             <input
                                 class="form-input form-input--number"
                                 type="number"
-                                step=step
-                                placeholder=placeholder
-                                prop:value=value
+                                step=step.clone()
+                                placeholder=placeholder.clone()
+                                prop:value=move || value_signal.get()
                                 on:input=move |e| {
-                                    update_value(key, target_value(&e));
+                                    update_value(&k_input, target_value(&e));
                                 }
                             />
                         </div>
@@ -308,7 +280,7 @@ pub fn ModelEditorSamplingForm(
                         }
                     >
                         <option value="">"(select a preset)"</option>
-                        {preset_options()}
+                        {move || preset_options()}
                     </select>
                 </div>
 
@@ -334,12 +306,16 @@ pub fn ModelEditorSamplingForm(
                                         class="form-input form-input--sm"
                                         placeholder="Preset name"
                                         prop:value=preset_name_input
-                                        on:keydown=save_preset_on_enter
+                                        on:input=move |e| { preset_name_input.set(target_value(&e)); }
+                                        on:keydown=move |e| {
+                                            if e.key() == "Enter" { save_preset_action_inner(); }
+                                            else if e.key() == "Escape" { show_preset_input.set(false); }
+                                        }
                                     />
                                     <button
                                         type="button"
                                         class="btn btn-primary btn-sm"
-                                        on:click=handle_save_preset
+                                        on:click=move |_| { save_preset_action_inner(); }
                                     >
                                         "Save"
                                     </button>

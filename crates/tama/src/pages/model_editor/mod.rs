@@ -379,6 +379,12 @@ pub fn ModelEditor() -> impl IntoView {
                         save_status.set(Some((true, "✅ Preset saved".into())));
                         active_preset.set(name_clone.clone());
                         templates_refresh.update(|n| *n += 1);
+                        // Clear success message after 2s so dirty indicator can reappear
+                        let status = save_status;
+                        wasm_bindgen_futures::spawn_local(async move {
+                            gloo_timers::future::sleep(std::time::Duration::from_secs(2)).await;
+                            status.set(None);
+                        });
                     }
                     Err(e) => {
                         save_status.set(Some((false, format!("❌ Preset save failed: {}", e))));
@@ -458,6 +464,12 @@ pub fn ModelEditor() -> impl IntoView {
                     original_id.set(form_id);
                     save_status.set(Some((true, "✅ Saved".into())));
                     last_saved_form.set(serde_json::to_string(&form.get()).ok());
+                    // Clear success message after 2s so dirty indicator can reappear
+                    let status = save_status;
+                    wasm_bindgen_futures::spawn_local(async move {
+                        gloo_timers::future::sleep(std::time::Duration::from_secs(2)).await;
+                        status.set(None);
+                    });
                 }
                 Err(e) => {
                     if old_id != new_id && !old_id.is_empty() {

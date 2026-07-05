@@ -3,6 +3,7 @@ use std::sync::Arc;
 use leptos::prelude::*;
 
 use super::types::{ModelForm, QuantInfo, QuantKind};
+use crate::utils::target_value;
 
 fn format_bytes_opt(bytes: Option<u64>) -> String {
     let Some(b) = bytes else {
@@ -345,11 +346,7 @@ pub fn ModelEditorFilesForm(
                                 class="form-select"
                                 prop:value=current_mtp_clone
                                 on:change=move |e| {
-                                    use wasm_bindgen::JsCast;
-                                    let target = e.target()
-                                        .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
-                                        .map(|el| el.value())
-                                        .unwrap_or_default();
+                                    let target = target_value(&e);
                                     let selected = if target == "(none)" { None } else { Some(target) };
                                     form.update(|f| {
                                         if let Some(form) = f {
