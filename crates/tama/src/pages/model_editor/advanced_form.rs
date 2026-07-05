@@ -1,15 +1,15 @@
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
-use super::types::{ModelForm, QuantKind};
+use super::types::ModelForm;
 use crate::utils::target_value;
 
 const SPEC_TYPE_DRAFT_MTP: &str = "draft-mtp";
 const SPEC_TYPE_NGRAM_SIMPLE: &str = "ngram-simple";
 
-/// Speculative decoding form section for the model editor.
+/// Advanced form section combining Speculative Decoding and Extra Args.
 #[component]
-pub fn ModelEditorSpecDecodingForm(form: RwSignal<Option<ModelForm>>) -> impl IntoView {
+pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoView {
     // Checkboxes for spec types
     let toggle_spec_type = move |e: web_sys::Event, spec_type: String| {
         let checked = e
@@ -48,30 +48,12 @@ pub fn ModelEditorSpecDecodingForm(form: RwSignal<Option<ModelForm>>) -> impl In
             .unwrap_or(false)
     });
 
-    let has_mtp_quants = Signal::derive(move || {
-        form.get()
-            .as_ref()
-            .map(|f| f.quants.iter().any(|(_, q)| q.kind == QuantKind::Mtp))
-            .unwrap_or(false)
-    });
-
-    let mtp_quants = Signal::derive(move || {
-        form.get()
-            .as_ref()
-            .map(|f| {
-                f.quants
-                    .iter()
-                    .filter(|(_, q)| q.kind == QuantKind::Mtp)
-                    .map(|(k, q)| (k.clone(), q.clone()))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default()
-    });
-
     view! {
+        // ── Speculative Decoding subsection ──────────────────────────────
+        <h3 class="form-section-title">"Speculative Decoding"</h3>
         <div class="form-grid">
             // Spec type checkboxes
-            <label class="form-label">"Speculative Decoding Types"</label>
+            <label class="form-label">"Spec Types"</label>
             <div class="form-check-group">
                 // draft-mtp checkbox
                 <div class="form-check">
@@ -194,50 +176,25 @@ pub fn ModelEditorSpecDecodingForm(form: RwSignal<Option<ModelForm>>) -> impl In
                         });
                     }
                 />
-
-                // MTP Draft Model selector — shown when draft-mtp is checked and
-                // at least one MTP-kind quant is available.
-                <Show when=move || has_mtp_quants.get()>
-                    <label class="form-label" for="field-mtp-model">
-                        "MTP Draft Model"
-                        <div class="form-hint">
-                            "Select an MTP draft model file for speculative decoding"
-                        </div>
-                    </label>
-                    <select
-                        id="field-mtp-model"
-                        class="form-select"
-                        on:change=move |e| {
-                            let val = target_value(&e);
-                            form.update(|f| {
-                                if let Some(form) = f {
-                                    form.mtp_model = if val.is_empty() { None } else { Some(val) };
-                                }
-                            });
-                        }
-                    >
-                        <option value="">"(none)"</option>
-                        {move || {
-                            mtp_quants
-                                .get()
-                                .iter()
-                                .map(|(key, q)| {
-                                    let key_val = key.clone();
-                                    let file = q.file.clone();
-                                    let selected = form
-                                        .get_untracked()
-                                        .as_ref()
-                                        .and_then(|f| f.mtp_model.as_deref())
-                                        == Some(key.as_str());
-                                    view! {
-                                        <option value=key_val selected=selected>{file}</option>
-                                    }
-                                })
-                                .collect::<Vec<_>>()
-                        }}
-                    </select>
-                </Show>
             </Show>
         </div>
+
+        // ── Extra Args subsection ────────────────────────────────────────
+        <h3 class="form-section-title mt-2">"Extra Args"</h3>
+        <textarea
+            id="field-args"
+            class="form-textarea"
+            rows="6"
+            placeholder="One flag per line, e.g. -fa 1, -b 4096, --mlock"
+            prop:value=move || form.get().as_ref().map(|f| f.args.clone()).unwrap_or_default()
+            on:input=move |e| {
+                form.update(|f| {
+                    if let Some(form) = f {
+                        form.args = target_value(&e);
+                    }
+                });
+            }
+        />
+        <span class="form-hint">"One flag per line, e.g. -fa 1, --mlock, or -b 4096. Quote values containing spaces"</span>
     }
 }

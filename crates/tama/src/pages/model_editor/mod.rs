@@ -1,10 +1,10 @@
+mod advanced_form;
 mod api;
-mod extra_args_form;
-mod general_form;
-mod quants_vision_form;
+mod files_form;
+mod hardware_form;
 mod sampling_form;
 mod sections;
-mod spec_decoding_form;
+mod settings_form;
 mod types;
 
 use leptos::prelude::*;
@@ -15,12 +15,12 @@ use crate::components::modal::Modal;
 use crate::components::pull_quant_wizard::{CompletedQuant, PullQuantWizard};
 use crate::utils::rw_signal_to_signal;
 
+use self::advanced_form::ModelEditorAdvancedForm;
 use self::api::*;
-use self::extra_args_form::ModelEditorExtraArgsForm;
-use self::general_form::ModelEditorGeneralForm;
-use self::quants_vision_form::ModelEditorQuantsVisionForm;
+use self::files_form::ModelEditorFilesForm;
+use self::hardware_form::ModelEditorHardwareForm;
 use self::sampling_form::ModelEditorSamplingForm;
-use self::spec_decoding_form::ModelEditorSpecDecodingForm;
+use self::settings_form::ModelEditorSettingsForm;
 use self::types::*;
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -38,9 +38,15 @@ pub fn ModelEditor() -> impl IntoView {
         async move { fetch_model(id).await }
     });
 
+    // Refresh trigger for templates LocalResource
+    let templates_refresh = RwSignal::new(0u32);
+
     // Use LocalResource for templates
     let templates: LocalResource<Option<std::collections::HashMap<String, serde_json::Value>>> =
-        LocalResource::new(|| async move { fetch_sampling_templates().await });
+        LocalResource::new(move || {
+            let _ = templates_refresh.get();
+            async move { fetch_sampling_templates().await }
+        });
 
     // Consolidated form signal
     let form = RwSignal::new(Option::<ModelForm>::None);
@@ -65,7 +71,17 @@ pub fn ModelEditor() -> impl IntoView {
     let verify_status = RwSignal::new(Option::<(bool, String)>::None);
 
     // Active navigation section
-    let active_section = RwSignal::new(Section::General);
+    let active_section = RwSignal::new(Section::Settings);
+
+    // Active preset name (tracks which preset was last loaded)
+    let active_preset = RwSignal::new(String::new());
+
+    // Dirty tracking via snapshot comparison
+    let last_saved_form = RwSignal::new(Option::<String>::None);
+    let is_dirty = Signal::derive(move || {
+        let current = serde_json::to_string(&form.get()).ok();
+        current != last_saved_form.get()
+    });
 
     // Tracks whether the form has been populated from the loaded model detail.
     // Used to gate the layout render without depending on form.get() (which changes on every keystroke).
@@ -207,6 +223,8 @@ pub fn ModelEditor() -> impl IntoView {
 
                 repo_commit_sha.set(d.repo_commit_sha.clone());
                 repo_pulled_at.set(d.repo_pulled_at.clone());
+                // Seed last_saved_form so is_dirty starts as false (not "unsaved" on load)
+                last_saved_form.set(serde_json::to_string(&form.get()).ok());
                 form_ready.set(true);
             }
         }
@@ -326,9 +344,54 @@ pub fn ModelEditor() -> impl IntoView {
                         }
                     }
                 }
+                active_preset.set(preset_name_clone);
             }
         });
 
+    // Save preset action — collects enabled sampling values and persists via config API
+    let save_preset_action: Action<String, (), LocalStorage> =
+        Action::new_unsync(move |name: &String| {
+            let name_clone = name.clone();
+            async move {
+                let form_val = form.get();
+                let Some(initial_form) = form_val else {
+                    save_status.set(Some((false, "❌ Form not loaded.".into())));
+                    return;
+                };
+
+                // Collect enabled sampling values into a JSON object
+                let mut map = serde_json::Map::new();
+                for (key, field) in &initial_form.sampling {
+                    if field.enabled {
+                        let val: serde_json::Value = if let Ok(v) = field.value.parse::<f64>() {
+                            serde_json::json!(v)
+                        } else if let Ok(v) = field.value.parse::<u64>() {
+                            serde_json::json!(v)
+                        } else {
+                            serde_json::json!(field.value)
+                        };
+                        map.insert(key.clone(), val);
+                    }
+                }
+
+                match save_sampling_template(&name_clone, &serde_json::Value::Object(map)).await {
+                    Ok(()) => {
+                        save_status.set(Some((true, "✅ Preset saved".into())));
+                        active_preset.set(name_clone.clone());
+                        templates_refresh.update(|n| *n += 1);
+                        // Clear success message after 2s so dirty indicator can reappear
+                        let status = save_status;
+                        wasm_bindgen_futures::spawn_local(async move {
+                            gloo_timers::future::sleep(std::time::Duration::from_secs(2)).await;
+                            status.set(None);
+                        });
+                    }
+                    Err(e) => {
+                        save_status.set(Some((false, format!("❌ Preset save failed: {}", e))));
+                    }
+                }
+            }
+        });
     // Actions
     let save_action: Action<(), (), LocalStorage> = Action::new_unsync(move |_: &()| {
         let form_val = form.get();
@@ -400,6 +463,13 @@ pub fn ModelEditor() -> impl IntoView {
                 Ok(()) => {
                     original_id.set(form_id);
                     save_status.set(Some((true, "✅ Saved".into())));
+                    last_saved_form.set(serde_json::to_string(&form.get()).ok());
+                    // Clear success message after 2s so dirty indicator can reappear
+                    let status = save_status;
+                    wasm_bindgen_futures::spawn_local(async move {
+                        gloo_timers::future::sleep(std::time::Duration::from_secs(2)).await;
+                        status.set(None);
+                    });
                 }
                 Err(e) => {
                     if old_id != new_id && !old_id.is_empty() {
@@ -582,29 +652,6 @@ pub fn ModelEditor() -> impl IntoView {
                     }
                 }}
             </h1>
-            <div class="page-header-actions">
-                {move || save_status.get().map(|(_, msg)| view! { <span class="text-muted">{msg}</span> })}
-                <button
-                    type="button"
-                    class="btn btn-primary"
-                    on:click=move |_| { save_action.dispatch(()); }
-                >
-                    "Save Model"
-                </button>
-                {move || (!is_new()).then(|| view! {
-                    <button
-                        type="button"
-                        class="btn btn-danger ml-2"
-                        on:click=move |_| {
-                            let confirmed = web_sys::window()
-                                .and_then(|w| w.confirm_with_message("Delete this model and all its files from disk? This cannot be undone.").ok())
-                                .unwrap_or(false);
-                            if confirmed { delete_action.dispatch(()); }
-                        }
-                    >"Delete Model"</button>
-                })}
-                <A href="/tama/models" attr:class="btn btn-secondary btn-sm ml-2">"← Back to Models"</A>
-            </div>
         </div>
 
         {move || deleted.get().then(|| view! {
@@ -627,135 +674,151 @@ pub fn ModelEditor() -> impl IntoView {
                 form_ready.get().then(|| {
                     view! {
                         <div class="model-editor-layout">
-                            // Side navigation
-                            <div class="model-editor-nav">
+                            // Pill-style tab navigation
+                            <div class="model-editor-pills">
                                 <button
-                                    class="nav-btn"
-                                    class:nav-btn--active=move || active_section.get() == Section::General
-                                    on:click=move |_| {
-                                        active_section.set(Section::General);
-                                        if let Some(el) = web_sys::window()
-                                            .and_then(|w| w.document())
-                                            .and_then(|d| d.get_element_by_id("section-general"))
-                                        {
-                                            el.scroll_into_view_with_bool(true);
-                                        }
-                                    }
+                                    class="model-editor-pill"
+                                    class:model-editor-pill--active=move || active_section.get() == Section::Settings
+                                    on:click=move |_| { active_section.set(Section::Settings); }
                                 >
-                                    <span class="nav-btn__icon">{Section::General.icon()}</span>
-                                    <span class="nav-btn__text">{Section::General.name()}</span>
+                                    <span>{Section::Settings.icon()}</span>
+                                    <span>{Section::Settings.name()}</span>
                                 </button>
                                 <button
-                                    class="nav-btn"
-                                    class:nav-btn--active=move || active_section.get() == Section::Sampling
-                                    on:click=move |_| {
-                                        active_section.set(Section::Sampling);
-                                        if let Some(el) = web_sys::window()
-                                            .and_then(|w| w.document())
-                                            .and_then(|d| d.get_element_by_id("section-sampling"))
-                                        {
-                                            el.scroll_into_view_with_bool(true);
-                                        }
-                                    }
+                                    class="model-editor-pill"
+                                    class:model-editor-pill--active=move || active_section.get() == Section::Hardware
+                                    on:click=move |_| { active_section.set(Section::Hardware); }
                                 >
-                                    <span class="nav-btn__icon">{Section::Sampling.icon()}</span>
-                                    <span class="nav-btn__text">{Section::Sampling.name()}</span>
+                                    <span>{Section::Hardware.icon()}</span>
+                                    <span>{Section::Hardware.name()}</span>
                                 </button>
                                 <button
-                                    class="nav-btn"
-                                    class:nav-btn--active=move || active_section.get() == Section::SpecDecoding
-                                    on:click=move |_| {
-                                        active_section.set(Section::SpecDecoding);
-                                        if let Some(el) = web_sys::window()
-                                            .and_then(|w| w.document())
-                                            .and_then(|d| d.get_element_by_id("section-spec-decoding"))
-                                        {
-                                            el.scroll_into_view_with_bool(true);
-                                        }
-                                    }
+                                    class="model-editor-pill"
+                                    class:model-editor-pill--active=move || active_section.get() == Section::Sampling
+                                    on:click=move |_| { active_section.set(Section::Sampling); }
                                 >
-                                    <span class="nav-btn__icon">{Section::SpecDecoding.icon()}</span>
-                                    <span class="nav-btn__text">{Section::SpecDecoding.name()}</span>
+                                    <span>{Section::Sampling.icon()}</span>
+                                    <span>{Section::Sampling.name()}</span>
                                 </button>
                                 <button
-                                    class="nav-btn"
-                                    class:nav-btn--active=move || active_section.get() == Section::QuantsVision
-                                    on:click=move |_| {
-                                        active_section.set(Section::QuantsVision);
-                                        if let Some(el) = web_sys::window()
-                                            .and_then(|w| w.document())
-                                            .and_then(|d| d.get_element_by_id("section-quants"))
-                                        {
-                                            el.scroll_into_view_with_bool(true);
-                                        }
-                                    }
+                                    class="model-editor-pill"
+                                    class:model-editor-pill--active=move || active_section.get() == Section::Files
+                                    on:click=move |_| { active_section.set(Section::Files); }
                                 >
-                                    <span class="nav-btn__icon">{Section::QuantsVision.icon()}</span>
-                                    <span class="nav-btn__text">{Section::QuantsVision.name()}</span>
+                                    <span>{Section::Files.icon()}</span>
+                                    <span>{Section::Files.name()}</span>
                                 </button>
                                 <button
-                                    class="nav-btn"
-                                    class:nav-btn--active=move || active_section.get() == Section::ExtraArgs
-                                    on:click=move |_| {
-                                        active_section.set(Section::ExtraArgs);
-                                        if let Some(el) = web_sys::window()
-                                            .and_then(|w| w.document())
-                                            .and_then(|d| d.get_element_by_id("section-extra-args"))
-                                        {
-                                            el.scroll_into_view_with_bool(true);
-                                        }
-                                    }
+                                    class="model-editor-pill"
+                                    class:model-editor-pill--active=move || active_section.get() == Section::Advanced
+                                    on:click=move |_| { active_section.set(Section::Advanced); }
                                 >
-                                    <span class="nav-btn__icon">{Section::ExtraArgs.icon()}</span>
-                                    <span class="nav-btn__text">{Section::ExtraArgs.name()}</span>
+                                    <span>{Section::Advanced.icon()}</span>
+                                    <span>{Section::Advanced.name()}</span>
                                 </button>
                             </div>
 
-                            // Main content area — all sections visible, stacked
+                            // Tab content — only active tab renders
                             <div class="model-editor-main">
-                                <div id="section-general" class="card">
-                                    <h2 class="card__title">"General"</h2>
-                                    <ModelEditorGeneralForm
-                                        form=form
-                                        backends=backends
-                                    />
-                                </div>
+                                {match active_section.get() {
+                                    Section::Settings => view! {
+                                        <div class="card">
+                                            <h2 class="card__title">"Settings"</h2>
+                                            <ModelEditorSettingsForm
+                                                form=form
+                                                backends=backends
+                                            />
+                                        </div>
+                                    }.into_any(),
+                                    Section::Hardware => view! {
+                                        <div class="card">
+                                            <h2 class="card__title">"Hardware"</h2>
+                                            <ModelEditorHardwareForm
+                                                form=form
+                                            />
+                                        </div>
+                                    }.into_any(),
+                                    Section::Sampling => view! {
+                                        <div class="card mt-2">
+                                            <h2 class="card__title">"Sampling"</h2>
+                                            <ModelEditorSamplingForm
+                                                form=form
+                                                templates=templates
+                                                load_preset_action=load_preset_action
+                                                active_preset=active_preset
+                                                save_preset_action=save_preset_action
+                                            />
+                                        </div>
+                                    }.into_any(),
+                                    Section::Files => view! {
+                                        <div class="card mt-2">
+                                            <h2 class="card__title">"Files"</h2>
+                                            <ModelEditorFilesForm
+                                                form=form
+                                                repo_commit_sha=repo_commit_sha
+                                                repo_pulled_at=repo_pulled_at
+                                                refresh_busy=refresh_busy
+                                                verify_busy=verify_busy
+                                                refresh_status=refresh_status
+                                                verify_status=verify_status
+                                                pull_modal_open_signal=pull_modal_open_signal
+                                                delete_quant_action=delete_quant_action
+                                                original_id=original_id
+                                                refresh_action=refresh_action
+                                                verify_action=verify_action
+                                            />
+                                        </div>
+                                    }.into_any(),
+                                    Section::Advanced => view! {
+                                        <div class="card mt-2">
+                                            <h2 class="card__title">"Advanced"</h2>
+                                            <ModelEditorAdvancedForm form=form />
+                                        </div>
+                                    }.into_any(),
+                                }}
+                            </div>
 
-                                <div id="section-sampling" class="card mt-2">
-                                    <h2 class="card__title">"Sampling"</h2>
-                                    <ModelEditorSamplingForm
-                                        form=form
-                                        templates=templates
-                                        load_preset_action=load_preset_action
-                                    />
+                            // Sticky save bar
+                            <div class="model-editor-save-bar">
+                                <div class="model-editor-save-bar__left">
+                                    <A href="/tama/models" attr:class="btn btn-secondary btn-sm">"← Back to Models"</A>
                                 </div>
-
-                                <div id="section-spec-decoding" class="card mt-2">
-                                    <h2 class="card__title">"Spec Decoding"</h2>
-                                    <ModelEditorSpecDecodingForm form=form />
+                                <div class="model-editor-save-bar__center">
+                                    {move || {
+                                        if let Some((ok, msg)) = save_status.get() {
+                        let cls = if ok {
+                            "model-editor-save-bar__status model-editor-save-bar__status--saved"
+                        } else {
+                            "model-editor-save-bar__status"
+                        };
+                                            Some(view! { <span class=cls>{msg}</span> }.into_any())
+                                        } else if is_dirty.get() {
+                                            Some(view! { <span class="model-editor-save-bar__status model-editor-save-bar__status--dirty">"● Unsaved changes"</span> }.into_any())
+                                        } else {
+                                            None
+                                        }
+                                    }}
                                 </div>
-
-                                <div id="section-quants" class="card mt-2">
-                                    <h2 class="card__title">"Quants & Vision"</h2>
-                                    <ModelEditorQuantsVisionForm
-                                        form=form
-                                        repo_commit_sha=repo_commit_sha
-                                        repo_pulled_at=repo_pulled_at
-                                        refresh_busy=refresh_busy
-                                        verify_busy=verify_busy
-                                        refresh_status=refresh_status
-                                        verify_status=verify_status
-                                        pull_modal_open_signal=pull_modal_open_signal
-                                        delete_quant_action=delete_quant_action
-                                        original_id=original_id
-                                        refresh_action=refresh_action
-                                        verify_action=verify_action
-                                    />
-                                </div>
-
-                                <div id="section-extra-args" class="card mt-2">
-                                    <h2 class="card__title">"Extra Args"</h2>
-                                    <ModelEditorExtraArgsForm form=form />
+                                <div class="model-editor-save-bar__right">
+                                    <button
+                                        type="button"
+                                        class="btn btn-primary"
+                                        on:click=move |_| { save_action.dispatch(()); }
+                                    >
+                                        "Save Model"
+                                    </button>
+                                    {move || (!is_new()).then(|| view! {
+                                        <button
+                                            type="button"
+                                            class="btn btn-danger ml-2"
+                                            on:click=move |_| {
+                                                let confirmed = web_sys::window()
+                                                    .and_then(|w| w.confirm_with_message("Delete this model and all its files from disk? This cannot be undone.").ok())
+                                                    .unwrap_or(false);
+                                                if confirmed { delete_action.dispatch(()); }
+                                            }
+                                        >"Delete Model"</button>
+                                    })}
                                 </div>
                             </div>
                         </div>

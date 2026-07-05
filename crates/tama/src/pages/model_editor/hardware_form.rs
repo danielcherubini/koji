@@ -3,7 +3,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
 
 use super::api::{fetch_gpu_devices, refresh_gpu_devices};
-use super::types::{BackendOption, GpuDeviceInfo, ModelForm};
+use super::types::{GpuDeviceInfo, ModelForm};
 use crate::components::context_length_selector::ContextLengthSelector;
 use crate::utils::target_value;
 
@@ -19,19 +19,10 @@ const KV_QUANT_OPTIONS: &[&str] = &[
     "f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1",
 ];
 
-fn set_input_value(id: &str, value: &str) {
-    if let Some(el) = web_sys::window()
-        .and_then(|w| w.document())
-        .and_then(|d| d.get_element_by_id(id))
-    {
-        if let Ok(input) = el.clone().dyn_into::<web_sys::HtmlInputElement>() {
-            input.set_value(value);
-            return;
-        }
-        if let Ok(select) = el.dyn_into::<web_sys::HtmlSelectElement>() {
-            select.set_value(value);
-        }
-    }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum KvQuantField {
+    K,
+    V,
 }
 
 /// Custom KV quant text input that appears when the selected value is not in the known options.
@@ -76,20 +67,8 @@ fn KvQuantCustomInput(form: RwSignal<Option<ModelForm>>, field: KvQuantField) ->
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum KvQuantField {
-    K,
-    V,
-}
-
 #[component]
-pub fn ModelEditorGeneralForm(
-    form: RwSignal<Option<ModelForm>>,
-    backends: RwSignal<Vec<BackendOption>>,
-) -> impl IntoView {
-    // Track the last form ID we've initialized inputs for
-    let last_init_id = StoredValue::new(None::<String>);
-
+pub fn ModelEditorHardwareForm(form: RwSignal<Option<ModelForm>>) -> impl IntoView {
     // GPU devices discovered for the current backend
     let gpu_devices: RwSignal<Vec<GpuDeviceInfo>> = RwSignal::new(Vec::new());
     let gpu_fetching: RwSignal<bool> = RwSignal::new(false);
@@ -113,7 +92,7 @@ pub fn ModelEditorGeneralForm(
 
     // Refresh GPU devices for the current backend.
     let refresh_devices = Callback::new(move |_| {
-        let (backend, gpu_variant) = form.with(|f| {
+        let (backend_name, gpu_variant) = form.with(|f| {
             let variant = f
                 .as_ref()
                 .and_then(|f| f.gpu_variant.as_deref())
@@ -124,14 +103,14 @@ pub fn ModelEditorGeneralForm(
                 variant.to_string(),
             )
         });
-        if backend.is_empty() {
+        if backend_name.is_empty() {
             return;
         }
         let devices_signal = gpu_devices;
         let fetching_signal = gpu_fetching;
         spawn_local(async move {
             fetching_signal.set(true);
-            let devices = refresh_gpu_devices(&backend, &gpu_variant).await;
+            let devices = refresh_gpu_devices(&backend_name, &gpu_variant).await;
             devices_signal.set(devices);
             fetching_signal.set(false);
         });
@@ -162,161 +141,15 @@ pub fn ModelEditorGeneralForm(
         }
     });
 
-    // On first mount, if backend is already set, fetch devices
-    let mounted = StoredValue::new(false);
-    Effect::new(move |_| {
-        if !mounted.get_value() {
-            mounted.set_value(true);
-            let (backend, gpu_variant) = form
-                .get()
-                .as_ref()
-                .map(|f| {
-                    let variant = f
-                        .gpu_variant
-                        .as_deref()
-                        .filter(|s| !s.is_empty())
-                        .unwrap_or("cpu");
-                    (f.backend.clone(), variant.to_string())
-                })
-                .unwrap_or_default();
-            if !backend.is_empty() {
-                last_backend.set_value(backend.clone());
-                fetch_devices_for_backend.run((backend, gpu_variant));
-            }
-        }
-    });
-
-    // When form changes to a new model, populate the input values
-    Effect::new(move |_| {
-        if let Some(f) = form.get() {
-            if last_init_id.get_value() != Some(f.id.clone()) {
-                set_input_value(
-                    "field-display-name",
-                    f.display_name.as_deref().unwrap_or_default(),
-                );
-                set_input_value("field-model", f.model.as_deref().unwrap_or_default());
-                set_input_value(
-                    "field-gpu-layers",
-                    &f.gpu_layers.map(|v| v.to_string()).unwrap_or_default(),
-                );
-                set_input_value(
-                    "field-gpu-device",
-                    f.gpu_device.as_deref().unwrap_or_default(),
-                );
-                set_input_value(
-                    "field-ctx",
-                    &f.context_length.map(|v| v.to_string()).unwrap_or_default(),
-                );
-                set_input_value(
-                    "field-port",
-                    &f.port.map(|v| v.to_string()).unwrap_or_default(),
-                );
-                set_input_value(
-                    "field-num-parallel",
-                    &f.num_parallel.map(|v| v.to_string()).unwrap_or_default(),
-                );
-                set_input_value(
-                    "field-kv-quant-k",
-                    f.cache_type_k.as_deref().unwrap_or_default(),
-                );
-                set_input_value(
-                    "field-kv-quant-v",
-                    f.cache_type_v.as_deref().unwrap_or_default(),
-                );
-                last_init_id.set_value(Some(f.id.clone()));
-            }
-        }
-    });
-
     view! {
         <div class="form-grid">
-            <label class="form-label" for="field-display-name">"Display Name"</label>
-            <input
-                id="field-display-name"
-                class="form-input"
-                type="text"
-                placeholder="Auto-generated from HF repo name"
-                on:input=move |ev| {
-                    let val = target_value(&ev);
-                    form.update(|f| {
-                        if let Some(form) = f {
-                            form.display_name = if val.is_empty() { None } else { Some(val) };
-                        }
-                    });
-                }
-            />
-
-            <label class="form-label" for="field-backend">"Backend"</label>
-            <select
-                id="field-backend"
-                class="form-select"
-                on:change=move |e| {
-                    let val = target_value(&e);
-                    form.update(|f| {
-                        if let Some(form) = f {
-                            // Parse "name:variant" or just "name"
-                            if let Some((name, variant)) = val.split_once(':') {
-                                form.backend = name.to_string();
-                                form.gpu_variant = Some(variant.to_string());
-                            } else {
-                                form.backend = val;
-                                form.gpu_variant = None;
-                            }
-                        }
-                    });
-                }
-            >
-                {move || backends.get().into_iter().map(|opt| {
-                    let value = if let Some(ref v) = opt.variant {
-                        format!("{}:{}", opt.name, v)
-                    } else {
-                        opt.name.clone()
-                    };
-                    let selected = form.get_untracked().as_ref().map(|f| {
-                        let expected = if let Some(ref v) = f.gpu_variant {
-                            format!("{}:{}", f.backend, v)
-                        } else {
-                            f.backend.clone()
-                        };
-                        expected == value
-                    }).unwrap_or(false);
-                    let value2 = value.clone();
-                    view! { <option value=value2 selected=selected>{opt.label.clone()}</option> }
-                }).collect::<Vec<_>>()}
-            </select>
-
-            <label class="form-label" for="field-api-name">"API Name"</label>
-            <input
-                id="field-api-name"
-                class="form-input"
-                type="text"
-                disabled=true
-                title="API Name is auto-derived from the HF repo name"
-                prop:value=move || form.get().as_ref().and_then(|f| f.api_name.clone()).unwrap_or_default()
-            />
-
-            <label class="form-label" for="field-model">"Model (HF repo)"</label>
-            <input
-                id="field-model"
-                class="form-input"
-                type="text"
-                placeholder="e.g. unsloth/gemma-4-26B-A4B-it-GGUF"
-                on:input=move |ev| {
-                    form.update(|f| {
-                        if let Some(form) = f {
-                            let val = target_value(&ev);
-                            form.model = if val.is_empty() { None } else { Some(val) };
-                        }
-                    });
-                }
-            />
-
             <label class="form-label" for="field-gpu-layers">"GPU Layers"</label>
             <input
                 id="field-gpu-layers"
                 class="form-input"
                 type="number"
                 placeholder="e.g. 999"
+                prop:value=move || form.get().as_ref().and_then(|f| f.gpu_layers).map(|v| v.to_string()).unwrap_or_default()
                 on:input=move |ev| {
                     form.update(|f| {
                         if let Some(form) = f {
@@ -398,6 +231,52 @@ pub fn ModelEditorGeneralForm(
                 max_context=Signal::derive(move || form.get().and_then(|f| f.hf_context_length))
             />
 
+            <label class="form-label" for="field-num-parallel">"Num parallel slots"</label>
+            <input
+                id="field-num-parallel"
+                class="form-input"
+                type="number"
+                min="0"
+                placeholder="0 = auto"
+                prop:value=move || form.get().as_ref().and_then(|f| f.num_parallel).map(|v| v.to_string()).unwrap_or_default()
+                on:input=move |ev| {
+                    form.update(|f| {
+                        if let Some(form) = f {
+                            let val = target_value(&ev);
+                            form.num_parallel = if val.is_empty() {
+                                None
+                            } else {
+                                val.parse::<u32>().ok()
+                            };
+                        }
+                    });
+                }
+            />
+
+            <label class="form-label" for="field-kv-unified">
+                "Unified KV cache"
+                <div class="form-hint">All parallel slots share a single context pool. Better for agent+subagent workflows.</div>
+            </label>
+            <div class="form-check">
+                <input
+                    id="field-kv-unified"
+                    type="checkbox"
+                    prop:checked=move || form.get().as_ref().map(|f| f.kv_unified).unwrap_or(true)
+                    on:change=move |e| {
+                        let checked = e.target()
+                            .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
+                            .map(|el| el.checked())
+                            .unwrap_or(false);
+                        form.update(|f| {
+                            if let Some(form) = f {
+                                form.kv_unified = checked;
+                            }
+                        });
+                    }
+                />
+                <label class="form-check-label" for="field-kv-unified">"Unified KV cache"</label>
+            </div>
+
             <label class="form-label" for="field-kv-quant-k">
                 "KV cache type K"
                 <div class="form-hint">Quantize the K cache to reduce VRAM usage. Lower precision = less memory, slightly slower inference.</div>
@@ -470,90 +349,8 @@ pub fn ModelEditorGeneralForm(
             </select>
             <KvQuantCustomInput form=form field=KvQuantField::V />
 
-            <label class="form-label" for="field-num-parallel">"Num parallel slots"</label>
-            <input
-                id="field-num-parallel"
-                class="form-input"
-                type="number"
-                min="0"
-                placeholder="0 = auto"
-                on:input=move |ev| {
-                    form.update(|f| {
-                        if let Some(form) = f {
-                            // Empty string = None (use default), "0" = Some(0) (explicit auto), "1+" = Some(N)
-                            let val = target_value(&ev);
-                            form.num_parallel = if val.is_empty() {
-                                None
-                            } else {
-                                val.parse::<u32>().ok()
-                            };
-                        }
-                    });
-                }
-            />
-
-            <label class="form-label" for="field-kv-unified">
-                "Unified KV cache"
-                <div class="form-hint">All parallel slots share a single context pool. Better for agent+subagent workflows.</div>
-            </label>
-            <div class="form-check">
-                <input
-                    id="field-kv-unified"
-                    type="checkbox"
-                    prop:checked=move || form.get().as_ref().map(|f| f.kv_unified).unwrap_or(true)
-                    on:change=move |e| {
-                        let checked = e.target()
-                            .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
-                            .map(|el| el.checked())
-                            .unwrap_or(false);
-                        form.update(|f| {
-                            if let Some(form) = f {
-                                form.kv_unified = checked;
-                            }
-                        });
-                    }
-                />
-                <label class="form-check-label" for="field-kv-unified">"Unified KV cache"</label>
-            </div>
-
-            <label class="form-label" for="field-port">"Port override"</label>
-            <input
-                id="field-port"
-                class="form-input"
-                type="number"
-                placeholder="leave blank for default"
-                on:input=move |ev| {
-                    form.update(|f| {
-                        if let Some(form) = f {
-                            form.port = target_value(&ev).parse::<u16>().ok();
-                        }
-                    });
-                }
-            />
-
-            <label class="form-label">"Enabled"</label>
-            <div class="form-check">
-                <input
-                    id="field-enabled"
-                    type="checkbox"
-                    prop:checked=move || form.get().as_ref().map(|f| f.enabled).unwrap_or(true)
-                    on:change=move |e| {
-                        let checked = e.target()
-                            .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
-                            .map(|el| el.checked())
-                            .unwrap_or(false);
-                        form.update(|f| {
-                            if let Some(form) = f {
-                                form.enabled = checked;
-                            }
-                        });
-                    }
-                />
-                <label class="form-check-label" for="field-enabled">"Enabled"</label>
-            </div>
-
             <label class="form-label">"Input Modalities"</label>
-            <div class="form-check-group">
+            <div class="form-check-group modality-row">
                 <For
                     each=move || MODALITY_OPTIONS.iter().enumerate().map(|(i, (v, l))| (i, *v, *l))
                     key=|(i, v, _)| (*i, v.to_string())
@@ -604,7 +401,7 @@ pub fn ModelEditorGeneralForm(
             </div>
 
             <label class="form-label">"Output Modalities"</label>
-            <div class="form-check-group">
+            <div class="form-check-group modality-row">
                 <For
                     each=move || MODALITY_OPTIONS.iter().enumerate().map(|(i, (v, l))| (i, *v, *l))
                     key=|(i, v, _)| (*i, format!("out-{}", v))

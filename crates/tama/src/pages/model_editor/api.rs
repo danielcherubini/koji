@@ -305,3 +305,65 @@ pub async fn refresh_gpu_devices(
         _ => Vec::new(),
     }
 }
+
+/// Save a sampling preset template via the existing structured config endpoint.
+///
+/// Flow: GET `/tama/v1/config/structured` → insert/update `sampling_templates` → POST back.
+pub async fn save_sampling_template(name: &str, params: &serde_json::Value) -> Result<(), String> {
+    // GET the current structured config
+    let get_resp = get_request("/tama/v1/config/structured")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if get_resp.status() != 200 {
+        let text = get_resp
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unknown error".into());
+        return Err(format!("Failed to fetch config: {}", text));
+    }
+
+    // Parse the config as a JSON Value so we can modify it
+    let mut config: serde_json::Value = get_resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse config: {}", e))?;
+
+    // Ensure sampling_templates exists and insert/update the preset
+    if let Some(obj) = config.as_object_mut() {
+        let templates = obj
+            .entry("sampling_templates")
+            .or_insert(serde_json::Value::Object(serde_json::Map::new()));
+
+        if let Some(templates_obj) = templates.as_object_mut() {
+            templates_obj.insert(name.to_string(), params.clone());
+        } else {
+            // Replace with a proper object
+            let mut map = serde_json::Map::new();
+            map.insert(name.to_string(), params.clone());
+            obj.insert(
+                "sampling_templates".to_string(),
+                serde_json::Value::Object(map),
+            );
+        }
+    }
+
+    // POST the full config back
+    let post_resp = post_request("/tama/v1/config/structured")
+        .json(&config)
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if post_resp.status() == 200 {
+        Ok(())
+    } else {
+        let text = post_resp
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unknown error".into());
+        Err(format!("Failed to save template: {}", text))
+    }
+}

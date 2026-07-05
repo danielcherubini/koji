@@ -2,31 +2,31 @@
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Section {
-    General,
+    Settings,
+    Hardware,
     Sampling,
-    SpecDecoding,
-    QuantsVision,
-    ExtraArgs,
+    Files,
+    Advanced,
 }
 
 impl Section {
     pub(crate) fn name(&self) -> &'static str {
         match self {
-            Self::General => "General",
+            Self::Settings => "Settings",
+            Self::Hardware => "Hardware",
             Self::Sampling => "Sampling",
-            Self::SpecDecoding => "Spec Decoding",
-            Self::QuantsVision => "Quants & Vision",
-            Self::ExtraArgs => "Extra Args",
+            Self::Files => "Files",
+            Self::Advanced => "Advanced",
         }
     }
 
     pub(crate) fn icon(&self) -> &'static str {
         match self {
-            Self::General => "⚙️",
+            Self::Settings => "⚙️",
+            Self::Hardware => "🖥️",
             Self::Sampling => "🎲",
-            Self::SpecDecoding => "⚡",
-            Self::QuantsVision => "📊 👁️",
-            Self::ExtraArgs => "📝",
+            Self::Files => "📁",
+            Self::Advanced => "🔧",
         }
     }
 }
