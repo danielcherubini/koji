@@ -223,6 +223,8 @@ pub fn ModelEditor() -> impl IntoView {
 
                 repo_commit_sha.set(d.repo_commit_sha.clone());
                 repo_pulled_at.set(d.repo_pulled_at.clone());
+                // Seed last_saved_form so is_dirty starts as false (not "unsaved" on load)
+                last_saved_form.set(serde_json::to_string(&form.get()).ok());
                 form_ready.set(true);
             }
         }
@@ -771,10 +773,15 @@ pub fn ModelEditor() -> impl IntoView {
                                 </div>
                                 <div class="model-editor-save-bar__center">
                                     {move || {
-                                        if let Some((_, msg)) = save_status.get() {
-                                            Some(view! { <span class="text-muted">{msg}</span> }.into_any())
+                                        if let Some((ok, msg)) = save_status.get() {
+                        let cls = if ok {
+                            "model-editor-save-bar__status model-editor-save-bar__status--saved"
+                        } else {
+                            "model-editor-save-bar__status"
+                        };
+                                            Some(view! { <span class=cls>{msg}</span> }.into_any())
                                         } else if is_dirty.get() {
-                                            Some(view! { <span class="text-muted">"● Unsaved changes"</span> }.into_any())
+                                            Some(view! { <span class="model-editor-save-bar__status model-editor-save-bar__status--dirty">"● Unsaved changes"</span> }.into_any())
                                         } else {
                                             None
                                         }

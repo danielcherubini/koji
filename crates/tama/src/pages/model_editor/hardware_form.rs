@@ -141,30 +141,6 @@ pub fn ModelEditorHardwareForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
         }
     });
 
-    // On first mount, if backend is already set, fetch devices
-    let mounted = StoredValue::new(false);
-    Effect::new(move |_| {
-        if !mounted.get_value() {
-            mounted.set_value(true);
-            let (backend_name, gpu_variant) = form
-                .get()
-                .as_ref()
-                .map(|f| {
-                    let variant = f
-                        .gpu_variant
-                        .as_deref()
-                        .filter(|s| !s.is_empty())
-                        .unwrap_or("cpu");
-                    (f.backend.clone(), variant.to_string())
-                })
-                .unwrap_or_default();
-            if !backend_name.is_empty() {
-                last_backend.set_value(backend_name.clone());
-                fetch_devices_for_backend.run((backend_name, gpu_variant));
-            }
-        }
-    });
-
     view! {
         <div class="form-grid">
             <label class="form-label" for="field-gpu-layers">"GPU Layers"</label>
