@@ -148,12 +148,15 @@ tama/
 ├── crates/
 │   ├── tama-core/      # Core library (types, models, logic)
 │   ├── tama/           # Main binary with web control plane (WASM + SSR)
+│   │   └── css/        # CSS source files (edit these, NOT dist/)
 │   └── tama-mock/      # Mock utilities for testing
 ├── config/              # Configuration templates
 ├── docs/                # Documentation
 ├── installer/           # Windows installer scripts
 └── target/              # Build artifacts (ignored)
 ```
+
+**CSS convention:** Always edit files in `crates/tama/css/`. The `crates/tama/dist/` directory is Trunk build output (untracked in git) — never edit files there directly. Trunk regenerates `dist/` from `css/` during build.
 
 ## Patterns
 
