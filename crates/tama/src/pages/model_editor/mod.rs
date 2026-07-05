@@ -1,9 +1,10 @@
 mod api;
 mod extra_args_form;
-mod general_form;
+mod hardware_form;
 mod quants_vision_form;
 mod sampling_form;
 mod sections;
+mod settings_form;
 mod spec_decoding_form;
 mod types;
 
@@ -17,9 +18,10 @@ use crate::utils::rw_signal_to_signal;
 
 use self::api::*;
 use self::extra_args_form::ModelEditorExtraArgsForm;
-use self::general_form::ModelEditorGeneralForm;
+use self::hardware_form::ModelEditorHardwareForm;
 use self::quants_vision_form::ModelEditorQuantsVisionForm;
 use self::sampling_form::ModelEditorSamplingForm;
+use self::settings_form::ModelEditorSettingsForm;
 use self::spec_decoding_form::ModelEditorSpecDecodingForm;
 use self::types::*;
 
@@ -662,7 +664,7 @@ pub fn ModelEditor() -> impl IntoView {
                                     Section::Settings => view! {
                                         <div class="card">
                                             <h2 class="card__title">"Settings"</h2>
-                                            <ModelEditorGeneralForm
+                                            <ModelEditorSettingsForm
                                                 form=form
                                                 backends=backends
                                             />
@@ -671,9 +673,8 @@ pub fn ModelEditor() -> impl IntoView {
                                     Section::Hardware => view! {
                                         <div class="card">
                                             <h2 class="card__title">"Hardware"</h2>
-                                            <ModelEditorGeneralForm
+                                            <ModelEditorHardwareForm
                                                 form=form
-                                                backends=backends
                                             />
                                         </div>
                                     }.into_any(),
