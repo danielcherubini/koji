@@ -667,12 +667,8 @@ pub fn ModelEditor() -> impl IntoView {
                 <span class="text-muted">"Loading model..."</span>
             </div>
         }>
-            {move || {
-                // Use form_ready as the stability gate, NOT form.get().
-                // form.get() changes on every keystroke, which would cause
-                // the entire layout to unmount/remount and lose input focus.
-                form_ready.get().then(|| {
-                    view! {
+            <Show when=move || form_ready.get()>
+                {view! {
                         <div class="model-editor-layout">
                             // Pill-style tab navigation
                             <div class="model-editor-pills">
@@ -822,9 +818,8 @@ pub fn ModelEditor() -> impl IntoView {
                                 </div>
                             </div>
                         </div>
-                    }.into_any()
-                })
-            }}
+                    }}
+            </Show>
         </Suspense>
 
         <Modal
