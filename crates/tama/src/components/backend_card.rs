@@ -171,7 +171,7 @@ pub fn BackendCard(
 
     let default_args_initial = backend.default_args.join(" ");
     let default_args_signal = RwSignal::new(default_args_initial.clone());
-    let default_env_initial = backend.default_env.join(" ");
+    let default_env_initial = serde_json::to_string(&backend.default_env).unwrap_or_default();
     let default_env_signal = RwSignal::new(default_env_initial.clone());
     let bk_env = backend_key.clone();
 
@@ -344,7 +344,7 @@ pub fn BackendCard(
                      <label style="font-size:0.875rem;font-weight:600;">"Environment Variables"</label>
                      <input
                          type="text"
-                         placeholder="e.g. RADV_PERFTEST=nogttspill"
+                         placeholder=r#"["RADV_PERFTEST=nogttspill", "FOO=bar"]"#
                          style="font-size:0.875rem;padding:0.375rem;border:1px solid var(--border,#ccc);border-radius:4px;font-family:monospace;"
                          prop:value=move || default_env_signal.get()
                          on:input=move |ev| {

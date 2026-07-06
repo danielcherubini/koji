@@ -200,6 +200,8 @@ impl ProxyState {
             if let Some((key, value)) = env_var.split_once('=') {
                 info!("Applying env var: {}={}", key, value);
                 child.env(key, value);
+            } else if !env_var.is_empty() {
+                warn!("Skipping malformed env var (missing '='): {}", env_var);
             }
         }
 
@@ -599,7 +601,7 @@ impl ProxyState {
             ));
         }
 
-        let (backend, pid) = match &state {
+        let (_backend, pid) = match &state {
             ModelState::Ready {
                 backend,
                 backend_pid,
@@ -619,10 +621,7 @@ impl ProxyState {
             }
         };
 
-        info!(
-            "Stopping backend '{}' for backend '{}'",
-            backend, backend_name
-        );
+        info!("Stopping backend '{}'", backend_name);
 
         // Send SIGTERM for graceful shutdown
         info!("Sending SIGTERM to backend process {}", pid);

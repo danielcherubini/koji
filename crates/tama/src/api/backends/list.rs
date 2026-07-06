@@ -250,8 +250,8 @@ pub async fn list_backends(State(state): State<Arc<ProxyState>>) -> impl IntoRes
                 }
             }
         }
-        Err(_e) => {
-            tracing::warn!("Failed to open backend manager");
+        Err(e) => {
+            tracing::warn!("Failed to open backend manager: {:?}", e.status());
         }
     }
 
@@ -509,8 +509,8 @@ pub async fn check_backend_updates(State(state): State<Arc<ProxyState>>) -> impl
                 }
             }
         }
-        Err(_e) => {
-            tracing::warn!("Failed to open backend manager");
+        Err(e) => {
+            tracing::warn!("Failed to open backend manager: {:?}", e.status());
             // On error, still return known backends as not installed
             for (type_, display_name, release_notes_url) in KNOWN_BACKENDS {
                 backends.push(BackendCardDto::default_uninstalled(
@@ -610,9 +610,9 @@ pub async fn list_backend_versions(
             })
             .into_response()
         }
-        Err(_e) => (
+        Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": "Failed to open backend manager"})),
+            Json(json!({"error": format!("Failed to open backend manager: {:?}", e.status())})),
         )
             .into_response(),
     }

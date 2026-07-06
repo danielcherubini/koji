@@ -323,7 +323,7 @@ pub fn Backends() -> impl IntoView {
             let env_edit_keys: Vec<String> = env_edits.keys().cloned().collect();
             for key in env_edit_keys {
                 let env_str = env_edits.get(&key).cloned().unwrap_or_default();
-                let parts: Vec<String> = env_str.split_whitespace().map(String::from).collect();
+                let parts: Vec<String> = serde_json::from_str(&env_str).unwrap_or_default();
                 // Parse "backend_type:gpu_variant" from key
                 let parts_key: Vec<&str> = key.splitn(2, ':').collect();
                 let bt = parts_key[0];

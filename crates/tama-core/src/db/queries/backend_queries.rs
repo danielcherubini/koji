@@ -266,7 +266,7 @@ pub struct BackendConfigRecord {
     pub gpu_variant: String,
     /// Parsed from JSON array stored in `default_args` column.
     pub default_args: Vec<String>,
-    /// Parsed from space-separated string stored in `default_env` column.
+    /// Parsed from JSON array stored in `default_env` column.
     pub default_env: Vec<String>,
     pub health_check_url: Option<String>,
 }
@@ -301,7 +301,9 @@ fn raw_to_record(raw: RawBackendConfigRow) -> Result<BackendConfigRecord> {
         _ => Vec::new(),
     };
     let default_env: Vec<String> = match raw.default_env_raw {
-        Some(ref s) if !s.is_empty() => s.split_whitespace().map(String::from).collect(),
+        Some(ref s) if !s.is_empty() => {
+            serde_json::from_str(s).context("Failed to parse default_env JSON")?
+        }
         _ => Vec::new(),
     };
 
@@ -353,10 +355,13 @@ pub fn upsert_backend_config(
                 .context("Failed to serialize default_args to JSON")?,
         )
     };
-    let default_env_str = if default_env.is_empty() {
+    let default_env_json = if default_env.is_empty() {
         None
     } else {
-        Some(default_env.join(" "))
+        Some(
+            serde_json::to_string(default_env)
+                .context("Failed to serialize default_env to JSON")?,
+        )
     };
 
     conn.execute(
@@ -370,7 +375,7 @@ pub fn upsert_backend_config(
             name,
             gpu_variant,
             default_args_json.as_deref(),
-            default_env_str.as_deref(),
+            default_env_json.as_deref(),
             health_check_url,
         ),
     )?;
