@@ -176,42 +176,47 @@ pub fn ModelEditorHardwareForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
         }
     });
 
-    // Populate input values when the form data loads.
+    // Populate input values when the form data loads (or model changes).
+    // Only runs when the model ID changes, not on every keystroke.
+    let last_init_id = StoredValue::new(None::<String>);
     Effect::new(move |_| {
         if let Some(f) = form.get() {
-            set_input_value(
-                "field-gpu-layers",
-                &f.gpu_layers.map(|v| v.to_string()).unwrap_or_default(),
-            );
-            set_input_value(
-                "field-gpu-device",
-                f.gpu_device.as_deref().unwrap_or_default(),
-            );
-            set_input_value(
-                "field-num-parallel",
-                &f.num_parallel.map(|v| v.to_string()).unwrap_or_default(),
-            );
-            set_checked("field-kv-unified", f.kv_unified);
-            set_input_value(
-                "field-kv-quant-k",
-                f.cache_type_k.as_deref().unwrap_or_default(),
-            );
-            set_input_value(
-                "field-kv-quant-v",
-                f.cache_type_v.as_deref().unwrap_or_default(),
-            );
-            // Modality checkboxes
-            if let Some(m) = &f.modalities {
-                for (val, _) in MODALITY_OPTIONS {
-                    set_checked(
-                        &format!("field-modality-input-{}", val),
-                        m.input.contains(&val.to_string()),
-                    );
-                    set_checked(
-                        &format!("field-modality-output-{}", val),
-                        m.output.contains(&val.to_string()),
-                    );
+            if last_init_id.get_value() != Some(f.id.clone()) {
+                set_input_value(
+                    "field-gpu-layers",
+                    &f.gpu_layers.map(|v| v.to_string()).unwrap_or_default(),
+                );
+                set_input_value(
+                    "field-gpu-device",
+                    f.gpu_device.as_deref().unwrap_or_default(),
+                );
+                set_input_value(
+                    "field-num-parallel",
+                    &f.num_parallel.map(|v| v.to_string()).unwrap_or_default(),
+                );
+                set_checked("field-kv-unified", f.kv_unified);
+                set_input_value(
+                    "field-kv-quant-k",
+                    f.cache_type_k.as_deref().unwrap_or_default(),
+                );
+                set_input_value(
+                    "field-kv-quant-v",
+                    f.cache_type_v.as_deref().unwrap_or_default(),
+                );
+                // Modality checkboxes
+                if let Some(m) = &f.modalities {
+                    for (val, _) in MODALITY_OPTIONS {
+                        set_checked(
+                            &format!("field-modality-input-{}", val),
+                            m.input.contains(&val.to_string()),
+                        );
+                        set_checked(
+                            &format!("field-modality-output-{}", val),
+                            m.output.contains(&val.to_string()),
+                        );
+                    }
                 }
+                last_init_id.set_value(Some(f.id.clone()));
             }
         }
     });

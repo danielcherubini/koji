@@ -76,22 +76,27 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
             .unwrap_or(false)
     });
 
-    // Populate input values when the form data loads.
+    // Populate input values when the form data loads (or model changes).
+    // Only runs when the model ID changes, not on every keystroke.
+    let last_init_id = StoredValue::new(None::<String>);
     Effect::new(move |_| {
         if let Some(f) = form.get() {
-            set_checked(
-                "field-spec-draft-mtp",
-                f.spec_decoding
-                    .spec_types
-                    .contains(&SPEC_TYPE_DRAFT_MTP.to_string()),
-            );
-            set_checked(
-                "field-spec-ngram-simple",
-                f.spec_decoding
-                    .spec_types
-                    .contains(&SPEC_TYPE_NGRAM_SIMPLE.to_string()),
-            );
-            set_input_value("field-args", &f.args);
+            if last_init_id.get_value() != Some(f.id.clone()) {
+                set_checked(
+                    "field-spec-draft-mtp",
+                    f.spec_decoding
+                        .spec_types
+                        .contains(&SPEC_TYPE_DRAFT_MTP.to_string()),
+                );
+                set_checked(
+                    "field-spec-ngram-simple",
+                    f.spec_decoding
+                        .spec_types
+                        .contains(&SPEC_TYPE_NGRAM_SIMPLE.to_string()),
+                );
+                set_input_value("field-args", &f.args);
+                last_init_id.set_value(Some(f.id.clone()));
+            }
         }
     });
 

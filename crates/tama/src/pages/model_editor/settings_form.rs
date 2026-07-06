@@ -37,22 +37,28 @@ pub fn ModelEditorSettingsForm(
     form: RwSignal<Option<ModelForm>>,
     backends: RwSignal<Vec<BackendOption>>,
 ) -> impl IntoView {
-    // Populate input values when the form data loads.
+    // Populate input values when the form data loads (or model changes).
     // Uses get_element_by_id because prop:value doesn't work reliably
     // inside Suspense + conditional rendering.
+    // Only runs when the model ID changes, not on every keystroke —
+    // otherwise set_input_value resets the cursor mid-edit.
+    let last_init_id = StoredValue::new(None::<String>);
     Effect::new(move |_| {
         if let Some(f) = form.get() {
-            set_input_value(
-                "field-display-name",
-                f.display_name.as_deref().unwrap_or_default(),
-            );
-            set_input_value("field-model", f.model.as_deref().unwrap_or_default());
-            set_input_value("field-api-name", f.api_name.as_deref().unwrap_or_default());
-            set_input_value(
-                "field-port",
-                &f.port.map(|v| v.to_string()).unwrap_or_default(),
-            );
-            set_checked("field-enabled", f.enabled);
+            if last_init_id.get_value() != Some(f.id.clone()) {
+                set_input_value(
+                    "field-display-name",
+                    f.display_name.as_deref().unwrap_or_default(),
+                );
+                set_input_value("field-model", f.model.as_deref().unwrap_or_default());
+                set_input_value("field-api-name", f.api_name.as_deref().unwrap_or_default());
+                set_input_value(
+                    "field-port",
+                    &f.port.map(|v| v.to_string()).unwrap_or_default(),
+                );
+                set_checked("field-enabled", f.enabled);
+                last_init_id.set_value(Some(f.id.clone()));
+            }
         }
     });
 
