@@ -193,11 +193,19 @@ impl ProxyState {
             }
         }
         configure_process_group(&mut child);
+
+        // Apply default env vars from backend config (e.g. RADV_PERFTEST=nogttspill)
+        let default_env = manager.get_default_env(&server_config.backend, gpu_variant);
+        for env_var in &default_env {
+            if let Some((key, value)) = env_var.split_once('=') {
+                info!("Applying env var: {}={}", key, value);
+                child.env(key, value);
+            }
+        }
+
         child
             .args(&args)
             .env("MODEL_NAME", model_name)
-            // RADV_PERFTEST=nogttspill improves vulkan performance by avoiding GTT spilling
-            .env("RADV_PERFTEST", "nogttspill")
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
 

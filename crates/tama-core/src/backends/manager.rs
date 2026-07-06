@@ -59,6 +59,7 @@ impl BackendManager {
         name: &str,
         gpu_variant: &str,
         default_args: &[String],
+        default_env: &[String],
         health_check_url: Option<&str>,
     ) -> Result<i64> {
         crate::db::queries::upsert_backend_config(
@@ -66,6 +67,7 @@ impl BackendManager {
             name,
             gpu_variant,
             default_args,
+            default_env,
             health_check_url,
         )
     }
@@ -84,6 +86,16 @@ impl BackendManager {
             .ok()
             .flatten()
             .map(|c| c.default_args)
+            .unwrap_or_default()
+    }
+
+    /// Get default_env for a backend + variant from backend_configs.
+    /// Returns empty vec if no config exists.
+    pub fn get_default_env(&self, name: &str, gpu_variant: &str) -> Vec<String> {
+        crate::db::queries::get_backend_config(&self.conn, name, gpu_variant)
+            .ok()
+            .flatten()
+            .map(|c| c.default_env)
             .unwrap_or_default()
     }
 
@@ -386,11 +398,13 @@ mod tests {
         let manager = BackendManager::open_in_memory().unwrap();
 
         let args = vec!["-fa 1".to_string(), "-b 2048".to_string()];
+        let env = vec!["RADV_PERFTEST=nogttspill".to_string()];
         let id = manager
             .save_config(
                 "llama_cpp",
                 "cpu",
                 &args,
+                &env,
                 Some("http://localhost:8080/health"),
             )
             .unwrap();
@@ -400,6 +414,7 @@ mod tests {
         assert_eq!(record.name, "llama_cpp");
         assert_eq!(record.gpu_variant, "cpu");
         assert_eq!(record.default_args, args);
+        assert_eq!(record.default_env, env);
         assert_eq!(
             record.health_check_url,
             Some("http://localhost:8080/health".to_string())
@@ -416,6 +431,7 @@ mod tests {
                 "llama_cpp",
                 "cpu",
                 &["-fa 1".to_string()],
+                &[],
                 Some("http://localhost:8080/health"),
             )
             .unwrap();
@@ -426,6 +442,7 @@ mod tests {
                 "llama_cpp",
                 "cpu",
                 &["-fa 1".to_string(), "-b 2048".to_string()],
+                &["FOO=bar".to_string()],
                 Some("http://localhost:9090/health"),
             )
             .unwrap();
@@ -435,6 +452,7 @@ mod tests {
 
         let record = manager.get_config("llama_cpp", "cpu").unwrap().unwrap();
         assert_eq!(record.default_args, vec!["-fa 1", "-b 2048"]);
+        assert_eq!(record.default_env, vec!["FOO=bar"]);
         assert_eq!(
             record.health_check_url,
             Some("http://localhost:9090/health".to_string())
@@ -457,13 +475,16 @@ mod tests {
                 "llama_cpp",
                 "cpu",
                 &["-fa 1".to_string()],
+                &[],
                 Some("http://localhost:8080/health"),
             )
             .unwrap();
         manager
-            .save_config("llama_cpp", "vulkan", &[], None)
+            .save_config("llama_cpp", "vulkan", &[], &[], None)
             .unwrap();
-        manager.save_config("ik_llama", "cpu", &[], None).unwrap();
+        manager
+            .save_config("ik_llama", "cpu", &[], &[], None)
+            .unwrap();
 
         let configs = manager.list_configs().unwrap();
         assert_eq!(configs.len(), 3);
@@ -787,7 +808,7 @@ mod tests {
 
         let args = vec!["-fa 1".to_string(), "-b 2048".to_string()];
         manager
-            .save_config("llama_cpp", "cpu", &args, None)
+            .save_config("llama_cpp", "cpu", &args, &[], None)
             .unwrap();
 
         let result = manager.get_default_args("llama_cpp", "cpu");
@@ -810,6 +831,7 @@ mod tests {
             .save_config(
                 "llama_cpp",
                 "cpu",
+                &[],
                 &[],
                 Some("http://localhost:8080/health"),
             )

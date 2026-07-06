@@ -110,6 +110,8 @@ pub struct BackendCardDto {
     pub release_notes_url: Option<String>,
     #[serde(default)]
     pub default_args: Vec<String>,
+    #[serde(default)]
+    pub default_env: Vec<String>,
     /// Whether the active version is currently selected for display.
     #[serde(default)]
     pub is_active: bool,
@@ -137,6 +139,9 @@ pub fn BackendCard(
     /// Called when default_args input changes with ("backend_type:gpu_variant", new_value)
     #[prop(optional)]
     on_default_args_change: Option<Callback<(String, String)>>,
+    /// Called when default_env input changes with ("backend_type:gpu_variant", new_value)
+    #[prop(optional)]
+    on_default_env_change: Option<Callback<(String, String)>>,
     /// Called with (backend_type, version, gpu_variant) when version dropdown changes.
     #[prop(optional)]
     on_version_change: Option<Callback<(String, String, String)>>,
@@ -166,6 +171,9 @@ pub fn BackendCard(
 
     let default_args_initial = backend.default_args.join(" ");
     let default_args_signal = RwSignal::new(default_args_initial.clone());
+    let default_env_initial = backend.default_env.join(" ");
+    let default_env_signal = RwSignal::new(default_env_initial.clone());
+    let bk_env = backend_key.clone();
 
     // All installed versions (sorted by installed_at DESC)
     let versions = backend.versions.clone();
@@ -326,6 +334,24 @@ pub fn BackendCard(
                                  default_args_signal.set(input.value());
                                  if let Some(cb) = &on_default_args_change {
                                      cb.run((bk_input.clone(), input.value()));
+                                 }
+                             }
+                         }
+                     />
+                </div>
+
+                <div style="display:flex;flex-direction:column;gap:0.25rem;">
+                     <label style="font-size:0.875rem;font-weight:600;">"Environment Variables"</label>
+                     <input
+                         type="text"
+                         placeholder="e.g. RADV_PERFTEST=nogttspill"
+                         style="font-size:0.875rem;padding:0.375rem;border:1px solid var(--border,#ccc);border-radius:4px;font-family:monospace;"
+                         prop:value=move || default_env_signal.get()
+                         on:input=move |ev| {
+                             if let Some(input) = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok()) {
+                                 default_env_signal.set(input.value());
+                                 if let Some(cb) = &on_default_env_change {
+                                     cb.run((bk_env.clone(), input.value()));
                                  }
                              }
                          }
@@ -551,6 +577,7 @@ mod tests {
             update: UpdateStatusDto::default(),
             release_notes_url: Some("https://example.com".to_string()),
             default_args: vec![],
+            default_env: vec![],
             is_active: false,
         };
         let json = serde_json::to_string(&dto).unwrap();
@@ -570,6 +597,7 @@ mod tests {
             update: UpdateStatusDto::default(),
             release_notes_url: None,
             default_args: vec![],
+            default_env: vec![],
             is_active: true,
         };
         let json = serde_json::to_string(&dto_active).unwrap();
@@ -585,6 +613,7 @@ mod tests {
             update: UpdateStatusDto::default(),
             release_notes_url: None,
             default_args: vec![],
+            default_env: vec![],
             is_active: false,
         };
         let json2 = serde_json::to_string(&dto_inactive).unwrap();
@@ -641,6 +670,7 @@ mod tests {
             },
             release_notes_url: None,
             default_args: vec!["--threads".to_string()],
+            default_env: vec![],
             is_active: true,
         };
 
@@ -662,6 +692,7 @@ mod tests {
             update: UpdateStatusDto::default(),
             release_notes_url: None,
             default_args: vec![],
+            default_env: vec![],
             is_active: false,
         };
 
@@ -692,6 +723,7 @@ mod tests {
             },
             release_notes_url: None,
             default_args: vec![],
+            default_env: vec![],
             is_active: false,
         };
 
@@ -737,6 +769,7 @@ mod tests {
                 "https://github.com/ggml-org/llama.cpp/releases/tag/b8500".to_string(),
             ),
             default_args: vec!["--threads".to_string(), "4".to_string()],
+            default_env: vec![],
             is_active: true,
         };
 

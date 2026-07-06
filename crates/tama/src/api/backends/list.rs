@@ -39,14 +39,17 @@ pub async fn list_backends(State(state): State<Arc<ProxyState>>) -> impl IntoRes
 
     // Load backend configs from DB (keyed by (name, gpu_variant)), reusing the manager
     // opened above to avoid opening the DB twice.
-    let backend_configs_map: std::collections::HashMap<(String, String), Vec<String>> = mgr_result
+    let backend_configs_map: std::collections::HashMap<
+        (String, String),
+        (Vec<String>, Vec<String>),
+    > = mgr_result
         .as_ref()
         .ok()
         .and_then(|mgr| mgr.list_configs().ok())
         .map(|configs| {
             configs
                 .into_iter()
-                .map(|c| ((c.name, c.gpu_variant), c.default_args))
+                .map(|c| ((c.name, c.gpu_variant), (c.default_args, c.default_env)))
                 .collect()
         })
         .unwrap_or_default();
@@ -91,7 +94,7 @@ pub async fn list_backends(State(state): State<Arc<ProxyState>>) -> impl IntoRes
 
                     // Create one card per variant
                     for (variant, variant_versions) in variant_groups {
-                        let default_args = backend_configs_map
+                        let (default_args, default_env) = backend_configs_map
                             .get(&(type_.to_string(), variant.clone()))
                             .cloned()
                             .unwrap_or_default();
@@ -146,6 +149,7 @@ pub async fn list_backends(State(state): State<Arc<ProxyState>>) -> impl IntoRes
                             update: update_status,
                             release_notes_url: release_notes_url.map(String::from),
                             default_args: default_args.clone(),
+                            default_env: default_env.clone(),
                             is_active: true,
                         });
                     }
@@ -188,7 +192,7 @@ pub async fn list_backends(State(state): State<Arc<ProxyState>>) -> impl IntoRes
 
                     for (variant, variant_versions) in variant_groups {
                         let active_version = mgr.get_active(name, &variant).ok().flatten();
-                        let default_args = backend_configs_map
+                        let (default_args, default_env) = backend_configs_map
                             .get(&(bt.clone(), variant.clone()))
                             .cloned()
                             .unwrap_or_default();
@@ -239,6 +243,7 @@ pub async fn list_backends(State(state): State<Arc<ProxyState>>) -> impl IntoRes
                             update: update_status,
                             release_notes_url: None,
                             default_args,
+                            default_env,
                             is_active: true,
                         });
                     }
@@ -317,14 +322,17 @@ pub async fn check_backend_updates(State(state): State<Arc<ProxyState>>) -> impl
 
     // Load backend configs from DB (keyed by (name, gpu_variant)), reusing the manager
     // opened above to avoid opening the DB twice.
-    let backend_configs_map: std::collections::HashMap<(String, String), Vec<String>> = mgr_result
+    let backend_configs_map: std::collections::HashMap<
+        (String, String),
+        (Vec<String>, Vec<String>),
+    > = mgr_result
         .as_ref()
         .ok()
         .and_then(|mgr| mgr.list_configs().ok())
         .map(|configs| {
             configs
                 .into_iter()
-                .map(|c| ((c.name, c.gpu_variant), c.default_args))
+                .map(|c| ((c.name, c.gpu_variant), (c.default_args, c.default_env)))
                 .collect()
         })
         .unwrap_or_default();
@@ -351,7 +359,7 @@ pub async fn check_backend_updates(State(state): State<Arc<ProxyState>>) -> impl
 
                     // Create one card per variant
                     for (variant, variant_versions) in variant_groups {
-                        let default_args = backend_configs_map
+                        let (default_args, default_env) = backend_configs_map
                             .get(&(type_.to_string(), variant.clone()))
                             .cloned()
                             .unwrap_or_default();
@@ -411,6 +419,7 @@ pub async fn check_backend_updates(State(state): State<Arc<ProxyState>>) -> impl
                             },
                             release_notes_url: release_notes_url.map(String::from),
                             default_args: default_args.clone(),
+                            default_env: default_env.clone(),
                             is_active: true,
                         });
                     }
@@ -457,7 +466,7 @@ pub async fn check_backend_updates(State(state): State<Arc<ProxyState>>) -> impl
 
                     for (variant, variant_versions) in variant_groups {
                         let active_version = mgr.get_active(name, &variant).ok().flatten();
-                        let default_args = backend_configs_map
+                        let (default_args, default_env) = backend_configs_map
                             .get(&(bt.clone(), variant.clone()))
                             .cloned()
                             .unwrap_or_default();
@@ -493,6 +502,7 @@ pub async fn check_backend_updates(State(state): State<Arc<ProxyState>>) -> impl
                             update: UpdateStatusDto::default(),
                             release_notes_url: None,
                             default_args,
+                            default_env,
                             is_active: true,
                         });
                     }

@@ -62,6 +62,8 @@ pub struct BackendCardDto {
     pub release_notes_url: Option<String>,
     #[serde(default)]
     pub default_args: Vec<String>,
+    #[serde(default)]
+    pub default_env: Vec<String>,
     /// Whether the active version is currently selected for display.
     #[serde(default)]
     pub is_active: bool,
@@ -84,6 +86,7 @@ impl BackendCardDto {
             update: UpdateStatusDto::default(),
             release_notes_url: release_notes_url.map(String::from),
             default_args,
+            default_env: vec![],
             is_active: false,
         }
     }
