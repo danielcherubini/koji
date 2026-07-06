@@ -1,6 +1,8 @@
 use super::*;
 use crate::api::benchmarks::run::{resolve_model_path, unload_model_before_benchmark};
-use crate::api::error::error_response;
+use crate::api::benchmarks::{
+    job_conflict_response, job_manager_unavailable_response, BenchmarkProgressSink,
+};
 
 // ── Request DTO ───────────────────────────────────────────────────────
 
@@ -51,13 +53,7 @@ pub async fn run_mtp_benchmark(
 ) -> impl IntoResponse {
     let jobs = match &state.web_jobs {
         Some(j) => j.clone(),
-        None => {
-            return error_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Job manager not available",
-                None,
-            )
-        }
+        None => return job_manager_unavailable_response(),
     };
 
     // Validate draft_max_values is not empty
@@ -69,20 +65,13 @@ pub async fn run_mtp_benchmark(
         );
     }
 
-    // Submit a benchmark job
     let job = match jobs.submit(JobKind::Benchmark, None).await {
         Ok(j) => j,
-        Err(_) => {
-            return error_response(
-                StatusCode::CONFLICT,
-                "Another job is already running",
-                Some("ConflictError"),
-            )
-        }
+        Err(_) => return job_conflict_response(),
     };
 
     let job_id = job.id.clone();
-    let req_clone = req.clone();
+
     let db_path = state
         .db_dir
         .clone()
@@ -99,7 +88,7 @@ pub async fn run_mtp_benchmark(
         if let Err(e) = run_mtp_benchmark_inner(
             jobs.clone(),
             &job,
-            &req_clone,
+            req,
             Some(db_path),
             proxy_base_url,
             client,
@@ -120,7 +109,7 @@ pub async fn run_mtp_benchmark(
 pub async fn run_mtp_benchmark_inner(
     jobs: Arc<JobManager>,
     job: &Arc<tama_core::web_types::Job>,
-    req: &MtpBenchmarkRunRequest,
+    req: MtpBenchmarkRunRequest,
     db_path: Option<std::path::PathBuf>,
     proxy_base_url: String,
     client: reqwest::Client,
@@ -129,6 +118,14 @@ pub async fn run_mtp_benchmark_inner(
 
     // Unload any active server for this model before running the benchmark.
     unload_model_before_benchmark(&client, &proxy_base_url, &req.model_id, &job.id).await;
+
+    // Clone fields we need after consuming `req`
+    let model_id = req.model_id.clone();
+    let backend_name = req.backend_name.clone();
+    let quant = req.quant.clone();
+    let benchmark_type = req.benchmark_type.clone();
+    let gpu_variant = req.gpu_variant.clone();
+    let draft_max_for_trace = req.draft_max_values.clone();
 
     // Load config - clone db_path for the blocking task
     let db_path: std::path::PathBuf = db_path.context("Cannot determine db path")?;
@@ -145,14 +142,14 @@ pub async fn run_mtp_benchmark_inner(
     let model_configs = tama_core::db::load_model_configs(&conn)?;
 
     // If model_id is an integer db_id, resolve it to the config key first.
-    let resolved_id = if let Ok(db_id) = req.model_id.parse::<i64>() {
+    let resolved_id = if let Ok(db_id) = model_id.parse::<i64>() {
         model_configs
             .iter()
             .find(|(_, mc)| mc.db_id == Some(db_id))
             .map(|(key, _)| key.as_str())
-            .unwrap_or(&req.model_id)
+            .unwrap_or(&model_id)
     } else {
-        &req.model_id
+        &model_id
     };
 
     let (server_config, _) = config
@@ -165,7 +162,7 @@ pub async fn run_mtp_benchmark_inner(
         &conn,
         &model_configs,
         resolved_id,
-        req.quant.as_deref(),
+        quant.as_deref(),
     )?;
 
     // Get model display name from config
@@ -179,62 +176,25 @@ pub async fn run_mtp_benchmark_inner(
     // Build MtpBenchConfig
     let mtp_config = llama_cli_mtp::MtpBenchConfig {
         model_path: model_path.clone(),
-        draft_max_values: req.draft_max_values.clone(),
+        draft_max_values: req.draft_max_values,
         ngl: req.ngl,
         draft_ngl: req.draft_ngl,
         flash_attn: req.flash_attn,
         context_size: req.context_size,
     };
 
-    // Create progress sink adapter (same pattern as spec.rs)
-    let job_clone = job.clone();
-    let jobs_clone = jobs.clone();
-    struct MtpBenchProgressSink {
-        job: Arc<tama_core::web_types::Job>,
-        jobs: Arc<JobManager>,
-    }
-    impl tama_core::backends::ProgressSink for MtpBenchProgressSink {
-        fn log(&self, line: &str) {
-            let job = self.job.clone();
-            let jobs = self.jobs.clone();
-            let line = line.to_string();
-            tokio::spawn(async move {
-                jobs.append_log(&job, line).await;
-            });
-        }
-
-        fn result(&self, json: &str) {
-            let job = self.job.clone();
-            let data = json.to_string();
-            tracing::info!("MtpBenchProgressSink::result called, job_id={}", job.id);
-
-            // Broadcast over the shared job event channel so live SSE
-            // subscribers get the result immediately.
-            if let Err(e) = job.log_tx.send(JobEvent::Result(data.clone())) {
-                tracing::warn!("Failed to broadcast result for job {}: {}", job.id, e);
-            }
-
-            tokio::spawn(async move {
-                let mut results = job.benchmark_results.write().await;
-                *results = Some(data);
-                tracing::info!("Stored MTP benchmark results in job state");
-            });
-        }
-    }
-
-    let sink = Arc::new(MtpBenchProgressSink {
-        job: job_clone.clone(),
-        jobs: jobs_clone.clone(),
+    // Create progress sink
+    let sink = Arc::new(BenchmarkProgressSink {
+        name: "mtp-bench",
+        job: job.clone(),
+        jobs: jobs.clone(),
     });
 
     // Resolve backend path for llama-server discovery
-    let target_backend = req
-        .backend_name
-        .as_deref()
-        .unwrap_or(&server_config.backend);
+    let target_backend = backend_name.as_deref().unwrap_or(&server_config.backend);
     let manager = tama_core::backends::BackendManager::open(db_dir)?;
     let backend_path =
-        config.resolve_backend_path(target_backend, req.gpu_variant.as_deref(), &manager)?;
+        config.resolve_backend_path(target_backend, gpu_variant.as_deref(), &manager)?;
 
     // Discover llama-server binary
     // The resolved path may be a file (llama-server) rather than the backend directory.
@@ -249,7 +209,7 @@ pub async fn run_mtp_benchmark_inner(
         job_id = %job.id,
         model = %resolved_id,
         backend = %target_backend,
-        draft_max = ?req.draft_max_values,
+        draft_max = ?draft_max_for_trace,
         "Starting MTP benchmark",
     );
     tracing::info!(job_id = %job.id, llama_server = %server_binary.display(), "Using llama-server binary");
@@ -275,9 +235,9 @@ pub async fn run_mtp_benchmark_inner(
     let _id = tama_core::db::queries::insert_benchmark(
         &conn,
         &tama_core::db::queries::BenchmarkInsertParams {
-            model_id: &req.model_id,
+            model_id: &model_id,
             display_name: display_name.as_deref(),
-            quant: req.quant.as_deref(),
+            quant: quant.as_deref(),
             backend: target_backend.to_string().as_str(),
             engine: "llama_cli_mtp",
             pp_sizes_json,
@@ -292,7 +252,7 @@ pub async fn run_mtp_benchmark_inner(
             vram_total_mib: vram.as_ref().map(|v| v.total_mib as i64),
             duration_seconds: 0.0,
             status: "success",
-            benchmark_type: req.benchmark_type.as_deref(),
+            benchmark_type: benchmark_type.as_deref(),
         },
     )?;
 

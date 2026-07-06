@@ -1,5 +1,5 @@
 use super::*;
-use crate::api::error::error_response;
+use crate::api::benchmarks::BenchmarkProgressSink;
 
 // ── Handler: Submit benchmark job ─────────────────────────────────────
 
@@ -9,29 +9,16 @@ pub async fn run_benchmark(
 ) -> impl IntoResponse {
     let jobs = match &state.web_jobs {
         Some(j) => j.clone(),
-        None => {
-            return error_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Job manager not available",
-                None,
-            )
-        }
+        None => return job_manager_unavailable_response(),
     };
 
-    // Submit a benchmark job
     let job = match jobs.submit(JobKind::Benchmark, None).await {
         Ok(j) => j,
-        Err(_) => {
-            return error_response(
-                StatusCode::CONFLICT,
-                "Another job is already running",
-                Some("ConflictError"),
-            )
-        }
+        Err(_) => return job_conflict_response(),
     };
 
     let job_id = job.id.clone();
-    let req_clone = req.clone();
+
     let db_path = state
         .db_dir
         .clone()
@@ -48,13 +35,14 @@ pub async fn run_benchmark(
         if let Err(e) = run_benchmark_inner(
             jobs.clone(),
             &job,
-            &req_clone,
+            req,
             Some(db_path),
             proxy_base_url,
             client,
         )
         .await
         {
+            tracing::error!(job_id = %job.id, error = %e, "Benchmark job failed");
             jobs.finish(&job, JobStatus::Failed, Some(e.to_string()))
                 .await;
         } else {
@@ -68,7 +56,7 @@ pub async fn run_benchmark(
 pub async fn run_benchmark_inner(
     jobs: Arc<JobManager>,
     job: &Arc<tama_core::web_types::Job>,
-    req: &BenchmarkRunRequest,
+    req: BenchmarkRunRequest,
     db_path: Option<std::path::PathBuf>,
     proxy_base_url: String,
     client: reqwest::Client,
@@ -79,6 +67,19 @@ pub async fn run_benchmark_inner(
     // This prevents GPU memory conflicts when the model is already loaded.
     unload_model_before_benchmark(&client, &proxy_base_url, &req.model_id, &job.id).await;
 
+    // Clone fields we need after consuming `req`
+    let model_id = req.model_id.clone();
+    let backend_name = req.backend_name.clone();
+    let quant = req.quant.clone();
+    let benchmark_type = req.benchmark_type.clone();
+    let ngl_range = req.ngl_range.clone();
+    let ngl_range_for_insert = ngl_range.clone();
+    let pp_sizes_for_trace = req.pp_sizes.clone();
+    let pp_sizes_for_serial = pp_sizes_for_trace.clone();
+    let tg_sizes_for_trace = req.tg_sizes.clone();
+    let tg_sizes_for_serial = tg_sizes_for_trace.clone();
+    let threads_for_trace = req.threads.clone();
+
     // Load config - clone db_path for the blocking task
     let db_path: std::path::PathBuf = db_path.context("Cannot determine db path")?;
     let db_path_for_load = db_path.clone();
@@ -88,72 +89,35 @@ pub async fn run_benchmark_inner(
     })
     .await??;
 
-    // Create progress sink adapter (same pattern as backend install)
-    let job_clone = job.clone();
-    let jobs_clone = jobs.clone();
-    struct BenchProgressSink {
-        job: Arc<tama_core::web_types::Job>,
-        jobs: Arc<JobManager>,
-    }
-    impl tama_core::backends::ProgressSink for BenchProgressSink {
-        fn log(&self, line: &str) {
-            let job = self.job.clone();
-            let jobs = self.jobs.clone();
-            let line = line.to_string();
-            tokio::spawn(async move {
-                jobs.append_log(&job, line).await;
-            });
-        }
-
-        fn result(&self, json: &str) {
-            let job = self.job.clone();
-            let data = json.to_string();
-            tracing::info!("BenchmarkProgressSink::result called, job_id={}", job.id);
-
-            // Broadcast over the shared job event channel so live SSE
-            // subscribers get the result immediately. Send synchronously —
-            // `broadcast::Sender::send` is non-blocking.
-            if let Err(e) = job.log_tx.send(JobEvent::Result(data.clone())) {
-                tracing::warn!("Failed to broadcast result for job {}: {}", job.id, e);
-            }
-
-            tokio::spawn(async move {
-                // Also store in job state so late subscribers can pick it
-                // up on replay and the REST endpoint can return it.
-                let mut results = job.benchmark_results.write().await;
-                *results = Some(data);
-                tracing::info!("Stored benchmark results in job state");
-            });
-        }
-    }
-
-    let sink = BenchProgressSink {
-        job: job_clone.clone(),
-        jobs: jobs_clone.clone(),
+    // Create progress sink
+    let sink = BenchmarkProgressSink {
+        name: "llama-bench",
+        job: job.clone(),
+        jobs: jobs.clone(),
     };
 
     // Build llama-bench config
     let bench_config = LlamaBenchConfig {
-        pp_sizes: req.pp_sizes.clone(),
-        tg_sizes: req.tg_sizes.clone(),
+        pp_sizes: req.pp_sizes,
+        tg_sizes: req.tg_sizes,
         runs: req.runs,
         warmup: req.warmup,
-        threads: req.threads.clone(),
-        ngl_range: req.ngl_range.clone(),
+        threads: req.threads,
+        ngl_range,
         ctx_override: req.ctx_override,
-        batch_sizes: req.batch_sizes.clone(),
-        ubatch_sizes: req.ubatch_sizes.clone(),
-        kv_cache_type: req.kv_cache_type.clone(),
-        depth: req.depth.clone(),
+        batch_sizes: req.batch_sizes,
+        ubatch_sizes: req.ubatch_sizes,
+        kv_cache_type: req.kv_cache_type,
+        depth: req.depth,
         flash_attn: req.flash_attn,
     };
 
     tracing::info!(
         job_id = %job.id,
-        model_id = %req.model_id,
-        backend = ?req.backend_name,
-        pp_sizes = ?req.pp_sizes,
-        tg_sizes = ?req.tg_sizes,
+        model_id = %model_id,
+        backend = ?backend_name,
+        pp_sizes = ?pp_sizes_for_trace,
+        tg_sizes = ?tg_sizes_for_trace,
         runs = req.runs,
         "Starting llama-bench benchmark",
     );
@@ -161,9 +125,9 @@ pub async fn run_benchmark_inner(
     // Run benchmark
     let report = llama_bench::run_llama_bench(
         &config,
-        &req.model_id,
-        req.quant.as_deref(),
-        req.backend_name.as_deref(),
+        &model_id,
+        quant.as_deref(),
+        backend_name.as_deref(),
         &bench_config,
         &sink,
     )
@@ -177,14 +141,14 @@ pub async fn run_benchmark_inner(
     // string (e.g. "4") because that's what the model dropdown submits, so we
     // resolve it to the config key first — otherwise `.get("4")` never hits.
     let model_configs = tama_core::db::load_model_configs(&conn)?;
-    let resolved_key = if let Ok(db_id) = req.model_id.parse::<i64>() {
+    let resolved_key = if let Ok(db_id) = model_id.parse::<i64>() {
         model_configs
             .iter()
             .find(|(_, mc)| mc.db_id == Some(db_id))
             .map(|(key, _)| key.clone())
-            .unwrap_or_else(|| req.model_id.clone())
+            .unwrap_or_else(|| model_id.clone())
     } else {
-        req.model_id.clone()
+        model_id.clone()
     };
     let display_name = model_configs.get(&resolved_key).and_then(|mc| {
         mc.display_name
@@ -199,11 +163,10 @@ pub async fn run_benchmark_inner(
     let results_json =
         serde_json::to_string(&report).context("Failed to serialize benchmark report")?;
     let pp_sizes_json =
-        serde_json::to_string(&req.pp_sizes).context("Failed to serialize pp_sizes")?;
+        serde_json::to_string(&pp_sizes_for_serial).context("Failed to serialize pp_sizes")?;
     let tg_sizes_json =
-        serde_json::to_string(&req.tg_sizes).context("Failed to serialize tg_sizes")?;
-    let threads_json = req
-        .threads
+        serde_json::to_string(&tg_sizes_for_serial).context("Failed to serialize tg_sizes")?;
+    let threads_json = threads_for_trace
         .as_ref()
         .map(serde_json::to_string)
         .transpose()
@@ -224,7 +187,7 @@ pub async fn run_benchmark_inner(
             pp_sizes_json: &pp_sizes_json,
             tg_sizes_json: &tg_sizes_json,
             threads_json: threads_json.as_deref(),
-            ngl_range: req.ngl_range.as_deref(),
+            ngl_range: ngl_range_for_insert.as_deref(),
             runs: req.runs,
             warmup: req.warmup,
             results_json: &results_json,
@@ -233,7 +196,7 @@ pub async fn run_benchmark_inner(
             vram_total_mib: vram.as_ref().map(|v| v.total_mib as i64),
             duration_seconds: 0.0, // duration tracked by job system
             status: "success",
-            benchmark_type: req.benchmark_type.as_deref(),
+            benchmark_type: benchmark_type.as_deref(),
         },
     )?;
 
