@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use leptos::prelude::*;
+use web_sys::HtmlInputElement;
 
 use super::types::{ModelForm, QuantInfo, QuantKind};
 use crate::utils::target_value;
@@ -130,11 +131,14 @@ pub fn ModelEditorFilesForm(
                                     <td>
                                         <input
                                             type="checkbox"
-                                            prop:checked=move || {
-                                                form.get()
+                                            on:mounted=move |el: web_sys::Element| {
+                                                let checked = form
+                                                    .get()
                                                     .as_ref()
                                                     .and_then(|f| f.quant.as_deref())
-                                                    == Some(name_for_check.as_str())
+                                                    == Some(name_for_check.as_str());
+                                                let input = wasm_bindgen::JsCast::unchecked_into::<HtmlInputElement>(el);
+                                                input.set_checked(checked);
                                             }
                                             on:change=move |e| {
                                                 use wasm_bindgen::JsCast;
@@ -278,11 +282,14 @@ pub fn ModelEditorFilesForm(
                                                 <td>
                                                     <input
                                                         type="checkbox"
-                                                        prop:checked=move || {
-                                                            form.get()
+                                                        on:mounted=move |el: web_sys::Element| {
+                                                            let checked = form
+                                                                .get()
                                                                 .as_ref()
                                                                 .and_then(|f| f.mmproj.as_deref())
-                                                                == Some(name_for_check.as_str())
+                                                                == Some(name_for_check.as_str());
+                                                            let input = wasm_bindgen::JsCast::unchecked_into::<HtmlInputElement>(el);
+                                                            input.set_checked(checked);
                                                         }
                                                         on:change=move |e| {
                                                             use wasm_bindgen::JsCast;
@@ -334,7 +341,6 @@ pub fn ModelEditorFilesForm(
             let current_mtp = Signal::derive(move || {
                 form.get().and_then(|f| f.mtp_model.clone())
             });
-            let current_mtp_clone = current_mtp;
             let mtp_entries_clone = mtp_entries;
             Some(view! {
                 <div class="mt-3">
@@ -344,7 +350,11 @@ pub fn ModelEditorFilesForm(
                             <span class="form-label">Draft model for speculative decoding</span>
                             <select
                                 class="form-select"
-                                prop:value=current_mtp_clone
+                                on:mounted=move |el: web_sys::Element| {
+                                    let val = current_mtp.get_untracked().unwrap_or_default();
+                                    let select = wasm_bindgen::JsCast::unchecked_into::<web_sys::HtmlSelectElement>(el);
+                                    select.set_value(&val);
+                                }
                                 on:change=move |e| {
                                     let target = target_value(&e);
                                     let selected = if target == "(none)" { None } else { Some(target) };

@@ -1,6 +1,7 @@
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
+use web_sys::HtmlInputElement;
 
 use super::api::{fetch_gpu_devices, refresh_gpu_devices};
 use super::types::{GpuDeviceInfo, ModelForm};
@@ -45,22 +46,40 @@ fn KvQuantCustomInput(form: RwSignal<Option<ModelForm>>, field: KvQuantField) ->
             KvQuantField::V => f.cache_type_v.clone(),
         })
     });
+
+    let input_ref = NodeRef::new();
+
+    // Set initial value when the input mounts
+    Effect::new(move |_| {
+        if let Some(el) = input_ref.get_untracked() {
+            let val = current_value.get().unwrap_or_default();
+            let input = wasm_bindgen::JsCast::unchecked_into::<HtmlInputElement>(el);
+            input.set_value(&val);
+        }
+    });
+
     view! {
         <Show when=move || is_custom.get()>
             {move || {
-                let val = current_value.get().expect("KV quant custom value should be present when is_custom is true");
                 view! {
-                    <input class="form-input" type="text" maxlength="32" placeholder="Custom quant value..." prop:value=val on:input=move |ev| {
-                        let v = target_value(&ev);
-                        form.update(|f| {
-                            if let Some(form) = f {
-                                match field {
-                                    KvQuantField::K => form.cache_type_k = if v.is_empty() { None } else { Some(v) },
-                                    KvQuantField::V => form.cache_type_v = if v.is_empty() { None } else { Some(v) },
+                    <input
+                        node_ref=input_ref
+                        class="form-input"
+                        type="text"
+                        maxlength="32"
+                        placeholder="Custom quant value..."
+                        on:input=move |ev| {
+                            let v = target_value(&ev);
+                            form.update(|f| {
+                                if let Some(form) = f {
+                                    match field {
+                                        KvQuantField::K => form.cache_type_k = if v.is_empty() { None } else { Some(v) },
+                                        KvQuantField::V => form.cache_type_v = if v.is_empty() { None } else { Some(v) },
+                                    }
                                 }
-                            }
-                        });
-                    } />
+                            });
+                        }
+                    />
                 }
             }}
         </Show>
@@ -141,6 +160,60 @@ pub fn ModelEditorHardwareForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
         }
     });
 
+    // GPU layers input NodeRef + Effect
+    let gpu_layers_ref = NodeRef::new();
+    Effect::new(move |_| {
+        if let Some(el) = gpu_layers_ref.get_untracked() {
+            let val = form
+                .get()
+                .as_ref()
+                .and_then(|f| f.gpu_layers)
+                .map(|v| v.to_string())
+                .unwrap_or_default();
+            let input = wasm_bindgen::JsCast::unchecked_into::<HtmlInputElement>(el);
+            input.set_value(&val);
+        }
+    });
+
+    // Num parallel input NodeRef + Effect
+    let num_parallel_ref = NodeRef::new();
+    Effect::new(move |_| {
+        if let Some(el) = num_parallel_ref.get_untracked() {
+            let val = form
+                .get()
+                .as_ref()
+                .and_then(|f| f.num_parallel)
+                .map(|v| v.to_string())
+                .unwrap_or_default();
+            let input = wasm_bindgen::JsCast::unchecked_into::<HtmlInputElement>(el);
+            input.set_value(&val);
+        }
+    });
+
+    // KV unified checkbox NodeRef + Effect
+    let kv_unified_ref = NodeRef::new();
+    Effect::new(move |_| {
+        if let Some(el) = kv_unified_ref.get_untracked() {
+            let checked = form.get().as_ref().map(|f| f.kv_unified).unwrap_or(true);
+            let input = wasm_bindgen::JsCast::unchecked_into::<HtmlInputElement>(el);
+            input.set_checked(checked);
+        }
+    });
+
+    // GPU device select NodeRef + Effect
+    let gpu_device_ref = NodeRef::new();
+    Effect::new(move |_| {
+        if let Some(el) = gpu_device_ref.get_untracked() {
+            let val = form
+                .get()
+                .as_ref()
+                .and_then(|f| f.gpu_device.clone())
+                .unwrap_or_default();
+            let select = wasm_bindgen::JsCast::unchecked_into::<web_sys::HtmlSelectElement>(el);
+            select.set_value(&val);
+        }
+    });
+
     view! {
         <div class="form-grid">
             <label class="form-label" for="field-gpu-layers">"GPU Layers"</label>
@@ -149,7 +222,7 @@ pub fn ModelEditorHardwareForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                 class="form-input"
                 type="number"
                 placeholder="e.g. 999"
-                prop:value=move || form.get().as_ref().and_then(|f| f.gpu_layers).map(|v| v.to_string()).unwrap_or_default()
+                node_ref=gpu_layers_ref
                 on:input=move |ev| {
                     form.update(|f| {
                         if let Some(form) = f {
@@ -181,6 +254,7 @@ pub fn ModelEditorHardwareForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
             <select
                 id="field-gpu-device"
                 class="form-select"
+                node_ref=gpu_device_ref
                 on:change=move |e| {
                     let val = target_value(&e);
                     form.update(|f| {
@@ -238,7 +312,7 @@ pub fn ModelEditorHardwareForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                 type="number"
                 min="0"
                 placeholder="0 = auto"
-                prop:value=move || form.get().as_ref().and_then(|f| f.num_parallel).map(|v| v.to_string()).unwrap_or_default()
+                node_ref=num_parallel_ref
                 on:input=move |ev| {
                     form.update(|f| {
                         if let Some(form) = f {
@@ -261,7 +335,7 @@ pub fn ModelEditorHardwareForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                 <input
                     id="field-kv-unified"
                     type="checkbox"
-                    prop:checked=move || form.get().as_ref().map(|f| f.kv_unified).unwrap_or(true)
+                    node_ref=kv_unified_ref
                     on:change=move |e| {
                         let checked = e.target()
                             .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
@@ -365,12 +439,15 @@ pub fn ModelEditorHardwareForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                                 <input
                                     id=input_id
                                     type="checkbox"
-                                    prop:checked=move || {
-                                        form.get()
+                                    on:mounted=move |el: web_sys::Element| {
+                                        let checked = form
+                                            .get()
                                             .as_ref()
                                             .and_then(|f| f.modalities.as_ref())
                                             .map(|m| m.input.contains(&checked_value))
-                                            .unwrap_or(false)
+                                            .unwrap_or(false);
+                                        let input = wasm_bindgen::JsCast::unchecked_into::<HtmlInputElement>(el);
+                                        input.set_checked(checked);
                                     }
                                     on:change=move |e| {
                                         let checked = e.target()
@@ -416,12 +493,15 @@ pub fn ModelEditorHardwareForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                                 <input
                                     id=input_id
                                     type="checkbox"
-                                    prop:checked=move || {
-                                        form.get()
+                                    on:mounted=move |el: web_sys::Element| {
+                                        let checked = form
+                                            .get()
                                             .as_ref()
                                             .and_then(|f| f.modalities.as_ref())
                                             .map(|m| m.output.contains(&checked_value))
-                                            .unwrap_or(false)
+                                            .unwrap_or(false);
+                                        let input = wasm_bindgen::JsCast::unchecked_into::<HtmlInputElement>(el);
+                                        input.set_checked(checked);
                                     }
                                     on:change=move |e| {
                                         let checked = e.target()

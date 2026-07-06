@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use leptos::prelude::*;
+use web_sys::HtmlInputElement;
 
 use super::types::{ModelForm, SamplingField};
 use crate::utils::target_value;
@@ -196,7 +197,11 @@ pub fn ModelEditorSamplingForm(
                             <label class="form-check">
                                 <input
                                     type="checkbox"
-                                    prop:checked=move || enabled_signal.get()
+                                    on:mounted=move |el: web_sys::Element| {
+                                        let checked = enabled_signal.get_untracked();
+                                        let input = wasm_bindgen::JsCast::unchecked_into::<HtmlInputElement>(el);
+                                        input.set_checked(checked);
+                                    }
                                     on:change=move |e| {
                                         use wasm_bindgen::JsCast;
                                         let checked = e.target()
@@ -231,7 +236,11 @@ pub fn ModelEditorSamplingForm(
                                 type="number"
                                 step=step.clone()
                                 placeholder=placeholder.clone()
-                                prop:value=move || value_signal.get()
+                                on:mounted=move |el: web_sys::Element| {
+                                    let val = value_signal.get_untracked();
+                                    let input = wasm_bindgen::JsCast::unchecked_into::<HtmlInputElement>(el);
+                                    input.set_value(&val);
+                                }
                                 on:input=move |e| {
                                     update_value(&k_input, target_value(&e));
                                 }
@@ -299,13 +308,18 @@ pub fn ModelEditorSamplingForm(
                     // Inline preset name input
                     {move || {
                         show_preset_input.get().then(|| {
+                            let preset_name_ref = preset_name_input;
                             view! {
                                 <div class="sampling-preset-input">
                                     <input
                                         type="text"
                                         class="form-input form-input--sm"
                                         placeholder="Preset name"
-                                        prop:value=preset_name_input
+                                        on:mounted=move |el: web_sys::Element| {
+                                            let val = preset_name_ref.get_untracked();
+                                            let input = wasm_bindgen::JsCast::unchecked_into::<HtmlInputElement>(el);
+                                            input.set_value(&val);
+                                        }
                                         on:input=move |e| { preset_name_input.set(target_value(&e)); }
                                         on:keydown=move |e| {
                                             if e.key() == "Enter" { save_preset_action_inner(); }

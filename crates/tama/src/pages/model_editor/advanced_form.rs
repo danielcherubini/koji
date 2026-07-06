@@ -1,5 +1,6 @@
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
+use web_sys::{HtmlInputElement, HtmlTextAreaElement};
 
 use super::types::ModelForm;
 use crate::utils::target_value;
@@ -48,6 +49,56 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
             .unwrap_or(false)
     });
 
+    // draft-mtp checkbox NodeRef + Effect
+    let draft_mtp_ref = NodeRef::new();
+    Effect::new(move |_| {
+        if let Some(el) = draft_mtp_ref.get_untracked() {
+            let checked = form
+                .get()
+                .as_ref()
+                .map(|f| {
+                    f.spec_decoding
+                        .spec_types
+                        .contains(&SPEC_TYPE_DRAFT_MTP.to_string())
+                })
+                .unwrap_or(false);
+            let input = wasm_bindgen::JsCast::unchecked_into::<HtmlInputElement>(el);
+            input.set_checked(checked);
+        }
+    });
+
+    // ngram-simple checkbox NodeRef + Effect
+    let ngram_simple_ref = NodeRef::new();
+    Effect::new(move |_| {
+        if let Some(el) = ngram_simple_ref.get_untracked() {
+            let checked = form
+                .get()
+                .as_ref()
+                .map(|f| {
+                    f.spec_decoding
+                        .spec_types
+                        .contains(&SPEC_TYPE_NGRAM_SIMPLE.to_string())
+                })
+                .unwrap_or(false);
+            let input = wasm_bindgen::JsCast::unchecked_into::<HtmlInputElement>(el);
+            input.set_checked(checked);
+        }
+    });
+
+    // args textarea NodeRef + Effect
+    let args_ref = NodeRef::new();
+    Effect::new(move |_| {
+        if let Some(el) = args_ref.get_untracked() {
+            let val = form
+                .get()
+                .as_ref()
+                .map(|f| f.args.clone())
+                .unwrap_or_default();
+            let textarea = wasm_bindgen::JsCast::unchecked_into::<HtmlTextAreaElement>(el);
+            textarea.set_value(&val);
+        }
+    });
+
     view! {
         // ── Speculative Decoding subsection ──────────────────────────────
         <h3 class="form-section-title">"Speculative Decoding"</h3>
@@ -60,12 +111,7 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                     <input
                         id="field-spec-draft-mtp"
                         type="checkbox"
-                        prop:checked=move || {
-                            form.get()
-                                .as_ref()
-                                .map(|f| f.spec_decoding.spec_types.contains(&SPEC_TYPE_DRAFT_MTP.to_string()))
-                                .unwrap_or(false)
-                        }
+                        node_ref=draft_mtp_ref
                         on:change=move |e| {
                             toggle_spec_type(e, SPEC_TYPE_DRAFT_MTP.to_string());
                         }
@@ -81,12 +127,7 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                     <input
                         id="field-spec-ngram-simple"
                         type="checkbox"
-                        prop:checked=move || {
-                            form.get()
-                                .as_ref()
-                                .map(|f| f.spec_decoding.spec_types.contains(&SPEC_TYPE_NGRAM_SIMPLE.to_string()))
-                                .unwrap_or(false)
-                        }
+                        node_ref=ngram_simple_ref
                         on:change=move |e| {
                             toggle_spec_type(e, SPEC_TYPE_NGRAM_SIMPLE.to_string());
                         }
@@ -186,7 +227,7 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
             class="form-textarea"
             rows="6"
             placeholder="One flag per line, e.g. -fa 1, -b 4096, --mlock"
-            prop:value=move || form.get().as_ref().map(|f| f.args.clone()).unwrap_or_default()
+            node_ref=args_ref
             on:input=move |e| {
                 form.update(|f| {
                     if let Some(form) = f {
