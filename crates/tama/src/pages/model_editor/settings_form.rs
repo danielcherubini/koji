@@ -17,7 +17,7 @@ pub fn ModelEditorSettingsForm(
                 class="form-input"
                 type="text"
                 placeholder="Auto-generated from HF repo name"
-                on:mounted=move |el: web_sys::Element| {
+                on:mount=move |el: web_sys::Element| {
                     let input = el.unchecked_into::<web_sys::HtmlInputElement>();
                     let val = form.get().as_ref().and_then(|f| f.display_name.clone()).unwrap_or_default();
                     input.set_value(&val);
@@ -39,7 +39,7 @@ pub fn ModelEditorSettingsForm(
                     class="form-input"
                     type="text"
                     placeholder="e.g. unsloth/gemma-4-26B-A4B-it-GGUF"
-                    on:mounted=move |el: web_sys::Element| {
+                    on:mount=move |el: web_sys::Element| {
                         let input = el.unchecked_into::<web_sys::HtmlInputElement>();
                         let val = form.get().as_ref().and_then(|f| f.model.clone()).unwrap_or_default();
                         input.set_value(&val);
@@ -78,7 +78,7 @@ pub fn ModelEditorSettingsForm(
                 type="text"
                 disabled=true
                 title="API Name is auto-derived from the HF repo name"
-                on:mounted=move |el: web_sys::Element| {
+                on:mount=move |el: web_sys::Element| {
                     let input = el.unchecked_into::<web_sys::HtmlInputElement>();
                     let val = form.get().as_ref().and_then(|f| f.api_name.clone()).unwrap_or_default();
                     input.set_value(&val);
@@ -129,7 +129,7 @@ pub fn ModelEditorSettingsForm(
                 <input
                     id="field-enabled"
                     type="checkbox"
-                    on:mounted=move |el: web_sys::Element| {
+                    on:mount=move |el: web_sys::Element| {
                         let input = el.unchecked_into::<web_sys::HtmlInputElement>();
                         let checked = form.get().as_ref().map(|f| f.enabled).unwrap_or(true);
                         input.set_checked(checked);
@@ -155,7 +155,7 @@ pub fn ModelEditorSettingsForm(
                 class="form-input"
                 type="number"
                 placeholder="leave blank for default"
-                on:mounted=move |el: web_sys::Element| {
+                on:mount=move |el: web_sys::Element| {
                     let input = el.unchecked_into::<web_sys::HtmlInputElement>();
                     let val = form.get().as_ref().and_then(|f| f.port).map(|v| v.to_string()).unwrap_or_default();
                     input.set_value(&val);

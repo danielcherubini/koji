@@ -197,7 +197,7 @@ pub fn ModelEditorSamplingForm(
                             <label class="form-check">
                                 <input
                                     type="checkbox"
-                                    on:mounted=move |el: web_sys::Element| {
+                                    on:mount=move |el: web_sys::Element| {
                                         let checked = enabled_signal.get_untracked();
                                         let input = wasm_bindgen::JsCast::unchecked_into::<HtmlInputElement>(el);
                                         input.set_checked(checked);
@@ -236,7 +236,7 @@ pub fn ModelEditorSamplingForm(
                                 type="number"
                                 step=step.clone()
                                 placeholder=placeholder.clone()
-                                on:mounted=move |el: web_sys::Element| {
+                                on:mount=move |el: web_sys::Element| {
                                     let val = value_signal.get_untracked();
                                     let input = wasm_bindgen::JsCast::unchecked_into::<HtmlInputElement>(el);
                                     input.set_value(&val);
@@ -315,7 +315,7 @@ pub fn ModelEditorSamplingForm(
                                         type="text"
                                         class="form-input form-input--sm"
                                         placeholder="Preset name"
-                                        on:mounted=move |el: web_sys::Element| {
+                                        on:mount=move |el: web_sys::Element| {
                                             let val = preset_name_ref.get_untracked();
                                             let input = wasm_bindgen::JsCast::unchecked_into::<HtmlInputElement>(el);
                                             input.set_value(&val);

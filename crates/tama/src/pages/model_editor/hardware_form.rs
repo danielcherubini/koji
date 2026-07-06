@@ -55,7 +55,7 @@ fn KvQuantCustomInput(form: RwSignal<Option<ModelForm>>, field: KvQuantField) ->
                         type="text"
                         maxlength="32"
                         placeholder="Custom quant value..."
-                        on:mounted=move |el: web_sys::Element| {
+                        on:mount=move |el: web_sys::Element| {
                             let input = el.unchecked_into::<web_sys::HtmlInputElement>();
                             let val = current_value.get().unwrap_or_default();
                             input.set_value(&val);
@@ -160,7 +160,7 @@ pub fn ModelEditorHardwareForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                 class="form-input"
                 type="number"
                 placeholder="e.g. 999"
-                on:mounted=move |el: web_sys::Element| {
+                on:mount=move |el: web_sys::Element| {
                     let input = el.unchecked_into::<web_sys::HtmlInputElement>();
                     let val = form.get().as_ref().and_then(|f| f.gpu_layers).map(|v| v.to_string()).unwrap_or_default();
                     input.set_value(&val);
@@ -196,7 +196,7 @@ pub fn ModelEditorHardwareForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
             <select
                 id="field-gpu-device"
                 class="form-select"
-                on:mounted=move |el: web_sys::Element| {
+                on:mount=move |el: web_sys::Element| {
                     let select = el.unchecked_into::<web_sys::HtmlSelectElement>();
                     let val = form.get().as_ref().and_then(|f| f.gpu_device.clone()).unwrap_or_default();
                     select.set_value(&val);
@@ -258,7 +258,7 @@ pub fn ModelEditorHardwareForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                 type="number"
                 min="0"
                 placeholder="0 = auto"
-                on:mounted=move |el: web_sys::Element| {
+                on:mount=move |el: web_sys::Element| {
                     let input = el.unchecked_into::<web_sys::HtmlInputElement>();
                     let val = form.get().as_ref().and_then(|f| f.num_parallel).map(|v| v.to_string()).unwrap_or_default();
                     input.set_value(&val);
@@ -285,7 +285,7 @@ pub fn ModelEditorHardwareForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                 <input
                     id="field-kv-unified"
                     type="checkbox"
-                    on:mounted=move |el: web_sys::Element| {
+                    on:mount=move |el: web_sys::Element| {
                         let input = el.unchecked_into::<web_sys::HtmlInputElement>();
                         let checked = form.get().as_ref().map(|f| f.kv_unified).unwrap_or(true);
                         input.set_checked(checked);
@@ -393,7 +393,7 @@ pub fn ModelEditorHardwareForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                                 <input
                                     id=input_id
                                     type="checkbox"
-                                    on:mounted=move |el: web_sys::Element| {
+                                    on:mount=move |el: web_sys::Element| {
                                         let input = el.unchecked_into::<web_sys::HtmlInputElement>();
                                         let checked = form
                                             .get()
@@ -447,7 +447,7 @@ pub fn ModelEditorHardwareForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                                 <input
                                     id=input_id
                                     type="checkbox"
-                                    on:mounted=move |el: web_sys::Element| {
+                                    on:mount=move |el: web_sys::Element| {
                                         let input = el.unchecked_into::<web_sys::HtmlInputElement>();
                                         let checked = form
                                             .get()

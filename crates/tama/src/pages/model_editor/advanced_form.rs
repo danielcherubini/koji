@@ -61,7 +61,7 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                     <input
                         id="field-spec-draft-mtp"
                         type="checkbox"
-                        on:mounted=move |el: web_sys::Element| {
+                        on:mount=move |el: web_sys::Element| {
                             let input = el.unchecked_into::<HtmlInputElement>();
                             let checked = form
                                 .get()
@@ -89,7 +89,7 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                     <input
                         id="field-spec-ngram-simple"
                         type="checkbox"
-                        on:mounted=move |el: web_sys::Element| {
+                        on:mount=move |el: web_sys::Element| {
                             let input = el.unchecked_into::<HtmlInputElement>();
                             let checked = form
                                 .get()
@@ -201,7 +201,7 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
             class="form-textarea"
             rows="6"
             placeholder="One flag per line, e.g. -fa 1, -b 4096, --mlock"
-            on:mounted=move |el: web_sys::Element| {
+            on:mount=move |el: web_sys::Element| {
                 let textarea = el.unchecked_into::<HtmlTextAreaElement>();
                 let val = form.get().as_ref().map(|f| f.args.clone()).unwrap_or_default();
                 textarea.set_value(&val);

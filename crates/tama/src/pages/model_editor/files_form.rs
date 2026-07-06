@@ -131,7 +131,7 @@ pub fn ModelEditorFilesForm(
                                     <td>
                                         <input
                                             type="checkbox"
-                                            on:mounted=move |el: web_sys::Element| {
+                                            on:mount=move |el: web_sys::Element| {
                                                 let checked = form
                                                     .get()
                                                     .as_ref()
@@ -282,7 +282,7 @@ pub fn ModelEditorFilesForm(
                                                 <td>
                                                     <input
                                                         type="checkbox"
-                                                        on:mounted=move |el: web_sys::Element| {
+                                                        on:mount=move |el: web_sys::Element| {
                                                             let checked = form
                                                                 .get()
                                                                 .as_ref()
@@ -350,7 +350,7 @@ pub fn ModelEditorFilesForm(
                             <span class="form-label">Draft model for speculative decoding</span>
                             <select
                                 class="form-select"
-                                on:mounted=move |el: web_sys::Element| {
+                                on:mount=move |el: web_sys::Element| {
                                     let val = current_mtp.get_untracked().unwrap_or_default();
                                     let select = wasm_bindgen::JsCast::unchecked_into::<web_sys::HtmlSelectElement>(el);
                                     select.set_value(&val);
