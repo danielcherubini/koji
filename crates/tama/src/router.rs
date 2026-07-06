@@ -17,7 +17,7 @@ use crate::api::backends::{
     activate_backend_version, check_backend_updates, compaction::update_compaction, get_job,
     install_backend, job_events_sse, list_backend_versions, list_backends, remove_backend,
     remove_backend_version, system_capabilities, update_backend, update_backend_default_args,
-    update_backend_source,
+    update_backend_default_env, update_backend_source,
 };
 use crate::api::backup::{restore_preview, start_restore};
 use crate::api::benchmarks::{
@@ -118,6 +118,10 @@ pub fn build_web_routes() -> Router<Arc<tama_core::proxy::ProxyState>> {
         .route(
             "/tama/v1/backends/:name/default-args",
             post(update_backend_default_args),
+        )
+        .route(
+            "/tama/v1/backends/:name/default-env",
+            post(update_backend_default_env),
         )
         .route(
             "/tama/v1/backends/:name/versions/:version",

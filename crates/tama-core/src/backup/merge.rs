@@ -174,8 +174,8 @@ pub fn merge_database(
     local_db
         .execute_batch(
             "INSERT OR IGNORE INTO backend_installations \
-         (name, backend_type, version, path, installed_at, gpu_type, gpu_variant, source, is_active) \
-         SELECT name, backend_type, version, path, installed_at, gpu_type, gpu_variant, source, is_active \
+         (name, backend_type, version, path, installed_at, gpu_variant, source, is_active) \
+         SELECT name, backend_type, version, path, installed_at, gpu_variant, source, is_active \
          FROM backup_db.backend_installations",
         )
         .context("Failed to merge backend_installations")?;

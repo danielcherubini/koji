@@ -1,3 +1,4 @@
+use crate::api::error::error_body;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -7,8 +8,9 @@ use axum::{
 use std::sync::Arc;
 
 use super::is_valid_repo_id;
+use crate::api::helpers::{spawn_model_crud, DEFAULT_CRUD_STATUS};
+use crate::api::load_config_from_state;
 use crate::api::models::resolve_model_id;
-use crate::api::{load_config_from_state, trigger_proxy_reload};
 use tama_core::proxy::ProxyState;
 
 /// Body for rename endpoint.
@@ -31,40 +33,26 @@ pub async fn rename_model(
         Err((status, body)) => return (status, Json(body)).into_response(),
     };
 
-    match tokio::task::spawn_blocking(move || {
+    spawn_model_crud(state_clone, DEFAULT_CRUD_STATUS, move || {
         let mgr = tama_core::models::ModelManager::open(&config_dir).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                serde_json::json!({"error": e.to_string()}),
-            )
+            (StatusCode::INTERNAL_SERVER_ERROR, error_body(e.to_string(), None))
         })?;
 
         // Check source ID exists
         let model_id = resolve_model_id(&id_str, &mgr)
             .map_err(|e| {
-                (
-                    StatusCode::BAD_REQUEST,
-                    serde_json::json!({"error": e.to_string()}),
-                )
+                (StatusCode::BAD_REQUEST, error_body(e.to_string(), Some("ValidationError")))
             })?
             .ok_or_else(|| {
-                (
-                    StatusCode::NOT_FOUND,
-                    serde_json::json!({"error": "Model not found"}),
-                )
+                (StatusCode::NOT_FOUND, error_body("Model not found", Some("NotFoundError")))
             })?;
-        let existing_record = mgr.get_config(model_id)
+        let existing_record = mgr
+            .get_config(model_id)
             .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    serde_json::json!({"error": e.to_string()}),
-                )
+                (StatusCode::INTERNAL_SERVER_ERROR, error_body(e.to_string(), None))
             })?
             .ok_or_else(|| {
-                (
-                    StatusCode::NOT_FOUND,
-                    serde_json::json!({"error": "Model not found"}),
-                )
+                (StatusCode::NOT_FOUND, error_body("Model not found", Some("NotFoundError")))
             })?;
         let mut model_config = tama_core::config::ModelConfig::from_db_record(&existing_record);
 
@@ -72,35 +60,36 @@ pub async fn rename_model(
         if new_repo_id.is_empty() {
             return Err((
                 StatusCode::UNPROCESSABLE_ENTITY,
-                serde_json::json!({"error": "New repo_id cannot be empty"}),
+                error_body("New repo_id cannot be empty", Some("ValidationError")),
             ));
         }
         if new_repo_id.len() > 256 {
             return Err((
                 StatusCode::UNPROCESSABLE_ENTITY,
-                serde_json::json!({"error": "New repo_id must be at most 256 characters"}),
+                error_body("New repo_id must be at most 256 characters", Some("ValidationError")),
             ));
         }
         if !is_valid_repo_id(&new_repo_id) {
             return Err((
                 StatusCode::UNPROCESSABLE_ENTITY,
-                serde_json::json!({"error": "New repo_id contains invalid characters (only alphanumeric, dots, underscores, hyphens, and slashes are allowed)"}),
+                error_body("New repo_id contains invalid characters (only alphanumeric, dots, underscores, hyphens, and slashes are allowed)", Some("ValidationError")),
             ));
         }
 
         // Check target repo_id doesn't already exist
-        if mgr.get_config_by_repo_id(&new_repo_id)
+        if mgr
+            .get_config_by_repo_id(&new_repo_id)
             .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    serde_json::json!({"error": e.to_string()}),
-                )
+                (StatusCode::INTERNAL_SERVER_ERROR, error_body(e.to_string(), None))
             })?
             .is_some()
         {
             return Err((
                 StatusCode::CONFLICT,
-                serde_json::json!({"error": format!("Model '{}' already exists", new_repo_id)}),
+                error_body(
+                    format!("Model '{}' already exists", new_repo_id),
+                    Some("ConflictError"),
+                ),
             ));
         }
 
@@ -109,14 +98,11 @@ pub async fn rename_model(
 
         // Save with new repo_id (keeps same integer id)
         let config_key = new_repo_id.to_lowercase().replace('/', "--");
-        let _ = mgr.save_model_config(&config_key, &model_config).map_err(
-            |e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    serde_json::json!({"error": e.to_string()}),
-                )
-            },
-        )?;
+        let _ = mgr
+            .save_model_config(&config_key, &model_config)
+            .map_err(|e| {
+                (StatusCode::INTERNAL_SERVER_ERROR, error_body(e.to_string(), None))
+            })?;
 
         // Clean up update_check record for old repo_id
         let _ = mgr.delete_update_check("model", &existing_record.repo_id);
@@ -124,18 +110,4 @@ pub async fn rename_model(
         Ok(serde_json::json!({ "ok": true, "id": model_id }))
     })
     .await
-    {
-        Ok(Ok(val)) => {
-            if let Err(e) = trigger_proxy_reload(&state_clone).await {
-                tracing::warn!("Failed to trigger proxy reload after rename: {}", e.1);
-            }
-            Json(val).into_response()
-        }
-        Ok(Err((status, body))) => (status, Json(body)).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
-    }
 }

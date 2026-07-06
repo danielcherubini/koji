@@ -1,3 +1,4 @@
+use crate::api::error::error_body;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -6,8 +7,9 @@ use axum::{
 };
 use std::sync::Arc;
 
+use crate::api::helpers::{spawn_model_crud, DEFAULT_CRUD_STATUS};
+use crate::api::load_config_from_state;
 use crate::api::models::resolve_model_id;
-use crate::api::{load_config_from_state, trigger_proxy_reload};
 use tama_core::proxy::ProxyState;
 
 /// DELETE /tama/v1/models/:id/quants/:quant_key — delete a single quant's file
@@ -24,11 +26,11 @@ pub async fn delete_quant(
         Err((status, body)) => return (status, Json(body)).into_response(),
     };
 
-    match tokio::task::spawn_blocking(move || {
+    spawn_model_crud(state_clone, DEFAULT_CRUD_STATUS, move || {
         let mgr = tama_core::models::ModelManager::open(&config_dir).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                serde_json::json!({"error": e.to_string()}),
+                error_body(e.to_string(), None),
             )
         })?;
 
@@ -38,13 +40,13 @@ pub async fn delete_quant(
             .map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    serde_json::json!({"error": e.to_string()}),
+                    error_body(e.to_string(), None),
                 )
             })?
             .ok_or_else(|| {
                 (
                     StatusCode::NOT_FOUND,
-                    serde_json::json!({"error": "Model not found"}),
+                    error_body("Model not found", Some("NotFoundError")),
                 )
             })?;
 
@@ -54,7 +56,7 @@ pub async fn delete_quant(
         let quant_entry = model_config.quants.get(&quant_key).ok_or_else(|| {
             (
                 StatusCode::NOT_FOUND,
-                serde_json::json!({"error": "Quant not found"}),
+                error_body("Quant not found", Some("NotFoundError")),
             )
         })?;
 
@@ -79,7 +81,7 @@ pub async fn delete_quant(
             .map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    serde_json::json!({"error": e.to_string()}),
+                    error_body(e.to_string(), None),
                 )
             })?;
 
@@ -104,31 +106,14 @@ pub async fn delete_quant(
             let _ = mgr.delete_file(id, &filename);
         }
 
-        Ok((
-            cfg,
-            serde_json::json!({
-                "ok": true,
-                "id": id,
-                "quant_key": quant_key,
-                "deleted_file": filename
-            }),
-        ))
+        Ok(serde_json::json!({
+            "ok": true,
+            "id": id,
+            "quant_key": quant_key,
+            "deleted_file": filename
+        }))
     })
     .await
-    {
-        Ok(Ok((_cfg, val))) => {
-            if let Err(e) = trigger_proxy_reload(&state_clone).await {
-                tracing::warn!("Failed to trigger proxy reload after delete_quant: {}", e.1);
-            }
-            Json(val).into_response()
-        }
-        Ok(Err((status, body))) => (status, Json(body)).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
-    }
 }
 
 /// DELETE /tama/v1/models/:id — delete a model.
@@ -144,25 +129,25 @@ pub async fn delete_model(
         Err((status, body)) => return (status, Json(body)).into_response(),
     };
 
-    match tokio::task::spawn_blocking(move || {
+    spawn_model_crud(state_clone, DEFAULT_CRUD_STATUS, move || {
         // Capture the removed model for cleanup
         let mut mgr = tama_core::models::ModelManager::open(&config_dir).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                serde_json::json!({"error": e.to_string()}),
+                error_body(e.to_string(), None),
             )
         })?;
         let model_id = resolve_model_id(&id_str, &mgr)
             .map_err(|e| {
                 (
                     StatusCode::BAD_REQUEST,
-                    serde_json::json!({"error": e.to_string()}),
+                    error_body(e.to_string(), Some("ValidationError")),
                 )
             })?
             .ok_or_else(|| {
                 (
                     StatusCode::NOT_FOUND,
-                    serde_json::json!({"error": "Model not found"}),
+                    error_body("Model not found", Some("NotFoundError")),
                 )
             })?;
         let model_record = mgr
@@ -170,13 +155,13 @@ pub async fn delete_model(
             .map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    serde_json::json!({"error": e.to_string()}),
+                    error_body(e.to_string(), None),
                 )
             })?
             .ok_or_else(|| {
                 (
                     StatusCode::NOT_FOUND,
-                    serde_json::json!({"error": "Model not found"}),
+                    error_body("Model not found", Some("NotFoundError")),
                 )
             })?;
         let _model_config = tama_core::config::ModelConfig::from_db_record(&model_record);
@@ -198,7 +183,7 @@ pub async fn delete_model(
                 tracing::error!("Failed to delete model records from database: {e}");
                 return Err((
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    serde_json::json!({"error": "Failed to delete model records from database"}),
+                    error_body("Failed to delete model records from database", None),
                 ));
             }
         }
@@ -258,18 +243,4 @@ pub async fn delete_model(
         Ok(serde_json::json!({ "ok": true }))
     })
     .await
-    {
-        Ok(Ok(val)) => {
-            if let Err(e) = trigger_proxy_reload(&state_clone).await {
-                tracing::warn!("Failed to trigger proxy reload after delete: {}", e.1);
-            }
-            Json(val).into_response()
-        }
-        Ok(Err((status, body))) => (status, Json(body)).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
-    }
 }

@@ -86,17 +86,17 @@ fn _override_arg(args: &mut Vec<String>, flag: &str, value: &str) {
 /// Start a backend process and wait for it to be healthy
 async fn _start_backend(
     config: &Config,
-    server_name: &str,
+    backend_name: &str,
     ctx_override: Option<u32>,
 ) -> Result<BenchBackend> {
-    info!("Starting backend for server: {}", server_name);
+    info!("Starting backend for server: {}", backend_name);
 
     let db_dir = crate::config::Config::config_dir()?;
     let OpenResult { conn, .. } = crate::db::open(&db_dir)?;
     let model_configs = crate::db::load_model_configs(&conn)?;
 
     let (server_config, backend_config) = config
-        .resolve_server(&model_configs, server_name)
+        .resolve_backend(&model_configs, backend_name)
         .with_context(|| "Failed to resolve server config for bench")?;
 
     let spawn_start = Instant::now();
@@ -170,27 +170,27 @@ async fn _start_backend(
         if !is_process_alive(pid) {
             return Err(anyhow!(
                 "Backend '{}' (pid {}) exited before becoming healthy",
-                server_name,
+                backend_name,
                 pid
             ));
         }
 
         if let Ok(response) = check_health(&health_url, Some(5)).await {
             if response.status().is_success() {
-                info!("Backend '{}' is healthy", server_name);
+                info!("Backend '{}' is healthy", backend_name);
                 healthy = true;
                 break;
             }
         }
 
-        tracing::debug!("Health check pending for backend: {}", server_name);
+        tracing::debug!("Health check pending for backend: {}", backend_name);
     }
 
     if !healthy {
         let _ = kill_process(pid).await;
         return Err(anyhow!(
             "Backend '{}' failed to become healthy after {}s",
-            server_name,
+            backend_name,
             timeout.as_secs()
         ));
     }
@@ -240,7 +240,7 @@ async fn _stop_backend(backend: &BenchBackend) -> Result<()> {
 ///
 /// # Parameters
 /// - `config` — workspace [`Config`] used to resolve the server and backend settings.
-/// - `server_name` — name of the server entry in `config.models` to benchmark.
+/// - `backend_name` — name of the server entry in `config.models` to benchmark.
 /// - `bench_config` — benchmark parameters: PP/TG sizes, run counts, warmup
 ///   iterations, and optional context-size override.
 ///
@@ -250,25 +250,25 @@ async fn _stop_backend(backend: &BenchBackend) -> Result<()> {
 ///
 /// # Errors
 /// Returns `Err` if:
-/// - `server_name` cannot be resolved in `config`.
+/// - `backend_name` cannot be resolved in `config`.
 /// - The backend process fails to start or does not become healthy within 120 s.
 /// - All measurement runs for any `(pp_size, tg_size)` combination fail.
 /// - The backend cannot be stopped cleanly after a successful benchmark run.
 pub async fn run_benchmark(
     config: &Config,
-    server_name: &str,
+    backend_name: &str,
     bench_config: &BenchConfig,
 ) -> Result<BenchReport> {
-    println!("Starting benchmark for '{}'...", server_name);
+    println!("Starting benchmark for '{}'...", backend_name);
 
     // Build ModelInfo from config data
     let db_dir = crate::config::Config::config_dir()?;
     let OpenResult { conn, .. } = crate::db::open(&db_dir)?;
     let model_configs = crate::db::load_model_configs(&conn)?;
 
-    let (server_config, backend_config) = config.resolve_server(&model_configs, server_name)?;
+    let (server_config, backend_config) = config.resolve_backend(&model_configs, backend_name)?;
     let model_info = ModelInfo {
-        name: server_name.to_string(),
+        name: backend_name.to_string(),
         model_id: server_config.model.clone(),
         quant: server_config.quant.clone(),
         backend: server_config.backend.clone(),
@@ -281,7 +281,7 @@ pub async fn run_benchmark(
     };
 
     // Start backend
-    let backend = _start_backend(config, server_name, bench_config.ctx_override).await?;
+    let backend = _start_backend(config, backend_name, bench_config.ctx_override).await?;
 
     println!("Backend loaded in {:.0} ms", backend.load_time_ms);
 

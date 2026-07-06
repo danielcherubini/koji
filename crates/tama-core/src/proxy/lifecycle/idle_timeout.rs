@@ -19,9 +19,9 @@ impl ProxyState {
         let now = Instant::now();
         let mut to_unload = Vec::new();
         let mut failed_to_remove = Vec::new();
-        // (server_name, model_name, backend, restart_count, pid, backend_url)
+        // (backend_name, model_name, backend, restart_count, pid, backend_url)
         let mut dead_pid_candidates: Vec<(String, String, String, u32, u32, String)> = Vec::new();
-        // (server_name, model_name, backend, start_time, pid)
+        // (backend_name, model_name, backend, start_time, pid)
         let mut stuck_starting_servers: Vec<(String, String, String, Instant, u32)> = Vec::new();
 
         let (auto_unload, idle_timeout_secs, startup_timeout_secs, max_restarts, restart_delay_ms) = {
@@ -40,18 +40,18 @@ impl ProxyState {
 
         // === PHASE 1: Collect candidates under read lock (fast only) ===
         let models = self.models.read().await;
-        for (server_name, state) in models.iter() {
+        for (backend_name, state) in models.iter() {
             // Check Starting state first (including TTS — they can also get stuck)
             if let ModelState::Starting { start_time, .. } = state {
                 if now.saturating_duration_since(*start_time) > startup_timeout {
                     warn!(
                         "Server '{}' stuck in Starting for {}s (timeout: {}s)",
-                        server_name,
+                        backend_name,
                         now.saturating_duration_since(*start_time).as_secs(),
                         startup_timeout_secs,
                     );
                     stuck_starting_servers.push((
-                        server_name.clone(),
+                        backend_name.clone(),
                         state.model_name().to_string(),
                         state.backend().to_string(),
                         *start_time,
@@ -82,7 +82,7 @@ impl ProxyState {
                 let pid = *backend_pid;
                 if !is_process_alive(pid) {
                     dead_pid_candidates.push((
-                        server_name.clone(),
+                        backend_name.clone(),
                         state.model_name().to_string(),
                         state.backend().to_string(),
                         *restart_count,
@@ -101,11 +101,11 @@ impl ProxyState {
                     if auto_unload && idle_duration > idle_timeout {
                         warn!(
                             "Server '{}' idle for {}s (timeout: {}s)",
-                            server_name,
+                            backend_name,
                             idle_duration.as_secs(),
                             idle_timeout_secs
                         );
-                        to_unload.push(server_name.clone());
+                        to_unload.push(backend_name.clone());
                     }
                 }
             }
@@ -114,17 +114,17 @@ impl ProxyState {
             if matches!(state, ModelState::Failed { .. }) {
                 warn!(
                     "Server '{}' in Failed state, marking for cleanup",
-                    server_name
+                    backend_name
                 );
-                failed_to_remove.push(server_name.clone());
+                failed_to_remove.push(backend_name.clone());
             }
         }
         drop(models); // Release read lock
 
         // === PHASE 2: Health confirmation (outside lock) ===
-        // (server_name, model_name, backend, restart_count, pid)
+        // (backend_name, model_name, backend, restart_count, pid)
         let mut confirmed_dead: Vec<(String, String, String, u32, u32)> = Vec::new();
-        for (server_name, model_name, backend, restart_count, pid, backend_url) in
+        for (backend_name, model_name, backend, restart_count, pid, backend_url) in
             dead_pid_candidates
         {
             let health_url = format!("{}/health", backend_url);
@@ -136,13 +136,13 @@ impl ProxyState {
             if still_dead {
                 info!(
                     "Server '{}' confirmed dead (pid {}, restart_count: {}/{})",
-                    server_name, pid, restart_count, max_restarts
+                    backend_name, pid, restart_count, max_restarts
                 );
-                confirmed_dead.push((server_name, model_name, backend, restart_count, pid));
+                confirmed_dead.push((backend_name, model_name, backend, restart_count, pid));
             } else {
                 debug!(
                     "Server '{}' PID {} reused, health endpoint responds",
-                    server_name, pid
+                    backend_name, pid
                 );
             }
         }
@@ -152,12 +152,12 @@ impl ProxyState {
         // Remove Failed models
         if !failed_to_remove.is_empty() {
             let mut models = self.models.write().await;
-            for server_name in &failed_to_remove {
-                models.remove(server_name);
+            for backend_name in &failed_to_remove {
+                models.remove(backend_name);
                 self.inference_stats.send_modify(|map| {
-                    map.remove(server_name);
+                    map.remove(backend_name);
                 });
-                info!("Removed failed server '{}' from model map", server_name);
+                info!("Removed failed server '{}' from model map", backend_name);
             }
         }
 
@@ -166,23 +166,23 @@ impl ProxyState {
             let mut pids_to_clean: Vec<(String, u32)> = Vec::new();
             {
                 let mut models = self.models.write().await;
-                for (server_name, model_name, backend, observed_start, observed_pid) in
+                for (backend_name, model_name, backend, observed_start, observed_pid) in
                     &stuck_starting_servers
                 {
                     // Revalidate: only transition if still in Starting state with matching start_time
                     // (could have become Ready between Phase 1 and Phase 3)
-                    if let Some(existing) = models.get(server_name) {
+                    if let Some(existing) = models.get(backend_name) {
                         let still_starting = matches!(existing, ModelState::Starting { start_time, .. } if start_time == observed_start);
                         if !still_starting {
                             debug!(
                                 "Server '{}' state or start_time changed, skipping stuck transition",
-                                server_name
+                                backend_name
                             );
                             continue;
                         }
                     }
                     models.insert(
-                        server_name.clone(),
+                        backend_name.clone(),
                         ModelState::Failed {
                             model_name: model_name.clone(),
                             backend: backend.clone(),
@@ -194,17 +194,17 @@ impl ProxyState {
                     );
                     warn!(
                         "Transitioned '{}' to Failed (stuck in Starting)",
-                        server_name
+                        backend_name
                     );
-                    pids_to_clean.push((server_name.clone(), *observed_pid));
+                    pids_to_clean.push((backend_name.clone(), *observed_pid));
                 }
             }
             // Kill orphaned process groups outside the write lock
-            for (server_name, pid) in pids_to_clean {
+            for (backend_name, pid) in pids_to_clean {
                 if pid > 0 {
                     warn!(
                         "Killing orphaned process group {} for stuck server '{}'",
-                        pid, server_name
+                        pid, backend_name
                     );
                     let _ = kill_process_group(pid).await;
                     tokio::time::sleep(Duration::from_millis(250)).await;
@@ -224,12 +224,12 @@ impl ProxyState {
             let mut removed_servers: Vec<String> = Vec::new();
             {
                 let mut models = self.models.write().await;
-                for (server_name, model_name, backend, restart_count, observed_pid) in
+                for (backend_name, model_name, backend, restart_count, observed_pid) in
                     &confirmed_dead
                 {
                     // Revalidate: only act if still Ready with matching PID
                     // (could have been replaced by forward_request() auto-load)
-                    let pid_matches = models.get(server_name).and_then(|s| match s {
+                    let pid_matches = models.get(backend_name).and_then(|s| match s {
                         ModelState::Ready { backend_pid, .. } => {
                             if backend_pid == observed_pid {
                                 Some(true)
@@ -246,14 +246,14 @@ impl ProxyState {
                     });
 
                     if pid_matches.unwrap_or(false) {
-                        models.remove(server_name);
+                        models.remove(backend_name);
                         self.inference_stats.send_modify(|map| {
-                            map.remove(server_name);
+                            map.remove(backend_name);
                         });
-                        removed_servers.push(server_name.clone());
+                        removed_servers.push(backend_name.clone());
                         if *restart_count >= max_restarts {
                             models.insert(
-                                server_name.clone(),
+                                backend_name.clone(),
                                 ModelState::Failed {
                                     model_name: model_name.clone(),
                                     backend: backend.clone(),
@@ -265,11 +265,11 @@ impl ProxyState {
                             );
                             warn!(
                                 "Server '{}' exceeded max restarts ({}/{})",
-                                server_name, restart_count, max_restarts
+                                backend_name, restart_count, max_restarts
                             );
                         } else {
                             to_restart.push((
-                                server_name.clone(),
+                                backend_name.clone(),
                                 model_name.clone(),
                                 *restart_count,
                             ));
@@ -277,7 +277,7 @@ impl ProxyState {
                     } else {
                         debug!(
                             "Server '{}' state changed during health check, skipping cleanup",
-                            server_name
+                            backend_name
                         );
                     }
                 }
@@ -285,21 +285,21 @@ impl ProxyState {
             // Clean DB — remove ALL dead entries so cleanup_stale_processes()
             // doesn't rediscover them, regardless of whether they'll be restarted
             if let Some(mgr) = self.model_mgr() {
-                for server_name in &removed_servers {
-                    let _ = mgr.remove_active(server_name);
+                for backend_name in &removed_servers {
+                    let _ = mgr.remove_active(backend_name);
                 }
             }
 
             // Spawn restart tasks (no locks)
-            for (server_name, model_name, restart_count) in &to_restart {
+            for (backend_name, model_name, restart_count) in &to_restart {
                 let new_restart_count = restart_count + 1;
                 info!(
                     "Auto-restarting '{}' (model '{}', attempt {}/{})",
-                    server_name, model_name, new_restart_count, max_restarts
+                    backend_name, model_name, new_restart_count, max_restarts
                 );
 
                 let state = self.clone();
-                let sn = server_name.clone();
+                let sn = backend_name.clone();
                 let mn = model_name.clone();
                 let rdc = new_restart_count;
                 let delay_ms = restart_delay_ms;
@@ -335,9 +335,9 @@ impl ProxyState {
         }
 
         // Unload idle models (existing logic)
-        for server_name in &to_unload {
-            if let Err(e) = self.unload_model(server_name).await {
-                warn!("Failed to unload '{}': {}", server_name, e);
+        for backend_name in &to_unload {
+            if let Err(e) = self.unload_model(backend_name).await {
+                warn!("Failed to unload '{}': {}", backend_name, e);
             }
         }
 

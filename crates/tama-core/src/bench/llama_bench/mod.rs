@@ -95,7 +95,7 @@ pub async fn run_llama_bench(
     };
 
     let (server_config, _backend_config) = config
-        .resolve_server(&model_configs, resolved_id)
+        .resolve_backend(&model_configs, resolved_id)
         .context("Failed to resolve server config for benchmark")?;
 
     let model_path =

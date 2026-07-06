@@ -1,8 +1,10 @@
+use crate::api::error::{error_body, error_response};
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use std::sync::Arc;
 
 use super::{apply_model_body, is_valid_repo_id, validate_model_body, ModelBody};
-use crate::api::{load_config_from_state, trigger_proxy_reload};
+use crate::api::helpers::spawn_model_crud;
+use crate::api::load_config_from_state;
 use tama_core::proxy::ProxyState;
 
 /// POST /tama/v1/models — create a new model.
@@ -27,30 +29,26 @@ pub async fn create_model(
     // Validate repo_id: non-empty, max 256 chars, valid regex pattern
     let repo_id = body.repo_id.trim().to_string();
     if repo_id.is_empty() {
-        return (
+        return error_response(
             StatusCode::UNPROCESSABLE_ENTITY,
-            Json(serde_json::json!({"error": "repo_id cannot be empty"})),
-        )
-            .into_response();
+            "repo_id cannot be empty",
+            Some("ValidationError"),
+        );
     }
     if repo_id.len() > 256 {
-        return (
+        return error_response(
             StatusCode::UNPROCESSABLE_ENTITY,
-            Json(serde_json::json!({"error": "repo_id must be at most 256 characters"})),
-        )
-            .into_response();
+            "repo_id must be at most 256 characters",
+            Some("ValidationError"),
+        );
     }
     if !is_valid_repo_id(&repo_id) {
-        return (StatusCode::UNPROCESSABLE_ENTITY, Json(serde_json::json!({"error": "repo_id contains invalid characters (only alphanumeric, dots, underscores, hyphens, and slashes are allowed)"}))).into_response();
+        return error_response(StatusCode::UNPROCESSABLE_ENTITY, "repo_id contains invalid characters (only alphanumeric, dots, underscores, hyphens, and slashes are allowed)", Some("ValidationError"));
     }
 
     // Validate ModelBody fields
     if let Err(e) = validate_model_body(&body.model) {
-        return (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(serde_json::json!({"error": e})),
-        )
-            .into_response();
+        return error_response(StatusCode::UNPROCESSABLE_ENTITY, e, Some("ValidationError"));
     }
 
     // Load config first (async, handles its own spawn_blocking)
@@ -59,11 +57,11 @@ pub async fn create_model(
         Err((status, body)) => return (status, Json(body)).into_response(),
     };
 
-    match tokio::task::spawn_blocking(move || {
+    spawn_model_crud(state_clone, StatusCode::CREATED, move || {
         let mgr = tama_core::models::ModelManager::open(&config_dir).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                serde_json::json!({"error": e.to_string()}),
+                error_body(e.to_string(), None),
             )
         })?;
         if mgr
@@ -71,14 +69,17 @@ pub async fn create_model(
             .map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    serde_json::json!({"error": e.to_string()}),
+                    error_body(e.to_string(), None),
                 )
             })?
             .is_some()
         {
             return Err((
                 StatusCode::CONFLICT,
-                serde_json::json!({"error": format!("Model '{}' already exists", repo_id)}),
+                error_body(
+                    format!("Model '{}' already exists", repo_id),
+                    Some("ConflictError"),
+                ),
             ));
         }
 
@@ -122,25 +123,11 @@ pub async fn create_model(
             .map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    serde_json::json!({"error": e.to_string()}),
+                    error_body(e.to_string(), None),
                 )
             })?;
 
         Ok(serde_json::json!({ "ok": true, "id": model_id }))
     })
     .await
-    {
-        Ok(Ok(val)) => {
-            if let Err(e) = trigger_proxy_reload(&state_clone).await {
-                tracing::warn!("Failed to trigger proxy reload after create: {}", e.1);
-            }
-            (StatusCode::CREATED, Json(val)).into_response()
-        }
-        Ok(Err((status, body))) => (status, Json(body)).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
-    }
 }

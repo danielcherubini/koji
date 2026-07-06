@@ -4,6 +4,34 @@ use wasm_bindgen::JsCast;
 use super::types::ModelForm;
 use crate::utils::target_value;
 
+/// Set an input's value by DOM id.
+fn set_input_value(id: &str, value: &str) {
+    if let Some(el) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id(id))
+    {
+        if let Ok(input) = el.clone().dyn_into::<web_sys::HtmlInputElement>() {
+            input.set_value(value);
+            return;
+        }
+        if let Ok(textarea) = el.dyn_into::<web_sys::HtmlTextAreaElement>() {
+            textarea.set_value(value);
+        }
+    }
+}
+
+/// Set a checkbox's checked state by DOM id.
+fn set_checked(id: &str, checked: bool) {
+    if let Some(el) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id(id))
+    {
+        if let Ok(input) = el.dyn_into::<web_sys::HtmlInputElement>() {
+            input.set_checked(checked);
+        }
+    }
+}
+
 const SPEC_TYPE_DRAFT_MTP: &str = "draft-mtp";
 const SPEC_TYPE_NGRAM_SIMPLE: &str = "ngram-simple";
 
@@ -48,6 +76,52 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
             .unwrap_or(false)
     });
 
+    // Populate input values when the form data loads (or model changes).
+    // Only runs when the model ID changes, not on every keystroke.
+    let last_init_id = StoredValue::new(None::<String>);
+    Effect::new(move |_| {
+        if let Some(f) = form.get() {
+            if last_init_id.get_value() != Some(f.id.clone()) {
+                set_checked(
+                    "field-spec-draft-mtp",
+                    f.spec_decoding
+                        .spec_types
+                        .contains(&SPEC_TYPE_DRAFT_MTP.to_string()),
+                );
+                set_checked(
+                    "field-spec-ngram-simple",
+                    f.spec_decoding
+                        .spec_types
+                        .contains(&SPEC_TYPE_NGRAM_SIMPLE.to_string()),
+                );
+                set_input_value("field-args", &f.args);
+                // Spec decoding selects and input
+                set_input_value(
+                    "field-spec-n-max",
+                    &f.spec_decoding
+                        .n_max
+                        .map(|v| v.to_string())
+                        .unwrap_or_default(),
+                );
+                set_input_value(
+                    "field-spec-n-min",
+                    &f.spec_decoding
+                        .n_min
+                        .map(|v| v.to_string())
+                        .unwrap_or_default(),
+                );
+                set_input_value(
+                    "field-spec-draft-ngl",
+                    &f.spec_decoding
+                        .draft_ngl
+                        .map(|v| v.to_string())
+                        .unwrap_or_default(),
+                );
+                last_init_id.set_value(Some(f.id.clone()));
+            }
+        }
+    });
+
     view! {
         // ── Speculative Decoding subsection ──────────────────────────────
         <h3 class="form-section-title">"Speculative Decoding"</h3>
@@ -60,12 +134,6 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                     <input
                         id="field-spec-draft-mtp"
                         type="checkbox"
-                        prop:checked=move || {
-                            form.get()
-                                .as_ref()
-                                .map(|f| f.spec_decoding.spec_types.contains(&SPEC_TYPE_DRAFT_MTP.to_string()))
-                                .unwrap_or(false)
-                        }
                         on:change=move |e| {
                             toggle_spec_type(e, SPEC_TYPE_DRAFT_MTP.to_string());
                         }
@@ -81,12 +149,6 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                     <input
                         id="field-spec-ngram-simple"
                         type="checkbox"
-                        prop:checked=move || {
-                            form.get()
-                                .as_ref()
-                                .map(|f| f.spec_decoding.spec_types.contains(&SPEC_TYPE_NGRAM_SIMPLE.to_string()))
-                                .unwrap_or(false)
-                        }
                         on:change=move |e| {
                             toggle_spec_type(e, SPEC_TYPE_NGRAM_SIMPLE.to_string());
                         }
@@ -186,7 +248,6 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
             class="form-textarea"
             rows="6"
             placeholder="One flag per line, e.g. -fa 1, -b 4096, --mlock"
-            prop:value=move || form.get().as_ref().map(|f| f.args.clone()).unwrap_or_default()
             on:input=move |e| {
                 form.update(|f| {
                     if let Some(form) = f {

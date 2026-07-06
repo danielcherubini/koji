@@ -1,9 +1,38 @@
 use std::sync::Arc;
 
 use leptos::prelude::*;
+use wasm_bindgen::JsCast;
 
 use super::types::{ModelForm, SamplingField};
 use crate::utils::target_value;
+
+/// Set an input's value by DOM id.
+fn set_input_value(id: &str, value: &str) {
+    if let Some(el) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id(id))
+    {
+        if let Ok(input) = el.clone().dyn_into::<web_sys::HtmlInputElement>() {
+            input.set_value(value);
+            return;
+        }
+        if let Ok(select) = el.dyn_into::<web_sys::HtmlSelectElement>() {
+            select.set_value(value);
+        }
+    }
+}
+
+/// Set a checkbox's checked state by DOM id.
+fn set_checked(id: &str, checked: bool) {
+    if let Some(el) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id(id))
+    {
+        if let Ok(input) = el.dyn_into::<web_sys::HtmlInputElement>() {
+            input.set_checked(checked);
+        }
+    }
+}
 
 // ── Sampling field definitions ───────────────────────────────────────────────
 
@@ -82,6 +111,20 @@ pub fn ModelEditorSamplingForm(
     active_preset: RwSignal<String>,
     save_preset_action: Action<String, (), LocalStorage>,
 ) -> impl IntoView {
+    // Populate input values when the form data loads (or model changes).
+    let last_init_id = StoredValue::new(None::<String>);
+    Effect::new(move |_| {
+        if let Some(f) = form.get() {
+            if last_init_id.get_value() != Some(f.id.clone()) {
+                for (key, field) in &f.sampling {
+                    set_checked(&format!("field-sampling-{}-enabled", key), field.enabled);
+                    set_input_value(&format!("field-sampling-{}-value", key), &field.value);
+                }
+                last_init_id.set_value(Some(f.id.clone()));
+            }
+        }
+    });
+
     // Inline preset name input state
     let show_preset_input = RwSignal::new(false);
     let preset_name_input = RwSignal::new(String::new());
@@ -159,7 +202,7 @@ pub fn ModelEditorSamplingForm(
                         .map(|f| f.enabled)
                         .unwrap_or(false)
                 });
-                let value_signal = Signal::derive(move || {
+                let _value_signal = Signal::derive(move || {
                     form.get()
                         .and_then(|f| f.sampling.get(&*k_value).cloned())
                         .map(|f| f.value)
@@ -196,7 +239,8 @@ pub fn ModelEditorSamplingForm(
                             <label class="form-check">
                                 <input
                                     type="checkbox"
-                                    prop:checked=move || enabled_signal.get()
+                                    id=format!("field-sampling-{}-enabled", key)
+
                                     on:change=move |e| {
                                         use wasm_bindgen::JsCast;
                                         let checked = e.target()
@@ -231,7 +275,8 @@ pub fn ModelEditorSamplingForm(
                                 type="number"
                                 step=step.clone()
                                 placeholder=placeholder.clone()
-                                prop:value=move || value_signal.get()
+                                id=format!("field-sampling-{}-value", key)
+
                                 on:input=move |e| {
                                     update_value(&k_input, target_value(&e));
                                 }
@@ -299,13 +344,14 @@ pub fn ModelEditorSamplingForm(
                     // Inline preset name input
                     {move || {
                         show_preset_input.get().then(|| {
+                            let _preset_name_ref = preset_name_input;
                             view! {
                                 <div class="sampling-preset-input">
                                     <input
                                         type="text"
                                         class="form-input form-input--sm"
                                         placeholder="Preset name"
-                                        prop:value=preset_name_input
+
                                         on:input=move |e| { preset_name_input.set(target_value(&e)); }
                                         on:keydown=move |e| {
                                             if e.key() == "Enter" { save_preset_action_inner(); }

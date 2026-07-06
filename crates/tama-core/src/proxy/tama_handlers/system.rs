@@ -105,7 +105,7 @@ pub async fn handle_tama_system_restart(state: State<Arc<ProxyState>>) -> Respon
     Response::builder()
         .status(200)
         .body(axum::body::Body::from("Tama is shutting down"))
-        .unwrap()
+        .expect("Response::builder with valid status and body should not fail")
 }
 
 /// Stream live system metrics snapshots as SSE events.

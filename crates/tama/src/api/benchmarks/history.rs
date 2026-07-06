@@ -1,4 +1,5 @@
 use super::*;
+use crate::api::error::error_response;
 
 // ── Handler: Get benchmark result ─────────────────────────────────────
 
@@ -9,22 +10,22 @@ pub async fn get_benchmark_result(
     let jobs = match &state.web_jobs {
         Some(j) => j.clone(),
         None => {
-            return (
+            return error_response(
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(serde_json::json!({"error": "Job manager not available"})),
+                "Job manager not available",
+                None,
             )
-                .into_response();
         }
     };
 
     let job = match jobs.get(&job_id).await {
         Some(j) => j,
         None => {
-            return (
+            return error_response(
                 StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "Job not found"})),
+                "Job not found",
+                Some("NotFoundError"),
             )
-                .into_response();
         }
     };
 
@@ -184,13 +185,7 @@ pub async fn benchmark_events(
 pub async fn list_benchmark_history(State(_state): State<Arc<ProxyState>>) -> impl IntoResponse {
     let db_dir = match tama_core::config::Config::config_dir() {
         Ok(d) => d,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": e.to_string()})),
-            )
-                .into_response();
-        }
+        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     };
 
     let entries = match tokio::task::spawn_blocking(move || {
@@ -201,19 +196,9 @@ pub async fn list_benchmark_history(State(_state): State<Arc<ProxyState>>) -> im
     {
         Ok(Ok(entries)) => entries,
         Ok(Err(e)) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": e.to_string()})),
-            )
-                .into_response();
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None)
         }
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": e.to_string()})),
-            )
-                .into_response();
-        }
+        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     };
 
     let history: Vec<BenchmarkHistoryEntry> = entries
@@ -316,13 +301,7 @@ pub async fn delete_benchmark(
 ) -> impl IntoResponse {
     let db_dir = match tama_core::config::Config::config_dir() {
         Ok(d) => d,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": e.to_string()})),
-            )
-                .into_response();
-        }
+        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     };
 
     match tokio::task::spawn_blocking(move || {
@@ -332,15 +311,7 @@ pub async fn delete_benchmark(
     .await
     {
         Ok(Ok(())) => Json(serde_json::json!({"ok": true})).into_response(),
-        Ok(Err(e)) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
+        Ok(Err(e)) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     }
 }

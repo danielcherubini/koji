@@ -1,6 +1,5 @@
 //! Install modal - configures install request for a backend.
 
-use crate::components::backend_card::GpuTypeDto;
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -44,7 +43,8 @@ pub struct InstallRequest {
     pub backend_type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
-    pub gpu_type: GpuTypeDto,
+    /// GPU variant for the installation (e.g. "cpu", "cuda", "vulkan", "rocm", "metal").
+    pub gpu_variant: String,
     pub build_from_source: bool,
     pub force: bool,
 }
@@ -69,30 +69,18 @@ pub fn InstallModal(
     let is_ik_llama = backend_type == "ik_llama";
     let is_linux = capabilities.os == "linux";
 
-    // Default GPU type: CUDA if detected, otherwise CPU
-    let default_gpu = if let Some(v) = &capabilities.detected_cuda_version {
-        GpuTypeDto::Cuda { version: v.clone() }
+    // Default GPU variant: CUDA if detected, otherwise CPU
+    let default_gpu_variant = if capabilities.os == "linux" {
+        capabilities
+            .detected_cuda_version
+            .as_deref()
+            .unwrap_or("cpu")
     } else {
-        GpuTypeDto::CpuOnly
+        "cpu"
     };
 
     // Signals for form state
-    let gpu_kind = RwSignal::new(match default_gpu {
-        GpuTypeDto::Cuda { .. } => "cuda".to_string(),
-        GpuTypeDto::Vulkan => "vulkan".to_string(),
-        GpuTypeDto::Metal => "metal".to_string(),
-        GpuTypeDto::Rocm { .. } => "rocm".to_string(),
-        GpuTypeDto::CpuOnly => "cpu".to_string(),
-        GpuTypeDto::Custom => "custom".to_string(),
-    });
-
-    let cuda_version = RwSignal::new(
-        capabilities
-            .detected_cuda_version
-            .clone()
-            .or_else(|| capabilities.supported_cuda_versions.first().cloned())
-            .unwrap_or_else(|| "12.4".to_string()),
-    );
+    let gpu_variant = RwSignal::new(default_gpu_variant.to_string());
 
     let version = RwSignal::new(String::from("latest"));
     let force_overwrite = RwSignal::new(false);
@@ -102,7 +90,7 @@ pub fn InstallModal(
     let backend_type_for_force = backend_type.clone();
     let force_source = Memo::new(move |_| {
         let is_ik = backend_type_for_force == "ik_llama";
-        let is_cuda = gpu_kind.get() == "cuda";
+        let is_cuda = gpu_variant.get() == "cuda";
         is_ik || (is_linux && is_cuda)
     });
     let effective_build_from_source =
@@ -113,7 +101,7 @@ pub fn InstallModal(
         && capabilities.cmake_available
         && capabilities.compiler_available;
 
-    let supported_versions = RwSignal::new(capabilities.supported_cuda_versions.clone());
+    let _supported_versions = RwSignal::new(capabilities.supported_cuda_versions.clone());
     let backend_type_submit = backend_type.clone();
 
     let display_name = match backend_type.as_str() {
@@ -148,50 +136,20 @@ pub fn InstallModal(
                         view! { <span/> }.into_any()
                     }}
 
-                    {/* GPU Type */}
+                    {/* GPU Variant */}
                     <div class="form-group">
                         <label class="form-label">"GPU Acceleration"</label>
                         <select
-                            on:change=move |e| gpu_kind.set(event_target_value(&e))
+                            on:change=move |e| gpu_variant.set(event_target_value(&e))
                             class="form-select"
                         >
-                            <option value="cpu" selected=move || gpu_kind.get() == "cpu">"CPU Only"</option>
-                            <option value="cuda" selected=move || gpu_kind.get() == "cuda">"CUDA (NVIDIA)"</option>
-                            <option value="vulkan" selected=move || gpu_kind.get() == "vulkan">"Vulkan"</option>
-                            <option value="metal" selected=move || gpu_kind.get() == "metal">"Metal (macOS)"</option>
-                            <option value="rocm" selected=move || gpu_kind.get() == "rocm">"ROCm (AMD)"</option>
+                            <option value="cpu" selected=move || gpu_variant.get() == "cpu">"CPU Only"</option>
+                            <option value="cuda" selected=move || gpu_variant.get() == "cuda">"CUDA (NVIDIA)"</option>
+                            <option value="vulkan" selected=move || gpu_variant.get() == "vulkan">"Vulkan"</option>
+                            <option value="metal" selected=move || gpu_variant.get() == "metal">"Metal (macOS)"</option>
+                            <option value="rocm" selected=move || gpu_variant.get() == "rocm">"ROCm (AMD)"</option>
                         </select>
                     </div>
-
-                    {/* CUDA version */}
-                    {move || {
-                        if gpu_kind.get() == "cuda" {
-                            let versions = supported_versions.get();
-                            view! {
-                                <div class="form-group">
-                                    <label class="form-label">"CUDA Version"</label>
-                                    <select
-                                        on:change=move |e| cuda_version.set(event_target_value(&e))
-                                        class="form-select"
-                                    >
-                                        {versions.iter().cloned().map(|v| {
-                                            let v_for_selected = v.clone();
-                                            view! {
-                                                <option
-                                                    value=v_for_selected.clone()
-                                                    selected=move || cuda_version.get() == v_for_selected
-                                                >
-                                                    {v}
-                                                </option>
-                                            }
-                                        }).collect::<Vec<_>>()}
-                                    </select>
-                                </div>
-                            }.into_any()
-                        } else {
-                            view! { <span/> }.into_any()
-                        }
-                    }}
 
                     {/* Version */}
                     {if !is_ik_llama {
@@ -272,18 +230,10 @@ pub fn InstallModal(
                             type="button"
                             class="btn btn-primary"
                             on:click=move |_| {
-                                let kind = gpu_kind.get();
-                                let gpu_type = match kind.as_str() {
-                                    "cuda" => GpuTypeDto::Cuda { version: cuda_version.get() },
-                                    "vulkan" => GpuTypeDto::Vulkan,
-                                    "metal" => GpuTypeDto::Metal,
-                                    "rocm" => GpuTypeDto::Rocm { version: "7.2".to_string() },
-                                    _ => GpuTypeDto::CpuOnly,
-                                };
                                 let request = InstallRequest {
                                     backend_type: backend_type_submit.clone(),
                                     version: None,
-                                    gpu_type,
+                                    gpu_variant: gpu_variant.get(),
                                     build_from_source: effective_build_from_source.get(),
                                     force: force_overwrite.get(),
                                 };
@@ -310,16 +260,14 @@ mod tests {
         let req = InstallRequest {
             backend_type: "llama_cpp".to_string(),
             version: Some("b8407".to_string()),
-            gpu_type: GpuTypeDto::Cuda {
-                version: "12.4".to_string(),
-            },
+            gpu_variant: "cuda".to_string(),
             build_from_source: false,
             force: false,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("llama_cpp"));
         assert!(json.contains("b8407"));
-        assert!(json.contains("\"kind\":\"cuda\""));
+        assert!(json.contains("\"gpu_variant\":\"cuda\""));
     }
 
     #[test]
@@ -333,13 +281,13 @@ mod tests {
         let req = InstallRequest {
             backend_type: "ik_llama".to_string(),
             version: None,
-            gpu_type: GpuTypeDto::CpuOnly,
+            gpu_variant: "cpu".to_string(),
             build_from_source: true,
             force: false,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("ik_llama"));
-        assert!(json.contains("cpu_only"));
+        assert!(json.contains("cpu"));
         assert!(json.contains("build_from_source"));
     }
 
@@ -348,7 +296,7 @@ mod tests {
         let req = InstallRequest {
             backend_type: "llama_cpp".to_string(),
             version: Some("latest".to_string()),
-            gpu_type: GpuTypeDto::Vulkan,
+            gpu_variant: "vulkan".to_string(),
             build_from_source: false,
             force: true,
         };
@@ -363,9 +311,7 @@ mod tests {
         let req = InstallRequest {
             backend_type: "llama_cpp".to_string(),
             version: Some("7.2".to_string()),
-            gpu_type: GpuTypeDto::Rocm {
-                version: "7.2".to_string(),
-            },
+            gpu_variant: "rocm".to_string(),
             build_from_source: false,
             force: false,
         };
@@ -378,7 +324,7 @@ mod tests {
         let req = InstallRequest {
             backend_type: "custom".to_string(),
             version: None,
-            gpu_type: GpuTypeDto::CpuOnly,
+            gpu_variant: "cpu".to_string(),
             build_from_source: false,
             force: false,
         };
@@ -391,9 +337,7 @@ mod tests {
         let original = InstallRequest {
             backend_type: "llama_cpp".to_string(),
             version: Some("b8407".to_string()),
-            gpu_type: GpuTypeDto::Cuda {
-                version: "12.4".to_string(),
-            },
+            gpu_variant: "cuda".to_string(),
             build_from_source: false,
             force: false,
         };

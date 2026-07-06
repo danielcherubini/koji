@@ -201,7 +201,7 @@ impl ModelManager {
     /// Insert or replace an active model entry when a backend is loaded.
     pub fn insert_active(
         &self,
-        server_name: &str,
+        backend_name: &str,
         model_name: &str,
         backend: &str,
         pid: i64,
@@ -210,7 +210,7 @@ impl ModelManager {
     ) -> Result<()> {
         crate::db::queries::insert_active_model(
             &self.conn,
-            server_name,
+            backend_name,
             model_name,
             backend,
             pid,
@@ -220,8 +220,8 @@ impl ModelManager {
     }
 
     /// Remove an active model entry when a backend is unloaded.
-    pub fn remove_active(&self, server_name: &str) -> Result<()> {
-        crate::db::queries::remove_active_model(&self.conn, server_name)
+    pub fn remove_active(&self, backend_name: &str) -> Result<()> {
+        crate::db::queries::remove_active_model(&self.conn, backend_name)
     }
 
     /// Get all active model entries (for status / cleanup).
@@ -229,7 +229,7 @@ impl ModelManager {
         crate::db::queries::get_active_models(&self.conn)
     }
 
-    /// Rename an active model by updating its primary key (server_name).
+    /// Rename an active model by updating its primary key (backend_name).
     pub fn rename_active(&self, old_name: &str, new_name: &str) -> Result<()> {
         crate::db::queries::rename_active_model(&self.conn, old_name, new_name)
     }

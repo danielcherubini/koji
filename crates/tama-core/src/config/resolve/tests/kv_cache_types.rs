@@ -1,63 +1,17 @@
-use tempfile::tempdir;
-
-use super::super::*;
+use crate::config::resolve::tests::test_helpers as h;
 
 /// Tests that -ctk and -ctv flags are injected when cache_type_k/v are set
 /// and backend is llama.cpp.
 #[test]
 fn test_kv_cache_type_args_injected_when_set() {
-    let temp_dir = tempdir().expect("Failed to create temp dir");
-    let models_dir = temp_dir.path().join("models");
-    let org_dir = models_dir.join("org").join("repo");
-    let quant_file = org_dir.join("model-Q4_K_M.gguf");
+    let (_temp_dir, models_dir) = h::temp_model_dir();
+    let config = h::sample_config(models_dir);
+    let backend = h::sample_backend();
 
-    std::fs::create_dir_all(&org_dir).expect("Failed to create model dir");
-    std::fs::write(&quant_file, b"dummy gguf content").expect("Failed to write model file");
-
-    let mut quants = std::collections::BTreeMap::new();
-    quants.insert(
-        "Q4_K_M".to_string(),
-        crate::config::types::QuantEntry {
-            file: "model-Q4_K_M.gguf".to_string(),
-            kind: Default::default(),
-            size_bytes: None,
-            context_length: None,
-        },
-    );
-
-    let mut config = Config::default();
-    config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-
-    let backend = BackendConfig {
-        path: None,
-        version: None,
-        gpu_variant: None,
-    };
-
-    let server = ModelConfig {
-        backend: "llama_cpp".to_string(),
-        args: vec![],
-        sampling: None,
-        model: Some("org/repo".to_string()),
-        quant: Some("Q4_K_M".to_string()),
-        mmproj: None,
-        port: None,
-        health_check: None,
-        enabled: true,
-        context_length: None,
-        num_parallel: None,
-        kv_unified: false,
-        profile: None,
-        api_name: None,
-        gpu_layers: None,
-        cache_type_k: Some("q4_0".to_string()),
-        cache_type_v: Some("q8_0".to_string()),
-        quants,
-        modalities: None,
-        display_name: None,
-        db_id: None,
-        ..Default::default()
-    };
+    let server = h::sample_server(|s| {
+        s.cache_type_k = Some("q4_0".to_string());
+        s.cache_type_v = Some("q8_0".to_string());
+    });
 
     let args = config
         .build_full_args(&server, &backend, None, &[])
@@ -81,58 +35,14 @@ fn test_kv_cache_type_args_injected_when_set() {
 /// on a llama.cpp backend.
 #[test]
 fn test_kv_cache_type_args_not_injected_when_none() {
-    let temp_dir = tempdir().expect("Failed to create temp dir");
-    let models_dir = temp_dir.path().join("models");
-    let org_dir = models_dir.join("org").join("repo");
-    let quant_file = org_dir.join("model-Q4_K_M.gguf");
+    let (_temp_dir, models_dir) = h::temp_model_dir();
+    let config = h::sample_config(models_dir);
+    let backend = h::sample_backend();
 
-    std::fs::create_dir_all(&org_dir).expect("Failed to create model dir");
-    std::fs::write(&quant_file, b"dummy gguf content").expect("Failed to write model file");
-
-    let mut quants = std::collections::BTreeMap::new();
-    quants.insert(
-        "Q4_K_M".to_string(),
-        crate::config::types::QuantEntry {
-            file: "model-Q4_K_M.gguf".to_string(),
-            kind: Default::default(),
-            size_bytes: None,
-            context_length: None,
-        },
-    );
-
-    let mut config = Config::default();
-    config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-
-    let backend = BackendConfig {
-        path: None,
-        version: None,
-        gpu_variant: None,
-    };
-
-    let server = ModelConfig {
-        backend: "llama_cpp".to_string(),
-        args: vec![],
-        sampling: None,
-        model: Some("org/repo".to_string()),
-        quant: Some("Q4_K_M".to_string()),
-        mmproj: None,
-        port: None,
-        health_check: None,
-        enabled: true,
-        context_length: None,
-        num_parallel: None,
-        kv_unified: false,
-        profile: None,
-        api_name: None,
-        gpu_layers: None,
-        cache_type_k: None,
-        cache_type_v: None,
-        quants,
-        modalities: None,
-        display_name: None,
-        db_id: None,
-        ..Default::default()
-    };
+    let server = h::sample_server(|s| {
+        s.cache_type_k = None;
+        s.cache_type_v = None;
+    });
 
     let args = config
         .build_full_args(&server, &backend, None, &[])
@@ -155,58 +65,15 @@ fn test_kv_cache_type_args_not_injected_when_none() {
 /// even when cache_type_k/v are set.
 #[test]
 fn test_kv_cache_type_args_not_injected_for_non_llama_backend() {
-    let temp_dir = tempdir().expect("Failed to create temp dir");
-    let models_dir = temp_dir.path().join("models");
-    let org_dir = models_dir.join("org").join("repo");
-    let quant_file = org_dir.join("model-Q4_K_M.gguf");
+    let (_temp_dir, models_dir) = h::temp_model_dir();
+    let config = h::sample_config(models_dir);
+    let backend = h::sample_backend();
 
-    std::fs::create_dir_all(&org_dir).expect("Failed to create model dir");
-    std::fs::write(&quant_file, b"dummy gguf content").expect("Failed to write model file");
-
-    let mut quants = std::collections::BTreeMap::new();
-    quants.insert(
-        "Q4_K_M".to_string(),
-        crate::config::types::QuantEntry {
-            file: "model-Q4_K_M.gguf".to_string(),
-            kind: Default::default(),
-            size_bytes: None,
-            context_length: None,
-        },
-    );
-
-    let mut config = Config::default();
-    config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-
-    let backend = BackendConfig {
-        path: None,
-        version: None,
-        gpu_variant: None,
-    };
-
-    let server = ModelConfig {
-        backend: "ollama".to_string(),
-        args: vec![],
-        sampling: None,
-        model: Some("org/repo".to_string()),
-        quant: Some("Q4_K_M".to_string()),
-        mmproj: None,
-        port: None,
-        health_check: None,
-        enabled: true,
-        context_length: None,
-        num_parallel: None,
-        kv_unified: false,
-        profile: None,
-        api_name: None,
-        gpu_layers: None,
-        cache_type_k: Some("q4_0".to_string()),
-        cache_type_v: Some("q8_0".to_string()),
-        quants,
-        modalities: None,
-        display_name: None,
-        db_id: None,
-        ..Default::default()
-    };
+    let server = h::sample_server(|s| {
+        s.backend = "ollama".to_string();
+        s.cache_type_k = Some("q4_0".to_string());
+        s.cache_type_v = Some("q8_0".to_string());
+    });
 
     let args = config
         .build_full_args(&server, &backend, None, &[])
@@ -229,58 +96,15 @@ fn test_kv_cache_type_args_not_injected_for_non_llama_backend() {
 /// user-provided args on a llama.cpp backend.
 #[test]
 fn test_kv_cache_type_args_no_duplicate_when_in_user_args() {
-    let temp_dir = tempdir().expect("Failed to create temp dir");
-    let models_dir = temp_dir.path().join("models");
-    let org_dir = models_dir.join("org").join("repo");
-    let quant_file = org_dir.join("model-Q4_K_M.gguf");
+    let (_temp_dir, models_dir) = h::temp_model_dir();
+    let config = h::sample_config(models_dir);
+    let backend = h::sample_backend();
 
-    std::fs::create_dir_all(&org_dir).expect("Failed to create model dir");
-    std::fs::write(&quant_file, b"dummy gguf content").expect("Failed to write model file");
-
-    let mut quants = std::collections::BTreeMap::new();
-    quants.insert(
-        "Q4_K_M".to_string(),
-        crate::config::types::QuantEntry {
-            file: "model-Q4_K_M.gguf".to_string(),
-            kind: Default::default(),
-            size_bytes: None,
-            context_length: None,
-        },
-    );
-
-    let mut config = Config::default();
-    config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-
-    let backend = BackendConfig {
-        path: None,
-        version: None,
-        gpu_variant: None,
-    };
-
-    let server = ModelConfig {
-        backend: "llama_cpp".to_string(),
-        args: vec!["-ctk f16".to_string(), "-ctv f16".to_string()],
-        sampling: None,
-        model: Some("org/repo".to_string()),
-        quant: Some("Q4_K_M".to_string()),
-        mmproj: None,
-        port: None,
-        health_check: None,
-        enabled: true,
-        context_length: None,
-        num_parallel: None,
-        kv_unified: false,
-        profile: None,
-        api_name: None,
-        gpu_layers: None,
-        cache_type_k: Some("q4_0".to_string()),
-        cache_type_v: Some("q8_0".to_string()),
-        quants,
-        modalities: None,
-        display_name: None,
-        db_id: None,
-        ..Default::default()
-    };
+    let server = h::sample_server(|s| {
+        s.args = vec!["-ctk f16".to_string(), "-ctv f16".to_string()];
+        s.cache_type_k = Some("q4_0".to_string());
+        s.cache_type_v = Some("q8_0".to_string());
+    });
 
     let args = config
         .build_full_args(&server, &backend, None, &[])
@@ -306,58 +130,14 @@ fn test_kv_cache_type_args_no_duplicate_when_in_user_args() {
 /// strings on a llama.cpp backend.
 #[test]
 fn test_kv_cache_type_args_not_injected_for_empty_string() {
-    let temp_dir = tempdir().expect("Failed to create temp dir");
-    let models_dir = temp_dir.path().join("models");
-    let org_dir = models_dir.join("org").join("repo");
-    let quant_file = org_dir.join("model-Q4_K_M.gguf");
+    let (_temp_dir, models_dir) = h::temp_model_dir();
+    let config = h::sample_config(models_dir);
+    let backend = h::sample_backend();
 
-    std::fs::create_dir_all(&org_dir).expect("Failed to create model dir");
-    std::fs::write(&quant_file, b"dummy gguf content").expect("Failed to write model file");
-
-    let mut quants = std::collections::BTreeMap::new();
-    quants.insert(
-        "Q4_K_M".to_string(),
-        crate::config::types::QuantEntry {
-            file: "model-Q4_K_M.gguf".to_string(),
-            kind: Default::default(),
-            size_bytes: None,
-            context_length: None,
-        },
-    );
-
-    let mut config = Config::default();
-    config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-
-    let backend = BackendConfig {
-        path: None,
-        version: None,
-        gpu_variant: None,
-    };
-
-    let server = ModelConfig {
-        backend: "llama_cpp".to_string(),
-        args: vec![],
-        sampling: None,
-        model: Some("org/repo".to_string()),
-        quant: Some("Q4_K_M".to_string()),
-        mmproj: None,
-        port: None,
-        health_check: None,
-        enabled: true,
-        context_length: None,
-        num_parallel: None,
-        kv_unified: false,
-        profile: None,
-        api_name: None,
-        gpu_layers: None,
-        cache_type_k: Some("".to_string()),
-        cache_type_v: Some("".to_string()),
-        quants,
-        modalities: None,
-        display_name: None,
-        db_id: None,
-        ..Default::default()
-    };
+    let server = h::sample_server(|s| {
+        s.cache_type_k = Some("".to_string());
+        s.cache_type_v = Some("".to_string());
+    });
 
     let args = config
         .build_full_args(&server, &backend, None, &[])

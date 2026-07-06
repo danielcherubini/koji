@@ -1,6 +1,7 @@
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use std::sync::Arc;
 
+use crate::api::error::{error_body, error_response, error_response_simple};
 use tama_core::proxy::ProxyState;
 
 pub mod aliases;
@@ -8,6 +9,8 @@ pub mod backends;
 pub mod backup;
 pub mod benchmarks;
 pub mod downloads;
+pub mod error;
+pub mod helpers;
 pub mod hf;
 pub mod logs;
 pub mod middleware;
@@ -36,13 +39,7 @@ pub async fn get_logs(
 ) -> impl IntoResponse {
     let dir = match state.config.read().await.logs_dir() {
         Ok(d) => d,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": e.to_string()})),
-            )
-                .into_response()
-        }
+        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     };
     let log_path = dir.join("tama.log");
     // Use spawn_blocking for synchronous file I/O to avoid blocking the Tokio runtime.
@@ -57,11 +54,10 @@ pub async fn get_logs(
 }
 
 pub async fn get_config(State(_state): State<Arc<ProxyState>>) -> impl IntoResponse {
-    (
+    error_response_simple(
         StatusCode::GONE,
-        Json(serde_json::json!({"error": "TOML config is no longer used. Use GET /tama/v1/config/structured instead."})),
+        "TOML config is no longer used. Use GET /tama/v1/config/structured instead.",
     )
-        .into_response()
 }
 
 #[derive(serde::Deserialize)]
@@ -80,7 +76,7 @@ async fn trigger_proxy_reload(state: &ProxyState) -> Result<(), (StatusCode, ser
     state.reload_model_configs().await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            serde_json::json!({"error": format!("Failed to reload model configs: {}", e)}),
+            error_body(format!("Failed to reload model configs: {}", e), None),
         )
     })?;
     // Aliases are nice-to-have; log a warning but don't fail the whole operation.
@@ -116,11 +112,10 @@ pub async fn save_config(
     State(_state): State<Arc<ProxyState>>,
     _body: Json<ConfigBody>,
 ) -> impl IntoResponse {
-    (
+    error_response_simple(
         StatusCode::GONE,
-        Json(serde_json::json!({"error": "TOML config is no longer used. Use POST /tama/v1/config/structured instead."})),
+        "TOML config is no longer used. Use POST /tama/v1/config/structured instead.",
     )
-        .into_response()
 }
 
 // ── Structured Config API (JSON-based for WASM) ─────────────────────────────────
@@ -151,11 +146,11 @@ pub async fn save_structured_config(
     {
         Some(d) => d,
         None => {
-            return (
+            return error_response(
                 StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "config directory not configured"})),
+                "config directory not configured",
+                Some("NotFoundError"),
             )
-                .into_response();
         }
     };
     let db_path = config_dir.join("tama.db");
@@ -172,16 +167,8 @@ pub async fn save_structured_config(
             sync_proxy_config(&state, new_config).await;
             Json(serde_json::json!({ "ok": true })).into_response()
         }
-        Ok(Err(e)) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
+        Ok(Err(e)) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     }
 }
 
@@ -202,7 +189,7 @@ async fn load_config_from_state(
         .ok_or_else(|| {
             (
                 StatusCode::NOT_FOUND,
-                serde_json::json!({"error": "config directory not configured"}),
+                error_body("config directory not configured", Some("NotFoundError")),
             )
         })?;
     let db_path = config_dir.join("tama.db");
@@ -211,13 +198,13 @@ async fn load_config_from_state(
         .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                serde_json::json!({"error": e.to_string()}),
+                error_body(e.to_string(), None),
             )
         })?
         .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                serde_json::json!({"error": e.to_string()}),
+                error_body(e.to_string(), None),
             )
         })?;
     Ok((cfg, config_dir))

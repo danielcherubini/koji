@@ -23,7 +23,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
 
+use crate::api::error::error_response;
 use crate::gpu::query_vram;
+use tama_core::backends::ProgressSink;
 use tama_core::bench::llama_cli_spec::{SpecBenchConfig, SpecType};
 use tama_core::proxy::ProxyState;
 use tama_core::web_types::{JobEvent, JobKind, JobManager, JobStatus};
@@ -154,3 +156,132 @@ pub use history::{
 pub use mtp::run_mtp_benchmark;
 pub use run::{run_benchmark, run_benchmark_inner};
 pub use spec::{run_spec_benchmark, run_spec_benchmark_inner, validate_spec_sweep};
+
+// ── Shared helpers ────────────────────────────────────────────────────
+
+/// A generic progress sink for benchmark jobs.
+/// Logs progress lines and broadcasts results over the job event channel.
+#[derive(Clone)]
+pub struct BenchmarkProgressSink {
+    pub name: &'static str,
+    pub job: Arc<tama_core::web_types::Job>,
+    pub jobs: Arc<JobManager>,
+}
+
+impl ProgressSink for BenchmarkProgressSink {
+    fn log(&self, line: &str) {
+        tracing::debug!("[{}] {}", self.name, line);
+        let job = self.job.clone();
+        let jobs = self.jobs.clone();
+        let line = line.to_string();
+        tokio::spawn(async move {
+            jobs.append_log(&job, line).await;
+        });
+    }
+
+    fn result(&self, json: &str) {
+        let job = self.job.clone();
+        let data = json.to_string();
+        tracing::info!("[{}] result: {}", self.name, json);
+
+        // Broadcast over the shared job event channel so live SSE
+        // subscribers get the result immediately. Send synchronously —
+        // `broadcast::Sender::send` is non-blocking.
+        if let Err(e) = job.log_tx.send(JobEvent::Result(data.clone())) {
+            tracing::warn!("Failed to broadcast result for job {}: {}", job.id, e);
+        }
+
+        tokio::spawn(async move {
+            // Also store in job state so late subscribers can pick it
+            // up on replay and the REST endpoint can return it.
+            let mut results = job.benchmark_results.write().await;
+            *results = Some(data);
+            tracing::info!("Stored benchmark results in job state");
+        });
+    }
+}
+
+/// Generic job submission helper for benchmark handlers.
+/// Takes ownership of the request to avoid borrow-checker issues with
+/// `tokio::spawn` (borrowed references can't escape into `'static` tasks).
+pub async fn submit_benchmark_job<F, Fut, R>(
+    state: &Arc<ProxyState>,
+    req: R,
+    run_inner: F,
+) -> Result<(String, Arc<JobManager>)>
+where
+    R: Send + 'static,
+    F: FnOnce(
+            Arc<JobManager>,
+            Arc<tama_core::web_types::Job>,
+            R,
+            std::path::PathBuf,
+            String,
+            reqwest::Client,
+        ) -> Fut
+        + Send
+        + 'static,
+    Fut: std::future::Future<Output = anyhow::Result<()>> + Send,
+{
+    let jobs = match &state.web_jobs {
+        Some(j) => j.clone(),
+        None => return Err(anyhow::anyhow!("Job manager not available")),
+    };
+
+    let job = jobs.submit(JobKind::Benchmark, None).await?;
+    let job_id = job.id.clone();
+    let db_path = state
+        .db_dir
+        .clone()
+        .unwrap_or_else(|| {
+            tama_core::config::Config::config_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."))
+        })
+        .join("tama.db");
+    let proxy_base_url = state.config.read().await.proxy_url();
+    let client = state.client.clone();
+
+    let jobs_for_spawn = jobs.clone();
+    let job_for_spawn = job.clone();
+    tokio::spawn(async move {
+        if let Err(e) = run_inner(
+            jobs_for_spawn.clone(),
+            job_for_spawn.clone(),
+            req,
+            db_path,
+            proxy_base_url,
+            client,
+        )
+        .await
+        {
+            tracing::error!(job_id = %job_for_spawn.id, error = %e, "Benchmark job failed");
+            jobs_for_spawn
+                .finish(&job_for_spawn, JobStatus::Failed, Some(e.to_string()))
+                .await;
+        } else {
+            jobs_for_spawn
+                .finish(&job_for_spawn, JobStatus::Succeeded, None)
+                .await;
+        }
+    });
+
+    Ok((job_id, jobs))
+}
+
+/// Build the shared error response for job manager unavailability.
+pub fn job_manager_unavailable_response() -> axum::response::Response {
+    error_response(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Job manager not available",
+        None,
+    )
+}
+
+/// Build the shared error response for job submission conflicts.
+pub fn job_conflict_response() -> axum::response::Response {
+    error_response(
+        StatusCode::CONFLICT,
+        "Another job is already running",
+        Some("ConflictError"),
+    )
+}

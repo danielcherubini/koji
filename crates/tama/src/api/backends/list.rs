@@ -8,6 +8,8 @@ use serde_json::json;
 use std::sync::Arc;
 
 use super::types::*;
+use crate::api::error::error_response;
+use crate::api::helpers::open_backend_manager;
 use tama_core::proxy::ProxyState;
 
 /// GET /tama/v1/backends
@@ -29,31 +31,25 @@ pub async fn list_backends(State(state): State<Arc<ProxyState>>) -> impl IntoRes
         None
     };
 
-    // Open registry
     let config_dir = state.db_dir.clone().unwrap_or_else(|| {
         tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
     });
 
-    // Open registry (blocking call wrapped in spawn_blocking)
-    let config_dir_clone = config_dir.clone();
-    let mgr_result: Result<tama_core::backends::BackendManager, _> =
-        tokio::task::spawn_blocking(move || {
-            tama_core::backends::BackendManager::open(&config_dir_clone)
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("spawn error: {}", e))
-        .and_then(|r| r);
+    let mgr_result = open_backend_manager(&state).await;
 
     // Load backend configs from DB (keyed by (name, gpu_variant)), reusing the manager
     // opened above to avoid opening the DB twice.
-    let backend_configs_map: std::collections::HashMap<(String, String), Vec<String>> = mgr_result
+    let backend_configs_map: std::collections::HashMap<
+        (String, String),
+        (Vec<String>, Vec<String>),
+    > = mgr_result
         .as_ref()
         .ok()
         .and_then(|mgr| mgr.list_configs().ok())
         .map(|configs| {
             configs
                 .into_iter()
-                .map(|c| ((c.name, c.gpu_variant), c.default_args))
+                .map(|c| ((c.name, c.gpu_variant), (c.default_args, c.default_env)))
                 .collect()
         })
         .unwrap_or_default();
@@ -98,7 +94,7 @@ pub async fn list_backends(State(state): State<Arc<ProxyState>>) -> impl IntoRes
 
                     // Create one card per variant
                     for (variant, variant_versions) in variant_groups {
-                        let default_args = backend_configs_map
+                        let (default_args, default_env) = backend_configs_map
                             .get(&(type_.to_string(), variant.clone()))
                             .cloned()
                             .unwrap_or_default();
@@ -118,7 +114,6 @@ pub async fn list_backends(State(state): State<Arc<ProxyState>>) -> impl IntoRes
                                 path: info.path.to_string_lossy().to_string(),
                                 installed_at: info.installed_at,
                                 gpu_variant: info.gpu_variant.clone(),
-                                gpu_type: info.gpu_type.as_ref().map(|g| g.into()),
                                 source: info.source.as_ref().map(|s| s.into()),
                                 is_active: active_version
                                     .as_ref()
@@ -154,6 +149,7 @@ pub async fn list_backends(State(state): State<Arc<ProxyState>>) -> impl IntoRes
                             update: update_status,
                             release_notes_url: release_notes_url.map(String::from),
                             default_args: default_args.clone(),
+                            default_env: default_env.clone(),
                             is_active: true,
                         });
                     }
@@ -196,7 +192,7 @@ pub async fn list_backends(State(state): State<Arc<ProxyState>>) -> impl IntoRes
 
                     for (variant, variant_versions) in variant_groups {
                         let active_version = mgr.get_active(name, &variant).ok().flatten();
-                        let default_args = backend_configs_map
+                        let (default_args, default_env) = backend_configs_map
                             .get(&(bt.clone(), variant.clone()))
                             .cloned()
                             .unwrap_or_default();
@@ -212,7 +208,6 @@ pub async fn list_backends(State(state): State<Arc<ProxyState>>) -> impl IntoRes
                                 path: info.path.to_string_lossy().to_string(),
                                 installed_at: info.installed_at,
                                 gpu_variant: info.gpu_variant.clone(),
-                                gpu_type: info.gpu_type.as_ref().map(|g| g.into()),
                                 source: info.source.as_ref().map(|s| s.into()),
                                 is_active: active_version
                                     .as_ref()
@@ -248,6 +243,7 @@ pub async fn list_backends(State(state): State<Arc<ProxyState>>) -> impl IntoRes
                             update: update_status,
                             release_notes_url: None,
                             default_args,
+                            default_env,
                             is_active: true,
                         });
                     }
@@ -255,7 +251,7 @@ pub async fn list_backends(State(state): State<Arc<ProxyState>>) -> impl IntoRes
             }
         }
         Err(e) => {
-            tracing::warn!("Failed to open backend manager: {}", e);
+            tracing::warn!("Failed to open backend manager: {:?}", e.status());
         }
     }
 
@@ -300,11 +296,11 @@ pub async fn check_backend_updates(State(state): State<Arc<ProxyState>>) -> impl
     let jobs = match &state.web_jobs {
         Some(j) => j,
         None => {
-            return (
+            return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "job manager not configured"})),
+                "job manager not configured",
+                None,
             )
-                .into_response();
         }
     };
 
@@ -322,32 +318,24 @@ pub async fn check_backend_updates(State(state): State<Arc<ProxyState>>) -> impl
         })
         .map(|j| job_to_active_dto(&j));
 
-    let config_dir = state.db_dir.clone().unwrap_or_else(|| {
-        tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-    });
+    let mgr_result = open_backend_manager(&state).await;
 
-    // Open registry
-    let config_dir_clone = config_dir.clone();
-    let mgr_result: Result<tama_core::backends::BackendManager, _> =
-        tokio::task::spawn_blocking(move || {
-            tama_core::backends::BackendManager::open(&config_dir_clone)
+    // Load backend configs from DB (keyed by (name, gpu_variant)), reusing the manager
+    // opened above to avoid opening the DB twice.
+    let backend_configs_map: std::collections::HashMap<
+        (String, String),
+        (Vec<String>, Vec<String>),
+    > = mgr_result
+        .as_ref()
+        .ok()
+        .and_then(|mgr| mgr.list_configs().ok())
+        .map(|configs| {
+            configs
+                .into_iter()
+                .map(|c| ((c.name, c.gpu_variant), (c.default_args, c.default_env)))
+                .collect()
         })
-        .await
-        .map_err(|e| anyhow::anyhow!("spawn error: {}", e))
-        .and_then(|r| r);
-
-    // Load backend configs from DB (keyed by (name, gpu_variant))
-    let backend_configs_map: std::collections::HashMap<(String, String), Vec<String>> =
-        tama_core::backends::BackendManager::open(&config_dir)
-            .ok()
-            .and_then(|mgr| mgr.list_configs().ok())
-            .map(|configs| {
-                configs
-                    .into_iter()
-                    .map(|c| ((c.name, c.gpu_variant), c.default_args))
-                    .collect()
-            })
-            .unwrap_or_default();
+        .unwrap_or_default();
 
     let mut backends: Vec<BackendCardDto> = Vec::new();
     let mut custom: Vec<BackendCardDto> = Vec::new();
@@ -371,7 +359,7 @@ pub async fn check_backend_updates(State(state): State<Arc<ProxyState>>) -> impl
 
                     // Create one card per variant
                     for (variant, variant_versions) in variant_groups {
-                        let default_args = backend_configs_map
+                        let (default_args, default_env) = backend_configs_map
                             .get(&(type_.to_string(), variant.clone()))
                             .cloned()
                             .unwrap_or_default();
@@ -407,7 +395,6 @@ pub async fn check_backend_updates(State(state): State<Arc<ProxyState>>) -> impl
                                 path: info.path.to_string_lossy().to_string(),
                                 installed_at: info.installed_at,
                                 gpu_variant: info.gpu_variant.clone(),
-                                gpu_type: info.gpu_type.as_ref().map(|g| g.into()),
                                 source: info.source.as_ref().map(|s| s.into()),
                                 is_active: active_version
                                     .as_ref()
@@ -432,6 +419,7 @@ pub async fn check_backend_updates(State(state): State<Arc<ProxyState>>) -> impl
                             },
                             release_notes_url: release_notes_url.map(String::from),
                             default_args: default_args.clone(),
+                            default_env: default_env.clone(),
                             is_active: true,
                         });
                     }
@@ -478,7 +466,7 @@ pub async fn check_backend_updates(State(state): State<Arc<ProxyState>>) -> impl
 
                     for (variant, variant_versions) in variant_groups {
                         let active_version = mgr.get_active(name, &variant).ok().flatten();
-                        let default_args = backend_configs_map
+                        let (default_args, default_env) = backend_configs_map
                             .get(&(bt.clone(), variant.clone()))
                             .cloned()
                             .unwrap_or_default();
@@ -494,7 +482,6 @@ pub async fn check_backend_updates(State(state): State<Arc<ProxyState>>) -> impl
                                 path: info.path.to_string_lossy().to_string(),
                                 installed_at: info.installed_at,
                                 gpu_variant: info.gpu_variant.clone(),
-                                gpu_type: info.gpu_type.as_ref().map(|g| g.into()),
                                 source: info.source.as_ref().map(|s| s.into()),
                                 is_active: active_version
                                     .as_ref()
@@ -515,6 +502,7 @@ pub async fn check_backend_updates(State(state): State<Arc<ProxyState>>) -> impl
                             update: UpdateStatusDto::default(),
                             release_notes_url: None,
                             default_args,
+                            default_env,
                             is_active: true,
                         });
                     }
@@ -522,7 +510,7 @@ pub async fn check_backend_updates(State(state): State<Arc<ProxyState>>) -> impl
             }
         }
         Err(e) => {
-            tracing::warn!("Failed to open backend manager: {}", e);
+            tracing::warn!("Failed to open backend manager: {:?}", e.status());
             // On error, still return known backends as not installed
             for (type_, display_name, release_notes_url) in KNOWN_BACKENDS {
                 backends.push(BackendCardDto::default_uninstalled(
@@ -557,18 +545,7 @@ pub async fn list_backend_versions(
             .into_response();
     }
 
-    let config_dir = state.db_dir.clone().unwrap_or_else(|| {
-        tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-    });
-
-    let config_dir_clone = config_dir.clone();
-    let mgr_result: Result<tama_core::backends::BackendManager, _> =
-        tokio::task::spawn_blocking(move || {
-            tama_core::backends::BackendManager::open(&config_dir_clone)
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("spawn error: {}", e))
-        .and_then(|r| r);
+    let mgr_result = open_backend_manager(&state).await;
 
     match mgr_result {
         Ok(mgr) => {
@@ -619,7 +596,6 @@ pub async fn list_backend_versions(
                         path: info.path.to_string_lossy().to_string(),
                         installed_at: info.installed_at,
                         gpu_variant: info.gpu_variant.clone(),
-                        gpu_type: info.gpu_type.as_ref().map(|g| g.into()),
                         source: info.source.as_ref().map(|s| s.into()),
                         is_active,
                     }
@@ -636,7 +612,7 @@ pub async fn list_backend_versions(
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to open manager: {}", e)})),
+            Json(json!({"error": format!("Failed to open backend manager: {:?}", e.status())})),
         )
             .into_response(),
     }

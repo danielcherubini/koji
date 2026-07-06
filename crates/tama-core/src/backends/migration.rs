@@ -6,7 +6,6 @@ use rusqlite::Connection;
 
 use crate::backends::get_backend_install_path;
 use crate::backends::types::BackendType;
-use crate::gpu::GpuType;
 
 const MIGRATION_MARKER: &str = ".tama-migration-v2-done";
 
@@ -38,8 +37,8 @@ pub fn migrate_legacy_backends(conn: &Connection, backends_dir: &Path) -> anyhow
         let backend_type = parse_backend_type(&record.backend_type);
         let old_path = PathBuf::from(&record.path);
 
-        // Derive gpu_variant
-        let gpu_variant = derive_gpu_variant(&record.gpu_type, &old_path);
+        // Derive gpu_variant from binary path heuristic
+        let gpu_variant = derive_gpu_variant(&old_path);
 
         // Compute new path
         let new_path_dir =
@@ -100,7 +99,7 @@ pub fn migrate_legacy_backends(conn: &Connection, backends_dir: &Path) -> anyhow
 fn list_all_backend_records(conn: &Connection) -> anyhow::Result<Vec<BackendRecord>> {
     let mut stmt = conn.prepare(
         "SELECT id, name, backend_type, version, path, installed_at, \
-         COALESCE(gpu_type, ''), COALESCE(gpu_variant, 'cpu'), \
+         COALESCE(gpu_variant, 'cpu'), \
          COALESCE(source, ''), is_active \
          FROM backend_installations",
     )?;
@@ -113,10 +112,9 @@ fn list_all_backend_records(conn: &Connection) -> anyhow::Result<Vec<BackendReco
             version: row.get(3)?,
             path: row.get(4)?,
             _installed_at: row.get(5)?,
-            gpu_type: row.get(6)?,
-            _gpu_variant: row.get(7)?,
-            _source: row.get(8)?,
-            _is_active: row.get::<_, i64>(9)? != 0,
+            _gpu_variant: row.get(6)?,
+            _source: row.get(7)?,
+            _is_active: row.get::<_, i64>(8)? != 0,
         })
     })?;
 
@@ -141,30 +139,26 @@ fn update_backend_path_and_variant(
     Ok(())
 }
 
-fn derive_gpu_variant(gpu_type_str: &str, binary_path: &Path) -> String {
-    if let Some(gpu_type) = parse_gpu_type(gpu_type_str) {
-        return gpu_type.variant_folder().to_string();
-    }
-
-    // Heuristic: check binary name for hints
+fn derive_gpu_variant(binary_path: &Path) -> String {
+    // Heuristic: check binary name for GPU hints
     if let Some(stem) = binary_path.file_stem().and_then(|s| s.to_str()) {
         let lower = stem.to_lowercase();
         if lower.contains("cuda") {
-            tracing::warn!("Heuristic: detected 'cuda' in binary name {}", stem);
+            tracing::info!("Heuristic: detected 'cuda' in binary name {}", stem);
             return "cuda".to_string();
         }
         if lower.contains("rocm") || lower.contains("hip") {
-            tracing::warn!("Heuristic: detected 'rocm' in binary name {}", stem);
+            tracing::info!("Heuristic: detected 'rocm' in binary name {}", stem);
             return "rocm".to_string();
         }
         if lower.contains("vulkan") {
-            tracing::warn!("Heuristic: detected 'vulkan' in binary name {}", stem);
+            tracing::info!("Heuristic: detected 'vulkan' in binary name {}", stem);
             return "vulkan".to_string();
         }
     }
 
-    tracing::warn!(
-        "No gpu_type info for {}, defaulting to 'cpu'",
+    tracing::debug!(
+        "No GPU hints in binary name {}, defaulting to 'cpu'",
         binary_path.display()
     );
     "cpu".to_string()
@@ -310,14 +304,6 @@ fn parse_backend_type(type_str: &str) -> BackendType {
     }
 }
 
-fn parse_gpu_type(type_str: &str) -> Option<GpuType> {
-    if type_str.is_empty() {
-        return None;
-    }
-    // Try to deserialize from JSON string
-    serde_json::from_str(type_str).ok()
-}
-
 #[derive(Debug)]
 struct BackendRecord {
     id: i64,
@@ -326,7 +312,6 @@ struct BackendRecord {
     version: String,
     path: String,
     _installed_at: i64,
-    gpu_type: String,
     _gpu_variant: String,
     _source: String,
     _is_active: bool,
@@ -363,48 +348,20 @@ mod tests {
     }
 
     #[test]
-    fn test_derive_gpu_variant_from_gpu_type() {
-        // GpuType uses default serde repr: {"CpuOnly":null}, {"Vulkan":null}, etc.
-        assert_eq!(
-            derive_gpu_variant("{\"CpuOnly\":null}", Path::new("/tmp/test")),
-            "cpu"
-        );
-        assert_eq!(
-            derive_gpu_variant("{\"Vulkan\":null}", Path::new("/tmp/test")),
-            "vulkan"
-        );
-        assert_eq!(
-            derive_gpu_variant("{\"Metal\":null}", Path::new("/tmp/test")),
-            "metal"
-        );
-        assert_eq!(
-            derive_gpu_variant("{\"Cuda\":{\"version\":\"12.4\"}}", Path::new("/tmp/test")),
-            "cuda"
-        );
-        assert_eq!(
-            derive_gpu_variant("{\"RocM\":{\"version\":\"6.0\"}}", Path::new("/tmp/test")),
-            "rocm"
-        );
-    }
-
-    #[test]
     fn test_derive_gpu_variant_heuristic() {
         assert_eq!(
-            derive_gpu_variant("", Path::new("/tmp/llama-server-cuda")),
+            derive_gpu_variant(Path::new("/tmp/llama-server-cuda")),
             "cuda"
         );
         assert_eq!(
-            derive_gpu_variant("", Path::new("/tmp/llama-server-rocm")),
+            derive_gpu_variant(Path::new("/tmp/llama-server-rocm")),
             "rocm"
         );
         assert_eq!(
-            derive_gpu_variant("", Path::new("/tmp/llama-server-vulkan")),
+            derive_gpu_variant(Path::new("/tmp/llama-server-vulkan")),
             "vulkan"
         );
-        assert_eq!(
-            derive_gpu_variant("", Path::new("/tmp/llama-server")),
-            "cpu"
-        );
+        assert_eq!(derive_gpu_variant(Path::new("/tmp/llama-server")), "cpu");
     }
 
     #[test]

@@ -101,7 +101,7 @@ pub async fn install_prebuilt(
         version,
         os,
         arch,
-        options.gpu_type.as_ref(),
+        &options.gpu_variant,
     ) {
         Ok(u) => u,
         Err(e) => {

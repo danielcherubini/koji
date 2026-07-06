@@ -125,8 +125,8 @@ impl JobManager {
         });
 
         let mut active = self.active.lock().await;
-        if active.is_some() {
-            return Err(JobError::AlreadyRunning(active.as_ref().unwrap().clone()));
+        if let Some(ref id) = *active {
+            return Err(JobError::AlreadyRunning(id.clone()));
         }
         *active = Some(job_id.clone());
         drop(active);
