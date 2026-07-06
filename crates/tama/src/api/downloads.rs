@@ -100,7 +100,10 @@ pub async fn get_active_downloads(
     let svc = state.download_queue.as_ref().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(error_body("Download queue not configured", Some("ServiceUnavailableError"))),
+            Json(error_body(
+                "Download queue not configured",
+                Some("ServiceUnavailableError"),
+            )),
         )
     })?;
 
@@ -124,7 +127,10 @@ pub async fn get_download_history(
     let svc = state.download_queue.as_ref().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(error_body("Download queue not configured", Some("ServiceUnavailableError"))),
+            Json(error_body(
+                "Download queue not configured",
+                Some("ServiceUnavailableError"),
+            )),
         )
     })?;
 
