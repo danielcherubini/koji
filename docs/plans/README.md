@@ -15,9 +15,9 @@ This directory contains implementation plans for the Tama project. Each plan doc
 ## Quick Stats
 
 - **Total Plans**: 143
-- **Completed**: 136 ✅
+- **Completed**: 137 ✅
 - **In Progress**: 0 🚧
-- **Draft**: 7 📋
+- **Draft**: 6 📋
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
 
@@ -27,7 +27,7 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 | Plan | Description | Status |
 |------|-------------|--------|
-| [Codebase Improvements](2026-07-06-codebase-improvements.md) | Quick wins: error_response helper, unwrap→expect, dead code removal, benchmark DRY, API boilerplate extraction, gpu_type→gpu_variant rename, server→backend rename, test fixture helpers | 📋 DRAFT |
+| [Codebase Improvements](2026-07-06-codebase-improvements.md) | Quick wins: error_response helper, unwrap→expect, dead code removal, benchmark DRY, API boilerplate extraction, gpu_type→gpu_variant rename, server→backend rename, test fixture helpers | ✅ COMPLETED (#143) |
 | [File Splits — tama-core](2026-07-06-file-splits.md) | Split 5 god files (config/types.rs 1407, models.rs 1303, checker.rs 1079, forward.rs 1119, gpu/system.rs 1121) into focused modules | 📋 DRAFT |
 | [Architectural Refactoring](2026-07-06-architectural-refactoring.md) | DB repository layer (35 direct query calls → Repository), ProxyState encapsulation (25 pub fields → pub(crate) + WebState), move web_types to tama crate | 📋 DRAFT |
 | [Type Safety](2026-07-06-type-safety.md) | GpuVendor + ModelState enums, DB tuples → typed records, config enums (RestartPolicy, LogLevel, CompactionDevice) | 📋 DRAFT |
