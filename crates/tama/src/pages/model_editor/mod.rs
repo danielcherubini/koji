@@ -689,11 +689,11 @@ pub fn ModelEditor() -> impl IntoView {
                                 </button>
                                 <button
                                     class="model-editor-pill"
-                                    class:model-editor-pill--active=move || active_section.get() == Section::Hardware
-                                    on:click=move |_| { active_section.set(Section::Hardware); }
+                                    class:model-editor-pill--active=move || active_section.get() == Section::Context
+                                    on:click=move |_| { active_section.set(Section::Context); }
                                 >
-                                    <span>{Section::Hardware.icon()}</span>
-                                    <span>{Section::Hardware.name()}</span>
+                                    <span>{Section::Context.icon()}</span>
+                                    <span>{Section::Context.name()}</span>
                                 </button>
                                 <button
                                     class="model-editor-pill"
@@ -733,9 +733,9 @@ pub fn ModelEditor() -> impl IntoView {
                                             />
                                         </div>
                                     }.into_any(),
-                                    Section::Hardware => view! {
+                                    Section::Context => view! {
                                         <div class="card">
-                                            <h2 class="card__title">"Hardware"</h2>
+                                            <h2 class="card__title">"Context"</h2>
                                             <ModelEditorHardwareForm
                                                 form=form
                                             />

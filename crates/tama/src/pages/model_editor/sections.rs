@@ -3,7 +3,7 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Section {
     Settings,
-    Hardware,
+    Context,
     Sampling,
     Files,
     Advanced,
@@ -13,7 +13,7 @@ impl Section {
     pub(crate) fn name(&self) -> &'static str {
         match self {
             Self::Settings => "Settings",
-            Self::Hardware => "Hardware",
+            Self::Context => "Context",
             Self::Sampling => "Sampling",
             Self::Files => "Files",
             Self::Advanced => "Advanced",
@@ -23,7 +23,7 @@ impl Section {
     pub(crate) fn icon(&self) -> &'static str {
         match self {
             Self::Settings => "⚙️",
-            Self::Hardware => "🖥️",
+            Self::Context => "🖥️",
             Self::Sampling => "🎲",
             Self::Files => "📁",
             Self::Advanced => "🔧",

@@ -196,6 +196,8 @@ impl ProxyState {
         child
             .args(&args)
             .env("MODEL_NAME", model_name)
+            // RADV_PERFTEST=nogttspill improves vulkan performance by avoiding GTT spilling
+            .env("RADV_PERFTEST", "nogttspill")
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
 

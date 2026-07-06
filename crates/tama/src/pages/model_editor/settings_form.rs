@@ -1,7 +1,9 @@
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
+use wasm_bindgen_futures::spawn_local;
 
-use super::types::{BackendOption, ModelForm};
+use super::api::{fetch_gpu_devices, refresh_gpu_devices};
+use super::types::{BackendOption, GpuDeviceInfo, ModelForm};
 use crate::utils::target_value;
 
 /// Set an input's value by DOM id.
@@ -32,16 +34,92 @@ fn set_checked(id: &str, checked: bool) {
     }
 }
 
+const MODALITY_OPTIONS: &[(&str, &str)] = &[
+    ("text", "Text"),
+    ("image", "Image"),
+    ("audio", "Audio"),
+    ("video", "Video"),
+    ("pdf", "PDF"),
+];
+
 #[component]
 pub fn ModelEditorSettingsForm(
     form: RwSignal<Option<ModelForm>>,
     backends: RwSignal<Vec<BackendOption>>,
 ) -> impl IntoView {
+    // GPU devices discovered for the current backend
+    let gpu_devices: RwSignal<Vec<GpuDeviceInfo>> = RwSignal::new(Vec::new());
+    let gpu_fetching: RwSignal<bool> = RwSignal::new(false);
+
+    // Fetch GPU devices for the given backend name and variant.
+    let fetch_devices_for_backend =
+        Callback::new(move |(backend_name, gpu_variant): (String, String)| {
+            if backend_name.is_empty() {
+                gpu_devices.set(Vec::new());
+                return;
+            }
+            let devices_signal = gpu_devices;
+            let fetching_signal = gpu_fetching;
+            spawn_local(async move {
+                fetching_signal.set(true);
+                let devices = fetch_gpu_devices(&backend_name, &gpu_variant).await;
+                devices_signal.set(devices);
+                fetching_signal.set(false);
+            });
+        });
+
+    // Refresh GPU devices for the current backend.
+    let refresh_devices = Callback::new(move |_| {
+        let (backend_name, gpu_variant) = form.with(|f| {
+            let variant = f
+                .as_ref()
+                .and_then(|f| f.gpu_variant.as_deref())
+                .filter(|s| !s.is_empty())
+                .unwrap_or("cpu");
+            (
+                f.as_ref().map(|f| f.backend.clone()).unwrap_or_default(),
+                variant.to_string(),
+            )
+        });
+        if backend_name.is_empty() {
+            return;
+        }
+        let devices_signal = gpu_devices;
+        let fetching_signal = gpu_fetching;
+        spawn_local(async move {
+            fetching_signal.set(true);
+            let devices = refresh_gpu_devices(&backend_name, &gpu_variant).await;
+            devices_signal.set(devices);
+            fetching_signal.set(false);
+        });
+    });
+
+    // When backend changes, fetch GPU devices
+    let last_backend = StoredValue::new(String::new());
+    Effect::new(move |_| {
+        let (current_backend, current_variant) = form
+            .get()
+            .as_ref()
+            .map(|f| {
+                let variant = f
+                    .gpu_variant
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("cpu");
+                (f.backend.clone(), variant.to_string())
+            })
+            .unwrap_or_default();
+        let prev = last_backend.get_value();
+        if current_backend != prev && !current_backend.is_empty() {
+            last_backend.set_value(current_backend.clone());
+            fetch_devices_for_backend.run((current_backend, current_variant));
+        } else if current_backend.is_empty() {
+            last_backend.set_value(String::new());
+            gpu_devices.set(Vec::new());
+        }
+    });
+
     // Populate input values when the form data loads (or model changes).
-    // Uses get_element_by_id because prop:value doesn't work reliably
-    // inside Suspense + conditional rendering.
-    // Only runs when the model ID changes, not on every keystroke —
-    // otherwise set_input_value resets the cursor mid-edit.
     let last_init_id = StoredValue::new(None::<String>);
     Effect::new(move |_| {
         if let Some(f) = form.get() {
@@ -57,6 +135,28 @@ pub fn ModelEditorSettingsForm(
                     &f.port.map(|v| v.to_string()).unwrap_or_default(),
                 );
                 set_checked("field-enabled", f.enabled);
+                // GPU layers and device
+                set_input_value(
+                    "field-gpu-layers",
+                    &f.gpu_layers.map(|v| v.to_string()).unwrap_or_default(),
+                );
+                set_input_value(
+                    "field-gpu-device",
+                    f.gpu_device.as_deref().unwrap_or_default(),
+                );
+                // Modality checkboxes
+                if let Some(m) = &f.modalities {
+                    for (val, _) in MODALITY_OPTIONS {
+                        set_checked(
+                            &format!("field-modality-input-{}", val),
+                            m.input.contains(&val.to_string()),
+                        );
+                        set_checked(
+                            &format!("field-modality-output-{}", val),
+                            m.output.contains(&val.to_string()),
+                        );
+                    }
+                }
                 last_init_id.set_value(Some(f.id.clone()));
             }
         }
@@ -131,7 +231,6 @@ pub fn ModelEditorSettingsForm(
                     let val = target_value(&e);
                     form.update(|f| {
                         if let Some(form) = f {
-                            // Parse "name:variant" or just "name"
                             if let Some((name, variant)) = val.split_once(':') {
                                 form.backend = name.to_string();
                                 form.gpu_variant = Some(variant.to_string());
@@ -196,6 +295,165 @@ pub fn ModelEditorSettingsForm(
                     });
                 }
             />
+
+            <label class="form-label" for="field-gpu-layers">"GPU Layers"</label>
+            <input
+                id="field-gpu-layers"
+                class="form-input"
+                type="number"
+                placeholder="e.g. 999"
+                on:input=move |ev| {
+                    form.update(|f| {
+                        if let Some(form) = f {
+                            form.gpu_layers = target_value(&ev).parse::<u32>().ok();
+                        }
+                    });
+                }
+            />
+
+            <label class="form-label" for="field-gpu-device">
+                "GPU Isolation"
+                <button
+                    class="form-icon-button"
+                    title="Refresh GPU devices"
+                    disabled=move || gpu_fetching.get()
+                    on:click=move |_| {
+                        refresh_devices.run(());
+                    }
+                >
+                    {move || {
+                        if gpu_fetching.get() {
+                            "⟳".to_string()
+                        } else {
+                            "↻".to_string()
+                        }
+                    }}
+                </button>
+            </label>
+            <select
+                id="field-gpu-device"
+                class="form-select"
+                on:change=move |e| {
+                    let val = target_value(&e);
+                    form.update(|f| {
+                        if let Some(form) = f {
+                            form.gpu_device = if val.is_empty() { None } else { Some(val) };
+                        }
+                    });
+                }
+            >
+                <option value="">
+                    {move || {
+                        if gpu_devices.get().is_empty() && !gpu_fetching.get() {
+                            "None (could not list devices)"
+                        } else {
+                            "None"
+                        }
+                    }}
+                </option>
+                {move || {
+                    let current = form.get().as_ref().and_then(|f| f.gpu_device.clone()).unwrap_or_default();
+                    gpu_devices.get().into_iter().enumerate().map(|(i, dev)| {
+                        let gpu_id = format!("GPU{i}");
+                        let selected = current == gpu_id;
+                        let label = if dev.vram_total_mib.is_some() {
+                            format!("{} — {} ({} MiB)", gpu_id, dev.name, dev.vram_total_mib.unwrap_or(0))
+                        } else {
+                            format!("{} — {}", gpu_id, dev.name)
+                        };
+                        view! { <option value=gpu_id.clone() selected=selected>{label}</option> }
+                    }).collect::<Vec<_>>()
+                }}
+            </select>
+            <Show when=move || gpu_devices.get().is_empty() && !gpu_fetching.get() && form.get().as_ref().map(|f| !f.backend.is_empty()).unwrap_or(false)>
+                <div class="form-hint">Could not list devices - leave blank for default</div>
+            </Show>
+
+            <label class="form-label">"Input Modalities"</label>
+            <div class="form-check-group modality-row">
+                <For
+                    each=move || MODALITY_OPTIONS.iter().enumerate().map(|(i, (v, l))| (i, *v, *l))
+                    key=|(i, v, _)| (*i, v.to_string())
+                    children=move |(_i, value, label)| {
+                        let value_str = value.to_string();
+                        let input_id = format!("field-modality-input-{}", value);
+                        let label_for = format!("field-modality-input-{}", value);
+                        let onchange_value = value_str.clone();
+                        view! {
+                            <div class="form-check">
+                                <input
+                                    id=input_id
+                                    type="checkbox"
+                                    on:change=move |e| {
+                                        let checked = e.target()
+                                            .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
+                                            .map(|el| el.checked())
+                                            .unwrap_or(false);
+                                        let v = onchange_value.clone();
+                                        form.update(move |f| {
+                                            if let Some(form) = f {
+                                                if let Some(m) = form.modalities.as_mut() {
+                                                    if checked {
+                                                        if !m.input.contains(&v) {
+                                                            m.input.push(v.clone());
+                                                        }
+                                                    } else {
+                                                        m.input.retain(|x| *x != v);
+                                                    }
+                                                }
+                                            }
+                                        });
+                                    }
+                                />
+                                <label class="form-check-label" for=label_for>{label}</label>
+                            </div>
+                        }
+                    }
+                />
+            </div>
+
+            <label class="form-label">"Output Modalities"</label>
+            <div class="form-check-group modality-row">
+                <For
+                    each=move || MODALITY_OPTIONS.iter().enumerate().map(|(i, (v, l))| (i, *v, *l))
+                    key=|(i, v, _)| (*i, format!("out-{}", v))
+                    children=move |(_i, value, label)| {
+                        let value_str = value.to_string();
+                        let input_id = format!("field-modality-output-{}", value);
+                        let label_for = format!("field-modality-output-{}", value);
+                        let onchange_value = value_str.clone();
+                        view! {
+                            <div class="form-check">
+                                <input
+                                    id=input_id
+                                    type="checkbox"
+                                    on:change=move |e| {
+                                        let checked = e.target()
+                                            .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
+                                            .map(|el| el.checked())
+                                            .unwrap_or(false);
+                                        let v = onchange_value.clone();
+                                        form.update(move |f| {
+                                            if let Some(form) = f {
+                                                if let Some(m) = form.modalities.as_mut() {
+                                                    if checked {
+                                                        if !m.output.contains(&v) {
+                                                            m.output.push(v.clone());
+                                                        }
+                                                    } else {
+                                                        m.output.retain(|x| *x != v);
+                                                    }
+                                                }
+                                            }
+                                        });
+                                    }
+                                />
+                                <label class="form-check-label" for=label_for>{label}</label>
+                            </div>
+                        }
+                    }
+                />
+            </div>
         </div>
     }
 }
