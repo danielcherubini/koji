@@ -91,6 +91,13 @@ pub fn ModelEditor() -> impl IntoView {
     Effect::new(move |_| {
         if let Some(guard) = detail.get() {
             if let Some(d) = guard.take() {
+                web_sys::console::log_1(
+                    &format!(
+                        "[parent] Effect re-populating form from detail, id={}",
+                        d.id
+                    )
+                    .into(),
+                );
                 backends.set(d.backends.clone());
                 original_id.set(d.id.to_string());
 
