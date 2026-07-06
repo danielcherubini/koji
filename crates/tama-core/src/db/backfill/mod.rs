@@ -26,6 +26,9 @@ struct LegacyBackendInfo {
     version: String,
     path: std::path::PathBuf,
     installed_at: i64,
+    #[serde(default)]
+    #[allow(dead_code)]
     gpu_type: Option<crate::gpu::GpuType>,
+    #[serde(default)]
     source: Option<crate::backends::BackendSource>,
 }

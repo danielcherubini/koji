@@ -111,7 +111,6 @@ pub async fn list_backends(State(state): State<Arc<ProxyState>>) -> impl IntoRes
                                 path: info.path.to_string_lossy().to_string(),
                                 installed_at: info.installed_at,
                                 gpu_variant: info.gpu_variant.clone(),
-                                gpu_type: info.gpu_type.as_ref().map(|g| g.into()),
                                 source: info.source.as_ref().map(|s| s.into()),
                                 is_active: active_version
                                     .as_ref()
@@ -205,7 +204,6 @@ pub async fn list_backends(State(state): State<Arc<ProxyState>>) -> impl IntoRes
                                 path: info.path.to_string_lossy().to_string(),
                                 installed_at: info.installed_at,
                                 gpu_variant: info.gpu_variant.clone(),
-                                gpu_type: info.gpu_type.as_ref().map(|g| g.into()),
                                 source: info.source.as_ref().map(|s| s.into()),
                                 is_active: active_version
                                     .as_ref()
@@ -389,7 +387,6 @@ pub async fn check_backend_updates(State(state): State<Arc<ProxyState>>) -> impl
                                 path: info.path.to_string_lossy().to_string(),
                                 installed_at: info.installed_at,
                                 gpu_variant: info.gpu_variant.clone(),
-                                gpu_type: info.gpu_type.as_ref().map(|g| g.into()),
                                 source: info.source.as_ref().map(|s| s.into()),
                                 is_active: active_version
                                     .as_ref()
@@ -476,7 +473,6 @@ pub async fn check_backend_updates(State(state): State<Arc<ProxyState>>) -> impl
                                 path: info.path.to_string_lossy().to_string(),
                                 installed_at: info.installed_at,
                                 gpu_variant: info.gpu_variant.clone(),
-                                gpu_type: info.gpu_type.as_ref().map(|g| g.into()),
                                 source: info.source.as_ref().map(|s| s.into()),
                                 is_active: active_version
                                     .as_ref()
@@ -590,7 +586,6 @@ pub async fn list_backend_versions(
                         path: info.path.to_string_lossy().to_string(),
                         installed_at: info.installed_at,
                         gpu_variant: info.gpu_variant.clone(),
-                        gpu_type: info.gpu_type.as_ref().map(|g| g.into()),
                         source: info.source.as_ref().map(|s| s.into()),
                         is_active,
                     }

@@ -3,7 +3,6 @@ use std::sync::Arc;
 
 use crate::backends::InstallOptions;
 use crate::backends::ProgressSink;
-use crate::gpu::GpuType;
 
 /// Emit a log line through the progress sink, or println if no sink is provided.
 pub(crate) fn emit(sink: Option<&Arc<dyn ProgressSink>>, line: impl Into<String>) {
@@ -37,36 +36,34 @@ pub(crate) fn build_cmake_args(
         "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON".to_string(),
     ];
 
-    // Add GPU-specific flags
-    if let Some(ref gpu) = options.gpu_type {
-        match gpu {
-            GpuType::Cuda { .. } => {
-                cmake_args.push("-DGGML_CUDA=ON".to_string());
-            }
-            GpuType::Vulkan => {
-                cmake_args.push("-DGGML_VULKAN=ON".to_string());
-            }
-            GpuType::Metal => {
-                cmake_args.push("-DGGML_METAL=ON".to_string());
-            }
-            GpuType::RocM { .. } => {
-                cmake_args.push("-DGGML_HIP=ON".to_string());
-                cmake_args.push("-DGGML_HIP_ROCWMMA_FATTN=ON".to_string());
-                cmake_args.push("-DGGML_CUDA_FA_ALL_QUANTS=ON".to_string());
-                // Note: `-DGGML_BACKEND_DL=ON` was removed because it conflicts
-                // with GGML_NATIVE (ON by default). llama.cpp cmake hard-stops
-                // when both are set. Keeping GGML_NATIVE for CPU optimizations.
-                // Note: `-DLLAMA_CURL=ON` was deprecated upstream and is now
-                // silently ignored (emits a cmake warning). curl support is
-                // handled implicitly by current llama.cpp builds, so we do
-                // not pass the flag.
-                if !amdgpu_targets.is_empty() {
-                    cmake_args.push(format!("-DAMDGPU_TARGETS={}", amdgpu_targets.join(";")));
-                }
-            }
-            GpuType::CpuOnly => {}
-            GpuType::Custom => {}
+    // Add GPU-specific flags based on gpu_variant (e.g. "cuda", "vulkan", "rocm", "metal")
+    match options.gpu_variant.as_str() {
+        "cuda" => {
+            cmake_args.push("-DGGML_CUDA=ON".to_string());
         }
+        "vulkan" => {
+            cmake_args.push("-DGGML_VULKAN=ON".to_string());
+        }
+        "metal" => {
+            cmake_args.push("-DGGML_METAL=ON".to_string());
+        }
+        "rocm" => {
+            cmake_args.push("-DGGML_HIP=ON".to_string());
+            cmake_args.push("-DGGML_HIP_ROCWMMA_FATTN=ON".to_string());
+            cmake_args.push("-DGGML_CUDA_FA_ALL_QUANTS=ON".to_string());
+            // Note: `-DGGML_BACKEND_DL=ON` was removed because it conflicts
+            // with GGML_NATIVE (ON by default). llama.cpp cmake hard-stops
+            // when both are set. Keeping GGML_NATIVE for CPU optimizations.
+            // Note: `-DLLAMA_CURL=ON` was deprecated upstream and is now
+            // silently ignored (emits a cmake warning). curl support is
+            // handled implicitly by current llama.cpp builds, so we do
+            // not pass the flag.
+            if !amdgpu_targets.is_empty() {
+                cmake_args.push(format!("-DAMDGPU_TARGETS={}", amdgpu_targets.join(";")));
+            }
+        }
+        // "cpu", "custom", or any other variant — no GPU flags
+        _ => {}
     }
 
     // Explicitly enable all IQK FlashAttention KV cache quant types for ik_llama.
@@ -92,7 +89,7 @@ mod tests {
     use crate::backends::types::{BackendSource, BackendType};
     use std::path::PathBuf;
 
-    fn make_options(backend_type: BackendType, gpu_type: Option<GpuType>) -> InstallOptions {
+    fn make_options(backend_type: BackendType, gpu_variant: &str) -> InstallOptions {
         InstallOptions {
             backend_type,
             source: BackendSource::SourceCode {
@@ -101,8 +98,7 @@ mod tests {
                 commit: None,
             },
             target_dir: PathBuf::from("/tmp/test"),
-            gpu_type,
-            gpu_variant: "cpu".to_string(),
+            gpu_variant: gpu_variant.to_string(),
             allow_overwrite: false,
         }
     }
@@ -111,7 +107,7 @@ mod tests {
     /// for shared libraries in its own directory after installation.
     #[test]
     fn test_all_builds_include_rpath_origin() {
-        let opts = make_options(BackendType::LlamaCpp, None);
+        let opts = make_options(BackendType::LlamaCpp, "cpu");
         let args = build_cmake_args(&opts, Path::new("/src"), Path::new("/build"), &[]);
         assert!(
             args.contains(&"-DCMAKE_BUILD_RPATH=$ORIGIN".to_string()),
@@ -131,7 +127,7 @@ mod tests {
     /// causes NaN crashes on hybrid Mamba/attention models (e.g. Qwen3.5).
     #[test]
     fn test_ik_llama_includes_iqk_fa_all_quants() {
-        let opts = make_options(BackendType::IkLlama, None);
+        let opts = make_options(BackendType::IkLlama, "cpu");
         let args = build_cmake_args(&opts, Path::new("/src"), Path::new("/build"), &[]);
         assert!(
             args.contains(&"-DGGML_IQK_FA_ALL_QUANTS=ON".to_string()),
@@ -143,7 +139,7 @@ mod tests {
     /// llama.cpp builds must NOT include the ik_llama-specific flag.
     #[test]
     fn test_llama_cpp_excludes_iqk_fa_all_quants() {
-        let opts = make_options(BackendType::LlamaCpp, None);
+        let opts = make_options(BackendType::LlamaCpp, "cpu");
         let args = build_cmake_args(&opts, Path::new("/src"), Path::new("/build"), &[]);
         assert!(
             !args.contains(&"-DGGML_IQK_FA_ALL_QUANTS=ON".to_string()),
@@ -154,12 +150,7 @@ mod tests {
     /// ik_llama + CUDA should have both the CUDA flag and the quants flag.
     #[test]
     fn test_ik_llama_cuda_includes_both_flags() {
-        let opts = make_options(
-            BackendType::IkLlama,
-            Some(GpuType::Cuda {
-                version: "12".to_string(),
-            }),
-        );
+        let opts = make_options(BackendType::IkLlama, "cuda");
         let args = build_cmake_args(&opts, Path::new("/src"), Path::new("/build"), &[]);
         assert!(args.contains(&"-DGGML_CUDA=ON".to_string()));
         assert!(args.contains(&"-DGGML_IQK_FA_ALL_QUANTS=ON".to_string()));
@@ -168,12 +159,7 @@ mod tests {
     /// ROCm source builds must emit the full ROCm flag set.
     #[test]
     fn test_rocm_emits_full_flag_set() {
-        let opts = make_options(
-            BackendType::LlamaCpp,
-            Some(GpuType::RocM {
-                version: "7.2".to_string(),
-            }),
-        );
+        let opts = make_options(BackendType::LlamaCpp, "rocm");
         let args = build_cmake_args(
             &opts,
             Path::new("/src"),
@@ -215,12 +201,7 @@ mod tests {
     /// Multiple AMDGPU targets are joined with semicolons (CMake list separator).
     #[test]
     fn test_rocm_multi_target_joined_with_semicolons() {
-        let opts = make_options(
-            BackendType::LlamaCpp,
-            Some(GpuType::RocM {
-                version: "7.2".to_string(),
-            }),
-        );
+        let opts = make_options(BackendType::LlamaCpp, "rocm");
         let args = build_cmake_args(
             &opts,
             Path::new("/src"),
@@ -238,12 +219,7 @@ mod tests {
     /// (fall back to llama.cpp's default list), but other ROCm flags remain.
     #[test]
     fn test_rocm_no_targets_omits_amdgpu_targets_flag() {
-        let opts = make_options(
-            BackendType::LlamaCpp,
-            Some(GpuType::RocM {
-                version: "7.2".to_string(),
-            }),
-        );
+        let opts = make_options(BackendType::LlamaCpp, "rocm");
         let args = build_cmake_args(&opts, Path::new("/src"), Path::new("/build"), &[]);
         assert!(
             !args.iter().any(|a| a.starts_with("-DAMDGPU_TARGETS=")),
@@ -269,12 +245,7 @@ mod tests {
     /// is accidentally populated by the caller.
     #[test]
     fn test_non_rocm_never_emits_rocm_flags() {
-        let opts = make_options(
-            BackendType::LlamaCpp,
-            Some(GpuType::Cuda {
-                version: "12".to_string(),
-            }),
-        );
+        let opts = make_options(BackendType::LlamaCpp, "cuda");
         let args = build_cmake_args(
             &opts,
             Path::new("/src"),
@@ -294,12 +265,7 @@ mod tests {
     /// the ROCm-specific rocWMMA FlashAttention flag.
     #[test]
     fn test_ik_llama_rocm_includes_both_iqk_and_rocwmma() {
-        let opts = make_options(
-            BackendType::IkLlama,
-            Some(GpuType::RocM {
-                version: "7.2".to_string(),
-            }),
-        );
+        let opts = make_options(BackendType::IkLlama, "rocm");
         let args = build_cmake_args(
             &opts,
             Path::new("/src"),

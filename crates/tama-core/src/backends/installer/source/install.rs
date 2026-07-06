@@ -16,7 +16,7 @@ use crate::backends::installer::prebuilt::prepare_target_dir;
 use crate::backends::types::BackendType;
 use crate::backends::InstallOptions;
 use crate::backends::ProgressSink;
-use crate::gpu::{detect_amdgpu_targets, GpuType};
+use crate::gpu::detect_amdgpu_targets;
 
 /// Build and install a backend from source using git + cmake.
 pub async fn install_from_source(
@@ -117,7 +117,7 @@ pub async fn install_from_source(
     // Register ROCm library path with ldconfig so the built binary can find
     // shared libraries like libhipblas.so at runtime.
     #[cfg(not(target_os = "windows"))]
-    if matches!(options.gpu_type, Some(GpuType::RocM { .. })) {
+    if options.gpu_variant == "rocm" {
         if let Some(lib_dir) = detect_rocm_lib_dir() {
             match register_ldconfig_path(&lib_dir, "rocm.conf") {
                 Ok(()) => {
@@ -425,7 +425,7 @@ async fn configure_cmake(
     build_output: &Path,
     #[allow(unused_variables)] progress: Option<&Arc<dyn ProgressSink>>,
 ) -> Result<()> {
-    let amdgpu_targets = if matches!(options.gpu_type, Some(GpuType::RocM { .. })) {
+    let amdgpu_targets = if options.gpu_variant == "rocm" {
         let targets = detect_amdgpu_targets();
         if targets.is_empty() {
             tracing::warn!(
@@ -444,7 +444,7 @@ async fn configure_cmake(
 
     let mut cmd = tokio::process::Command::new("cmake");
     cmd.args(&cmake_args);
-    if matches!(options.gpu_type, Some(GpuType::RocM { .. })) {
+    if options.gpu_variant == "rocm" {
         if let Some((hipcxx, hip_path)) = detect_hip_env() {
             tracing::info!("Using HIPCXX={}, HIP_PATH={}", hipcxx, hip_path);
             cmd.env("HIPCXX", hipcxx);

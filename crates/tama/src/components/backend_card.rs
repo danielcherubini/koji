@@ -72,8 +72,6 @@ pub struct BackendInfoDto {
     #[serde(default)]
     pub gpu_variant: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gpu_type: Option<GpuTypeDto>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<BackendSourceDto>,
 }
 
@@ -86,8 +84,6 @@ pub struct BackendVersionDto {
     pub installed_at: i64,
     #[serde(default)]
     pub gpu_variant: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gpu_type: Option<GpuTypeDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<BackendSourceDto>,
     pub is_active: bool,
@@ -303,10 +299,12 @@ pub fn BackendCard(
                         } else { view! { <span/> }.into_any() }}
 
                         {if let Some(ref v) = info {
-                            if let Some(ref g) = v.gpu_type {
-                                let label = g.label();
-                                view! { <div style="font-size:0.875rem;"><strong>"GPU: "</strong>{label}</div> }.into_any()
-                            } else { view! { <span/> }.into_any() }
+                            let gpu_label = if v.gpu_variant.is_empty() {
+                                "CPU".to_string()
+                            } else {
+                                v.gpu_variant.to_lowercase()
+                            };
+                            view! { <div style="font-size:0.875rem;"><strong>"GPU: "</strong>{gpu_label}</div> }.into_any()
                         } else { view! { <span/> }.into_any() }}
 
                         {if let Some(ref v) = info {
@@ -621,9 +619,6 @@ mod tests {
                 path: "/path/to/backend".to_string(),
                 installed_at: 1700000000,
                 gpu_variant: "cuda_12".to_string(),
-                gpu_type: Some(GpuTypeDto::Cuda {
-                    version: "12.4".to_string(),
-                }),
                 source: Some(BackendSourceDto::Prebuilt {
                     version: "1.0.0".to_string(),
                 }),
@@ -634,9 +629,6 @@ mod tests {
                 path: "/path/to/backend".to_string(),
                 installed_at: 1700000000,
                 gpu_variant: "cuda_12".to_string(),
-                gpu_type: Some(GpuTypeDto::Cuda {
-                    version: "12.4".to_string(),
-                }),
                 source: Some(BackendSourceDto::Prebuilt {
                     version: "1.0.0".to_string(),
                 }),
@@ -690,7 +682,6 @@ mod tests {
                 path: "/custom/path".to_string(),
                 installed_at: 1700000000,
                 gpu_variant: String::new(),
-                gpu_type: None,
                 source: None,
             }),
             versions: vec![],
@@ -722,9 +713,6 @@ mod tests {
                 path: "/home/user/.local/share/tama/backends/llama-cpp/b8407".to_string(),
                 installed_at: 1700000000,
                 gpu_variant: "cuda_12".to_string(),
-                gpu_type: Some(GpuTypeDto::Cuda {
-                    version: "12.4".to_string(),
-                }),
                 source: Some(BackendSourceDto::Prebuilt {
                     version: "b8407".to_string(),
                 }),
@@ -735,9 +723,6 @@ mod tests {
                 path: "/home/user/.local/share/tama/backends/llama-cpp/b8407".to_string(),
                 installed_at: 1700000000,
                 gpu_variant: "cuda_12".to_string(),
-                gpu_type: Some(GpuTypeDto::Cuda {
-                    version: "12.4".to_string(),
-                }),
                 source: Some(BackendSourceDto::Prebuilt {
                     version: "b8407".to_string(),
                 }),

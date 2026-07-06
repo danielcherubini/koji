@@ -17,16 +17,14 @@ use std::sync::Arc;
 
 use super::types::{BackendSource, BackendType};
 use super::ProgressSink;
-use crate::gpu::GpuType;
 
 #[derive(Debug, Clone)]
 pub struct InstallOptions {
     pub backend_type: BackendType,
     pub source: BackendSource,
     pub target_dir: PathBuf,
-    pub gpu_type: Option<GpuType>,
     /// GPU variant string (e.g. "cpu", "cuda", "rocm").
-    /// Used for path computation and registry metadata.
+    /// Used for path computation, download URL resolution, and registry metadata.
     pub gpu_variant: String,
     /// When true, skip the target directory existence check.
     /// Used by the update path where the directory already exists.

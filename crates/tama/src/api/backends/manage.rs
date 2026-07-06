@@ -223,7 +223,6 @@ pub async fn update_backend(
         backend_type: backend_type.clone(),
         source,
         target_dir,
-        gpu_type: backend_info.gpu_type,
         gpu_variant: backend_info.gpu_variant.clone(),
         allow_overwrite: true,
     };
@@ -575,7 +574,6 @@ pub async fn remove_backend_version(
         version: info.version.clone(),
         path: std::path::PathBuf::from(&info.path),
         installed_at: info.installed_at,
-        gpu_type: None,
         gpu_variant: info.gpu_variant.clone(),
         source: None,
     };

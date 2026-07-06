@@ -171,7 +171,6 @@ mod tests {
             version: "test".to_string(),
             path: outside_path,
             installed_at: 0,
-            gpu_type: None,
             gpu_variant: "cpu".to_string(),
             source: None,
         };
@@ -258,7 +257,6 @@ mod tests {
             version: "v0.3.0".to_string(),
             path: test_base.clone(), // This is a directory, not a binary
             installed_at: 0,
-            gpu_type: None,
             gpu_variant: "cpu".to_string(),
             source: None,
         };

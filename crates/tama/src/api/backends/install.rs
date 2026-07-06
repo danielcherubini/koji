@@ -59,25 +59,14 @@ pub async fn install_backend(
         }
     }
 
-    // Validate gpu_type version fields: if present, must be non-empty and <= 32 chars
-    match &req.gpu_type {
-        GpuTypeDto::Cuda { version } | GpuTypeDto::Rocm { version } => {
-            if version.is_empty() {
-                return error_response(
-                    StatusCode::BAD_REQUEST,
-                    "gpu type version cannot be empty",
-                    Some("ValidationError"),
-                );
-            }
-            if version.len() > 32 {
-                return error_response(
-                    StatusCode::BAD_REQUEST,
-                    "gpu type version must be at most 32 characters",
-                    Some("ValidationError"),
-                );
-            }
-        }
-        _ => {}
+    // Validate gpu_variant: must be a known variant string
+    let valid_variants = ["cpu", "cuda", "vulkan", "rocm", "metal", "custom"];
+    if !valid_variants.contains(&req.gpu_variant.to_lowercase().as_str()) {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            format!("gpu_variant must be one of: {}", valid_variants.join(", ")),
+            Some("ValidationError"),
+        );
     }
 
     let jobs = match &state.web_jobs {
@@ -259,23 +248,9 @@ pub async fn install_backend(
         .into_response();
     }
 
-    // Convert GPU type
-    let gpu_type = match &req.gpu_type {
-        GpuTypeDto::Cuda { version } => Some(tama_core::gpu::GpuType::Cuda {
-            version: version.clone(),
-        }),
-        GpuTypeDto::Vulkan => Some(tama_core::gpu::GpuType::Vulkan),
-        GpuTypeDto::Metal => Some(tama_core::gpu::GpuType::Metal),
-        GpuTypeDto::Rocm { version } => Some(tama_core::gpu::GpuType::RocM {
-            version: version.clone(),
-        }),
-        GpuTypeDto::CpuOnly => Some(tama_core::gpu::GpuType::CpuOnly),
-        GpuTypeDto::Custom => Some(tama_core::gpu::GpuType::Custom),
-    };
-
     // Compute effective build_from_source
     let is_linux = std::env::consts::OS == "linux";
-    let is_cuda = matches!(&req.gpu_type, GpuTypeDto::Cuda { .. });
+    let is_cuda = req.gpu_variant.to_lowercase() == "cuda";
     let is_ik_llama = matches!(backend_type, tama_core::backends::BackendType::IkLlama);
 
     let mut notices: Vec<String> = Vec::new();
@@ -399,10 +374,7 @@ pub async fn install_backend(
     };
 
     // Compute the versioned target directory
-    let gpu_variant = gpu_type
-        .as_ref()
-        .map(|g| g.variant_folder().to_string())
-        .unwrap_or_else(|| "cpu".to_string());
+    let gpu_variant = req.gpu_variant.clone();
 
     let target_dir = match tama_core::backends::backends_dir() {
         Ok(d) => {
@@ -428,10 +400,9 @@ pub async fn install_backend(
         }
     };
 
-    // Capture values needed for DB registration before gpu_type/source are moved
+    // Capture values needed for DB registration before source is moved
     let reg_backend_type = backend_type.clone();
     let reg_version = version.clone();
-    let reg_gpu_type = gpu_type.clone();
     let reg_gpu_variant = gpu_variant.clone();
     let reg_source = source.clone();
     let reg_backend_name = match backend_type {
@@ -446,7 +417,6 @@ pub async fn install_backend(
         backend_type: backend_type.clone(),
         source,
         target_dir,
-        gpu_type,
         gpu_variant,
         allow_overwrite: req.force,
     };
@@ -487,7 +457,6 @@ pub async fn install_backend(
                             version: reg_version,
                             path: binary_path,
                             installed_at,
-                            gpu_type: reg_gpu_type,
                             gpu_variant: reg_gpu_variant,
                             source: Some(reg_source),
                         })

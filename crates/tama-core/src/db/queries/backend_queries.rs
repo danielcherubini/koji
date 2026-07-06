@@ -13,7 +13,6 @@ pub struct BackendInstallationRecord {
     pub version: String,
     pub path: String,
     pub installed_at: i64,
-    pub gpu_type: Option<String>,
     pub gpu_variant: String,
     pub source: Option<String>,
     pub is_active: bool,
@@ -31,10 +30,9 @@ fn map_backend_record(row: &rusqlite::Row) -> rusqlite::Result<BackendInstallati
         version: row.get(3)?,
         path: row.get(4)?,
         installed_at: row.get(5)?,
-        gpu_type: row.get(6)?,
-        gpu_variant: row.get(7)?,
-        source: row.get(8)?,
-        is_active: row.get::<_, i64>(9)? != 0,
+        gpu_variant: row.get(6)?,
+        source: row.get(7)?,
+        is_active: row.get::<_, i64>(8)? != 0,
     })
 }
 
@@ -54,15 +52,14 @@ pub fn insert_backend_installation(
     let tx = conn.unchecked_transaction()?;
     tx.execute(
         "INSERT OR REPLACE INTO backend_installations
-             (name, backend_type, version, path, installed_at, gpu_type, gpu_variant, source, is_active)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1)",
+             (name, backend_type, version, path, installed_at, gpu_variant, source, is_active)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1)",
         (
             &record.name,
             &record.backend_type,
             &record.version,
             &record.path,
             record.installed_at,
-            record.gpu_type.as_deref(),
             &record.gpu_variant,
             record.source.as_deref(),
         ),
@@ -82,7 +79,7 @@ pub fn get_active_backend(
     gpu_variant: &str,
 ) -> Result<Option<BackendInstallationRecord>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, backend_type, version, path, installed_at, gpu_type, gpu_variant, source, is_active
+        "SELECT id, name, backend_type, version, path, installed_at, gpu_variant, source, is_active
          FROM backend_installations
          WHERE name = ?1 AND gpu_variant = ?2 AND is_active = 1",
     )?;
@@ -96,7 +93,7 @@ pub fn get_active_backend(
 /// Return all active backend installations (one per backend name/variant).
 pub fn list_active_backends(conn: &Connection) -> Result<Vec<BackendInstallationRecord>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, backend_type, version, path, installed_at, gpu_type, gpu_variant, source, is_active
+        "SELECT id, name, backend_type, version, path, installed_at, gpu_variant, source, is_active
          FROM backend_installations
          WHERE is_active = 1",
     )?;
@@ -115,12 +112,12 @@ pub fn list_backend_versions(
     gpu_variant: Option<&str>,
 ) -> Result<Vec<BackendInstallationRecord>> {
     let sql = if let Some(_variant) = gpu_variant {
-        "SELECT id, name, backend_type, version, path, installed_at, gpu_type, gpu_variant, source, is_active
+        "SELECT id, name, backend_type, version, path, installed_at, gpu_variant, source, is_active
          FROM backend_installations
          WHERE name = ?1 AND gpu_variant = ?2
          ORDER BY installed_at DESC"
     } else {
-        "SELECT id, name, backend_type, version, path, installed_at, gpu_type, gpu_variant, source, is_active
+        "SELECT id, name, backend_type, version, path, installed_at, gpu_variant, source, is_active
          FROM backend_installations
          WHERE name = ?1
          ORDER BY installed_at DESC"
@@ -144,7 +141,7 @@ pub fn get_backend_by_version(
     version: &str,
 ) -> Result<Option<BackendInstallationRecord>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, backend_type, version, path, installed_at, gpu_type, gpu_variant, source, is_active
+        "SELECT id, name, backend_type, version, path, installed_at, gpu_variant, source, is_active
          FROM backend_installations
          WHERE name = ?1 AND gpu_variant = ?2 AND version = ?3",
     )?;
@@ -523,7 +520,6 @@ mod tests {
                 version: "b8407".to_string(),
                 path: "/tmp/test/llama-server".to_string(),
                 installed_at: 0,
-                gpu_type: None,
                 gpu_variant: "cpu".to_string(),
                 source: None,
                 is_active: true,

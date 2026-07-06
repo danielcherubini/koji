@@ -16,7 +16,6 @@ fn insert_active_backend(
         version: version.to_string(),
         path: std::path::PathBuf::from(path),
         installed_at: 0,
-        gpu_type: None,
         gpu_variant: gpu_variant.to_string(),
         source: None,
     };

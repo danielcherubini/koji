@@ -211,7 +211,6 @@ impl BackendManager {
             installed_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs() as i64),
-            gpu_type: existing.gpu_type,
             gpu_variant: existing.gpu_variant,
             source: new_source,
         };
@@ -300,12 +299,6 @@ impl BackendManager {
     // ── Private helpers ──────────────────────────────────────
 
     fn info_to_record(info: &BackendInfo) -> Result<crate::db::queries::BackendInstallationRecord> {
-        let gpu_type_json = info
-            .gpu_type
-            .as_ref()
-            .map(serde_json::to_string)
-            .transpose()
-            .context("Failed to serialize gpu_type")?;
         let source_json = info
             .source
             .as_ref()
@@ -319,7 +312,6 @@ impl BackendManager {
             version: info.version.clone(),
             path: info.path.to_string_lossy().to_string(),
             installed_at: info.installed_at,
-            gpu_type: gpu_type_json,
             gpu_variant: info.gpu_variant.clone(),
             source: source_json,
             is_active: true,
@@ -329,12 +321,6 @@ impl BackendManager {
     fn record_to_info(
         record: crate::db::queries::BackendInstallationRecord,
     ) -> Result<BackendInfo> {
-        let gpu_type = record
-            .gpu_type
-            .as_deref()
-            .map(serde_json::from_str)
-            .transpose()
-            .context("Failed to deserialize gpu_type")?;
         let source = record
             .source
             .as_deref()
@@ -353,7 +339,6 @@ impl BackendManager {
             version: record.version,
             path: std::path::PathBuf::from(record.path),
             installed_at: record.installed_at,
-            gpu_type,
             gpu_variant: record.gpu_variant,
             source,
         })
@@ -381,7 +366,6 @@ mod tests {
                 version: version.to_string(),
                 path: "/tmp/test/llama-server".to_string(),
                 installed_at: 0,
-                gpu_type: None,
                 gpu_variant: gpu_variant.to_string(),
                 source: None,
                 is_active: true,
@@ -555,7 +539,6 @@ mod tests {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_secs() as i64,
-            gpu_type: None,
             gpu_variant: "cpu".to_string(),
             source: None,
         }
@@ -646,7 +629,6 @@ mod tests {
             version: "b8407".to_string(),
             path: std::path::PathBuf::from("/path/to/llama_cpp"),
             installed_at: info1.installed_at,
-            gpu_type: None,
             gpu_variant: "cuda".to_string(),
             source: None,
         };
@@ -897,7 +879,6 @@ mod tests {
                 version: version.to_string(),
                 path: "/tmp/test/llama-server".to_string(),
                 installed_at: 0,
-                gpu_type: None,
                 gpu_variant: gpu_variant.to_string(),
                 source: source_json,
                 is_active: true,

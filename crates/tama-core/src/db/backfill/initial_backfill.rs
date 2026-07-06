@@ -128,14 +128,6 @@ pub fn migrate_backend_registry_toml(
     let mut count = 0usize;
 
     for (name, info) in registry_data.backends {
-        let gpu_type_json: Option<String> =
-            match &info.gpu_type {
-                Some(g) => Some(serde_json::to_string(g).with_context(|| {
-                    format!("Failed to serialize gpu_type for backend '{}'", name)
-                })?),
-                None => None,
-            };
-
         let source_json: Option<String> =
             match &info.source {
                 Some(s) => Some(serde_json::to_string(s).with_context(|| {
@@ -151,8 +143,7 @@ pub fn migrate_backend_registry_toml(
             version: info.version.clone(),
             path: info.path.to_string_lossy().to_string(),
             installed_at: info.installed_at,
-            gpu_type: gpu_type_json,
-            gpu_variant: "cpu".to_string(), // Legacy data has no gpu_variant; default to cpu
+            gpu_variant: "cpu".to_string(), // Legacy TOML data has no gpu_variant; default to cpu
             source: source_json,
             is_active: true,
         };
@@ -412,7 +403,6 @@ installed_at = 1700000000
                 version: "b3456".to_string(),
                 path: "/opt/backends/llama_cpp/llama-server".to_string(),
                 installed_at: 1700000000,
-                gpu_type: None,
                 gpu_variant: "cpu".to_string(),
                 source: None,
                 is_active: true,
