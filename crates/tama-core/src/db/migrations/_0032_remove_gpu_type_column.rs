@@ -26,7 +26,7 @@ mod tests {
             .prepare("PRAGMA table_info(backend_installations)")
             .expect("prepare should succeed");
         let columns: Vec<String> = stmt
-            .query_map([], |row: &rusqlite::Row| Ok(row.get::<_, String>(1)?))
+            .query_map([], |row: &rusqlite::Row| row.get::<_, String>(1))
             .expect("query should succeed")
             .collect::<Result<Vec<_>, _>>()
             .expect("collect should succeed");

@@ -154,6 +154,7 @@ pub fn tail_lines(path: &Path, n: usize) -> Result<Vec<String>> {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use std::io::Write;
