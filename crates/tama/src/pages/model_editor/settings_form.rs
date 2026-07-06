@@ -45,16 +45,7 @@ pub fn ModelEditorSettingsForm(
     let last_init_id = StoredValue::new(None::<String>);
     Effect::new(move |_| {
         if let Some(f) = form.get() {
-            web_sys::console::log_1(
-                &format!(
-                    "[settings] Effect fired, form id={}, last_init={:?}",
-                    f.id,
-                    last_init_id.get_value()
-                )
-                .into(),
-            );
             if last_init_id.get_value() != Some(f.id.clone()) {
-                web_sys::console::log_1(&"[settings] Populating inputs".into());
                 set_input_value(
                     "field-display-name",
                     f.display_name.as_deref().unwrap_or_default(),
@@ -68,8 +59,6 @@ pub fn ModelEditorSettingsForm(
                 set_checked("field-enabled", f.enabled);
                 last_init_id.set_value(Some(f.id.clone()));
             }
-        } else {
-            web_sys::console::log_1(&"[settings] Effect fired, form is None".into());
         }
     });
 
@@ -83,7 +72,6 @@ pub fn ModelEditorSettingsForm(
                 placeholder="Auto-generated from HF repo name"
                 on:input=move |ev| {
                     let val = target_value(&ev);
-                    web_sys::console::log_1(&format!("[settings] on:input display_name={}", val).into());
                     form.update(|f| {
                         if let Some(form) = f {
                             form.display_name = if val.is_empty() { None } else { Some(val) };
@@ -141,20 +129,16 @@ pub fn ModelEditorSettingsForm(
                 class="form-select"
                 on:change=move |e| {
                     let val = target_value(&e);
-                    web_sys::console::log_1(&format!("[settings] on:change backend={}", val).into());
                     form.update(|f| {
                         if let Some(form) = f {
                             // Parse "name:variant" or just "name"
                             if let Some((name, variant)) = val.split_once(':') {
                                 form.backend = name.to_string();
                                 form.gpu_variant = Some(variant.to_string());
-                                web_sys::console::log_1(&format!("[settings] set backend={}, gpu_variant={}", name, variant).into());
                             } else {
                                 form.backend = val;
                                 form.gpu_variant = None;
                             }
-                        } else {
-                            web_sys::console::log_1(&"[settings] form is None in update!".into());
                         }
                     });
                 }

@@ -96,11 +96,6 @@ pub fn ModelEditor() -> impl IntoView {
             if let Some(d) = guard.take() {
                 let id_str = d.id.to_string();
                 if populated_id.get_value() != Some(id_str.clone()) {
-                    web_sys::console::log_1(
-                        &format!("[parent] Effect populating form from detail, id={}", id_str)
-                            .into(),
-                    );
-                    backends.set(d.backends.clone());
                     original_id.set(d.id.to_string());
 
                     // Build consolidated form
@@ -408,18 +403,6 @@ pub fn ModelEditor() -> impl IntoView {
         let form_val = form.get();
         let original_id_val = original_id.get();
         let is_new_val = is_new();
-
-        web_sys::console::log_1(
-            &format!(
-                "[save] backend={}, gpu_variant={:?}",
-                form_val
-                    .as_ref()
-                    .map(|f| f.backend.clone())
-                    .unwrap_or_default(),
-                form_val.as_ref().and_then(|f| f.gpu_variant.clone())
-            )
-            .into(),
-        );
 
         async move {
             let Some(initial_form) = form_val else {

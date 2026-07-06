@@ -95,6 +95,28 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                         .contains(&SPEC_TYPE_NGRAM_SIMPLE.to_string()),
                 );
                 set_input_value("field-args", &f.args);
+                // Spec decoding selects and input
+                set_input_value(
+                    "field-spec-n-max",
+                    &f.spec_decoding
+                        .n_max
+                        .map(|v| v.to_string())
+                        .unwrap_or_default(),
+                );
+                set_input_value(
+                    "field-spec-n-min",
+                    &f.spec_decoding
+                        .n_min
+                        .map(|v| v.to_string())
+                        .unwrap_or_default(),
+                );
+                set_input_value(
+                    "field-spec-draft-ngl",
+                    &f.spec_decoding
+                        .draft_ngl
+                        .map(|v| v.to_string())
+                        .unwrap_or_default(),
+                );
                 last_init_id.set_value(Some(f.id.clone()));
             }
         }

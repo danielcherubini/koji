@@ -83,7 +83,7 @@ fn KvQuantCustomInput(form: RwSignal<Option<ModelForm>>, field: KvQuantField) ->
                         type="text"
                         maxlength="32"
                         placeholder="Custom quant value..."
-
+                        id=format!("field-kv-custom-{}", match field { KvQuantField::K => "k", KvQuantField::V => "v" })
                         on:input=move |ev| {
                             let v = target_value(&ev);
                             form.update(|f| {
@@ -201,6 +201,15 @@ pub fn ModelEditorHardwareForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                 );
                 set_input_value(
                     "field-kv-quant-v",
+                    f.cache_type_v.as_deref().unwrap_or_default(),
+                );
+                // Custom KV quant inputs (only visible when custom is selected)
+                set_input_value(
+                    "field-kv-custom-k",
+                    f.cache_type_k.as_deref().unwrap_or_default(),
+                );
+                set_input_value(
+                    "field-kv-custom-v",
                     f.cache_type_v.as_deref().unwrap_or_default(),
                 );
                 // Modality checkboxes
