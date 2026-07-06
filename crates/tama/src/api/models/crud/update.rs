@@ -8,8 +8,9 @@ use axum::{
 use std::sync::Arc;
 
 use super::{apply_model_body, validate_model_body, ModelBody};
+use crate::api::helpers::{spawn_model_crud, DEFAULT_CRUD_STATUS};
+use crate::api::load_config_from_state;
 use crate::api::models::resolve_model_id;
-use crate::api::{load_config_from_state, trigger_proxy_reload};
 use tama_core::proxy::ProxyState;
 
 /// PUT /tama/v1/models/:id — update an existing model.
@@ -31,7 +32,7 @@ pub async fn update_model(
         Err((status, body)) => return (status, Json(body)).into_response(),
     };
 
-    match tokio::task::spawn_blocking(move || {
+    spawn_model_crud(state_clone, DEFAULT_CRUD_STATUS, move || {
         // Load existing from DB
         let mgr = tama_core::models::ModelManager::open(&config_dir).map_err(|e| {
             (
@@ -83,16 +84,4 @@ pub async fn update_model(
         Ok(serde_json::json!({ "ok": true, "id": new_model_id }))
     })
     .await
-    {
-        Ok(Ok(val)) => {
-            // Since we only updated the DB, the proxy config (which is just General, Backends, etc.)
-            // doesn't need syncing. But the proxy's runtime model registry DOES.
-            if let Err(e) = trigger_proxy_reload(&state_clone).await {
-                tracing::warn!("Failed to trigger proxy reload after update: {}", e.1);
-            }
-            Json(val).into_response()
-        }
-        Ok(Err((status, body))) => (status, Json(body)).into_response(),
-        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
-    }
 }

@@ -10,6 +10,7 @@ pub mod backup;
 pub mod benchmarks;
 pub mod downloads;
 pub mod error;
+pub mod helpers;
 pub mod hf;
 pub mod logs;
 pub mod middleware;

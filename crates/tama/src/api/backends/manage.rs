@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use super::types::*;
 use crate::api::error::error_response;
+use crate::api::helpers::open_backend_manager;
 use tama_core::proxy::ProxyState;
 
 /// Query params for POST /tama/v1/backends/:name/update
@@ -50,22 +51,9 @@ pub async fn update_backend(
     });
     let config_dir_clone = config_dir.clone();
 
-    // Open manager and get backend
-    let mgr_result: Result<tama_core::backends::BackendManager, _> =
-        tokio::task::spawn_blocking(move || tama_core::backends::BackendManager::open(&config_dir))
-            .await
-            .map_err(|e| anyhow::anyhow!("spawn error: {}", e))
-            .and_then(|r| r);
-
-    let mgr = match mgr_result {
-        Ok(r) => r,
-        Err(e) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to open manager: {}", e),
-                None,
-            )
-        }
+    let mgr = match open_backend_manager(&state).await {
+        Ok(mgr) => mgr,
+        Err(e) => return e,
     };
 
     // Determine gpu_variant: use explicit value or auto-infer from manager

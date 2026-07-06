@@ -3,7 +3,8 @@ use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use std::sync::Arc;
 
 use super::{apply_model_body, is_valid_repo_id, validate_model_body, ModelBody};
-use crate::api::{load_config_from_state, trigger_proxy_reload};
+use crate::api::helpers::spawn_model_crud;
+use crate::api::load_config_from_state;
 use tama_core::proxy::ProxyState;
 
 /// POST /tama/v1/models — create a new model.
@@ -56,7 +57,7 @@ pub async fn create_model(
         Err((status, body)) => return (status, Json(body)).into_response(),
     };
 
-    match tokio::task::spawn_blocking(move || {
+    spawn_model_crud(state_clone, StatusCode::CREATED, move || {
         let mgr = tama_core::models::ModelManager::open(&config_dir).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -129,14 +130,4 @@ pub async fn create_model(
         Ok(serde_json::json!({ "ok": true, "id": model_id }))
     })
     .await
-    {
-        Ok(Ok(val)) => {
-            if let Err(e) = trigger_proxy_reload(&state_clone).await {
-                tracing::warn!("Failed to trigger proxy reload after create: {}", e.1);
-            }
-            (StatusCode::CREATED, Json(val)).into_response()
-        }
-        Ok(Err((status, body))) => (status, Json(body)).into_response(),
-        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
-    }
 }

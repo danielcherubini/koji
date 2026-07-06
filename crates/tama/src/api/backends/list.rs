@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use super::types::*;
 use crate::api::error::error_response;
+use crate::api::helpers::open_backend_manager;
 use tama_core::proxy::ProxyState;
 
 /// GET /tama/v1/backends
@@ -30,20 +31,11 @@ pub async fn list_backends(State(state): State<Arc<ProxyState>>) -> impl IntoRes
         None
     };
 
-    // Open registry
     let config_dir = state.db_dir.clone().unwrap_or_else(|| {
         tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
     });
 
-    // Open registry (blocking call wrapped in spawn_blocking)
-    let config_dir_clone = config_dir.clone();
-    let mgr_result: Result<tama_core::backends::BackendManager, _> =
-        tokio::task::spawn_blocking(move || {
-            tama_core::backends::BackendManager::open(&config_dir_clone)
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("spawn error: {}", e))
-        .and_then(|r| r);
+    let mgr_result = open_backend_manager(&state).await;
 
     // Load backend configs from DB (keyed by (name, gpu_variant)), reusing the manager
     // opened above to avoid opening the DB twice.
@@ -255,8 +247,8 @@ pub async fn list_backends(State(state): State<Arc<ProxyState>>) -> impl IntoRes
                 }
             }
         }
-        Err(e) => {
-            tracing::warn!("Failed to open backend manager: {}", e);
+        Err(_e) => {
+            tracing::warn!("Failed to open backend manager");
         }
     }
 
@@ -323,32 +315,21 @@ pub async fn check_backend_updates(State(state): State<Arc<ProxyState>>) -> impl
         })
         .map(|j| job_to_active_dto(&j));
 
-    let config_dir = state.db_dir.clone().unwrap_or_else(|| {
-        tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-    });
+    let mgr_result = open_backend_manager(&state).await;
 
-    // Open registry
-    let config_dir_clone = config_dir.clone();
-    let mgr_result: Result<tama_core::backends::BackendManager, _> =
-        tokio::task::spawn_blocking(move || {
-            tama_core::backends::BackendManager::open(&config_dir_clone)
+    // Load backend configs from DB (keyed by (name, gpu_variant)), reusing the manager
+    // opened above to avoid opening the DB twice.
+    let backend_configs_map: std::collections::HashMap<(String, String), Vec<String>> = mgr_result
+        .as_ref()
+        .ok()
+        .and_then(|mgr| mgr.list_configs().ok())
+        .map(|configs| {
+            configs
+                .into_iter()
+                .map(|c| ((c.name, c.gpu_variant), c.default_args))
+                .collect()
         })
-        .await
-        .map_err(|e| anyhow::anyhow!("spawn error: {}", e))
-        .and_then(|r| r);
-
-    // Load backend configs from DB (keyed by (name, gpu_variant))
-    let backend_configs_map: std::collections::HashMap<(String, String), Vec<String>> =
-        tama_core::backends::BackendManager::open(&config_dir)
-            .ok()
-            .and_then(|mgr| mgr.list_configs().ok())
-            .map(|configs| {
-                configs
-                    .into_iter()
-                    .map(|c| ((c.name, c.gpu_variant), c.default_args))
-                    .collect()
-            })
-            .unwrap_or_default();
+        .unwrap_or_default();
 
     let mut backends: Vec<BackendCardDto> = Vec::new();
     let mut custom: Vec<BackendCardDto> = Vec::new();
@@ -522,8 +503,8 @@ pub async fn check_backend_updates(State(state): State<Arc<ProxyState>>) -> impl
                 }
             }
         }
-        Err(e) => {
-            tracing::warn!("Failed to open backend manager: {}", e);
+        Err(_e) => {
+            tracing::warn!("Failed to open backend manager");
             // On error, still return known backends as not installed
             for (type_, display_name, release_notes_url) in KNOWN_BACKENDS {
                 backends.push(BackendCardDto::default_uninstalled(
@@ -558,18 +539,7 @@ pub async fn list_backend_versions(
             .into_response();
     }
 
-    let config_dir = state.db_dir.clone().unwrap_or_else(|| {
-        tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-    });
-
-    let config_dir_clone = config_dir.clone();
-    let mgr_result: Result<tama_core::backends::BackendManager, _> =
-        tokio::task::spawn_blocking(move || {
-            tama_core::backends::BackendManager::open(&config_dir_clone)
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("spawn error: {}", e))
-        .and_then(|r| r);
+    let mgr_result = open_backend_manager(&state).await;
 
     match mgr_result {
         Ok(mgr) => {
@@ -635,9 +605,9 @@ pub async fn list_backend_versions(
             })
             .into_response()
         }
-        Err(e) => (
+        Err(_e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to open manager: {}", e)})),
+            Json(json!({"error": "Failed to open backend manager"})),
         )
             .into_response(),
     }

@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use super::types::*;
 use crate::api::error::error_response;
+use crate::api::helpers::open_backend_manager;
 use tama_core::proxy::ProxyState;
 
 /// POST /tama/v1/backends/install
@@ -565,24 +566,9 @@ pub async fn remove_backend(
 
     let gpu_variant = query.gpu_variant;
 
-    let config_dir_clone = config_dir.clone();
-    let mgr_result: Result<tama_core::backends::BackendManager, _> =
-        tokio::task::spawn_blocking(move || {
-            tama_core::backends::BackendManager::open(&config_dir_clone)
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("spawn error: {}", e))
-        .and_then(|r| r);
-
-    let mgr = match mgr_result {
-        Ok(r) => r,
-        Err(e) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to open manager: {}", e),
-                None,
-            )
-        }
+    let mgr = match open_backend_manager(&state).await {
+        Ok(mgr) => mgr,
+        Err(e) => return e,
     };
 
     // If gpu_variant is provided, only remove that variant (all its versions);

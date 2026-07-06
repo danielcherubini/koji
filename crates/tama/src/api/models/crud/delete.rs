@@ -1,4 +1,4 @@
-use crate::api::error::{error_body, error_response};
+use crate::api::error::error_body;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -7,8 +7,9 @@ use axum::{
 };
 use std::sync::Arc;
 
+use crate::api::helpers::{spawn_model_crud, DEFAULT_CRUD_STATUS};
+use crate::api::load_config_from_state;
 use crate::api::models::resolve_model_id;
-use crate::api::{load_config_from_state, trigger_proxy_reload};
 use tama_core::proxy::ProxyState;
 
 /// DELETE /tama/v1/models/:id/quants/:quant_key — delete a single quant's file
@@ -25,7 +26,7 @@ pub async fn delete_quant(
         Err((status, body)) => return (status, Json(body)).into_response(),
     };
 
-    match tokio::task::spawn_blocking(move || {
+    spawn_model_crud(state_clone, DEFAULT_CRUD_STATUS, move || {
         let mgr = tama_core::models::ModelManager::open(&config_dir).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -105,27 +106,14 @@ pub async fn delete_quant(
             let _ = mgr.delete_file(id, &filename);
         }
 
-        Ok((
-            cfg,
-            serde_json::json!({
-                "ok": true,
-                "id": id,
-                "quant_key": quant_key,
-                "deleted_file": filename
-            }),
-        ))
+        Ok(serde_json::json!({
+            "ok": true,
+            "id": id,
+            "quant_key": quant_key,
+            "deleted_file": filename
+        }))
     })
     .await
-    {
-        Ok(Ok((_cfg, val))) => {
-            if let Err(e) = trigger_proxy_reload(&state_clone).await {
-                tracing::warn!("Failed to trigger proxy reload after delete_quant: {}", e.1);
-            }
-            Json(val).into_response()
-        }
-        Ok(Err((status, body))) => (status, Json(body)).into_response(),
-        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
-    }
 }
 
 /// DELETE /tama/v1/models/:id — delete a model.
@@ -141,7 +129,7 @@ pub async fn delete_model(
         Err((status, body)) => return (status, Json(body)).into_response(),
     };
 
-    match tokio::task::spawn_blocking(move || {
+    spawn_model_crud(state_clone, DEFAULT_CRUD_STATUS, move || {
         // Capture the removed model for cleanup
         let mut mgr = tama_core::models::ModelManager::open(&config_dir).map_err(|e| {
             (
@@ -255,14 +243,4 @@ pub async fn delete_model(
         Ok(serde_json::json!({ "ok": true }))
     })
     .await
-    {
-        Ok(Ok(val)) => {
-            if let Err(e) = trigger_proxy_reload(&state_clone).await {
-                tracing::warn!("Failed to trigger proxy reload after delete: {}", e.1);
-            }
-            Json(val).into_response()
-        }
-        Ok(Err((status, body))) => (status, Json(body)).into_response(),
-        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
-    }
 }
