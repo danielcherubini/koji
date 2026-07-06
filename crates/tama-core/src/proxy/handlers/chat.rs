@@ -29,7 +29,7 @@ async fn resolve_and_load_server(
 
     let resolved_model = state.resolve_alias(model_name).await;
 
-    let server_name = match ensure_model_loaded(state, model_name, |resolved, e| {
+    let backend_name = match ensure_model_loaded(state, model_name, |resolved, e| {
         tracing::warn!("Failed to load model {}: {}", resolved, e);
         Err(anyhow::anyhow!("Failed to load model: {}", e))
     })
@@ -52,7 +52,7 @@ async fn resolve_and_load_server(
 
     forward_request(
         state,
-        &server_name,
+        &backend_name,
         &parts,
         body_bytes,
         Some(&resolved_model),

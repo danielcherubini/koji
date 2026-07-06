@@ -1,6 +1,5 @@
 //! Install modal - configures install request for a backend.
 
-
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 

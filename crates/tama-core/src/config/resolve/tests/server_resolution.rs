@@ -133,7 +133,7 @@ fn test_resolve_by_api_name() {
     );
 
     // Should find model by api_name (not by model field)
-    let results = config.resolve_servers_for_model(&models, "bartowski/Qwen3-8B-GGUF");
+    let results = config.resolve_backends_for_model(&models, "bartowski/Qwen3-8B-GGUF");
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].0, "my-custom-name");
 }
@@ -191,7 +191,7 @@ fn test_api_name_takes_priority() {
     );
 
     // Querying by "friendly-name" (api_name) should resolve correctly
-    let results = config.resolve_servers_for_model(&models, "friendly-name");
+    let results = config.resolve_backends_for_model(&models, "friendly-name");
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].0, "slug");
 }
@@ -249,16 +249,16 @@ fn test_backward_compat_no_api_name() {
     );
 
     // Should still resolve by config key
-    let results = config.resolve_servers_for_model(&models, "config-key-name");
+    let results = config.resolve_backends_for_model(&models, "config-key-name");
     assert_eq!(results.len(), 1);
 
     // Should also resolve by model field
-    let results = config.resolve_servers_for_model(&models, "org/repo");
+    let results = config.resolve_backends_for_model(&models, "org/repo");
     assert_eq!(results.len(), 1);
 }
 
 #[test]
-fn test_resolve_server_by_api_name() {
+fn test_resolve_backend_by_api_name() {
     let mut config = Config::default();
     config.backends.insert(
         "llama_cpp".to_string(),
@@ -309,7 +309,7 @@ fn test_resolve_server_by_api_name() {
         },
     );
 
-    // Should find model by api_name via resolve_server
-    let result = config.resolve_server(&models, "bartowski/Qwen3-8B-GGUF");
+    // Should find model by api_name via resolve_backend
+    let result = config.resolve_backend(&models, "bartowski/Qwen3-8B-GGUF");
     assert!(result.is_ok());
 }

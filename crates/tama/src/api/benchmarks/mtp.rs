@@ -153,7 +153,7 @@ pub async fn run_mtp_benchmark_inner(
     };
 
     let (server_config, _) = config
-        .resolve_server(&model_configs, resolved_id)
+        .resolve_backend(&model_configs, resolved_id)
         .context("Failed to resolve server config for benchmark")?;
 
     let model_path = resolve_model_path(

@@ -55,7 +55,7 @@ pub async fn handle_forward_post(
         None
     };
 
-    let server_name = if let Some(ref model) = resolved_model {
+    let backend_name = if let Some(ref model) = resolved_model {
         match ensure_model_loaded(&state, model, |resolved, e| {
             tracing::warn!("Failed to load model {}: {}", resolved, e);
             Err(anyhow::anyhow!("Failed to load model: {}", e))
@@ -98,7 +98,7 @@ pub async fn handle_forward_post(
 
     forward_request(
         &state,
-        &server_name,
+        &backend_name,
         &parts,
         &body_bytes,
         model_name.as_deref(),
@@ -132,10 +132,10 @@ pub async fn forward_to_backend(
         .unwrap_or_default();
 
     let models = state.models.read().await;
-    let server_name = models.keys().next().cloned().unwrap_or_else(String::new);
+    let backend_name = models.keys().next().cloned().unwrap_or_else(String::new);
     drop(models);
 
-    if server_name.is_empty() {
+    if backend_name.is_empty() {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(serde_json::json!({
@@ -148,5 +148,5 @@ pub async fn forward_to_backend(
             .into_response();
     }
 
-    forward_request(state, &server_name, &parts, &body_bytes, None).await
+    forward_request(state, &backend_name, &parts, &body_bytes, None).await
 }

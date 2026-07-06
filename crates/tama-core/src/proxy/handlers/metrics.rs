@@ -210,13 +210,13 @@ fn format_value(value: f32) -> String {
 /// 1. Find first `{` and first ` ` in the line
 /// 2. If `{` comes first: inject `,server="<name>"` before `}`
 /// 3. If ` ` comes first or no `{`: inject `{server="<name>"}` before the space
-pub fn inject_server_label(line: &str, server_name: &str) -> String {
+pub fn inject_backend_label(line: &str, backend_name: &str) -> String {
     // Comment lines and blank lines pass through unchanged
     if line.is_empty() || line.starts_with('#') {
         return line.to_string();
     }
 
-    let escaped_name = escape_prometheus_label(server_name);
+    let escaped_name = escape_prometheus_label(backend_name);
 
     // Find the first space (separates metric name from value)
     // and first `{` (start of label block)
@@ -260,10 +260,10 @@ pub fn inject_server_label(line: &str, server_name: &str) -> String {
 }
 
 /// Format all lines from a backend's `/metrics` response, injecting server labels.
-pub fn format_backend_metrics(lines: &[&str], server_name: &str) -> String {
+pub fn format_backend_metrics(lines: &[&str], backend_name: &str) -> String {
     lines
         .iter()
-        .map(|line| inject_server_label(line, server_name))
+        .map(|line| inject_backend_label(line, backend_name))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -299,12 +299,12 @@ mod tests {
         }
     }
 
-    // ── inject_server_label tests ──────────────────────────────────────
+    // ── inject_backend_label tests ──────────────────────────────────────
 
     #[test]
-    fn test_inject_server_label_with_existing_labels() {
+    fn test_inject_backend_label_with_existing_labels() {
         let line = "llamacpp:prompt_tokens_total{backend=\"llama\"} 32479";
-        let result = inject_server_label(line, "my-model");
+        let result = inject_backend_label(line, "my-model");
         assert!(
             result.contains("backend=\"llama\""),
             "existing labels should be preserved: {}",
@@ -323,9 +323,9 @@ mod tests {
     }
 
     #[test]
-    fn test_inject_server_label_without_labels() {
+    fn test_inject_backend_label_without_labels() {
         let line = "llamacpp:n_decode_total 581";
-        let result = inject_server_label(line, "my-model");
+        let result = inject_backend_label(line, "my-model");
         assert_eq!(
             result, "llamacpp:n_decode_total{server=\"my-model\"} 581",
             "server label should be injected before value"
@@ -333,30 +333,30 @@ mod tests {
     }
 
     #[test]
-    fn test_inject_server_label_help_line_unchanged() {
+    fn test_inject_backend_label_help_line_unchanged() {
         let line = "# HELP llamacpp:prompt_tokens_total Number of prompt tokens processed.";
-        let result = inject_server_label(line, "my-model");
+        let result = inject_backend_label(line, "my-model");
         assert_eq!(result, line, "HELP line should pass through unchanged");
     }
 
     #[test]
-    fn test_inject_server_label_type_line_unchanged() {
+    fn test_inject_backend_label_type_line_unchanged() {
         let line = "# TYPE llamacpp:prompt_tokens_total counter";
-        let result = inject_server_label(line, "my-model");
+        let result = inject_backend_label(line, "my-model");
         assert_eq!(result, line, "TYPE line should pass through unchanged");
     }
 
     #[test]
-    fn test_inject_server_label_empty_line_unchanged() {
+    fn test_inject_backend_label_empty_line_unchanged() {
         let line = "";
-        let result = inject_server_label(line, "my-model");
+        let result = inject_backend_label(line, "my-model");
         assert_eq!(result, "", "empty line should pass through unchanged");
     }
 
     #[test]
-    fn test_inject_server_label_escapes_special_chars() {
+    fn test_inject_backend_label_escapes_special_chars() {
         let line = "metric_name 42";
-        let result = inject_server_label(line, "model\\with\"quotes");
+        let result = inject_backend_label(line, "model\\with\"quotes");
         assert_eq!(
             result, "metric_name{server=\"model\\\\with\\\"quotes\"} 42",
             "special chars should be escaped"

@@ -13,16 +13,16 @@ use super::process::{
 use super::types::{ModelState, ProxyState};
 use crate::logging;
 
-/// Ensure a model is loaded and return its server name.
+/// Ensure a model is loaded and return its backend name.
 ///
 /// This encapsulates the shared flow used by multiple handlers:
-/// resolve alias → get available server → evict LRU if needed → get model card
+/// resolve alias → get available backend → evict LRU if needed → get model card
 /// → load model → update last_accessed.
 ///
 /// Callers provide an `on_load_error` closure to handle the case where loading
 /// fails (e.g., returning an error response or falling back to another server).
 /// The closure receives the resolved model name and the error, and returns the
-/// fallback server name (or an error if no fallback is possible).
+/// fallback backend name (or an error if no fallback is possible).
 pub async fn ensure_model_loaded(
     state: &Arc<ProxyState>,
     model_name: &str,
@@ -31,7 +31,7 @@ pub async fn ensure_model_loaded(
     // Resolve alias before routing
     let resolved_model = state.resolve_alias(model_name).await;
 
-    let server_name = match state.get_available_server_for_model(&resolved_model).await {
+    let backend_name = match state.get_available_backend_for_model(&resolved_model).await {
         Some(name) => name,
         None => {
             let model_card = state.get_model_card(&resolved_model).await;
@@ -46,8 +46,8 @@ pub async fn ensure_model_loaded(
         }
     };
 
-    state.update_last_accessed(&server_name).await;
-    Ok(server_name)
+    state.update_last_accessed(&backend_name).await;
+    Ok(backend_name)
 }
 
 mod compaction;
@@ -65,34 +65,34 @@ impl ProxyState {
 
         let config = self.config.read().await.clone();
 
-        // Resolve the server name for this model
+        // Resolve the backend name for this model
         let model_configs = self.model_configs.read().await;
-        let servers = config.resolve_servers_for_model(&model_configs, model_name);
-        let server_name = servers
+        let servers = config.resolve_backends_for_model(&model_configs, model_name);
+        let backend_name = servers
             .first()
             .map(|(name, _, _)| name.clone())
-            .ok_or_else(|| anyhow::anyhow!("Failed to resolve server for model {}", model_name))?;
+            .ok_or_else(|| anyhow::anyhow!("Failed to resolve backend for model {}", model_name))?;
 
-        // Get server and backend config from config
+        // Get backend and backend config from config
         let (server_config, backend_config) =
-            config.resolve_server(&model_configs, &server_name)?;
+            config.resolve_backend(&model_configs, &backend_name)?;
 
         // Atomically check if already loaded and reserve if not (single write lock)
         {
             let mut models = self.models.write().await;
-            if let Some(state) = models.get(&server_name) {
+            if let Some(state) = models.get(&backend_name) {
                 if state.is_ready() || matches!(state, ModelState::Starting { .. }) {
                     debug!(
                         "Server '{}' already loaded/starting for model '{}'",
-                        server_name, model_name
+                        backend_name, model_name
                     );
-                    return Ok(server_name);
+                    return Ok(backend_name);
                 }
             }
 
-            // Reserve this server with Starting state
+            // Reserve this backend with Starting state
             models.insert(
-                server_name.clone(),
+                backend_name.clone(),
                 ModelState::Starting {
                     model_name: model_name.to_string(),
                     backend: server_config.backend.clone(),
@@ -137,7 +137,7 @@ impl ProxyState {
             model_card.and_then(|card| card.model.default_gpu_device.clone()),
         );
 
-        // Build a modified server config with the resolved gpu_device.
+        // Build a modified backend config with the resolved gpu_device.
         // This ensures build_full_args() sees the effective value.
         let server_config = if effective_gpu_device.is_some() && server_config.gpu_device.is_none()
         {
@@ -161,8 +161,8 @@ impl ProxyState {
         let backend_url = format!("http://127.0.0.1:{}", port);
 
         info!(
-            "Starting backend '{}' for server '{}' (model '{}')",
-            server_config.backend, server_name, model_name
+            "Starting backend '{}' for backend '{}' (model '{}')",
+            server_config.backend, backend_name, model_name
         );
 
         // Resolve logs directory for backend log file
@@ -216,26 +216,26 @@ impl ProxyState {
             anyhow::anyhow!("Failed to get PID for backend '{}'", server_config.backend)
         })?;
         info!(
-            "Backend '{}' started for server '{}' (pid: {:?})",
-            server_config.backend, server_name, pid
+            "Backend '{}' started for backend '{}' (pid: {:?})",
+            server_config.backend, backend_name, pid
         );
 
         // Update the PID in the Starting state so cleanup paths can find it
         {
             let mut models = self.models.write().await;
-            if let Some(ModelState::Starting { backend_pid, .. }) = models.get_mut(&server_name) {
+            if let Some(ModelState::Starting { backend_pid, .. }) = models.get_mut(&backend_name) {
                 *backend_pid = pid;
             }
         }
 
         // Get the backend log stream for SSE broadcasting — use same key as
-        // the dashboard constructs: {backend}_{server_name}.
-        let log_key = format!("{}_{}", server_config.backend, server_name);
+        // the dashboard constructs: {backend}_{backend_name}.
+        let log_key = format!("{}_{}", server_config.backend, backend_name);
         let log_stream = self.backend_logs.get_or_create(&log_key).await;
 
-        // Open log file for this backend instance — include server name so
+        // Open log file for this backend instance — include backend name so
         // multiple models on the same backend get separate log files.
-        let log_name = format!("{}_{}", server_config.backend, server_name);
+        let log_name = format!("{}_{}", server_config.backend, backend_name);
         let log_file = logs_dir
             .as_ref()
             .and_then(|dir| logging::open_log(dir, &log_name).ok());
@@ -288,19 +288,19 @@ impl ProxyState {
         }
 
         // Spawn a reaper task so the child process is waited on and doesn't become a zombie
-        let reaper_server = server_name.clone();
+        let reaper_backend = backend_name.clone();
         model_tasks.spawn(async move {
             match child.wait().await {
                 Ok(status) => {
                     debug!(
                         "Backend process {} for server '{}' exited with {}",
-                        pid, reaper_server, status
+                        pid, reaper_backend, status
                     );
                 }
                 Err(e) => {
                     warn!(
                         "Failed to wait on backend process {} for server '{}': {}",
-                        pid, reaper_server, e
+                        pid, reaper_backend, e
                     );
                 }
             }
@@ -310,7 +310,7 @@ impl ProxyState {
         self.model_tasks
             .write()
             .await
-            .insert(server_name.clone(), model_tasks);
+            .insert(backend_name.clone(), model_tasks);
 
         // Wait for health check to pass — single success is enough.
         let timeout = Duration::from_secs(self.config.read().await.proxy.startup_timeout_secs);
@@ -321,8 +321,8 @@ impl ProxyState {
             tokio::time::sleep(Duration::from_millis(500)).await;
             if start.elapsed() >= timeout {
                 warn!(
-                    "Startup health check timeout for server '{}' after {}s, killing process group",
-                    server_name,
+                    "Startup health check timeout for backend '{}' after {}s, killing process group",
+                    backend_name,
                     timeout.as_secs()
                 );
                 // Kill entire process group, not just parent
@@ -338,7 +338,7 @@ impl ProxyState {
 
             if let Ok(response) = check_health(&health_url, Some(5)).await {
                 if response.status().is_success() {
-                    debug!("Health check passed for server '{}'", server_name);
+                    debug!("Health check passed for backend '{}'", backend_name);
                     health_ok = true;
                     break;
                 }
@@ -347,19 +347,19 @@ impl ProxyState {
 
         if !health_ok {
             // Abort orphan task readers and reaper (JoinSet was already inserted above)
-            if let Some(mut tasks) = self.model_tasks.write().await.remove(&server_name) {
+            if let Some(mut tasks) = self.model_tasks.write().await.remove(&backend_name) {
                 tasks.abort_all();
             }
             // Clean up the Starting entry so future load_model calls don't short-circuit
             let mut models = self.models.write().await;
-            models.remove(&server_name);
+            models.remove(&backend_name);
             self.inference_stats.send_modify(|map| {
-                map.remove(&server_name);
+                map.remove(&backend_name);
             });
             return Err(anyhow::anyhow!(
-                "Backend '{}' failed to start for server '{}' (timeout after {}s)",
+                "Backend '{}' failed to start for backend '{}' (timeout after {}s)",
                 server_config.backend,
-                server_name,
+                backend_name,
                 timeout.as_secs()
             ));
         }
@@ -368,7 +368,7 @@ impl ProxyState {
         // consecutive_failures Arc so external holders keep observing updates.
         {
             let mut models = self.models.write().await;
-            if let Some(state) = models.get_mut(&server_name) {
+            if let Some(state) = models.get_mut(&backend_name) {
                 if let ModelState::Starting {
                     consecutive_failures,
                     failure_timestamp,
@@ -397,7 +397,7 @@ impl ProxyState {
         // Write to DB after model is ready (best-effort)
         if let Some(mgr) = self.model_mgr() {
             let _ = mgr.insert_active(
-                &server_name,
+                &backend_name,
                 model_name,
                 &server_config.backend,
                 pid as i64,
@@ -406,18 +406,18 @@ impl ProxyState {
             );
         }
 
-        info!("Server '{}' loaded successfully", server_name);
+        info!("Server '{}' loaded successfully", backend_name);
         self.metrics
             .models_loaded
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Ok(server_name)
+        Ok(backend_name)
     }
 
     /// Resolve the effective GPU device for a model.
     ///
-    /// Uses the same resolution logic as `load_model`: checks the server config's
+    /// Uses the same resolution logic as `load_model`: checks the backend config's
     /// `gpu_device` first, then falls back to the model card's `default_gpu_device`.
-    /// Returns `None` if the model cannot be routed to any server.
+    /// Returns `None` if the model cannot be routed to any backend.
     pub async fn resolve_model_gpu_device(
         &self,
         model_name: &str,
@@ -425,9 +425,9 @@ impl ProxyState {
     ) -> Option<String> {
         let config = self.config.read().await.clone();
         let model_configs = self.model_configs.read().await;
-        let servers = config.resolve_servers_for_model(&model_configs, model_name);
-        let server_name = servers.first().map(|(name, _, _)| name.clone())?;
-        let (server_config, _) = config.resolve_server(&model_configs, &server_name).ok()?;
+        let servers = config.resolve_backends_for_model(&model_configs, model_name);
+        let backend_name = servers.first().map(|(name, _, _)| name.clone())?;
+        let (server_config, _) = config.resolve_backend(&model_configs, &backend_name).ok()?;
         resolve_gpu_device(
             server_config.gpu_device.clone(),
             model_card.and_then(|card| card.model.default_gpu_device.clone()),
@@ -470,7 +470,7 @@ impl ProxyState {
         // Collect names of non-inference backends (TTS, compaction) from the
         // runtime models map. These are NOT in model_configs, so checking only
         // model_configs would miss them (e.g. compaction).
-        let non_inference_servers: std::collections::HashSet<String> = models
+        let non_inference_backends: std::collections::HashSet<String> = models
             .iter()
             .filter(|(_, s)| s.is_non_inference_backend())
             .map(|(name, _)| name.clone())
@@ -484,18 +484,18 @@ impl ProxyState {
         let model_configs = self.model_configs.read().await;
         let llm_count = ready_servers
             .iter()
-            .filter(|server_name| {
+            .filter(|backend_name| {
                 // Skip non-inference backends (TTS, compaction)
                 if model_configs
-                    .get(server_name.as_str())
+                    .get(backend_name.as_str())
                     .is_some_and(|mc| mc.backend.starts_with("tts_") || mc.backend == "compaction")
-                    || non_inference_servers.contains(server_name.as_str())
+                    || non_inference_backends.contains(backend_name.as_str())
                 {
                     return false;
                 }
                 // Only count models on the same GPU device
                 let model_gpu = model_configs
-                    .get(server_name.as_str())
+                    .get(backend_name.as_str())
                     .and_then(|mc| mc.gpu_device.as_ref());
                 model_gpu == target_gpu_device.as_ref()
             })
@@ -510,22 +510,22 @@ impl ProxyState {
         let mut models = self.models.write().await;
         let lru_name = ready_servers
             .iter()
-            .filter(|server_name| {
+            .filter(|backend_name| {
                 // Skip non-inference backends (TTS, compaction)
                 if model_configs
-                    .get(server_name.as_str())
+                    .get(backend_name.as_str())
                     .is_some_and(|mc| mc.backend.starts_with("tts_") || mc.backend == "compaction")
-                    || non_inference_servers.contains(server_name.as_str())
+                    || non_inference_backends.contains(backend_name.as_str())
                 {
                     return false;
                 }
                 // Only consider models on the same GPU device
                 let model_gpu = model_configs
-                    .get(server_name.as_str())
+                    .get(backend_name.as_str())
                     .and_then(|mc| mc.gpu_device.as_ref());
                 model_gpu == target_gpu_device.as_ref()
             })
-            .filter_map(|server_name| models.get(server_name).map(|s| (server_name, s)))
+            .filter_map(|backend_name| models.get(backend_name).map(|s| (backend_name, s)))
             .min_by_key(|(_, s)| s.last_accessed())
             .map(|(name, _)| name.to_string());
 
@@ -569,14 +569,14 @@ impl ProxyState {
         }
     }
 
-    /// Unload a server by stopping its backend process.
-    pub async fn unload_model(&self, server_name: &str) -> Result<()> {
-        debug!("Unloading server: {}", server_name);
+    /// Unload a backend by stopping its backend process.
+    pub async fn unload_model(&self, backend_name: &str) -> Result<()> {
+        debug!("Unloading backend: {}", backend_name);
 
         let state = self
-            .get_model_state(server_name)
+            .get_model_state(backend_name)
             .await
-            .with_context(|| format!("Server '{}' not loaded", server_name))?;
+            .with_context(|| format!("Server '{}' not loaded", backend_name))?;
 
         if !matches!(
             state,
@@ -584,12 +584,12 @@ impl ProxyState {
         ) {
             return Err(anyhow::anyhow!(
                 "Server '{}' is not ready (state: {:?})",
-                server_name,
+                backend_name,
                 state
             ));
         }
 
-        let (backend_name, pid) = match &state {
+        let (backend, pid) = match &state {
             ModelState::Ready {
                 backend,
                 backend_pid,
@@ -602,16 +602,16 @@ impl ProxyState {
             } => (backend.clone(), *backend_pid),
             _ => {
                 return Err(anyhow::anyhow!(
-                    "Server '{}' entered unexpected state during unload (state: {:?})",
-                    server_name,
+                    "Backend '{}' entered unexpected state during unload (state: {:?})",
+                    backend_name,
                     state
                 ));
             }
         };
 
         info!(
-            "Stopping backend '{}' for server '{}'",
-            backend_name, server_name
+            "Stopping backend '{}' for backend '{}'",
+            backend, backend_name
         );
 
         // Send SIGTERM for graceful shutdown
@@ -638,8 +638,8 @@ impl ProxyState {
             }
         }
 
-        // Cancel and join any spawned tasks for this server (stdout/stderr readers, reaper)
-        if let Some(mut tasks) = self.model_tasks.write().await.remove(server_name) {
+        // Cancel and join any spawned tasks for this backend (stdout/stderr readers, reaper)
+        if let Some(mut tasks) = self.model_tasks.write().await.remove(backend_name) {
             tasks.abort_all();
             // Wait for all tasks to finish (they should exit quickly after abort)
             while tasks.join_next().await.is_some() {}
@@ -647,19 +647,19 @@ impl ProxyState {
 
         // Remove from models
         let mut models = self.models.write().await;
-        models.remove(server_name);
+        models.remove(backend_name);
 
-        // Clear stale inference stats for this server
+        // Clear stale inference stats for this backend
         self.inference_stats.send_modify(|map| {
-            map.remove(server_name);
+            map.remove(backend_name);
         });
 
         // Write to DB after model is unloaded (best-effort)
         if let Some(mgr) = self.model_mgr() {
-            let _ = mgr.remove_active(server_name);
+            let _ = mgr.remove_active(backend_name);
         }
 
-        info!("Server '{}' unloaded", server_name);
+        info!("Backend '{}' unloaded", backend_name);
         self.metrics
             .models_unloaded
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);

@@ -83,7 +83,7 @@ pub async fn handle_all_logs(
             }
         }
 
-        // Collect backend logs (named {backend}_{server_name}.log)
+        // Collect backend logs (named {backend}_{backend_name}.log)
         let mut entries = match std::fs::read_dir(dir) {
             Ok(rd) => rd.filter_map(|e| e.ok()).collect::<Vec<_>>(),
             Err(_) => Vec::new(),
