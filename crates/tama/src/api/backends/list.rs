@@ -8,6 +8,7 @@ use serde_json::json;
 use std::sync::Arc;
 
 use super::types::*;
+use crate::api::error::error_response;
 use tama_core::proxy::ProxyState;
 
 /// GET /tama/v1/backends
@@ -300,11 +301,11 @@ pub async fn check_backend_updates(State(state): State<Arc<ProxyState>>) -> impl
     let jobs = match &state.web_jobs {
         Some(j) => j,
         None => {
-            return (
+            return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "job manager not configured"})),
+                "job manager not configured",
+                None,
             )
-                .into_response();
         }
     };
 

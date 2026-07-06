@@ -1,3 +1,4 @@
+use crate::api::error::{error_body, error_response};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -21,11 +22,7 @@ pub async fn update_model(
 
     // Validate ModelBody fields
     if let Err(e) = validate_model_body(&body) {
-        return (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(serde_json::json!({"error": e})),
-        )
-            .into_response();
+        return error_response(StatusCode::UNPROCESSABLE_ENTITY, e, Some("ValidationError"));
     }
 
     // Load config first (async, handles its own spawn_blocking)
@@ -39,20 +36,20 @@ pub async fn update_model(
         let mgr = tama_core::models::ModelManager::open(&config_dir).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                serde_json::json!({"error": e.to_string()}),
+                error_body(e.to_string(), None),
             )
         })?;
         let model_id = resolve_model_id(&id_str, &mgr)
             .map_err(|e| {
                 (
                     StatusCode::BAD_REQUEST,
-                    serde_json::json!({"error": e.to_string()}),
+                    error_body(e.to_string(), Some("ValidationError")),
                 )
             })?
             .ok_or_else(|| {
                 (
                     StatusCode::NOT_FOUND,
-                    serde_json::json!({"error": "Model not found"}),
+                    error_body("Model not found", Some("NotFoundError")),
                 )
             })?;
         let existing_record = mgr
@@ -60,13 +57,13 @@ pub async fn update_model(
             .map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    serde_json::json!({"error": e.to_string()}),
+                    error_body(e.to_string(), None),
                 )
             })?
             .ok_or_else(|| {
                 (
                     StatusCode::NOT_FOUND,
-                    serde_json::json!({"error": "Model not found"}),
+                    error_body("Model not found", Some("NotFoundError")),
                 )
             })?;
         let existing = tama_core::config::ModelConfig::from_db_record(&existing_record);
@@ -80,7 +77,7 @@ pub async fn update_model(
             .map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    serde_json::json!({"error": e.to_string()}),
+                    error_body(e.to_string(), None),
                 )
             })?;
         Ok(serde_json::json!({ "ok": true, "id": new_model_id }))
@@ -96,10 +93,6 @@ pub async fn update_model(
             Json(val).into_response()
         }
         Ok(Err((status, body))) => (status, Json(body)).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     }
 }

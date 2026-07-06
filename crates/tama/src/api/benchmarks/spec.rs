@@ -1,5 +1,6 @@
 use super::*;
 use crate::api::benchmarks::run::{resolve_model_path, unload_model_before_benchmark};
+use crate::api::error::error_response;
 
 // ── Handler: Submit spec benchmark job ────────────────────────────────
 
@@ -10,21 +11,21 @@ pub async fn run_spec_benchmark(
     let jobs = match &state.web_jobs {
         Some(j) => j.clone(),
         None => {
-            return (
+            return error_response(
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(serde_json::json!({"error": "Job manager not available"})),
+                "Job manager not available",
+                None,
             )
-                .into_response();
         }
     };
 
     // Validate spec_types is not empty
     if req.spec_types.is_empty() {
-        return (
+        return error_response(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "spec_types must not be empty"})),
-        )
-            .into_response();
+            "spec_types must not be empty",
+            Some("ValidationError"),
+        );
     }
 
     // Apply minimum guards
@@ -50,22 +51,22 @@ pub async fn run_spec_benchmark(
 
     // Validate sweep matrix would produce entries
     if let Err(e) = validate_spec_sweep(&validation_config) {
-        return (
+        return error_response(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response();
+            e.to_string(),
+            Some("ValidationError"),
+        );
     }
 
     // Submit a benchmark job
     let job = match jobs.submit(JobKind::Benchmark, None).await {
         Ok(j) => j,
         Err(_) => {
-            return (
+            return error_response(
                 StatusCode::CONFLICT,
-                Json(serde_json::json!({"error": "Another job is already running"})),
+                "Another job is already running",
+                Some("ConflictError"),
             )
-                .into_response();
         }
     };
 

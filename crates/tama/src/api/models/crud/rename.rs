@@ -1,3 +1,4 @@
+use crate::api::error::{error_body, error_response};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -33,38 +34,23 @@ pub async fn rename_model(
 
     match tokio::task::spawn_blocking(move || {
         let mgr = tama_core::models::ModelManager::open(&config_dir).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                serde_json::json!({"error": e.to_string()}),
-            )
+(StatusCode::INTERNAL_SERVER_ERROR, error_body(e.to_string(), None))
         })?;
 
         // Check source ID exists
         let model_id = resolve_model_id(&id_str, &mgr)
             .map_err(|e| {
-                (
-                    StatusCode::BAD_REQUEST,
-                    serde_json::json!({"error": e.to_string()}),
-                )
+(StatusCode::BAD_REQUEST, error_body(e.to_string(), Some("ValidationError")))
             })?
             .ok_or_else(|| {
-                (
-                    StatusCode::NOT_FOUND,
-                    serde_json::json!({"error": "Model not found"}),
-                )
+(StatusCode::NOT_FOUND, error_body("Model not found", Some("NotFoundError")))
             })?;
         let existing_record = mgr.get_config(model_id)
             .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    serde_json::json!({"error": e.to_string()}),
-                )
+(StatusCode::INTERNAL_SERVER_ERROR, error_body(e.to_string(), None))
             })?
             .ok_or_else(|| {
-                (
-                    StatusCode::NOT_FOUND,
-                    serde_json::json!({"error": "Model not found"}),
-                )
+(StatusCode::NOT_FOUND, error_body("Model not found", Some("NotFoundError")))
             })?;
         let mut model_config = tama_core::config::ModelConfig::from_db_record(&existing_record);
 
@@ -72,35 +58,32 @@ pub async fn rename_model(
         if new_repo_id.is_empty() {
             return Err((
                 StatusCode::UNPROCESSABLE_ENTITY,
-                serde_json::json!({"error": "New repo_id cannot be empty"}),
+                error_body("New repo_id cannot be empty", Some("ValidationError")),
             ));
         }
         if new_repo_id.len() > 256 {
             return Err((
                 StatusCode::UNPROCESSABLE_ENTITY,
-                serde_json::json!({"error": "New repo_id must be at most 256 characters"}),
+                error_body("New repo_id must be at most 256 characters", Some("ValidationError")),
             ));
         }
         if !is_valid_repo_id(&new_repo_id) {
             return Err((
                 StatusCode::UNPROCESSABLE_ENTITY,
-                serde_json::json!({"error": "New repo_id contains invalid characters (only alphanumeric, dots, underscores, hyphens, and slashes are allowed)"}),
+                error_body("New repo_id contains invalid characters (only alphanumeric, dots, underscores, hyphens, and slashes are allowed)", Some("ValidationError")),
             ));
         }
 
         // Check target repo_id doesn't already exist
         if mgr.get_config_by_repo_id(&new_repo_id)
             .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    serde_json::json!({"error": e.to_string()}),
-                )
+(StatusCode::INTERNAL_SERVER_ERROR, error_body(e.to_string(), None))
             })?
             .is_some()
         {
             return Err((
                 StatusCode::CONFLICT,
-                serde_json::json!({"error": format!("Model '{}' already exists", new_repo_id)}),
+                error_body(format!("Model '{}' already exists", new_repo_id), Some("ConflictError")),
             ));
         }
 
@@ -111,10 +94,7 @@ pub async fn rename_model(
         let config_key = new_repo_id.to_lowercase().replace('/', "--");
         let _ = mgr.save_model_config(&config_key, &model_config).map_err(
             |e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    serde_json::json!({"error": e.to_string()}),
-                )
+(StatusCode::INTERNAL_SERVER_ERROR, error_body(e.to_string(), None))
             },
         )?;
 
@@ -132,10 +112,6 @@ pub async fn rename_model(
             Json(val).into_response()
         }
         Ok(Err((status, body))) => (status, Json(body)).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     }
 }

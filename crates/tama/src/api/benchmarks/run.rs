@@ -1,4 +1,5 @@
 use super::*;
+use crate::api::error::error_response;
 
 // ── Handler: Submit benchmark job ─────────────────────────────────────
 
@@ -9,11 +10,11 @@ pub async fn run_benchmark(
     let jobs = match &state.web_jobs {
         Some(j) => j.clone(),
         None => {
-            return (
+            return error_response(
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(serde_json::json!({"error": "Job manager not available"})),
+                "Job manager not available",
+                None,
             )
-                .into_response();
         }
     };
 
@@ -21,11 +22,11 @@ pub async fn run_benchmark(
     let job = match jobs.submit(JobKind::Benchmark, None).await {
         Ok(j) => j,
         Err(_) => {
-            return (
+            return error_response(
                 StatusCode::CONFLICT,
-                Json(serde_json::json!({"error": "Another job is already running"})),
+                "Another job is already running",
+                Some("ConflictError"),
             )
-                .into_response();
         }
     };
 

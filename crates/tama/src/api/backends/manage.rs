@@ -8,6 +8,7 @@ use serde::Deserialize;
 use std::sync::Arc;
 
 use super::types::*;
+use crate::api::error::error_response;
 use tama_core::proxy::ProxyState;
 
 /// Query params for POST /tama/v1/backends/:name/update
@@ -26,21 +27,21 @@ pub async fn update_backend(
 ) -> impl IntoResponse {
     // Validate path param to prevent path traversal attacks
     if name.contains('/') || name.contains('\\') || name.contains("..") {
-        return (
+        return error_response(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "Invalid backend name: path separators or traversal sequences not allowed"})),
-        )
-            .into_response();
+            "Invalid backend name: path separators or traversal sequences not allowed",
+            Some("ValidationError"),
+        );
     }
 
     let jobs = match &state.web_jobs {
         Some(j) => j,
         None => {
-            return (
+            return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "job manager not configured"})),
+                "job manager not configured",
+                None,
             )
-                .into_response();
         }
     };
 
@@ -59,11 +60,11 @@ pub async fn update_backend(
     let mgr = match mgr_result {
         Ok(r) => r,
         Err(e) => {
-            return (
+            return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": format!("Failed to open manager: {}", e)})),
+                format!("Failed to open manager: {}", e),
+                None,
             )
-                .into_response();
         }
     };
 
@@ -75,20 +76,18 @@ pub async fn update_backend(
             let versions = match mgr.list_versions(&name, None) {
                 Ok(Some(v)) => v,
                 Ok(None) => {
-                    return (
+                    return error_response(
                         StatusCode::NOT_FOUND,
-                        Json(serde_json::json!({"error": format!("Backend '{}' not found", name)})),
+                        format!("Backend '{}' not found", name),
+                        Some("NotFoundError"),
                     )
-                        .into_response();
                 }
                 Err(e) => {
-                    return (
+                    return error_response(
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(
-                            serde_json::json!({"error": format!("Failed to query backend: {}", e)}),
-                        ),
+                        format!("Failed to query backend: {}", e),
+                        None,
                     )
-                        .into_response();
                 }
             };
             let mut variants: Vec<String> =
@@ -117,18 +116,18 @@ pub async fn update_backend(
     let backend_info = match mgr.get_active(&name, &lookup_variant) {
         Ok(Some(info)) => info,
         Ok(None) => {
-            return (
+            return error_response(
                 StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": format!("Backend '{}' not found", name)})),
+                format!("Backend '{}' not found", name),
+                Some("NotFoundError"),
             )
-                .into_response();
         }
         Err(e) => {
-            return (
+            return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": format!("Failed to get backend: {}", e)})),
+                format!("Failed to get backend: {}", e),
+                None,
             )
-                .into_response();
         }
     };
 
@@ -138,13 +137,11 @@ pub async fn update_backend(
     let latest_version = match tama_core::backends::check_latest_version(&backend_type).await {
         Ok(v) => v,
         Err(e) => {
-            return (
+            return error_response(
                 StatusCode::BAD_GATEWAY,
-                Json(
-                    serde_json::json!({"error": format!("Failed to check latest version: {}", e)}),
-                ),
+                format!("Failed to check latest version: {}", e),
+                None,
             )
-                .into_response();
         }
     };
 
@@ -168,11 +165,11 @@ pub async fn update_backend(
                 .into_response();
         }
         Err(_) => {
-            return (
+            return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "failed to create job"})),
+                "failed to create job",
+                None,
             )
-                .into_response();
         }
     };
 
@@ -185,11 +182,11 @@ pub async fn update_backend(
             &latest_version,
         ),
         Err(e) => {
-            return (
+            return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": format!("Failed to get backends dir: {}", e)})),
+                format!("Failed to get backends dir: {}", e),
+                None,
             )
-                .into_response();
         }
     };
 
@@ -490,18 +487,18 @@ pub async fn remove_backend_version(
 ) -> impl IntoResponse {
     // Validate path params (prevent path traversal)
     if name.contains('/') || name.contains('\\') || name.contains("..") {
-        return (
+        return error_response(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "Invalid backend name: path separators or traversal sequences not allowed"})),
-        )
-            .into_response();
+            "Invalid backend name: path separators or traversal sequences not allowed",
+            Some("ValidationError"),
+        );
     }
     if version.contains('/') || version.contains('\\') || version.contains("..") {
-        return (
+        return error_response(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "Invalid version: path separators or traversal sequences not allowed"})),
-        )
-            .into_response();
+            "Invalid version: path separators or traversal sequences not allowed",
+            Some("ValidationError"),
+        );
     }
 
     let config_dir = state.db_dir.clone().unwrap_or_else(|| {
@@ -521,11 +518,11 @@ pub async fn remove_backend_version(
     let mgr = match mgr_result {
         Ok(r) => r,
         Err(e) => {
-            return (
+            return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": format!("Failed to open manager: {}", e)})),
+                format!("Failed to open manager: {}", e),
+                None,
             )
-                .into_response();
         }
     };
 
@@ -545,11 +542,11 @@ pub async fn remove_backend_version(
                 .into_response();
         }
         Err(e) => {
-            return (
+            return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": format!("Failed to query backend: {}", e)})),
+                format!("Failed to query backend: {}", e),
+                None,
             )
-                .into_response();
         }
     };
 
@@ -627,21 +624,21 @@ pub async fn remove_backend_version(
                 )
                     .into_response();
             }
-            return (
+            return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": format!("Failed to remove files: {}", e)})),
-            )
-                .into_response();
+                format!("Failed to remove files: {}", e),
+                None,
+            );
         }
     }
 
     // Remove from DB (activates another version if this was active)
     if let Err(e) = mgr.remove_version(&name, &info.gpu_variant, &version) {
-        return (
+        return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("Failed to remove version: {}", e)})),
-        )
-            .into_response();
+            format!("Failed to remove version: {}", e),
+            None,
+        );
     }
 
     // Clean up update_check records — use LIKE pattern to match all variants
@@ -679,11 +676,11 @@ pub async fn activate_backend_version(
 ) -> impl IntoResponse {
     // Validate name
     if name.contains('/') || name.contains('\\') || name.contains("..") {
-        return (
+        return error_response(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "Invalid backend name"})),
-        )
-            .into_response();
+            "Invalid backend name",
+            Some("ValidationError"),
+        );
     }
 
     let config_dir = state.db_dir.clone().unwrap_or_else(|| {
@@ -817,11 +814,11 @@ pub async fn activate_backend_version(
             })
             .into_response()
         }
-        Err(e) => (
+        Err(e) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("Failed to activate: {}", e)})),
-        )
-            .into_response(),
+            format!("Failed to activate: {}", e),
+            None,
+        ),
     }
 }
 
@@ -864,11 +861,11 @@ pub async fn update_backend_default_args(
 
     match result {
         Ok(()) => Json(serde_json::json!({"success": true})).into_response(),
-        Err(e) => (
+        Err(e) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("Failed to update backend config: {}", e)})),
-        )
-            .into_response(),
+            format!("Failed to update backend config: {}", e),
+            None,
+        ),
     }
 }
 
@@ -890,11 +887,11 @@ pub async fn update_backend_source(
 ) -> impl IntoResponse {
     // Validate path param to prevent path traversal attacks
     if name.contains('/') || name.contains('\\') || name.contains("..") {
-        return (
+        return error_response(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "Invalid backend name"})),
-        )
-            .into_response();
+            "Invalid backend name",
+            Some("ValidationError"),
+        );
     }
 
     let config_dir = state.db_dir.clone().unwrap_or_else(|| {
@@ -957,24 +954,16 @@ pub async fn update_backend_source(
         Err(e) => {
             let err_msg = e.to_string();
             if err_msg.contains("not found") {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(serde_json::json!({"error": err_msg})),
-                )
-                    .into_response();
+                return error_response(StatusCode::NOT_FOUND, err_msg, Some("NotFoundError"));
             }
             if err_msg.contains("Invalid gpu_variant") || err_msg.contains("multiple variants") {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({"error": err_msg})),
-                )
-                    .into_response();
+                return error_response(StatusCode::BAD_REQUEST, err_msg, Some("ValidationError"));
             }
-            return (
+            return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": format!("Failed to open manager: {}", e)})),
-            )
-                .into_response();
+                format!("Failed to open manager: {}", e),
+                None,
+            );
         }
     };
 
@@ -982,11 +971,11 @@ pub async fn update_backend_source(
     if let Some(jobs) = &state.web_jobs {
         if let Some(active_job) = jobs.active().await {
             if active_job.backend_type.as_ref().map(|b| b.to_string()) == Some(name.clone()) {
-                return (
+                return error_response(
                     StatusCode::CONFLICT,
-                    Json(serde_json::json!({"error": "another backend job is already running"})),
-                )
-                    .into_response();
+                    "another backend job is already running",
+                    Some("ConflictError"),
+                );
             }
         }
     }
@@ -1004,10 +993,10 @@ pub async fn update_backend_source(
 
     match update_result {
         Ok(()) => Json(UpdateSourceResponse { build_from_source }).into_response(),
-        Err(e) => (
+        Err(e) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("Failed to update build method: {}", e)})),
-        )
-            .into_response(),
+            format!("Failed to update build method: {}", e),
+            None,
+        ),
     }
 }

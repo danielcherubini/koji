@@ -2,6 +2,7 @@
 //!
 //! - GET /tama/v1/logs — returns grouped logs (proxied from tama-core)
 //! - GET /tama/v1/logs/:backend — returns last N lines of a backend's log file
+use crate::api::error::error_response;
 
 use axum::{
     extract::{Path, Query, State},
@@ -46,31 +47,25 @@ pub async fn get_backend_logs(
 ) -> impl IntoResponse {
     let dir = match state.config.read().await.logs_dir() {
         Ok(d) => d,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": e.to_string()})),
-            )
-                .into_response();
-        }
+        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     };
 
     if !is_valid_backend_name(&backend) {
-        return (
+        return error_response(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "Invalid backend name"})),
-        )
-            .into_response();
+            "Invalid backend name",
+            Some("ValidationError"),
+        );
     }
 
     let path = dir.join(format!("{}.log", backend));
 
     if !path.exists() {
-        return (
+        return error_response(
             StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": format!("No logs found for '{}'", backend)})),
-        )
-            .into_response();
+            format!("No logs found for '{}'", backend),
+            Some("NotFoundError"),
+        );
     }
 
     let n = query.lines.min(MAX_LINES);

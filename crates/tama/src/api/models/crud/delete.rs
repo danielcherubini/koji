@@ -1,3 +1,4 @@
+use crate::api::error::{error_body, error_response};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -28,7 +29,7 @@ pub async fn delete_quant(
         let mgr = tama_core::models::ModelManager::open(&config_dir).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                serde_json::json!({"error": e.to_string()}),
+                error_body(e.to_string(), None),
             )
         })?;
 
@@ -38,13 +39,13 @@ pub async fn delete_quant(
             .map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    serde_json::json!({"error": e.to_string()}),
+                    error_body(e.to_string(), None),
                 )
             })?
             .ok_or_else(|| {
                 (
                     StatusCode::NOT_FOUND,
-                    serde_json::json!({"error": "Model not found"}),
+                    error_body("Model not found", Some("NotFoundError")),
                 )
             })?;
 
@@ -54,7 +55,7 @@ pub async fn delete_quant(
         let quant_entry = model_config.quants.get(&quant_key).ok_or_else(|| {
             (
                 StatusCode::NOT_FOUND,
-                serde_json::json!({"error": "Quant not found"}),
+                error_body("Quant not found", Some("NotFoundError")),
             )
         })?;
 
@@ -79,7 +80,7 @@ pub async fn delete_quant(
             .map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    serde_json::json!({"error": e.to_string()}),
+                    error_body(e.to_string(), None),
                 )
             })?;
 
@@ -123,11 +124,7 @@ pub async fn delete_quant(
             Json(val).into_response()
         }
         Ok(Err((status, body))) => (status, Json(body)).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     }
 }
 
@@ -149,20 +146,20 @@ pub async fn delete_model(
         let mut mgr = tama_core::models::ModelManager::open(&config_dir).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                serde_json::json!({"error": e.to_string()}),
+                error_body(e.to_string(), None),
             )
         })?;
         let model_id = resolve_model_id(&id_str, &mgr)
             .map_err(|e| {
                 (
                     StatusCode::BAD_REQUEST,
-                    serde_json::json!({"error": e.to_string()}),
+                    error_body(e.to_string(), Some("ValidationError")),
                 )
             })?
             .ok_or_else(|| {
                 (
                     StatusCode::NOT_FOUND,
-                    serde_json::json!({"error": "Model not found"}),
+                    error_body("Model not found", Some("NotFoundError")),
                 )
             })?;
         let model_record = mgr
@@ -170,13 +167,13 @@ pub async fn delete_model(
             .map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    serde_json::json!({"error": e.to_string()}),
+                    error_body(e.to_string(), None),
                 )
             })?
             .ok_or_else(|| {
                 (
                     StatusCode::NOT_FOUND,
-                    serde_json::json!({"error": "Model not found"}),
+                    error_body("Model not found", Some("NotFoundError")),
                 )
             })?;
         let _model_config = tama_core::config::ModelConfig::from_db_record(&model_record);
@@ -198,7 +195,7 @@ pub async fn delete_model(
                 tracing::error!("Failed to delete model records from database: {e}");
                 return Err((
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    serde_json::json!({"error": "Failed to delete model records from database"}),
+                    error_body("Failed to delete model records from database", None),
                 ));
             }
         }
@@ -266,10 +263,6 @@ pub async fn delete_model(
             Json(val).into_response()
         }
         Ok(Err((status, body))) => (status, Json(body)).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     }
 }

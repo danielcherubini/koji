@@ -1,3 +1,4 @@
+use crate::api::error::{error_body, error_response};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -50,20 +51,20 @@ pub async fn refresh_model_metadata(
         let mgr = tama_core::models::ModelManager::open(&config_dir).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                serde_json::json!({"error": e.to_string()}),
+                error_body(e.to_string(), None),
             )
         })?;
         let model_id = resolve_model_id(&id_str, &mgr)
             .map_err(|e| {
                 (
                     StatusCode::BAD_REQUEST,
-                    serde_json::json!({"error": e.to_string()}),
+                    error_body(e.to_string(), Some("ValidationError")),
                 )
             })?
             .ok_or_else(|| {
                 (
                     StatusCode::NOT_FOUND,
-                    serde_json::json!({"error": "Model not found"}),
+                    error_body("Model not found", Some("NotFoundError")),
                 )
             })?;
         let record = mgr
@@ -71,19 +72,19 @@ pub async fn refresh_model_metadata(
             .map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    serde_json::json!({"error": e.to_string()}),
+                    error_body(e.to_string(), None),
                 )
             })?
             .ok_or_else(|| {
                 (
                     StatusCode::NOT_FOUND,
-                    serde_json::json!({"error": "Model not found"}),
+                    error_body("Model not found", Some("NotFoundError")),
                 )
             })?;
         let models_dir = cfg.models_dir().map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                serde_json::json!({"error": e.to_string()}),
+                error_body(e.to_string(), None),
             )
         })?;
         Ok::<_, (StatusCode, serde_json::Value)>((model_id, record.repo_id, config_dir, models_dir))
@@ -92,13 +93,7 @@ pub async fn refresh_model_metadata(
     let (model_id, repo_id, config_dir, _models_dir) = match resolved {
         Ok(Ok(x)) => x,
         Ok(Err((s, b))) => return (s, Json(b)).into_response(),
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": e.to_string()})),
-            )
-                .into_response();
-        }
+        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     };
 
     // Step 2: async HF fetches (no DB handle held).
@@ -174,16 +169,12 @@ pub async fn refresh_model_metadata(
             }))
             .into_response()
         }
-        Ok(Err(e)) => (
+        Ok(Err(e)) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("DB write failed: {}", e)})),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
+            format!("DB write failed: {}", e),
+            None,
+        ),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     }
 }
 
@@ -207,20 +198,20 @@ pub async fn verify_model_files(
         let mgr = tama_core::models::ModelManager::open(&config_dir).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                serde_json::json!({"error": e.to_string()}),
+                error_body(e.to_string(), None),
             )
         })?;
         let model_id = resolve_model_id(&id_str, &mgr)
             .map_err(|e| {
                 (
                     StatusCode::BAD_REQUEST,
-                    serde_json::json!({"error": e.to_string()}),
+                    error_body(e.to_string(), Some("ValidationError")),
                 )
             })?
             .ok_or_else(|| {
                 (
                     StatusCode::NOT_FOUND,
-                    serde_json::json!({"error": "Model not found"}),
+                    error_body("Model not found", Some("NotFoundError")),
                 )
             })?;
         let record = mgr
@@ -228,19 +219,19 @@ pub async fn verify_model_files(
             .map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    serde_json::json!({"error": e.to_string()}),
+                    error_body(e.to_string(), None),
                 )
             })?
             .ok_or_else(|| {
                 (
                     StatusCode::NOT_FOUND,
-                    serde_json::json!({"error": "Model not found"}),
+                    error_body("Model not found", Some("NotFoundError")),
                 )
             })?;
         let models_dir = _cfg.models_dir().map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                serde_json::json!({"error": e.to_string()}),
+                error_body(e.to_string(), None),
             )
         })?;
         Ok::<_, (StatusCode, serde_json::Value)>((model_id, record.repo_id, config_dir, models_dir))
@@ -249,13 +240,7 @@ pub async fn verify_model_files(
     let (model_id, repo_id, config_dir, models_dir) = match resolved {
         Ok(Ok(x)) => x,
         Ok(Err((s, b))) => return (s, Json(b)).into_response(),
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": e.to_string()})),
-            )
-                .into_response();
-        }
+        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     };
 
     // Model files live at <models_dir>/<repo_id>/<filename>.gguf
@@ -296,15 +281,11 @@ pub async fn verify_model_files(
             }))
             .into_response()
         }
-        Ok(Err(e)) => (
+        Ok(Err(e)) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("verify failed: {}", e)})),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
+            format!("verify failed: {}", e),
+            None,
+        ),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     }
 }

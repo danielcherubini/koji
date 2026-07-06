@@ -1,5 +1,6 @@
 use super::*;
 use crate::api::benchmarks::run::{resolve_model_path, unload_model_before_benchmark};
+use crate::api::error::error_response;
 
 // ── Request DTO ───────────────────────────────────────────────────────
 
@@ -51,32 +52,32 @@ pub async fn run_mtp_benchmark(
     let jobs = match &state.web_jobs {
         Some(j) => j.clone(),
         None => {
-            return (
+            return error_response(
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(serde_json::json!({"error": "Job manager not available"})),
+                "Job manager not available",
+                None,
             )
-                .into_response();
         }
     };
 
     // Validate draft_max_values is not empty
     if req.draft_max_values.is_empty() {
-        return (
+        return error_response(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "draft_max_values must not be empty"})),
-        )
-            .into_response();
+            "draft_max_values must not be empty",
+            Some("ValidationError"),
+        );
     }
 
     // Submit a benchmark job
     let job = match jobs.submit(JobKind::Benchmark, None).await {
         Ok(j) => j,
         Err(_) => {
-            return (
+            return error_response(
                 StatusCode::CONFLICT,
-                Json(serde_json::json!({"error": "Another job is already running"})),
+                "Another job is already running",
+                Some("ConflictError"),
             )
-                .into_response();
         }
     };
 

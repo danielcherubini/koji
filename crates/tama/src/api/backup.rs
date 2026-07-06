@@ -1,5 +1,6 @@
 //! Backup and restore API endpoints.
 
+use crate::api::error::error_response;
 use axum::{
     extract::{Multipart, State},
     http::StatusCode,
@@ -111,16 +112,8 @@ pub async fn create_backup(State(state): State<Arc<ProxyState>>) -> impl IntoRes
             )
                 .into_response()
         }
-        Ok(Err(e)) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
+        Ok(Err(e)) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     }
 }
 
@@ -134,11 +127,11 @@ pub async fn restore_preview(
         tama_core::config::Config::config_dir().unwrap_or_else(|_| std::env::temp_dir());
     let temp_dir = config_dir.join("uploads");
     if let Err(e) = std::fs::create_dir_all(&temp_dir) {
-        return (
+        return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("Failed to create temp directory: {}", e)})),
-        )
-            .into_response();
+            format!("Failed to create temp directory: {}", e),
+            None,
+        );
     }
 
     let upload_id = Uuid::new_v4().simple().to_string();
@@ -149,29 +142,29 @@ pub async fn restore_preview(
         let bytes = match field.bytes().await {
             Ok(b) => b,
             Err(e) => {
-                return (
+                return error_response(
                     StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({"error": format!("Failed to read upload: {}", e)})),
+                    format!("Failed to read upload: {}", e),
+                    Some("ValidationError"),
                 )
-                    .into_response();
             }
         };
         if let Err(e) = std::fs::write(&upload_path, &bytes) {
-            return (
+            return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": format!("Failed to write upload: {}", e)})),
-            )
-                .into_response();
+                format!("Failed to write upload: {}", e),
+                None,
+            );
         }
         uploaded = true;
     }
 
     if !uploaded {
-        return (
+        return error_response(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "No file uploaded"})),
-        )
-            .into_response();
+            "No file uploaded",
+            Some("ValidationError"),
+        );
     }
 
     // Extract manifest
@@ -219,16 +212,12 @@ pub async fn restore_preview(
             })
             .into_response()
         }
-        Ok(Err(e)) => (
+        Ok(Err(e)) => error_response(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
+            e.to_string(),
+            Some("ValidationError"),
+        ),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     }
 }
 
@@ -242,22 +231,22 @@ pub async fn start_restore(
     let upload_path = match uploads.get(&body.upload_id) {
         Some(entry) => entry.path.clone(),
         None => {
-            return (
+            return error_response(
                 StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "Upload not found or expired"})),
+                "Upload not found or expired",
+                Some("NotFoundError"),
             )
-                .into_response();
         }
     };
     drop(uploads);
 
     // Create restore job
     let Some(jobs) = state.web_jobs.as_ref() else {
-        return (
+        return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "Jobs not configured"})),
-        )
-            .into_response();
+            "Jobs not configured",
+            None,
+        );
     };
 
     let job = jobs
@@ -274,11 +263,11 @@ pub async fn start_restore(
                 Ok(d) => d,
                 Err(e) => {
                     tracing::error!("Config dir not configured: {}", e);
-                    return (
+                    return error_response(
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({"error": format!("Config dir not configured: {}", e)})),
-                    )
-                        .into_response();
+                        format!("Config dir not configured: {}", e),
+                        None,
+                    );
                 }
             };
             let temp_dir = config_dir.join("uploads");
@@ -306,11 +295,7 @@ pub async fn start_restore(
 
             Json(RestoreResponse { job_id }).into_response()
         }
-        Err(e) => (
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
+        Err(e) => error_response(StatusCode::CONFLICT, e.to_string(), Some("ConflictError")),
     }
 }
 

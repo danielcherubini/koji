@@ -4,6 +4,7 @@ use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use regex::Regex;
 use std::sync::{Arc, OnceLock};
 
+use crate::api::error::{error_response, error_response_simple};
 use tama_core::proxy::ProxyState;
 
 /// Regex for valid alias names: starts with alphanumeric, then alphanumeric/underscore/hyphen,
@@ -36,21 +37,16 @@ pub async fn list_aliases(State(state): State<Arc<ProxyState>>) -> impl IntoResp
     let mgr = match state.model_mgr() {
         Some(m) => m,
         None => {
-            return (
+            return error_response_simple(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "Database not configured"})),
+                "Database not configured",
             )
-                .into_response();
         }
     };
 
     match tama_core::db::queries::get_all_aliases(mgr.conn()) {
         Ok(aliases) => Json(aliases).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     }
 }
 
@@ -62,26 +58,21 @@ pub async fn get_alias(
     let mgr = match state.model_mgr() {
         Some(m) => m,
         None => {
-            return (
+            return error_response_simple(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "Database not configured"})),
+                "Database not configured",
             )
-                .into_response();
         }
     };
 
     match tama_core::db::queries::get_alias_by_id(mgr.conn(), id) {
         Ok(Some(alias)) => Json(alias).into_response(),
-        Ok(None) => (
+        Ok(None) => error_response(
             StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "Alias not found"})),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
+            "Alias not found",
+            Some("NotFoundError"),
+        ),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     }
 }
 
@@ -93,21 +84,20 @@ pub async fn create_alias(
     let mgr = match state.model_mgr() {
         Some(m) => m,
         None => {
-            return (
+            return error_response_simple(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "Database not configured"})),
+                "Database not configured",
             )
-                .into_response();
         }
     };
 
     // Validate alias name
     if let Some(err) = validate_alias_name(&payload.name) {
-        return (
+        return error_response(
             StatusCode::UNPROCESSABLE_ENTITY,
-            Json(serde_json::json!({"error": err})),
-        )
-            .into_response();
+            err,
+            Some("ValidationError"),
+        );
     }
 
     // Validate model_id exists
@@ -117,21 +107,15 @@ pub async fn create_alias(
         |row| row.get(0),
     ) {
         Ok(v) => v,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": e.to_string()})),
-            )
-                .into_response();
-        }
+        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     };
 
     if !model_exists {
-        return (
+        return error_response(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "Model not found"})),
-        )
-            .into_response();
+            "Model not found",
+            Some("ValidationError"),
+        );
     }
 
     let new_id = match tama_core::db::queries::insert_alias(
@@ -141,13 +125,7 @@ pub async fn create_alias(
         payload.description.as_deref(),
     ) {
         Ok(id) => id,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": e.to_string()})),
-            )
-                .into_response();
-        }
+        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     };
 
     // Reload alias cache in ProxyState
@@ -158,16 +136,11 @@ pub async fn create_alias(
     // Return the created alias
     match tama_core::db::queries::get_alias_by_id(mgr.conn(), new_id) {
         Ok(Some(alias)) => (StatusCode::CREATED, Json(alias)).into_response(),
-        Ok(None) => (
+        Ok(None) => error_response_simple(
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "Failed to retrieve created alias"})),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
+            "Failed to retrieve created alias",
+        ),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     }
 }
 
@@ -180,22 +153,21 @@ pub async fn update_alias(
     let mgr = match state.model_mgr() {
         Some(m) => m,
         None => {
-            return (
+            return error_response_simple(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "Database not configured"})),
+                "Database not configured",
             )
-                .into_response();
         }
     };
 
     // Validate alias name if provided
     if let Some(ref name) = payload.name {
         if let Some(err) = validate_alias_name(name) {
-            return (
+            return error_response(
                 StatusCode::UNPROCESSABLE_ENTITY,
-                Json(serde_json::json!({"error": err})),
-            )
-                .into_response();
+                err,
+                Some("ValidationError"),
+            );
         }
     }
 
@@ -208,20 +180,16 @@ pub async fn update_alias(
         ) {
             Ok(v) => v,
             Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"error": e.to_string()})),
-                )
-                    .into_response();
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None)
             }
         };
 
         if !model_exists {
-            return (
+            return error_response(
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "Model not found"})),
-            )
-                .into_response();
+                "Model not found",
+                Some("ValidationError"),
+            );
         }
     }
 
@@ -234,13 +202,7 @@ pub async fn update_alias(
         payload.enabled,
     ) {
         Ok(()) => {}
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": e.to_string()})),
-            )
-                .into_response();
-        }
+        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     }
 
     // Reload alias cache in ProxyState
@@ -250,16 +212,11 @@ pub async fn update_alias(
 
     match tama_core::db::queries::get_alias_by_id(mgr.conn(), id) {
         Ok(Some(alias)) => Json(alias).into_response(),
-        Ok(None) => (
+        Ok(None) => error_response_simple(
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "Failed to retrieve updated alias"})),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
+            "Failed to retrieve updated alias",
+        ),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     }
 }
 
@@ -271,23 +228,16 @@ pub async fn delete_alias(
     let mgr = match state.model_mgr() {
         Some(m) => m,
         None => {
-            return (
+            return error_response_simple(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "Database not configured"})),
+                "Database not configured",
             )
-                .into_response();
         }
     };
 
     match tama_core::db::queries::delete_alias(mgr.conn(), id) {
         Ok(()) => {}
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": e.to_string()})),
-            )
-                .into_response();
-        }
+        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     }
 
     // Reload alias cache in ProxyState
