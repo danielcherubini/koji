@@ -96,6 +96,7 @@ pub fn ModelEditor() -> impl IntoView {
             if let Some(d) = guard.take() {
                 let id_str = d.id.to_string();
                 if populated_id.get_value() != Some(id_str.clone()) {
+                    backends.set(d.backends.clone());
                     original_id.set(d.id.to_string());
 
                     // Build consolidated form
