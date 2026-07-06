@@ -1,70 +1,25 @@
-use super::super::super::*;
-use crate::config::types::{QuantEntry, QuantKind, SpecDecodingConfig};
-use std::collections::BTreeMap;
-use tempfile::tempdir;
+use crate::config::resolve::tests::test_helpers as h;
+use crate::config::types::{QuantKind, SpecDecodingConfig};
+use crate::config::Config;
 
 /// Tests that spec decoding flags (--spec-type, --spec-draft-n-max, --spec-draft-n-min)
 /// are injected when spec_decoding is configured on a llama.cpp backend.
 #[test]
 fn test_spec_decoding_flags_injected() {
-    let temp_dir = tempdir().expect("Failed to create temp dir");
-    let models_dir = temp_dir.path().join("models");
-    let org_dir = models_dir.join("org").join("repo");
-    let quant_file = org_dir.join("model-Q4_K_M.gguf");
+    let (_temp_dir, models_dir) = h::temp_model_dir();
+    let config = h::sample_config(models_dir);
+    let backend = h::sample_backend();
 
-    std::fs::create_dir_all(&org_dir).expect("Failed to create model dir");
-    std::fs::write(&quant_file, b"dummy gguf content").expect("Failed to write model file");
-
-    let mut quants = BTreeMap::new();
-    quants.insert(
-        "Q4_K_M".to_string(),
-        QuantEntry {
-            file: "model-Q4_K_M.gguf".to_string(),
-            kind: Default::default(),
-            size_bytes: None,
-            context_length: Some(8192),
-        },
-    );
-
-    let mut config = Config::default();
-    config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-
-    let server = ModelConfig {
-        backend: "llama_cpp".to_string(),
-        args: vec![],
-        sampling: None,
-        model: Some("org/repo".to_string()),
-        quant: Some("Q4_K_M".to_string()),
-        mmproj: None,
-        port: None,
-        health_check: None,
-        enabled: true,
-        context_length: Some(8192),
-        num_parallel: Some(1),
-        kv_unified: false,
-        profile: None,
-        api_name: None,
-        gpu_layers: None,
-        cache_type_k: None,
-        cache_type_v: None,
-        quants,
-        modalities: None,
-        display_name: None,
-        db_id: None,
-        spec_decoding: SpecDecodingConfig {
+    let server = h::sample_server(|s| {
+        s.context_length = Some(8192);
+        s.num_parallel = Some(1);
+        s.spec_decoding = SpecDecodingConfig {
             spec_types: vec!["draft-mtp".to_string(), "ngram-simple".to_string()],
             n_max: Some(4),
             n_min: Some(2),
             draft_ngl: Some(16),
-        },
-        ..Default::default()
-    };
-
-    let backend = BackendConfig {
-        path: None,
-        version: None,
-        gpu_variant: None,
-    };
+        };
+    });
 
     let args = config
         .build_full_args(&server, &backend, None, &[])
@@ -122,65 +77,22 @@ fn test_spec_decoding_flags_injected() {
 /// Tests that if the user already has --spec-type in their args, we don't inject another.
 #[test]
 fn test_spec_decoding_no_duplicate_when_in_args() {
-    let temp_dir = tempdir().expect("Failed to create temp dir");
-    let models_dir = temp_dir.path().join("models");
-    let org_dir = models_dir.join("org").join("repo");
-    let quant_file = org_dir.join("model-Q4_K_M.gguf");
-
-    std::fs::create_dir_all(&org_dir).expect("Failed to create model dir");
-    std::fs::write(&quant_file, b"dummy gguf content").expect("Failed to write model file");
-
-    let mut quants = BTreeMap::new();
-    quants.insert(
-        "Q4_K_M".to_string(),
-        QuantEntry {
-            file: "model-Q4_K_M.gguf".to_string(),
-            kind: Default::default(),
-            size_bytes: None,
-            context_length: Some(8192),
-        },
-    );
-
-    let mut config = Config::default();
-    config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
+    let (_temp_dir, models_dir) = h::temp_model_dir();
+    let config = h::sample_config(models_dir);
+    let backend = h::sample_backend();
 
     // User manually added --spec-type in args
-    let server = ModelConfig {
-        backend: "llama_cpp".to_string(),
-        args: vec!["--spec-type draft-mtp".to_string()],
-        sampling: None,
-        model: Some("org/repo".to_string()),
-        quant: Some("Q4_K_M".to_string()),
-        mmproj: None,
-        port: None,
-        health_check: None,
-        enabled: true,
-        context_length: Some(8192),
-        num_parallel: Some(1),
-        kv_unified: false,
-        profile: None,
-        api_name: None,
-        gpu_layers: None,
-        cache_type_k: None,
-        cache_type_v: None,
-        quants,
-        modalities: None,
-        display_name: None,
-        db_id: None,
-        spec_decoding: SpecDecodingConfig {
+    let server = h::sample_server(|s| {
+        s.args = vec!["--spec-type draft-mtp".to_string()];
+        s.context_length = Some(8192);
+        s.num_parallel = Some(1);
+        s.spec_decoding = SpecDecodingConfig {
             spec_types: vec!["draft-mtp".to_string(), "ngram-simple".to_string()],
             n_max: Some(4),
             n_min: Some(2),
             draft_ngl: None,
-        },
-        ..Default::default()
-    };
-
-    let backend = BackendConfig {
-        path: None,
-        version: None,
-        gpu_variant: None,
-    };
+        };
+    });
 
     let args = config
         .build_full_args(&server, &backend, None, &[])
@@ -210,65 +122,21 @@ fn test_spec_decoding_no_duplicate_when_in_args() {
 /// Tests that --spec-draft-ngl is only injected when "draft-mtp" is in spec_types.
 #[test]
 fn test_spec_decoding_draft_ngl_only_for_mtp() {
-    let temp_dir = tempdir().expect("Failed to create temp dir");
-    let models_dir = temp_dir.path().join("models");
-    let org_dir = models_dir.join("org").join("repo");
-    let quant_file = org_dir.join("model-Q4_K_M.gguf");
-
-    std::fs::create_dir_all(&org_dir).expect("Failed to create model dir");
-    std::fs::write(&quant_file, b"dummy gguf content").expect("Failed to write model file");
-
-    let mut quants = BTreeMap::new();
-    quants.insert(
-        "Q4_K_M".to_string(),
-        QuantEntry {
-            file: "model-Q4_K_M.gguf".to_string(),
-            kind: Default::default(),
-            size_bytes: None,
-            context_length: Some(8192),
-        },
-    );
-
-    let mut config = Config::default();
-    config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
+    let (_temp_dir, models_dir) = h::temp_model_dir();
+    let config = h::sample_config(models_dir);
+    let backend = h::sample_backend();
 
     // spec_types does NOT contain "draft-mtp", so draft_ngl should NOT be injected
-    let server = ModelConfig {
-        backend: "llama_cpp".to_string(),
-        args: vec![],
-        sampling: None,
-        model: Some("org/repo".to_string()),
-        quant: Some("Q4_K_M".to_string()),
-        mmproj: None,
-        port: None,
-        health_check: None,
-        enabled: true,
-        context_length: Some(8192),
-        num_parallel: Some(1),
-        kv_unified: false,
-        profile: None,
-        api_name: None,
-        gpu_layers: None,
-        cache_type_k: None,
-        cache_type_v: None,
-        quants,
-        modalities: None,
-        display_name: None,
-        db_id: None,
-        spec_decoding: SpecDecodingConfig {
+    let server = h::sample_server(|s| {
+        s.context_length = Some(8192);
+        s.num_parallel = Some(1);
+        s.spec_decoding = SpecDecodingConfig {
             spec_types: vec!["ngram-simple".to_string()], // No draft-mtp
             n_max: Some(4),
             n_min: Some(2),
             draft_ngl: Some(16), // Set but should be ignored without draft-mtp
-        },
-        ..Default::default()
-    };
-
-    let backend = BackendConfig {
-        path: None,
-        version: None,
-        gpu_variant: None,
-    };
+        };
+    });
 
     let args = config
         .build_full_args(&server, &backend, None, &[])
@@ -292,64 +160,20 @@ fn test_spec_decoding_draft_ngl_only_for_mtp() {
 /// Tests that draft_ngl=99 is injected as-is (not truncated, not quoted).
 #[test]
 fn test_spec_decoding_draft_ngl_value_99() {
-    let temp_dir = tempdir().expect("Failed to create temp dir");
-    let models_dir = temp_dir.path().join("models");
-    let org_dir = models_dir.join("org").join("repo");
-    let quant_file = org_dir.join("model-Q4_K_M.gguf");
+    let (_temp_dir, models_dir) = h::temp_model_dir();
+    let config = h::sample_config(models_dir);
+    let backend = h::sample_backend();
 
-    std::fs::create_dir_all(&org_dir).expect("Failed to create model dir");
-    std::fs::write(&quant_file, b"dummy gguf content").expect("Failed to write model file");
-
-    let mut quants = BTreeMap::new();
-    quants.insert(
-        "Q4_K_M".to_string(),
-        QuantEntry {
-            file: "model-Q4_K_M.gguf".to_string(),
-            kind: Default::default(),
-            size_bytes: None,
-            context_length: Some(8192),
-        },
-    );
-
-    let mut config = Config::default();
-    config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-
-    let server = ModelConfig {
-        backend: "llama_cpp".to_string(),
-        args: vec![],
-        sampling: None,
-        model: Some("org/repo".to_string()),
-        quant: Some("Q4_K_M".to_string()),
-        mmproj: None,
-        port: None,
-        health_check: None,
-        enabled: true,
-        context_length: Some(8192),
-        num_parallel: Some(1),
-        kv_unified: false,
-        profile: None,
-        api_name: None,
-        gpu_layers: None,
-        cache_type_k: None,
-        cache_type_v: None,
-        quants,
-        modalities: None,
-        display_name: None,
-        db_id: None,
-        spec_decoding: SpecDecodingConfig {
+    let server = h::sample_server(|s| {
+        s.context_length = Some(8192);
+        s.num_parallel = Some(1);
+        s.spec_decoding = SpecDecodingConfig {
             spec_types: vec!["draft-mtp".to_string()],
             n_max: Some(4),
             n_min: Some(2),
             draft_ngl: Some(99),
-        },
-        ..Default::default()
-    };
-
-    let backend = BackendConfig {
-        path: None,
-        version: None,
-        gpu_variant: None,
-    };
+        };
+    });
 
     let args = config
         .build_full_args(&server, &backend, None, &[])
@@ -385,65 +209,21 @@ fn test_spec_decoding_draft_ngl_value_99() {
 /// Tests that empty spec_types produces no spec decoding flags.
 #[test]
 fn test_spec_decoding_empty_types_no_flags() {
-    let temp_dir = tempdir().expect("Failed to create temp dir");
-    let models_dir = temp_dir.path().join("models");
-    let org_dir = models_dir.join("org").join("repo");
-    let quant_file = org_dir.join("model-Q4_K_M.gguf");
-
-    std::fs::create_dir_all(&org_dir).expect("Failed to create model dir");
-    std::fs::write(&quant_file, b"dummy gguf content").expect("Failed to write model file");
-
-    let mut quants = BTreeMap::new();
-    quants.insert(
-        "Q4_K_M".to_string(),
-        QuantEntry {
-            file: "model-Q4_K_M.gguf".to_string(),
-            kind: Default::default(),
-            size_bytes: None,
-            context_length: Some(8192),
-        },
-    );
-
-    let mut config = Config::default();
-    config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
+    let (_temp_dir, models_dir) = h::temp_model_dir();
+    let config = h::sample_config(models_dir);
+    let backend = h::sample_backend();
 
     // Empty spec_types → no spec decoding flags should be injected
-    let server = ModelConfig {
-        backend: "llama_cpp".to_string(),
-        args: vec![],
-        sampling: None,
-        model: Some("org/repo".to_string()),
-        quant: Some("Q4_K_M".to_string()),
-        mmproj: None,
-        port: None,
-        health_check: None,
-        enabled: true,
-        context_length: Some(8192),
-        num_parallel: Some(1),
-        kv_unified: false,
-        profile: None,
-        api_name: None,
-        gpu_layers: None,
-        cache_type_k: None,
-        cache_type_v: None,
-        quants,
-        modalities: None,
-        display_name: None,
-        db_id: None,
-        spec_decoding: SpecDecodingConfig {
+    let server = h::sample_server(|s| {
+        s.context_length = Some(8192);
+        s.num_parallel = Some(1);
+        s.spec_decoding = SpecDecodingConfig {
             spec_types: vec![], // Empty
             n_max: Some(4),
             n_min: Some(2),
             draft_ngl: Some(16),
-        },
-        ..Default::default()
-    };
-
-    let backend = BackendConfig {
-        path: None,
-        version: None,
-        gpu_variant: None,
-    };
+        };
+    });
 
     let args = config
         .build_full_args(&server, &backend, None, &[])
@@ -476,7 +256,7 @@ fn test_spec_decoding_empty_types_no_flags() {
 /// `draft-mtp` is in `spec_types`, and the referenced quant has `kind = Mtp`.
 #[test]
 fn test_mtp_model_injected_when_draft_mtp_enabled() {
-    let temp_dir = tempdir().expect("Failed to create temp dir");
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
     let models_dir = temp_dir.path().join("models");
     let org_dir = models_dir.join("org").join("repo");
     let quant_file = org_dir.join("model-Q4_K_M.gguf");
@@ -486,21 +266,21 @@ fn test_mtp_model_injected_when_draft_mtp_enabled() {
     std::fs::write(&quant_file, b"dummy gguf content").expect("Failed to write model file");
     std::fs::write(&mtp_file, b"dummy mtp content").expect("Failed to write mtp file");
 
-    let mut quants = BTreeMap::new();
+    let mut quants = std::collections::BTreeMap::new();
     quants.insert(
         "Q4_K_M".to_string(),
-        QuantEntry {
+        crate::config::types::QuantEntry {
             file: "model-Q4_K_M.gguf".to_string(),
-            kind: QuantKind::Model,
+            kind: crate::config::types::QuantKind::Model,
             size_bytes: None,
             context_length: Some(8192),
         },
     );
     quants.insert(
         "mtp-F16".to_string(),
-        QuantEntry {
+        crate::config::types::QuantEntry {
             file: "mtp-F16.gguf".to_string(),
-            kind: QuantKind::Mtp,
+            kind: crate::config::types::QuantKind::Mtp,
             size_bytes: None,
             context_length: None,
         },
@@ -509,43 +289,22 @@ fn test_mtp_model_injected_when_draft_mtp_enabled() {
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
 
-    let server = ModelConfig {
-        backend: "llama_cpp".to_string(),
-        args: vec![],
-        sampling: None,
-        model: Some("org/repo".to_string()),
-        quant: Some("Q4_K_M".to_string()),
-        mmproj: None,
-        mtp_model: Some("mtp-F16".to_string()),
-        port: None,
-        health_check: None,
-        enabled: true,
-        context_length: Some(8192),
-        num_parallel: Some(1),
-        kv_unified: false,
-        profile: None,
-        api_name: None,
-        gpu_layers: None,
-        cache_type_k: None,
-        cache_type_v: None,
-        quants,
-        modalities: None,
-        display_name: None,
-        db_id: None,
-        spec_decoding: SpecDecodingConfig {
+    let server = h::sample_server(|s| {
+        s.model = Some("org/repo".to_string());
+        s.quant = Some("Q4_K_M".to_string());
+        s.mtp_model = Some("mtp-F16".to_string());
+        s.context_length = Some(8192);
+        s.num_parallel = Some(1);
+        s.quants = quants;
+        s.spec_decoding = SpecDecodingConfig {
             spec_types: vec!["draft-mtp".to_string()],
             n_max: None,
             n_min: None,
             draft_ngl: None,
-        },
-        ..Default::default()
-    };
+        };
+    });
 
-    let backend = BackendConfig {
-        path: None,
-        version: None,
-        gpu_variant: None,
-    };
+    let backend = h::sample_backend();
 
     let args = config
         .build_full_args(&server, &backend, None, &[])
@@ -572,7 +331,7 @@ fn test_mtp_model_injected_when_draft_mtp_enabled() {
 /// but `draft-mtp` is NOT in `spec_types`.
 #[test]
 fn test_mtp_model_not_injected_without_draft_mtp() {
-    let temp_dir = tempdir().expect("Failed to create temp dir");
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
     let models_dir = temp_dir.path().join("models");
     let org_dir = models_dir.join("org").join("repo");
     let quant_file = org_dir.join("model-Q4_K_M.gguf");
@@ -582,21 +341,21 @@ fn test_mtp_model_not_injected_without_draft_mtp() {
     std::fs::write(&quant_file, b"dummy gguf content").expect("Failed to write model file");
     std::fs::write(&mtp_file, b"dummy mtp content").expect("Failed to write mtp file");
 
-    let mut quants = BTreeMap::new();
+    let mut quants = std::collections::BTreeMap::new();
     quants.insert(
         "Q4_K_M".to_string(),
-        QuantEntry {
+        crate::config::types::QuantEntry {
             file: "model-Q4_K_M.gguf".to_string(),
-            kind: QuantKind::Model,
+            kind: crate::config::types::QuantKind::Model,
             size_bytes: None,
             context_length: Some(8192),
         },
     );
     quants.insert(
         "mtp-F16".to_string(),
-        QuantEntry {
+        crate::config::types::QuantEntry {
             file: "mtp-F16.gguf".to_string(),
-            kind: QuantKind::Mtp,
+            kind: crate::config::types::QuantKind::Mtp,
             size_bytes: None,
             context_length: None,
         },
@@ -605,44 +364,23 @@ fn test_mtp_model_not_injected_without_draft_mtp() {
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
 
-    let server = ModelConfig {
-        backend: "llama_cpp".to_string(),
-        args: vec![],
-        sampling: None,
-        model: Some("org/repo".to_string()),
-        quant: Some("Q4_K_M".to_string()),
-        mmproj: None,
-        mtp_model: Some("mtp-F16".to_string()),
-        port: None,
-        health_check: None,
-        enabled: true,
-        context_length: Some(8192),
-        num_parallel: Some(1),
-        kv_unified: false,
-        profile: None,
-        api_name: None,
-        gpu_layers: None,
-        cache_type_k: None,
-        cache_type_v: None,
-        quants,
-        modalities: None,
-        display_name: None,
-        db_id: None,
-        spec_decoding: SpecDecodingConfig {
+    let server = h::sample_server(|s| {
+        s.model = Some("org/repo".to_string());
+        s.quant = Some("Q4_K_M".to_string());
+        s.mtp_model = Some("mtp-F16".to_string());
+        s.context_length = Some(8192);
+        s.num_parallel = Some(1);
+        s.quants = quants;
+        s.spec_decoding = SpecDecodingConfig {
             // Empty spec_types - draft-mtp not enabled
             spec_types: vec![],
             n_max: None,
             n_min: None,
             draft_ngl: None,
-        },
-        ..Default::default()
-    };
+        };
+    });
 
-    let backend = BackendConfig {
-        path: None,
-        version: None,
-        gpu_variant: None,
-    };
+    let backend = h::sample_backend();
 
     let args = config
         .build_full_args(&server, &backend, None, &[])
@@ -660,7 +398,7 @@ fn test_mtp_model_not_injected_without_draft_mtp() {
 /// it in their `args`.
 #[test]
 fn test_mtp_model_no_duplicate_when_in_args() {
-    let temp_dir = tempdir().expect("Failed to create temp dir");
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
     let models_dir = temp_dir.path().join("models");
     let org_dir = models_dir.join("org").join("repo");
     let quant_file = org_dir.join("model-Q4_K_M.gguf");
@@ -670,21 +408,21 @@ fn test_mtp_model_no_duplicate_when_in_args() {
     std::fs::write(&quant_file, b"dummy gguf content").expect("Failed to write model file");
     std::fs::write(&mtp_file, b"dummy mtp content").expect("Failed to write mtp file");
 
-    let mut quants = BTreeMap::new();
+    let mut quants = std::collections::BTreeMap::new();
     quants.insert(
         "Q4_K_M".to_string(),
-        QuantEntry {
+        crate::config::types::QuantEntry {
             file: "model-Q4_K_M.gguf".to_string(),
-            kind: QuantKind::Model,
+            kind: crate::config::types::QuantKind::Model,
             size_bytes: None,
             context_length: Some(8192),
         },
     );
     quants.insert(
         "mtp-F16".to_string(),
-        QuantEntry {
+        crate::config::types::QuantEntry {
             file: "mtp-F16.gguf".to_string(),
-            kind: QuantKind::Mtp,
+            kind: crate::config::types::QuantKind::Mtp,
             size_bytes: None,
             context_length: None,
         },
@@ -694,43 +432,23 @@ fn test_mtp_model_no_duplicate_when_in_args() {
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
 
     // User already has --spec-draft-model in args
-    let server = ModelConfig {
-        backend: "llama_cpp".to_string(),
-        args: vec!["--spec-draft-model /custom/path.gguf".to_string()],
-        sampling: None,
-        model: Some("org/repo".to_string()),
-        quant: Some("Q4_K_M".to_string()),
-        mmproj: None,
-        mtp_model: Some("mtp-F16".to_string()),
-        port: None,
-        health_check: None,
-        enabled: true,
-        context_length: Some(8192),
-        num_parallel: Some(1),
-        kv_unified: false,
-        profile: None,
-        api_name: None,
-        gpu_layers: None,
-        cache_type_k: None,
-        cache_type_v: None,
-        quants,
-        modalities: None,
-        display_name: None,
-        db_id: None,
-        spec_decoding: SpecDecodingConfig {
+    let server = h::sample_server(|s| {
+        s.args = vec!["--spec-draft-model /custom/path.gguf".to_string()];
+        s.model = Some("org/repo".to_string());
+        s.quant = Some("Q4_K_M".to_string());
+        s.mtp_model = Some("mtp-F16".to_string());
+        s.context_length = Some(8192);
+        s.num_parallel = Some(1);
+        s.quants = quants;
+        s.spec_decoding = SpecDecodingConfig {
             spec_types: vec!["draft-mtp".to_string()],
             n_max: None,
             n_min: None,
             draft_ngl: None,
-        },
-        ..Default::default()
-    };
+        };
+    });
 
-    let backend = BackendConfig {
-        path: None,
-        version: None,
-        gpu_variant: None,
-    };
+    let backend = h::sample_backend();
 
     let args = config
         .build_full_args(&server, &backend, None, &[])
@@ -749,66 +467,22 @@ fn test_mtp_model_no_duplicate_when_in_args() {
 /// even when `draft-mtp` is in `spec_types`.
 #[test]
 fn test_mtp_model_not_injected_when_none() {
-    let temp_dir = tempdir().expect("Failed to create temp dir");
-    let models_dir = temp_dir.path().join("models");
-    let org_dir = models_dir.join("org").join("repo");
-    let quant_file = org_dir.join("model-Q4_K_M.gguf");
-
-    std::fs::create_dir_all(&org_dir).expect("Failed to create model dir");
-    std::fs::write(&quant_file, b"dummy gguf content").expect("Failed to write model file");
-
-    let mut quants = BTreeMap::new();
-    quants.insert(
-        "Q4_K_M".to_string(),
-        QuantEntry {
-            file: "model-Q4_K_M.gguf".to_string(),
-            kind: QuantKind::Model,
-            size_bytes: None,
-            context_length: Some(8192),
-        },
-    );
-
-    let mut config = Config::default();
-    config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
+    let (_temp_dir, models_dir) = h::temp_model_dir();
+    let config = h::sample_config(models_dir);
 
     // mtp_model is None (default) but draft-mtp is in spec_types
-    let server = ModelConfig {
-        backend: "llama_cpp".to_string(),
-        args: vec![],
-        sampling: None,
-        model: Some("org/repo".to_string()),
-        quant: Some("Q4_K_M".to_string()),
-        mmproj: None,
-        mtp_model: None,
-        port: None,
-        health_check: None,
-        enabled: true,
-        context_length: Some(8192),
-        num_parallel: Some(1),
-        kv_unified: false,
-        profile: None,
-        api_name: None,
-        gpu_layers: None,
-        cache_type_k: None,
-        cache_type_v: None,
-        quants,
-        modalities: None,
-        display_name: None,
-        db_id: None,
-        spec_decoding: SpecDecodingConfig {
+    let server = h::sample_server(|s| {
+        s.context_length = Some(8192);
+        s.num_parallel = Some(1);
+        s.spec_decoding = SpecDecodingConfig {
             spec_types: vec!["draft-mtp".to_string()],
             n_max: None,
             n_min: None,
             draft_ngl: None,
-        },
-        ..Default::default()
-    };
+        };
+    });
 
-    let backend = BackendConfig {
-        path: None,
-        version: None,
-        gpu_variant: None,
-    };
+    let backend = h::sample_backend();
 
     let args = config
         .build_full_args(&server, &backend, None, &[])
@@ -826,7 +500,7 @@ fn test_mtp_model_not_injected_when_none() {
 /// has a `kind` that is not `Mtp`.
 #[test]
 fn test_mtp_model_warns_on_kind_mismatch() {
-    let temp_dir = tempdir().expect("Failed to create temp dir");
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
     let models_dir = temp_dir.path().join("models");
     let org_dir = models_dir.join("org").join("repo");
     let quant_file = org_dir.join("model-Q4_K_M.gguf");
@@ -837,12 +511,12 @@ fn test_mtp_model_warns_on_kind_mismatch() {
     std::fs::write(&quant_file, b"dummy gguf content").expect("Failed to write model file");
     std::fs::write(&wrong_kind_file, b"dummy gguf content").expect("Failed to write model file");
 
-    let mut quants = BTreeMap::new();
+    let mut quants = std::collections::BTreeMap::new();
     quants.insert(
         "Q4_K_M".to_string(),
-        QuantEntry {
+        crate::config::types::QuantEntry {
             file: "model-Q4_K_M.gguf".to_string(),
-            kind: QuantKind::Model,
+            kind: crate::config::types::QuantKind::Model,
             size_bytes: None,
             context_length: Some(8192),
         },
@@ -852,43 +526,22 @@ fn test_mtp_model_warns_on_kind_mismatch() {
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
 
     // mtp_model references a quant that has kind=Model (mismatched)
-    let server = ModelConfig {
-        backend: "llama_cpp".to_string(),
-        args: vec![],
-        sampling: None,
-        model: Some("org/repo".to_string()),
-        quant: Some("Q4_K_M".to_string()),
-        mmproj: None,
-        mtp_model: Some("Q4_K_M".to_string()),
-        port: None,
-        health_check: None,
-        enabled: true,
-        context_length: Some(8192),
-        num_parallel: Some(1),
-        kv_unified: false,
-        profile: None,
-        api_name: None,
-        gpu_layers: None,
-        cache_type_k: None,
-        cache_type_v: None,
-        quants,
-        modalities: None,
-        display_name: None,
-        db_id: None,
-        spec_decoding: SpecDecodingConfig {
+    let server = h::sample_server(|s| {
+        s.model = Some("org/repo".to_string());
+        s.quant = Some("Q4_K_M".to_string());
+        s.mtp_model = Some("Q4_K_M".to_string());
+        s.context_length = Some(8192);
+        s.num_parallel = Some(1);
+        s.quants = quants;
+        s.spec_decoding = SpecDecodingConfig {
             spec_types: vec!["draft-mtp".to_string()],
             n_max: None,
             n_min: None,
             draft_ngl: None,
-        },
-        ..Default::default()
-    };
+        };
+    });
 
-    let backend = BackendConfig {
-        path: None,
-        version: None,
-        gpu_variant: None,
-    };
+    let backend = h::sample_backend();
 
     // Should not panic - the kind mismatch should emit a warning and
     // skip the --spec-draft-model injection.

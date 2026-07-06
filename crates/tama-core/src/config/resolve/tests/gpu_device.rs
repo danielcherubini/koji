@@ -1,67 +1,16 @@
-use std::collections::BTreeMap;
-
-use crate::config::types::QuantEntry;
-use tempfile::tempdir;
-
-use super::super::*;
+use crate::config::resolve::tests::test_helpers as h;
 
 /// When `gpu_device = Some("ROCm0")` and backend is llama_cpp, `--device` is NOT injected by
 /// `build_full_args` — GPU isolation is now handled via env vars at spawn time instead.
 #[test]
 fn test_gpu_device_not_injected_as_cli_arg() {
-    let temp_dir = tempdir().expect("Failed to create temp dir");
-    let models_dir = temp_dir.path().join("models");
-    let org_dir = models_dir.join("org").join("repo");
-    let quant_file = org_dir.join("model-Q4_K_M.gguf");
+    let (_temp_dir, models_dir) = h::temp_model_dir();
+    let config = h::sample_config(models_dir);
+    let backend = h::sample_backend();
 
-    std::fs::create_dir_all(&org_dir).expect("Failed to create model dir");
-    std::fs::write(&quant_file, b"dummy gguf content").expect("Failed to write model file");
-
-    let mut quants = BTreeMap::new();
-    quants.insert(
-        "Q4_K_M".to_string(),
-        QuantEntry {
-            file: "model-Q4_K_M.gguf".to_string(),
-            kind: Default::default(),
-            size_bytes: None,
-            context_length: None,
-        },
-    );
-
-    let mut config = Config::default();
-    config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-
-    let backend = BackendConfig {
-        path: None,
-        version: None,
-        gpu_variant: None,
-    };
-
-    let server = ModelConfig {
-        backend: "llama_cpp".to_string(),
-        args: vec![],
-        sampling: None,
-        model: Some("org/repo".to_string()),
-        quant: Some("Q4_K_M".to_string()),
-        mmproj: None,
-        port: None,
-        health_check: None,
-        enabled: true,
-        context_length: None,
-        num_parallel: None,
-        kv_unified: false,
-        profile: None,
-        api_name: None,
-        gpu_layers: None,
-        cache_type_k: None,
-        cache_type_v: None,
-        quants,
-        modalities: None,
-        display_name: None,
-        db_id: None,
-        gpu_device: Some("ROCm0".to_string()),
-        ..Default::default()
-    };
+    let server = h::sample_server(|s| {
+        s.gpu_device = Some("ROCm0".to_string());
+    });
 
     let args = config
         .build_full_args(&server, &backend, None, &[])
@@ -77,59 +26,13 @@ fn test_gpu_device_not_injected_as_cli_arg() {
 /// When `gpu_device = None`, no `--device` flag is added.
 #[test]
 fn test_gpu_device_none_no_injection() {
-    let temp_dir = tempdir().expect("Failed to create temp dir");
-    let models_dir = temp_dir.path().join("models");
-    let org_dir = models_dir.join("org").join("repo");
-    let quant_file = org_dir.join("model-Q4_K_M.gguf");
+    let (_temp_dir, models_dir) = h::temp_model_dir();
+    let config = h::sample_config(models_dir);
+    let backend = h::sample_backend();
 
-    std::fs::create_dir_all(&org_dir).expect("Failed to create model dir");
-    std::fs::write(&quant_file, b"dummy gguf content").expect("Failed to write model file");
-
-    let mut quants = BTreeMap::new();
-    quants.insert(
-        "Q4_K_M".to_string(),
-        QuantEntry {
-            file: "model-Q4_K_M.gguf".to_string(),
-            kind: Default::default(),
-            size_bytes: None,
-            context_length: None,
-        },
-    );
-
-    let mut config = Config::default();
-    config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-
-    let backend = BackendConfig {
-        path: None,
-        version: None,
-        gpu_variant: None,
-    };
-
-    let server = ModelConfig {
-        backend: "llama_cpp".to_string(),
-        args: vec![],
-        sampling: None,
-        model: Some("org/repo".to_string()),
-        quant: Some("Q4_K_M".to_string()),
-        mmproj: None,
-        port: None,
-        health_check: None,
-        enabled: true,
-        context_length: None,
-        num_parallel: None,
-        kv_unified: false,
-        profile: None,
-        api_name: None,
-        gpu_layers: None,
-        cache_type_k: None,
-        cache_type_v: None,
-        quants,
-        modalities: None,
-        display_name: None,
-        db_id: None,
-        gpu_device: None,
-        ..Default::default()
-    };
+    let server = h::sample_server(|s| {
+        s.gpu_device = None;
+    });
 
     let args = config
         .build_full_args(&server, &backend, None, &[])
@@ -146,59 +49,14 @@ fn test_gpu_device_none_no_injection() {
 /// The `gpu_device` config field no longer causes injection — only user-provided flags survive.
 #[test]
 fn test_user_device_flag_preserved() {
-    let temp_dir = tempdir().expect("Failed to create temp dir");
-    let models_dir = temp_dir.path().join("models");
-    let org_dir = models_dir.join("org").join("repo");
-    let quant_file = org_dir.join("model-Q4_K_M.gguf");
+    let (_temp_dir, models_dir) = h::temp_model_dir();
+    let config = h::sample_config(models_dir);
+    let backend = h::sample_backend();
 
-    std::fs::create_dir_all(&org_dir).expect("Failed to create model dir");
-    std::fs::write(&quant_file, b"dummy gguf content").expect("Failed to write model file");
-
-    let mut quants = BTreeMap::new();
-    quants.insert(
-        "Q4_K_M".to_string(),
-        QuantEntry {
-            file: "model-Q4_K_M.gguf".to_string(),
-            kind: Default::default(),
-            size_bytes: None,
-            context_length: None,
-        },
-    );
-
-    let mut config = Config::default();
-    config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-
-    let backend = BackendConfig {
-        path: None,
-        version: None,
-        gpu_variant: None,
-    };
-
-    let server = ModelConfig {
-        backend: "llama_cpp".to_string(),
-        args: vec!["--device cuda0".to_string()],
-        sampling: None,
-        model: Some("org/repo".to_string()),
-        quant: Some("Q4_K_M".to_string()),
-        mmproj: None,
-        port: None,
-        health_check: None,
-        enabled: true,
-        context_length: None,
-        num_parallel: None,
-        kv_unified: false,
-        profile: None,
-        api_name: None,
-        gpu_layers: None,
-        cache_type_k: None,
-        cache_type_v: None,
-        quants,
-        modalities: None,
-        display_name: None,
-        db_id: None,
-        gpu_device: Some("ROCm0".to_string()),
-        ..Default::default()
-    };
+    let server = h::sample_server(|s| {
+        s.args = vec!["--device cuda0".to_string()];
+        s.gpu_device = Some("ROCm0".to_string());
+    });
 
     let args = config
         .build_full_args(&server, &backend, None, &[])
@@ -222,59 +80,14 @@ fn test_user_device_flag_preserved() {
 /// When `gpu_device` is set but backend is non-llama.cpp, no `--device` flag is added.
 #[test]
 fn test_gpu_device_not_injected_for_non_llama_cpp() {
-    let temp_dir = tempdir().expect("Failed to create temp dir");
-    let models_dir = temp_dir.path().join("models");
-    let org_dir = models_dir.join("org").join("repo");
-    let quant_file = org_dir.join("model-Q4_K_M.gguf");
+    let (_temp_dir, models_dir) = h::temp_model_dir();
+    let config = h::sample_config(models_dir);
+    let backend = h::sample_backend();
 
-    std::fs::create_dir_all(&org_dir).expect("Failed to create model dir");
-    std::fs::write(&quant_file, b"dummy gguf content").expect("Failed to write model file");
-
-    let mut quants = BTreeMap::new();
-    quants.insert(
-        "Q4_K_M".to_string(),
-        QuantEntry {
-            file: "model-Q4_K_M.gguf".to_string(),
-            kind: Default::default(),
-            size_bytes: None,
-            context_length: None,
-        },
-    );
-
-    let mut config = Config::default();
-    config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-
-    let backend = BackendConfig {
-        path: None,
-        version: None,
-        gpu_variant: None,
-    };
-
-    let server = ModelConfig {
-        backend: "ik_llama".to_string(),
-        args: vec![],
-        sampling: None,
-        model: Some("org/repo".to_string()),
-        quant: Some("Q4_K_M".to_string()),
-        mmproj: None,
-        port: None,
-        health_check: None,
-        enabled: true,
-        context_length: None,
-        num_parallel: None,
-        kv_unified: false,
-        profile: None,
-        api_name: None,
-        gpu_layers: None,
-        cache_type_k: None,
-        cache_type_v: None,
-        quants,
-        modalities: None,
-        display_name: None,
-        db_id: None,
-        gpu_device: Some("ROCm0".to_string()),
-        ..Default::default()
-    };
+    let server = h::sample_server(|s| {
+        s.backend = "ik_llama".to_string();
+        s.gpu_device = Some("ROCm0".to_string());
+    });
 
     let args = config
         .build_full_args(&server, &backend, None, &[])
@@ -290,59 +103,13 @@ fn test_gpu_device_not_injected_for_non_llama_cpp() {
 /// When `gpu_device = Some("   ")`, no `--device` flag is added (whitespace-only).
 #[test]
 fn test_gpu_device_empty_string_no_injection() {
-    let temp_dir = tempdir().expect("Failed to create temp dir");
-    let models_dir = temp_dir.path().join("models");
-    let org_dir = models_dir.join("org").join("repo");
-    let quant_file = org_dir.join("model-Q4_K_M.gguf");
+    let (_temp_dir, models_dir) = h::temp_model_dir();
+    let config = h::sample_config(models_dir);
+    let backend = h::sample_backend();
 
-    std::fs::create_dir_all(&org_dir).expect("Failed to create model dir");
-    std::fs::write(&quant_file, b"dummy gguf content").expect("Failed to write model file");
-
-    let mut quants = BTreeMap::new();
-    quants.insert(
-        "Q4_K_M".to_string(),
-        QuantEntry {
-            file: "model-Q4_K_M.gguf".to_string(),
-            kind: Default::default(),
-            size_bytes: None,
-            context_length: None,
-        },
-    );
-
-    let mut config = Config::default();
-    config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-
-    let backend = BackendConfig {
-        path: None,
-        version: None,
-        gpu_variant: None,
-    };
-
-    let server = ModelConfig {
-        backend: "llama_cpp".to_string(),
-        args: vec![],
-        sampling: None,
-        model: Some("org/repo".to_string()),
-        quant: Some("Q4_K_M".to_string()),
-        mmproj: None,
-        port: None,
-        health_check: None,
-        enabled: true,
-        context_length: None,
-        num_parallel: None,
-        kv_unified: false,
-        profile: None,
-        api_name: None,
-        gpu_layers: None,
-        cache_type_k: None,
-        cache_type_v: None,
-        quants,
-        modalities: None,
-        display_name: None,
-        db_id: None,
-        gpu_device: Some("   ".to_string()),
-        ..Default::default()
-    };
+    let server = h::sample_server(|s| {
+        s.gpu_device = Some("   ".to_string());
+    });
 
     let args = config
         .build_full_args(&server, &backend, None, &[])

@@ -1,5 +1,5 @@
-use super::super::*;
-use crate::config::types::QuantEntry;
+use crate::config::resolve::tests::test_helpers as h;
+use crate::config::Config;
 
 /// Test that resolve_health_url and resolve_backend_url work even when
 /// the backend is NOT present in TOML [backends] section.
@@ -11,41 +11,9 @@ fn test_resolve_health_url_without_toml_backend() {
     let mut config = Config::default();
     config.backends.clear();
 
-    let mut quants = std::collections::BTreeMap::new();
-    quants.insert(
-        "Q4_K_M".to_string(),
-        QuantEntry {
-            file: "model.Q4_K_M.gguf".to_string(),
-            kind: Default::default(),
-            size_bytes: None,
-            context_length: None,
-        },
-    );
-
-    let model = ModelConfig {
-        backend: "llama_cpp".to_string(),
-        args: vec![],
-        sampling: None,
-        model: Some("test-model".to_string()),
-        quant: Some("Q4_K_M".to_string()),
-        mmproj: None,
-        port: Some(8080),
-        health_check: None,
-        enabled: true,
-        context_length: None,
-        num_parallel: Some(1),
-        kv_unified: false,
-        profile: None,
-        api_name: None,
-        gpu_layers: None,
-        cache_type_k: None,
-        cache_type_v: None,
-        quants,
-        modalities: None,
-        display_name: None,
-        db_id: None,
-        ..Default::default()
-    };
+    let model = h::sample_server(|s| {
+        s.port = Some(8080);
+    });
 
     // With explicit health_check_url parameter — server.port overrides the port
     let health_url = config.resolve_health_url(&model, Some("http://localhost:9090/health"));
@@ -83,53 +51,17 @@ fn test_resolve_health_url_without_toml_backend() {
 #[test]
 fn test_resolve_by_api_name() {
     let mut config = Config::default();
-    config.backends.insert(
-        "llama_cpp".to_string(),
-        BackendConfig {
-            path: Some("/usr/local/bin/llama-server".to_string()),
-            version: None,
-            gpu_variant: None,
-        },
-    );
-
-    let mut quants = std::collections::BTreeMap::new();
-    quants.insert(
-        "Q4_K_M".to_string(),
-        crate::config::types::QuantEntry {
-            file: "model.Q4_K_M.gguf".to_string(),
-            kind: Default::default(),
-            size_bytes: None,
-            context_length: None,
-        },
-    );
+    config
+        .backends
+        .insert("llama_cpp".to_string(), h::sample_backend());
 
     let mut models = std::collections::HashMap::new();
     models.insert(
         "my-custom-name".to_string(),
-        ModelConfig {
-            backend: "llama_cpp".to_string(),
-            args: vec![],
-            sampling: None,
-            model: Some("other-model-id".to_string()),
-            quant: Some("Q4_K_M".to_string()),
-            mmproj: None,
-            port: Some(8080),
-            health_check: None,
-            enabled: true,
-            context_length: None,
-            num_parallel: Some(1),
-            kv_unified: false,
-            profile: None,
-            api_name: Some("bartowski/Qwen3-8B-GGUF".to_string()),
-            gpu_layers: None,
-            cache_type_k: None,
-            cache_type_v: None,
-            quants,
-            modalities: None,
-            display_name: None,
-            db_id: None,
-            ..Default::default()
-        },
+        h::sample_server(|s| {
+            s.port = Some(8080);
+            s.api_name = Some("bartowski/Qwen3-8B-GGUF".to_string());
+        }),
     );
 
     // Should find model by api_name (not by model field)
@@ -141,53 +73,17 @@ fn test_resolve_by_api_name() {
 #[test]
 fn test_api_name_takes_priority() {
     let mut config = Config::default();
-    config.backends.insert(
-        "llama_cpp".to_string(),
-        BackendConfig {
-            path: Some("/usr/local/bin/llama-server".to_string()),
-            version: None,
-            gpu_variant: None,
-        },
-    );
-
-    let mut quants = std::collections::BTreeMap::new();
-    quants.insert(
-        "Q4_K_M".to_string(),
-        crate::config::types::QuantEntry {
-            file: "model.Q4_K_M.gguf".to_string(),
-            kind: Default::default(),
-            size_bytes: None,
-            context_length: None,
-        },
-    );
+    config
+        .backends
+        .insert("llama_cpp".to_string(), h::sample_backend());
 
     let mut models = std::collections::HashMap::new();
     models.insert(
         "slug".to_string(),
-        ModelConfig {
-            backend: "llama_cpp".to_string(),
-            args: vec![],
-            sampling: None,
-            model: Some("other-model".to_string()),
-            quant: Some("Q4_K_M".to_string()),
-            mmproj: None,
-            port: Some(8080),
-            health_check: None,
-            enabled: true,
-            context_length: None,
-            num_parallel: Some(1),
-            kv_unified: false,
-            profile: None,
-            api_name: Some("friendly-name".to_string()),
-            gpu_layers: None,
-            cache_type_k: None,
-            cache_type_v: None,
-            quants,
-            modalities: None,
-            display_name: None,
-            db_id: None,
-            ..Default::default()
-        },
+        h::sample_server(|s| {
+            s.port = Some(8080);
+            s.api_name = Some("friendly-name".to_string());
+        }),
     );
 
     // Querying by "friendly-name" (api_name) should resolve correctly
@@ -199,53 +95,17 @@ fn test_api_name_takes_priority() {
 #[test]
 fn test_backward_compat_no_api_name() {
     let mut config = Config::default();
-    config.backends.insert(
-        "llama_cpp".to_string(),
-        BackendConfig {
-            path: Some("/usr/local/bin/llama-server".to_string()),
-            version: None,
-            gpu_variant: None,
-        },
-    );
-
-    let mut quants = std::collections::BTreeMap::new();
-    quants.insert(
-        "Q4_K_M".to_string(),
-        crate::config::types::QuantEntry {
-            file: "model.Q4_K_M.gguf".to_string(),
-            kind: Default::default(),
-            size_bytes: None,
-            context_length: None,
-        },
-    );
+    config
+        .backends
+        .insert("llama_cpp".to_string(), h::sample_backend());
 
     let mut models = std::collections::HashMap::new();
     models.insert(
         "config-key-name".to_string(),
-        ModelConfig {
-            backend: "llama_cpp".to_string(),
-            args: vec![],
-            sampling: None,
-            model: Some("org/repo".to_string()),
-            quant: Some("Q4_K_M".to_string()),
-            mmproj: None,
-            port: Some(8080),
-            health_check: None,
-            enabled: true,
-            context_length: None,
-            num_parallel: Some(1),
-            kv_unified: false,
-            profile: None,
-            api_name: None,
-            gpu_layers: None,
-            cache_type_k: None,
-            cache_type_v: None,
-            quants,
-            modalities: None,
-            display_name: None,
-            db_id: None,
-            ..Default::default()
-        },
+        h::sample_server(|s| {
+            s.port = Some(8080);
+            s.api_name = None;
+        }),
     );
 
     // Should still resolve by config key
@@ -260,53 +120,17 @@ fn test_backward_compat_no_api_name() {
 #[test]
 fn test_resolve_backend_by_api_name() {
     let mut config = Config::default();
-    config.backends.insert(
-        "llama_cpp".to_string(),
-        BackendConfig {
-            path: Some("/usr/local/bin/llama-server".to_string()),
-            version: None,
-            gpu_variant: None,
-        },
-    );
-
-    let mut quants = std::collections::BTreeMap::new();
-    quants.insert(
-        "Q4_K_M".to_string(),
-        crate::config::types::QuantEntry {
-            file: "model.Q4_K_M.gguf".to_string(),
-            kind: Default::default(),
-            size_bytes: None,
-            context_length: None,
-        },
-    );
+    config
+        .backends
+        .insert("llama_cpp".to_string(), h::sample_backend());
 
     let mut models = std::collections::HashMap::new();
     models.insert(
         "my-custom-name".to_string(),
-        ModelConfig {
-            backend: "llama_cpp".to_string(),
-            args: vec![],
-            sampling: None,
-            model: Some("other-model-id".to_string()),
-            quant: Some("Q4_K_M".to_string()),
-            mmproj: None,
-            port: Some(8080),
-            health_check: None,
-            enabled: true,
-            context_length: None,
-            num_parallel: Some(1),
-            kv_unified: false,
-            profile: None,
-            api_name: Some("bartowski/Qwen3-8B-GGUF".to_string()),
-            gpu_layers: None,
-            cache_type_k: None,
-            cache_type_v: None,
-            quants,
-            modalities: None,
-            display_name: None,
-            db_id: None,
-            ..Default::default()
-        },
+        h::sample_server(|s| {
+            s.port = Some(8080);
+            s.api_name = Some("bartowski/Qwen3-8B-GGUF".to_string());
+        }),
     );
 
     // Should find model by api_name via resolve_backend
