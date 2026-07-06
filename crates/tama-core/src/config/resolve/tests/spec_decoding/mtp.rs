@@ -1,5 +1,5 @@
 use crate::config::resolve::tests::test_helpers as h;
-use crate::config::types::{QuantKind, SpecDecodingConfig};
+use crate::config::types::SpecDecodingConfig;
 use crate::config::Config;
 
 /// Tests that spec decoding flags (--spec-type, --spec-draft-n-max, --spec-draft-n-min)
