@@ -1,56 +1,17 @@
-use super::super::super::*;
-use crate::config::types::{QuantEntry, SpecDecodingConfig};
-use std::collections::BTreeMap;
-use tempfile::tempdir;
+use crate::config::resolve::tests::test_helpers as h;
+use crate::config::types::SpecDecodingConfig;
 
 /// Tests that multiple spec_types are joined with commas in --spec-type.
 #[test]
 fn test_spec_decoding_multi_type_comma_separated() {
-    let temp_dir = tempdir().expect("Failed to create temp dir");
-    let models_dir = temp_dir.path().join("models");
-    let org_dir = models_dir.join("org").join("repo");
-    let quant_file = org_dir.join("model-Q4_K_M.gguf");
+    let (_temp_dir, models_dir) = h::temp_model_dir();
+    let config = h::sample_config(models_dir);
+    let backend = h::sample_backend();
 
-    std::fs::create_dir_all(&org_dir).expect("Failed to create model dir");
-    std::fs::write(&quant_file, b"dummy gguf content").expect("Failed to write model file");
-
-    let mut quants = BTreeMap::new();
-    quants.insert(
-        "Q4_K_M".to_string(),
-        QuantEntry {
-            file: "model-Q4_K_M.gguf".to_string(),
-            kind: Default::default(),
-            size_bytes: None,
-            context_length: Some(8192),
-        },
-    );
-
-    let mut config = Config::default();
-    config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-
-    let server = ModelConfig {
-        backend: "llama_cpp".to_string(),
-        args: vec![],
-        sampling: None,
-        model: Some("org/repo".to_string()),
-        quant: Some("Q4_K_M".to_string()),
-        mmproj: None,
-        port: None,
-        health_check: None,
-        enabled: true,
-        context_length: Some(8192),
-        num_parallel: Some(1),
-        kv_unified: false,
-        profile: None,
-        api_name: None,
-        gpu_layers: None,
-        cache_type_k: None,
-        cache_type_v: None,
-        quants,
-        modalities: None,
-        display_name: None,
-        db_id: None,
-        spec_decoding: SpecDecodingConfig {
+    let server = h::sample_server(|s| {
+        s.context_length = Some(8192);
+        s.num_parallel = Some(1);
+        s.spec_decoding = SpecDecodingConfig {
             spec_types: vec![
                 "draft-mtp".to_string(),
                 "ngram-simple".to_string(),
@@ -59,15 +20,8 @@ fn test_spec_decoding_multi_type_comma_separated() {
             n_max: Some(4),
             n_min: Some(2),
             draft_ngl: None,
-        },
-        ..Default::default()
-    };
-
-    let backend = BackendConfig {
-        path: None,
-        version: None,
-        gpu_variant: None,
-    };
+        };
+    });
 
     let args = config
         .build_full_args(&server, &backend, None, &[])
@@ -89,65 +43,22 @@ fn test_spec_decoding_multi_type_comma_separated() {
 /// Tests that a non-llama backend does NOT inject spec decoding flags.
 #[test]
 fn test_spec_decoding_non_llama_backend_no_flags() {
-    let temp_dir = tempdir().expect("Failed to create temp dir");
-    let models_dir = temp_dir.path().join("models");
-    let org_dir = models_dir.join("org").join("repo");
-    let quant_file = org_dir.join("model-Q4_K_M.gguf");
-
-    std::fs::create_dir_all(&org_dir).expect("Failed to create model dir");
-    std::fs::write(&quant_file, b"dummy gguf content").expect("Failed to write model file");
-
-    let mut quants = BTreeMap::new();
-    quants.insert(
-        "Q4_K_M".to_string(),
-        QuantEntry {
-            file: "model-Q4_K_M.gguf".to_string(),
-            kind: Default::default(),
-            size_bytes: None,
-            context_length: Some(8192),
-        },
-    );
-
-    let mut config = Config::default();
-    config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
+    let (_temp_dir, models_dir) = h::temp_model_dir();
+    let config = h::sample_config(models_dir);
+    let backend = h::sample_backend();
 
     // Use a non-llama backend
-    let server = ModelConfig {
-        backend: "ollama".to_string(),
-        args: vec![],
-        sampling: None,
-        model: Some("org/repo".to_string()),
-        quant: Some("Q4_K_M".to_string()),
-        mmproj: None,
-        port: None,
-        health_check: None,
-        enabled: true,
-        context_length: Some(8192),
-        num_parallel: Some(1),
-        kv_unified: false,
-        profile: None,
-        api_name: None,
-        gpu_layers: None,
-        cache_type_k: None,
-        cache_type_v: None,
-        quants,
-        modalities: None,
-        display_name: None,
-        db_id: None,
-        spec_decoding: SpecDecodingConfig {
+    let server = h::sample_server(|s| {
+        s.backend = "ollama".to_string();
+        s.context_length = Some(8192);
+        s.num_parallel = Some(1);
+        s.spec_decoding = SpecDecodingConfig {
             spec_types: vec!["draft-mtp".to_string()],
             n_max: Some(4),
             n_min: Some(2),
             draft_ngl: Some(16),
-        },
-        ..Default::default()
-    };
-
-    let backend = BackendConfig {
-        path: None,
-        version: None,
-        gpu_variant: None,
-    };
+        };
+    });
 
     let args = config
         .build_full_args(&server, &backend, None, &[])
@@ -180,70 +91,27 @@ fn test_spec_decoding_non_llama_backend_no_flags() {
 /// so pre-existing flags in user args are not duplicated.
 #[test]
 fn test_spec_decoding_all_already_has_checks() {
-    let temp_dir = tempdir().expect("Failed to create temp dir");
-    let models_dir = temp_dir.path().join("models");
-    let org_dir = models_dir.join("org").join("repo");
-    let quant_file = org_dir.join("model-Q4_K_M.gguf");
-
-    std::fs::create_dir_all(&org_dir).expect("Failed to create model dir");
-    std::fs::write(&quant_file, b"dummy gguf content").expect("Failed to write model file");
-
-    let mut quants = BTreeMap::new();
-    quants.insert(
-        "Q4_K_M".to_string(),
-        QuantEntry {
-            file: "model-Q4_K_M.gguf".to_string(),
-            kind: Default::default(),
-            size_bytes: None,
-            context_length: Some(8192),
-        },
-    );
-
-    let mut config = Config::default();
-    config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
+    let (_temp_dir, models_dir) = h::temp_model_dir();
+    let config = h::sample_config(models_dir);
+    let backend = h::sample_backend();
 
     // User already has all 4 flags in args
-    let server = ModelConfig {
-        backend: "llama_cpp".to_string(),
-        args: vec![
+    let server = h::sample_server(|s| {
+        s.args = vec![
             "--spec-type user-type".to_string(),
             "--spec-draft-n-max 8".to_string(),
             "--spec-draft-n-min 1".to_string(),
             "--spec-draft-ngl 32".to_string(),
-        ],
-        sampling: None,
-        model: Some("org/repo".to_string()),
-        quant: Some("Q4_K_M".to_string()),
-        mmproj: None,
-        port: None,
-        health_check: None,
-        enabled: true,
-        context_length: Some(8192),
-        num_parallel: Some(1),
-        kv_unified: false,
-        profile: None,
-        api_name: None,
-        gpu_layers: None,
-        cache_type_k: None,
-        cache_type_v: None,
-        quants,
-        modalities: None,
-        display_name: None,
-        db_id: None,
-        spec_decoding: SpecDecodingConfig {
+        ];
+        s.context_length = Some(8192);
+        s.num_parallel = Some(1);
+        s.spec_decoding = SpecDecodingConfig {
             spec_types: vec!["draft-mtp".to_string()],
             n_max: Some(4),
             n_min: Some(2),
             draft_ngl: Some(16),
-        },
-        ..Default::default()
-    };
-
-    let backend = BackendConfig {
-        path: None,
-        version: None,
-        gpu_variant: None,
-    };
+        };
+    });
 
     let args = config
         .build_full_args(&server, &backend, None, &[])

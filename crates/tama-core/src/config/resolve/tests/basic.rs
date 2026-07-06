@@ -1,66 +1,36 @@
-use super::super::*;
+use crate::config::resolve::tests::test_helpers as h;
 use crate::config::types::QuantEntry;
+use crate::config::{BackendConfig, Config};
 use std::collections::BTreeMap;
-use tempfile::tempdir;
 
 #[test]
 fn test_build_full_args_unified() {
-    let temp_dir = tempdir().expect("Failed to create temp dir");
-    let models_dir = temp_dir.path().join("models");
-    let org_dir = models_dir.join("org").join("repo");
-    let quant_file = org_dir.join("model-Q4_K_M.gguf");
+    let (_temp_dir, models_dir) = h::temp_model_dir();
+    let config = h::sample_config(models_dir);
 
-    // Create the model directory structure and file
-    std::fs::create_dir_all(&org_dir).expect("Failed to create model dir");
-    std::fs::write(&quant_file, b"dummy gguf content").expect("Failed to write model file");
-
-    let mut quants = BTreeMap::new();
-    quants.insert(
-        "Q4_K_M".to_string(),
-        QuantEntry {
-            file: "model-Q4_K_M.gguf".to_string(),
-            kind: Default::default(),
-            size_bytes: None,
-            context_length: Some(8192),
-        },
-    );
-
-    let mut config = Config::default();
-    config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-
-    let server = ModelConfig {
-        backend: "llama_cpp".to_string(),
-        args: vec![],
-        sampling: Some(crate::profiles::SamplingParams {
+    let server = h::sample_server(|s| {
+        s.backend = "llama_cpp".to_string();
+        s.sampling = Some(crate::profiles::SamplingParams {
             temperature: Some(0.3),
             ..Default::default()
-        }),
-        model: Some("org/repo".to_string()),
-        quant: Some("Q4_K_M".to_string()),
-        mmproj: None,
-        port: None,
-        health_check: None,
-        enabled: true,
-        context_length: Some(4096),
-        num_parallel: Some(1),
-        kv_unified: false,
-        profile: None,
-        api_name: None,
-        gpu_layers: Some(99),
-        cache_type_k: None,
-        cache_type_v: None,
-        quants,
-        modalities: None,
-        display_name: None,
-        db_id: None,
-        ..Default::default()
-    };
+        });
+        s.context_length = Some(4096);
+        s.num_parallel = Some(1);
+        s.gpu_layers = Some(99);
+        let mut quants = std::collections::BTreeMap::new();
+        quants.insert(
+            "Q4_K_M".to_string(),
+            QuantEntry {
+                file: "model-Q4_K_M.gguf".to_string(),
+                kind: Default::default(),
+                size_bytes: None,
+                context_length: Some(8192),
+            },
+        );
+        s.quants = quants;
+    });
 
-    let backend = BackendConfig {
-        path: None,
-        version: None,
-        gpu_variant: None,
-    };
+    let backend = h::sample_backend();
 
     let args = config
         .build_full_args(&server, &backend, None, &[])
@@ -88,61 +58,20 @@ fn test_build_full_args_unified() {
 
 #[test]
 fn test_build_full_args_ctx_override() {
-    let temp_dir = tempdir().expect("Failed to create temp dir");
-    let models_dir = temp_dir.path().join("models");
-    let org_dir = models_dir.join("org").join("repo");
-    let quant_file = org_dir.join("model-Q4_K_M.gguf");
+    let (_temp_dir, models_dir) = h::temp_model_dir();
+    let config = h::sample_config(models_dir);
 
-    std::fs::create_dir_all(&org_dir).expect("Failed to create model dir");
-    std::fs::write(&quant_file, b"dummy gguf content").expect("Failed to write model file");
-
-    let mut quants = BTreeMap::new();
-    quants.insert(
-        "Q4_K_M".to_string(),
-        QuantEntry {
-            file: "model-Q4_K_M.gguf".to_string(),
-            kind: Default::default(),
-            size_bytes: None,
-            context_length: Some(8192),
-        },
-    );
-
-    let mut config = Config::default();
-    config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-
-    let server = ModelConfig {
-        backend: "llama_cpp".to_string(),
-        args: vec![],
-        sampling: Some(crate::profiles::SamplingParams {
+    let server = h::sample_server(|s| {
+        s.sampling = Some(crate::profiles::SamplingParams {
             temperature: Some(0.3),
             ..Default::default()
-        }),
-        model: Some("org/repo".to_string()),
-        quant: Some("Q4_K_M".to_string()),
-        mmproj: None,
-        port: None,
-        health_check: None,
-        enabled: true,
-        context_length: Some(4096),
-        num_parallel: Some(1),
-        kv_unified: false,
-        profile: None,
-        api_name: None,
-        gpu_layers: Some(99),
-        cache_type_k: None,
-        cache_type_v: None,
-        quants,
-        modalities: None,
-        display_name: None,
-        db_id: None,
-        ..Default::default()
-    };
+        });
+        s.context_length = Some(4096);
+        s.num_parallel = Some(1);
+        s.gpu_layers = Some(99);
+    });
 
-    let backend = BackendConfig {
-        path: None,
-        version: None,
-        gpu_variant: None,
-    };
+    let backend = h::sample_backend();
 
     // ctx_override should take priority over server.context_length
     let args = config
@@ -156,58 +85,16 @@ fn test_build_full_args_ctx_override() {
 
 #[test]
 fn test_build_full_args_no_sampling() {
-    let temp_dir = tempdir().expect("Failed to create temp dir");
-    let models_dir = temp_dir.path().join("models");
-    let org_dir = models_dir.join("org").join("repo");
-    let quant_file = org_dir.join("model-Q4_K_M.gguf");
+    let (_temp_dir, models_dir) = h::temp_model_dir();
+    let config = h::sample_config(models_dir);
 
-    std::fs::create_dir_all(&org_dir).expect("Failed to create model dir");
-    std::fs::write(&quant_file, b"dummy gguf content").expect("Failed to write model file");
+    let server = h::sample_server(|s| {
+        s.sampling = None; // No sampling params
+        s.context_length = None;
+        s.gpu_layers = Some(99);
+    });
 
-    let mut quants = BTreeMap::new();
-    quants.insert(
-        "Q4_K_M".to_string(),
-        QuantEntry {
-            file: "model-Q4_K_M.gguf".to_string(),
-            kind: Default::default(),
-            size_bytes: None,
-            context_length: None,
-        },
-    );
-
-    let mut config = Config::default();
-    config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
-
-    let server = ModelConfig {
-        backend: "llama_cpp".to_string(),
-        args: vec![],
-        sampling: None, // No sampling params
-        model: Some("org/repo".to_string()),
-        quant: Some("Q4_K_M".to_string()),
-        mmproj: None,
-        port: None,
-        health_check: None,
-        enabled: true,
-        context_length: None,
-        num_parallel: Some(1),
-        kv_unified: false,
-        profile: None,
-        api_name: None,
-        gpu_layers: Some(99),
-        cache_type_k: None,
-        cache_type_v: None,
-        quants,
-        modalities: None,
-        display_name: None,
-        db_id: None,
-        ..Default::default()
-    };
-
-    let backend = BackendConfig {
-        path: None,
-        version: None,
-        gpu_variant: None,
-    };
+    let backend = h::sample_backend();
 
     let args = config
         .build_full_args(&server, &backend, None, &[])
@@ -221,42 +108,19 @@ fn test_build_full_args_no_sampling() {
 
 #[test]
 fn test_build_full_args_no_quants() {
-    let temp_dir = tempdir().expect("Failed to create temp dir");
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
     let models_dir = temp_dir.path().join("models");
 
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
 
-    let server = ModelConfig {
-        backend: "llama_cpp".to_string(),
-        args: vec![],
-        sampling: None,
-        model: Some("org/repo".to_string()),
-        quant: Some("Q4_K_M".to_string()),
-        mmproj: None,
-        port: None,
-        health_check: None,
-        enabled: true,
-        context_length: None,
-        num_parallel: Some(1),
-        kv_unified: false,
-        profile: None,
-        api_name: None,
-        gpu_layers: Some(99),
-        cache_type_k: None,
-        cache_type_v: None,
-        quants: BTreeMap::new(), // Empty quants map
-        modalities: None,
-        display_name: None,
-        db_id: None,
-        ..Default::default()
-    };
+    let server = h::sample_server(|s| {
+        s.sampling = None;
+        s.context_length = None;
+        s.quants = BTreeMap::new(); // Empty quants map
+    });
 
-    let backend = BackendConfig {
-        path: None,
-        version: None,
-        gpu_variant: None,
-    };
+    let backend = h::sample_backend();
 
     // Should not crash when quants is empty
     let args = config.build_full_args(&server, &backend, None, &[]);
@@ -284,34 +148,18 @@ fn test_build_args_sampling_overrides_inline_temp_in_args() {
         },
     );
 
-    let server = ModelConfig {
-        backend: "test_backend".to_string(),
+    let server = h::sample_server(|s| {
+        s.backend = "test_backend".to_string();
         // inline --temp in args should be overridden by sampling.temperature
-        args: vec!["--temp 0.10".to_string()],
-        sampling: Some(crate::profiles::SamplingParams {
+        s.args = vec!["--temp 0.10".to_string()];
+        s.sampling = Some(crate::profiles::SamplingParams {
             temperature: Some(0.5),
             ..Default::default()
-        }),
-        model: None,
-        quant: None,
-        mmproj: None,
-        port: None,
-        health_check: None,
-        enabled: true,
-        context_length: None,
-        num_parallel: Some(1),
-        kv_unified: false,
-        profile: None,
-        api_name: None,
-        gpu_layers: None,
-        cache_type_k: None,
-        cache_type_v: None,
-        quants: std::collections::BTreeMap::new(),
-        modalities: None,
-        display_name: None,
-        db_id: None,
-        ..Default::default()
-    };
+        });
+        s.model = None;
+        s.quant = None;
+        s.quants = std::collections::BTreeMap::new();
+    });
 
     let backend = config.backends.get("test_backend").unwrap().clone();
     let flat = config.build_args(&server, &backend, &[]);
@@ -332,7 +180,7 @@ fn test_build_args_sampling_overrides_inline_temp_in_args() {
 #[test]
 fn test_build_full_args_returns_flat_tokens_with_quoted_path() {
     // Path with spaces must round-trip through grouped → flat correctly.
-    let temp_dir = tempdir().expect("Failed to create temp dir");
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
     let models_dir = temp_dir.path().join("models with space");
     let org_dir = models_dir.join("org").join("repo");
     let quant_file = org_dir.join("model.gguf");
@@ -353,36 +201,13 @@ fn test_build_full_args_returns_flat_tokens_with_quoted_path() {
     let mut config = Config::default();
     config.general.models_dir = Some(models_dir.to_string_lossy().to_string());
 
-    let server = ModelConfig {
-        backend: "llama_cpp".to_string(),
-        args: vec![],
-        sampling: None,
-        model: Some("org/repo".to_string()),
-        quant: Some("Q4".to_string()),
-        mmproj: None,
-        port: None,
-        health_check: None,
-        enabled: true,
-        context_length: None,
-        num_parallel: Some(1),
-        kv_unified: false,
-        profile: None,
-        api_name: None,
-        gpu_layers: None,
-        cache_type_k: None,
-        cache_type_v: None,
-        quants,
-        modalities: None,
-        display_name: None,
-        db_id: None,
-        ..Default::default()
-    };
+    let server = h::sample_server(|s| {
+        s.model = Some("org/repo".to_string());
+        s.quant = Some("Q4".to_string());
+        s.quants = quants;
+    });
 
-    let backend = BackendConfig {
-        path: None,
-        version: None,
-        gpu_variant: None,
-    };
+    let backend = h::sample_backend();
 
     let args = config
         .build_full_args(&server, &backend, None, &[])

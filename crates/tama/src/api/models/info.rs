@@ -1,3 +1,4 @@
+use crate::api::error::error_response;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -208,30 +209,28 @@ pub async fn get_model(
             let mgr = match tama_core::models::ModelManager::open(&config_dir) {
                 Ok(m) => m,
                 Err(e) => {
-                    return (
+                    return error_response(
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(
-                            serde_json::json!({"error": format!("Failed to open database: {}", e)}),
-                        ),
+                        format!("Failed to open database: {}", e),
+                        None,
                     )
-                        .into_response();
                 }
             };
             let model_id = match resolve_model_id(&id_str, &mgr) {
                 Ok(Some(id)) => id,
                 Ok(None) => {
-                    return (
+                    return error_response(
                         StatusCode::NOT_FOUND,
-                        Json(serde_json::json!({"error": "Model not found"})),
+                        "Model not found",
+                        Some("NotFoundError"),
                     )
-                        .into_response();
                 }
                 Err(e) => {
-                    return (
+                    return error_response(
                         StatusCode::BAD_REQUEST,
-                        Json(serde_json::json!({"error": e.to_string()})),
+                        e.to_string(),
+                        Some("ValidationError"),
                     )
-                        .into_response();
                 }
             };
 
@@ -261,11 +260,11 @@ pub async fn get_model(
                     val["backends"] = serde_json::json!(backend_options);
                     Json(val).into_response()
                 }
-                None => (
+                None => error_response(
                     StatusCode::NOT_FOUND,
-                    Json(serde_json::json!({"error": "Model not found"})),
-                )
-                    .into_response(),
+                    "Model not found",
+                    Some("NotFoundError"),
+                ),
             }
         }
         Err((status, body)) => (status, Json(body)).into_response(),

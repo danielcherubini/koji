@@ -1,3 +1,4 @@
+use crate::api::error::{error_body, error_response};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -7,8 +8,9 @@ use axum::{
 use std::sync::Arc;
 
 use super::{apply_model_body, validate_model_body, ModelBody};
+use crate::api::helpers::{spawn_model_crud, DEFAULT_CRUD_STATUS};
+use crate::api::load_config_from_state;
 use crate::api::models::resolve_model_id;
-use crate::api::{load_config_from_state, trigger_proxy_reload};
 use tama_core::proxy::ProxyState;
 
 /// PUT /tama/v1/models/:id — update an existing model.
@@ -21,11 +23,7 @@ pub async fn update_model(
 
     // Validate ModelBody fields
     if let Err(e) = validate_model_body(&body) {
-        return (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(serde_json::json!({"error": e})),
-        )
-            .into_response();
+        return error_response(StatusCode::UNPROCESSABLE_ENTITY, e, Some("ValidationError"));
     }
 
     // Load config first (async, handles its own spawn_blocking)
@@ -34,25 +32,25 @@ pub async fn update_model(
         Err((status, body)) => return (status, Json(body)).into_response(),
     };
 
-    match tokio::task::spawn_blocking(move || {
+    spawn_model_crud(state_clone, DEFAULT_CRUD_STATUS, move || {
         // Load existing from DB
         let mgr = tama_core::models::ModelManager::open(&config_dir).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                serde_json::json!({"error": e.to_string()}),
+                error_body(e.to_string(), None),
             )
         })?;
         let model_id = resolve_model_id(&id_str, &mgr)
             .map_err(|e| {
                 (
                     StatusCode::BAD_REQUEST,
-                    serde_json::json!({"error": e.to_string()}),
+                    error_body(e.to_string(), Some("ValidationError")),
                 )
             })?
             .ok_or_else(|| {
                 (
                     StatusCode::NOT_FOUND,
-                    serde_json::json!({"error": "Model not found"}),
+                    error_body("Model not found", Some("NotFoundError")),
                 )
             })?;
         let existing_record = mgr
@@ -60,13 +58,13 @@ pub async fn update_model(
             .map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    serde_json::json!({"error": e.to_string()}),
+                    error_body(e.to_string(), None),
                 )
             })?
             .ok_or_else(|| {
                 (
                     StatusCode::NOT_FOUND,
-                    serde_json::json!({"error": "Model not found"}),
+                    error_body("Model not found", Some("NotFoundError")),
                 )
             })?;
         let existing = tama_core::config::ModelConfig::from_db_record(&existing_record);
@@ -80,26 +78,10 @@ pub async fn update_model(
             .map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    serde_json::json!({"error": e.to_string()}),
+                    error_body(e.to_string(), None),
                 )
             })?;
         Ok(serde_json::json!({ "ok": true, "id": new_model_id }))
     })
     .await
-    {
-        Ok(Ok(val)) => {
-            // Since we only updated the DB, the proxy config (which is just General, Backends, etc.)
-            // doesn't need syncing. But the proxy's runtime model registry DOES.
-            if let Err(e) = trigger_proxy_reload(&state_clone).await {
-                tracing::warn!("Failed to trigger proxy reload after update: {}", e.1);
-            }
-            Json(val).into_response()
-        }
-        Ok(Err((status, body))) => (status, Json(body)).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
-    }
 }

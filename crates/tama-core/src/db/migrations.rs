@@ -34,6 +34,8 @@ mod _0028_add_selected_mtp_model;
 mod _0029_add_gpu_device;
 mod _0030_add_network_metrics;
 mod _0031_create_app_config;
+mod _0032_remove_gpu_type_column;
+mod _0033_add_default_env;
 
 #[cfg(test)]
 mod migrations_tests;
@@ -69,7 +71,7 @@ impl Drop for FkGuard<'_> {
 type Migration = (i32, bool, &'static str);
 
 /// Version number for the latest migration
-pub const LATEST_VERSION: i32 = 31;
+pub const LATEST_VERSION: i32 = 33;
 
 /// All migrations collected from individual files, sorted by version.
 const MIGRATIONS: &[Migration] = &[
@@ -104,6 +106,8 @@ const MIGRATIONS: &[Migration] = &[
     _0029_add_gpu_device::MIGRATION,
     _0030_add_network_metrics::MIGRATION,
     _0031_create_app_config::MIGRATION,
+    _0032_remove_gpu_type_column::MIGRATION,
+    _0033_add_default_env::MIGRATION,
 ];
 
 /// Run all applicable migrations on the database

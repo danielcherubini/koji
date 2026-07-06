@@ -83,7 +83,7 @@ pub async fn handle_all_logs(
             }
         }
 
-        // Collect backend logs (named {backend}_{server_name}.log)
+        // Collect backend logs (named {backend}_{backend_name}.log)
         let mut entries = match std::fs::read_dir(dir) {
             Ok(rd) => rd.filter_map(|e| e.ok()).collect::<Vec<_>>(),
             Err(_) => Vec::new(),
@@ -152,7 +152,7 @@ pub async fn handle_backend_log_sse(
                 Ok(axum::response::sse::Event::default()
                     .event("log")
                     .json_data(json!({ "line": line }))
-                    .unwrap())
+                    .expect("SSE Event json_data serialization should not fail for valid JSON"))
             }))
             .chain(futures_util::stream::unfold(rx, move |mut rx| async move {
                 loop {
@@ -162,7 +162,7 @@ pub async fn handle_backend_log_sse(
                                 Ok(axum::response::sse::Event::default()
                                     .event("log")
                                     .json_data(json!({ "line": line }))
-                                    .unwrap()),
+                                    .expect("SSE Event json_data serialization should not fail for valid JSON")),
                                 rx,
                             ));
                         }

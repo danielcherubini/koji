@@ -339,6 +339,7 @@ mod tests {
                 "llama_cpp",
                 "cpu",
                 &["--threads".to_string(), "4".to_string()],
+                &[],
                 None,
             )
             .unwrap();
@@ -347,6 +348,7 @@ mod tests {
                 "llama_cpp",
                 "vulkan",
                 &["--flash-attn".to_string()],
+                &[],
                 None,
             )
             .unwrap();

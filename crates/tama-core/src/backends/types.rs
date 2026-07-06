@@ -6,8 +6,6 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumIs};
 
-use crate::gpu::GpuType;
-
 /// Metadata for an installed backend.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackendInfo {
@@ -16,8 +14,6 @@ pub struct BackendInfo {
     pub version: String,
     pub path: PathBuf,
     pub installed_at: i64,
-    #[serde(default)]
-    pub gpu_type: Option<GpuType>,
     #[serde(default)]
     pub gpu_variant: String,
     #[serde(default)]

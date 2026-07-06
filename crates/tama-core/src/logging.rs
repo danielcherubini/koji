@@ -6,6 +6,7 @@ use tracing_subscriber::{fmt, EnvFilter};
 const MAX_LOG_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
 const MAX_LOG_FILES: usize = 5;
 
+#[deprecated(note = "not used — remove in next major version")]
 pub fn init() {
     if let Err(e) = fmt()
         .with_env_filter(EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()))
@@ -19,6 +20,7 @@ pub fn init() {
 ///
 /// Opens `logs_dir/tama.log` and configures the global tracing subscriber
 /// to write there. Rotates the log if it exceeds MAX_LOG_SIZE.
+#[deprecated(note = "not used — remove in next major version")]
 pub fn init_with_file(logs_dir: &Path) -> Result<()> {
     use std::sync::{Arc, Mutex};
 
@@ -75,11 +77,13 @@ impl std::io::Write for MultiWriter {
 }
 
 /// Get the log file path for a profile.
+#[deprecated(note = "not used externally — remove in next major version")]
 pub fn log_path(logs_dir: &Path, profile: &str) -> PathBuf {
     logs_dir.join(format!("{}.log", profile))
 }
 
 /// Open (or create) a log file for appending. Rotates if over MAX_LOG_SIZE.
+#[allow(deprecated)]
 pub fn open_log(logs_dir: &Path, profile: &str) -> Result<File> {
     fs::create_dir_all(logs_dir)
         .with_context(|| format!("Failed to create logs directory: {}", logs_dir.display()))?;
@@ -102,6 +106,7 @@ pub fn open_log(logs_dir: &Path, profile: &str) -> Result<File> {
 }
 
 /// Rotate log files: profile.log -> profile.1.log -> profile.2.log -> ...
+#[allow(deprecated)]
 fn rotate_logs(logs_dir: &Path, profile: &str) -> Result<()> {
     // Remove oldest
     let oldest = logs_dir.join(format!("{}.{}.log", profile, MAX_LOG_FILES));
@@ -149,6 +154,7 @@ pub fn tail_lines(path: &Path, n: usize) -> Result<Vec<String>> {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use std::io::Write;

@@ -81,13 +81,13 @@ impl ProxyState {
         state
     }
 
-    /// Get the backend URL for a server name.
-    pub async fn get_backend_url(&self, server_name: &str) -> Result<String> {
+    /// Get the backend URL for a backend name.
+    pub async fn get_backend_url(&self, backend_name: &str) -> Result<String> {
         let config = self.config.read().await;
         let model_configs = self.model_configs.read().await;
-        let server = config
-            .resolve_server(&model_configs, server_name)
-            .with_context(|| format!("Server '{}' not found", server_name))?
+        let backend_config = config
+            .resolve_backend(&model_configs, backend_name)
+            .with_context(|| format!("Backend '{}' not found", backend_name))?
             .0;
 
         // Open BackendManager for health_check_url lookup
@@ -99,67 +99,67 @@ impl ProxyState {
                 crate::backends::BackendManager::open_in_memory()
                     .expect("in-memory BackendManager must always open")
             });
-        let gpu_variant = server.gpu_variant.as_deref().unwrap_or("cpu");
-        let health_url = manager.get_health_check_url(&server.backend, gpu_variant);
+        let gpu_variant = backend_config.gpu_variant.as_deref().unwrap_or("cpu");
+        let health_url = manager.get_health_check_url(&backend_config.backend, gpu_variant);
         let backend_url = config
-            .resolve_backend_url(server, health_url.as_deref())
-            .with_context(|| format!("No backend URL resolved for server '{}'", server_name))?;
+            .resolve_backend_url(backend_config, health_url.as_deref())
+            .with_context(|| format!("No backend URL resolved for backend '{}'", backend_name))?;
 
         Ok(backend_url)
     }
 
     /// Check if a model is already loaded.
     pub async fn is_model_loaded(&self, model_name: &str) -> bool {
-        self.get_available_server_for_model(model_name)
+        self.get_available_backend_for_model(model_name)
             .await
             .is_some()
     }
 
-    /// Get the state of a loaded model (server).
-    pub async fn get_model_state(&self, server_name: &str) -> Option<ModelState> {
+    /// Get the state of a loaded model (backend).
+    pub async fn get_model_state(&self, backend_name: &str) -> Option<ModelState> {
         let models = self.models.read().await;
-        models.get(server_name).cloned()
+        models.get(backend_name).cloned()
     }
 
     /// Get the state of a loaded model with last_accessed field.
     pub async fn get_model_state_with_access(
         &self,
-        server_name: &str,
+        backend_name: &str,
     ) -> Option<(ModelState, Option<Instant>)> {
         let models = self.models.read().await;
         models
-            .get(server_name)
+            .get(backend_name)
             .map(|state| (state.clone(), state.last_accessed()))
     }
 
-    /// Get the backend PID for a server.
-    pub async fn get_backend_pid(&self, server_name: &str) -> Option<u32> {
+    /// Get the backend PID for a backend.
+    pub async fn get_backend_pid(&self, backend_name: &str) -> Option<u32> {
         self.models
             .read()
             .await
-            .get(server_name)
+            .get(backend_name)
             .and_then(|s| match s {
                 ModelState::Ready { backend_pid, .. } => Some(*backend_pid),
                 _ => None,
             })
     }
 
-    /// Get the circuit breaker failures for a server.
-    pub async fn get_circuit_breaker_failures(&self, server_name: &str) -> Option<u32> {
-        self.models.read().await.get(server_name).and_then(|s| {
+    /// Get the circuit breaker failures for a backend.
+    pub async fn get_circuit_breaker_failures(&self, backend_name: &str) -> Option<u32> {
+        self.models.read().await.get(backend_name).and_then(|s| {
             s.consecutive_failures()
                 .map(|f| f.load(std::sync::atomic::Ordering::Relaxed))
         })
     }
 
-    /// Find an available loaded server for a given model name.
-    pub async fn get_available_server_for_model(&self, model_name: &str) -> Option<String> {
-        let (server_names, circuit_breaker_threshold) = {
+    /// Find an available loaded backend for a given model name.
+    pub async fn get_available_backend_for_model(&self, model_name: &str) -> Option<String> {
+        let (backend_names, circuit_breaker_threshold) = {
             let config = self.config.read().await;
             let model_configs = self.model_configs.read().await;
-            // Collect just the server names (owned Strings) so we can drop the lock.
+            // Collect just the backend names (owned Strings) so we can drop the lock.
             let names: Vec<String> = config
-                .resolve_servers_for_model(&model_configs, model_name)
+                .resolve_backends_for_model(&model_configs, model_name)
                 .into_iter()
                 .map(|(name, _, _)| name)
                 .collect();
@@ -170,8 +170,8 @@ impl ProxyState {
         let models = self.models.read().await;
 
         // Simple round-robin or first available
-        for server_name in server_names {
-            if let Some(state) = models.get(&server_name) {
+        for backend_name in backend_names {
+            if let Some(state) = models.get(&backend_name) {
                 if (state.is_ready() || matches!(state, ModelState::Starting { .. }))
                     && state
                         .consecutive_failures()
@@ -179,7 +179,7 @@ impl ProxyState {
                         .unwrap_or(0)
                         < circuit_breaker_threshold
                 {
-                    return Some(server_name);
+                    return Some(backend_name);
                 }
             }
         }
@@ -187,10 +187,10 @@ impl ProxyState {
         None
     }
 
-    /// Update the last accessed time for a server.
-    pub async fn update_last_accessed(&self, server_name: &str) {
+    /// Update the last accessed time for a backend.
+    pub async fn update_last_accessed(&self, backend_name: &str) {
         let mut models = self.models.write().await;
-        if let Some(state) = models.get_mut(server_name) {
+        if let Some(state) = models.get_mut(backend_name) {
             match state {
                 ModelState::Starting { last_accessed, .. } => {
                     *last_accessed = Instant::now();

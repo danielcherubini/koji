@@ -590,7 +590,6 @@ pub async fn apply_backend_update(
                     commit: None,
                 }),
             target_dir,
-            gpu_type: backend_info.gpu_type,
             gpu_variant: backend_info.gpu_variant.clone(),
             allow_overwrite: true,
         };

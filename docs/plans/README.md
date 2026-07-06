@@ -14,14 +14,26 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Quick Stats
 
-- **Total Plans**: 136
+- **Total Plans**: 143
 - **Completed**: 136 ✅
 - **In Progress**: 0 🚧
-- **Remaining**: 1
+- **Draft**: 7 📋
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
 
 ---
+
+## Draft Plans
+
+| Plan | Description | Status |
+|------|-------------|--------|
+| [Codebase Improvements](2026-07-06-codebase-improvements.md) | Quick wins: error_response helper, unwrap→expect, dead code removal, benchmark DRY, API boilerplate extraction, gpu_type→gpu_variant rename, server→backend rename, test fixture helpers | 📋 DRAFT |
+| [File Splits — tama-core](2026-07-06-file-splits.md) | Split 5 god files (config/types.rs 1407, models.rs 1303, checker.rs 1079, forward.rs 1119, gpu/system.rs 1121) into focused modules | 📋 DRAFT |
+| [Architectural Refactoring](2026-07-06-architectural-refactoring.md) | DB repository layer (35 direct query calls → Repository), ProxyState encapsulation (25 pub fields → pub(crate) + WebState), move web_types to tama crate | 📋 DRAFT |
+| [Type Safety](2026-07-06-type-safety.md) | GpuVendor + ModelState enums, DB tuples → typed records, config enums (RestartPolicy, LogLevel, CompactionDevice) | 📋 DRAFT |
+| [Testability](2026-07-06-testability.md) | Backend lifecycle trait abstractions (HealthChecker, ProcessSpawner, PortAllocator) + tests, update checker + download queue processor tests | 📋 DRAFT |
+| [Web UI Splits](2026-07-06-web-ui-splits.md) | Split 3 large web UI files (types/config.rs 986, api/backends/manage.rs 1013, pages/config_editor.rs 937) into focused modules | 📋 DRAFT |
+| [Naming and Cleanup](2026-07-06-naming-and-cleanup.md) | Rename download→pull in model subsystem (15+ locations + DB migration), typed handler responses, remove deprecated fields, set rename_legacy deadline | 📋 DRAFT |
 
 ## Completed Plans
 

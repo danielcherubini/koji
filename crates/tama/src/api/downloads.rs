@@ -2,6 +2,7 @@
 //!
 //! Provides REST endpoints to query the download queue (active + history),
 //! cancel items, and stream real-time events via SSE.
+use crate::api::error::error_body;
 
 use async_stream::stream;
 use axum::extract::{Path, State};
@@ -99,14 +100,17 @@ pub async fn get_active_downloads(
     let svc = state.download_queue.as_ref().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({"error": "Download queue not configured"})),
+            Json(error_body(
+                "Download queue not configured",
+                Some("ServiceUnavailableError"),
+            )),
         )
     })?;
 
     let items = svc.get_active_items().map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
+            Json(error_body(e.to_string(), None)),
         )
     })?;
 
@@ -123,7 +127,10 @@ pub async fn get_download_history(
     let svc = state.download_queue.as_ref().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({"error": "Download queue not configured"})),
+            Json(error_body(
+                "Download queue not configured",
+                Some("ServiceUnavailableError"),
+            )),
         )
     })?;
 
@@ -132,14 +139,14 @@ pub async fn get_download_history(
         .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": e.to_string()})),
+                Json(error_body(e.to_string(), None)),
             )
         })?;
 
     let total = svc.count_history_items().map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
+            Json(error_body(e.to_string(), None)),
         )
     })?;
 

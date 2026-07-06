@@ -1,9 +1,38 @@
 use std::sync::Arc;
 
 use leptos::prelude::*;
+use wasm_bindgen::JsCast;
 
 use super::types::{ModelForm, QuantInfo, QuantKind};
 use crate::utils::target_value;
+
+/// Set an input's value by DOM id.
+fn set_input_value(id: &str, value: &str) {
+    if let Some(el) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id(id))
+    {
+        if let Ok(input) = el.clone().dyn_into::<web_sys::HtmlInputElement>() {
+            input.set_value(value);
+            return;
+        }
+        if let Ok(select) = el.dyn_into::<web_sys::HtmlSelectElement>() {
+            select.set_value(value);
+        }
+    }
+}
+
+/// Set a checkbox's checked state by DOM id.
+fn set_checked(id: &str, checked: bool) {
+    if let Some(el) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id(id))
+    {
+        if let Ok(input) = el.dyn_into::<web_sys::HtmlInputElement>() {
+            input.set_checked(checked);
+        }
+    }
+}
 
 fn format_bytes_opt(bytes: Option<u64>) -> String {
     let Some(b) = bytes else {
@@ -43,6 +72,29 @@ pub fn ModelEditorFilesForm(
     refresh_action: Action<(), (), LocalStorage>,
     verify_action: Action<(), (), LocalStorage>,
 ) -> impl IntoView {
+    // Populate input values when the form data loads (or model changes).
+    let last_init_id = StoredValue::new(None::<String>);
+    Effect::new(move |_| {
+        if let Some(f) = form.get() {
+            if last_init_id.get_value() != Some(f.id.clone()) {
+                // Quant checkbox
+                if let Some(q) = &f.quant {
+                    set_checked(&format!("field-quant-{}", q), true);
+                }
+                // MMProj checkbox
+                if let Some(m) = &f.mmproj {
+                    set_checked(&format!("field-mmproj-{}", m), true);
+                }
+                // MTP model select
+                set_input_value(
+                    "field-mtp-model",
+                    f.mtp_model.as_deref().unwrap_or("(none)"),
+                );
+                last_init_id.set_value(Some(f.id.clone()));
+            }
+        }
+    });
+
     view! {
         // Repo-level metadata + refresh/verify actions
         <div class="quants-meta-bar">
@@ -118,7 +170,7 @@ pub fn ModelEditorFilesForm(
                         key=|(_i, name, _)| name.clone()
                         children=move |(_i, name, q)| {
                             let name_arc = Arc::new(name.clone());
-                            let name_for_check = Arc::clone(&name_arc);
+                            let _name_for_check = Arc::clone(&name_arc);
                             let name_for_change = Arc::clone(&name_arc);
                             let q_arc = Arc::new(q);
                             let q_arc_size = Arc::clone(&q_arc);
@@ -130,12 +182,7 @@ pub fn ModelEditorFilesForm(
                                     <td>
                                         <input
                                             type="checkbox"
-                                            prop:checked=move || {
-                                                form.get()
-                                                    .as_ref()
-                                                    .and_then(|f| f.quant.as_deref())
-                                                    == Some(name_for_check.as_str())
-                                            }
+                                            id=format!("field-quant-{}", name)
                                             on:change=move |e| {
                                                 use wasm_bindgen::JsCast;
                                                 let checked = e.target()
@@ -263,7 +310,7 @@ pub fn ModelEditorFilesForm(
                                     key=|(name, _)| name.clone()
                                     children=move |(name, q)| {
                                         let name_arc = Arc::new(name.clone());
-                                        let name_for_check = Arc::clone(&name_arc);
+                                        let _name_for_check = Arc::clone(&name_arc);
                                         let size = format_bytes_opt(q.size_bytes);
                                         let sha_opt = q.lfs_oid.clone();
                                         let sha_display = sha_opt.as_deref().map(short_sha).unwrap_or_else(|| "—".to_string());
@@ -278,12 +325,7 @@ pub fn ModelEditorFilesForm(
                                                 <td>
                                                     <input
                                                         type="checkbox"
-                                                        prop:checked=move || {
-                                                            form.get()
-                                                                .as_ref()
-                                                                .and_then(|f| f.mmproj.as_deref())
-                                                                == Some(name_for_check.as_str())
-                                                        }
+                                                        id=format!("field-mmproj-{}", name_arc)
                                                         on:change=move |e| {
                                                             use wasm_bindgen::JsCast;
                                                             let checked = e.target()
@@ -331,10 +373,9 @@ pub fn ModelEditorFilesForm(
             if mtp_entries.is_empty() {
                 return None;
             }
-            let current_mtp = Signal::derive(move || {
+            let _current_mtp = Signal::derive(move || {
                 form.get().and_then(|f| f.mtp_model.clone())
             });
-            let current_mtp_clone = current_mtp;
             let mtp_entries_clone = mtp_entries;
             Some(view! {
                 <div class="mt-3">
@@ -344,7 +385,7 @@ pub fn ModelEditorFilesForm(
                             <span class="form-label">Draft model for speculative decoding</span>
                             <select
                                 class="form-select"
-                                prop:value=current_mtp_clone
+                                id="field-mtp-model"
                                 on:change=move |e| {
                                     let target = target_value(&e);
                                     let selected = if target == "(none)" { None } else { Some(target) };

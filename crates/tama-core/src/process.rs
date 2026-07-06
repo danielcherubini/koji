@@ -207,7 +207,7 @@ impl ProcessSupervisor {
             let interval_ms = self.health_check.interval_ms.unwrap_or(5000).max(1);
             let timeout_ms = self.health_check.timeout_ms.unwrap_or(3000).max(1);
             let mut health_interval = interval(Duration::from_millis(interval_ms));
-            let mut server_ready = false;
+            let mut backend_ready = false;
             let timeout = Duration::from_millis(timeout_ms);
             let http_client = reqwest::Client::builder()
                 .timeout(timeout)
@@ -236,8 +236,8 @@ impl ProcessSupervisor {
                             alive
                         };
 
-                        if healthy && !server_ready {
-                            server_ready = true;
+                        if healthy && !backend_ready {
+                            backend_ready = true;
                             tx.send(ProcessEvent::Ready).ok();
                         }
 

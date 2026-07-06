@@ -80,16 +80,16 @@ pub struct BackendLogManager {
 
 impl BackendLogManager {
     /// Get or create a log stream for a given server name.
-    pub async fn get_or_create(&self, server_name: &str) -> Arc<BackendLogStream> {
+    pub async fn get_or_create(&self, backend_name: &str) -> Arc<BackendLogStream> {
         let mut streams = self.streams.write().await;
         streams
-            .entry(server_name.to_string())
+            .entry(backend_name.to_string())
             .or_insert_with(|| Arc::new(BackendLogStream::new()))
             .clone()
     }
 
     /// Get an existing stream (returns None if not found).
-    pub async fn get(&self, server_name: &str) -> Option<Arc<BackendLogStream>> {
-        self.streams.read().await.get(server_name).cloned()
+    pub async fn get(&self, backend_name: &str) -> Option<Arc<BackendLogStream>> {
+        self.streams.read().await.get(backend_name).cloned()
     }
 }

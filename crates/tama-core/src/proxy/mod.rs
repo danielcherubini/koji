@@ -53,7 +53,7 @@ mod tests {
     async fn test_no_available_server_for_unknown_model() {
         let config = Config::default();
         let state = ProxyState::new(config, None);
-        let result = state.get_available_server_for_model("nonexistent").await;
+        let result = state.get_available_backend_for_model("nonexistent").await;
         assert!(result.is_none());
     }
 

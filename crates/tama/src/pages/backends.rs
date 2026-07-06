@@ -60,6 +60,8 @@ pub fn Backends() -> impl IntoView {
     let refresh_tick = RwSignal::new(0u32);
     let default_args_edits: RwSignal<std::collections::HashMap<String, String>> =
         RwSignal::new(std::collections::HashMap::new());
+    let default_env_edits: RwSignal<std::collections::HashMap<String, String>> =
+        RwSignal::new(std::collections::HashMap::new());
     let save_status: RwSignal<Option<String>> = RwSignal::new(None);
     let saving: RwSignal<bool> = RwSignal::new(false);
     let show_backend_dropdown = RwSignal::new(false);
@@ -243,6 +245,13 @@ pub fn Backends() -> impl IntoView {
             save_status.set(None); // Clear status when user makes new edits
         });
 
+    let on_default_env_change = Callback::new(move |(backend_key, new_value): (String, String)| {
+        default_env_edits.update(|edits| {
+            edits.insert(backend_key, new_value);
+        });
+        save_status.set(None);
+    });
+
     // Track version selection changes: key = "backend_type:gpu_variant", value = (type, version, variant)
     let version_edits: RwSignal<std::collections::HashMap<String, (String, String, String)>> =
         RwSignal::new(std::collections::HashMap::new());
@@ -262,8 +271,9 @@ pub fn Backends() -> impl IntoView {
             return;
         }
         let args_edits = default_args_edits.get();
+        let env_edits = default_env_edits.get();
         let ver_edits = version_edits.get();
-        if args_edits.is_empty() && ver_edits.is_empty() {
+        if args_edits.is_empty() && env_edits.is_empty() && ver_edits.is_empty() {
             return;
         }
         saving.set(true);
@@ -309,9 +319,33 @@ pub fn Backends() -> impl IntoView {
                 }
             }
 
+            // Apply default env changes — key is "backend_type:gpu_variant"
+            let env_edit_keys: Vec<String> = env_edits.keys().cloned().collect();
+            for key in env_edit_keys {
+                let env_str = env_edits.get(&key).cloned().unwrap_or_default();
+                let parts: Vec<String> = serde_json::from_str(&env_str).unwrap_or_default();
+                // Parse "backend_type:gpu_variant" from key
+                let parts_key: Vec<&str> = key.splitn(2, ':').collect();
+                let bt = parts_key[0];
+                let gv = parts_key.get(1).copied().unwrap_or("cpu");
+                let body = serde_json::json!({ "default_env": parts });
+                let url = format!("/tama/v1/backends/{}/default-env?gpu_variant={}", bt, gv);
+                let res = post_request(&url).json(&body).unwrap().send().await;
+                match res {
+                    Ok(response) if response.ok() => {}
+                    Ok(response) => {
+                        let status = response.status();
+                        let text = response.text().await.unwrap_or_default();
+                        errors.push(format!("{}: HTTP {} - {}", key, status, text));
+                    }
+                    Err(e) => errors.push(format!("{}: {}", key, e)),
+                }
+            }
+
             if errors.is_empty() {
                 save_status.set(Some("✅ Saved".to_string()));
                 default_args_edits.set(std::collections::HashMap::new());
+                default_env_edits.set(std::collections::HashMap::new());
                 version_edits.set(std::collections::HashMap::new());
                 refresh_tick.update(|n| *n += 1);
             } else {
@@ -512,6 +546,7 @@ pub fn Backends() -> impl IntoView {
                                 on_check_updates=on_check_updates_click
                                 on_delete=on_delete_click
                                 on_default_args_change=on_default_args_change
+                                on_default_env_change=on_default_env_change
                                 on_version_change=on_version_change
                                 on_build_method_change=on_build_method_change
                             />

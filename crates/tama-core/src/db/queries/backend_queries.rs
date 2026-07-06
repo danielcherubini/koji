@@ -13,7 +13,6 @@ pub struct BackendInstallationRecord {
     pub version: String,
     pub path: String,
     pub installed_at: i64,
-    pub gpu_type: Option<String>,
     pub gpu_variant: String,
     pub source: Option<String>,
     pub is_active: bool,
@@ -31,10 +30,9 @@ fn map_backend_record(row: &rusqlite::Row) -> rusqlite::Result<BackendInstallati
         version: row.get(3)?,
         path: row.get(4)?,
         installed_at: row.get(5)?,
-        gpu_type: row.get(6)?,
-        gpu_variant: row.get(7)?,
-        source: row.get(8)?,
-        is_active: row.get::<_, i64>(9)? != 0,
+        gpu_variant: row.get(6)?,
+        source: row.get(7)?,
+        is_active: row.get::<_, i64>(8)? != 0,
     })
 }
 
@@ -54,15 +52,14 @@ pub fn insert_backend_installation(
     let tx = conn.unchecked_transaction()?;
     tx.execute(
         "INSERT OR REPLACE INTO backend_installations
-             (name, backend_type, version, path, installed_at, gpu_type, gpu_variant, source, is_active)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1)",
+             (name, backend_type, version, path, installed_at, gpu_variant, source, is_active)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1)",
         (
             &record.name,
             &record.backend_type,
             &record.version,
             &record.path,
             record.installed_at,
-            record.gpu_type.as_deref(),
             &record.gpu_variant,
             record.source.as_deref(),
         ),
@@ -82,7 +79,7 @@ pub fn get_active_backend(
     gpu_variant: &str,
 ) -> Result<Option<BackendInstallationRecord>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, backend_type, version, path, installed_at, gpu_type, gpu_variant, source, is_active
+        "SELECT id, name, backend_type, version, path, installed_at, gpu_variant, source, is_active
          FROM backend_installations
          WHERE name = ?1 AND gpu_variant = ?2 AND is_active = 1",
     )?;
@@ -96,7 +93,7 @@ pub fn get_active_backend(
 /// Return all active backend installations (one per backend name/variant).
 pub fn list_active_backends(conn: &Connection) -> Result<Vec<BackendInstallationRecord>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, backend_type, version, path, installed_at, gpu_type, gpu_variant, source, is_active
+        "SELECT id, name, backend_type, version, path, installed_at, gpu_variant, source, is_active
          FROM backend_installations
          WHERE is_active = 1",
     )?;
@@ -115,12 +112,12 @@ pub fn list_backend_versions(
     gpu_variant: Option<&str>,
 ) -> Result<Vec<BackendInstallationRecord>> {
     let sql = if let Some(_variant) = gpu_variant {
-        "SELECT id, name, backend_type, version, path, installed_at, gpu_type, gpu_variant, source, is_active
+        "SELECT id, name, backend_type, version, path, installed_at, gpu_variant, source, is_active
          FROM backend_installations
          WHERE name = ?1 AND gpu_variant = ?2
          ORDER BY installed_at DESC"
     } else {
-        "SELECT id, name, backend_type, version, path, installed_at, gpu_type, gpu_variant, source, is_active
+        "SELECT id, name, backend_type, version, path, installed_at, gpu_variant, source, is_active
          FROM backend_installations
          WHERE name = ?1
          ORDER BY installed_at DESC"
@@ -144,7 +141,7 @@ pub fn get_backend_by_version(
     version: &str,
 ) -> Result<Option<BackendInstallationRecord>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, backend_type, version, path, installed_at, gpu_type, gpu_variant, source, is_active
+        "SELECT id, name, backend_type, version, path, installed_at, gpu_variant, source, is_active
          FROM backend_installations
          WHERE name = ?1 AND gpu_variant = ?2 AND version = ?3",
     )?;
@@ -269,6 +266,8 @@ pub struct BackendConfigRecord {
     pub gpu_variant: String,
     /// Parsed from JSON array stored in `default_args` column.
     pub default_args: Vec<String>,
+    /// Parsed from JSON array stored in `default_env` column.
+    pub default_env: Vec<String>,
     pub health_check_url: Option<String>,
 }
 
@@ -279,6 +278,7 @@ struct RawBackendConfigRow {
     name: String,
     gpu_variant: String,
     default_args_raw: Option<String>,
+    default_env_raw: Option<String>,
     health_check_url: Option<String>,
 }
 
@@ -288,7 +288,8 @@ fn map_raw_backend_config(row: &rusqlite::Row) -> rusqlite::Result<RawBackendCon
         name: row.get(1)?,
         gpu_variant: row.get(2)?,
         default_args_raw: row.get(3)?,
-        health_check_url: row.get(4)?,
+        default_env_raw: row.get(4)?,
+        health_check_url: row.get(5)?,
     })
 }
 
@@ -299,12 +300,19 @@ fn raw_to_record(raw: RawBackendConfigRow) -> Result<BackendConfigRecord> {
         }
         _ => Vec::new(),
     };
+    let default_env: Vec<String> = match raw.default_env_raw {
+        Some(ref s) if !s.is_empty() => {
+            serde_json::from_str(s).context("Failed to parse default_env JSON")?
+        }
+        _ => Vec::new(),
+    };
 
     Ok(BackendConfigRecord {
         id: raw.id,
         name: raw.name,
         gpu_variant: raw.gpu_variant,
         default_args,
+        default_env,
         health_check_url: raw.health_check_url,
     })
 }
@@ -316,7 +324,7 @@ pub fn get_backend_config(
     gpu_variant: &str,
 ) -> Result<Option<BackendConfigRecord>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, gpu_variant, default_args, health_check_url
+        "SELECT id, name, gpu_variant, default_args, default_env, health_check_url
          FROM backend_configs
          WHERE name = ?1 AND gpu_variant = ?2",
     )?;
@@ -336,6 +344,7 @@ pub fn upsert_backend_config(
     name: &str,
     gpu_variant: &str,
     default_args: &[String],
+    default_env: &[String],
     health_check_url: Option<&str>,
 ) -> Result<i64> {
     let default_args_json = if default_args.is_empty() {
@@ -346,17 +355,27 @@ pub fn upsert_backend_config(
                 .context("Failed to serialize default_args to JSON")?,
         )
     };
+    let default_env_json = if default_env.is_empty() {
+        None
+    } else {
+        Some(
+            serde_json::to_string(default_env)
+                .context("Failed to serialize default_env to JSON")?,
+        )
+    };
 
     conn.execute(
-        "INSERT INTO backend_configs (name, gpu_variant, default_args, health_check_url)
-         VALUES (?1, ?2, ?3, ?4)
+        "INSERT INTO backend_configs (name, gpu_variant, default_args, default_env, health_check_url)
+         VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(name, gpu_variant) DO UPDATE SET
              default_args = excluded.default_args,
+             default_env = excluded.default_env,
              health_check_url = excluded.health_check_url",
         (
             name,
             gpu_variant,
             default_args_json.as_deref(),
+            default_env_json.as_deref(),
             health_check_url,
         ),
     )?;
@@ -374,7 +393,7 @@ pub fn upsert_backend_config(
 /// Return all backend config records.
 pub fn list_backend_configs(conn: &Connection) -> Result<Vec<BackendConfigRecord>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, gpu_variant, default_args, health_check_url
+        "SELECT id, name, gpu_variant, default_args, default_env, health_check_url
          FROM backend_configs",
     )?;
     let raw_rows = stmt.query_map([], map_raw_backend_config)?;
@@ -394,11 +413,13 @@ mod tests {
         let OpenResult { conn, .. } = open_in_memory().unwrap();
 
         let args = vec!["-fa 1".to_string(), "-b 2048".to_string()];
+        let env = vec!["RADV_PERFTEST=nogttspill".to_string()];
         let id = upsert_backend_config(
             &conn,
             "llama_cpp",
             "cpu",
             &args,
+            &env,
             Some("http://localhost:8080/health"),
         )
         .unwrap();
@@ -411,6 +432,7 @@ mod tests {
         assert_eq!(record.name, "llama_cpp");
         assert_eq!(record.gpu_variant, "cpu");
         assert_eq!(record.default_args, args);
+        assert_eq!(record.default_env, env);
         assert_eq!(
             record.health_check_url,
             Some("http://localhost:8080/health".to_string())
@@ -427,6 +449,7 @@ mod tests {
             "llama_cpp",
             "cpu",
             &["-fa 1".to_string()],
+            &[],
             Some("http://localhost:8080/health"),
         )
         .unwrap();
@@ -437,6 +460,7 @@ mod tests {
             "llama_cpp",
             "cpu",
             &["-fa 1".to_string(), "-b 2048".to_string()],
+            &["FOO=bar".to_string()],
             Some("http://localhost:9090/health"),
         )
         .unwrap();
@@ -448,6 +472,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(record.default_args, vec!["-fa 1", "-b 2048"]);
+        assert_eq!(record.default_env, vec!["FOO=bar"]);
         assert_eq!(
             record.health_check_url,
             Some("http://localhost:9090/health".to_string())
@@ -471,11 +496,12 @@ mod tests {
             "llama_cpp",
             "cpu",
             &["-fa 1".to_string()],
+            &[],
             Some("http://localhost:8080/health"),
         )
         .unwrap();
-        upsert_backend_config(&conn, "llama_cpp", "vulkan", &[], None).unwrap();
-        upsert_backend_config(&conn, "ik_llama", "cpu", &[], None).unwrap();
+        upsert_backend_config(&conn, "llama_cpp", "vulkan", &[], &[], None).unwrap();
+        upsert_backend_config(&conn, "ik_llama", "cpu", &[], &[], None).unwrap();
 
         let configs = list_backend_configs(&conn).unwrap();
         assert_eq!(configs.len(), 3);
@@ -499,13 +525,14 @@ mod tests {
     fn test_upsert_backend_config_empty_args() {
         let OpenResult { conn, .. } = open_in_memory().unwrap();
 
-        let id = upsert_backend_config(&conn, "empty_backend", "cpu", &[], None).unwrap();
+        let id = upsert_backend_config(&conn, "empty_backend", "cpu", &[], &[], None).unwrap();
         assert_eq!(id, 1);
 
         let record = get_backend_config(&conn, "empty_backend", "cpu")
             .unwrap()
             .unwrap();
         assert!(record.default_args.is_empty());
+        assert!(record.default_env.is_empty());
         assert!(record.health_check_url.is_none());
     }
 
@@ -523,7 +550,6 @@ mod tests {
                 version: "b8407".to_string(),
                 path: "/tmp/test/llama-server".to_string(),
                 installed_at: 0,
-                gpu_type: None,
                 gpu_variant: "cpu".to_string(),
                 source: None,
                 is_active: true,

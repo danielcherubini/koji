@@ -11,7 +11,7 @@ static EMPTY_BACKEND_CONFIG: BackendConfig = BackendConfig {
 };
 
 impl Config {
-    pub fn resolve_server<'a>(
+    pub fn resolve_backend<'a>(
         &'a self,
         models: &'a std::collections::HashMap<String, ModelConfig>,
         name: &str,
@@ -65,7 +65,7 @@ impl Config {
         Ok((server, backend))
     }
 
-    pub fn resolve_servers_for_model<'a>(
+    pub fn resolve_backends_for_model<'a>(
         &'a self,
         models: &'a std::collections::HashMap<String, ModelConfig>,
         model_name: &str,
@@ -539,8 +539,8 @@ impl Config {
         Ok(flat)
     }
 
-    pub fn service_name(server_name: &str) -> String {
-        format!("tama-{}", server_name)
+    pub fn service_name(backend_name: &str) -> String {
+        format!("tama-{}", backend_name)
     }
 
     /// Open the application database, falling back to an in-memory connection on error.

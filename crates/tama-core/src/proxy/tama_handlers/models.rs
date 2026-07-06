@@ -130,7 +130,7 @@ pub async fn handle_tama_get_model(
     // Check if it's a configured (but not loaded) model
     let model_configs = state.model_configs.read().await;
     let config = state.config.read().await;
-    let servers = config.resolve_servers_for_model(&model_configs, &model_id);
+    let servers = config.resolve_backends_for_model(&model_configs, &model_id);
     if let Some((config_name, server_cfg, _)) = servers.first() {
         if server_cfg.enabled {
             return Json(serde_json::json!({
@@ -168,8 +168,8 @@ pub async fn handle_tama_load_model(
         .await;
     let _ = state.evict_lru_if_needed(target_gpu).await;
     match state.load_model(&model_id, model_card.as_ref()).await {
-        Ok(server_name) => {
-            let model_state = state.get_model_state(&server_name).await;
+        Ok(backend_name) => {
+            let model_state = state.get_model_state(&backend_name).await;
             let loaded = model_state.as_ref().is_some_and(|ms| ms.is_ready());
             Json(ModelResponse {
                 id: model_id,
@@ -207,7 +207,7 @@ pub async fn handle_tama_cancel_load(
     let model_id = resolve_model_id(&state, &model_id).await;
 
     // ── Step b: read lock — initial check ──────────────────────────────
-    let (server_name, pid) = {
+    let (backend_name, pid) = {
         let models = state.models.read().await;
         let entry = match models.get(&model_id) {
             Some(e) => e,
@@ -257,13 +257,13 @@ pub async fn handle_tama_cancel_load(
     // ── Step c+d: write lock — re-validate and remove ──────────────────
     {
         let mut models = state.models.write().await;
-        match models.get(&server_name) {
+        match models.get(&backend_name) {
             Some(ModelState::Starting { .. }) => {
                 // TODO: race with load_model's mgr.insert_active() — if health check
                 // succeeds between here and the kill below, load_model may insert a
                 // stale active_models DB row. A future fix would add a re-check in
                 // load_model before insert_active under the write lock.
-                models.remove(&server_name);
+                models.remove(&backend_name);
             }
             Some(ModelState::Ready { .. }) => {
                 return (
@@ -296,7 +296,7 @@ pub async fn handle_tama_cancel_load(
     if pid > 0 {
         // First attempt: SIGTERM
         if let Err(e) = kill_process_group(pid).await {
-            warn!("Cancel kill failed for '{}': {}", server_name, e);
+            warn!("Cancel kill failed for '{}': {}", backend_name, e);
         }
 
         // Poll up to 2s for the group to die (every 250ms)
@@ -310,7 +310,7 @@ pub async fn handle_tama_cancel_load(
         // Escalate: SIGKILL if still alive
         if is_process_group_alive(pid) {
             if let Err(e) = force_kill_process_group(pid).await {
-                warn!("Cancel force kill failed for '{}': {}", server_name, e);
+                warn!("Cancel force kill failed for '{}': {}", backend_name, e);
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
@@ -318,13 +318,16 @@ pub async fn handle_tama_cancel_load(
 
     // ── Step g: clean up DB ────────────────────────────────────────────
     if let Some(mgr) = state.model_mgr() {
-        if let Err(e) = mgr.remove_active(&server_name) {
-            warn!("Failed to remove active entry for '{}': {}", server_name, e);
+        if let Err(e) = mgr.remove_active(&backend_name) {
+            warn!(
+                "Failed to remove active entry for '{}': {}",
+                backend_name, e
+            );
         }
     }
 
     // ── Step h: log ────────────────────────────────────────────────────
-    info!("Model '{}' cancel completed", server_name);
+    info!("Model '{}' cancel completed", backend_name);
 
     // ── Step i: return response ────────────────────────────────────────
     Json(ModelResponse {
@@ -341,12 +344,12 @@ pub async fn handle_tama_unload_model(
 ) -> Response {
     let model_id = resolve_model_id(&state, &model_id).await;
     // Get the server name for this model
-    let server_name = state.get_available_server_for_model(&model_id).await;
+    let backend_name = state.get_available_backend_for_model(&model_id).await;
 
-    match server_name {
-        Some(server_name) => {
+    match backend_name {
+        Some(backend_name) => {
             // Unload the model
-            match state.unload_model(&server_name).await {
+            match state.unload_model(&backend_name).await {
                 Ok(_) => {
                     let model_state = state.get_model_state(&model_id).await;
                     let loaded = model_state.as_ref().is_some_and(|ms| ms.is_ready());

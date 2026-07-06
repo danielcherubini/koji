@@ -1,11 +1,11 @@
 use anyhow::{anyhow, Result};
 
 use crate::backends::types::BackendType;
-use crate::gpu::GpuType;
 
 /// Construct the GitHub release download URL for a pre-built binary.
 ///
-/// Note: `gpu` is taken by reference to avoid ownership issues.
+/// The `gpu_variant` parameter is a folder name string (e.g. "cpu", "cuda",
+/// "vulkan", "rocm") that determines which pre-built binary to download.
 /// Note: The `tag` parameter is the release tag (e.g. "b8407"), kept
 /// separate from any GPU version strings to avoid shadowing.
 pub fn get_prebuilt_url(
@@ -13,7 +13,7 @@ pub fn get_prebuilt_url(
     tag: &str,
     os: &str,
     arch: &str,
-    gpu: Option<&GpuType>,
+    gpu_variant: &str,
 ) -> Result<String> {
     match backend {
         BackendType::LlamaCpp => {
@@ -22,23 +22,26 @@ pub fn get_prebuilt_url(
                 tag
             );
 
-            let filename = match (os, arch, gpu) {
-                // Linux
-                ("linux", "x86_64", Some(GpuType::Vulkan)) => {
+            let filename = match (os, arch, gpu_variant) {
+                // Linux - Vulkan
+                ("linux", "x86_64", "vulkan") => {
                     format!("llama-{}-bin-ubuntu-vulkan-x64.tar.gz", tag)
                 }
-                ("linux", "x86_64", Some(GpuType::RocM { .. })) => {
+                // Linux - ROCm
+                ("linux", "x86_64", "rocm") => {
                     format!("llama-{}-bin-ubuntu-rocm-7.2-x64.tar.gz", tag)
                 }
+                // Linux - CPU, CUDA, and all other variants
+                // (llama.cpp doesn't ship Linux CUDA pre-built binaries;
+                // they use the generic ubuntu-x64 build)
                 ("linux", "x86_64", _) => {
-                    // CPU and CUDA both use the ubuntu-x64 build
-                    // (llama.cpp doesn't ship Linux CUDA pre-built binaries)
                     format!("llama-{}-bin-ubuntu-x64.tar.gz", tag)
                 }
-                // macOS
+                // macOS - ARM64
                 ("macos", "aarch64", _) => {
                     format!("llama-{}-bin-macos-arm64.tar.gz", tag)
                 }
+                // macOS - x86_64
                 ("macos", "x86_64", _) => {
                     format!("llama-{}-bin-macos-x64.tar.gz", tag)
                 }
@@ -70,7 +73,7 @@ mod tests {
     #[test]
     fn test_llama_cpp_download_url_linux_cpu() {
         let url =
-            get_prebuilt_url(&BackendType::LlamaCpp, "b8407", "linux", "x86_64", None).unwrap();
+            get_prebuilt_url(&BackendType::LlamaCpp, "b8407", "linux", "x86_64", "cpu").unwrap();
 
         assert_eq!(
             url,
@@ -79,8 +82,30 @@ mod tests {
     }
 
     #[test]
+    fn test_llama_cpp_download_url_linux_vulkan() {
+        let url =
+            get_prebuilt_url(&BackendType::LlamaCpp, "b8407", "linux", "x86_64", "vulkan").unwrap();
+
+        assert_eq!(
+            url,
+            "https://github.com/ggml-org/llama.cpp/releases/download/b8407/llama-b8407-bin-ubuntu-vulkan-x64.tar.gz"
+        );
+    }
+
+    #[test]
+    fn test_llama_cpp_download_url_linux_rocm() {
+        let url =
+            get_prebuilt_url(&BackendType::LlamaCpp, "b8407", "linux", "x86_64", "rocm").unwrap();
+
+        assert_eq!(
+            url,
+            "https://github.com/ggml-org/llama.cpp/releases/download/b8407/llama-b8407-bin-ubuntu-rocm-7.2-x64.tar.gz"
+        );
+    }
+
+    #[test]
     fn test_ik_llama_prebuilt_not_available() {
-        let result = get_prebuilt_url(&BackendType::IkLlama, "main", "linux", "x86_64", None);
+        let result = get_prebuilt_url(&BackendType::IkLlama, "main", "linux", "x86_64", "cpu");
         assert!(result.is_err());
     }
 }

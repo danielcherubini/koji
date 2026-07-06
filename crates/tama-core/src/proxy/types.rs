@@ -289,7 +289,7 @@ pub struct ProxyState {
     pub config_write_semaphore: Arc<tokio::sync::Semaphore>,
     /// Backend log stream manager — broadcasts backend stdout/stderr via SSE.
     pub backend_logs: crate::backends::log_stream::BackendLogManager,
-    /// Watch channel for per-server inference stats. Keyed by server_name.
+    /// Watch channel for per-backend inference stats. Keyed by backend_name.
     /// Single-producer (intercept handler), multi-consumer (metrics task).
     pub inference_stats: tokio::sync::watch::Sender<HashMap<String, LatestInferenceStats>>,
     /// Cache for discovered GPU devices, keyed by backend name.
@@ -349,7 +349,7 @@ impl ProxyState {
 
         // Abort all per-model task JoinSets (stdout/stderr readers, reapers)
         let mut all_tasks = self.model_tasks.write().await;
-        for (_server, mut tasks) in all_tasks.drain() {
+        for (_backend, mut tasks) in all_tasks.drain() {
             tasks.abort_all();
         }
 

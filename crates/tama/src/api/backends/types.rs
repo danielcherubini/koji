@@ -62,6 +62,8 @@ pub struct BackendCardDto {
     pub release_notes_url: Option<String>,
     #[serde(default)]
     pub default_args: Vec<String>,
+    #[serde(default)]
+    pub default_env: Vec<String>,
     /// Whether the active version is currently selected for display.
     #[serde(default)]
     pub is_active: bool,
@@ -84,6 +86,7 @@ impl BackendCardDto {
             update: UpdateStatusDto::default(),
             release_notes_url: release_notes_url.map(String::from),
             default_args,
+            default_env: vec![],
             is_active: false,
         }
     }
@@ -99,8 +102,6 @@ pub struct BackendInfoDto {
     #[serde(default)]
     pub gpu_variant: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub gpu_type: Option<GpuTypeDto>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<BackendSourceDto>,
 }
 
@@ -112,36 +113,7 @@ impl From<tama_core::backends::BackendInfo> for BackendInfoDto {
             path: info.path.to_string_lossy().to_string(),
             installed_at: info.installed_at,
             gpu_variant: info.gpu_variant,
-            gpu_type: info.gpu_type.as_ref().map(|g| g.into()),
             source: info.source.as_ref().map(|s| s.into()),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "kind")]
-pub enum GpuTypeDto {
-    Cuda { version: String },
-    Vulkan,
-    Metal,
-    Rocm { version: String },
-    CpuOnly,
-    Custom,
-}
-
-impl From<&tama_core::gpu::GpuType> for GpuTypeDto {
-    fn from(gpu: &tama_core::gpu::GpuType) -> Self {
-        match gpu {
-            tama_core::gpu::GpuType::Cuda { version } => Self::Cuda {
-                version: version.clone(),
-            },
-            tama_core::gpu::GpuType::Vulkan => Self::Vulkan,
-            tama_core::gpu::GpuType::Metal => Self::Metal,
-            tama_core::gpu::GpuType::RocM { version } => Self::Rocm {
-                version: version.clone(),
-            },
-            tama_core::gpu::GpuType::CpuOnly => Self::CpuOnly,
-            tama_core::gpu::GpuType::Custom => Self::Custom,
         }
     }
 }
@@ -245,7 +217,8 @@ pub struct CapabilitiesDto {
 pub struct InstallRequest {
     pub backend_type: String,
     pub version: Option<String>,
-    pub gpu_type: GpuTypeDto,
+    /// GPU variant for the installation (e.g. "cpu", "cuda", "vulkan", "rocm", "metal").
+    pub gpu_variant: String,
     pub build_from_source: bool,
     pub force: bool,
 }
@@ -276,8 +249,6 @@ pub struct BackendVersionDto {
     pub installed_at: i64,
     #[serde(default)]
     pub gpu_variant: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub gpu_type: Option<GpuTypeDto>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<BackendSourceDto>,
     pub is_active: bool,

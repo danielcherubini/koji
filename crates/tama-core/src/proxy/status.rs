@@ -5,9 +5,9 @@ use super::types::{ModelState, ProxyState};
 impl ProxyState {
     /// Build the per-model status snapshot embedded in `MetricSample.models`.
     ///
-    /// Iterates over every configured model, resolves its servers, and reports
-    /// `loaded: true` iff at least one of the server entries returned by
-    /// `Config::resolve_servers_for_model` is in `ModelState::Ready`. The
+    /// Iterates over every configured model, resolves its backends, and reports
+    /// `loaded: true` iff at least one of the backend entries returned by
+    /// `Config::resolve_backends_for_model` is in `ModelState::Ready`. The
     /// returned vector is sorted by `id` so dashboard rows do not shuffle
     /// between SSE samples.
     #[allow(deprecated)]
@@ -25,11 +25,11 @@ impl ProxyState {
         let runtime = self.models.read().await;
         let mut out: Vec<crate::gpu::ModelStatus> = Vec::with_capacity(model_configs.len());
         for (model_id, model_cfg) in model_configs.iter() {
-            // Determine the model's lifecycle state from its server entries.
-            let servers = config.resolve_servers_for_model(&model_configs, model_id);
+            // Determine the model's lifecycle state from its backend entries.
+            let servers = config.resolve_backends_for_model(&model_configs, model_id);
             let mut best_state: Option<&ModelState> = None;
-            for (server_name, _, _) in servers.iter() {
-                if let Some(state) = runtime.get(server_name) {
+            for (backend_name, _, _) in servers.iter() {
+                if let Some(state) = runtime.get(backend_name) {
                     match state {
                         ModelState::Ready { .. } => {
                             best_state = Some(state);
@@ -56,7 +56,7 @@ impl ProxyState {
                 None => (false, "idle".to_string(), None),
             };
 
-            // Look up the first matching server's inference stats.
+            // Look up the first matching backend's inference stats.
             // first-server-wins: for the current usage (one server per model) this is sufficient.
             let server_stats = servers
                 .iter()
@@ -365,7 +365,7 @@ mod tests {
         use std::time::{Instant, SystemTime};
 
         let mut config = Config::default();
-        // Add backends so resolve_servers_for_model can match models.
+        // Add backends so resolve_backends_for_model can match models.
         config.backends.insert(
             "vllm".to_string(),
             BackendConfig {
@@ -392,7 +392,7 @@ mod tests {
         }
 
         // Insert a Ready entry for "alpha" under the server name that
-        // `resolve_servers_for_model("alpha")` will return — the config key
+        // `resolve_backends_for_model("alpha")` will return — the config key
         // itself, since `make_model_config` leaves `model` as `None`.
         {
             let mut runtime = state.models.write().await;
@@ -460,16 +460,16 @@ mod tests {
             mc.insert("alpha".to_string(), make_model_config("llama_cpp"));
         }
 
-        // The server name `resolve_servers_for_model("alpha")` returns is
+        // The server name `resolve_backends_for_model("alpha")` returns is
         // the config key itself, since `make_model_config` leaves
         // `model` as `None`.
-        let server_name = "alpha".to_string();
+        let backend_name = "alpha".to_string();
 
         // --- Case 1: Starting must NOT count as loaded ---------------------
         {
             let mut runtime = state.models.write().await;
             runtime.insert(
-                server_name.clone(),
+                backend_name.clone(),
                 ModelState::Starting {
                     model_name: "alpha".to_string(),
                     backend: "llama_cpp".to_string(),
@@ -504,7 +504,7 @@ mod tests {
         {
             let mut runtime = state.models.write().await;
             runtime.insert(
-                server_name.clone(),
+                backend_name.clone(),
                 ModelState::Failed {
                     model_name: "alpha".to_string(),
                     backend: "llama_cpp".to_string(),

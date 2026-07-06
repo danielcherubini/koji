@@ -8,6 +8,8 @@ use serde::Deserialize;
 use std::sync::Arc;
 
 use super::types::*;
+use crate::api::error::error_response;
+use crate::api::helpers::open_backend_manager;
 use tama_core::proxy::ProxyState;
 
 /// POST /tama/v1/backends/install
@@ -17,75 +19,64 @@ pub async fn install_backend(
 ) -> impl IntoResponse {
     // Validate backend_type: non-empty and <= 64 chars
     if req.backend_type.is_empty() {
-        return (
+        return error_response(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "backend_type cannot be empty"})),
-        )
-            .into_response();
+            "backend_type cannot be empty",
+            Some("ValidationError"),
+        );
     }
     if req.backend_type.len() > 64 {
-        return (
+        return error_response(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "backend_type must be at most 64 characters"})),
-        )
-            .into_response();
+            "backend_type must be at most 64 characters",
+            Some("ValidationError"),
+        );
     }
 
     // Validate version: if provided, must be non-empty, <= 128 chars, and a single path segment
     if let Some(ref version) = req.version {
         if version.is_empty() {
-            return (
+            return error_response(
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "version cannot be empty"})),
-            )
-                .into_response();
+                "version cannot be empty",
+                Some("ValidationError"),
+            );
         }
         if version.len() > 128 {
-            return (
+            return error_response(
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "version must be at most 128 characters"})),
-            )
-                .into_response();
+                "version must be at most 128 characters",
+                Some("ValidationError"),
+            );
         }
         // Reject path traversal and multi-segment paths
         if version.contains('/') || version.contains('\\') || version.contains("..") {
-            return (
+            return error_response(
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "version must be a single path segment (no slashes or '..')"})),
-            )
-                .into_response();
+                "version must be a single path segment (no slashes or '..')",
+                Some("ValidationError"),
+            );
         }
     }
 
-    // Validate gpu_type version fields: if present, must be non-empty and <= 32 chars
-    match &req.gpu_type {
-        GpuTypeDto::Cuda { version } | GpuTypeDto::Rocm { version } => {
-            if version.is_empty() {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({"error": "gpu type version cannot be empty"})),
-                )
-                    .into_response();
-            }
-            if version.len() > 32 {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({"error": "gpu type version must be at most 32 characters"})),
-                )
-                    .into_response();
-            }
-        }
-        _ => {}
+    // Validate gpu_variant: must be a known variant string
+    let valid_variants = ["cpu", "cuda", "vulkan", "rocm", "metal", "custom"];
+    if !valid_variants.contains(&req.gpu_variant.to_lowercase().as_str()) {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            format!("gpu_variant must be one of: {}", valid_variants.join(", ")),
+            Some("ValidationError"),
+        );
     }
 
     let jobs = match &state.web_jobs {
         Some(j) => j,
         None => {
-            return (
+            return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "job manager not configured"})),
+                "job manager not configured",
+                None,
             )
-                .into_response();
         }
     };
 
@@ -95,18 +86,18 @@ pub async fn install_backend(
         "ik_llama" => tama_core::backends::BackendType::IkLlama,
         "tts_kokoro" => tama_core::backends::BackendType::TtsKokoro,
         "custom" => {
-            return (
+            return error_response(
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "Custom backends cannot be installed via API"})),
+                "Custom backends cannot be installed via API",
+                Some("ValidationError"),
             )
-                .into_response();
         }
         _ => {
-            return (
+            return error_response(
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": format!("Unknown backend type: {}", req.backend_type)})),
+                format!("Unknown backend type: {}", req.backend_type),
+                Some("ValidationError"),
             )
-                .into_response();
         }
     };
 
@@ -135,22 +126,22 @@ pub async fn install_backend(
                     .into_response();
             }
             Err(_) => {
-                return (
+                return error_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"error": "failed to create job"})),
+                    "failed to create job",
+                    None,
                 )
-                    .into_response();
             }
         };
 
         let backend_name = match &backend_type {
             tama_core::backends::BackendType::TtsKokoro => "tts_kokoro",
             _ => {
-                return (
+                return error_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"error": "Unsupported backend type for TTS install"})),
+                    "Unsupported backend type for TTS install",
+                    None,
                 )
-                    .into_response();
             }
         };
 
@@ -158,11 +149,11 @@ pub async fn install_backend(
         let config_dir = match tama_core::config::Config::config_dir() {
             Ok(d) => d,
             Err(e) => {
-                return (
+                return error_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"error": format!("config_dir: {}", e)})),
+                    format!("config_dir: {}", e),
+                    None,
                 )
-                    .into_response();
             }
         };
 
@@ -257,23 +248,9 @@ pub async fn install_backend(
         .into_response();
     }
 
-    // Convert GPU type
-    let gpu_type = match &req.gpu_type {
-        GpuTypeDto::Cuda { version } => Some(tama_core::gpu::GpuType::Cuda {
-            version: version.clone(),
-        }),
-        GpuTypeDto::Vulkan => Some(tama_core::gpu::GpuType::Vulkan),
-        GpuTypeDto::Metal => Some(tama_core::gpu::GpuType::Metal),
-        GpuTypeDto::Rocm { version } => Some(tama_core::gpu::GpuType::RocM {
-            version: version.clone(),
-        }),
-        GpuTypeDto::CpuOnly => Some(tama_core::gpu::GpuType::CpuOnly),
-        GpuTypeDto::Custom => Some(tama_core::gpu::GpuType::Custom),
-    };
-
     // Compute effective build_from_source
     let is_linux = std::env::consts::OS == "linux";
-    let is_cuda = matches!(&req.gpu_type, GpuTypeDto::Cuda { .. });
+    let is_cuda = req.gpu_variant.to_lowercase() == "cuda";
     let is_ik_llama = matches!(backend_type, tama_core::backends::BackendType::IkLlama);
 
     let mut notices: Vec<String> = Vec::new();
@@ -292,11 +269,11 @@ pub async fn install_backend(
         let cache = match &state.web_capabilities {
             Some(c) => c,
             None => {
-                return (
+                return error_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"error": "capabilities cache not configured"})),
+                    "capabilities cache not configured",
+                    None,
                 )
-                    .into_response();
             }
         };
 
@@ -318,25 +295,25 @@ pub async fn install_backend(
         };
 
         if !caps.git_available {
-            return (
+            return error_response(
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "missing build prerequisite: git"})),
-            )
-                .into_response();
+                "missing build prerequisite: git",
+                Some("ValidationError"),
+            );
         }
         if !caps.cmake_available {
-            return (
+            return error_response(
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "missing build prerequisite: cmake"})),
-            )
-                .into_response();
+                "missing build prerequisite: cmake",
+                Some("ValidationError"),
+            );
         }
         if !caps.compiler_available {
-            return (
+            return error_response(
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "missing build prerequisite: compiler"})),
-            )
-                .into_response();
+                "missing build prerequisite: compiler",
+                Some("ValidationError"),
+            );
         }
     }
 
@@ -360,11 +337,11 @@ pub async fn install_backend(
                 .into_response();
         }
         Err(_) => {
-            return (
+            return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "failed to create job"})),
+                "failed to create job",
+                None,
             )
-                .into_response();
         }
     };
 
@@ -376,11 +353,11 @@ pub async fn install_backend(
             "https://github.com/ikawrakow/ik_llama.cpp.git"
         }
         _ => {
-            return (
+            return error_response(
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": format!("Unsupported backend type: {}", backend_type)})),
+                format!("Unsupported backend type: {}", backend_type),
+                Some("ValidationError"),
             )
-                .into_response();
         }
     };
 
@@ -397,10 +374,7 @@ pub async fn install_backend(
     };
 
     // Compute the versioned target directory
-    let gpu_variant = gpu_type
-        .as_ref()
-        .map(|g| g.variant_folder().to_string())
-        .unwrap_or_else(|| "cpu".to_string());
+    let gpu_variant = req.gpu_variant.clone();
 
     let target_dir = match tama_core::backends::backends_dir() {
         Ok(d) => {
@@ -409,27 +383,26 @@ pub async fn install_backend(
                 tama_core::backends::BackendType::LlamaCpp
                     | tama_core::backends::BackendType::IkLlama
             ) {
-                return (
+                return error_response(
                     StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({"error": format!("Unsupported backend type: {}", backend_type)})),
-                )
-                    .into_response();
+                    format!("Unsupported backend type: {}", backend_type),
+                    Some("ValidationError"),
+                );
             }
             tama_core::backends::get_backend_install_path(&d, &backend_type, &gpu_variant, &version)
         }
         Err(e) => {
-            return (
+            return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": format!("Failed to get backends dir: {}", e)})),
+                format!("Failed to get backends dir: {}", e),
+                None,
             )
-                .into_response();
         }
     };
 
-    // Capture values needed for DB registration before gpu_type/source are moved
+    // Capture values needed for DB registration before source is moved
     let reg_backend_type = backend_type.clone();
     let reg_version = version.clone();
-    let reg_gpu_type = gpu_type.clone();
     let reg_gpu_variant = gpu_variant.clone();
     let reg_source = source.clone();
     let reg_backend_name = match backend_type {
@@ -444,7 +417,6 @@ pub async fn install_backend(
         backend_type: backend_type.clone(),
         source,
         target_dir,
-        gpu_type,
         gpu_variant,
         allow_overwrite: req.force,
     };
@@ -485,7 +457,6 @@ pub async fn install_backend(
                             version: reg_version,
                             path: binary_path,
                             installed_at,
-                            gpu_type: reg_gpu_type,
                             gpu_variant: reg_gpu_variant,
                             source: Some(reg_source),
                         })
@@ -539,11 +510,11 @@ pub async fn remove_backend(
     let jobs = match &state.web_jobs {
         Some(j) => j,
         None => {
-            return (
+            return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "job manager not configured"})),
+                "job manager not configured",
+                None,
             )
-                .into_response();
         }
     };
 
@@ -564,24 +535,9 @@ pub async fn remove_backend(
 
     let gpu_variant = query.gpu_variant;
 
-    let config_dir_clone = config_dir.clone();
-    let mgr_result: Result<tama_core::backends::BackendManager, _> =
-        tokio::task::spawn_blocking(move || {
-            tama_core::backends::BackendManager::open(&config_dir_clone)
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("spawn error: {}", e))
-        .and_then(|r| r);
-
-    let mgr = match mgr_result {
-        Ok(r) => r,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": format!("Failed to open manager: {}", e)})),
-            )
-                .into_response();
-        }
+    let mgr = match open_backend_manager(&state).await {
+        Ok(mgr) => mgr,
+        Err(e) => return e,
     };
 
     // If gpu_variant is provided, only remove that variant (all its versions);
@@ -592,18 +548,18 @@ pub async fn remove_backend(
             match mgr.list_versions(&name, Some(variant.as_str())) {
                 Ok(Some(versions)) if !versions.is_empty() => versions,
                 Ok(Some(_)) | Ok(None) => {
-                    return (
+                    return error_response(
                         StatusCode::NOT_FOUND,
-                        Json(serde_json::json!({"error": format!("Backend '{}' not found", name)})),
+                        format!("Backend '{}' not found", name),
+                        Some("NotFoundError"),
                     )
-                        .into_response();
                 }
                 Err(e) => {
-                    return (
+                    return error_response(
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({"error": format!("Failed to get backend: {}", e)})),
+                        format!("Failed to get backend: {}", e),
+                        None,
                     )
-                        .into_response();
                 }
             }
         } else {
@@ -611,18 +567,18 @@ pub async fn remove_backend(
             match mgr.list_versions(&name, None) {
                 Ok(Some(versions)) => versions,
                 Ok(None) => {
-                    return (
+                    return error_response(
                         StatusCode::NOT_FOUND,
-                        Json(serde_json::json!({"error": format!("Backend '{}' not found", name)})),
+                        format!("Backend '{}' not found", name),
+                        Some("NotFoundError"),
                     )
-                        .into_response();
                 }
                 Err(e) => {
-                    return (
+                    return error_response(
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({"error": format!("Failed to get backend: {}", e)})),
+                        format!("Failed to get backend: {}", e),
+                        None,
                     )
-                        .into_response();
                 }
             }
         };
@@ -658,22 +614,22 @@ pub async fn remove_backend(
                 )
                     .into_response();
             }
-            return (
+            return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": format!("Failed to remove files: {}", e)})),
-            )
-                .into_response();
+                format!("Failed to remove files: {}", e),
+                None,
+            );
         }
     }
 
     // Remove from DB (Some = remove specific variant, None = remove all variants)
     let variant_to_remove = gpu_variant.as_deref();
     if let Err(e) = mgr.delete_all_versions(&name, variant_to_remove) {
-        return (
+        return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("Failed to remove: {}", e)})),
-        )
-            .into_response();
+            format!("Failed to remove: {}", e),
+            None,
+        );
     }
 
     // Clean up update_check records — use LIKE pattern to match all variants

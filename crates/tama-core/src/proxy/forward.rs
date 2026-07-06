@@ -93,12 +93,12 @@ pub fn build_forward_uri(backend_url: &str, parts: &Parts) -> Option<String> {
 
 /// Process a complete SSE line, rewriting the `model` field in JSON data lines.
 /// If `inference_stats` is provided, also extracts `timings` from parsed JSON
-/// and updates the per-server HashMap in the watch channel (streaming responses
+/// and updates the per-backend HashMap in the watch channel (streaming responses
 /// include timings in a final data chunk before `[DONE]`).
 fn process_sse_line(
     line: &str,
     model_name: Option<&str>,
-    server_name: &str,
+    backend_name: &str,
     out: &mut String,
     inference_stats: Option<
         &std::sync::Arc<tokio::sync::watch::Sender<HashMap<String, LatestInferenceStats>>>,
@@ -111,7 +111,7 @@ fn process_sse_line(
         } else if let Ok(mut json_value) = serde_json::from_str::<JsonValue>(trimmed) {
             // Extract inference stats from timings if sender is available
             if let Some(sender) = inference_stats {
-                if let Some(_stats) = extract_inference_stats(server_name, &json_value, sender) {
+                if let Some(_stats) = extract_inference_stats(backend_name, &json_value, sender) {
                     // stats are already inserted into the HashMap inside extract_inference_stats
                 }
             }
@@ -136,11 +136,11 @@ fn process_sse_line(
 
 /// Extract inference stats from a llama_cpp `timings` object in a JSON response.
 ///
-/// Inserts the stats into the per-server HashMap keyed by `server_name` and sends
+/// Inserts the stats into the per-backend HashMap keyed by `backend_name` and sends
 /// the updated map via the watch channel. Returns the computed stats.
 /// Division by zero (prompt_n == 0, draft_n == 0) produces `None` for that field.
 pub fn extract_inference_stats(
-    server_name: &str,
+    backend_name: &str,
     json: &serde_json::Value,
     inference_stats: &tokio::sync::watch::Sender<HashMap<String, LatestInferenceStats>>,
 ) -> Option<LatestInferenceStats> {
@@ -164,10 +164,10 @@ pub fn extract_inference_stats(
         .unwrap_or_default()
         .as_millis() as i64;
 
-    // Read previous spec_decoding_active flag for THIS server (sticky: once true, stays true)
+    // Read previous spec_decoding_active flag for THIS backend (sticky: once true, stays true)
     let prev_active = inference_stats
         .borrow()
-        .get(server_name)
+        .get(backend_name)
         .map(|s| s.spec_decoding_active)
         .unwrap_or(false);
 
@@ -188,9 +188,9 @@ pub fn extract_inference_stats(
         last_updated_ms: now_ms,
     };
 
-    // Insert into per-server HashMap and send updated map
+    // Insert into per-backend HashMap and send updated map
     let mut map = inference_stats.borrow().clone();
-    map.insert(server_name.to_string(), stats);
+    map.insert(backend_name.to_string(), stats);
     inference_stats.send_replace(map);
 
     Some(stats)
@@ -198,7 +198,7 @@ pub fn extract_inference_stats(
 
 pub async fn forward_request(
     state: &Arc<ProxyState>,
-    server_name: &str,
+    backend_name: &str,
     parts: &Parts,
     body_bytes: &[u8],
     model_name: Option<&str>,
@@ -208,7 +208,7 @@ pub async fn forward_request(
         .total_requests
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-    let model_state = state.get_model_state(server_name).await;
+    let model_state = state.get_model_state(backend_name).await;
     if let Some(ms) = &model_state {
         // If the backend process has died, clean up immediately and let the
         // caller's auto-load logic restart it. Skip the circuit breaker
@@ -220,22 +220,22 @@ pub async fn forward_request(
             .unwrap_or(false);
         if process_dead {
             info!(
-                "Backend process for server '{}' is dead (detected at request entry), cleaning up",
-                server_name
+                "Backend process for backend '{}' is dead (detected at request entry), cleaning up",
+                backend_name
             );
             let mut models = state.models.write().await;
-            models.remove(server_name);
+            models.remove(backend_name);
             state.inference_stats.send_modify(|map| {
-                map.remove(server_name);
+                map.remove(backend_name);
             });
             if let Some(mgr) = state.model_mgr() {
-                let _ = mgr.remove_active(server_name);
+                let _ = mgr.remove_active(backend_name);
             }
             return (
                 StatusCode::BAD_GATEWAY,
                 Json(serde_json::json!({
                     "error": {
-                        "message": format!("Backend process for server '{}' has crashed, reloading", server_name),
+                        "message": format!("Backend process for backend '{}' has crashed, reloading", backend_name),
                         "type": "BackendCrashedError"
                     }
                 })),
@@ -252,14 +252,14 @@ pub async fn forward_request(
             // Check if cooldown has elapsed
             if !ms.can_reload(config.proxy.circuit_breaker_cooldown_seconds) {
                 info!(
-                    "Circuit breaker cooldown active for server '{}' ({} failures). Waiting for cooldown.",
-                    server_name, failures
+                    "Circuit breaker cooldown active for backend '{}' ({} failures). Waiting for cooldown.",
+                    backend_name, failures
                 );
                 return (
                     StatusCode::SERVICE_UNAVAILABLE,
                     Json(serde_json::json!({
                         "error": {
-                            "message": format!("Server {} is in cooldown due to repeated failures", server_name),
+                            "message": format!("Server {} is in cooldown due to repeated failures", backend_name),
                             "type": "ServiceUnavailableError"
                         }
                     })),
@@ -267,18 +267,18 @@ pub async fn forward_request(
                     .into_response();
             }
             info!(
-                "Circuit breaker tripped for server '{}' ({} failures). Unloading server.",
-                server_name, failures
+                "Circuit breaker tripped for server '{}' ({} failures). Unloading backend.",
+                backend_name, failures
             );
-            // Unload the server using PID from backend_pid
+            // Unload the backend using PID from backend_pid
             if let Some(_pid) = ms.backend_pid() {
-                let _ = state.unload_model(server_name).await;
+                let _ = state.unload_model(backend_name).await;
             }
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(serde_json::json!({
                     "error": {
-                        "message": format!("Server {} is currently unavailable due to repeated failures", server_name),
+                        "message": format!("Server {} is currently unavailable due to repeated failures", backend_name),
                         "type": "ServiceUnavailableError"
                     }
                 })),
@@ -289,15 +289,15 @@ pub async fn forward_request(
 
     let backend_url = {
         let models = state.models.read().await;
-        match models.get(server_name).and_then(|ms| ms.backend_url()) {
+        match models.get(backend_name).and_then(|ms| ms.backend_url()) {
             Some(url) => url.to_string(),
             None => {
-                info!("No backend URL for model '{}' (not loaded?)", server_name);
+                info!("No backend URL for model '{}' (not loaded?)", backend_name);
                 return (
                     StatusCode::BAD_GATEWAY,
                     Json(serde_json::json!({
                         "error": {
-                            "message": format!("Model '{}' is not loaded", server_name),
+                            "message": format!("Model '{}' is not loaded", backend_name),
                             "type": "BackendUrlError"
                         }
                     })),
@@ -377,7 +377,7 @@ pub async fn forward_request(
                             let new_ts = SystemTime::now();
                             let mut models = state.models.write().await;
                             #[allow(clippy::collapsible_match)]
-                            if let Some(existing) = models.get_mut(server_name) {
+                            if let Some(existing) = models.get_mut(backend_name) {
                                 match existing {
                                     ModelState::Ready {
                                         failure_timestamp, ..
@@ -413,7 +413,7 @@ pub async fn forward_request(
                 // Streaming response — rewrite the model name in each SSE chunk.
                 // Uses unfold to own the partial-line buffer across chunks (Send-safe).
                 let model_name: Option<String> = model_name.map(|s| s.to_string());
-                let server_name_owned = server_name.to_string();
+                let backend_name_owned = backend_name.to_string();
                 // Wrap inference_stats sender in Arc so it can be shared across
                 // async unfold iterations (watch::Sender is Clone but Arc avoids
                 // per-iteration cloning and keeps a single owned reference).
@@ -423,7 +423,7 @@ pub async fn forward_request(
                     (byte_stream, String::new()),
                     move |(mut stream, mut line_buf)| {
                         let model_name = model_name.clone();
-                        let server_name = server_name_owned.clone();
+                        let backend_name = backend_name_owned.clone();
                         let inference_stats = inference_stats.clone();
                         async move {
                             let chunk_result = stream.next().await?;
@@ -440,7 +440,7 @@ pub async fn forward_request(
                                             process_sse_line(
                                                 &line,
                                                 model_name.as_deref(),
-                                                &server_name,
+                                                &backend_name,
                                                 &mut out,
                                                 Some(&inference_stats),
                                             );
@@ -479,7 +479,7 @@ pub async fn forward_request(
                 {
                     // Extract inference stats from timings (before rewrite — timings unaffected by model name change)
                     let _stats =
-                        extract_inference_stats(server_name, &parsed, &state.inference_stats);
+                        extract_inference_stats(backend_name, &parsed, &state.inference_stats);
                     let rewritten = rewrite_json_model_name(parsed, model_name);
                     serde_json::to_vec(&rewritten).unwrap_or(body_bytes.to_vec())
                 } else {
@@ -524,17 +524,17 @@ pub async fn forward_request(
 
             if process_dead {
                 info!(
-                    "Backend process for server '{}' is dead, cleaning up model state",
-                    server_name
+                    "Backend process for backend '{}' is dead, cleaning up model state",
+                    backend_name
                 );
                 let mut models = state.models.write().await;
-                models.remove(server_name);
+                models.remove(backend_name);
                 state.inference_stats.send_modify(|map| {
-                    map.remove(server_name);
+                    map.remove(backend_name);
                 });
                 // Best-effort DB cleanup
                 if let Some(mgr) = state.model_mgr() {
-                    let _ = mgr.remove_active(server_name);
+                    let _ = mgr.remove_active(backend_name);
                 }
             } else {
                 // Process is alive — this is a transient error (timeout, busy, etc.)

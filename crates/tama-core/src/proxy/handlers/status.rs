@@ -56,7 +56,7 @@ pub async fn handle_health() -> Json<serde_json::Value> {
 /// Returns merged proxy and backend metrics in Prometheus exposition format.
 ///
 /// Fetches `/metrics` from all Ready (non-TTS) backends concurrently,
-/// injects `{server="<name>"}` labels, and appends Tama's own proxy
+/// injects `{backend="<name>"}` labels, and appends Tama's own proxy
 /// metrics prefixed with `tama:`. Returns `text/plain; version=0.0.4`.
 #[axum::debug_handler]
 pub async fn handle_metrics(state: State<Arc<ProxyState>>) -> Response {
@@ -81,10 +81,10 @@ pub async fn handle_metrics(state: State<Arc<ProxyState>>) -> Response {
     let client = state.client.clone();
     let mut set = tokio::task::JoinSet::new();
 
-    for (server_name, backend_url) in &backends {
+    for (backend_name, backend_url) in &backends {
         let client = client.clone();
         let url = format!("{}/metrics", backend_url);
-        let name = server_name.clone();
+        let name = backend_name.clone();
         set.spawn(async move {
             match client
                 .get(&url)

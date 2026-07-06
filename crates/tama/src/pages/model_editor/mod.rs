@@ -86,146 +86,153 @@ pub fn ModelEditor() -> impl IntoView {
     // Tracks whether the form has been populated from the loaded model detail.
     // Used to gate the layout render without depending on form.get() (which changes on every keystroke).
     let form_ready = RwSignal::new(false);
+    // Guards against re-populating the form from the resource on every reactive re-run.
+    // Without this, detail.get() returns a fresh clone each time and overwrites user edits.
+    let populated_id = StoredValue::new(None::<String>);
 
     // Populate signals when resource loads
     Effect::new(move |_| {
         if let Some(guard) = detail.get() {
             if let Some(d) = guard.take() {
-                backends.set(d.backends.clone());
-                original_id.set(d.id.to_string());
+                let id_str = d.id.to_string();
+                if populated_id.get_value() != Some(id_str.clone()) {
+                    backends.set(d.backends.clone());
+                    original_id.set(d.id.to_string());
 
-                // Build consolidated form
-                let mut sampling_fields = std::collections::HashMap::new();
-                if let Some(sampling_json) = &d.sampling {
-                    if let Some(obj) = sampling_json.as_object() {
-                        if let Some(temp) = obj.get("temperature") {
-                            if let Some(val) = temp.as_f64() {
-                                sampling_fields.insert(
-                                    "temperature".to_string(),
-                                    SamplingField {
-                                        enabled: true,
-                                        value: val.to_string(),
-                                    },
-                                );
+                    // Build consolidated form
+                    let mut sampling_fields = std::collections::HashMap::new();
+                    if let Some(sampling_json) = &d.sampling {
+                        if let Some(obj) = sampling_json.as_object() {
+                            if let Some(temp) = obj.get("temperature") {
+                                if let Some(val) = temp.as_f64() {
+                                    sampling_fields.insert(
+                                        "temperature".to_string(),
+                                        SamplingField {
+                                            enabled: true,
+                                            value: val.to_string(),
+                                        },
+                                    );
+                                }
                             }
-                        }
-                        if let Some(top_k) = obj.get("top_k") {
-                            if let Some(val) = top_k.as_u64() {
-                                sampling_fields.insert(
-                                    "top_k".to_string(),
-                                    SamplingField {
-                                        enabled: true,
-                                        value: val.to_string(),
-                                    },
-                                );
+                            if let Some(top_k) = obj.get("top_k") {
+                                if let Some(val) = top_k.as_u64() {
+                                    sampling_fields.insert(
+                                        "top_k".to_string(),
+                                        SamplingField {
+                                            enabled: true,
+                                            value: val.to_string(),
+                                        },
+                                    );
+                                }
                             }
-                        }
-                        if let Some(top_p) = obj.get("top_p") {
-                            if let Some(val) = top_p.as_f64() {
-                                sampling_fields.insert(
-                                    "top_p".to_string(),
-                                    SamplingField {
-                                        enabled: true,
-                                        value: val.to_string(),
-                                    },
-                                );
+                            if let Some(top_p) = obj.get("top_p") {
+                                if let Some(val) = top_p.as_f64() {
+                                    sampling_fields.insert(
+                                        "top_p".to_string(),
+                                        SamplingField {
+                                            enabled: true,
+                                            value: val.to_string(),
+                                        },
+                                    );
+                                }
                             }
-                        }
-                        if let Some(min_p) = obj.get("min_p") {
-                            if let Some(val) = min_p.as_f64() {
-                                sampling_fields.insert(
-                                    "min_p".to_string(),
-                                    SamplingField {
-                                        enabled: true,
-                                        value: val.to_string(),
-                                    },
-                                );
+                            if let Some(min_p) = obj.get("min_p") {
+                                if let Some(val) = min_p.as_f64() {
+                                    sampling_fields.insert(
+                                        "min_p".to_string(),
+                                        SamplingField {
+                                            enabled: true,
+                                            value: val.to_string(),
+                                        },
+                                    );
+                                }
                             }
-                        }
-                        if let Some(presence) = obj.get("presence_penalty") {
-                            if let Some(val) = presence.as_f64() {
-                                sampling_fields.insert(
-                                    "presence_penalty".to_string(),
-                                    SamplingField {
-                                        enabled: true,
-                                        value: val.to_string(),
-                                    },
-                                );
+                            if let Some(presence) = obj.get("presence_penalty") {
+                                if let Some(val) = presence.as_f64() {
+                                    sampling_fields.insert(
+                                        "presence_penalty".to_string(),
+                                        SamplingField {
+                                            enabled: true,
+                                            value: val.to_string(),
+                                        },
+                                    );
+                                }
                             }
-                        }
-                        if let Some(frequency) = obj.get("frequency_penalty") {
-                            if let Some(val) = frequency.as_f64() {
-                                sampling_fields.insert(
-                                    "frequency_penalty".to_string(),
-                                    SamplingField {
-                                        enabled: true,
-                                        value: val.to_string(),
-                                    },
-                                );
+                            if let Some(frequency) = obj.get("frequency_penalty") {
+                                if let Some(val) = frequency.as_f64() {
+                                    sampling_fields.insert(
+                                        "frequency_penalty".to_string(),
+                                        SamplingField {
+                                            enabled: true,
+                                            value: val.to_string(),
+                                        },
+                                    );
+                                }
                             }
-                        }
-                        if let Some(repeat_pen) = obj.get("repeat_penalty") {
-                            if let Some(val) = repeat_pen.as_f64() {
-                                sampling_fields.insert(
-                                    "repeat_penalty".to_string(),
-                                    SamplingField {
-                                        enabled: true,
-                                        value: val.to_string(),
-                                    },
-                                );
+                            if let Some(repeat_pen) = obj.get("repeat_penalty") {
+                                if let Some(val) = repeat_pen.as_f64() {
+                                    sampling_fields.insert(
+                                        "repeat_penalty".to_string(),
+                                        SamplingField {
+                                            enabled: true,
+                                            value: val.to_string(),
+                                        },
+                                    );
+                                }
                             }
                         }
                     }
+
+                    // Initialize modalities if absent so checkboxes have stable structure
+                    let mut modalities = d.modalities.clone();
+                    if modalities.is_none() {
+                        modalities = Some(ModelModalities {
+                            input: Vec::new(),
+                            output: Vec::new(),
+                        });
+                    }
+
+                    // Parse spec_decoding from ModelDetail
+                    let spec_decoding = if let Some(sd_json) = &d.spec_decoding {
+                        serde_json::from_value(sd_json.clone()).unwrap_or_default()
+                    } else {
+                        SpecDecodingForm::default()
+                    };
+
+                    form.set(Some(ModelForm {
+                        id: d.id.to_string(),
+                        backend: d.backend.clone(),
+                        gpu_variant: d.gpu_variant.clone(),
+                        gpu_device: d.gpu_device.clone(),
+                        model: d.model,
+                        quant: d.quant,
+                        mmproj: d.mmproj,
+                        mtp_model: d.mtp_model,
+                        args: d.args.join("\n"),
+                        sampling: sampling_fields,
+                        enabled: d.enabled,
+                        context_length: d.context_length,
+                        num_parallel: d.num_parallel,
+                        kv_unified: d.kv_unified,
+                        port: d.port,
+                        api_name: d.api_name.clone(),
+                        display_name: d.display_name.clone(),
+                        gpu_layers: d.gpu_layers,
+                        cache_type_k: d.cache_type_k,
+                        cache_type_v: d.cache_type_v,
+                        hf_context_length: d.hf_context_length,
+                        quants: d.quants.clone(),
+                        modalities,
+                        spec_decoding,
+                    }));
+
+                    repo_commit_sha.set(d.repo_commit_sha.clone());
+                    repo_pulled_at.set(d.repo_pulled_at.clone());
+                    // Seed last_saved_form so is_dirty starts as false (not "unsaved" on load)
+                    last_saved_form.set(serde_json::to_string(&form.get()).ok());
+                    form_ready.set(true);
+                    populated_id.set_value(Some(id_str));
                 }
-
-                // Initialize modalities if absent so checkboxes have stable structure
-                let mut modalities = d.modalities.clone();
-                if modalities.is_none() {
-                    modalities = Some(ModelModalities {
-                        input: Vec::new(),
-                        output: Vec::new(),
-                    });
-                }
-
-                // Parse spec_decoding from ModelDetail
-                let spec_decoding = if let Some(sd_json) = &d.spec_decoding {
-                    serde_json::from_value(sd_json.clone()).unwrap_or_default()
-                } else {
-                    SpecDecodingForm::default()
-                };
-
-                form.set(Some(ModelForm {
-                    id: d.id.to_string(),
-                    backend: d.backend.clone(),
-                    gpu_variant: d.gpu_variant.clone(),
-                    gpu_device: d.gpu_device.clone(),
-                    model: d.model,
-                    quant: d.quant,
-                    mmproj: d.mmproj,
-                    mtp_model: d.mtp_model,
-                    args: d.args.join("\n"),
-                    sampling: sampling_fields,
-                    enabled: d.enabled,
-                    context_length: d.context_length,
-                    num_parallel: d.num_parallel,
-                    kv_unified: d.kv_unified,
-                    port: d.port,
-                    api_name: d.api_name.clone(),
-                    display_name: d.display_name.clone(),
-                    gpu_layers: d.gpu_layers,
-                    cache_type_k: d.cache_type_k,
-                    cache_type_v: d.cache_type_v,
-                    hf_context_length: d.hf_context_length,
-                    quants: d.quants.clone(),
-                    modalities,
-                    spec_decoding,
-                }));
-
-                repo_commit_sha.set(d.repo_commit_sha.clone());
-                repo_pulled_at.set(d.repo_pulled_at.clone());
-                // Seed last_saved_form so is_dirty starts as false (not "unsaved" on load)
-                last_saved_form.set(serde_json::to_string(&form.get()).ok());
-                form_ready.set(true);
             }
         }
     });
@@ -667,12 +674,8 @@ pub fn ModelEditor() -> impl IntoView {
                 <span class="text-muted">"Loading model..."</span>
             </div>
         }>
-            {move || {
-                // Use form_ready as the stability gate, NOT form.get().
-                // form.get() changes on every keystroke, which would cause
-                // the entire layout to unmount/remount and lose input focus.
-                form_ready.get().then(|| {
-                    view! {
+            <Show when=move || form_ready.get()>
+                {view! {
                         <div class="model-editor-layout">
                             // Pill-style tab navigation
                             <div class="model-editor-pills">
@@ -686,11 +689,11 @@ pub fn ModelEditor() -> impl IntoView {
                                 </button>
                                 <button
                                     class="model-editor-pill"
-                                    class:model-editor-pill--active=move || active_section.get() == Section::Hardware
-                                    on:click=move |_| { active_section.set(Section::Hardware); }
+                                    class:model-editor-pill--active=move || active_section.get() == Section::Context
+                                    on:click=move |_| { active_section.set(Section::Context); }
                                 >
-                                    <span>{Section::Hardware.icon()}</span>
-                                    <span>{Section::Hardware.name()}</span>
+                                    <span>{Section::Context.icon()}</span>
+                                    <span>{Section::Context.name()}</span>
                                 </button>
                                 <button
                                     class="model-editor-pill"
@@ -730,9 +733,9 @@ pub fn ModelEditor() -> impl IntoView {
                                             />
                                         </div>
                                     }.into_any(),
-                                    Section::Hardware => view! {
+                                    Section::Context => view! {
                                         <div class="card">
-                                            <h2 class="card__title">"Hardware"</h2>
+                                            <h2 class="card__title">"Context"</h2>
                                             <ModelEditorHardwareForm
                                                 form=form
                                             />
@@ -822,9 +825,8 @@ pub fn ModelEditor() -> impl IntoView {
                                 </div>
                             </div>
                         </div>
-                    }.into_any()
-                })
-            }}
+                    }}
+            </Show>
         </Suspense>
 
         <Modal
