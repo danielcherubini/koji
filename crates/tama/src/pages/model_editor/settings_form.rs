@@ -141,6 +141,7 @@ pub fn ModelEditorSettingsForm(
                 class="form-select"
                 on:change=move |e| {
                     let val = target_value(&e);
+                    web_sys::console::log_1(&format!("[settings] on:change backend={}", val).into());
                     form.update(|f| {
                         if let Some(form) = f {
                             // Parse "name:variant" or just "name"

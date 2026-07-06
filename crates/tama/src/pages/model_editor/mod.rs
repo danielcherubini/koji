@@ -398,6 +398,18 @@ pub fn ModelEditor() -> impl IntoView {
         let original_id_val = original_id.get();
         let is_new_val = is_new();
 
+        web_sys::console::log_1(
+            &format!(
+                "[save] backend={}, gpu_variant={:?}",
+                form_val
+                    .as_ref()
+                    .map(|f| f.backend.clone())
+                    .unwrap_or_default(),
+                form_val.as_ref().and_then(|f| f.gpu_variant.clone())
+            )
+            .into(),
+        );
+
         async move {
             let Some(initial_form) = form_val else {
                 save_status.set(Some((false, "❌ Form not loaded.".into())));
