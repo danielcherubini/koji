@@ -235,6 +235,7 @@ pub fn ModelEditor() -> impl IntoView {
                     // Seed last_saved_form so is_dirty starts as false (not "unsaved" on load)
                     last_saved_form.set(serde_json::to_string(&form.get()).ok());
                     form_ready.set(true);
+                    populated_id.set_value(Some(id_str));
                 }
             }
         }
