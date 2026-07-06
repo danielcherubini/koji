@@ -148,10 +148,13 @@ pub fn ModelEditorSettingsForm(
                             if let Some((name, variant)) = val.split_once(':') {
                                 form.backend = name.to_string();
                                 form.gpu_variant = Some(variant.to_string());
+                                web_sys::console::log_1(&format!("[settings] set backend={}, gpu_variant={}", name, variant).into());
                             } else {
                                 form.backend = val;
                                 form.gpu_variant = None;
                             }
+                        } else {
+                            web_sys::console::log_1(&"[settings] form is None in update!".into());
                         }
                     });
                 }
