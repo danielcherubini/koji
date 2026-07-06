@@ -4,11 +4,58 @@ use wasm_bindgen::JsCast;
 use super::types::{BackendOption, ModelForm};
 use crate::utils::target_value;
 
+/// Set an input's value by DOM id.
+fn set_input_value(id: &str, value: &str) {
+    if let Some(el) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id(id))
+    {
+        if let Ok(input) = el.clone().dyn_into::<web_sys::HtmlInputElement>() {
+            input.set_value(value);
+            return;
+        }
+        if let Ok(select) = el.dyn_into::<web_sys::HtmlSelectElement>() {
+            select.set_value(value);
+        }
+    }
+}
+
+/// Set a checkbox's checked state by DOM id.
+fn set_checked(id: &str, checked: bool) {
+    if let Some(el) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id(id))
+    {
+        if let Ok(input) = el.dyn_into::<web_sys::HtmlInputElement>() {
+            input.set_checked(checked);
+        }
+    }
+}
+
 #[component]
 pub fn ModelEditorSettingsForm(
     form: RwSignal<Option<ModelForm>>,
     backends: RwSignal<Vec<BackendOption>>,
 ) -> impl IntoView {
+    // Populate input values when the form data loads.
+    // Uses get_element_by_id because prop:value doesn't work reliably
+    // inside Suspense + conditional rendering.
+    Effect::new(move |_| {
+        if let Some(f) = form.get() {
+            set_input_value(
+                "field-display-name",
+                f.display_name.as_deref().unwrap_or_default(),
+            );
+            set_input_value("field-model", f.model.as_deref().unwrap_or_default());
+            set_input_value("field-api-name", f.api_name.as_deref().unwrap_or_default());
+            set_input_value(
+                "field-port",
+                &f.port.map(|v| v.to_string()).unwrap_or_default(),
+            );
+            set_checked("field-enabled", f.enabled);
+        }
+    });
+
     view! {
         <div class="form-grid">
             <label class="form-label" for="field-display-name">"Display Name"</label>
@@ -17,11 +64,6 @@ pub fn ModelEditorSettingsForm(
                 class="form-input"
                 type="text"
                 placeholder="Auto-generated from HF repo name"
-                on:mount=move |el: web_sys::Element| {
-                    let input = el.unchecked_into::<web_sys::HtmlInputElement>();
-                    let val = form.get().as_ref().and_then(|f| f.display_name.clone()).unwrap_or_default();
-                    input.set_value(&val);
-                }
                 on:input=move |ev| {
                     let val = target_value(&ev);
                     form.update(|f| {
@@ -39,11 +81,6 @@ pub fn ModelEditorSettingsForm(
                     class="form-input"
                     type="text"
                     placeholder="e.g. unsloth/gemma-4-26B-A4B-it-GGUF"
-                    on:mount=move |el: web_sys::Element| {
-                        let input = el.unchecked_into::<web_sys::HtmlInputElement>();
-                        let val = form.get().as_ref().and_then(|f| f.model.clone()).unwrap_or_default();
-                        input.set_value(&val);
-                    }
                     on:input=move |ev| {
                         form.update(|f| {
                             if let Some(form) = f {
@@ -78,11 +115,6 @@ pub fn ModelEditorSettingsForm(
                 type="text"
                 disabled=true
                 title="API Name is auto-derived from the HF repo name"
-                on:mount=move |el: web_sys::Element| {
-                    let input = el.unchecked_into::<web_sys::HtmlInputElement>();
-                    let val = form.get().as_ref().and_then(|f| f.api_name.clone()).unwrap_or_default();
-                    input.set_value(&val);
-                }
             />
 
             <label class="form-label" for="field-backend">"Backend"</label>
@@ -129,11 +161,6 @@ pub fn ModelEditorSettingsForm(
                 <input
                     id="field-enabled"
                     type="checkbox"
-                    on:mount=move |el: web_sys::Element| {
-                        let input = el.unchecked_into::<web_sys::HtmlInputElement>();
-                        let checked = form.get().as_ref().map(|f| f.enabled).unwrap_or(true);
-                        input.set_checked(checked);
-                    }
                     on:change=move |e| {
                         let checked = e.target()
                             .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
@@ -155,11 +182,6 @@ pub fn ModelEditorSettingsForm(
                 class="form-input"
                 type="number"
                 placeholder="leave blank for default"
-                on:mount=move |el: web_sys::Element| {
-                    let input = el.unchecked_into::<web_sys::HtmlInputElement>();
-                    let val = form.get().as_ref().and_then(|f| f.port).map(|v| v.to_string()).unwrap_or_default();
-                    input.set_value(&val);
-                }
                 on:input=move |ev| {
                     form.update(|f| {
                         if let Some(form) = f {

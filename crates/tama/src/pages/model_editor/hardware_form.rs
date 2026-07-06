@@ -7,6 +7,34 @@ use super::types::{GpuDeviceInfo, ModelForm};
 use crate::components::context_length_selector::ContextLengthSelector;
 use crate::utils::target_value;
 
+/// Set an input's value by DOM id.
+fn set_input_value(id: &str, value: &str) {
+    if let Some(el) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id(id))
+    {
+        if let Ok(input) = el.clone().dyn_into::<web_sys::HtmlInputElement>() {
+            input.set_value(value);
+            return;
+        }
+        if let Ok(select) = el.dyn_into::<web_sys::HtmlSelectElement>() {
+            select.set_value(value);
+        }
+    }
+}
+
+/// Set a checkbox's checked state by DOM id.
+fn set_checked(id: &str, checked: bool) {
+    if let Some(el) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id(id))
+    {
+        if let Ok(input) = el.dyn_into::<web_sys::HtmlInputElement>() {
+            input.set_checked(checked);
+        }
+    }
+}
+
 const MODALITY_OPTIONS: &[(&str, &str)] = &[
     ("text", "Text"),
     ("image", "Image"),
@@ -38,7 +66,7 @@ fn KvQuantCustomInput(form: RwSignal<Option<ModelForm>>, field: KvQuantField) ->
         matches!(current, Some("__custom"))
             || matches!(current, Some(val) if !KV_QUANT_OPTIONS.contains(&val))
     });
-    let current_value = Signal::derive(move || {
+    let _current_value = Signal::derive(move || {
         let f = form.get();
         f.as_ref().and_then(|f| match field {
             KvQuantField::K => f.cache_type_k.clone(),
@@ -55,11 +83,7 @@ fn KvQuantCustomInput(form: RwSignal<Option<ModelForm>>, field: KvQuantField) ->
                         type="text"
                         maxlength="32"
                         placeholder="Custom quant value..."
-                        on:mount=move |el: web_sys::Element| {
-                            let input = el.unchecked_into::<web_sys::HtmlInputElement>();
-                            let val = current_value.get().unwrap_or_default();
-                            input.set_value(&val);
-                        }
+
                         on:input=move |ev| {
                             let v = target_value(&ev);
                             form.update(|f| {
@@ -152,6 +176,46 @@ pub fn ModelEditorHardwareForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
         }
     });
 
+    // Populate input values when the form data loads.
+    Effect::new(move |_| {
+        if let Some(f) = form.get() {
+            set_input_value(
+                "field-gpu-layers",
+                &f.gpu_layers.map(|v| v.to_string()).unwrap_or_default(),
+            );
+            set_input_value(
+                "field-gpu-device",
+                f.gpu_device.as_deref().unwrap_or_default(),
+            );
+            set_input_value(
+                "field-num-parallel",
+                &f.num_parallel.map(|v| v.to_string()).unwrap_or_default(),
+            );
+            set_checked("field-kv-unified", f.kv_unified);
+            set_input_value(
+                "field-kv-quant-k",
+                f.cache_type_k.as_deref().unwrap_or_default(),
+            );
+            set_input_value(
+                "field-kv-quant-v",
+                f.cache_type_v.as_deref().unwrap_or_default(),
+            );
+            // Modality checkboxes
+            if let Some(m) = &f.modalities {
+                for (val, _) in MODALITY_OPTIONS {
+                    set_checked(
+                        &format!("field-modality-input-{}", val),
+                        m.input.contains(&val.to_string()),
+                    );
+                    set_checked(
+                        &format!("field-modality-output-{}", val),
+                        m.output.contains(&val.to_string()),
+                    );
+                }
+            }
+        }
+    });
+
     view! {
         <div class="form-grid">
             <label class="form-label" for="field-gpu-layers">"GPU Layers"</label>
@@ -160,11 +224,7 @@ pub fn ModelEditorHardwareForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                 class="form-input"
                 type="number"
                 placeholder="e.g. 999"
-                on:mount=move |el: web_sys::Element| {
-                    let input = el.unchecked_into::<web_sys::HtmlInputElement>();
-                    let val = form.get().as_ref().and_then(|f| f.gpu_layers).map(|v| v.to_string()).unwrap_or_default();
-                    input.set_value(&val);
-                }
+
                 on:input=move |ev| {
                     form.update(|f| {
                         if let Some(form) = f {
@@ -196,11 +256,7 @@ pub fn ModelEditorHardwareForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
             <select
                 id="field-gpu-device"
                 class="form-select"
-                on:mount=move |el: web_sys::Element| {
-                    let select = el.unchecked_into::<web_sys::HtmlSelectElement>();
-                    let val = form.get().as_ref().and_then(|f| f.gpu_device.clone()).unwrap_or_default();
-                    select.set_value(&val);
-                }
+
                 on:change=move |e| {
                     let val = target_value(&e);
                     form.update(|f| {
@@ -258,11 +314,7 @@ pub fn ModelEditorHardwareForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                 type="number"
                 min="0"
                 placeholder="0 = auto"
-                on:mount=move |el: web_sys::Element| {
-                    let input = el.unchecked_into::<web_sys::HtmlInputElement>();
-                    let val = form.get().as_ref().and_then(|f| f.num_parallel).map(|v| v.to_string()).unwrap_or_default();
-                    input.set_value(&val);
-                }
+
                 on:input=move |ev| {
                     form.update(|f| {
                         if let Some(form) = f {
@@ -285,11 +337,7 @@ pub fn ModelEditorHardwareForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                 <input
                     id="field-kv-unified"
                     type="checkbox"
-                    on:mount=move |el: web_sys::Element| {
-                        let input = el.unchecked_into::<web_sys::HtmlInputElement>();
-                        let checked = form.get().as_ref().map(|f| f.kv_unified).unwrap_or(true);
-                        input.set_checked(checked);
-                    }
+
                     on:change=move |e| {
                         let checked = e.target()
                             .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
@@ -386,23 +434,14 @@ pub fn ModelEditorHardwareForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                         let value_str = value.to_string();
                         let input_id = format!("field-modality-input-{}", value);
                         let label_for = format!("field-modality-input-{}", value);
-                        let checked_value = value_str.clone();
+                        let _checked_value = value_str.clone();
                         let onchange_value = value_str.clone();
                         view! {
                             <div class="form-check">
                                 <input
                                     id=input_id
                                     type="checkbox"
-                                    on:mount=move |el: web_sys::Element| {
-                                        let input = el.unchecked_into::<web_sys::HtmlInputElement>();
-                                        let checked = form
-                                            .get()
-                                            .as_ref()
-                                            .and_then(|f| f.modalities.as_ref())
-                                            .map(|m| m.input.contains(&checked_value))
-                                            .unwrap_or(false);
-                                        input.set_checked(checked);
-                                    }
+
                                     on:change=move |e| {
                                         let checked = e.target()
                                             .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
@@ -440,23 +479,14 @@ pub fn ModelEditorHardwareForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                         let value_str = value.to_string();
                         let input_id = format!("field-modality-output-{}", value);
                         let label_for = format!("field-modality-output-{}", value);
-                        let checked_value = value_str.clone();
+                        let _checked_value = value_str.clone();
                         let onchange_value = value_str.clone();
                         view! {
                             <div class="form-check">
                                 <input
                                     id=input_id
                                     type="checkbox"
-                                    on:mount=move |el: web_sys::Element| {
-                                        let input = el.unchecked_into::<web_sys::HtmlInputElement>();
-                                        let checked = form
-                                            .get()
-                                            .as_ref()
-                                            .and_then(|f| f.modalities.as_ref())
-                                            .map(|m| m.output.contains(&checked_value))
-                                            .unwrap_or(false);
-                                        input.set_checked(checked);
-                                    }
+
                                     on:change=move |e| {
                                         let checked = e.target()
                                             .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())

@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use leptos::prelude::*;
-use web_sys::HtmlInputElement;
 
 use super::types::{ModelForm, QuantInfo, QuantKind};
 use crate::utils::target_value;
@@ -119,7 +118,7 @@ pub fn ModelEditorFilesForm(
                         key=|(_i, name, _)| name.clone()
                         children=move |(_i, name, q)| {
                             let name_arc = Arc::new(name.clone());
-                            let name_for_check = Arc::clone(&name_arc);
+                            let _name_for_check = Arc::clone(&name_arc);
                             let name_for_change = Arc::clone(&name_arc);
                             let q_arc = Arc::new(q);
                             let q_arc_size = Arc::clone(&q_arc);
@@ -131,15 +130,7 @@ pub fn ModelEditorFilesForm(
                                     <td>
                                         <input
                                             type="checkbox"
-                                            on:mount=move |el: web_sys::Element| {
-                                                let checked = form
-                                                    .get()
-                                                    .as_ref()
-                                                    .and_then(|f| f.quant.as_deref())
-                                                    == Some(name_for_check.as_str());
-                                                let input = wasm_bindgen::JsCast::unchecked_into::<HtmlInputElement>(el);
-                                                input.set_checked(checked);
-                                            }
+
                                             on:change=move |e| {
                                                 use wasm_bindgen::JsCast;
                                                 let checked = e.target()
@@ -267,7 +258,7 @@ pub fn ModelEditorFilesForm(
                                     key=|(name, _)| name.clone()
                                     children=move |(name, q)| {
                                         let name_arc = Arc::new(name.clone());
-                                        let name_for_check = Arc::clone(&name_arc);
+                                        let _name_for_check = Arc::clone(&name_arc);
                                         let size = format_bytes_opt(q.size_bytes);
                                         let sha_opt = q.lfs_oid.clone();
                                         let sha_display = sha_opt.as_deref().map(short_sha).unwrap_or_else(|| "—".to_string());
@@ -282,15 +273,7 @@ pub fn ModelEditorFilesForm(
                                                 <td>
                                                     <input
                                                         type="checkbox"
-                                                        on:mount=move |el: web_sys::Element| {
-                                                            let checked = form
-                                                                .get()
-                                                                .as_ref()
-                                                                .and_then(|f| f.mmproj.as_deref())
-                                                                == Some(name_for_check.as_str());
-                                                            let input = wasm_bindgen::JsCast::unchecked_into::<HtmlInputElement>(el);
-                                                            input.set_checked(checked);
-                                                        }
+
                                                         on:change=move |e| {
                                                             use wasm_bindgen::JsCast;
                                                             let checked = e.target()
@@ -338,7 +321,7 @@ pub fn ModelEditorFilesForm(
             if mtp_entries.is_empty() {
                 return None;
             }
-            let current_mtp = Signal::derive(move || {
+            let _current_mtp = Signal::derive(move || {
                 form.get().and_then(|f| f.mtp_model.clone())
             });
             let mtp_entries_clone = mtp_entries;
@@ -350,11 +333,7 @@ pub fn ModelEditorFilesForm(
                             <span class="form-label">Draft model for speculative decoding</span>
                             <select
                                 class="form-select"
-                                on:mount=move |el: web_sys::Element| {
-                                    let val = current_mtp.get_untracked().unwrap_or_default();
-                                    let select = wasm_bindgen::JsCast::unchecked_into::<web_sys::HtmlSelectElement>(el);
-                                    select.set_value(&val);
-                                }
+
                                 on:change=move |e| {
                                     let target = target_value(&e);
                                     let selected = if target == "(none)" { None } else { Some(target) };

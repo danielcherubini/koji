@@ -1,9 +1,36 @@
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
-use web_sys::{HtmlInputElement, HtmlTextAreaElement};
 
 use super::types::ModelForm;
 use crate::utils::target_value;
+
+/// Set an input's value by DOM id.
+fn set_input_value(id: &str, value: &str) {
+    if let Some(el) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id(id))
+    {
+        if let Ok(input) = el.clone().dyn_into::<web_sys::HtmlInputElement>() {
+            input.set_value(value);
+            return;
+        }
+        if let Ok(textarea) = el.dyn_into::<web_sys::HtmlTextAreaElement>() {
+            textarea.set_value(value);
+        }
+    }
+}
+
+/// Set a checkbox's checked state by DOM id.
+fn set_checked(id: &str, checked: bool) {
+    if let Some(el) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id(id))
+    {
+        if let Ok(input) = el.dyn_into::<web_sys::HtmlInputElement>() {
+            input.set_checked(checked);
+        }
+    }
+}
 
 const SPEC_TYPE_DRAFT_MTP: &str = "draft-mtp";
 const SPEC_TYPE_NGRAM_SIMPLE: &str = "ngram-simple";
@@ -49,6 +76,25 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
             .unwrap_or(false)
     });
 
+    // Populate input values when the form data loads.
+    Effect::new(move |_| {
+        if let Some(f) = form.get() {
+            set_checked(
+                "field-spec-draft-mtp",
+                f.spec_decoding
+                    .spec_types
+                    .contains(&SPEC_TYPE_DRAFT_MTP.to_string()),
+            );
+            set_checked(
+                "field-spec-ngram-simple",
+                f.spec_decoding
+                    .spec_types
+                    .contains(&SPEC_TYPE_NGRAM_SIMPLE.to_string()),
+            );
+            set_input_value("field-args", &f.args);
+        }
+    });
+
     view! {
         // ── Speculative Decoding subsection ──────────────────────────────
         <h3 class="form-section-title">"Speculative Decoding"</h3>
@@ -61,19 +107,6 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                     <input
                         id="field-spec-draft-mtp"
                         type="checkbox"
-                        on:mount=move |el: web_sys::Element| {
-                            let input = el.unchecked_into::<HtmlInputElement>();
-                            let checked = form
-                                .get()
-                                .as_ref()
-                                .map(|f| {
-                                    f.spec_decoding
-                                        .spec_types
-                                        .contains(&SPEC_TYPE_DRAFT_MTP.to_string())
-                                })
-                                .unwrap_or(false);
-                            input.set_checked(checked);
-                        }
                         on:change=move |e| {
                             toggle_spec_type(e, SPEC_TYPE_DRAFT_MTP.to_string());
                         }
@@ -89,19 +122,6 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                     <input
                         id="field-spec-ngram-simple"
                         type="checkbox"
-                        on:mount=move |el: web_sys::Element| {
-                            let input = el.unchecked_into::<HtmlInputElement>();
-                            let checked = form
-                                .get()
-                                .as_ref()
-                                .map(|f| {
-                                    f.spec_decoding
-                                        .spec_types
-                                        .contains(&SPEC_TYPE_NGRAM_SIMPLE.to_string())
-                                })
-                                .unwrap_or(false);
-                            input.set_checked(checked);
-                        }
                         on:change=move |e| {
                             toggle_spec_type(e, SPEC_TYPE_NGRAM_SIMPLE.to_string());
                         }
@@ -201,11 +221,6 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
             class="form-textarea"
             rows="6"
             placeholder="One flag per line, e.g. -fa 1, -b 4096, --mlock"
-            on:mount=move |el: web_sys::Element| {
-                let textarea = el.unchecked_into::<HtmlTextAreaElement>();
-                let val = form.get().as_ref().map(|f| f.args.clone()).unwrap_or_default();
-                textarea.set_value(&val);
-            }
             on:input=move |e| {
                 form.update(|f| {
                     if let Some(form) = f {
