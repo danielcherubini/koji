@@ -3,6 +3,9 @@ use serde::{Deserialize, Serialize};
 use super::vram::VramInfo;
 
 /// GPU vendor identifier.
+///
+/// `PartialOrd`/`Ord` derive is used for stable sort ordering of GPU devices
+/// in `SystemMetrics` (Amd < Nvidia).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, PartialOrd, Ord)]
 #[serde(rename_all = "lowercase")]
 pub enum GpuVendor {

@@ -144,12 +144,15 @@ impl<'de> Deserialize<'de> for CompactionDevice {
         D: serde::Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        Self::from_str(&s).ok_or_else(|| serde::de::Error::custom(format!("invalid compaction device: {s}")))
+        Self::from_str(&s)
+            .ok_or_else(|| serde::de::Error::custom(format!("invalid compaction device: {s}")))
     }
 }
 
 impl CompactionDevice {
     /// Serialize this enum to its string representation for DB storage.
+    /// Returns `String` (not `&'static str`) because `CudaDevice(N)` requires
+    /// formatting (allocates on each call).
     pub fn as_str(&self) -> String {
         match self {
             Self::Cpu => "cpu".to_string(),

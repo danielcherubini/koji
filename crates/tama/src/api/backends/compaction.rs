@@ -31,8 +31,8 @@ pub async fn update_compaction(
     {
         let mut config = state.config().write().await;
         if let Some(device) = &req.device {
-            config.compaction.device = CompactionDevice::from_str(device)
-                .unwrap_or(config.compaction.device.clone());
+            config.compaction.device =
+                CompactionDevice::from_str(device).unwrap_or(config.compaction.device.clone());
         }
         if let Some(port) = &req.port {
             config.compaction.port = *port;

@@ -79,9 +79,13 @@ impl Config {
             .ok_or_else(|| anyhow::anyhow!("app_general row not found after seeding"))?;
         let general = General {
             log_level: crate::config::types::LogLevel::from_str(&general_row.log_level)
-                .ok_or_else(|| {
-                    anyhow::anyhow!("invalid log_level '{}' in DB", general_row.log_level)
-                })?,
+                .unwrap_or_else(|| {
+                    tracing::warn!(
+                        log_level = %general_row.log_level,
+                        "Invalid log_level in DB, falling back to default (info)"
+                    );
+                    crate::config::types::LogLevel::default()
+                }),
             models_dir: general_row.models_dir,
             logs_dir: general_row.logs_dir,
             hf_token: general_row.hf_token,
@@ -113,12 +117,13 @@ impl Config {
             restart_policy: crate::config::types::RestartPolicy::from_str(
                 &supervisor_row.restart_policy,
             )
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "invalid restart_policy '{}' in DB",
-                    supervisor_row.restart_policy
-                )
-            })?,
+            .unwrap_or_else(|| {
+                tracing::warn!(
+                    restart_policy = %supervisor_row.restart_policy,
+                    "Invalid restart_policy in DB, falling back to default (always)"
+                );
+                crate::config::types::RestartPolicy::default()
+            }),
             max_restarts: supervisor_row.max_restarts,
             restart_delay_ms: supervisor_row.restart_delay_ms,
             health_check_interval_ms: supervisor_row.health_check_interval_ms,
@@ -133,12 +138,13 @@ impl Config {
             enabled: compaction_row.enabled,
             server_path: compaction_row.server_path,
             device: crate::config::types::CompactionDevice::from_str(&compaction_row.device)
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "invalid compaction device '{}' in DB",
-                        compaction_row.device
-                    )
-                })?,
+                .unwrap_or_else(|| {
+                    tracing::warn!(
+                        device = %compaction_row.device,
+                        "Invalid compaction device in DB, falling back to default (cpu)"
+                    );
+                    crate::config::types::CompactionDevice::default()
+                }),
             port: compaction_row.port,
             request_timeout_ms: compaction_row.request_timeout_ms,
         };
