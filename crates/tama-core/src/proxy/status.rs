@@ -1,13 +1,13 @@
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-use super::types::{ModelState, ProxyState};
+use super::types::{BackendState, ProxyState};
 
 impl ProxyState {
     /// Build the per-model status snapshot embedded in `MetricSample.models`.
     ///
     /// Iterates over every configured model, resolves its backends, and reports
     /// `loaded: true` iff at least one of the backend entries returned by
-    /// `Config::resolve_backends_for_model` is in `ModelState::Ready`. The
+    /// `Config::resolve_backends_for_model` is in `BackendState::Ready`. The
     /// returned vector is sorted by `id` so dashboard rows do not shuffle
     /// between SSE samples.
     #[allow(deprecated)]
@@ -27,17 +27,17 @@ impl ProxyState {
         for (model_id, model_cfg) in model_configs.iter() {
             // Determine the model's lifecycle state from its backend entries.
             let servers = config.resolve_backends_for_model(&model_configs, model_id);
-            let mut best_state: Option<&ModelState> = None;
+            let mut best_state: Option<&BackendState> = None;
             for (backend_name, _, _) in servers.iter() {
                 if let Some(state) = runtime.get(backend_name) {
                     match state {
-                        ModelState::Ready { .. } => {
+                        BackendState::Ready { .. } => {
                             best_state = Some(state);
                             break; // Ready is the best possible state
                         }
-                        ModelState::Starting { .. }
-                        | ModelState::Unloading { .. }
-                        | ModelState::Failed { .. } => {
+                        BackendState::Starting { .. }
+                        | BackendState::Unloading { .. }
+                        | BackendState::Failed { .. } => {
                             if best_state.is_none() {
                                 best_state = Some(state);
                             }
@@ -46,14 +46,18 @@ impl ProxyState {
                 }
             }
 
-            let (loaded, state_str, error_message) = match best_state {
-                Some(ModelState::Ready { .. }) => (true, "ready".to_string(), None),
-                Some(ModelState::Starting { .. }) => (false, "loading".to_string(), None),
-                Some(ModelState::Unloading { .. }) => (false, "unloading".to_string(), None),
-                Some(ModelState::Failed { error, .. }) => {
-                    (false, "failed".to_string(), Some(error.clone()))
+            let (loaded, model_state, error_message) = match best_state {
+                Some(BackendState::Ready { .. }) => (true, crate::gpu::ModelState::Ready, None),
+                Some(BackendState::Starting { .. }) => {
+                    (false, crate::gpu::ModelState::Loading, None)
                 }
-                None => (false, "idle".to_string(), None),
+                Some(BackendState::Unloading { .. }) => {
+                    (false, crate::gpu::ModelState::Unloading, None)
+                }
+                Some(BackendState::Failed { error, .. }) => {
+                    (false, crate::gpu::ModelState::Failed, Some(error.clone()))
+                }
+                None => (false, crate::gpu::ModelState::Idle, None),
             };
 
             // Look up the first matching backend's inference stats.
@@ -68,7 +72,7 @@ impl ProxyState {
                 display_name: model_cfg.display_name.clone(),
                 backend: model_cfg.backend.clone(),
                 loaded,
-                state: state_str,
+                state: model_state,
                 quant: model_cfg.quant.clone(),
                 context_length: model_cfg.context_length,
                 hf_architecture_type: model_cfg.hf_architecture_type.clone(),
@@ -115,7 +119,7 @@ impl ProxyState {
             let model_state = models.get(model_name);
 
             let model_json = match model_state {
-                Some(ModelState::Ready {
+                Some(BackendState::Ready {
                     backend_pid,
                     load_time,
                     last_accessed,
@@ -160,7 +164,7 @@ impl ProxyState {
                         "consecutive_failures": consecutive_failures.load(Relaxed),
                     })
                 }
-                Some(ModelState::Starting {
+                Some(BackendState::Starting {
                     consecutive_failures,
                     ..
                 }) => {
@@ -183,7 +187,7 @@ impl ProxyState {
                         "consecutive_failures": consecutive_failures.load(Relaxed),
                     })
                 }
-                Some(ModelState::Unloading { .. }) => {
+                Some(BackendState::Unloading { .. }) => {
                     serde_json::json!({
                         "id": model_config.db_id,
                         "display_name": model_config.display_name,
@@ -203,7 +207,7 @@ impl ProxyState {
                         "consecutive_failures": null,
                     })
                 }
-                Some(ModelState::Failed { .. }) => {
+                Some(BackendState::Failed { .. }) => {
                     serde_json::json!({
                         "id": model_config.db_id,
                         "display_name": model_config.display_name,
@@ -336,7 +340,9 @@ mod tests {
 
         // Every entry is reported as not loaded.
         assert!(
-            statuses.iter().all(|s| s.state != "ready"),
+            !statuses
+                .iter()
+                .any(|s| matches!(s.state, crate::gpu::ModelState::Ready)),
             "expected every status to not be ready, got: {:?}",
             statuses
         );
@@ -352,7 +358,7 @@ mod tests {
         assert_eq!(statuses[1].backend, "llama_cpp");
     }
 
-    /// When `state.models` contains a `ModelState::Ready` entry under the
+    /// When `state.models` contains a `BackendState::Ready` entry under the
     /// server name that resolves for one of the configured models, that
     /// model should be reported as `loaded == true` while all other
     /// configured models remain `loaded == false`. The returned vector
@@ -398,7 +404,7 @@ mod tests {
             let mut runtime = state.models.write().await;
             runtime.insert(
                 "alpha".to_string(),
-                ModelState::Ready {
+                BackendState::Ready {
                     model_name: "alpha".to_string(),
                     backend: "vllm".to_string(),
                     backend_pid: 12345,
@@ -422,7 +428,10 @@ mod tests {
         assert_eq!(ids, vec!["alpha", "zephyr"]);
 
         // Exactly one model is reported as loaded.
-        let loaded_count = statuses.iter().filter(|s| s.state == "ready").count();
+        let loaded_count = statuses
+            .iter()
+            .filter(|s| matches!(s.state, crate::gpu::ModelState::Ready))
+            .count();
         assert_eq!(
             loaded_count, 1,
             "expected exactly one loaded model, got: {:?}",
@@ -431,16 +440,24 @@ mod tests {
 
         // alpha is loaded with the configured backend.
         assert_eq!(statuses[0].id, "alpha");
-        assert_eq!(statuses[0].state, "ready", "expected alpha to be ready");
+        assert_eq!(
+            statuses[0].state,
+            crate::gpu::ModelState::Ready,
+            "expected alpha to be ready"
+        );
         assert_eq!(statuses[0].backend, "vllm");
 
         // zephyr is not loaded but still carries its configured backend.
         assert_eq!(statuses[1].id, "zephyr");
-        assert_eq!(statuses[1].state, "idle", "expected zephyr to not be ready");
+        assert_eq!(
+            statuses[1].state,
+            crate::gpu::ModelState::Idle,
+            "expected zephyr to not be ready"
+        );
         assert_eq!(statuses[1].backend, "llama_cpp");
     }
 
-    /// `collect_model_statuses` should only treat `ModelState::Ready` as
+    /// `collect_model_statuses` should only treat `BackendState::Ready` as
     /// "loaded". Other variants like `Starting` and `Failed` must be
     /// reported as `loaded == false` so the dashboard does not falsely
     /// claim a model is serving traffic while it is still booting or has
@@ -470,7 +487,7 @@ mod tests {
             let mut runtime = state.models.write().await;
             runtime.insert(
                 backend_name.clone(),
-                ModelState::Starting {
+                BackendState::Starting {
                     model_name: "alpha".to_string(),
                     backend: "llama_cpp".to_string(),
                     backend_url: "http://127.0.0.1:8000".to_string(),
@@ -495,8 +512,9 @@ mod tests {
             .find(|s| s.id == "alpha")
             .expect("alpha entry missing from collect_model_statuses output");
         assert_eq!(
-            alpha.state, "loading",
-            "ModelState::Starting must not be reported as ready, got: {:?}",
+            alpha.state,
+            crate::gpu::ModelState::Loading,
+            "BackendState::Starting must not be reported as ready, got: {:?}",
             alpha
         );
 
@@ -505,7 +523,7 @@ mod tests {
             let mut runtime = state.models.write().await;
             runtime.insert(
                 backend_name.clone(),
-                ModelState::Failed {
+                BackendState::Failed {
                     model_name: "alpha".to_string(),
                     backend: "llama_cpp".to_string(),
                     error: "backend exited with status 1".to_string(),
@@ -525,8 +543,9 @@ mod tests {
             .find(|s| s.id == "alpha")
             .expect("alpha entry missing from collect_model_statuses output");
         assert_eq!(
-            alpha.state, "failed",
-            "ModelState::Failed must not be reported as ready, got: {:?}",
+            alpha.state,
+            crate::gpu::ModelState::Failed,
+            "BackendState::Failed must not be reported as ready, got: {:?}",
             alpha
         );
     }

@@ -6,7 +6,7 @@ use crate::proxy::process::{
     check_health, configure_process_group, force_kill_process_group, is_process_group_alive,
     kill_process_group,
 };
-use crate::proxy::types::{ModelState, ProxyState};
+use crate::proxy::types::{BackendState, ProxyState};
 use anyhow::{Context, Result};
 
 impl ProxyState {
@@ -30,7 +30,7 @@ impl ProxyState {
         {
             let models = self.models.read().await;
             if let Some(state) = models.get("compaction") {
-                if state.is_ready() || matches!(state, ModelState::Starting { .. }) {
+                if state.is_ready() || matches!(state, BackendState::Starting { .. }) {
                     debug!("Compaction backend already loaded/starting");
                     return Ok(());
                 }
@@ -64,7 +64,7 @@ impl ProxyState {
             let mut models = self.models.write().await;
             models.insert(
                 "compaction".to_string(),
-                ModelState::Starting {
+                BackendState::Starting {
                     model_name: "compaction".to_string(),
                     backend: "compaction".to_string(),
                     backend_url: String::new(),
@@ -104,7 +104,7 @@ impl ProxyState {
             .arg("--port")
             .arg(port.to_string())
             .env("COMPACTION_PORT", port.to_string())
-            .env("COMPACTION_DEVICE", &compaction.device)
+            .env("COMPACTION_DEVICE", compaction.device.as_str())
             .current_dir(&server_dir);
 
         let mut child = child.spawn().with_context(|| {
@@ -119,7 +119,7 @@ impl ProxyState {
         // 10. Update PID in Starting state
         {
             let mut models = self.models.write().await;
-            if let Some(ModelState::Starting { backend_pid, .. }) = models.get_mut("compaction") {
+            if let Some(BackendState::Starting { backend_pid, .. }) = models.get_mut("compaction") {
                 *backend_pid = pid;
             }
         }
@@ -157,7 +157,7 @@ impl ProxyState {
                 let mut models = self.models.write().await;
                 models.insert(
                     "compaction".to_string(),
-                    ModelState::Failed {
+                    BackendState::Failed {
                         model_name: "compaction".to_string(),
                         backend: "compaction".to_string(),
                         error: format!("Startup timeout after {}s", timeout.as_secs()),
@@ -181,7 +181,7 @@ impl ProxyState {
         {
             let mut models = self.models.write().await;
             if let Some(state) = models.get_mut("compaction") {
-                if let ModelState::Starting {
+                if let BackendState::Starting {
                     consecutive_failures,
                     failure_timestamp,
                     ..
@@ -190,7 +190,7 @@ impl ProxyState {
                     consecutive_failures.store(0, std::sync::atomic::Ordering::Relaxed);
                     let cf = Arc::clone(consecutive_failures);
                     let ft = *failure_timestamp;
-                    *state = ModelState::Ready {
+                    *state = BackendState::Ready {
                         model_name: "compaction".to_string(),
                         backend: "compaction".to_string(),
                         backend_pid: pid,

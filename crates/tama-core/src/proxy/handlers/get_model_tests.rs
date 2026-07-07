@@ -171,7 +171,7 @@ async fn test_handle_get_model_fetches_from_backend_with_meta() {
         let mut models = state.models.write().await;
         models.insert(
             "test-model".to_string(),
-            crate::proxy::ModelState::Ready {
+            crate::proxy::BackendState::Ready {
                 model_name: "test-model".to_string(),
                 backend: "llama_cpp".to_string(),
                 backend_pid: 1234,
@@ -327,7 +327,7 @@ async fn test_handle_get_model_matches_by_model_field_when_multiple() {
         let mut models = state.models.write().await;
         models.insert(
             "my-model".to_string(),
-            crate::proxy::ModelState::Ready {
+            crate::proxy::BackendState::Ready {
                 model_name: "my-model".to_string(),
                 backend: "llama_cpp".to_string(),
                 backend_pid: 5678,
@@ -382,7 +382,7 @@ async fn test_handle_get_model_backend_failure_fallback() {
         let mut models = state.models.write().await;
         models.insert(
             "fail-model".to_string(),
-            crate::proxy::ModelState::Ready {
+            crate::proxy::BackendState::Ready {
                 model_name: "fail-model".to_string(),
                 backend: "llama_cpp".to_string(),
                 backend_pid: 9999,
@@ -457,7 +457,7 @@ async fn test_handle_get_model_normalizes_id_from_alias() {
         let mut models = state.models.write().await;
         models.insert(
             "gemma-e2b".to_string(),
-            crate::proxy::ModelState::Ready {
+            crate::proxy::BackendState::Ready {
                 model_name: "gemma-e2b".to_string(),
                 backend: "llama_cpp".to_string(),
                 backend_pid: 1001,

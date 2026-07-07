@@ -5,7 +5,7 @@ use crate::proxy::process::{
     check_health, force_kill_process_group, is_process_alive, is_process_group_alive,
     kill_process_group,
 };
-use crate::proxy::types::{ModelState, ProxyState};
+use crate::proxy::types::{BackendState, ProxyState};
 
 impl ProxyState {
     /// Check if any server has been idle for longer than the timeout.
@@ -42,7 +42,7 @@ impl ProxyState {
         let models = self.models.read().await;
         for (backend_name, state) in models.iter() {
             // Check Starting state first (including TTS — they can also get stuck)
-            if let ModelState::Starting { start_time, .. } = state {
+            if let BackendState::Starting { start_time, .. } = state {
                 if now.saturating_duration_since(*start_time) > startup_timeout {
                     warn!(
                         "Server '{}' stuck in Starting for {}s (timeout: {}s)",
@@ -62,7 +62,7 @@ impl ProxyState {
             }
 
             // Skip Unloading — already being handled
-            if matches!(state, ModelState::Unloading { .. }) {
+            if matches!(state, BackendState::Unloading { .. }) {
                 continue;
             }
 
@@ -73,7 +73,7 @@ impl ProxyState {
             }
 
             // Ready models — check PID liveness (fast syscall, OK under lock)
-            if let ModelState::Ready {
+            if let BackendState::Ready {
                 backend_pid,
                 restart_count,
                 ..
@@ -111,7 +111,7 @@ impl ProxyState {
             }
 
             // Failed models — mark for cleanup
-            if matches!(state, ModelState::Failed { .. }) {
+            if matches!(state, BackendState::Failed { .. }) {
                 warn!(
                     "Server '{}' in Failed state, marking for cleanup",
                     backend_name
@@ -172,7 +172,7 @@ impl ProxyState {
                     // Revalidate: only transition if still in Starting state with matching start_time
                     // (could have become Ready between Phase 1 and Phase 3)
                     if let Some(existing) = models.get(backend_name) {
-                        let still_starting = matches!(existing, ModelState::Starting { start_time, .. } if start_time == observed_start);
+                        let still_starting = matches!(existing, BackendState::Starting { start_time, .. } if start_time == observed_start);
                         if !still_starting {
                             debug!(
                                 "Server '{}' state or start_time changed, skipping stuck transition",
@@ -183,7 +183,7 @@ impl ProxyState {
                     }
                     models.insert(
                         backend_name.clone(),
-                        ModelState::Failed {
+                        BackendState::Failed {
                             model_name: model_name.clone(),
                             backend: backend.clone(),
                             error: format!(
@@ -230,7 +230,7 @@ impl ProxyState {
                     // Revalidate: only act if still Ready with matching PID
                     // (could have been replaced by forward_request() auto-load)
                     let pid_matches = models.get(backend_name).and_then(|s| match s {
-                        ModelState::Ready { backend_pid, .. } => {
+                        BackendState::Ready { backend_pid, .. } => {
                             if backend_pid == observed_pid {
                                 Some(true)
                             } else {
@@ -238,7 +238,7 @@ impl ProxyState {
                                 None
                             }
                         }
-                        ModelState::Starting { .. } => {
+                        BackendState::Starting { .. } => {
                             // Already being restarted by another path, skip
                             None
                         }
@@ -254,7 +254,7 @@ impl ProxyState {
                         if *restart_count >= max_restarts {
                             models.insert(
                                 backend_name.clone(),
-                                ModelState::Failed {
+                                BackendState::Failed {
                                     model_name: model_name.clone(),
                                     backend: backend.clone(),
                                     error: format!(
@@ -312,7 +312,7 @@ impl ProxyState {
                     match tokio::time::timeout(total_timeout, state.load_model(&mn, None)).await {
                         Ok(Ok(_)) => {
                             let mut models = state.models.write().await;
-                            if let Some(ModelState::Ready {
+                            if let Some(BackendState::Ready {
                                 restart_count: rc, ..
                             }) = models.get_mut(&sn)
                             {

@@ -2,6 +2,81 @@ use serde::{Deserialize, Serialize};
 
 use super::vram::VramInfo;
 
+/// GPU vendor identifier.
+///
+/// `PartialOrd`/`Ord` derive is used for stable sort ordering of GPU devices
+/// in `SystemMetrics` (Amd < Nvidia).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, PartialOrd, Ord)]
+#[serde(rename_all = "lowercase")]
+pub enum GpuVendor {
+    Amd,
+    #[default]
+    Nvidia,
+}
+
+impl GpuVendor {
+    /// Convert the vendor to its string representation.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Nvidia => "nvidia",
+            Self::Amd => "amd",
+        }
+    }
+
+    /// Parse a vendor from its string representation.
+    pub fn try_from_str(s: &str) -> Option<Self> {
+        match s {
+            "nvidia" => Some(Self::Nvidia),
+            "amd" => Some(Self::Amd),
+            _ => None,
+        }
+    }
+}
+
+/// Lifecycle state of a model's backend, used in [`ModelStatus`].
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelState {
+    /// No model is loaded on this backend.
+    #[default]
+    Idle,
+    /// The backend is currently loading.
+    Loading,
+    /// The backend is ready and accepting requests.
+    Ready,
+    /// The backend is unloading.
+    Unloading,
+    /// The backend has failed to load or crashed.
+    Failed,
+}
+
+impl ModelState {
+    /// Convert the state to its string representation.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Loading => "loading",
+            Self::Ready => "ready",
+            Self::Unloading => "unloading",
+            Self::Failed => "failed",
+        }
+    }
+
+    /// Parse a state from its string representation.
+    ///
+    /// Returns `Idle` for empty or unknown strings (backwards compatible).
+    pub fn from_str_fallback(s: &str) -> Self {
+        match s {
+            "idle" => Self::Idle,
+            "loading" => Self::Loading,
+            "ready" => Self::Ready,
+            "unloading" => Self::Unloading,
+            "failed" => Self::Failed,
+            _ => Self::Idle,
+        }
+    }
+}
+
 /// Per-GPU device statistics for a single tick. One entry per detected
 /// device (NVIDIA or AMD). Order is stable per-tick: NVIDIA devices
 /// sorted by `index`, then AMD devices by `card` number.
@@ -13,8 +88,8 @@ pub struct GpuDeviceStats {
     /// At backend launch, mapped to the llama.cpp device name
     /// (e.g. "CUDA0", "ROCm0", "Vulkan0") by the args builder.
     pub device_id: String,
-    /// Human-readable vendor: "nvidia" | "amd".
-    pub vendor: String,
+    /// GPU vendor.
+    pub vendor: GpuVendor,
     /// Human-readable GPU name (e.g. "Radeon AI PRO R9700", "GeForce RTX 4090").
     /// Defaults to empty string for backwards compatibility with cached samples.
     #[serde(default)]
@@ -121,7 +196,7 @@ pub struct ModelStatus {
     /// Current lifecycle state of the model's backend.
     /// One of: `idle`, `loading`, `ready`, `unloading`, `failed`.
     #[serde(default)]
-    pub state: String,
+    pub state: ModelState,
     /// Quantization name (e.g. "Q4_K_M", "Q8_0"). Display-only on dashboard.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quant: Option<String>,

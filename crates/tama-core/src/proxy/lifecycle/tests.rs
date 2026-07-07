@@ -3,13 +3,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::config::Config;
-use crate::proxy::types::{ModelState, ProxyState};
+use crate::proxy::types::{BackendState, ProxyState};
 use std::time::Instant;
 
-/// Helper to create a Ready ModelState for testing.
+/// Helper to create a Ready BackendState for testing.
 /// Uses a high PID that won't exist and won't conflict with real processes.
-fn make_ready_state(model_name: &str, backend: &str) -> ModelState {
-    ModelState::Ready {
+fn make_ready_state(model_name: &str, backend: &str) -> BackendState {
+    BackendState::Ready {
         model_name: model_name.to_string(),
         backend: backend.to_string(),
         backend_pid: 12345, // fake PID — won't be killed by tests
@@ -22,9 +22,9 @@ fn make_ready_state(model_name: &str, backend: &str) -> ModelState {
     }
 }
 
-/// Helper to create a Starting ModelState for testing.
-fn make_starting_state(model_name: &str, backend: &str) -> ModelState {
-    ModelState::Starting {
+/// Helper to create a Starting BackendState for testing.
+fn make_starting_state(model_name: &str, backend: &str) -> BackendState {
+    BackendState::Starting {
         model_name: model_name.to_string(),
         backend: backend.to_string(),
         backend_url: String::new(),
@@ -36,18 +36,18 @@ fn make_starting_state(model_name: &str, backend: &str) -> ModelState {
     }
 }
 
-/// Helper to create a Failed ModelState for testing.
-fn make_failed_state() -> ModelState {
-    ModelState::Failed {
+/// Helper to create a Failed BackendState for testing.
+fn make_failed_state() -> BackendState {
+    BackendState::Failed {
         model_name: "failed-model".to_string(),
         backend: "llama-cpp".to_string(),
         error: "test error".to_string(),
     }
 }
 
-/// Helper to create an Unloading ModelState for testing.
-fn make_unloading_state(model_name: &str, backend: &str) -> ModelState {
-    ModelState::Unloading {
+/// Helper to create an Unloading BackendState for testing.
+fn make_unloading_state(model_name: &str, backend: &str) -> BackendState {
+    BackendState::Unloading {
         model_name: model_name.to_string(),
         backend: backend.to_string(),
         backend_pid: 54321,
@@ -94,7 +94,7 @@ async fn test_failed_server_marked_for_cleanup() {
     );
 }
 
-/// Test ModelState::is_ready() returns correct values for each variant.
+/// Test BackendState::is_ready() returns correct values for each variant.
 #[test]
 fn test_model_state_is_ready() {
     let ready = make_ready_state("m", "llama-cpp");
@@ -107,7 +107,7 @@ fn test_model_state_is_ready() {
     assert!(!failed.is_ready());
 }
 
-/// Test ModelState::last_accessed() returns correct values.
+/// Test BackendState::last_accessed() returns correct values.
 #[test]
 fn test_model_state_last_accessed() {
     let ready = make_ready_state("m", "llama-cpp");
@@ -121,7 +121,7 @@ fn test_model_state_last_accessed() {
     assert!(failed.last_accessed().is_none());
 }
 
-/// Test ModelState::backend() returns the correct backend name.
+/// Test BackendState::backend() returns the correct backend name.
 #[test]
 fn test_model_state_backend() {
     let ready = make_ready_state("m", "llama-cpp-cuda");
@@ -131,7 +131,7 @@ fn test_model_state_backend() {
     assert_eq!(starting.backend(), "vllm");
 }
 
-/// Test ModelState::backend_pid() returns the correct PID.
+/// Test BackendState::backend_pid() returns the correct PID.
 #[test]
 fn test_model_state_backend_pid() {
     let ready = make_ready_state("m", "llama-cpp");
@@ -153,17 +153,17 @@ fn test_model_state_consecutive_failures() {
     assert_eq!(failures.unwrap().load(Ordering::Relaxed), 0);
 }
 
-/// Test that ModelState::is_ready() distinguishes all variants correctly.
+/// Test that BackendState::is_ready() distinguishes all variants correctly.
 #[test]
 fn test_model_state_variants() {
     let ready = make_ready_state("m", "llama-cpp");
-    assert!(matches!(ready, ModelState::Ready { .. }));
+    assert!(matches!(ready, BackendState::Ready { .. }));
 
     let starting = make_starting_state("m", "llama-cpp");
-    assert!(matches!(starting, ModelState::Starting { .. }));
+    assert!(matches!(starting, BackendState::Starting { .. }));
 
     let failed = make_failed_state();
-    assert!(matches!(failed, ModelState::Failed { .. }));
+    assert!(matches!(failed, BackendState::Failed { .. }));
 }
 
 /// Test that can_reload() returns true when no failure timestamp is set.
@@ -177,7 +177,7 @@ fn test_can_reload_no_failure_timestamp() {
 #[test]
 fn test_can_reload_cooldown_elapsed() {
     let mut ready = make_ready_state("m", "llama-cpp");
-    if let ModelState::Ready {
+    if let BackendState::Ready {
         failure_timestamp, ..
     } = &mut ready
     {
@@ -190,7 +190,7 @@ fn test_can_reload_cooldown_elapsed() {
 #[test]
 fn test_can_reload_cooldown_active() {
     let mut ready = make_ready_state("m", "llama-cpp");
-    if let ModelState::Ready {
+    if let BackendState::Ready {
         failure_timestamp, ..
     } = &mut ready
     {
@@ -264,10 +264,10 @@ fn test_unloading_can_reload_false() {
     assert!(!unloading.can_reload(60));
 }
 
-/// Test that ModelState::Default produces a Failed state with empty strings.
+/// Test that BackendState::Default produces a Failed state with empty strings.
 #[test]
 fn test_model_state_default_is_failed() {
-    let default_state = ModelState::default();
+    let default_state = BackendState::default();
     assert!(!default_state.is_ready());
     assert_eq!(default_state.model_name(), "");
     assert_eq!(default_state.backend(), "");
@@ -277,7 +277,7 @@ fn test_model_state_default_is_failed() {
 #[test]
 fn test_unloading_variant_match() {
     let unloading = make_unloading_state("m", "llama-cpp");
-    assert!(matches!(unloading, ModelState::Unloading { .. }));
+    assert!(matches!(unloading, BackendState::Unloading { .. }));
 }
 
 /// Test that evict_lru_if_needed returns Ok(None) when max_loaded_models is 0 (unlimited).
@@ -339,7 +339,7 @@ async fn test_evict_lru_if_needed_at_limit_evicts_lru() {
 
     // Add a Ready model with last_accessed set in the past
     let mut ready_state = make_ready_state("model.gguf", "llama-cpp");
-    if let ModelState::Ready { last_accessed, .. } = &mut ready_state {
+    if let BackendState::Ready { last_accessed, .. } = &mut ready_state {
         *last_accessed = Instant::now() - Duration::from_secs(300);
     }
     state
@@ -425,7 +425,7 @@ async fn test_evict_lru_if_needed_concurrent_no_double_eviction() {
 
     // Add 2 Ready models with different last_accessed times (LRU + newer)
     let mut ready1 = make_ready_state("model1.gguf", "llama-cpp");
-    if let ModelState::Ready { last_accessed, .. } = &mut ready1 {
+    if let BackendState::Ready { last_accessed, .. } = &mut ready1 {
         *last_accessed = Instant::now() - Duration::from_secs(600); // older
     }
     state
@@ -435,7 +435,7 @@ async fn test_evict_lru_if_needed_concurrent_no_double_eviction() {
         .insert("server1".to_string(), ready1);
 
     let mut ready2 = make_ready_state("model2.gguf", "llama-cpp");
-    if let ModelState::Ready { last_accessed, .. } = &mut ready2 {
+    if let BackendState::Ready { last_accessed, .. } = &mut ready2 {
         *last_accessed = Instant::now() - Duration::from_secs(100); // newer
     }
     state
@@ -584,7 +584,7 @@ async fn test_evict_lru_per_gpu_isolation() {
 
     // Add a Ready model on CUDA0
     let mut ready_cuda0 = make_ready_state("model-cuda0.gguf", "llama-cpp");
-    if let ModelState::Ready { last_accessed, .. } = &mut ready_cuda0 {
+    if let BackendState::Ready { last_accessed, .. } = &mut ready_cuda0 {
         *last_accessed = Instant::now() - Duration::from_secs(300);
     }
     state
@@ -640,7 +640,7 @@ async fn test_evict_lru_same_gpu_counts_together() {
 
     // Add first Ready model on CUDA0 (older last_accessed = LRU)
     let mut ready1 = make_ready_state("model1.gguf", "llama-cpp");
-    if let ModelState::Ready { last_accessed, .. } = &mut ready1 {
+    if let BackendState::Ready { last_accessed, .. } = &mut ready1 {
         *last_accessed = Instant::now() - Duration::from_secs(600);
     }
     state
@@ -651,7 +651,7 @@ async fn test_evict_lru_same_gpu_counts_together() {
 
     // Add second Ready model on CUDA0 (newer last_accessed)
     let mut ready2 = make_ready_state("model2.gguf", "llama-cpp");
-    if let ModelState::Ready { last_accessed, .. } = &mut ready2 {
+    if let BackendState::Ready { last_accessed, .. } = &mut ready2 {
         *last_accessed = Instant::now() - Duration::from_secs(100);
     }
     state
@@ -713,7 +713,7 @@ async fn test_evict_lru_none_gpu_grouped() {
 
     // Add first Ready model with no gpu_device (older)
     let mut ready1 = make_ready_state("model1.gguf", "llama-cpp");
-    if let ModelState::Ready { last_accessed, .. } = &mut ready1 {
+    if let BackendState::Ready { last_accessed, .. } = &mut ready1 {
         *last_accessed = Instant::now() - Duration::from_secs(600);
     }
     state
@@ -724,7 +724,7 @@ async fn test_evict_lru_none_gpu_grouped() {
 
     // Add second Ready model with no gpu_device (newer)
     let mut ready2 = make_ready_state("model2.gguf", "llama-cpp");
-    if let ModelState::Ready { last_accessed, .. } = &mut ready2 {
+    if let BackendState::Ready { last_accessed, .. } = &mut ready2 {
         *last_accessed = Instant::now() - Duration::from_secs(100);
     }
     state

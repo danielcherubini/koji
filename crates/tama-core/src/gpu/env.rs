@@ -86,11 +86,16 @@ pub fn resolve_gpu_env_from(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gpu::GpuVendor;
 
     fn build_test_gpu(device_id: &str, vendor: &str) -> GpuDeviceStats {
+        let gpu_vendor = match vendor {
+            "amd" => GpuVendor::Amd,
+            _ => GpuVendor::Nvidia,
+        };
         GpuDeviceStats {
             device_id: device_id.to_string(),
-            vendor: vendor.to_string(),
+            vendor: gpu_vendor,
             name: "".to_string(),
             utilization_pct: None,
             vram: None,

@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::config::types::CompactionDevice;
+
 /// Configuration for the LLMLingua-2 compaction service.
 /// When absent from the configuration, compaction is disabled.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -10,9 +12,9 @@ pub struct CompactionConfig {
     /// Path to the Python entrypoint (main.py). If omitted, uses embedded default.
     #[serde(default)]
     pub server_path: Option<String>,
-    /// Compute device: "cpu", "cuda", "cuda:0", "mps". Default: "cpu".
+    /// Compute device for the compaction backend. Default: `Cpu`.
     #[serde(default = "default_compaction_device")]
-    pub device: String,
+    pub device: CompactionDevice,
     /// Fixed port for the compaction server. If omitted, auto-assigned via TcpListener.
     #[serde(default)]
     pub port: Option<u16>,
@@ -33,8 +35,8 @@ impl Default for CompactionConfig {
     }
 }
 
-fn default_compaction_device() -> String {
-    "cpu".to_string()
+fn default_compaction_device() -> CompactionDevice {
+    CompactionDevice::Cpu
 }
 
 fn default_compaction_request_timeout_ms() -> u64 {

@@ -278,7 +278,7 @@ pub async fn list_backends(
 
     let compaction_card = CompactionCardDto {
         enabled: compaction_config.enabled,
-        device: compaction_config.device,
+        device: compaction_config.device.as_str(),
         port: compaction_config.port,
         running: compaction_running,
         server_url: compaction_url,

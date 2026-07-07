@@ -7,7 +7,7 @@ use crate::proxy::process::{
     check_health, configure_process_group, force_kill_process, force_kill_process_group,
     is_process_alive, is_process_group_alive, kill_process, kill_process_group,
 };
-use crate::proxy::types::{ModelState, ProxyState};
+use crate::proxy::types::{BackendState, ProxyState};
 use anyhow::{Context, Result};
 
 impl ProxyState {
@@ -54,7 +54,7 @@ impl ProxyState {
         {
             let mut models = self.models.write().await;
             if let Some(state) = models.get(backend_name) {
-                if state.is_ready() || matches!(state, ModelState::Starting { .. }) {
+                if state.is_ready() || matches!(state, BackendState::Starting { .. }) {
                     debug!("TTS backend '{}' already loaded/starting", backend_name);
                     return Ok(backend_name.to_string());
                 }
@@ -63,7 +63,7 @@ impl ProxyState {
             // Reserve with Starting state
             models.insert(
                 backend_name.to_string(),
-                ModelState::Starting {
+                BackendState::Starting {
                     model_name: backend_name.to_string(),
                     backend: info.name.clone(),
                     backend_url: String::new(),
@@ -119,7 +119,7 @@ impl ProxyState {
         // Update the PID in the Starting state so cleanup paths can find it
         {
             let mut models = self.models.write().await;
-            if let Some(ModelState::Starting { backend_pid, .. }) = models.get_mut(backend_name) {
+            if let Some(BackendState::Starting { backend_pid, .. }) = models.get_mut(backend_name) {
                 *backend_pid = pid;
             }
         }
@@ -192,7 +192,7 @@ impl ProxyState {
         {
             let mut models = self.models.write().await;
             if let Some(state) = models.get_mut(backend_name) {
-                if let ModelState::Starting {
+                if let BackendState::Starting {
                     consecutive_failures,
                     failure_timestamp,
                     model_name,
@@ -202,7 +202,7 @@ impl ProxyState {
                     consecutive_failures.store(0, std::sync::atomic::Ordering::Relaxed);
                     let cf = Arc::clone(consecutive_failures);
                     let ft = *failure_timestamp;
-                    *state = ModelState::Ready {
+                    *state = BackendState::Ready {
                         model_name: model_name.clone(),
                         backend: info.name.clone(),
                         backend_pid: pid,
@@ -237,7 +237,7 @@ impl ProxyState {
 
         if !matches!(
             state,
-            ModelState::Ready { .. } | ModelState::Unloading { .. }
+            BackendState::Ready { .. } | BackendState::Unloading { .. }
         ) {
             return Err(anyhow::anyhow!(
                 "TTS backend '{}' is not ready (state: {:?})",
@@ -247,8 +247,8 @@ impl ProxyState {
         }
 
         let pid = match &state {
-            ModelState::Ready { backend_pid, .. } => *backend_pid,
-            ModelState::Unloading { backend_pid, .. } => *backend_pid,
+            BackendState::Ready { backend_pid, .. } => *backend_pid,
+            BackendState::Unloading { backend_pid, .. } => *backend_pid,
             _ => unreachable!("already checked above"),
         };
 

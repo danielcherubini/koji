@@ -45,6 +45,7 @@ fn log_warn(msg: &str) {
 }
 
 mod components;
+mod gpu_types;
 mod pages;
 pub mod utils;
 

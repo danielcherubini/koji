@@ -8,6 +8,7 @@ use leptos::prelude::*;
 use leptos_router::components::A;
 
 use crate::components::list_card::ListCard;
+use crate::gpu_types::ModelState;
 
 // ── Inline SVG helpers ───────────────────────────────────────────────────────
 
@@ -65,24 +66,24 @@ pub(crate) struct ModelPips {
 
 /// CSS class string used for the per-model status badge.
 /// Maps lifecycle states to colour classes.
-pub(crate) fn model_status_badge_class(state: &str) -> &'static str {
+pub(crate) fn model_status_badge_class(state: &ModelState) -> &'static str {
     match state {
-        "ready" => "badge badge-success",
-        "loading" => "badge badge-info",
-        "unloading" => "badge badge-warning",
-        "failed" => "badge badge-error",
-        _ => "badge badge-muted",
+        ModelState::Ready => "badge badge-success",
+        ModelState::Loading => "badge badge-info",
+        ModelState::Unloading => "badge badge-warning",
+        ModelState::Failed => "badge badge-error",
+        ModelState::Idle => "badge badge-muted",
     }
 }
 
 /// Human-readable label that pairs with [`model_status_badge_class`].
-pub(crate) fn model_status_badge_label(state: &str) -> &'static str {
+pub(crate) fn model_status_badge_label(state: &ModelState) -> &'static str {
     match state {
-        "ready" => "Loaded",
-        "loading" => "Loading",
-        "unloading" => "Unloading",
-        "failed" => "Failed",
-        _ => "Idle",
+        ModelState::Ready => "Loaded",
+        ModelState::Loading => "Loading",
+        ModelState::Unloading => "Unloading",
+        ModelState::Failed => "Failed",
+        ModelState::Idle => "Idle",
     }
 }
 
@@ -90,24 +91,24 @@ pub(crate) fn model_status_badge_label(state: &str) -> &'static str {
 /// Ready models render an "Unload" button (btn-danger),
 /// loading/unloading show muted buttons,
 /// idle shows a "Load" button (btn-success).
-pub(crate) fn model_action_button_class(state: &str) -> &'static str {
+pub(crate) fn model_action_button_class(state: &ModelState) -> &'static str {
     match state {
-        "ready" => "btn btn-danger btn-sm",
-        "loading" => "btn btn-secondary btn-sm",
-        "unloading" => "btn btn-secondary btn-sm",
-        "failed" => "btn btn-warning btn-sm",
-        _ => "btn btn-success btn-sm",
+        ModelState::Ready => "btn btn-danger btn-sm",
+        ModelState::Loading => "btn btn-secondary btn-sm",
+        ModelState::Unloading => "btn btn-secondary btn-sm",
+        ModelState::Failed => "btn btn-warning btn-sm",
+        ModelState::Idle => "btn btn-success btn-sm",
     }
 }
 
 /// Human-readable label that pairs with [`model_action_button_class`].
-pub(crate) fn model_action_button_label(state: &str) -> &'static str {
+pub(crate) fn model_action_button_label(state: &ModelState) -> &'static str {
     match state {
-        "ready" => "Unload",
-        "loading" => "Loading…",
-        "unloading" => "Unloading…",
-        "failed" => "Retry",
-        _ => "Load",
+        ModelState::Ready => "Unload",
+        ModelState::Loading => "Loading…",
+        ModelState::Unloading => "Unloading…",
+        ModelState::Failed => "Retry",
+        ModelState::Idle => "Load",
     }
 }
 
@@ -128,16 +129,16 @@ pub(crate) fn format_context_length(n: u32) -> String {
 
 /// Resolves the effective state for badge/button logic.
 ///
-/// When `state` is non-empty, returns it as-is.
-/// When `state` is empty: `loaded == Some(true)` → `"ready"`, otherwise → `"idle"`.
+/// When `state` is not Idle, returns it as-is.
+/// When `state` is Idle: `loaded == Some(true)` → `Ready`, otherwise → `Idle`.
 /// This preserves the models page's existing `loaded` boolean fallback behavior.
-pub(crate) fn resolve_state(state: &str, loaded: Option<bool>) -> &str {
-    if !state.is_empty() {
-        return state;
+pub(crate) fn resolve_state(state: &ModelState, loaded: Option<bool>) -> ModelState {
+    if !matches!(state, ModelState::Idle) {
+        return state.clone();
     }
     match loaded {
-        Some(true) => "ready",
-        _ => "idle",
+        Some(true) => ModelState::Ready,
+        _ => ModelState::Idle,
     }
 }
 
@@ -198,7 +199,7 @@ pub fn ModelCard(
     #[prop(default = ModelPips::default())] pips: ModelPips,
     backend: String,
     log_source: Option<String>,
-    state: String,
+    state: ModelState,
     #[prop(default = None)] loaded: Option<bool>,
     #[prop(default = None)] enabled: Option<bool>,
     #[prop(default = None)] error_message: Option<String>,
@@ -210,25 +211,26 @@ pub fn ModelCard(
     #[prop(optional)] cancel_busy: Option<RwSignal<bool>>,
 ) -> impl IntoView {
     let effective_state = resolve_state(&state, loaded);
-    let badge_class = model_status_badge_class(effective_state);
-    let badge_label = model_status_badge_label(effective_state);
-    let button_class = model_action_button_class(effective_state);
-    let button_label = model_action_button_label(effective_state);
+    let badge_class = model_status_badge_class(&effective_state);
+    let badge_label = model_status_badge_label(&effective_state);
+    let button_class = model_action_button_class(&effective_state);
+    let button_label = model_action_button_label(&effective_state);
 
     // Map effective_state to ListCard state
     let card_state: Option<ReadSignal<Option<String>>> = match effective_state {
-        "ready" => Some(RwSignal::new(Some("ready".to_string())).read_only()),
-        "loading" => Some(RwSignal::new(Some("loading".to_string())).read_only()),
-        "unloading" => Some(RwSignal::new(Some("unloading".to_string())).read_only()),
-        "failed" => Some(RwSignal::new(Some("failed".to_string())).read_only()),
-        _ => None, // idle/unknown → no state class (default gray strip)
+        ModelState::Ready => Some(RwSignal::new(Some("ready".to_string())).read_only()),
+        ModelState::Loading => Some(RwSignal::new(Some("loading".to_string())).read_only()),
+        ModelState::Unloading => Some(RwSignal::new(Some("unloading".to_string())).read_only()),
+        ModelState::Failed => Some(RwSignal::new(Some("failed".to_string())).read_only()),
+        ModelState::Idle => None, // idle → no state class (default gray strip)
     };
 
     // Determine action button to show
-    let is_ready = effective_state == "ready";
-    let is_loading_or_unloading = matches!(effective_state, "loading" | "unloading");
-    let is_loading = effective_state == "loading";
-    let is_failed = effective_state == "failed";
+    let is_ready = matches!(effective_state, ModelState::Ready);
+    let is_loading_or_unloading =
+        matches!(effective_state, ModelState::Loading | ModelState::Unloading);
+    let is_loading = matches!(effective_state, ModelState::Loading);
+    let is_failed = matches!(effective_state, ModelState::Failed);
 
     // Build edit URL — use db_id when Some, fall back to id string
     let edit_id = if let Some(db_id_val) = db_id {
@@ -256,7 +258,7 @@ pub fn ModelCard(
     let spec_types_clone = pips.spec_types.clone();
     let gpu_label_clone = pips.gpu_label.clone();
     let error_message_clone = error_message.clone();
-    let effective_state_clone = effective_state.to_string();
+    let effective_state_clone = effective_state.clone();
 
     view! {
         <ListCard
@@ -348,7 +350,7 @@ pub fn ModelCard(
                 }}
                 // Error message for failed models
                 {if let Some(ref err) = error_message_clone {
-                    if effective_state_clone == "failed" {
+                    if matches!(effective_state_clone, ModelState::Failed) {
                         view! {
                             <div class="model-row__error">"Error: " {err.clone()}</div>
                         }.into_any()
@@ -471,34 +473,46 @@ mod tests {
 
     #[test]
     fn test_model_status_badge_class_uses_success_when_ready() {
-        assert_eq!(model_status_badge_class("ready"), "badge badge-success");
+        assert_eq!(
+            model_status_badge_class(&ModelState::Ready),
+            "badge badge-success"
+        );
     }
 
     #[test]
     fn test_model_status_badge_class_uses_muted_when_idle() {
-        assert_eq!(model_status_badge_class("idle"), "badge badge-muted");
+        assert_eq!(
+            model_status_badge_class(&ModelState::Idle),
+            "badge badge-muted"
+        );
     }
 
     #[test]
     fn test_model_status_badge_label_distinguishes_ready_and_idle() {
-        assert_eq!(model_status_badge_label("ready"), "Loaded");
-        assert_eq!(model_status_badge_label("idle"), "Idle");
+        assert_eq!(model_status_badge_label(&ModelState::Ready), "Loaded");
+        assert_eq!(model_status_badge_label(&ModelState::Idle), "Idle");
     }
 
     #[test]
     fn test_model_action_button_class_uses_danger_when_ready() {
-        assert_eq!(model_action_button_class("ready"), "btn btn-danger btn-sm");
+        assert_eq!(
+            model_action_button_class(&ModelState::Ready),
+            "btn btn-danger btn-sm"
+        );
     }
 
     #[test]
     fn test_model_action_button_class_uses_success_when_idle() {
-        assert_eq!(model_action_button_class("idle"), "btn btn-success btn-sm");
+        assert_eq!(
+            model_action_button_class(&ModelState::Idle),
+            "btn btn-success btn-sm"
+        );
     }
 
     #[test]
     fn test_model_action_button_class_uses_secondary_when_loading() {
         assert_eq!(
-            model_action_button_class("loading"),
+            model_action_button_class(&ModelState::Loading),
             "btn btn-secondary btn-sm"
         );
     }
@@ -528,21 +542,36 @@ mod tests {
 
     #[test]
     fn test_resolve_state_passthrough_when_non_empty() {
-        assert_eq!(resolve_state("ready", Some(false)), "ready");
-        assert_eq!(resolve_state("loading", None), "loading");
-        assert_eq!(resolve_state("failed", Some(true)), "failed");
-        assert_eq!(resolve_state("idle", None), "idle");
+        assert_eq!(
+            resolve_state(&ModelState::Ready, Some(false)),
+            ModelState::Ready
+        );
+        assert_eq!(
+            resolve_state(&ModelState::Loading, None),
+            ModelState::Loading
+        );
+        assert_eq!(
+            resolve_state(&ModelState::Failed, Some(true)),
+            ModelState::Failed
+        );
+        assert_eq!(resolve_state(&ModelState::Idle, None), ModelState::Idle);
     }
 
     #[test]
     fn test_resolve_state_fallback_to_loaded_true() {
-        assert_eq!(resolve_state("", Some(true)), "ready");
+        assert_eq!(
+            resolve_state(&ModelState::Idle, Some(true)),
+            ModelState::Ready
+        );
     }
 
     #[test]
     fn test_resolve_state_fallback_to_idle() {
-        assert_eq!(resolve_state("", Some(false)), "idle");
-        assert_eq!(resolve_state("", None), "idle");
+        assert_eq!(
+            resolve_state(&ModelState::Idle, Some(false)),
+            ModelState::Idle
+        );
+        assert_eq!(resolve_state(&ModelState::Idle, None), ModelState::Idle);
     }
 
     // ── Component compile-time smoke tests ──────────────────────────────────

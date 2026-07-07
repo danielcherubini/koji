@@ -444,26 +444,26 @@ device = "cuda"
         // Verify general was migrated correctly
         let OpenResult { conn, .. } = crate::db::open(config_dir).unwrap();
         let general = queries::get_general(&conn).unwrap().unwrap();
-        assert_eq!(general.0, "debug");
-        assert_eq!(general.1, Some("/data/models".to_string()));
-        assert_eq!(general.4, 24);
+        assert_eq!(general.log_level, "debug");
+        assert_eq!(general.models_dir, Some("/data/models".to_string()));
+        assert_eq!(general.update_check_interval, 24);
 
         // Verify proxy was migrated
         let proxy = queries::get_proxy(&conn).unwrap().unwrap();
-        assert_eq!(proxy.0, "127.0.0.1");
-        assert_eq!(proxy.1, 8080);
-        assert!(proxy.2);
-        assert_eq!(proxy.3, 600);
+        assert_eq!(proxy.host, "127.0.0.1");
+        assert_eq!(proxy.port, 8080);
+        assert!(proxy.auto_unload);
+        assert_eq!(proxy.idle_timeout_secs, 600);
 
         // Verify supervisor was migrated
         let supervisor = queries::get_supervisor(&conn).unwrap().unwrap();
-        assert_eq!(supervisor.0, "on-failure");
-        assert_eq!(supervisor.1, 5);
+        assert_eq!(supervisor.restart_policy, "on-failure");
+        assert_eq!(supervisor.max_restarts, 5);
 
         // Verify compaction was migrated
         let compaction = queries::get_compaction(&conn).unwrap().unwrap();
-        assert!(compaction.0);
-        assert_eq!(compaction.2, "cuda");
+        assert!(compaction.enabled);
+        assert_eq!(compaction.device, "cuda");
 
         // Verify config.toml was renamed
         assert!(!config_dir.join("config.toml").exists());

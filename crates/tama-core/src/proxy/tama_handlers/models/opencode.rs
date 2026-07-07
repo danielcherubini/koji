@@ -21,7 +21,7 @@ pub async fn handle_opencode_list_models(state: State<Arc<ProxyState>>) -> Json<
         let loaded: HashMap<_, _> = models
             .iter()
             .filter_map(|(name, ms)| {
-                if let crate::proxy::ModelState::Ready { backend_url, .. } = ms {
+                if let crate::proxy::BackendState::Ready { backend_url, .. } = ms {
                     Some((name.clone(), backend_url.clone()))
                 } else {
                     None

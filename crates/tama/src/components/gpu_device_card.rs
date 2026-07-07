@@ -2,6 +2,10 @@
 
 use leptos::prelude::*;
 
+use crate::gpu_types::ModelState;
+
+#[cfg(test)]
+use crate::gpu_types::GpuVendor;
 use crate::pages::dashboard::{GpuDeviceStats, ModelStatus, VramInfo};
 
 /// Lifecycle state of a GPU device, derived from loaded model states.
@@ -47,11 +51,11 @@ pub fn derive_device_state(loaded_models: &[ModelStatus], device_id: &str) -> Gp
         }
 
         // Model matches this device — track its state.
-        match model.state.as_str() {
-            "loading" => has_loading = true,
-            "ready" | "unloading" => has_active = true,
-            "failed" => has_failed = true,
-            _ => {}
+        match model.state {
+            ModelState::Loading => has_loading = true,
+            ModelState::Ready | ModelState::Unloading => has_active = true,
+            ModelState::Failed => has_failed = true,
+            ModelState::Idle => {}
         }
     }
 
@@ -104,7 +108,11 @@ pub fn model_for_device<'a>(
             None if device_id == "GPU0" => true,
             _ => false,
         };
-        targets_device && matches!(m.state.as_str(), "ready" | "loading" | "unloading")
+        targets_device
+            && matches!(
+                m.state,
+                ModelState::Ready | ModelState::Loading | ModelState::Unloading
+            )
     })
 }
 
@@ -128,17 +136,17 @@ pub fn loaded_model_display(
             continue;
         }
 
-        match model.state.as_str() {
-            "ready" | "loading" | "unloading" => {
+        match model.state {
+            ModelState::Ready | ModelState::Loading | ModelState::Unloading => {
                 let name = model
                     .display_name
                     .clone()
                     .or_else(|| model.api_name.clone())
                     .unwrap_or_else(|| model.id.clone());
-                let transferring = model.state == "loading";
+                let transferring = matches!(model.state, ModelState::Loading);
                 return Some(LoadedModelDisplay { name, transferring });
             }
-            _ => {}
+            ModelState::Failed | ModelState::Idle => {}
         }
     }
     None
@@ -355,6 +363,14 @@ mod tests {
     use super::*;
 
     fn make_model(id: &str, state: &str, gpu_device: Option<&str>) -> ModelStatus {
+        let model_state = match state {
+            "idle" => ModelState::Idle,
+            "loading" => ModelState::Loading,
+            "ready" => ModelState::Ready,
+            "unloading" => ModelState::Unloading,
+            "failed" => ModelState::Failed,
+            _ => ModelState::Idle,
+        };
         ModelStatus {
             id: id.to_string(),
             db_id: None,
@@ -363,7 +379,7 @@ mod tests {
             backend: "llama_cpp".to_string(),
             #[allow(deprecated)]
             loaded: state == "ready",
-            state: state.to_string(),
+            state: model_state,
             quant: None,
             context_length: None,
             hf_architecture_type: None,
@@ -380,10 +396,14 @@ mod tests {
     }
 
     fn make_gpu(device_id: &str, vendor: &str) -> GpuDeviceStats {
+        let gpu_vendor = match vendor {
+            "amd" => GpuVendor::Amd,
+            _ => GpuVendor::Nvidia,
+        };
         GpuDeviceStats {
             device_id: device_id.to_string(),
             name: "Test GPU".to_string(),
-            vendor: vendor.to_string(),
+            vendor: gpu_vendor,
             utilization_pct: None,
             vram: None,
             temperature_c: None,

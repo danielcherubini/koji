@@ -15,9 +15,9 @@ This directory contains implementation plans for the Tama project. Each plan doc
 ## Quick Stats
 
 - **Total Plans**: 47
-- **Completed**: 39 ✅
+- **Completed**: 40 ✅
 - **In Progress**: 0 🚧
-- **Draft**: 4 📋
+- **Draft**: 3 📋
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
 
@@ -27,7 +27,6 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 | Plan | Description | Status |
 |------|-------------|--------|
-| [Type Safety](plan-147-type-safety.md) | GpuVendor + ModelState enums, DB tuples → typed records, config enums (RestartPolicy, LogLevel, CompactionDevice) | 📋 DRAFT |
 | [Testability](plan-148-testability.md) | Backend lifecycle trait abstractions (HealthChecker, ProcessSpawner, PortAllocator) + tests, update checker + download queue processor tests | 📋 DRAFT |
 | [Web UI Splits](plan-149-web-ui-splits.md) | Split 3 large web UI files (types/config.rs 986, api/backends/manage.rs 1013, pages/config_editor.rs 937) into focused modules | 📋 DRAFT |
 | [Naming and Cleanup](plan-150-naming-and-cleanup.md) | Rename download→pull in model subsystem (15+ locations + DB migration), typed handler responses, remove deprecated fields, set rename_legacy deadline | 📋 DRAFT |
@@ -38,6 +37,7 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 | Plan | Description | PR / Git References |
 |------|-------------|---------------------|
+| [Type Safety](plan-147-type-safety.md) | GpuVendor + ModelState enums, DB tuples → typed records, config enums (RestartPolicy, LogLevel, CompactionDevice) | #146 ✅ COMPLETED |
 | [Architectural Refactoring](plan-146-architectural-refactoring.md) | DB repository layer, ProxyState encapsulation + WebState extraction, move web_types to tama crate | #145 ✅ COMPLETED |
 | [File Splits — tama-core](plan-145-file-splits.md) | Split 5 god files (config/types.rs 1407, models.rs 1303, checker.rs 1079, forward.rs 1119, gpu/system.rs 1121) into focused modules | #144 ✅ COMPLETED |
 | [Model Editor Redesign](plan-143-model-editor-redesign.md) | Replace side nav with pill-style tabs, sticky save bar, compact expandable sampling, reorganized sections (Settings/Hardware/Sampling/Files/Advanced), preset management | #142 ✅ COMPLETED |

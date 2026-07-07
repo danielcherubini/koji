@@ -8,11 +8,76 @@ use anyhow::{anyhow, Context, Result};
 use rusqlite::{params, Connection};
 use serde_json;
 
+use crate::config::types::{CompactionDevice, LogLevel, RestartPolicy};
+
+// ── Typed record structs ─────────────────────────────────────────────
+
+/// A row from the `app_general` table.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GeneralRecord {
+    pub log_level: String,
+    pub models_dir: Option<String>,
+    pub logs_dir: Option<String>,
+    pub hf_token: Option<String>,
+    pub update_check_interval: u32,
+}
+
+/// A row from the `app_proxy` table.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProxyRecord {
+    pub host: String,
+    pub port: u16,
+    pub auto_unload: bool,
+    pub idle_timeout_secs: u64,
+    pub startup_timeout_secs: u64,
+    pub circuit_breaker_threshold: u32,
+    pub circuit_breaker_cooldown_seconds: u64,
+    pub metrics_retention_secs: u64,
+    pub download_queue_poll_interval_secs: u64,
+    pub max_loaded_models: u32,
+    pub authenticator_url: Option<String>,
+    pub authenticator_skip_paths: Vec<String>,
+}
+
+/// A row from the `app_supervisor` table.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SupervisorRecord {
+    pub restart_policy: String,
+    pub max_restarts: u32,
+    pub restart_delay_ms: u64,
+    pub health_check_interval_ms: u64,
+    pub health_check_timeout_ms: u64,
+    pub health_check_retries: u32,
+}
+
+/// A row from the `app_compaction` table.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompactionRecord {
+    pub enabled: bool,
+    pub server_path: Option<String>,
+    pub device: String,
+    pub port: Option<u16>,
+    pub request_timeout_ms: u64,
+}
+
+/// A row from the `sampling_templates` table.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SamplingTemplateRecord {
+    pub name: String,
+    pub temperature: Option<f64>,
+    pub top_k: Option<u32>,
+    pub top_p: Option<f64>,
+    pub min_p: Option<f64>,
+    pub presence_penalty: Option<f64>,
+    pub frequency_penalty: Option<f64>,
+    pub repeat_penalty: Option<f64>,
+}
+
 /// Insert or replace the general app config row (id=1).
 #[allow(clippy::too_many_arguments)]
 pub fn upsert_general(
     conn: &Connection,
-    log_level: &str,
+    log_level: &LogLevel,
     models_dir: Option<&str>,
     logs_dir: Option<&str>,
     hf_token: Option<&str>,
@@ -21,29 +86,26 @@ pub fn upsert_general(
     conn.execute(
         "INSERT OR REPLACE INTO app_general (id, log_level, models_dir, logs_dir, hf_token, update_check_interval)
          VALUES (1, ?1, ?2, ?3, ?4, ?5)",
-        params![log_level, models_dir, logs_dir, hf_token, update_check_interval as i64],
+        params![log_level.as_str(), models_dir, logs_dir, hf_token, update_check_interval as i64],
     )
     .context("Failed to upsert app_general")?;
     Ok(())
 }
 
 /// Get the general app config row. Returns None if no row exists.
-#[allow(clippy::type_complexity)]
-pub fn get_general(
-    conn: &Connection,
-) -> Result<Option<(String, Option<String>, Option<String>, Option<String>, u32)>> {
+pub fn get_general(conn: &Connection) -> Result<Option<GeneralRecord>> {
     let mut stmt = conn.prepare(
         "SELECT log_level, models_dir, logs_dir, hf_token, update_check_interval
          FROM app_general WHERE id = 1",
     )?;
     let mut rows = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, Option<String>>(1)?,
-            row.get::<_, Option<String>>(2)?,
-            row.get::<_, Option<String>>(3)?,
-            row.get::<_, i64>(4)? as u32,
-        ))
+        Ok(GeneralRecord {
+            log_level: row.get::<_, String>(0)?,
+            models_dir: row.get::<_, Option<String>>(1)?,
+            logs_dir: row.get::<_, Option<String>>(2)?,
+            hf_token: row.get::<_, Option<String>>(3)?,
+            update_check_interval: row.get::<_, i64>(4)? as u32,
+        })
     })?;
     match rows.next() {
         Some(Ok(record)) => Ok(Some(record)),
@@ -99,25 +161,7 @@ pub fn upsert_proxy(
 
 /// Get the proxy config row. Returns None if no row exists.
 /// `authenticator_skip_paths` is deserialized from JSON.
-#[allow(clippy::type_complexity)]
-pub fn get_proxy(
-    conn: &Connection,
-) -> Result<
-    Option<(
-        String,
-        u16,
-        bool,
-        u64,
-        u64,
-        u32,
-        u64,
-        u64,
-        u64,
-        u32,
-        Option<String>,
-        Vec<String>,
-    )>,
-> {
+pub fn get_proxy(conn: &Connection) -> Result<Option<ProxyRecord>> {
     let mut stmt = conn.prepare(
         "SELECT host, port, auto_unload, idle_timeout_secs, startup_timeout_secs,
                 circuit_breaker_threshold, circuit_breaker_cooldown_seconds,
@@ -157,9 +201,9 @@ pub fn get_proxy(
                 authenticator_url,
                 skip_paths_str,
             ) = record;
-            let skip_paths: Vec<String> = serde_json::from_str(&skip_paths_str)
+            let authenticator_skip_paths: Vec<String> = serde_json::from_str(&skip_paths_str)
                 .map_err(|e| anyhow!("Failed to deserialize authenticator_skip_paths: {e}"))?;
-            Ok(Some((
+            Ok(Some(ProxyRecord {
                 host,
                 port,
                 auto_unload,
@@ -171,8 +215,8 @@ pub fn get_proxy(
                 download_queue_poll_interval_secs,
                 max_loaded_models,
                 authenticator_url,
-                skip_paths,
-            )))
+                authenticator_skip_paths,
+            }))
         }
         Some(Err(e)) => Err(e.into()),
         None => Ok(None),
@@ -182,7 +226,7 @@ pub fn get_proxy(
 /// Insert or replace the supervisor config row (id=1).
 pub fn upsert_supervisor(
     conn: &Connection,
-    restart_policy: &str,
+    restart_policy: &RestartPolicy,
     max_restarts: u32,
     restart_delay_ms: u64,
     health_check_interval_ms: u64,
@@ -194,7 +238,7 @@ pub fn upsert_supervisor(
             health_check_interval_ms, health_check_timeout_ms, health_check_retries)
          VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)",
         params![
-            restart_policy,
+            restart_policy.as_str(),
             max_restarts as i64,
             restart_delay_ms,
             health_check_interval_ms,
@@ -207,22 +251,21 @@ pub fn upsert_supervisor(
 }
 
 /// Get the supervisor config row. Returns None if no row exists.
-#[allow(clippy::type_complexity)]
-pub fn get_supervisor(conn: &Connection) -> Result<Option<(String, u32, u64, u64, u64, u32)>> {
+pub fn get_supervisor(conn: &Connection) -> Result<Option<SupervisorRecord>> {
     let mut stmt = conn.prepare(
         "SELECT restart_policy, max_restarts, restart_delay_ms, health_check_interval_ms,
                 health_check_timeout_ms, health_check_retries
          FROM app_supervisor WHERE id = 1",
     )?;
     let mut rows = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, i64>(1)? as u32,
-            row.get::<_, i64>(2)? as u64,
-            row.get::<_, i64>(3)? as u64,
-            row.get::<_, i64>(4)? as u64,
-            row.get::<_, i64>(5)? as u32,
-        ))
+        Ok(SupervisorRecord {
+            restart_policy: row.get::<_, String>(0)?,
+            max_restarts: row.get::<_, i64>(1)? as u32,
+            restart_delay_ms: row.get::<_, i64>(2)? as u64,
+            health_check_interval_ms: row.get::<_, i64>(3)? as u64,
+            health_check_timeout_ms: row.get::<_, i64>(4)? as u64,
+            health_check_retries: row.get::<_, i64>(5)? as u32,
+        })
     })?;
     match rows.next() {
         Some(Ok(record)) => Ok(Some(record)),
@@ -236,7 +279,7 @@ pub fn upsert_compaction(
     conn: &Connection,
     enabled: bool,
     server_path: Option<&str>,
-    device: &str,
+    device: &CompactionDevice,
     port: Option<u16>,
     request_timeout_ms: u64,
 ) -> Result<()> {
@@ -246,7 +289,7 @@ pub fn upsert_compaction(
         params![
             enabled as i32,
             server_path,
-            device,
+            device.as_str(),
             port.map(|p| p as i64),
             request_timeout_ms,
         ],
@@ -256,22 +299,19 @@ pub fn upsert_compaction(
 }
 
 /// Get the compaction config row. Returns None if no row exists.
-#[allow(clippy::type_complexity)]
-pub fn get_compaction(
-    conn: &Connection,
-) -> Result<Option<(bool, Option<String>, String, Option<u16>, u64)>> {
+pub fn get_compaction(conn: &Connection) -> Result<Option<CompactionRecord>> {
     let mut stmt = conn.prepare(
         "SELECT enabled, server_path, device, port, request_timeout_ms
          FROM app_compaction WHERE id = 1",
     )?;
     let mut rows = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, i32>(0)? != 0,
-            row.get::<_, Option<String>>(1)?,
-            row.get::<_, String>(2)?,
-            row.get::<_, Option<i64>>(3)?.map(|p| p as u16),
-            row.get::<_, i64>(4)? as u64,
-        ))
+        Ok(CompactionRecord {
+            enabled: row.get::<_, i32>(0)? != 0,
+            server_path: row.get::<_, Option<String>>(1)?,
+            device: row.get::<_, String>(2)?,
+            port: row.get::<_, Option<i64>>(3)?.map(|p| p as u16),
+            request_timeout_ms: row.get::<_, i64>(4)? as u64,
+        })
     })?;
     match rows.next() {
         Some(Ok(record)) => Ok(Some(record)),
@@ -320,36 +360,22 @@ pub fn upsert_sampling_template(
 }
 
 /// Get all sampling templates.
-#[allow(clippy::type_complexity)]
-pub fn get_all_sampling_templates(
-    conn: &Connection,
-) -> Result<
-    Vec<(
-        String,
-        Option<f64>,
-        Option<u32>,
-        Option<f64>,
-        Option<f64>,
-        Option<f64>,
-        Option<f64>,
-        Option<f64>,
-    )>,
-> {
+pub fn get_all_sampling_templates(conn: &Connection) -> Result<Vec<SamplingTemplateRecord>> {
     let mut stmt = conn.prepare(
         "SELECT name, temperature, top_k, top_p, min_p, presence_penalty, frequency_penalty, repeat_penalty
          FROM sampling_templates ORDER BY name",
     )?;
     let rows = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, Option<f64>>(1)?,
-            row.get::<_, Option<i64>>(2)?.map(|v| v as u32),
-            row.get::<_, Option<f64>>(3)?,
-            row.get::<_, Option<f64>>(4)?,
-            row.get::<_, Option<f64>>(5)?,
-            row.get::<_, Option<f64>>(6)?,
-            row.get::<_, Option<f64>>(7)?,
-        ))
+        Ok(SamplingTemplateRecord {
+            name: row.get::<_, String>(0)?,
+            temperature: row.get::<_, Option<f64>>(1)?,
+            top_k: row.get::<_, Option<i64>>(2)?.map(|v| v as u32),
+            top_p: row.get::<_, Option<f64>>(3)?,
+            min_p: row.get::<_, Option<f64>>(4)?,
+            presence_penalty: row.get::<_, Option<f64>>(5)?,
+            frequency_penalty: row.get::<_, Option<f64>>(6)?,
+            repeat_penalty: row.get::<_, Option<f64>>(7)?,
+        })
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Into::into)
@@ -483,6 +509,7 @@ pub fn seed_defaults(conn: &Connection) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::types::{CompactionDevice, LogLevel, RestartPolicy};
     use crate::db::open_in_memory;
 
     /// Helper: open an in-memory DB with migrations applied.
@@ -507,28 +534,25 @@ mod tests {
 
         // All singleton tables should have a row now
         let general = get_general(&conn).unwrap().unwrap();
-        assert_eq!(general.0, "info");
-        assert_eq!(general.4, 12);
+        assert_eq!(general.log_level, "info");
+        assert_eq!(general.update_check_interval, 12);
 
         let proxy = get_proxy(&conn).unwrap().unwrap();
-        assert_eq!(proxy.0, "0.0.0.0");
-        assert_eq!(proxy.1, 11434);
+        assert_eq!(proxy.host, "0.0.0.0");
+        assert_eq!(proxy.port, 11434);
 
         let supervisor = get_supervisor(&conn).unwrap().unwrap();
-        assert_eq!(supervisor.0, "always");
-        assert_eq!(supervisor.1, 10);
+        assert_eq!(supervisor.restart_policy, "always");
+        assert_eq!(supervisor.max_restarts, 10);
 
         let compaction = get_compaction(&conn).unwrap().unwrap();
-        assert!(!compaction.0);
-        assert_eq!(compaction.2, "cpu");
+        assert!(!compaction.enabled);
+        assert_eq!(compaction.device, "cpu");
 
         // 4 sampling templates
         let templates = get_all_sampling_templates(&conn).unwrap();
         assert_eq!(templates.len(), 4);
-        let names: Vec<&str> = templates
-            .iter()
-            .map(|(n, _, _, _, _, _, _, _)| n.as_str())
-            .collect();
+        let names: Vec<&str> = templates.iter().map(|t| t.name.as_str()).collect();
         assert!(names.contains(&"coding"));
         assert!(names.contains(&"chat"));
         assert!(names.contains(&"analysis"));
@@ -551,7 +575,7 @@ mod tests {
         // Upsert
         upsert_general(
             &conn,
-            "debug",
+            &LogLevel::Debug,
             Some("/data/models"),
             Some("/var/log/tama"),
             Some("hf_abc123"),
@@ -561,21 +585,21 @@ mod tests {
 
         // Get and verify
         let general = get_general(&conn).unwrap().unwrap();
-        assert_eq!(general.0, "debug");
-        assert_eq!(general.1, Some("/data/models".to_string()));
-        assert_eq!(general.2, Some("/var/log/tama".to_string()));
-        assert_eq!(general.3, Some("hf_abc123".to_string()));
-        assert_eq!(general.4, 30);
+        assert_eq!(general.log_level, "debug");
+        assert_eq!(general.models_dir, Some("/data/models".to_string()));
+        assert_eq!(general.logs_dir, Some("/var/log/tama".to_string()));
+        assert_eq!(general.hf_token, Some("hf_abc123".to_string()));
+        assert_eq!(general.update_check_interval, 30);
 
         // Upsert again (update)
-        upsert_general(&conn, "warn", None, None, None, 60).unwrap();
+        upsert_general(&conn, &LogLevel::Warn, None, None, None, 60).unwrap();
 
         let general = get_general(&conn).unwrap().unwrap();
-        assert_eq!(general.0, "warn");
-        assert_eq!(general.1, None);
-        assert_eq!(general.2, None);
-        assert_eq!(general.3, None);
-        assert_eq!(general.4, 60);
+        assert_eq!(general.log_level, "warn");
+        assert_eq!(general.models_dir, None);
+        assert_eq!(general.logs_dir, None);
+        assert_eq!(general.hf_token, None);
+        assert_eq!(general.update_check_interval, 60);
     }
 
     // ── proxy ──────────────────────────────────────────────────────────
@@ -609,18 +633,21 @@ mod tests {
         .unwrap();
 
         let proxy = get_proxy(&conn).unwrap().unwrap();
-        assert_eq!(proxy.0, "127.0.0.1");
-        assert_eq!(proxy.1, 8080);
-        assert!(proxy.2);
-        assert_eq!(proxy.3, 600);
-        assert_eq!(proxy.4, 180);
-        assert_eq!(proxy.5, 5);
-        assert_eq!(proxy.6, 120);
-        assert_eq!(proxy.7, 43200);
-        assert_eq!(proxy.8, 5);
-        assert_eq!(proxy.9, 2);
-        assert_eq!(proxy.10, Some("http://auth:8080".to_string()));
-        assert_eq!(proxy.11, skip_paths);
+        assert_eq!(proxy.host, "127.0.0.1");
+        assert_eq!(proxy.port, 8080);
+        assert!(proxy.auto_unload);
+        assert_eq!(proxy.idle_timeout_secs, 600);
+        assert_eq!(proxy.startup_timeout_secs, 180);
+        assert_eq!(proxy.circuit_breaker_threshold, 5);
+        assert_eq!(proxy.circuit_breaker_cooldown_seconds, 120);
+        assert_eq!(proxy.metrics_retention_secs, 43200);
+        assert_eq!(proxy.download_queue_poll_interval_secs, 5);
+        assert_eq!(proxy.max_loaded_models, 2);
+        assert_eq!(
+            proxy.authenticator_url,
+            Some("http://auth:8080".to_string())
+        );
+        assert_eq!(proxy.authenticator_skip_paths, skip_paths);
 
         // Update with empty skip paths
         upsert_proxy(
@@ -641,8 +668,8 @@ mod tests {
         .unwrap();
 
         let proxy = get_proxy(&conn).unwrap().unwrap();
-        assert_eq!(proxy.11, Vec::<String>::new());
-        assert_eq!(proxy.10, None);
+        assert_eq!(proxy.authenticator_skip_paths, Vec::<String>::new());
+        assert_eq!(proxy.authenticator_url, None);
     }
 
     // ── supervisor ─────────────────────────────────────────────────────
@@ -653,23 +680,23 @@ mod tests {
 
         assert!(get_supervisor(&conn).unwrap().is_none());
 
-        upsert_supervisor(&conn, "on-failure", 5, 5000, 3000, 10000, 2).unwrap();
+        upsert_supervisor(&conn, &RestartPolicy::OnFailure, 5, 5000, 3000, 10000, 2).unwrap();
 
         let supervisor = get_supervisor(&conn).unwrap().unwrap();
-        assert_eq!(supervisor.0, "on-failure");
-        assert_eq!(supervisor.1, 5);
-        assert_eq!(supervisor.2, 5000);
-        assert_eq!(supervisor.3, 3000);
-        assert_eq!(supervisor.4, 10000);
-        assert_eq!(supervisor.5, 2);
+        assert_eq!(supervisor.restart_policy, "on-failure");
+        assert_eq!(supervisor.max_restarts, 5);
+        assert_eq!(supervisor.restart_delay_ms, 5000);
+        assert_eq!(supervisor.health_check_interval_ms, 3000);
+        assert_eq!(supervisor.health_check_timeout_ms, 10000);
+        assert_eq!(supervisor.health_check_retries, 2);
 
         // Update
-        upsert_supervisor(&conn, "always", 20, 1000, 10000, 60000, 5).unwrap();
+        upsert_supervisor(&conn, &RestartPolicy::Always, 20, 1000, 10000, 60000, 5).unwrap();
 
         let supervisor = get_supervisor(&conn).unwrap().unwrap();
-        assert_eq!(supervisor.0, "always");
-        assert_eq!(supervisor.1, 20);
-        assert_eq!(supervisor.2, 1000);
+        assert_eq!(supervisor.restart_policy, "always");
+        assert_eq!(supervisor.max_restarts, 20);
+        assert_eq!(supervisor.restart_delay_ms, 1000);
     }
 
     // ── compaction ─────────────────────────────────────────────────────
@@ -684,28 +711,31 @@ mod tests {
             &conn,
             true,
             Some("/usr/local/bin/llmlingua"),
-            "cuda",
+            &CompactionDevice::Cuda,
             Some(8888),
             60000,
         )
         .unwrap();
 
         let compaction = get_compaction(&conn).unwrap().unwrap();
-        assert!(compaction.0);
-        assert_eq!(compaction.1, Some("/usr/local/bin/llmlingua".to_string()));
-        assert_eq!(compaction.2, "cuda");
-        assert_eq!(compaction.3, Some(8888));
-        assert_eq!(compaction.4, 60000);
+        assert!(compaction.enabled);
+        assert_eq!(
+            compaction.server_path,
+            Some("/usr/local/bin/llmlingua".to_string())
+        );
+        assert_eq!(compaction.device, "cuda");
+        assert_eq!(compaction.port, Some(8888));
+        assert_eq!(compaction.request_timeout_ms, 60000);
 
         // Update with defaults
-        upsert_compaction(&conn, false, None, "cpu", None, 30000).unwrap();
+        upsert_compaction(&conn, false, None, &CompactionDevice::Cpu, None, 30000).unwrap();
 
         let compaction = get_compaction(&conn).unwrap().unwrap();
-        assert!(!compaction.0);
-        assert_eq!(compaction.1, None);
-        assert_eq!(compaction.2, "cpu");
-        assert_eq!(compaction.3, None);
-        assert_eq!(compaction.4, 30000);
+        assert!(!compaction.enabled);
+        assert_eq!(compaction.server_path, None);
+        assert_eq!(compaction.device, "cpu");
+        assert_eq!(compaction.port, None);
+        assert_eq!(compaction.request_timeout_ms, 30000);
     }
 
     // ── sampling templates ─────────────────────────────────────────────
@@ -749,15 +779,12 @@ mod tests {
         assert_eq!(templates.len(), 2);
 
         // Verify values
-        let coding = templates
-            .iter()
-            .find(|(n, _, _, _, _, _, _, _)| n == "coding")
-            .unwrap();
-        assert_eq!(coding.1, Some(0.3));
-        assert_eq!(coding.2, Some(50));
-        assert_eq!(coding.3, Some(0.9));
-        assert_eq!(coding.4, Some(0.05));
-        assert_eq!(coding.5, Some(0.1));
+        let coding = templates.iter().find(|t| t.name == "coding").unwrap();
+        assert_eq!(coding.temperature, Some(0.3));
+        assert_eq!(coding.top_k, Some(50));
+        assert_eq!(coding.top_p, Some(0.9));
+        assert_eq!(coding.min_p, Some(0.05));
+        assert_eq!(coding.presence_penalty, Some(0.1));
 
         // Upsert updates existing template (coding)
         upsert_sampling_template(
@@ -776,13 +803,10 @@ mod tests {
         let templates = get_all_sampling_templates(&conn).unwrap();
         assert_eq!(templates.len(), 2); // Still 2, not 3
 
-        let coding = templates
-            .iter()
-            .find(|(n, _, _, _, _, _, _, _)| n == "coding")
-            .unwrap();
-        assert_eq!(coding.1, Some(0.5));
-        assert_eq!(coding.2, Some(100));
-        assert_eq!(coding.7, Some(1.5));
+        let coding = templates.iter().find(|t| t.name == "coding").unwrap();
+        assert_eq!(coding.temperature, Some(0.5));
+        assert_eq!(coding.top_k, Some(100));
+        assert_eq!(coding.repeat_penalty, Some(1.5));
 
         // Delete all
         delete_all_sampling_templates(&conn).unwrap();

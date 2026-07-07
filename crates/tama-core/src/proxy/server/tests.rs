@@ -175,7 +175,7 @@ async fn test_metrics_merges_backend_metrics() {
         let mut models = state.models.write().await;
         models.insert(
             "test-model".to_string(),
-            super::super::types::ModelState::Ready {
+            super::super::types::BackendState::Ready {
                 model_name: "test-model".to_string(),
                 backend: "llama_cpp".to_string(),
                 backend_pid: 99999,
@@ -362,7 +362,10 @@ async fn test_metric_sample_broadcast_populates_models_field() {
     assert_eq!(sample.models[0].id, "alpha");
     assert_eq!(sample.models[0].backend, "llama_cpp");
     assert!(
-        sample.models[0].state != "ready",
+        !matches!(
+            sample.models[0].state,
+            crate::gpu::ModelState::Ready
+        ),
         "Expected the configured model to be reported as not ready since no backend was started, got: {:?}",
         sample.models[0]
     );
@@ -605,7 +608,10 @@ async fn test_system_metrics_stream_sample_models_round_trip() {
     assert_eq!(models[0].id, "alpha");
     assert_eq!(models[0].backend, "llama_cpp");
     assert!(
-        models[0].state != "ready",
+        !matches!(
+            models[0].state,
+            crate::gpu::ModelState::Ready
+        ),
         "Expected the configured model to be reported as not ready since no backend was started, got: {:?}",
         models[0]
     );

@@ -1,5 +1,6 @@
 mod backend;
 mod compaction;
+mod enums;
 mod general;
 mod model;
 mod proxy;
@@ -16,6 +17,7 @@ mod model_tests;
 
 pub use backend::*;
 pub use compaction::*;
+pub use enums::*;
 pub use general::*;
 pub use model::*;
 pub use proxy::*;
@@ -76,78 +78,91 @@ impl Config {
         let general_row = crate::db::queries::get_general(&conn)?
             .ok_or_else(|| anyhow::anyhow!("app_general row not found after seeding"))?;
         let general = General {
-            log_level: general_row.0,
-            models_dir: general_row.1,
-            logs_dir: general_row.2,
-            hf_token: general_row.3,
-            update_check_interval: general_row.4,
+            log_level: crate::config::types::LogLevel::from_str(&general_row.log_level)
+                .unwrap_or_else(|| {
+                    tracing::warn!(
+                        log_level = %general_row.log_level,
+                        "Invalid log_level in DB, falling back to default (info)"
+                    );
+                    crate::config::types::LogLevel::default()
+                }),
+            models_dir: general_row.models_dir,
+            logs_dir: general_row.logs_dir,
+            hf_token: general_row.hf_token,
+            update_check_interval: general_row.update_check_interval,
         };
 
         // Read proxy
         let proxy_row = crate::db::queries::get_proxy(&conn)?
             .ok_or_else(|| anyhow::anyhow!("app_proxy row not found after seeding"))?;
         let proxy = ProxyConfig {
-            host: proxy_row.0,
-            port: proxy_row.1,
-            auto_unload: proxy_row.2,
-            idle_timeout_secs: proxy_row.3,
-            startup_timeout_secs: proxy_row.4,
-            circuit_breaker_threshold: proxy_row.5,
-            circuit_breaker_cooldown_seconds: proxy_row.6,
-            metrics_retention_secs: proxy_row.7,
-            download_queue_poll_interval_secs: proxy_row.8,
-            max_loaded_models: proxy_row.9,
-            authenticator_url: proxy_row.10,
-            authenticator_skip_paths: proxy_row.11,
+            host: proxy_row.host,
+            port: proxy_row.port,
+            auto_unload: proxy_row.auto_unload,
+            idle_timeout_secs: proxy_row.idle_timeout_secs,
+            startup_timeout_secs: proxy_row.startup_timeout_secs,
+            circuit_breaker_threshold: proxy_row.circuit_breaker_threshold,
+            circuit_breaker_cooldown_seconds: proxy_row.circuit_breaker_cooldown_seconds,
+            metrics_retention_secs: proxy_row.metrics_retention_secs,
+            download_queue_poll_interval_secs: proxy_row.download_queue_poll_interval_secs,
+            max_loaded_models: proxy_row.max_loaded_models,
+            authenticator_url: proxy_row.authenticator_url,
+            authenticator_skip_paths: proxy_row.authenticator_skip_paths,
         };
 
         // Read supervisor
         let supervisor_row = crate::db::queries::get_supervisor(&conn)?
             .ok_or_else(|| anyhow::anyhow!("app_supervisor row not found after seeding"))?;
         let supervisor = Supervisor {
-            restart_policy: supervisor_row.0,
-            max_restarts: supervisor_row.1,
-            restart_delay_ms: supervisor_row.2,
-            health_check_interval_ms: supervisor_row.3,
-            health_check_timeout_ms: supervisor_row.4,
-            health_check_retries: supervisor_row.5,
+            restart_policy: crate::config::types::RestartPolicy::from_str(
+                &supervisor_row.restart_policy,
+            )
+            .unwrap_or_else(|| {
+                tracing::warn!(
+                    restart_policy = %supervisor_row.restart_policy,
+                    "Invalid restart_policy in DB, falling back to default (always)"
+                );
+                crate::config::types::RestartPolicy::default()
+            }),
+            max_restarts: supervisor_row.max_restarts,
+            restart_delay_ms: supervisor_row.restart_delay_ms,
+            health_check_interval_ms: supervisor_row.health_check_interval_ms,
+            health_check_timeout_ms: supervisor_row.health_check_timeout_ms,
+            health_check_retries: supervisor_row.health_check_retries,
         };
 
         // Read compaction
         let compaction_row = crate::db::queries::get_compaction(&conn)?
             .ok_or_else(|| anyhow::anyhow!("app_compaction row not found after seeding"))?;
         let compaction = CompactionConfig {
-            enabled: compaction_row.0,
-            server_path: compaction_row.1,
-            device: compaction_row.2,
-            port: compaction_row.3,
-            request_timeout_ms: compaction_row.4,
+            enabled: compaction_row.enabled,
+            server_path: compaction_row.server_path,
+            device: crate::config::types::CompactionDevice::from_str(&compaction_row.device)
+                .unwrap_or_else(|| {
+                    tracing::warn!(
+                        device = %compaction_row.device,
+                        "Invalid compaction device in DB, falling back to default (cpu)"
+                    );
+                    crate::config::types::CompactionDevice::default()
+                }),
+            port: compaction_row.port,
+            request_timeout_ms: compaction_row.request_timeout_ms,
         };
 
         // Read sampling templates
         let template_rows = crate::db::queries::get_all_sampling_templates(&conn)?;
         let mut sampling_templates = HashMap::new();
-        for (
-            name,
-            temperature,
-            top_k,
-            top_p,
-            min_p,
-            presence_penalty,
-            frequency_penalty,
-            repeat_penalty,
-        ) in &template_rows
-        {
+        for template in &template_rows {
             sampling_templates.insert(
-                name.clone(),
+                template.name.clone(),
                 SamplingParams {
-                    temperature: *temperature,
-                    top_k: *top_k,
-                    top_p: *top_p,
-                    min_p: *min_p,
-                    presence_penalty: *presence_penalty,
-                    frequency_penalty: *frequency_penalty,
-                    repeat_penalty: *repeat_penalty,
+                    temperature: template.temperature,
+                    top_k: template.top_k,
+                    top_p: template.top_p,
+                    min_p: template.min_p,
+                    presence_penalty: template.presence_penalty,
+                    frequency_penalty: template.frequency_penalty,
+                    repeat_penalty: template.repeat_penalty,
                 },
             );
         }

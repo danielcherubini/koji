@@ -73,7 +73,7 @@ pub async fn create_state_with_two_backends(
         let mut models = state.models.write().await;
         models.insert(
             "model-a".to_string(),
-            crate::proxy::ModelState::Ready {
+            crate::proxy::BackendState::Ready {
                 model_name: "model-a".to_string(),
                 backend: "llama_cpp".to_string(),
                 backend_pid: 1001,
@@ -87,7 +87,7 @@ pub async fn create_state_with_two_backends(
         );
         models.insert(
             "model-b".to_string(),
-            crate::proxy::ModelState::Ready {
+            crate::proxy::BackendState::Ready {
                 model_name: "model-b".to_string(),
                 backend: "llama_cpp".to_string(),
                 backend_pid: 1002,
