@@ -49,38 +49,14 @@ struct RepoDbMeta {
     files: std::collections::HashMap<String, ModelFileDto>,
 }
 
-/// Load per-repo DB metadata for a model by its integer id.
-fn load_repo_db_meta(mgr: &tama_core::models::ModelManager, model_id: i64) -> RepoDbMeta {
-    let mut meta = RepoDbMeta::default();
-    if let Ok(Some(pull)) = mgr.get_pull(model_id) {
-        meta.commit_sha = Some(pull.commit_sha);
-        meta.pulled_at = Some(pull.pulled_at);
-    }
-    if let Ok(files) = mgr.get_files(model_id) {
-        for f in files {
-            let dto = tama_core::db::repository::ModelFileDto {
-                id: f.id,
-                model_id: f.model_id,
-                repo_id: f.repo_id.clone(),
-                filename: f.filename.clone(),
-                quant: f.quant.clone(),
-                lfs_oid: f.lfs_oid.clone(),
-                size_bytes: f.size_bytes,
-                downloaded_at: f.downloaded_at.clone(),
-                last_verified_at: f.last_verified_at.clone(),
-                verified_ok: f.verified_ok,
-                verify_error: f.verify_error.clone(),
-            };
-            meta.files.insert(f.filename.clone(), dto);
-        }
-    }
-    meta
-}
-
 /// Load per-repo DB metadata for a model using Repository.
 fn load_repo_db_meta_from_repo(repo: &Repository, model_id: i64) -> RepoDbMeta {
     let mut meta = RepoDbMeta::default();
-    // Note: pull metadata is tracked by ModelManager, not Repository
+    // Pull metadata (commit SHA + pull timestamp)
+    if let Ok(Some(pull)) = repo.get_model_pull(model_id) {
+        meta.commit_sha = Some(pull.commit_sha);
+        meta.pulled_at = Some(pull.pulled_at);
+    }
     if let Ok(files) = repo.get_model_files(model_id) {
         for f in files {
             meta.files.insert(f.filename.clone(), f);

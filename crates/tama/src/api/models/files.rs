@@ -162,19 +162,7 @@ pub async fn refresh_model_metadata(
             // Convert ModelFileRecord to ModelFileDto for serialization
             let files_dto: Vec<ModelFileDto> = files
                 .iter()
-                .map(|f| ModelFileDto {
-                    id: f.id,
-                    model_id: f.model_id,
-                    repo_id: f.repo_id.clone(),
-                    filename: f.filename.clone(),
-                    quant: f.quant.clone(),
-                    lfs_oid: f.lfs_oid.clone(),
-                    size_bytes: f.size_bytes,
-                    downloaded_at: f.downloaded_at.clone(),
-                    last_verified_at: f.last_verified_at.clone(),
-                    verified_ok: f.verified_ok,
-                    verify_error: f.verify_error.clone(),
-                })
+                .map(|f| tama_core::db::repository::file_record_to_dto(f.clone()))
                 .collect();
             let files_json: Vec<_> = files_dto.iter().map(file_record_json).collect();
             Json(serde_json::json!({
@@ -291,19 +279,7 @@ pub async fn verify_model_files(
             // Convert ModelFileRecord to ModelFileDto for serialization
             let files_dto: Vec<ModelFileDto> = files
                 .iter()
-                .map(|f| ModelFileDto {
-                    id: f.id,
-                    model_id: f.model_id,
-                    repo_id: f.repo_id.clone(),
-                    filename: f.filename.clone(),
-                    quant: f.quant.clone(),
-                    lfs_oid: f.lfs_oid.clone(),
-                    size_bytes: f.size_bytes,
-                    downloaded_at: f.downloaded_at.clone(),
-                    last_verified_at: f.last_verified_at.clone(),
-                    verified_ok: f.verified_ok,
-                    verify_error: f.verify_error.clone(),
-                })
+                .map(|f| tama_core::db::repository::file_record_to_dto(f.clone()))
                 .collect();
             let files_json: Vec<_> = files_dto.iter().map(file_record_json).collect();
             Json(serde_json::json!({

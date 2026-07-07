@@ -157,4 +157,10 @@ async fn main() -> Result<()> {
         // Use the listener module which handles OS signals + graceful shutdown
         tama_core::proxy::server::listener::run(app, addr, Some(on_shutdown), None).await
     }
+
+    #[cfg(not(feature = "ssr"))]
+    {
+        // CSR-only build: nothing to run (web UI is handled by browser)
+        Ok(())
+    }
 }

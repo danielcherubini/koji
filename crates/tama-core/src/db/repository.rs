@@ -172,6 +172,14 @@ pub struct UpdateCheckDto {
     pub checked_at: i64,
 }
 
+/// Data Transfer Object for a model pull record.
+/// Replaces `ModelPullRecord` in the API layer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelPullDto {
+    pub commit_sha: String,
+    pub pulled_at: String,
+}
+
 // ── Repository ───────────────────────────────────────────────────────────────
 
 /// Domain-level database access for API handlers.
@@ -280,6 +288,23 @@ impl Repository {
             configs.insert(config_key, record_to_dto(record));
         }
         Ok(configs)
+    }
+
+    /// Get pull metadata for a model (commit SHA and pull timestamp).
+    pub fn get_model_pull(&self, model_id: i64) -> anyhow::Result<Option<ModelPullDto>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT commit_sha, pulled_at FROM model_pulls WHERE model_id = ?1")
+            .with_context(|| format!("Failed to prepare get_model_pull for id={}", model_id))?;
+        let mut rows = stmt
+            .query_map([model_id], |row| {
+                Ok(ModelPullDto {
+                    commit_sha: row.get(0)?,
+                    pulled_at: row.get(1)?,
+                })
+            })
+            .with_context(|| format!("Failed to query model_pulls for id={}", model_id))?;
+        Ok(rows.next().transpose()?)
     }
 
     // ── Aliases ─────────────────────────────────────────────────────────
@@ -447,7 +472,7 @@ fn record_to_dto(record: queries::ModelConfigRecord) -> ModelConfigDto {
     }
 }
 
-fn file_record_to_dto(record: queries::ModelFileRecord) -> ModelFileDto {
+pub fn file_record_to_dto(record: queries::ModelFileRecord) -> ModelFileDto {
     ModelFileDto {
         id: record.id,
         model_id: record.model_id,
