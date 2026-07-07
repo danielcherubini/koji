@@ -14,8 +14,8 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Quick Stats
 
-- **Total Plans**: 143
-- **Completed**: 137 ✅
+- **Total Plans**: 144
+- **Completed**: 138 ✅
 - **In Progress**: 0 🚧
 - **Draft**: 6 📋
 
@@ -28,7 +28,7 @@ This directory contains implementation plans for the Tama project. Each plan doc
 | Plan | Description | Status |
 |------|-------------|--------|
 | [Codebase Improvements](2026-07-06-codebase-improvements.md) | Quick wins: error_response helper, unwrap→expect, dead code removal, benchmark DRY, API boilerplate extraction, gpu_type→gpu_variant rename, server→backend rename, test fixture helpers | ✅ COMPLETED (#143) |
-| [File Splits — tama-core](2026-07-06-file-splits.md) | Split 5 god files (config/types.rs 1407, models.rs 1303, checker.rs 1079, forward.rs 1119, gpu/system.rs 1121) into focused modules | 📋 DRAFT |
+| [File Splits — tama-core](2026-07-06-file-splits.md) | Split 5 god files (config/types.rs 1407, models.rs 1303, checker.rs 1079, forward.rs 1119, gpu/system.rs 1121) into focused modules | ✅ COMPLETED (#144) |
 | [Architectural Refactoring](2026-07-06-architectural-refactoring.md) | DB repository layer (35 direct query calls → Repository), ProxyState encapsulation (25 pub fields → pub(crate) + WebState), move web_types to tama crate | 📋 DRAFT |
 | [Type Safety](2026-07-06-type-safety.md) | GpuVendor + ModelState enums, DB tuples → typed records, config enums (RestartPolicy, LogLevel, CompactionDevice) | 📋 DRAFT |
 | [Testability](2026-07-06-testability.md) | Backend lifecycle trait abstractions (HealthChecker, ProcessSpawner, PortAllocator) + tests, update checker + download queue processor tests | 📋 DRAFT |
@@ -41,6 +41,7 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 | Plan | Description | PR / Git References |
 |------|-------------|---------------------|
+| [File Splits — tama-core](2026-07-06-file-splits.md) | Split 5 god files (config/types.rs 1407, models.rs 1303, checker.rs 1079, forward.rs 1119, gpu/system.rs 1121) into focused modules | #144 ✅ COMPLETED |
 | [Model Editor Redesign](2026-07-05-model-editor-redesign.md) | Replace side nav with pill-style tabs, sticky save bar, compact expandable sampling, reorganized sections (Settings/Hardware/Sampling/Files/Advanced), preset management | #142 ✅ COMPLETED |
 | [Dashboard Bar Charts](2026-07-04-dashboard-bar-charts.md) | Replace dense sparkline area charts with vertical bar charts on dashboard stat cards (CPU, Memory, Network) — 30s buckets, avg aggregation, opacity-scaled bars | #141 ✅ COMPLETED |
 | [Model Sort + Group](2026-07-02-model-sort-group.md) | Add sort and group controls to the dashboard Models section (GPU, Family, Vendor, Status) with localStorage persistence | #136, #137, #138, #139, #140 ✅ COMPLETED |
