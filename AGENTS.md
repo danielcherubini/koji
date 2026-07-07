@@ -4,6 +4,14 @@ This file documents build commands, code style, and conventions for the Tama pro
 
 ## Build & Testing
 
+### Prerequisites
+
+The project uses build performance optimizations that require these tools installed:
+
+- **mold** — Fast linker (configured in `.cargo/config.toml`). Install: `sudo dnf install mold` (Fedora) or `sudo pacman -S mold` (Arch)
+- **clang** — Used as linker driver for mold. Usually pre-installed.
+- **cargo-nextest** — Faster parallel test runner. Install: `cargo install --locked cargo-nextest`
+
 ### Workspace Commands
 
 ```bash
@@ -13,27 +21,56 @@ cargo build --workspace
 # Release build
 cargo build --release --workspace
 
-# Run all tests
-cargo test --workspace
+# Run all tests (use cargo-nextest — ~40% faster than cargo test)
+cargo nextest run --workspace
 
 # Run tests for a specific crate
-cargo test --package tama-core
+cargo nextest run --package tama-core
 
 # Run a single test
-cargo test --package tama-core test_function_name
-
-# Run a single test with full output
-cargo test --package tama-core test_function_name -- --nocapture
+cargo nextest run --package tama-core test_function_name
 
 # Run tests with filtering
-cargo test --package tama-core -- backends::registry::tests::test_add
+cargo nextest run --package tama-core -- backends::registry::tests::test_add
 
-# Check formatting, clippy, and tests
+# Check formatting, clippy, and tests (full gate — run before commit/PR)
 cargo check --workspace
 cargo fmt --all
 cargo clippy --workspace -- -D warnings
-cargo test --workspace
+cargo nextest run --workspace
 ```
+
+### Targeted Testing (during development)
+
+**Never run the full workspace unless you're about to commit.** Use targeted commands that only compile + test the affected crate:
+
+```bash
+# Just the crate you're working on (~2-3s warm vs 9s workspace)
+cargo nextest run --package tama-core
+
+# Just the module (~1-2s warm)
+cargo nextest run --package tama-core -- proxy::lifecycle
+
+# Just one test (fastest)
+cargo nextest run --package tama-core -- test_load_model_pipeline
+
+# Quick compile check for the crate (no test runtime)
+cargo check --package tama-core
+```
+
+**Workflow:**
+1. **While coding:** `cargo nextest run --package <crate> -- <module>` after each change
+2. **Before commit:** `cargo nextest run --workspace` (full gate)
+3. **CI/PR:** full workspace + clippy + fmt
+
+### Build Performance Config
+
+The project is configured for fast incremental builds (`.cargo/config.toml` + `Cargo.toml` dev profile):
+
+- **mold linker** — 2-10x faster linking vs GNU ld
+- **`debug = "line-tables-only"`** — Enough for backtraces, no full DWARF for deps
+- **`debug = false` for dependencies** — Skips debug info for 1000+ dep crates
+- **`--profile debugging`** — Use when you need full debug info for a debugger
 
 ### Makefile
 
