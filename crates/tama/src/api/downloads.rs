@@ -97,7 +97,7 @@ fn default_offset() -> i64 {
 pub async fn get_active_downloads(
     State(state): State<Arc<ProxyState>>,
 ) -> Result<Json<DownloadsActiveResponse>, (StatusCode, Json<serde_json::Value>)> {
-    let svc = state.download_queue.as_ref().ok_or_else(|| {
+    let svc = state.download_queue().as_ref().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(error_body(
@@ -124,7 +124,7 @@ pub async fn get_download_history(
     State(state): State<Arc<ProxyState>>,
     axum::extract::Query(query): axum::extract::Query<HistoryQuery>,
 ) -> Result<Json<DownloadsHistoryResponse>, (StatusCode, Json<serde_json::Value>)> {
-    let svc = state.download_queue.as_ref().ok_or_else(|| {
+    let svc = state.download_queue().as_ref().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(error_body(
@@ -163,7 +163,7 @@ pub async fn cancel_download(
     State(state): State<Arc<ProxyState>>,
     Path(job_id): axum::extract::Path<String>,
 ) -> Json<DownloadCancelResponse> {
-    let svc = match &state.download_queue {
+    let svc = match &state.download_queue() {
         Some(svc) => svc,
         None => {
             return Json(DownloadCancelResponse {
@@ -190,7 +190,7 @@ pub async fn download_events_sse(
     State(state): State<Arc<ProxyState>>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, axum::Error>>>, StatusCode> {
     let svc = state
-        .download_queue
+        .download_queue()
         .as_ref()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
 

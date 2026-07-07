@@ -41,13 +41,13 @@ pub struct UpdateTriggerResponse {
 
 /// Check whether a newer version of Tama is available on GitHub Releases.
 ///
-/// Uses `state.web_binary_version` (the actual running binary version passed from
+/// Uses `state.web_binary_version()` (the actual running binary version passed from
 /// the CLI) rather than `env!("CARGO_PKG_VERSION")` to avoid version mismatch
 /// between tama-web and tama-cli crate versions.
 pub async fn check_update(
     State(state): State<Arc<ProxyState>>,
 ) -> Result<Json<UpdateCheckResponse>, (StatusCode, Json<serde_json::Value>)> {
-    match tama_core::self_update::check_for_update(&state.web_binary_version).await {
+    match tama_core::self_update::check_for_update(&state.web_binary_version()).await {
         Ok(info) => Ok(Json(UpdateCheckResponse {
             update_available: info.update_available,
             current_version: info.current_version,
@@ -74,7 +74,8 @@ pub async fn trigger_update(
 ) -> Result<Json<UpdateTriggerResponse>, (StatusCode, Json<serde_json::Value>)> {
     // Check if an update is already in progress
     {
-        let guard = state.web_update_tx.lock().await;
+        let update_tx = state.web_update_tx();
+        let guard = update_tx.lock().await;
         if let Some(ref tx) = *guard {
             if tx.receiver_count() > 0 || !tx.is_empty() {
                 return Err((
@@ -90,11 +91,12 @@ pub async fn trigger_update(
 
     // Store the sender in ProxyState so the SSE endpoint can subscribe
     {
-        let mut guard = state.web_update_tx.lock().await;
+        let update_tx = state.web_update_tx();
+        let mut guard = update_tx.lock().await;
         *guard = Some(tx.clone());
     }
 
-    let binary_version = state.web_binary_version.clone();
+    let binary_version = state.web_binary_version().clone();
 
     // Spawn the update task
     tokio::spawn(async move {
@@ -141,7 +143,8 @@ pub async fn trigger_update(
                     }
 
                     // Cleanup: set update_tx back to None so future requests can start a new update
-                    let mut guard = state_clone.web_update_tx.lock().await;
+                    let update_tx = state_clone.web_update_tx();
+                    let mut guard = update_tx.lock().await;
                     *guard = None;
                 }
             }
@@ -158,7 +161,8 @@ pub async fn trigger_update(
                 }
 
                 // Cleanup: set update_tx back to None so future requests can start a new update
-                let mut guard = state_clone.web_update_tx.lock().await;
+                let update_tx = state_clone.web_update_tx();
+                let mut guard = update_tx.lock().await;
                 *guard = None;
             }
         }
@@ -183,7 +187,8 @@ pub async fn update_events(
     State(state): State<Arc<ProxyState>>,
 ) -> Sse<impl Stream<Item = Result<Event, axum::Error>>> {
     let rx = {
-        let guard = state.web_update_tx.lock().await;
+        let update_tx = state.web_update_tx();
+        let guard = update_tx.lock().await;
         guard.as_ref().map(|tx| tx.subscribe())
     };
 

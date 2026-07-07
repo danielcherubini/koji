@@ -15,7 +15,7 @@ use tama_core::proxy::ProxyState;
 /// GET /tama/v1/backends
 pub async fn list_backends(State(state): State<Arc<ProxyState>>) -> impl IntoResponse {
     // active_job is only available when job manager is configured
-    let active_job = if let Some(jobs) = &state.web_jobs {
+    let active_job = if let Some(jobs) = state.web_jobs() {
         jobs.active()
             .await
             .filter(|j| {
@@ -31,7 +31,7 @@ pub async fn list_backends(State(state): State<Arc<ProxyState>>) -> impl IntoRes
         None
     };
 
-    let config_dir = state.db_dir.clone().unwrap_or_else(|| {
+    let config_dir = state.db_dir().clone().unwrap_or_else(|| {
         tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
     });
 
@@ -256,11 +256,11 @@ pub async fn list_backends(State(state): State<Arc<ProxyState>>) -> impl IntoRes
     }
 
     // Get compaction config
-    let compaction_config = state.config.read().await.compaction.clone();
+    let compaction_config = state.config().read().await.compaction.clone();
 
     // Check if compaction backend is running (in model registry as "compaction")
     let (compaction_running, compaction_url) = {
-        let models = state.models.read().await;
+        let models = state.models().read().await;
         if let Some(model_state) = models.get("compaction") {
             if model_state.is_ready() {
                 (true, model_state.backend_url().map(|u| u.to_string()))
@@ -293,7 +293,7 @@ pub async fn list_backends(State(state): State<Arc<ProxyState>>) -> impl IntoRes
 
 /// POST /tama/v1/backends/check-updates
 pub async fn check_backend_updates(State(state): State<Arc<ProxyState>>) -> impl IntoResponse {
-    let jobs = match &state.web_jobs {
+    let jobs = match state.web_jobs() {
         Some(j) => j,
         None => {
             return error_response(

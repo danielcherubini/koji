@@ -35,7 +35,7 @@ fn validate_alias_name(name: &str) -> Option<String> {
 /// GET /tama/v1/aliases
 /// Returns list of all aliases (enabled and disabled)
 pub async fn list_aliases(State(state): State<Arc<ProxyState>>) -> impl IntoResponse {
-    let db_dir = state.db_dir.clone().unwrap_or_else(|| {
+    let db_dir = state.db_dir().clone().unwrap_or_else(|| {
         tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
     });
 
@@ -60,7 +60,7 @@ pub async fn get_alias(
     State(state): State<Arc<ProxyState>>,
     axum::extract::Path(id): axum::extract::Path<i64>,
 ) -> impl IntoResponse {
-    let db_dir = state.db_dir.clone().unwrap_or_else(|| {
+    let db_dir = state.db_dir().clone().unwrap_or_else(|| {
         tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
     });
 
@@ -90,7 +90,7 @@ pub async fn create_alias(
     State(state): State<Arc<ProxyState>>,
     Json(payload): Json<CreateAliasRequest>,
 ) -> impl IntoResponse {
-    let db_dir = state.db_dir.clone().unwrap_or_else(|| {
+    let db_dir = state.db_dir().clone().unwrap_or_else(|| {
         tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
     });
 
@@ -162,7 +162,7 @@ pub async fn update_alias(
     axum::extract::Path(id): axum::extract::Path<i64>,
     Json(payload): Json<UpdateAliasRequest>,
 ) -> impl IntoResponse {
-    let db_dir = state.db_dir.clone().unwrap_or_else(|| {
+    let db_dir = state.db_dir().clone().unwrap_or_else(|| {
         tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
     });
 
@@ -240,7 +240,7 @@ pub async fn delete_alias(
     State(state): State<Arc<ProxyState>>,
     axum::extract::Path(id): axum::extract::Path<i64>,
 ) -> impl IntoResponse {
-    let db_dir = state.db_dir.clone().unwrap_or_else(|| {
+    let db_dir = state.db_dir().clone().unwrap_or_else(|| {
         tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
     });
 

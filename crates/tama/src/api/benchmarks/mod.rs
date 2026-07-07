@@ -223,7 +223,7 @@ where
         + 'static,
     Fut: std::future::Future<Output = anyhow::Result<()>> + Send,
 {
-    let jobs = match &state.web_jobs {
+    let jobs = match state.web_jobs() {
         Some(j) => j.clone(),
         None => return Err(anyhow::anyhow!("Job manager not available")),
     };
@@ -231,15 +231,15 @@ where
     let job = jobs.submit(JobKind::Benchmark, None).await?;
     let job_id = job.id.clone();
     let db_path = state
-        .db_dir
+        .db_dir()
         .clone()
         .unwrap_or_else(|| {
             tama_core::config::Config::config_dir()
                 .unwrap_or_else(|_| std::path::PathBuf::from("."))
         })
         .join("tama.db");
-    let proxy_base_url = state.config.read().await.proxy_url();
-    let client = state.client.clone();
+    let proxy_base_url = state.config().read().await.proxy_url();
+    let client = state.client().clone();
 
     let jobs_for_spawn = jobs.clone();
     let job_for_spawn = job.clone();

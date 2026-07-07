@@ -37,7 +37,7 @@ pub async fn get_logs(
     State(state): State<Arc<ProxyState>>,
     axum::extract::Query(query): axum::extract::Query<LogsQuery>,
 ) -> impl IntoResponse {
-    let dir = match state.config.read().await.logs_dir() {
+    let dir = match state.config().read().await.logs_dir() {
         Ok(d) => d,
         Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     };
@@ -67,7 +67,7 @@ pub struct ConfigBody {
 
 /// Update the proxy's live in-memory config after a successful disk save.
 async fn sync_proxy_config(state: &ProxyState, new_config: tama_core::config::Config) {
-    let mut config = state.config.write().await;
+    let mut config = state.config().write().await;
     *config = new_config;
 }
 
@@ -140,7 +140,7 @@ pub async fn save_structured_config(
 ) -> impl IntoResponse {
     // Resolve the correct DB path from state
     let config_dir = match state
-        .db_dir
+        .db_dir()
         .clone()
         .or_else(|| tama_core::config::Config::config_dir().ok())
     {
@@ -183,7 +183,7 @@ async fn load_config_from_state(
     state: &ProxyState,
 ) -> Result<(tama_core::config::Config, std::path::PathBuf), (StatusCode, serde_json::Value)> {
     let config_dir = state
-        .db_dir
+        .db_dir()
         .clone()
         .or_else(|| tama_core::config::Config::config_dir().ok())
         .ok_or_else(|| {

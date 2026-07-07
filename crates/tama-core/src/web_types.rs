@@ -47,6 +47,17 @@ pub struct JobState {
     pub error: Option<String>,
 }
 
+impl std::fmt::Debug for JobState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JobState")
+            .field("status", &self.status)
+            .field("started_at", &self.started_at)
+            .field("finished_at", &self.finished_at)
+            .field("error", &self.error)
+            .finish()
+    }
+}
+
 pub struct Job {
     pub id: JobId,
     pub kind: JobKind,
@@ -59,6 +70,25 @@ pub struct Job {
     /// Benchmark results JSON (set when benchmark completes)
     pub benchmark_results: RwLock<Option<String>>,
     pub child_pids: RwLock<Vec<u32>>,
+}
+
+impl std::fmt::Debug for Job {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Job")
+            .field("id", &self.id)
+            .field("kind", &self.kind)
+            .field("backend_type", &self.backend_type)
+            .field("state", &self.state.try_read().ok())
+            .field("log_head", &self.log_head.try_read().ok())
+            .field("log_tail", &self.log_tail.try_read().ok())
+            .field(
+                "log_dropped",
+                &self.log_dropped.load(std::sync::atomic::Ordering::Relaxed),
+            )
+            .field("benchmark_results", &self.benchmark_results.try_read().ok())
+            .field("child_pids", &self.child_pids.try_read().ok())
+            .finish()
+    }
 }
 
 /// Maximum number of log lines to retain in the head buffer (oldest 100 lines).
@@ -77,7 +107,7 @@ pub enum JobError {
     NotFound,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct JobManager {
     jobs: Arc<RwLock<HashMap<JobId, Arc<Job>>>>,
     finished_order: Arc<Mutex<VecDeque<JobId>>>,
@@ -289,7 +319,7 @@ pub struct CapabilitiesDto {
     pub supported_cuda_versions: Vec<String>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct CapabilitiesCache {
     inner: Arc<tokio::sync::Mutex<Option<(std::time::Instant, CapabilitiesDto)>>>,
 }
@@ -357,7 +387,7 @@ impl Default for CapabilitiesCache {
 // ── Upload types ─────────────────────────────────────────────────────────────
 
 /// Temporary upload entry for restore archives.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct UploadEntry {
     pub path: std::path::PathBuf,
     pub created_at: chrono::DateTime<chrono::Utc>,

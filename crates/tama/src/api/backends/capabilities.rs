@@ -6,7 +6,7 @@ use tama_core::proxy::ProxyState;
 
 /// GET /tama/v1/system/capabilities
 pub async fn system_capabilities(State(state): State<Arc<ProxyState>>) -> impl IntoResponse {
-    let cache = match &state.web_capabilities {
+    let cache = match state.web_capabilities() {
         Some(c) => c,
         None => {
             return error_response(

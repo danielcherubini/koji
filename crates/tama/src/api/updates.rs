@@ -76,7 +76,7 @@ pub struct QuantDetailJson {
 
 /// GET /tama/v1/updates - Returns cached results from DB
 pub async fn get_updates(State(state): State<Arc<ProxyState>>) -> impl IntoResponse {
-    let config_dir = match state.db_dir.clone() {
+    let config_dir = match state.db_dir().clone() {
         Some(d) => d,
         None => {
             return (
@@ -87,7 +87,7 @@ pub async fn get_updates(State(state): State<Arc<ProxyState>>) -> impl IntoRespo
         }
     };
 
-    let checker = &state.web_update_checker;
+    let checker = &state.web_update_checker();
     match checker.get_results(&config_dir).await {
         Ok(records) => {
             let mut backends = Vec::new();
@@ -177,7 +177,7 @@ pub async fn get_updates(State(state): State<Arc<ProxyState>>) -> impl IntoRespo
 
 /// POST /tama/v1/updates/check - Trigger full re-check
 pub async fn trigger_check(State(state): State<Arc<ProxyState>>) -> impl IntoResponse {
-    let config_dir = match state.db_dir.clone() {
+    let config_dir = match state.db_dir().clone() {
         Some(d) => d,
         None => {
             return (
@@ -188,7 +188,7 @@ pub async fn trigger_check(State(state): State<Arc<ProxyState>>) -> impl IntoRes
         }
     };
 
-    let checker = state.web_update_checker.clone();
+    let checker = state.web_update_checker().clone();
     // Run in background, return immediately
     tokio::spawn(async move {
         if let Err(e) = checker.run_check(&config_dir).await {
@@ -220,7 +220,7 @@ pub async fn check_single(
     Path((item_type, item_id)): Path<(String, String)>,
     axum::extract::Query(query): axum::extract::Query<CheckSingleQuery>,
 ) -> impl IntoResponse {
-    let config_dir = match state.db_dir.clone() {
+    let config_dir = match state.db_dir().clone() {
         Some(d) => d,
         None => {
             return (
@@ -231,7 +231,7 @@ pub async fn check_single(
         }
     };
 
-    let checker = &state.web_update_checker;
+    let checker = &state.web_update_checker();
     let result = match item_type.as_str() {
         "backend" => {
             let config_dir_clone = config_dir.clone();
@@ -331,8 +331,8 @@ pub async fn check_single(
 pub async fn update_events_sse(
     State(state): State<Arc<ProxyState>>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, axum::Error>>>, StatusCode> {
-    let tx = state
-        .web_update_checker
+    let checker = state.web_update_checker();
+    let tx = checker
         .update_events_tx
         .as_ref()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
@@ -409,7 +409,7 @@ pub async fn apply_backend_update(
     Path(name): Path<String>,
     axum::extract::Query(query): axum::extract::Query<CheckSingleQuery>,
 ) -> impl IntoResponse {
-    let config_dir = match state.db_dir.clone() {
+    let config_dir = match state.db_dir().clone() {
         Some(d) => d,
         None => {
             return (
@@ -484,7 +484,7 @@ pub async fn apply_backend_update(
             .into_response();
     };
 
-    let jobs = match &state.web_jobs {
+    let jobs = match state.web_jobs() {
         Some(j) => j.clone(),
         None => {
             return (
@@ -639,7 +639,7 @@ pub async fn apply_model_update(
     Path(id): Path<i64>,
     Json(req): Json<ModelUpdateRequest>,
 ) -> impl IntoResponse {
-    let config_dir = match state.db_dir.clone() {
+    let config_dir = match state.db_dir().clone() {
         Some(d) => d,
         None => {
             return (
@@ -724,7 +724,7 @@ pub async fn apply_model_update(
         .collect();
 
     // 4. Pre-check for duplicate enqueues and enqueue each quant
-    let svc = match state.download_queue.as_ref() {
+    let svc = match state.download_queue().as_ref() {
         Some(s) => s,
         None => {
             return (

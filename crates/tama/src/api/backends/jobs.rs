@@ -21,10 +21,7 @@ pub async fn get_job(
     State(state): State<Arc<ProxyState>>,
     Path(job_id): Path<String>,
 ) -> Result<Json<JobSnapshotDto>, StatusCode> {
-    let jobs = state
-        .web_jobs
-        .as_ref()
-        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let jobs = state.web_jobs().ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
     let job = jobs.get(&job_id).await.ok_or(StatusCode::NOT_FOUND)?;
 
     let (state, log_head, log_tail, dropped) = tokio::join!(
@@ -67,10 +64,7 @@ pub async fn job_events_sse(
     State(state): State<Arc<ProxyState>>,
     Path(job_id): Path<String>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, axum::Error>>>, StatusCode> {
-    let jobs = state
-        .web_jobs
-        .as_ref()
-        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let jobs = state.web_jobs().ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
     let job = jobs.get(&job_id).await.ok_or(StatusCode::NOT_FOUND)?;
 
     let mut rx = job.log_tx.subscribe();

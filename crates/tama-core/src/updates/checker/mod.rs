@@ -58,6 +58,12 @@ pub struct UpdateChecker {
     pub update_events_tx: Option<tokio::sync::broadcast::Sender<UpdateEvent>>,
 }
 
+impl std::fmt::Debug for UpdateChecker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UpdateChecker").finish_non_exhaustive()
+    }
+}
+
 /// Results from an initial sync of backends and models to check for updates.
 pub type UpdateSyncResults = (
     Vec<(String, BackendType, String)>,

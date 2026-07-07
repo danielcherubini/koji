@@ -69,7 +69,7 @@ pub async fn install_backend(
         );
     }
 
-    let jobs = match &state.web_jobs {
+    let jobs = match state.web_jobs() {
         Some(j) => j,
         None => {
             return error_response(
@@ -266,7 +266,7 @@ pub async fn install_backend(
 
     // Check prerequisites if source build
     if effective_build_from_source {
-        let cache = match &state.web_capabilities {
+        let cache = match state.web_capabilities() {
             Some(c) => c,
             None => {
                 return error_response(
@@ -507,7 +507,7 @@ pub async fn remove_backend(
     Path(name): Path<String>,
     axum::extract::Query(query): axum::extract::Query<RemoveQuery>,
 ) -> impl IntoResponse {
-    let jobs = match &state.web_jobs {
+    let jobs = match state.web_jobs() {
         Some(j) => j,
         None => {
             return error_response(
@@ -518,7 +518,7 @@ pub async fn remove_backend(
         }
     };
 
-    let config_dir = state.db_dir.clone().unwrap_or_else(|| {
+    let config_dir = state.db_dir().clone().unwrap_or_else(|| {
         tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
     });
 

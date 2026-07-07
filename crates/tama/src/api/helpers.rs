@@ -14,7 +14,7 @@ pub const DEFAULT_CRUD_STATUS: StatusCode = StatusCode::OK;
 pub async fn open_backend_manager(
     state: &ProxyState,
 ) -> Result<BackendManager, axum::response::Response> {
-    let config_dir = state.db_dir.clone().unwrap_or_else(|| {
+    let config_dir = state.db_dir().clone().unwrap_or_else(|| {
         tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
     });
     let config_dir_clone = config_dir.clone();

@@ -7,7 +7,7 @@ pub async fn get_benchmark_result(
     State(state): State<Arc<ProxyState>>,
     Path(job_id): Path<String>,
 ) -> impl IntoResponse {
-    let jobs = match &state.web_jobs {
+    let jobs = match state.web_jobs() {
         Some(j) => j.clone(),
         None => {
             return error_response(
@@ -73,7 +73,7 @@ pub async fn benchmark_events(
     State(state): State<Arc<ProxyState>>,
     Path(job_id): Path<String>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, axum::Error>>>, StatusCode> {
-    let jobs = match &state.web_jobs {
+    let jobs = match state.web_jobs() {
         Some(j) => j.clone(),
         None => {
             return Err(StatusCode::SERVICE_UNAVAILABLE);

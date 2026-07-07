@@ -35,7 +35,7 @@ pub async fn update_backend(
         );
     }
 
-    let jobs = match &state.web_jobs {
+    let jobs = match state.web_jobs() {
         Some(j) => j,
         None => {
             return error_response(
@@ -46,7 +46,7 @@ pub async fn update_backend(
         }
     };
 
-    let config_dir = state.db_dir.clone().unwrap_or_else(|| {
+    let config_dir = state.db_dir().clone().unwrap_or_else(|| {
         tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
     });
     let config_dir_clone = config_dir.clone();
@@ -228,7 +228,7 @@ pub async fn update_backend(
     };
 
     // Clone variables needed for the post-update check
-    let checker = state.web_update_checker.clone();
+    let checker = state.web_update_checker().clone();
     let backend_type_clone = backend_type.clone();
 
     // Spawn the update task
@@ -488,7 +488,7 @@ pub async fn remove_backend_version(
         );
     }
 
-    let config_dir = state.db_dir.clone().unwrap_or_else(|| {
+    let config_dir = state.db_dir().clone().unwrap_or_else(|| {
         tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
     });
 
@@ -579,7 +579,7 @@ pub async fn remove_backend_version(
     };
 
     // Check if a job is running for this backend
-    if let Some(jobs) = &state.web_jobs {
+    if let Some(jobs) = state.web_jobs() {
         if let Some(active_job) = jobs.active().await {
             let active_type = active_job
                 .backend_type
@@ -667,7 +667,7 @@ pub async fn activate_backend_version(
         );
     }
 
-    let config_dir = state.db_dir.clone().unwrap_or_else(|| {
+    let config_dir = state.db_dir().clone().unwrap_or_else(|| {
         tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
     });
 
@@ -826,7 +826,7 @@ pub async fn update_backend_default_args(
     axum::extract::Query(query): axum::extract::Query<DefaultArgsQuery>,
     Json(req): Json<UpdateDefaultArgsRequest>,
 ) -> impl IntoResponse {
-    let config_dir = state.db_dir.clone().unwrap_or_else(|| {
+    let config_dir = state.db_dir().clone().unwrap_or_else(|| {
         tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
     });
 
@@ -890,7 +890,7 @@ pub async fn update_backend_default_env(
         );
     }
 
-    let config_dir = state.db_dir.clone().unwrap_or_else(|| {
+    let config_dir = state.db_dir().clone().unwrap_or_else(|| {
         tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
     });
 
@@ -950,7 +950,7 @@ pub async fn update_backend_source(
         );
     }
 
-    let config_dir = state.db_dir.clone().unwrap_or_else(|| {
+    let config_dir = state.db_dir().clone().unwrap_or_else(|| {
         tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
     });
 
@@ -1024,7 +1024,7 @@ pub async fn update_backend_source(
     };
 
     // Check for active job conflict
-    if let Some(jobs) = &state.web_jobs {
+    if let Some(jobs) = state.web_jobs() {
         if let Some(active_job) = jobs.active().await {
             if active_job.backend_type.as_ref().map(|b| b.to_string()) == Some(name.clone()) {
                 return error_response(

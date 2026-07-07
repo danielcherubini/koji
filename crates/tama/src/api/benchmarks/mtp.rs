@@ -51,7 +51,7 @@ pub async fn run_mtp_benchmark(
     State(state): State<Arc<ProxyState>>,
     Json(req): Json<MtpBenchmarkRunRequest>,
 ) -> impl IntoResponse {
-    let jobs = match &state.web_jobs {
+    let jobs = match state.web_jobs() {
         Some(j) => j.clone(),
         None => return job_manager_unavailable_response(),
     };
@@ -73,15 +73,15 @@ pub async fn run_mtp_benchmark(
     let job_id = job.id.clone();
 
     let db_path = state
-        .db_dir
+        .db_dir()
         .clone()
         .unwrap_or_else(|| {
             tama_core::config::Config::config_dir()
                 .unwrap_or_else(|_| std::path::PathBuf::from("."))
         })
         .join("tama.db");
-    let proxy_base_url = state.config.read().await.proxy_url();
-    let client = state.client.clone();
+    let proxy_base_url = state.config().read().await.proxy_url();
+    let client = state.client().clone();
 
     // Spawn the benchmark in the background
     tokio::spawn(async move {

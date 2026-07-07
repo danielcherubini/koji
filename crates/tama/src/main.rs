@@ -102,7 +102,7 @@ async fn main() -> Result<()> {
 
         // Set the binary version for the web UI
         let mut state_inner = (*state).clone();
-        state_inner.web_binary_version = env!("CARGO_PKG_VERSION").to_string();
+        state_inner.set_binary_version(env!("CARGO_PKG_VERSION"));
         let state = Arc::new(state_inner);
 
         // Build the unified router: proxy routes + web UI routes on a single server.
@@ -114,14 +114,14 @@ async fn main() -> Result<()> {
         let cleanup_state = Arc::clone(&state);
         let on_shutdown = async move {
             // Kill children of any active backend job
-            if let Some(jobs) = &cleanup_state.web_jobs {
+            if let Some(jobs) = cleanup_state.web_jobs() {
                 if let Some(active_job) = jobs.active().await {
                     tracing::info!("Killing children of active job {}...", active_job.id);
                     jobs.kill_children(&active_job).await;
                 }
             }
             // Unload TTS backends
-            let models = cleanup_state.models.read().await;
+            let models = cleanup_state.models().read().await;
             let tts_backends: Vec<String> = models
                 .iter()
                 .filter(|(_, ms)| ms.is_tts_backend())

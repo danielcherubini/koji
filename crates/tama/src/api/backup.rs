@@ -67,7 +67,7 @@ pub struct BackendEntry {
 /// GET /tama/v1/backup - Create backup and return as file download
 pub async fn create_backup(State(state): State<Arc<ProxyState>>) -> impl IntoResponse {
     let config_dir: std::path::PathBuf = {
-        state.db_dir.clone().unwrap_or_else(|| {
+        state.db_dir().clone().unwrap_or_else(|| {
             tama_core::config::Config::config_dir()
                 .unwrap_or_else(|_| std::path::PathBuf::from("."))
         })
@@ -177,7 +177,8 @@ pub async fn restore_preview(
     match manifest_result {
         Ok(Ok(manifest)) => {
             // Store upload reference
-            let mut uploads = state.web_upload_lock.write().await;
+            let upload_lock = state.web_upload_lock();
+            let mut uploads = upload_lock.write().await;
             uploads.insert(
                 upload_id.clone(),
                 UploadEntry {
@@ -227,7 +228,8 @@ pub async fn start_restore(
     Json(body): Json<RestoreRequest>,
 ) -> impl IntoResponse {
     // Look up upload
-    let uploads = state.web_upload_lock.read().await;
+    let upload_lock = state.web_upload_lock();
+    let uploads = upload_lock.read().await;
     let upload_path = match uploads.get(&body.upload_id) {
         Some(entry) => entry.path.clone(),
         None => {
@@ -241,7 +243,7 @@ pub async fn start_restore(
     drop(uploads);
 
     // Create restore job
-    let Some(jobs) = state.web_jobs.as_ref() else {
+    let Some(jobs) = state.web_jobs() else {
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Jobs not configured",
