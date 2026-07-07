@@ -103,7 +103,7 @@ pub async fn handle_get_model(
     };
 
     // Phase 2: Check if the config's backend is loaded and Ready.
-    if let Some(crate::proxy::ModelState::Ready { backend_url, .. }) =
+    if let Some(crate::proxy::BackendState::Ready { backend_url, .. }) =
         state.models.read().await.get(&config_name)
     {
         // Query backend's /v1/models and find matching entry
@@ -151,7 +151,7 @@ pub async fn handle_list_models(state: State<Arc<ProxyState>>) -> Json<serde_jso
         let backend_info: Vec<_> = models
             .iter()
             .map(|(name, ms)| {
-                if let crate::proxy::ModelState::Ready { backend_url, .. } = ms {
+                if let crate::proxy::BackendState::Ready { backend_url, .. } = ms {
                     (name.clone(), Some(backend_url.clone()), true)
                 } else {
                     (name.clone(), None, false)

@@ -47,11 +47,13 @@ pub fn derive_device_state(loaded_models: &[ModelStatus], device_id: &str) -> Gp
         }
 
         // Model matches this device — track its state.
-        match model.state.as_str() {
-            "loading" => has_loading = true,
-            "ready" | "unloading" => has_active = true,
-            "failed" => has_failed = true,
-            _ => {}
+        match model.state {
+            tama_core::gpu::ModelState::Loading => has_loading = true,
+            tama_core::gpu::ModelState::Ready | tama_core::gpu::ModelState::Unloading => {
+                has_active = true
+            }
+            tama_core::gpu::ModelState::Failed => has_failed = true,
+            tama_core::gpu::ModelState::Idle => {}
         }
     }
 
@@ -104,7 +106,13 @@ pub fn model_for_device<'a>(
             None if device_id == "GPU0" => true,
             _ => false,
         };
-        targets_device && matches!(m.state.as_str(), "ready" | "loading" | "unloading")
+        targets_device
+            && matches!(
+                m.state,
+                tama_core::gpu::ModelState::Ready
+                    | tama_core::gpu::ModelState::Loading
+                    | tama_core::gpu::ModelState::Unloading
+            )
     })
 }
 
@@ -128,17 +136,19 @@ pub fn loaded_model_display(
             continue;
         }
 
-        match model.state.as_str() {
-            "ready" | "loading" | "unloading" => {
+        match model.state {
+            tama_core::gpu::ModelState::Ready
+            | tama_core::gpu::ModelState::Loading
+            | tama_core::gpu::ModelState::Unloading => {
                 let name = model
                     .display_name
                     .clone()
                     .or_else(|| model.api_name.clone())
                     .unwrap_or_else(|| model.id.clone());
-                let transferring = model.state == "loading";
+                let transferring = matches!(model.state, tama_core::gpu::ModelState::Loading);
                 return Some(LoadedModelDisplay { name, transferring });
             }
-            _ => {}
+            tama_core::gpu::ModelState::Failed | tama_core::gpu::ModelState::Idle => {}
         }
     }
     None
@@ -355,6 +365,14 @@ mod tests {
     use super::*;
 
     fn make_model(id: &str, state: &str, gpu_device: Option<&str>) -> ModelStatus {
+        let model_state = match state {
+            "idle" => tama_core::gpu::ModelState::Idle,
+            "loading" => tama_core::gpu::ModelState::Loading,
+            "ready" => tama_core::gpu::ModelState::Ready,
+            "unloading" => tama_core::gpu::ModelState::Unloading,
+            "failed" => tama_core::gpu::ModelState::Failed,
+            _ => tama_core::gpu::ModelState::Idle,
+        };
         ModelStatus {
             id: id.to_string(),
             db_id: None,
@@ -363,7 +381,7 @@ mod tests {
             backend: "llama_cpp".to_string(),
             #[allow(deprecated)]
             loaded: state == "ready",
-            state: state.to_string(),
+            state: model_state,
             quant: None,
             context_length: None,
             hf_architecture_type: None,
@@ -380,10 +398,14 @@ mod tests {
     }
 
     fn make_gpu(device_id: &str, vendor: &str) -> GpuDeviceStats {
+        let gpu_vendor = match vendor {
+            "amd" => tama_core::gpu::GpuVendor::Amd,
+            _ => tama_core::gpu::GpuVendor::Nvidia,
+        };
         GpuDeviceStats {
             device_id: device_id.to_string(),
             name: "Test GPU".to_string(),
-            vendor: vendor.to_string(),
+            vendor: gpu_vendor,
             utilization_pct: None,
             vram: None,
             temperature_c: None,

@@ -10,9 +10,9 @@ use super::pull_jobs::PullJob;
 /// Cache entry for discovered GPU devices: (discovered_at, devices).
 type GpuDeviceCacheEntry = (Instant, Vec<crate::gpu::GpuDeviceInfo>);
 
-/// State for a model backend.
+/// State for a model backend lifecycle.
 #[derive(Debug, Clone)]
-pub enum ModelState {
+pub enum BackendState {
     /// Backend is starting up (placeholder during initialization)
     Starting {
         model_name: String,
@@ -55,7 +55,7 @@ pub enum ModelState {
     },
 }
 
-impl Default for ModelState {
+impl Default for BackendState {
     fn default() -> Self {
         Self::Failed {
             model_name: String::new(),
@@ -65,42 +65,42 @@ impl Default for ModelState {
     }
 }
 
-impl ModelState {
+impl BackendState {
     pub fn model_name(&self) -> &str {
         match self {
-            ModelState::Starting { model_name, .. } => model_name,
-            ModelState::Ready { model_name, .. } => model_name,
-            ModelState::Failed { model_name, .. } => model_name,
-            ModelState::Unloading { model_name, .. } => model_name,
+            BackendState::Starting { model_name, .. } => model_name,
+            BackendState::Ready { model_name, .. } => model_name,
+            BackendState::Failed { model_name, .. } => model_name,
+            BackendState::Unloading { model_name, .. } => model_name,
         }
     }
 
     pub fn backend(&self) -> &str {
         match self {
-            ModelState::Starting { backend, .. } => backend,
-            ModelState::Ready { backend, .. } => backend,
-            ModelState::Failed { backend, .. } => backend,
-            ModelState::Unloading { backend, .. } => backend,
+            BackendState::Starting { backend, .. } => backend,
+            BackendState::Ready { backend, .. } => backend,
+            BackendState::Failed { backend, .. } => backend,
+            BackendState::Unloading { backend, .. } => backend,
         }
     }
 
     pub fn is_ready(&self) -> bool {
-        matches!(self, ModelState::Ready { .. })
+        matches!(self, BackendState::Ready { .. })
     }
 
     pub fn backend_url(&self) -> Option<&str> {
         match self {
-            ModelState::Ready { backend_url, .. } => Some(backend_url),
-            ModelState::Unloading { .. } => None,
+            BackendState::Ready { backend_url, .. } => Some(backend_url),
+            BackendState::Unloading { .. } => None,
             _ => None,
         }
     }
 
     pub fn backend_pid(&self) -> Option<u32> {
         match self {
-            ModelState::Starting { backend_pid, .. } => Some(*backend_pid),
-            ModelState::Ready { backend_pid, .. } => Some(*backend_pid),
-            ModelState::Unloading { backend_pid, .. } => Some(*backend_pid),
+            BackendState::Starting { backend_pid, .. } => Some(*backend_pid),
+            BackendState::Ready { backend_pid, .. } => Some(*backend_pid),
+            BackendState::Unloading { backend_pid, .. } => Some(*backend_pid),
             _ => None,
         }
     }
@@ -120,16 +120,16 @@ impl ModelState {
 
     pub fn consecutive_failures(&self) -> Option<&Arc<std::sync::atomic::AtomicU32>> {
         match self {
-            ModelState::Starting {
+            BackendState::Starting {
                 consecutive_failures,
                 ..
             } => Some(consecutive_failures),
-            ModelState::Ready {
+            BackendState::Ready {
                 consecutive_failures,
                 ..
             } => Some(consecutive_failures),
-            ModelState::Failed { .. } => None,
-            ModelState::Unloading {
+            BackendState::Failed { .. } => None,
+            BackendState::Unloading {
                 consecutive_failures,
                 ..
             } => Some(consecutive_failures),
@@ -138,26 +138,26 @@ impl ModelState {
 
     pub fn load_time(&self) -> Option<std::time::SystemTime> {
         match self {
-            ModelState::Ready { load_time, .. } => Some(*load_time),
-            ModelState::Unloading { .. } => None,
+            BackendState::Ready { load_time, .. } => Some(*load_time),
+            BackendState::Unloading { .. } => None,
             _ => None,
         }
     }
 
     pub fn last_accessed(&self) -> Option<Instant> {
         match self {
-            ModelState::Ready { last_accessed, .. } => Some(*last_accessed),
-            ModelState::Starting { last_accessed, .. } => Some(*last_accessed),
-            ModelState::Failed { .. } => None,
-            ModelState::Unloading { last_accessed, .. } => Some(*last_accessed),
+            BackendState::Ready { last_accessed, .. } => Some(*last_accessed),
+            BackendState::Starting { last_accessed, .. } => Some(*last_accessed),
+            BackendState::Failed { .. } => None,
+            BackendState::Unloading { last_accessed, .. } => Some(*last_accessed),
         }
     }
 
     /// Get the restart count for this model (only set on Ready/Unloading states).
     pub fn restart_count(&self) -> Option<u32> {
         match self {
-            ModelState::Ready { restart_count, .. } => Some(*restart_count),
-            ModelState::Unloading { restart_count, .. } => Some(*restart_count),
+            BackendState::Ready { restart_count, .. } => Some(*restart_count),
+            BackendState::Unloading { restart_count, .. } => Some(*restart_count),
             _ => None,
         }
     }
@@ -165,7 +165,7 @@ impl ModelState {
     /// Get the start time for Starting state models.
     pub fn start_time(&self) -> Option<Instant> {
         match self {
-            ModelState::Starting { start_time, .. } => Some(*start_time),
+            BackendState::Starting { start_time, .. } => Some(*start_time),
             _ => None,
         }
     }
@@ -173,12 +173,12 @@ impl ModelState {
     /// Check if the server has failed and the cooldown has elapsed.
     pub fn can_reload(&self, cooldown_seconds: u64) -> bool {
         match self {
-            ModelState::Failed { .. } => false,
-            ModelState::Unloading { .. } => false,
-            ModelState::Starting {
+            BackendState::Failed { .. } => false,
+            BackendState::Unloading { .. } => false,
+            BackendState::Starting {
                 failure_timestamp, ..
             }
-            | ModelState::Ready {
+            | BackendState::Ready {
                 failure_timestamp, ..
             } => failure_timestamp
                 .map(|ts| {
@@ -259,7 +259,7 @@ pub struct ProxyState {
     /// alias_name → resolved model name (api_name or repo_id)
     /// Only enabled aliases are cached. Populated from DB on init and reload.
     pub(crate) aliases: Arc<tokio::sync::RwLock<std::collections::HashMap<String, String>>>,
-    pub(crate) models: Arc<tokio::sync::RwLock<std::collections::HashMap<String, ModelState>>>,
+    pub(crate) models: Arc<tokio::sync::RwLock<std::collections::HashMap<String, BackendState>>>,
     pub(crate) client: reqwest::Client,
     pub(crate) metrics: Arc<ProxyMetrics>,
     pub(crate) db_dir: Option<std::path::PathBuf>,
@@ -355,7 +355,7 @@ impl ProxyState {
     /// Returns a reference to the models RwLock.
     pub fn models(
         &self,
-    ) -> &Arc<tokio::sync::RwLock<std::collections::HashMap<String, ModelState>>> {
+    ) -> &Arc<tokio::sync::RwLock<std::collections::HashMap<String, BackendState>>> {
         &self.models
     }
 
@@ -455,7 +455,7 @@ mod tests {
         > = state.model_configs();
         let _: &Arc<tokio::sync::RwLock<std::collections::HashMap<String, String>>> =
             state.aliases();
-        let _: &Arc<tokio::sync::RwLock<std::collections::HashMap<String, ModelState>>> =
+        let _: &Arc<tokio::sync::RwLock<std::collections::HashMap<String, BackendState>>> =
             state.models();
         let _: &reqwest::Client = state.client();
         let _: &Arc<ProxyMetrics> = state.metrics();

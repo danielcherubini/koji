@@ -10,7 +10,7 @@ use super::process::{
     check_health, configure_process_group, force_kill_process, force_kill_process_group,
     is_process_alive, is_process_group_alive, kill_process, kill_process_group, override_arg,
 };
-use super::types::{ModelState, ProxyState};
+use super::types::{BackendState, ProxyState};
 use crate::logging;
 
 /// Ensure a model is loaded and return its backend name.
@@ -81,7 +81,7 @@ impl ProxyState {
         {
             let mut models = self.models.write().await;
             if let Some(state) = models.get(&backend_name) {
-                if state.is_ready() || matches!(state, ModelState::Starting { .. }) {
+                if state.is_ready() || matches!(state, BackendState::Starting { .. }) {
                     debug!(
                         "Server '{}' already loaded/starting for model '{}'",
                         backend_name, model_name
@@ -93,7 +93,7 @@ impl ProxyState {
             // Reserve this backend with Starting state
             models.insert(
                 backend_name.clone(),
-                ModelState::Starting {
+                BackendState::Starting {
                     model_name: model_name.to_string(),
                     backend: server_config.backend.clone(),
                     backend_url: String::new(),
@@ -235,7 +235,8 @@ impl ProxyState {
         // Update the PID in the Starting state so cleanup paths can find it
         {
             let mut models = self.models.write().await;
-            if let Some(ModelState::Starting { backend_pid, .. }) = models.get_mut(&backend_name) {
+            if let Some(BackendState::Starting { backend_pid, .. }) = models.get_mut(&backend_name)
+            {
                 *backend_pid = pid;
             }
         }
@@ -381,7 +382,7 @@ impl ProxyState {
         {
             let mut models = self.models.write().await;
             if let Some(state) = models.get_mut(&backend_name) {
-                if let ModelState::Starting {
+                if let BackendState::Starting {
                     consecutive_failures,
                     failure_timestamp,
                     ..
@@ -391,7 +392,7 @@ impl ProxyState {
                     consecutive_failures.store(0, std::sync::atomic::Ordering::Relaxed);
                     let cf = Arc::clone(consecutive_failures);
                     let ft = *failure_timestamp;
-                    *state = ModelState::Ready {
+                    *state = BackendState::Ready {
                         model_name: model_name.to_string(),
                         backend: server_config.backend.clone(),
                         backend_pid: pid,
@@ -475,7 +476,7 @@ impl ProxyState {
         let models = self.models.write().await;
         let ready_servers: Vec<String> = models
             .iter()
-            .filter(|(_, s)| matches!(s, ModelState::Ready { .. }))
+            .filter(|(_, s)| matches!(s, BackendState::Ready { .. }))
             .map(|(name, _)| name.clone())
             .collect();
 
@@ -544,7 +545,7 @@ impl ProxyState {
         // Atomically transition Ready → Unloading
         if let Some(ref name) = lru_name {
             if let Some(state) = models.get_mut(name) {
-                if let ModelState::Ready {
+                if let BackendState::Ready {
                     model_name,
                     backend,
                     backend_pid,
@@ -556,7 +557,7 @@ impl ProxyState {
                     load_time: _,
                 } = std::mem::take(state)
                 {
-                    *state = ModelState::Unloading {
+                    *state = BackendState::Unloading {
                         model_name,
                         backend,
                         backend_pid,
@@ -592,7 +593,7 @@ impl ProxyState {
 
         if !matches!(
             state,
-            ModelState::Ready { .. } | ModelState::Unloading { .. }
+            BackendState::Ready { .. } | BackendState::Unloading { .. }
         ) {
             return Err(anyhow::anyhow!(
                 "Server '{}' is not ready (state: {:?})",
@@ -602,12 +603,12 @@ impl ProxyState {
         }
 
         let (_backend, pid) = match &state {
-            ModelState::Ready {
+            BackendState::Ready {
                 backend,
                 backend_pid,
                 ..
             }
-            | ModelState::Unloading {
+            | BackendState::Unloading {
                 backend,
                 backend_pid,
                 ..

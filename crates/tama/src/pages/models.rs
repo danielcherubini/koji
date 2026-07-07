@@ -20,7 +20,7 @@ struct ModelEntry {
     loaded: bool,
     /// Lifecycle state: idle, loading, ready, unloading, failed.
     #[serde(default)]
-    state: String,
+    state: tama_core::gpu::ModelState,
     #[serde(default)]
     api_name: Option<String>,
     #[serde(default)]

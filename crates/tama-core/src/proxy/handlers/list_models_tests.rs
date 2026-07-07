@@ -456,7 +456,7 @@ async fn test_handle_list_models_alias_deduplication() {
         let mut models = state.models.write().await;
         models.insert(
             "gemma-e2b".to_string(),
-            crate::proxy::ModelState::Ready {
+            crate::proxy::BackendState::Ready {
                 model_name: "gemma-e2b".to_string(),
                 backend: "llama_cpp".to_string(),
                 backend_pid: 1001,
@@ -552,7 +552,7 @@ async fn test_handle_list_models_no_alias_no_normalization() {
         let mut models = state.models.write().await;
         models.insert(
             "my-model".to_string(),
-            crate::proxy::ModelState::Ready {
+            crate::proxy::BackendState::Ready {
                 model_name: "my-model".to_string(),
                 backend: "llama_cpp".to_string(),
                 backend_pid: 1001,

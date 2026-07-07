@@ -85,7 +85,7 @@ pub struct MetricsSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GpuDeviceStats {
     pub device_id: String,
-    pub vendor: String,
+    pub vendor: tama_core::gpu::GpuVendor,
     /// Human-readable GPU name (e.g. "Radeon AI PRO R9700", "GeForce RTX 4090").
     #[serde(default)]
     pub name: String,
@@ -123,7 +123,7 @@ pub struct ModelStatus {
     pub loaded: bool,
     /// Lifecycle state: idle, loading, ready, unloading, failed.
     #[serde(default)]
-    pub state: String,
+    pub state: tama_core::gpu::ModelState,
     #[serde(default)]
     pub quant: Option<String>,
     #[serde(default)]
@@ -171,7 +171,14 @@ pub fn format_number(n: u64) -> String {
 pub fn active_models(models: &[ModelStatus]) -> Vec<ModelStatus> {
     models
         .iter()
-        .filter(|m| matches!(m.state.as_str(), "ready" | "loading" | "unloading"))
+        .filter(|m| {
+            matches!(
+                m.state,
+                tama_core::gpu::ModelState::Ready
+                    | tama_core::gpu::ModelState::Loading
+                    | tama_core::gpu::ModelState::Unloading
+            )
+        })
         .cloned()
         .collect()
 }
@@ -184,7 +191,14 @@ pub fn active_models(models: &[ModelStatus]) -> Vec<ModelStatus> {
 pub fn inactive_models(models: &[ModelStatus]) -> Vec<ModelStatus> {
     models
         .iter()
-        .filter(|m| !matches!(m.state.as_str(), "ready" | "loading" | "unloading"))
+        .filter(|m| {
+            !matches!(
+                m.state,
+                tama_core::gpu::ModelState::Ready
+                    | tama_core::gpu::ModelState::Loading
+                    | tama_core::gpu::ModelState::Unloading
+            )
+        })
         .cloned()
         .collect()
 }

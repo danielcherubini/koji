@@ -27,7 +27,7 @@ pub use handlers::tts::{
 };
 pub use process::{check_health, force_kill_process, is_process_alive, kill_process, override_arg};
 pub use server::ProxyServer;
-pub use types::{ModelState, ProxyMetrics, ProxyState};
+pub use types::{BackendState, ProxyMetrics, ProxyState};
 
 #[cfg(test)]
 mod tests {
@@ -283,7 +283,7 @@ mod tests {
         let mut models = state.models.write().await;
         models.insert(
             "test-model".to_string(),
-            crate::proxy::types::ModelState::Ready {
+            crate::proxy::types::BackendState::Ready {
                 model_name: "test-model".to_string(),
                 backend: "llama_cpp".to_string(),
                 backend_pid: 1234,

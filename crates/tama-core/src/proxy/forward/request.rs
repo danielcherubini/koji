@@ -2,7 +2,7 @@ use super::headers::{filter_request_headers, strip_response_headers};
 use super::json::rewrite_json_model_name;
 use super::sse::process_sse_line;
 use super::stats::extract_inference_stats;
-use crate::proxy::{ModelState, ProxyState};
+use crate::proxy::{BackendState, ProxyState};
 use axum::{body::Body, http::request::Parts, response::IntoResponse};
 use bytes::Bytes;
 use futures_util::stream::StreamExt;
@@ -188,16 +188,16 @@ pub async fn forward_request(
                             f.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         }
                         // Set failure timestamp for cooldown
-                        if ms.is_ready() || matches!(ms, ModelState::Starting { .. }) {
+                        if ms.is_ready() || matches!(ms, BackendState::Starting { .. }) {
                             let new_ts = SystemTime::now();
                             let mut models = state.models.write().await;
                             #[allow(clippy::collapsible_match)]
                             if let Some(existing) = models.get_mut(backend_name) {
                                 match existing {
-                                    ModelState::Ready {
+                                    BackendState::Ready {
                                         failure_timestamp, ..
                                     }
-                                    | ModelState::Starting {
+                                    | BackendState::Starting {
                                         failure_timestamp, ..
                                     } => {
                                         *failure_timestamp = Some(new_ts);

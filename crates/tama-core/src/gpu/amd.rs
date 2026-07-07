@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use super::types::GpuDeviceStats;
+use super::types::{GpuDeviceStats, GpuVendor};
 use super::vram::VramInfo;
 
 /// Cached map of PCI bus address → GPU product name from rocm-smi.
@@ -184,7 +184,7 @@ pub(super) fn query_amd_devices() -> Vec<GpuDeviceStats> {
 
         let mut stats = GpuDeviceStats {
             device_id: format!("amd{card_num}"),
-            vendor: "amd".to_string(),
+            vendor: GpuVendor::Amd,
             name,
             utilization_pct: None,
             vram: None,

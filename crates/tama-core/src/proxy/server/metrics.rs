@@ -225,7 +225,10 @@ pub fn start_metrics_collector(
 
             // 3. Collect model statuses
             let model_statuses = metrics_state.collect_model_statuses().await;
-            let models_loaded = model_statuses.iter().filter(|m| m.state == "ready").count() as u64;
+            let models_loaded = model_statuses
+                .iter()
+                .filter(|m| matches!(m.state, crate::gpu::ModelState::Ready))
+                .count() as u64;
 
             // 4. Build unified MetricSample WITH inference fields
             let sample = crate::gpu::MetricSample {

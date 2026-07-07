@@ -11,7 +11,7 @@ use tower::ServiceExt;
 use super::helpers::create_state_with_model;
 use crate::config::ModelConfig;
 use crate::proxy::tama_handlers::models::handle_tama_cancel_load;
-use crate::proxy::ModelState;
+use crate::proxy::BackendState;
 
 /// Cancel returns 200 for a Starting model with a PID.
 /// The fake PID (99999) has no real process group, so kill_process_group
@@ -30,7 +30,7 @@ async fn test_cancel_returns_200_for_starting_model() {
     // Insert a Starting entry with a fake PID
     state.models.write().await.insert(
         "test-model".to_string(),
-        ModelState::Starting {
+        BackendState::Starting {
             model_name: "test-model".into(),
             backend: "llama_cpp".into(),
             backend_url: String::new(),
@@ -89,7 +89,7 @@ async fn test_cancel_returns_409_for_ready_model() {
     // Insert a Ready entry
     state.models.write().await.insert(
         "test-model".to_string(),
-        ModelState::Ready {
+        BackendState::Ready {
             model_name: "test-model".to_string(),
             backend: "llama_cpp".to_string(),
             backend_pid: 12345,
@@ -189,7 +189,7 @@ async fn test_cancel_returns_404_for_failed_model() {
     // Insert a Failed entry
     state.models.write().await.insert(
         "test-model".to_string(),
-        ModelState::Failed {
+        BackendState::Failed {
             model_name: "test-model".to_string(),
             backend: "llama_cpp".to_string(),
             error: "Some error".to_string(),

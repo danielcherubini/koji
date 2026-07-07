@@ -11,7 +11,7 @@ use axum::{
 use super::utils::resolve_model_id;
 use crate::proxy::process::{force_kill_process_group, is_process_group_alive, kill_process_group};
 use crate::proxy::tama_handlers::ModelResponse;
-use crate::proxy::{ModelState, ProxyState};
+use crate::proxy::{BackendState, ProxyState};
 use tracing::{info, warn};
 
 /// Handle listing all configured models (Tama management API).
@@ -162,8 +162,8 @@ pub async fn handle_tama_cancel_load(
         };
 
         match entry {
-            ModelState::Starting { backend_pid, .. } => (model_id.clone(), *backend_pid),
-            ModelState::Ready { .. } => {
+            BackendState::Starting { backend_pid, .. } => (model_id.clone(), *backend_pid),
+            BackendState::Ready { .. } => {
                 return (
                     StatusCode::CONFLICT,
                     Json(serde_json::json!({
@@ -194,14 +194,14 @@ pub async fn handle_tama_cancel_load(
     {
         let mut models = state.models.write().await;
         match models.get(&backend_name) {
-            Some(ModelState::Starting { .. }) => {
+            Some(BackendState::Starting { .. }) => {
                 // TODO: race with load_model's mgr.insert_active() — if health check
                 // succeeds between here and the kill below, load_model may insert a
                 // stale active_models DB row. A future fix would add a re-check in
                 // load_model before insert_active under the write lock.
                 models.remove(&backend_name);
             }
-            Some(ModelState::Ready { .. }) => {
+            Some(BackendState::Ready { .. }) => {
                 return (
                     StatusCode::CONFLICT,
                     Json(serde_json::json!({

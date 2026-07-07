@@ -64,7 +64,7 @@ fn test_parse_nvidia_smi_csv_line() {
     assert!(stats.is_some());
     let stats = stats.unwrap();
     assert_eq!(stats.device_id, "nvidia0");
-    assert_eq!(stats.vendor, "nvidia");
+    assert_eq!(stats.vendor, GpuVendor::Nvidia);
     assert_eq!(stats.name, "GeForce RTX 4090");
     assert_eq!(stats.uuid, Some("GPU-abc123".to_string()));
     assert_eq!(stats.utilization_pct, Some(45));
@@ -185,7 +185,7 @@ fn test_aggregate_vram_one_none() {
 fn build_test_device(device_id: &str, util: Option<u8>) -> GpuDeviceStats {
     GpuDeviceStats {
         device_id: device_id.to_string(),
-        vendor: "nvidia".to_string(),
+        vendor: GpuVendor::Nvidia,
         name: "Test GPU".to_string(),
         utilization_pct: util,
         vram: None,
@@ -211,7 +211,7 @@ fn build_test_device_with_vram(
     };
     GpuDeviceStats {
         device_id: device_id.to_string(),
-        vendor: "nvidia".to_string(),
+        vendor: GpuVendor::Nvidia,
         name: "Test GPU".to_string(),
         utilization_pct: None,
         vram,
@@ -230,7 +230,7 @@ fn test_assign_position_ids_sorts_and_assigns() {
     let mut gpus = vec![
         GpuDeviceStats {
             device_id: "nvidia10".to_string(),
-            vendor: "nvidia".to_string(),
+            vendor: GpuVendor::Nvidia,
             name: "RTX 4090".to_string(),
             utilization_pct: None,
             vram: None,
@@ -242,7 +242,7 @@ fn test_assign_position_ids_sorts_and_assigns() {
         },
         GpuDeviceStats {
             device_id: "nvidia2".to_string(),
-            vendor: "nvidia".to_string(),
+            vendor: GpuVendor::Nvidia,
             name: "RTX 3090".to_string(),
             utilization_pct: None,
             vram: None,
@@ -257,10 +257,10 @@ fn test_assign_position_ids_sorts_and_assigns() {
     // nvidia2 should come before nvidia10
     assert_eq!(gpus.len(), 2);
     assert_eq!(gpus[0].device_id, "GPU0");
-    assert_eq!(gpus[0].vendor, "nvidia");
+    assert_eq!(gpus[0].vendor, GpuVendor::Nvidia);
     assert_eq!(gpus[0].name, "RTX 3090");
     assert_eq!(gpus[1].device_id, "GPU1");
-    assert_eq!(gpus[1].vendor, "nvidia");
+    assert_eq!(gpus[1].vendor, GpuVendor::Nvidia);
     assert_eq!(gpus[1].name, "RTX 4090");
 }
 
@@ -269,7 +269,7 @@ fn test_assign_position_ids_multiple_per_vendor() {
     let mut gpus = vec![
         GpuDeviceStats {
             device_id: "nvidia1".to_string(),
-            vendor: "nvidia".to_string(),
+            vendor: GpuVendor::Nvidia,
             name: "RTX 4090".to_string(),
             utilization_pct: None,
             vram: None,
@@ -281,7 +281,7 @@ fn test_assign_position_ids_multiple_per_vendor() {
         },
         GpuDeviceStats {
             device_id: "amd0".to_string(),
-            vendor: "amd".to_string(),
+            vendor: GpuVendor::Amd,
             name: "Radeon RX 7900".to_string(),
             utilization_pct: None,
             vram: None,
@@ -293,7 +293,7 @@ fn test_assign_position_ids_multiple_per_vendor() {
         },
         GpuDeviceStats {
             device_id: "nvidia0".to_string(),
-            vendor: "nvidia".to_string(),
+            vendor: GpuVendor::Nvidia,
             name: "RTX 3090".to_string(),
             utilization_pct: None,
             vram: None,
@@ -305,7 +305,7 @@ fn test_assign_position_ids_multiple_per_vendor() {
         },
         GpuDeviceStats {
             device_id: "amd1".to_string(),
-            vendor: "amd".to_string(),
+            vendor: GpuVendor::Amd,
             name: "Radeon RX 6900".to_string(),
             utilization_pct: None,
             vram: None,
@@ -320,16 +320,16 @@ fn test_assign_position_ids_multiple_per_vendor() {
     // Expected order: amd0, amd1, nvidia0, nvidia1
     assert_eq!(gpus.len(), 4);
     assert_eq!(gpus[0].device_id, "GPU0");
-    assert_eq!(gpus[0].vendor, "amd");
+    assert_eq!(gpus[0].vendor, GpuVendor::Amd);
     assert_eq!(gpus[0].name, "Radeon RX 7900");
     assert_eq!(gpus[1].device_id, "GPU1");
-    assert_eq!(gpus[1].vendor, "amd");
+    assert_eq!(gpus[1].vendor, GpuVendor::Amd);
     assert_eq!(gpus[1].name, "Radeon RX 6900");
     assert_eq!(gpus[2].device_id, "GPU2");
-    assert_eq!(gpus[2].vendor, "nvidia");
+    assert_eq!(gpus[2].vendor, GpuVendor::Nvidia);
     assert_eq!(gpus[2].name, "RTX 3090");
     assert_eq!(gpus[3].device_id, "GPU3");
-    assert_eq!(gpus[3].vendor, "nvidia");
+    assert_eq!(gpus[3].vendor, GpuVendor::Nvidia);
     assert_eq!(gpus[3].name, "RTX 4090");
 }
 

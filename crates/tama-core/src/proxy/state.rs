@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::download_queue::{queue_processor_loop, DownloadQueueService};
-use super::types::{ModelState, ProxyMetrics, ProxyState};
+use super::types::{BackendState, ProxyMetrics, ProxyState};
 
 impl ProxyState {
     pub fn new(config: crate::config::Config, db_dir: Option<std::path::PathBuf>) -> Self {
@@ -98,7 +98,7 @@ impl ProxyState {
     }
 
     /// Get the state of a loaded model (backend).
-    pub async fn get_model_state(&self, backend_name: &str) -> Option<ModelState> {
+    pub async fn get_model_state(&self, backend_name: &str) -> Option<BackendState> {
         let models = self.models.read().await;
         models.get(backend_name).cloned()
     }
@@ -107,7 +107,7 @@ impl ProxyState {
     pub async fn get_model_state_with_access(
         &self,
         backend_name: &str,
-    ) -> Option<(ModelState, Option<Instant>)> {
+    ) -> Option<(BackendState, Option<Instant>)> {
         let models = self.models.read().await;
         models
             .get(backend_name)
@@ -121,7 +121,7 @@ impl ProxyState {
             .await
             .get(backend_name)
             .and_then(|s| match s {
-                ModelState::Ready { backend_pid, .. } => Some(*backend_pid),
+                BackendState::Ready { backend_pid, .. } => Some(*backend_pid),
                 _ => None,
             })
     }
@@ -154,7 +154,7 @@ impl ProxyState {
         // Simple round-robin or first available
         for backend_name in backend_names {
             if let Some(state) = models.get(&backend_name) {
-                if (state.is_ready() || matches!(state, ModelState::Starting { .. }))
+                if (state.is_ready() || matches!(state, BackendState::Starting { .. }))
                     && state
                         .consecutive_failures()
                         .map(|f| f.load(std::sync::atomic::Ordering::Relaxed))
@@ -174,16 +174,16 @@ impl ProxyState {
         let mut models = self.models.write().await;
         if let Some(state) = models.get_mut(backend_name) {
             match state {
-                ModelState::Starting { last_accessed, .. } => {
+                BackendState::Starting { last_accessed, .. } => {
                     *last_accessed = Instant::now();
                 }
-                ModelState::Ready { last_accessed, .. } => {
+                BackendState::Ready { last_accessed, .. } => {
                     *last_accessed = Instant::now();
                 }
-                ModelState::Unloading { last_accessed, .. } => {
+                BackendState::Unloading { last_accessed, .. } => {
                     *last_accessed = Instant::now();
                 }
-                ModelState::Failed { .. } => {}
+                BackendState::Failed { .. } => {}
             }
         }
     }

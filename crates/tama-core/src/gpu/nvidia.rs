@@ -1,4 +1,4 @@
-use super::types::GpuDeviceStats;
+use super::types::{GpuDeviceStats, GpuVendor};
 use super::vram::VramInfo;
 
 /// Parse a single line of nvidia-smi CSV output into `GpuDeviceStats`.
@@ -29,7 +29,7 @@ pub(super) fn parse_nvidia_smi_csv_line(line: &str) -> Option<GpuDeviceStats> {
 
     Some(GpuDeviceStats {
         device_id: format!("nvidia{index}"),
-        vendor: "nvidia".to_string(),
+        vendor: GpuVendor::Nvidia,
         name,
         utilization_pct: Some(utilization),
         vram: Some(VramInfo {

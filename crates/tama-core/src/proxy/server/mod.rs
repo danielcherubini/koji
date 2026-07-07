@@ -137,7 +137,7 @@ impl ProxyServer {
                 let mut models = state.models.write().await;
                 models.insert(
                     entry.server_name.clone(),
-                    super::types::ModelState::Ready {
+                    super::types::BackendState::Ready {
                         model_name: entry.model_name.clone(),
                         backend: entry.backend.clone(),
                         backend_pid: pid,
