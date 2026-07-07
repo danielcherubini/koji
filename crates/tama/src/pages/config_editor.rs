@@ -4,11 +4,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 use crate::components::section_card::SectionCard;
-use crate::utils::{extract_and_store_csrf_token, get_request, post_request};
-use tama_core::config::{
+use crate::gpu_types::{
     CompactionDevice as CoreCompactionDevice, LogLevel as CoreLogLevel,
     RestartPolicy as CoreRestartPolicy,
 };
+use crate::utils::{extract_and_store_csrf_token, get_request, post_request};
 
 // ─── WASM-safe JSON mirror types ──────────────────────────────────────────
 // These match the shape served by /api/config/structured and accepted by POST.
@@ -341,8 +341,7 @@ fn GeneralForm(config: RwSignal<Option<Config>>) -> impl IntoView {
                             let v = target_value(&ev);
                             config.update(|c| {
                                 if let Some(c) = c {
-                                    c.general.log_level = CoreLogLevel::from_str(&v)
-                                        .unwrap_or(CoreLogLevel::Info);
+                                    c.general.log_level = CoreLogLevel::from_str(&v);
                                 }
                             });
                         }
@@ -654,8 +653,7 @@ fn SupervisorForm(config: RwSignal<Option<Config>>) -> impl IntoView {
                             let v = target_value(&ev);
                             config.update(|c| {
                                 if let Some(c) = c {
-                                    c.supervisor.restart_policy = CoreRestartPolicy::from_str(&v)
-                                        .unwrap_or(CoreRestartPolicy::Always);
+                                    c.supervisor.restart_policy = CoreRestartPolicy::from_str(&v);
                                 }
                             });
                         }
@@ -880,8 +878,7 @@ fn CompactionForm(config: RwSignal<Option<Config>>) -> impl IntoView {
                             let v = target_value(&ev);
                             config.update(|c| {
                                 if let Some(c) = c {
-                                    c.compaction.device = CoreCompactionDevice::from_str(&v)
-                                        .unwrap_or(CoreCompactionDevice::Cpu);
+                                    c.compaction.device = CoreCompactionDevice::from_str(&v);
                                 }
                             });
                         }
