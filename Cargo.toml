@@ -54,3 +54,15 @@ nix = { version = "0.29", features = ["process"] }
 regex = "1"
 log = "0.4"
 rand = "0.9"
+
+# Build performance: line-tables-only for workspace crates (backtraces work),
+# no debug info for dependencies. Use --profile debugging for full debug info.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.debugging]
+inherits = "dev"
+debug = true
