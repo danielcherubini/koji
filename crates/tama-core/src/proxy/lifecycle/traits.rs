@@ -16,6 +16,12 @@
 //! so production code is unchanged when using `()` as the type parameter.
 //!
 //! Mock implementations are provided for testing (e.g., `MockHealthChecker`).
+//!
+//! # Dependencies
+//!
+//! Uses `async-trait` for async trait methods. This adds heap allocation for
+//! vtables but is confined to test infrastructure — production code uses `()`
+//! default impls with zero overhead.
 
 use std::path::Path;
 
@@ -196,6 +202,7 @@ impl HealthChecker for MockHealthChecker {
 }
 
 /// A mock process spawner that tracks spawn calls and returns configurable PIDs.
+/// Reserved for future lifecycle tests that need to mock process spawning.
 #[derive(Debug, Default)]
 #[allow(dead_code)]
 pub struct MockProcessSpawner {
@@ -260,6 +267,7 @@ impl ProcessSpawner for MockProcessSpawner {
 }
 
 /// A mock port allocator that returns a configurable port.
+/// Reserved for future lifecycle tests that need to mock port allocation.
 #[derive(Debug, Default)]
 #[allow(dead_code)]
 pub struct MockPortAllocator {
@@ -286,6 +294,7 @@ impl PortAllocator for MockPortAllocator {
 }
 
 /// A mock process checker that returns configurable answers.
+/// Reserved for future lifecycle tests that need to mock process existence checks.
 #[derive(Debug, Default)]
 #[allow(dead_code)]
 pub struct MockProcessChecker {
