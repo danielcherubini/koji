@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+#![allow(deprecated)]
 
 #[cfg(feature = "ssr")]
 pub mod app_state;

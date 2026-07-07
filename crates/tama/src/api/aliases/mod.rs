@@ -114,11 +114,7 @@ pub async fn create_alias(
     }
 
     // Validate model_id exists
-    let model_exists: bool = match repo.conn().query_row(
-        "SELECT COUNT(*) > 0 FROM model_configs WHERE id = ?",
-        [payload.model_id],
-        |row| row.get(0),
-    ) {
+    let model_exists = match repo.model_exists(payload.model_id) {
         Ok(v) => v,
         Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     };
@@ -189,15 +185,9 @@ pub async fn update_alias(
 
     // Validate model_id if provided
     if let Some(ref model_id) = payload.model_id {
-        let model_exists: bool = match repo.conn().query_row(
-            "SELECT COUNT(*) > 0 FROM model_configs WHERE id = ?",
-            [model_id],
-            |row| row.get(0),
-        ) {
+        let model_exists = match repo.model_exists(*model_id) {
             Ok(v) => v,
-            Err(e) => {
-                return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None)
-            }
+            Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
         };
 
         if !model_exists {

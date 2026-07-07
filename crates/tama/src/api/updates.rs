@@ -647,7 +647,6 @@ pub async fn apply_backend_update(
 ///
 /// Accepts `{ "quants": ["Q4_K_M", "Q8_0"] }` and returns immediately with job IDs.
 pub async fn apply_model_update(
-    Extension(_web_state): Extension<WebState>,
     State(state): State<Arc<ProxyState>>,
     Path(id): Path<i64>,
     Json(req): Json<ModelUpdateRequest>,
@@ -750,8 +749,8 @@ pub async fn apply_model_update(
 
     // Phase 1: Preflight — check all items for duplicates before creating any jobs.
     // This is read-only and returns early on the first conflict or error.
-    let mgr = match tama_core::models::ModelManager::open(&config_dir) {
-        Ok(m) => m,
+    let repo = match Repository::open(&config_dir) {
+        Ok(r) => r,
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -760,10 +759,9 @@ pub async fn apply_model_update(
                 .into_response();
         }
     };
-    let conn = mgr.conn();
 
     for (quant_key, filename) in &unique_files {
-        match tama_core::db::queries::get_active_item_by_repo_filename(conn, &repo_id, filename) {
+        match repo.get_active_download_by_filename(&repo_id, filename) {
             Ok(Some(existing)) => {
                 return (
                     StatusCode::CONFLICT,

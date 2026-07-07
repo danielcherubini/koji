@@ -194,8 +194,52 @@ impl Repository {
     /// Returns a reference to the underlying SQLite connection.
     ///
     /// This is a permanent escape hatch for callers that need raw access.
+    #[allow(dead_code)]
     pub fn conn(&self) -> &rusqlite::Connection {
         &self.conn
+    }
+
+    /// Check if a model config exists by its integer id.
+    pub fn model_exists(&self, id: i64) -> anyhow::Result<bool> {
+        let count: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM model_configs WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .with_context(|| format!("Failed to check model config existence id={}", id))?;
+        Ok(count > 0)
+    }
+
+    /// Get an active download queue item by repo_id and filename.
+    ///
+    /// Returns `None` if no active (queued/running/verifying) item exists
+    /// for the given repo_id and filename combination.
+    pub fn get_active_download_by_filename(
+        &self,
+        repo_id: &str,
+        filename: &str,
+    ) -> anyhow::Result<Option<DownloadQueueDto>> {
+        let item = queries::get_active_item_by_repo_filename(&self.conn, repo_id, filename)
+            .with_context(|| {
+                format!(
+                    "Failed to get active download for repo_id={} filename={}",
+                    repo_id, filename
+                )
+            })?;
+        Ok(item.map(queue_item_to_dto))
+    }
+
+    /// Load all model configs as a `HashMap<config_key, ModelConfig>`.
+    ///
+    /// Returns the raw `ModelConfig` type (not DTOs), suitable for benchmark
+    /// operations that need config fields like `quants`, `api_name`, etc.
+    pub fn load_model_configs_for_benchmarks(
+        &self,
+    ) -> anyhow::Result<std::collections::HashMap<String, crate::config::ModelConfig>> {
+        crate::db::load_model_configs(&self.conn)
+            .with_context(|| "Failed to load model configs for benchmarks")
     }
 
     // ── Model Config ────────────────────────────────────────────────────

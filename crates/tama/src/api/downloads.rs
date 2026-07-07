@@ -52,10 +52,10 @@ pub struct DownloadCancelResponse {
     pub message: Option<String>,
 }
 
-/// Convert a `tama_core::db::queries::DownloadQueueItem` to a DTO.
+/// Convert a `DownloadQueueDto` to a `DownloadQueueItemDto`.
 /// Note: progress_percent is computed client-side from bytes_downloaded
 /// and total_bytes, so it's not included in the API response.
-fn item_to_dto(item: &tama_core::db::queries::DownloadQueueItem) -> DownloadQueueItemDto {
+fn item_to_dto(item: &tama_core::db::repository::DownloadQueueDto) -> DownloadQueueItemDto {
     DownloadQueueItemDto {
         job_id: item.job_id.clone(),
         repo_id: item.repo_id.clone(),
@@ -106,7 +106,7 @@ pub async fn get_active_downloads(
         )
     })?;
 
-    let items = svc.get_active_items().map_err(|e| {
+    let items = svc.get_active_items_dto().map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(error_body(e.to_string(), None)),
@@ -134,7 +134,7 @@ pub async fn get_download_history(
     })?;
 
     let items = svc
-        .get_history_items(query.limit, query.offset)
+        .get_history_items_dto(query.limit, query.offset)
         .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,

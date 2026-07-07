@@ -8,6 +8,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use tokio::sync::broadcast;
 
+use crate::db::repository::DownloadQueueDto;
 use crate::models::ModelManager;
 
 // Re-export query type for use in tests.
@@ -236,12 +237,34 @@ impl DownloadQueueService {
         self.model_mgr.lock().unwrap().queue_get_active()
     }
 
+    /// Get all active items as DTOs (queued + running + verifying), ordered by status priority.
+    pub fn get_active_items_dto(&self) -> Result<Vec<DownloadQueueDto>> {
+        self.model_mgr
+            .lock()
+            .unwrap()
+            .queue_get_active()
+            .map(|items| items.into_iter().map(item_to_dto).collect())
+    }
+
     /// Get history items (completed, failed, cancelled), sorted newest first.
     pub fn get_history_items(&self, limit: i64, offset: i64) -> Result<Vec<DownloadQueueItem>> {
         self.model_mgr
             .lock()
             .unwrap()
             .queue_get_history(limit, offset)
+    }
+
+    /// Get history items as DTOs (completed, failed, cancelled), sorted newest first.
+    pub fn get_history_items_dto(
+        &self,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<DownloadQueueDto>> {
+        self.model_mgr
+            .lock()
+            .unwrap()
+            .queue_get_history(limit, offset)
+            .map(|items| items.into_iter().map(item_to_dto).collect())
     }
 
     /// Count total history items (completed, failed, cancelled).
@@ -286,6 +309,27 @@ impl DownloadQueueService {
             [job_id],
         )?;
         Ok(rows > 0)
+    }
+}
+
+/// Convert a `DownloadQueueItem` (DB record type) to a `DownloadQueueDto`.
+fn item_to_dto(item: DownloadQueueItem) -> DownloadQueueDto {
+    DownloadQueueDto {
+        id: item.id,
+        job_id: item.job_id,
+        repo_id: item.repo_id,
+        filename: item.filename,
+        display_name: item.display_name,
+        status: item.status,
+        bytes_downloaded: item.bytes_downloaded,
+        total_bytes: item.total_bytes,
+        error_message: item.error_message,
+        started_at: item.started_at,
+        completed_at: item.completed_at,
+        queued_at: item.queued_at,
+        kind: item.kind,
+        quant: item.quant,
+        context_length: item.context_length,
     }
 }
 

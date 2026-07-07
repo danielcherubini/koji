@@ -140,7 +140,7 @@ pub async fn run_mtp_benchmark_inner(
     // Resolve model path (same pattern as spec.rs)
     let db_dir = db_path.parent().context("db_path has no parent")?;
     let repo = tama_core::db::repository::Repository::open(db_dir)?;
-    let model_configs = tama_core::db::load_model_configs(repo.conn())?;
+    let model_configs = repo.load_model_configs_for_benchmarks()?;
 
     // If model_id is an integer db_id, resolve it to the config key first.
     let resolved_id = if let Ok(db_id) = model_id.parse::<i64>() {

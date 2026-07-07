@@ -141,7 +141,7 @@ pub async fn run_benchmark_inner(
     // Get model display name from config. The request carries the db_id as a
     // string (e.g. "4") because that's what the model dropdown submits, so we
     // resolve it to the config key first — otherwise `.get("4")` never hits.
-    let model_configs = tama_core::db::load_model_configs(repo.conn())?;
+    let model_configs = repo.load_model_configs_for_benchmarks()?;
     let resolved_key = if let Ok(db_id) = model_id.parse::<i64>() {
         model_configs
             .iter()

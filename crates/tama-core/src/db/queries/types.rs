@@ -7,9 +7,13 @@ use serde::{Deserialize, Serialize};
 
 /// Per-repo user configuration for a model.
 ///
-/// This type is `pub` because it's part of `ModelManager`'s public API.
-/// API handlers should prefer Repository methods that return DTOs instead.
+/// This type is part of `ModelManager`'s public API. API handlers should
+/// prefer Repository methods that return DTOs instead.
 #[derive(Debug, Clone)]
+#[deprecated(
+    since = "2.1.0",
+    note = "Prefer Repository::get_model_config() which returns ModelConfigDto"
+)]
 pub struct ModelConfigRecord {
     pub id: i64,         // auto-increment primary key
     pub repo_id: String, // HF repo name
@@ -59,9 +63,13 @@ pub struct ModelPullRecord {
 
 /// A stored file record for a downloaded GGUF.
 ///
-/// This type is `pub` because it's part of `ModelManager`'s public API.
-/// API handlers should prefer Repository methods that return DTOs instead.
+/// This type is part of `ModelManager`'s public API. API handlers should
+/// prefer Repository methods that return DTOs instead.
 #[derive(Debug, Clone)]
+#[deprecated(
+    since = "2.1.0",
+    note = "Prefer Repository::get_model_files() which returns ModelFileDto"
+)]
 pub struct ModelFileRecord {
     pub id: i64,         // auto-increment primary key
     pub model_id: i64,   // FK to model_configs.id

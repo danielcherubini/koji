@@ -211,9 +211,7 @@ pub async fn delete_model(
         // Step 1b: Delete the update check record (best-effort, separate from transaction).
         // Kept outside the transaction so a missing or corrupted update_checks table
         // doesn't block model deletion. Errors are logged for visibility.
-        if let Err(e) =
-            tama_core::db::queries::delete_update_check(mgr.conn(), "model", &model_id.to_string())
-        {
+        if let Err(e) = repo.delete_update_check("model", &model_id.to_string()) {
             tracing::warn!(
                 "Failed to delete update check record for model {}: {}",
                 model_id,
