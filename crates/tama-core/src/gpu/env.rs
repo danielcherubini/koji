@@ -1,4 +1,5 @@
-use super::system::{detect_gpu_devices, GpuDeviceStats};
+use super::system::detect_gpu_devices;
+use super::types::GpuDeviceStats;
 
 /// Resolve a `gpu_device` string (e.g. "GPU1") + `gpu_variant` to
 /// (env_var_name, index) for driver-level GPU isolation.
