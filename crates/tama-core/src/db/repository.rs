@@ -537,3 +537,350 @@ fn update_check_record_to_dto(record: queries::UpdateCheckRecord) -> UpdateCheck
 
 // Re-export internal query types used by the Repository
 use crate::db::queries;
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::{open_in_memory, OpenResult};
+
+    /// Helper: open an in-memory database and return a Repository.
+    fn test_repo() -> Repository {
+        let OpenResult { conn, .. } = open_in_memory().unwrap();
+        Repository { conn }
+    }
+
+    /// Helper: insert a model config record and return its id.
+    fn insert_model_config(
+        conn: &Connection,
+        repo_id: &str,
+        display_name: Option<&str>,
+        backend: &str,
+    ) -> i64 {
+        let record = queries::ModelConfigRecord {
+            id: 0,
+            repo_id: repo_id.to_string(),
+            display_name: display_name.map(String::from),
+            backend: backend.to_string(),
+            gpu_variant: None,
+            gpu_device: None,
+            enabled: true,
+            selected_quant: None,
+            selected_mmproj: None,
+            selected_mtp_model: None,
+            context_length: None,
+            num_parallel: None,
+            kv_unified: false,
+            gpu_layers: None,
+            cache_type_k: None,
+            cache_type_v: None,
+            port: None,
+            args: None,
+            sampling: None,
+            modalities: None,
+            profile: None,
+            api_name: Some(repo_id.to_string()),
+            health_check: None,
+            hf_format: None,
+            hf_base_model: None,
+            hf_pipeline_tag: None,
+            hf_total_params: None,
+            hf_active_params: None,
+            hf_architecture_type: None,
+            hf_context_length: None,
+            hf_num_layers: None,
+            hf_last_modified: None,
+            spec_decoding: None,
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+        };
+        queries::upsert_model_config(conn, &record).unwrap()
+    }
+
+    // ── Alias CRUD ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_alias_crud_round_trip() {
+        use rusqlite::params;
+        let repo = test_repo();
+
+        // Insert a model config first (alias references it via FK)
+        let model_id: i64 = repo.conn.query_row(
+            "INSERT INTO model_configs (repo_id, backend, api_name) VALUES (?1, ?2, ?3) RETURNING id",
+            params!["test-org/test-model", "llama_cpp", "test"],
+            |row| row.get(0),
+        ).unwrap();
+
+        // Act: insert alias
+        let alias_id = repo
+            .insert_alias("test-alias", model_id, Some("A test alias"))
+            .unwrap();
+        assert!(alias_id > 0);
+
+        // Assert: retrieve by id
+        let alias = repo.get_alias_by_id(alias_id).unwrap().unwrap();
+        assert_eq!(alias.name, "test-alias");
+        assert_eq!(alias.model_id, model_id);
+        assert_eq!(alias.description, Some("A test alias".to_string()));
+
+        // Act: update alias (use same model_id since model_id+1 doesn't exist)
+        repo.update_alias(alias_id, Some("renamed"), Some(model_id), None, None)
+            .unwrap();
+
+        // Assert: updated values
+        let alias = repo.get_alias_by_id(alias_id).unwrap().unwrap();
+        assert_eq!(alias.name, "renamed");
+        assert_eq!(alias.model_id, model_id); // unchanged model_id
+        assert_eq!(alias.description, Some("A test alias".to_string())); // unchanged
+
+        // Assert: visible in get_all
+        let all = repo.get_all_aliases().unwrap();
+        assert!(all.iter().any(|a| a.id == alias_id));
+
+        // Act: delete
+        repo.delete_alias(alias_id).unwrap();
+
+        // Assert: gone
+        assert!(repo.get_alias_by_id(alias_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_alias_not_found() {
+        let repo = test_repo();
+        let result = repo.get_alias_by_id(999).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_all_aliases_empty() {
+        let repo = test_repo();
+        let aliases = repo.get_all_aliases().unwrap();
+        assert!(aliases.is_empty());
+    }
+
+    // ── Benchmark CRUD ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_benchmark_crud_round_trip() {
+        let repo = test_repo();
+
+        let params = BenchmarkParams {
+            model_id: "test-model".to_string(),
+            display_name: Some("Test Model".to_string()),
+            quant: Some("Q4_K_M".to_string()),
+            backend: "llama_cpp".to_string(),
+            engine: "llama_bench".to_string(),
+            pp_sizes_json: "[512,1024]".to_string(),
+            tg_sizes_json: "[128,256]".to_string(),
+            threads_json: Some("[8]".to_string()),
+            ngl_range: None,
+            runs: 3,
+            warmup: 1,
+            results_json: "[{\"pp\":100}]".to_string(),
+            load_time_ms: Some(1500.0),
+            vram_used_mib: Some(4096),
+            vram_total_mib: Some(8192),
+            duration_seconds: 30.5,
+            status: "success".to_string(),
+            benchmark_type: Some("baseline".to_string()),
+        };
+
+        // Insert
+        let id = repo.insert_benchmark(&params).unwrap();
+        assert!(id > 0);
+
+        // List
+        let benchmarks = repo.list_benchmarks().unwrap();
+        assert_eq!(benchmarks.len(), 1);
+        let b = &benchmarks[0];
+        assert_eq!(b.id, id);
+        assert_eq!(b.model_id, "test-model");
+        assert_eq!(b.backend, "llama_cpp");
+        assert_eq!(b.quant, Some("Q4_K_M".to_string()));
+        assert_eq!(b.runs, 3);
+        assert_eq!(b.duration_seconds, 30.5);
+
+        // Delete
+        repo.delete_benchmark(id).unwrap();
+
+        // Verify gone
+        let benchmarks = repo.list_benchmarks().unwrap();
+        assert!(benchmarks.is_empty());
+    }
+
+    #[test]
+    fn test_list_benchmarks_empty() {
+        let repo = test_repo();
+        let benchmarks = repo.list_benchmarks().unwrap();
+        assert!(benchmarks.is_empty());
+    }
+
+    // ── Update Checks ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_delete_update_check() {
+        let repo = test_repo();
+
+        // Insert directly via queries
+        queries::upsert_update_check(
+            &repo.conn,
+            queries::UpdateCheckParams {
+                item_type: "backend",
+                item_id: "llama-cpp",
+                current_version: Some("v0.1.0"),
+                latest_version: Some("v0.2.0"),
+                update_available: true,
+                status: "update_available",
+                error_message: None,
+                details_json: None,
+                checked_at: 1713168000,
+            },
+        )
+        .unwrap();
+
+        // Verify present
+        let checks = repo.get_all_update_checks().unwrap();
+        assert_eq!(checks.len(), 1);
+
+        // Delete
+        repo.delete_update_check("backend", "llama-cpp").unwrap();
+
+        // Verify gone
+        let checks = repo.get_all_update_checks().unwrap();
+        assert!(checks.is_empty());
+    }
+
+    #[test]
+    fn test_delete_update_checks_by_pattern() {
+        let repo = test_repo();
+
+        // Insert multiple records
+        queries::upsert_update_check(
+            &repo.conn,
+            queries::UpdateCheckParams {
+                item_type: "backend",
+                item_id: "llama_cpp:cpu",
+                current_version: None,
+                latest_version: None,
+                update_available: false,
+                status: "unknown",
+                error_message: None,
+                details_json: None,
+                checked_at: 1000,
+            },
+        )
+        .unwrap();
+
+        queries::upsert_update_check(
+            &repo.conn,
+            queries::UpdateCheckParams {
+                item_type: "backend",
+                item_id: "llama_cpp:cuda",
+                current_version: None,
+                latest_version: None,
+                update_available: false,
+                status: "unknown",
+                error_message: None,
+                details_json: None,
+                checked_at: 1001,
+            },
+        )
+        .unwrap();
+
+        queries::upsert_update_check(
+            &repo.conn,
+            queries::UpdateCheckParams {
+                item_type: "backend",
+                item_id: "vulkan:cpu",
+                current_version: None,
+                latest_version: None,
+                update_available: false,
+                status: "unknown",
+                error_message: None,
+                details_json: None,
+                checked_at: 1002,
+            },
+        )
+        .unwrap();
+
+        // Delete all llama_cpp variants
+        repo.delete_update_checks_by_pattern("backend", "llama_cpp:%")
+            .unwrap();
+
+        // Verify llama_cpp records are gone
+        let checks = repo.get_all_update_checks().unwrap();
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].item_id, "vulkan:cpu");
+    }
+
+    // ── Model Configs ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_load_model_configs_empty() {
+        let repo = test_repo();
+        let configs = repo.load_model_configs().unwrap();
+        assert!(configs.is_empty());
+    }
+
+    #[test]
+    fn test_load_model_configs_returns_inserted() {
+        let repo = test_repo();
+
+        // Insert via queries (Repository has no insert method)
+        let id = insert_model_config(
+            &repo.conn,
+            "test-org/test-model",
+            Some("Test Model"),
+            "llama_cpp",
+        );
+
+        // Load via Repository
+        let configs = repo.load_model_configs().unwrap();
+        assert_eq!(configs.len(), 1);
+
+        let key = "test-org--test-model";
+        let config = configs.get(key).unwrap();
+        assert_eq!(config.id, id);
+        assert_eq!(config.repo_id, "test-org/test-model");
+        assert_eq!(config.display_name, Some("Test Model".to_string()));
+        assert_eq!(config.backend, "llama_cpp");
+        assert!(config.enabled);
+    }
+
+    #[test]
+    fn test_load_model_configs_multiple() {
+        let repo = test_repo();
+
+        insert_model_config(&repo.conn, "org/model-a", Some("Model A"), "llama_cpp");
+        insert_model_config(&repo.conn, "org/model-b", Some("Model B"), "vulkan");
+
+        let configs = repo.load_model_configs().unwrap();
+        assert_eq!(configs.len(), 2);
+        assert!(configs.contains_key("org--model-a"));
+        assert!(configs.contains_key("org--model-b"));
+    }
+
+    // ── Model Files ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_get_model_files_empty_for_unknown_config() {
+        let repo = test_repo();
+        let files = repo.get_model_files(999).unwrap();
+        assert!(files.is_empty());
+    }
+
+    // ── Repository::open() ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_repository_open_and_model_exists() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let repo = Repository::open(dir.path()).unwrap();
+
+        // Fresh DB: no models exist
+        assert!(!repo.model_exists(1).unwrap());
+        assert!(!repo.model_exists(0).unwrap());
+    }
+}
