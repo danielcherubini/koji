@@ -147,7 +147,7 @@ impl CompactionDevice {
                         return Self::CudaDevice(n);
                     }
                 }
-                Self::Cuda
+                Self::default()
             }
             _ => Self::default(),
         }
