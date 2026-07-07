@@ -6,11 +6,11 @@ use axum::{
     Json,
 };
 use std::sync::Arc;
+use tama_core::proxy::ProxyState;
 
 use crate::api::helpers::{spawn_model_crud, DEFAULT_CRUD_STATUS};
 use crate::api::load_config_from_state;
 use crate::api::models::resolve_model_id;
-use tama_core::proxy::ProxyState;
 
 /// DELETE /tama/v1/models/:id/quants/:quant_key — delete a single quant's file
 /// and remove it from the config.

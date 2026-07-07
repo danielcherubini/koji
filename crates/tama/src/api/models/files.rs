@@ -6,11 +6,11 @@ use axum::{
     Json,
 };
 use std::sync::Arc;
+use tama_core::proxy::ProxyState;
 
 use super::resolve_model_id;
 use crate::api::load_config_from_state;
 use tama_core::db::repository::ModelFileDto;
-use tama_core::proxy::ProxyState;
 
 /// Serialize a `ModelFileDto` into the same shape used by the enriched
 /// quants response so refresh/verify callers get data identical to a GET.

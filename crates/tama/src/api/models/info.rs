@@ -6,11 +6,11 @@ use axum::{
     Json,
 };
 use std::sync::Arc;
+use tama_core::proxy::ProxyState;
 
 use crate::api::load_config_from_state;
 use tama_core::backends::BackendOption;
 use tama_core::db::repository::{ModelConfigDto, ModelFileDto, Repository};
-use tama_core::proxy::ProxyState;
 
 /// Build the list of available backend options by querying installed variants from the DB.
 fn build_backend_options(

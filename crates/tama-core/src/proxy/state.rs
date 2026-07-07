@@ -48,22 +48,6 @@ impl ProxyState {
             inference_stats: tokio::sync::watch::channel(std::collections::HashMap::new()).0,
             gpu_devices_cache: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             model_tasks: tokio::sync::RwLock::new(std::collections::HashMap::new()),
-            // ── Web UI state ──
-            #[cfg(feature = "web-ui")]
-            web_state: Some(Arc::new(crate::proxy::types::WebState {
-                jobs: Some(Arc::new(crate::web_types::JobManager::new())),
-                capabilities: Some(Arc::new(crate::web_types::CapabilitiesCache::new())),
-                update_checker: {
-                    let (tx, _) =
-                        tokio::sync::broadcast::channel::<crate::updates::UpdateEvent>(256);
-                    let mut checker = crate::updates::UpdateChecker::new();
-                    checker.set_update_events_tx(tx);
-                    Arc::new(checker)
-                },
-                binary_version: String::new(), // Set later by CLI
-                update_tx: Arc::new(tokio::sync::Mutex::new(None)),
-                upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-            })),
         };
 
         // Spawn the queue processor background task if download queue is configured.

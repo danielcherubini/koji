@@ -4,10 +4,11 @@ use crate::api::benchmarks::BenchmarkProgressSink;
 // ── Handler: Submit benchmark job ─────────────────────────────────────
 
 pub async fn run_benchmark(
+    Extension(web_state): Extension<WebState>,
     State(state): State<Arc<ProxyState>>,
     Json(req): Json<BenchmarkRunRequest>,
 ) -> impl IntoResponse {
-    let jobs = match state.web_jobs() {
+    let jobs = match web_state.jobs.as_ref() {
         Some(j) => j.clone(),
         None => return job_manager_unavailable_response(),
     };
@@ -55,7 +56,7 @@ pub async fn run_benchmark(
 
 pub async fn run_benchmark_inner(
     jobs: Arc<JobManager>,
-    job: &Arc<tama_core::web_types::Job>,
+    job: &Arc<crate::web_types::Job>,
     req: BenchmarkRunRequest,
     db_path: Option<std::path::PathBuf>,
     proxy_base_url: String,

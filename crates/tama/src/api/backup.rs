@@ -1,17 +1,17 @@
 //! Backup and restore API endpoints.
 
 use crate::api::error::error_response;
+use crate::web_types::WebState;
 use axum::{
-    extract::{Multipart, State},
+    extract::{Extension, Multipart, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use uuid::Uuid;
-
 use tama_core::proxy::ProxyState;
+use uuid::Uuid;
 
 /// Request body for restore preview.
 #[derive(Deserialize)]
@@ -65,7 +65,10 @@ pub struct BackendEntry {
 }
 
 /// GET /tama/v1/backup - Create backup and return as file download
-pub async fn create_backup(State(state): State<Arc<ProxyState>>) -> impl IntoResponse {
+pub async fn create_backup(
+    State(state): State<Arc<ProxyState>>,
+    Extension(_web_state): Extension<WebState>,
+) -> impl IntoResponse {
     let config_dir: std::path::PathBuf = {
         state.db_dir().clone().unwrap_or_else(|| {
             tama_core::config::Config::config_dir()
@@ -119,7 +122,8 @@ pub async fn create_backup(State(state): State<Arc<ProxyState>>) -> impl IntoRes
 
 /// POST /tama/v1/restore/preview - Upload archive and return manifest preview
 pub async fn restore_preview(
-    State(state): State<Arc<ProxyState>>,
+    State(_state): State<Arc<ProxyState>>,
+    Extension(web_state): Extension<WebState>,
     mut multipart: Multipart,
 ) -> impl IntoResponse {
     // Save upload to temp file
@@ -177,7 +181,7 @@ pub async fn restore_preview(
     match manifest_result {
         Ok(Ok(manifest)) => {
             // Store upload reference
-            let upload_lock = state.web_upload_lock();
+            let upload_lock = web_state.upload_lock.clone();
             let mut uploads = upload_lock.write().await;
             uploads.insert(
                 upload_id.clone(),
@@ -224,11 +228,12 @@ pub async fn restore_preview(
 
 /// POST /tama/v1/restore - Start restore job
 pub async fn start_restore(
-    State(state): State<Arc<ProxyState>>,
+    State(_state): State<Arc<ProxyState>>,
+    Extension(web_state): Extension<WebState>,
     Json(body): Json<RestoreRequest>,
 ) -> impl IntoResponse {
     // Look up upload
-    let upload_lock = state.web_upload_lock();
+    let upload_lock = web_state.upload_lock.clone();
     let uploads = upload_lock.read().await;
     let upload_path = match uploads.get(&body.upload_id) {
         Some(entry) => entry.path.clone(),
@@ -243,7 +248,7 @@ pub async fn start_restore(
     drop(uploads);
 
     // Create restore job
-    let Some(jobs) = state.web_jobs() else {
+    let Some(jobs) = web_state.jobs.as_ref() else {
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Jobs not configured",
@@ -253,7 +258,7 @@ pub async fn start_restore(
 
     let job = jobs
         .submit(
-            tama_core::web_types::JobKind::Restore,
+            crate::web_types::JobKind::Restore,
             None, // No backend type for restore
         )
         .await;
@@ -301,8 +306,8 @@ pub async fn start_restore(
     }
 }
 
-/// Re-export from tama-core for backward compatibility.
-pub use tama_core::web_types::UploadEntry;
+/// Re-export from local web_types for backward compatibility.
+pub use crate::web_types::UploadEntry;
 
 #[cfg(test)]
 mod tests {

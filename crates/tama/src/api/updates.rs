@@ -1,6 +1,6 @@
 use async_stream::stream;
 use axum::{
-    extract::{Path, State},
+    extract::{Extension, Path, State},
     http::StatusCode,
     response::{
         sse::{Event, KeepAlive},
@@ -12,6 +12,7 @@ use futures_util::Stream;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+use crate::web_types::WebState;
 use tama_core::backends::{
     check_latest_version, get_backend_install_path, BackendManager, BackendSource, BackendType,
     InstallOptions,
@@ -75,7 +76,10 @@ pub struct QuantDetailJson {
 }
 
 /// GET /tama/v1/updates - Returns cached results from DB
-pub async fn get_updates(State(state): State<Arc<ProxyState>>) -> impl IntoResponse {
+pub async fn get_updates(
+    State(state): State<Arc<ProxyState>>,
+    Extension(web_state): Extension<WebState>,
+) -> impl IntoResponse {
     let config_dir = match state.db_dir().clone() {
         Some(d) => d,
         None => {
@@ -87,14 +91,16 @@ pub async fn get_updates(State(state): State<Arc<ProxyState>>) -> impl IntoRespo
         }
     };
 
-    let checker = &state.web_update_checker();
+    let checker = &web_state.update_checker;
     match checker.get_results(&config_dir).await {
         Ok(records) => {
             let mut backends = Vec::new();
             let mut models = Vec::new();
             for r in records {
-                let details: Option<serde_json::Value> =
-                    r.details_json.and_then(|j| serde_json::from_str(&j).ok());
+                let details: Option<serde_json::Value> = r
+                    .details_json
+                    .as_ref()
+                    .and_then(|j| serde_json::from_str::<serde_json::Value>(j).ok());
 
                 // Extract repo_id from details JSON if present (for models)
                 let repo_id = details
@@ -176,7 +182,10 @@ pub async fn get_updates(State(state): State<Arc<ProxyState>>) -> impl IntoRespo
 }
 
 /// POST /tama/v1/updates/check - Trigger full re-check
-pub async fn trigger_check(State(state): State<Arc<ProxyState>>) -> impl IntoResponse {
+pub async fn trigger_check(
+    State(state): State<Arc<ProxyState>>,
+    Extension(web_state): Extension<WebState>,
+) -> impl IntoResponse {
     let config_dir = match state.db_dir().clone() {
         Some(d) => d,
         None => {
@@ -188,7 +197,7 @@ pub async fn trigger_check(State(state): State<Arc<ProxyState>>) -> impl IntoRes
         }
     };
 
-    let checker = state.web_update_checker().clone();
+    let checker = web_state.update_checker.clone();
     // Run in background, return immediately
     tokio::spawn(async move {
         if let Err(e) = checker.run_check(&config_dir).await {
@@ -216,6 +225,7 @@ pub struct CheckSingleQuery {
 /// For backends, use `?gpu_variant=xxx` to check a specific variant.
 /// If not provided, checks the active variant (legacy behavior).
 pub async fn check_single(
+    Extension(web_state): Extension<WebState>,
     State(state): State<Arc<ProxyState>>,
     Path((item_type, item_id)): Path<(String, String)>,
     axum::extract::Query(query): axum::extract::Query<CheckSingleQuery>,
@@ -231,7 +241,7 @@ pub async fn check_single(
         }
     };
 
-    let checker = &state.web_update_checker();
+    let checker = &web_state.update_checker;
     let result = match item_type.as_str() {
         "backend" => {
             let config_dir_clone = config_dir.clone();
@@ -329,9 +339,10 @@ pub async fn check_single(
 
 /// GET /tama/v1/updates/events — SSE stream of update check lifecycle events.
 pub async fn update_events_sse(
-    State(state): State<Arc<ProxyState>>,
+    Extension(web_state): Extension<WebState>,
+    State(_state): State<Arc<ProxyState>>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, axum::Error>>>, StatusCode> {
-    let checker = state.web_update_checker();
+    let checker = web_state.update_checker.clone();
     let tx = checker
         .update_events_tx
         .as_ref()
@@ -405,6 +416,7 @@ pub async fn update_events_sse(
 /// Use `?gpu_variant=xxx` to update a specific variant.
 /// If not provided, updates the active variant (legacy behavior).
 pub async fn apply_backend_update(
+    Extension(web_state): Extension<WebState>,
     State(state): State<Arc<ProxyState>>,
     Path(name): Path<String>,
     axum::extract::Query(query): axum::extract::Query<CheckSingleQuery>,
@@ -484,7 +496,7 @@ pub async fn apply_backend_update(
             .into_response();
     };
 
-    let jobs = match state.web_jobs() {
+    let jobs = match web_state.jobs.as_ref() {
         Some(j) => j.clone(),
         None => {
             return (
@@ -497,13 +509,13 @@ pub async fn apply_backend_update(
 
     let job = match jobs
         .submit(
-            tama_core::web_types::JobKind::Update,
+            crate::web_types::JobKind::Update,
             Some(backend_type.clone()),
         )
         .await
     {
         Ok(j) => j,
-        Err(tama_core::web_types::JobError::AlreadyRunning(existing_id)) => {
+        Err(crate::web_types::JobError::AlreadyRunning(existing_id)) => {
             return (StatusCode::CONFLICT, Json(serde_json::json!({ "error": "another backend job is already running", "job_id": existing_id }))).into_response();
         }
         Err(_) => {
@@ -613,14 +625,14 @@ pub async fn apply_backend_update(
         {
             Ok(_) => {
                 let _ = jobs_clone
-                    .finish(&job_clone, tama_core::web_types::JobStatus::Succeeded, None)
+                    .finish(&job_clone, crate::web_types::JobStatus::Succeeded, None)
                     .await;
             }
             Err(e) => {
                 let _ = jobs_clone
                     .finish(
                         &job_clone,
-                        tama_core::web_types::JobStatus::Failed,
+                        crate::web_types::JobStatus::Failed,
                         Some(e.to_string()),
                     )
                     .await;
@@ -635,6 +647,7 @@ pub async fn apply_backend_update(
 ///
 /// Accepts `{ "quants": ["Q4_K_M", "Q8_0"] }` and returns immediately with job IDs.
 pub async fn apply_model_update(
+    Extension(_web_state): Extension<WebState>,
     State(state): State<Arc<ProxyState>>,
     Path(id): Path<i64>,
     Json(req): Json<ModelUpdateRequest>,

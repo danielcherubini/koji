@@ -25,10 +25,11 @@ use std::sync::Arc;
 
 use crate::api::error::error_response;
 use crate::gpu::query_vram;
+use crate::web_types::{JobEvent, JobKind, JobManager, JobStatus, WebState};
+use axum::extract::Extension;
 use tama_core::backends::ProgressSink;
 use tama_core::bench::llama_cli_spec::{SpecBenchConfig, SpecType};
 use tama_core::proxy::ProxyState;
-use tama_core::web_types::{JobEvent, JobKind, JobManager, JobStatus};
 
 // ── Request/Response DTOs ─────────────────────────────────────────────
 
@@ -164,7 +165,7 @@ pub use spec::{run_spec_benchmark, run_spec_benchmark_inner, validate_spec_sweep
 #[derive(Clone)]
 pub struct BenchmarkProgressSink {
     pub name: &'static str,
-    pub job: Arc<tama_core::web_types::Job>,
+    pub job: Arc<crate::web_types::Job>,
     pub jobs: Arc<JobManager>,
 }
 
@@ -205,7 +206,8 @@ impl ProgressSink for BenchmarkProgressSink {
 /// Takes ownership of the request to avoid borrow-checker issues with
 /// `tokio::spawn` (borrowed references can't escape into `'static` tasks).
 pub async fn submit_benchmark_job<F, Fut, R>(
-    state: &Arc<ProxyState>,
+    state: &tama_core::proxy::ProxyState,
+    web_state: &WebState,
     req: R,
     run_inner: F,
 ) -> Result<(String, Arc<JobManager>)>
@@ -213,7 +215,7 @@ where
     R: Send + 'static,
     F: FnOnce(
             Arc<JobManager>,
-            Arc<tama_core::web_types::Job>,
+            Arc<crate::web_types::Job>,
             R,
             std::path::PathBuf,
             String,
@@ -223,7 +225,7 @@ where
         + 'static,
     Fut: std::future::Future<Output = anyhow::Result<()>> + Send,
 {
-    let jobs = match state.web_jobs() {
+    let jobs = match &web_state.jobs {
         Some(j) => j.clone(),
         None => return Err(anyhow::anyhow!("Job manager not available")),
     };

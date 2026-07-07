@@ -1,6 +1,19 @@
 #[cfg(feature = "ssr")]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::Arc;
+
+    /// Create a minimal WebState for tests.
+    fn test_web_state() -> tama_web::web_types::WebState {
+        tama_web::web_types::WebState {
+            jobs: Some(Arc::new(tama_web::web_types::JobManager::new())),
+            capabilities: None,
+            update_checker: Arc::new(tama_core::updates::UpdateChecker::default()),
+            binary_version: "test".to_string(),
+            update_tx: Arc::new(tokio::sync::Mutex::new(None)),
+            upload_lock: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+        }
+    }
 
     async fn start_test_server() -> (reqwest::Client, std::net::SocketAddr) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -10,7 +23,9 @@ mod tests {
             let state = Arc::new(tama_core::proxy::ProxyState::new(config, None));
             axum::serve(
                 listener,
-                tama_web::router::build_web_routes().with_state(state),
+                tama_web::router::build_web_routes(Arc::new(test_web_state()))
+                    .with_state(state)
+                    .layer(axum::extract::Extension(test_web_state())),
             )
             .await
             .unwrap();
@@ -136,7 +151,9 @@ mod tests {
                 ));
                 axum::serve(
                     listener,
-                    tama_web::router::build_web_routes().with_state(state),
+                    tama_web::router::build_web_routes(Arc::new(test_web_state()))
+                        .with_state(state)
+                        .layer(axum::extract::Extension(test_web_state())),
                 )
                 .await
                 .unwrap();
@@ -367,7 +384,9 @@ mod tests {
                 ));
                 axum::serve(
                     listener,
-                    tama_web::router::build_web_routes().with_state(state),
+                    tama_web::router::build_web_routes(Arc::new(test_web_state()))
+                        .with_state(state)
+                        .layer(axum::extract::Extension(test_web_state())),
                 )
                 .await
                 .unwrap();

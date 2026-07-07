@@ -1,11 +1,7 @@
 use async_stream::stream;
+use axum::extract::{Extension, Path, State};
 use axum::response::sse::Event;
-use axum::{
-    extract::{Path, State},
-    http::StatusCode,
-    response::Sse,
-    Json,
-};
+use axum::{http::StatusCode, response::Sse, Json};
 use futures_util::Stream;
 use serde_json::json;
 use std::sync::atomic::Ordering;
@@ -13,15 +9,20 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 
 use super::types::*;
+use crate::web_types::WebState;
 use tama_core::proxy::ProxyState;
 
 /// GET /tama/v1/backends/jobs/:id
 #[allow(dead_code)]
 pub async fn get_job(
-    State(state): State<Arc<ProxyState>>,
+    State(_state): State<Arc<ProxyState>>,
+    Extension(web_state): Extension<WebState>,
     Path(job_id): Path<String>,
 ) -> Result<Json<JobSnapshotDto>, StatusCode> {
-    let jobs = state.web_jobs().ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let jobs = web_state
+        .jobs
+        .as_ref()
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
     let job = jobs.get(&job_id).await.ok_or(StatusCode::NOT_FOUND)?;
 
     let (state, log_head, log_tail, dropped) = tokio::join!(
@@ -40,10 +41,10 @@ pub async fn get_job(
     Ok(Json(JobSnapshotDto {
         id: job.id.clone(),
         kind: match job.kind {
-            tama_core::web_types::JobKind::Install => "install".to_string(),
-            tama_core::web_types::JobKind::Update => "update".to_string(),
-            tama_core::web_types::JobKind::Restore => "restore".to_string(),
-            tama_core::web_types::JobKind::Benchmark => "benchmark".to_string(),
+            crate::web_types::JobKind::Install => "install".to_string(),
+            crate::web_types::JobKind::Update => "update".to_string(),
+            crate::web_types::JobKind::Restore => "restore".to_string(),
+            crate::web_types::JobKind::Benchmark => "benchmark".to_string(),
         },
         status: state.status,
         backend_type: job
@@ -61,10 +62,14 @@ pub async fn get_job(
 /// GET /tama/v1/backends/jobs/:id/events
 #[allow(dead_code)]
 pub async fn job_events_sse(
-    State(state): State<Arc<ProxyState>>,
+    State(_state): State<Arc<ProxyState>>,
+    Extension(web_state): Extension<WebState>,
     Path(job_id): Path<String>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, axum::Error>>>, StatusCode> {
-    let jobs = state.web_jobs().ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let jobs = web_state
+        .jobs
+        .as_ref()
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
     let job = jobs.get(&job_id).await.ok_or(StatusCode::NOT_FOUND)?;
 
     let mut rx = job.log_tx.subscribe();
@@ -112,7 +117,7 @@ pub async fn job_events_sse(
         }
 
         // Emit final status if terminal
-        if status != tama_core::web_types::JobStatus::Running {
+        if status != crate::web_types::JobStatus::Running {
             yield Ok(Event::default().event("status")
                 .json_data(json!({ "status": status}))?);
             if let Some(err) = error {
@@ -127,18 +132,18 @@ pub async fn job_events_sse(
             tokio::select! {
                 event = rx.recv() => {
                     match event {
-                        Ok(tama_core::web_types::JobEvent::Log(line)) => {
+                        Ok(crate::web_types::JobEvent::Log(line)) => {
                             yield Ok(Event::default().event("log")
                                 .json_data(json!({ "line": line}))?);
                         }
-                        Ok(tama_core::web_types::JobEvent::Status(s)) => {
+                        Ok(crate::web_types::JobEvent::Status(s)) => {
                             yield Ok(Event::default().event("status")
                                 .json_data(json!({ "status": s}))?);
-                            if s != tama_core::web_types::JobStatus::Running {
+                            if s != crate::web_types::JobStatus::Running {
                                 return; // Close on terminal status
                             }
                         }
-                        Ok(tama_core::web_types::JobEvent::Result(results_json)) => {
+                        Ok(crate::web_types::JobEvent::Result(results_json)) => {
                             yield Ok(Event::default().event("result")
                                 .json_data(json!({ "results": results_json}))?);
                         }

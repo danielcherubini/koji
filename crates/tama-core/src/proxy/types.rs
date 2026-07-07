@@ -223,29 +223,6 @@ pub struct LatestInferenceStats {
     pub last_updated_ms: i64,
 }
 
-/// Web UI state extracted from [`ProxyState`].
-///
-/// Contains only the fields needed by the web control plane (SSR + CSR).
-/// Feature-gated behind `web-ui` so tama-core compiles without web dependencies.
-#[cfg(feature = "web-ui")]
-#[derive(Debug, Clone)]
-pub struct WebState {
-    /// Job manager for backend install/update/restore/benchmark operations.
-    pub jobs: Option<Arc<crate::web_types::JobManager>>,
-    /// Cache for backend capabilities.
-    pub capabilities: Option<Arc<crate::web_types::CapabilitiesCache>>,
-    /// Shared update checker to prevent concurrent runs across requests.
-    pub update_checker: Arc<crate::updates::UpdateChecker>,
-    /// The version of the running tama binary (passed from the CLI at startup).
-    pub binary_version: String,
-    /// Broadcast sender for self-update progress messages.
-    /// `None` when no update is in progress.
-    pub update_tx: Arc<tokio::sync::Mutex<Option<tokio::sync::broadcast::Sender<String>>>>,
-    /// Temporary upload storage for restore archives.
-    pub upload_lock:
-        Arc<tokio::sync::RwLock<std::collections::HashMap<String, crate::web_types::UploadEntry>>>,
-}
-
 /// Manages proxy state and model lifecycle.
 ///
 /// TODO(2026-06-27): Consider splitting into sub-structs (ModelRegistry, MetricsCollector, DownloadManager)
@@ -271,8 +248,6 @@ impl Clone for ProxyState {
             inference_stats: self.inference_stats.clone(),
             gpu_devices_cache: Arc::clone(&self.gpu_devices_cache),
             model_tasks: tokio::sync::RwLock::new(std::collections::HashMap::new()),
-            #[cfg(feature = "web-ui")]
-            web_state: self.web_state.clone(),
         }
     }
 }
@@ -313,12 +288,6 @@ pub struct ProxyState {
     /// Per-model JoinSets tracking spawned tasks (stdout/stderr readers, reaper).
     /// Used for clean cancellation on unload.
     pub(crate) model_tasks: tokio::sync::RwLock<HashMap<String, JoinSet<()>>>,
-
-    // ── Web UI state (only present when `web-ui` feature is enabled) ──
-    /// Web UI state extracted from ProxyState. Contains fields needed by
-    /// the web control plane (SSR + CSR).
-    #[cfg(feature = "web-ui")]
-    pub(crate) web_state: Option<Arc<WebState>>,
 }
 
 impl ProxyState {
@@ -467,77 +436,6 @@ impl ProxyState {
     pub fn model_tasks(&self) -> &tokio::sync::RwLock<HashMap<String, JoinSet<()>>> {
         &self.model_tasks
     }
-
-    // ── Web state accessors (feature-gated) ──
-
-    /// Returns a reference to the web state, if the `web-ui` feature is enabled.
-    #[cfg(feature = "web-ui")]
-    pub fn web_state(&self) -> Option<&Arc<WebState>> {
-        self.web_state.as_ref()
-    }
-
-    /// Returns the web jobs, if the `web-ui` feature is enabled.
-    #[cfg(feature = "web-ui")]
-    pub fn web_jobs(&self) -> Option<Arc<crate::web_types::JobManager>> {
-        self.web_state.as_ref().and_then(|w| w.jobs.clone())
-    }
-
-    /// Returns the web capabilities cache, if the `web-ui` feature is enabled.
-    #[cfg(feature = "web-ui")]
-    pub fn web_capabilities(&self) -> Option<Arc<crate::web_types::CapabilitiesCache>> {
-        self.web_state.as_ref().and_then(|w| w.capabilities.clone())
-    }
-
-    /// Returns a clone of the web update checker, if the `web-ui` feature is enabled.
-    #[cfg(feature = "web-ui")]
-    pub fn web_update_checker(&self) -> Arc<crate::updates::UpdateChecker> {
-        self.web_state
-            .as_ref()
-            .map(|w| Arc::clone(&w.update_checker))
-            .expect("web_state must be initialized when web-ui feature is enabled")
-    }
-
-    /// Returns the current binary version string, if the `web-ui` feature is enabled.
-    #[cfg(feature = "web-ui")]
-    pub fn web_binary_version(&self) -> String {
-        self.web_state
-            .as_ref()
-            .map(|w| w.binary_version.clone())
-            .unwrap_or_default()
-    }
-
-    /// Sets the binary version string, if the `web-ui` feature is enabled.
-    #[cfg(feature = "web-ui")]
-    pub fn set_binary_version(&mut self, version: &str) {
-        if let Some(ws) = self.web_state.take() {
-            let mut inner = (*ws).clone();
-            inner.binary_version = version.to_string();
-            self.web_state = Some(Arc::new(inner));
-        }
-    }
-
-    /// Returns a clone of the web update broadcast sender, if the `web-ui` feature is enabled.
-    #[cfg(feature = "web-ui")]
-    pub fn web_update_tx(
-        &self,
-    ) -> Arc<tokio::sync::Mutex<Option<tokio::sync::broadcast::Sender<String>>>> {
-        self.web_state
-            .as_ref()
-            .map(|w| Arc::clone(&w.update_tx))
-            .expect("web_state must be initialized when web-ui feature is enabled")
-    }
-
-    /// Returns a clone of the web upload lock, if the `web-ui` feature is enabled.
-    #[cfg(feature = "web-ui")]
-    pub fn web_upload_lock(
-        &self,
-    ) -> Arc<tokio::sync::RwLock<std::collections::HashMap<String, crate::web_types::UploadEntry>>>
-    {
-        self.web_state
-            .as_ref()
-            .map(|w| Arc::clone(&w.upload_lock))
-            .expect("web_state must be initialized when web-ui feature is enabled")
-    }
 }
 
 #[cfg(test)]
@@ -576,56 +474,6 @@ mod tests {
         let _: &Arc<tokio::sync::RwLock<HashMap<String, GpuDeviceCacheEntry>>> =
             state.gpu_devices_cache();
         let _: &tokio::sync::RwLock<HashMap<String, JoinSet<()>>> = state.model_tasks();
-    }
-
-    /// Verify that web state accessors return the correct types when feature is enabled.
-    #[cfg(feature = "web-ui")]
-    #[test]
-    fn test_proxy_state_web_accessors() {
-        let config = crate::config::Config::default();
-        let state = ProxyState::new(config, None);
-
-        // Web state accessor returns Some
-        let web = state.web_state();
-        assert!(
-            web.is_some(),
-            "web_state() should return Some when web-ui feature is enabled"
-        );
-
-        let web = web.unwrap();
-
-        // WebState fields are accessible
-        let _: &Option<Arc<crate::web_types::JobManager>> = &web.jobs;
-        let _: &Option<Arc<crate::web_types::CapabilitiesCache>> = &web.capabilities;
-        let _: &crate::updates::UpdateChecker = &web.update_checker;
-        let _: &str = &web.binary_version;
-        let _: &Arc<tokio::sync::Mutex<Option<tokio::sync::broadcast::Sender<String>>>> =
-            &web.update_tx;
-        let _: &Arc<
-            tokio::sync::RwLock<std::collections::HashMap<String, crate::web_types::UploadEntry>>,
-        > = &web.upload_lock;
-
-        // Individual web accessors on ProxyState
-        let _: Option<Arc<crate::web_types::JobManager>> = state.web_jobs();
-        let _: Option<Arc<crate::web_types::CapabilitiesCache>> = state.web_capabilities();
-        let _: Arc<crate::updates::UpdateChecker> = state.web_update_checker();
-        let _: String = state.web_binary_version();
-        let _: Arc<tokio::sync::Mutex<Option<tokio::sync::broadcast::Sender<String>>>> =
-            state.web_update_tx();
-        let _: Arc<
-            tokio::sync::RwLock<std::collections::HashMap<String, crate::web_types::UploadEntry>>,
-        > = state.web_upload_lock();
-    }
-
-    /// Verify that set_binary_version updates the value.
-    #[cfg(feature = "web-ui")]
-    #[test]
-    fn test_set_binary_version() {
-        let config = crate::config::Config::default();
-        let mut state = ProxyState::new(config, None);
-
-        state.set_binary_version("1.2.3");
-        assert_eq!(state.web_binary_version(), "1.2.3");
     }
 
     #[test]

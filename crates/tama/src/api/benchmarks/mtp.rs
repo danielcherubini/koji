@@ -48,10 +48,11 @@ fn default_context_size() -> Option<u32> {
 // ── Handler: Submit MTP benchmark job ─────────────────────────────────
 
 pub async fn run_mtp_benchmark(
+    Extension(web_state): Extension<WebState>,
     State(state): State<Arc<ProxyState>>,
     Json(req): Json<MtpBenchmarkRunRequest>,
 ) -> impl IntoResponse {
-    let jobs = match state.web_jobs() {
+    let jobs = match web_state.jobs.as_ref() {
         Some(j) => j.clone(),
         None => return job_manager_unavailable_response(),
     };
@@ -108,7 +109,7 @@ pub async fn run_mtp_benchmark(
 
 pub async fn run_mtp_benchmark_inner(
     jobs: Arc<JobManager>,
-    job: &Arc<tama_core::web_types::Job>,
+    job: &Arc<crate::web_types::Job>,
     req: MtpBenchmarkRunRequest,
     db_path: Option<std::path::PathBuf>,
     proxy_base_url: String,

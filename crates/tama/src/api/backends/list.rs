@@ -1,27 +1,31 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Extension, Path, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
 };
 use serde_json::json;
 use std::sync::Arc;
+use tama_core::proxy::ProxyState;
 
 use super::types::*;
 use crate::api::error::error_response;
 use crate::api::helpers::open_backend_manager;
-use tama_core::proxy::ProxyState;
+use crate::web_types::WebState;
 
 /// GET /tama/v1/backends
-pub async fn list_backends(State(state): State<Arc<ProxyState>>) -> impl IntoResponse {
+pub async fn list_backends(
+    State(state): State<Arc<ProxyState>>,
+    Extension(web_state): Extension<WebState>,
+) -> impl IntoResponse {
     // active_job is only available when job manager is configured
-    let active_job = if let Some(jobs) = state.web_jobs() {
+    let active_job = if let Some(jobs) = &web_state.jobs {
         jobs.active()
             .await
             .filter(|j| {
                 let st = j.state.try_read().ok();
                 if let Some(s) = &st {
-                    matches!(s.status, tama_core::web_types::JobStatus::Running)
+                    matches!(s.status, crate::web_types::JobStatus::Running)
                 } else {
                     false
                 }
@@ -292,9 +296,12 @@ pub async fn list_backends(State(state): State<Arc<ProxyState>>) -> impl IntoRes
 }
 
 /// POST /tama/v1/backends/check-updates
-pub async fn check_backend_updates(State(state): State<Arc<ProxyState>>) -> impl IntoResponse {
-    let jobs = match state.web_jobs() {
-        Some(j) => j,
+pub async fn check_backend_updates(
+    State(state): State<Arc<ProxyState>>,
+    Extension(web_state): Extension<WebState>,
+) -> impl IntoResponse {
+    let jobs = match &web_state.jobs {
+        Some(j) => j.clone(),
         None => {
             return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -311,7 +318,7 @@ pub async fn check_backend_updates(State(state): State<Arc<ProxyState>>) -> impl
         .filter(|j| {
             let state = j.state.try_read().ok();
             if let Some(s) = &state {
-                matches!(s.status, tama_core::web_types::JobStatus::Running)
+                matches!(s.status, crate::web_types::JobStatus::Running)
             } else {
                 false
             }

@@ -6,12 +6,12 @@ use axum::{
     Json,
 };
 use std::sync::Arc;
+use tama_core::proxy::ProxyState;
 
 use super::{apply_model_body, validate_model_body, ModelBody};
 use crate::api::helpers::{spawn_model_crud, DEFAULT_CRUD_STATUS};
 use crate::api::load_config_from_state;
 use crate::api::models::resolve_model_id;
-use tama_core::proxy::ProxyState;
 
 /// PUT /tama/v1/models/:id — update an existing model.
 pub async fn update_model(

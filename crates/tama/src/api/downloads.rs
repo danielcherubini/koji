@@ -3,6 +3,7 @@
 //! Provides REST endpoints to query the download queue (active + history),
 //! cancel items, and stream real-time events via SSE.
 use crate::api::error::error_body;
+use tama_core::proxy::ProxyState;
 
 use async_stream::stream;
 use axum::extract::{Path, State};
@@ -15,8 +16,6 @@ use futures_util::Stream;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::broadcast;
-
-use tama_core::proxy::ProxyState;
 
 // ── DTO types ────────────────────────────────────────────────────────────────
 

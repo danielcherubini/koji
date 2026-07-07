@@ -3,6 +3,7 @@
 //! - GET /tama/v1/logs — returns grouped logs (proxied from tama-core)
 //! - GET /tama/v1/logs/:backend — returns last N lines of a backend's log file
 use crate::api::error::error_response;
+use tama_core::proxy::ProxyState;
 
 use axum::{
     extract::{Path, Query, State},
@@ -12,8 +13,6 @@ use axum::{
 };
 use serde::Deserialize;
 use std::sync::Arc;
-
-use tama_core::proxy::ProxyState;
 
 /// Maximum number of lines to return (clamp for the `lines` query parameter).
 pub const MAX_LINES: usize = 10_000;

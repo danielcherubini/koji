@@ -27,8 +27,6 @@ pub use handlers::tts::{
 };
 pub use process::{check_health, force_kill_process, is_process_alive, kill_process, override_arg};
 pub use server::ProxyServer;
-#[cfg(feature = "web-ui")]
-pub use types::WebState;
 pub use types::{ModelState, ProxyMetrics, ProxyState};
 
 #[cfg(test)]

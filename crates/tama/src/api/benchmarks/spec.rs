@@ -7,10 +7,11 @@ use crate::api::benchmarks::{
 // ── Handler: Submit spec benchmark job ────────────────────────────────
 
 pub async fn run_spec_benchmark(
+    Extension(web_state): Extension<WebState>,
     State(state): State<Arc<ProxyState>>,
     Json(req): Json<SpecBenchmarkRunRequest>,
 ) -> impl IntoResponse {
-    let jobs = match state.web_jobs() {
+    let jobs = match web_state.jobs.as_ref() {
         Some(j) => j.clone(),
         None => return job_manager_unavailable_response(),
     };
@@ -102,7 +103,7 @@ pub fn validate_spec_sweep(config: &SpecBenchConfig) -> Result<()> {
 
 pub async fn run_spec_benchmark_inner(
     jobs: Arc<JobManager>,
-    job: &Arc<tama_core::web_types::Job>,
+    job: &Arc<crate::web_types::Job>,
     req: SpecBenchmarkRunRequest,
     db_path: Option<std::path::PathBuf>,
     proxy_base_url: String,

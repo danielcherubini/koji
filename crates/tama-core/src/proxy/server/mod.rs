@@ -212,7 +212,7 @@ impl ProxyServer {
     #[cfg(feature = "web-ui")]
     pub async fn into_unified_router(
         self,
-        extra_routes: axum::Router<Arc<crate::proxy::ProxyState>>,
+        extra_routes: axum::Router<Arc<ProxyState>>,
     ) -> axum::Router {
         router::build_unified_router(self.state, extra_routes).await
     }

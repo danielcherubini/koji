@@ -1,11 +1,11 @@
 use crate::api::error::{error_body, error_response};
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use std::sync::Arc;
+use tama_core::proxy::ProxyState;
 
 use super::{apply_model_body, is_valid_repo_id, validate_model_body, ModelBody};
 use crate::api::helpers::spawn_model_crud;
 use crate::api::load_config_from_state;
-use tama_core::proxy::ProxyState;
 
 /// POST /tama/v1/models — create a new model.
 /// The body contains `repo_id` (HuggingFace repo name). Returns the auto-generated integer id.

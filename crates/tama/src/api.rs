@@ -66,13 +66,15 @@ pub struct ConfigBody {
 }
 
 /// Update the proxy's live in-memory config after a successful disk save.
-async fn sync_proxy_config(state: &ProxyState, new_config: tama_core::config::Config) {
+async fn sync_proxy_config(state: &Arc<ProxyState>, new_config: tama_core::config::Config) {
     let mut config = state.config().write().await;
     *config = new_config;
 }
 
 /// Trigger the proxy to reload its model registry from the database.
-async fn trigger_proxy_reload(state: &ProxyState) -> Result<(), (StatusCode, serde_json::Value)> {
+async fn trigger_proxy_reload(
+    state: &Arc<ProxyState>,
+) -> Result<(), (StatusCode, serde_json::Value)> {
     state.reload_model_configs().await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -174,15 +176,15 @@ pub async fn save_structured_config(
 
 // ── Shared helpers (used by both model and non-model endpoints) ──────────────
 
-/// Load config from the config directory derived from ProxyState.
+/// Load config from the config directory derived from Arc<ProxyState>.
 /// Returns (config, config_dir) on success.
 /// Prefer db_dir (set at startup to Config::config_dir()) to ensure we
 /// always open the correct database. Fall back to the system default
 /// when db_dir is None (e.g. in tests that create ProxyState without a db_dir).
 async fn load_config_from_state(
-    state: &ProxyState,
+    proxy_state: &Arc<ProxyState>,
 ) -> Result<(tama_core::config::Config, std::path::PathBuf), (StatusCode, serde_json::Value)> {
-    let config_dir = state
+    let config_dir = proxy_state
         .db_dir()
         .clone()
         .or_else(|| tama_core::config::Config::config_dir().ok())

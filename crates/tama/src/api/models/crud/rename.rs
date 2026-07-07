@@ -6,12 +6,12 @@ use axum::{
     Json,
 };
 use std::sync::Arc;
+use tama_core::proxy::ProxyState;
 
 use super::is_valid_repo_id;
 use crate::api::helpers::{spawn_model_crud, DEFAULT_CRUD_STATUS};
 use crate::api::load_config_from_state;
 use crate::api::models::resolve_model_id;
-use tama_core::proxy::ProxyState;
 
 /// Body for rename endpoint.
 #[derive(serde::Deserialize)]
