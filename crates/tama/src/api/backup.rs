@@ -65,10 +65,7 @@ pub struct BackendEntry {
 }
 
 /// GET /tama/v1/backup - Create backup and return as file download
-pub async fn create_backup(
-    State(state): State<Arc<ProxyState>>,
-    Extension(_web_state): Extension<WebState>,
-) -> impl IntoResponse {
+pub async fn create_backup(State(state): State<Arc<ProxyState>>) -> impl IntoResponse {
     let config_dir: std::path::PathBuf = {
         state.db_dir().clone().unwrap_or_else(|| {
             tama_core::config::Config::config_dir()

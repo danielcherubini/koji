@@ -157,10 +157,4 @@ async fn main() -> Result<()> {
         // Use the listener module which handles OS signals + graceful shutdown
         tama_core::proxy::server::listener::run(app, addr, Some(on_shutdown), None).await
     }
-
-    #[cfg(not(feature = "ssr"))]
-    {
-        let server = ProxyServer::new(state.clone()).await;
-        server.run(addr, None).await
-    }
 }

@@ -300,7 +300,6 @@ pub async fn list_benchmark_history(State(_state): State<Arc<ProxyState>>) -> im
 // ── Handler: Delete benchmark history entry ───────────────────────────
 
 pub async fn delete_benchmark(
-    Extension(_web_state): Extension<WebState>,
     State(_state): State<Arc<ProxyState>>,
     Path(id): Path<i64>,
 ) -> impl IntoResponse {

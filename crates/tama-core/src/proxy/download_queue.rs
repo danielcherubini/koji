@@ -255,11 +255,7 @@ impl DownloadQueueService {
     }
 
     /// Get history items as DTOs (completed, failed, cancelled), sorted newest first.
-    pub fn get_history_items_dto(
-        &self,
-        limit: i64,
-        offset: i64,
-    ) -> Result<Vec<DownloadQueueDto>> {
+    pub fn get_history_items_dto(&self, limit: i64, offset: i64) -> Result<Vec<DownloadQueueDto>> {
         self.model_mgr
             .lock()
             .unwrap()

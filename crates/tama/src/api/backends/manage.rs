@@ -684,7 +684,6 @@ pub struct ActivateQuery {
 
 /// POST /tama/v1/backends/:name/activate
 pub async fn activate_backend_version(
-    Extension(_web_state): Extension<WebState>,
     State(state): State<Arc<ProxyState>>,
     Path(name): Path<String>,
     axum::extract::Query(query): axum::extract::Query<ActivateQuery>,
@@ -853,7 +852,6 @@ pub struct DefaultArgsQuery {
 }
 
 pub async fn update_backend_default_args(
-    Extension(_web_state): Extension<WebState>,
     State(state): State<Arc<ProxyState>>,
     Path(backend_name): Path<String>,
     axum::extract::Query(query): axum::extract::Query<DefaultArgsQuery>,
@@ -909,7 +907,6 @@ pub struct DefaultEnvQuery {
 }
 
 pub async fn update_backend_default_env(
-    Extension(_web_state): Extension<WebState>,
     State(state): State<Arc<ProxyState>>,
     Path(backend_name): Path<String>,
     axum::extract::Query(query): axum::extract::Query<DefaultEnvQuery>,

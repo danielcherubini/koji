@@ -187,7 +187,9 @@ pub async fn update_alias(
     if let Some(ref model_id) = payload.model_id {
         let model_exists = match repo.model_exists(*model_id) {
             Ok(v) => v,
-            Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
+            Err(e) => {
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None)
+            }
         };
 
         if !model_exists {
