@@ -1,14 +1,16 @@
-//! Web UI types shared between tama-core and tama-web.
+//! Web UI types for tama.
 //!
-//! These types are defined in tama-core to avoid a circular dependency:
-//! tama-core → tama-web → tama-core. They are only compiled when the
-//! `web-ui` feature is enabled.
+//! These types are defined in the tama crate (not tama-core) to keep tama-core
+//! free of web-specific concepts. The tama crate owns all web UI state management.
 
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use tama_core::backends::BackendType;
+use tama_core::gpu::BuildPrerequisites;
+use tama_core::updates::UpdateChecker;
 use tokio::sync::{broadcast, Mutex, RwLock};
 
 // ── Job types ────────────────────────────────────────────────────────────────
@@ -47,10 +49,23 @@ pub struct JobState {
     pub error: Option<String>,
 }
 
+impl std::fmt::Debug for JobState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JobState")
+            .field("status", &self.status)
+            .field("started_at", &self.started_at)
+            .field("finished_at", &self.finished_at)
+            .field("error", &self.error)
+            .finish()
+    }
+}
+
 pub struct Job {
     pub id: JobId,
     pub kind: JobKind,
-    pub backend_type: Option<crate::backends::BackendType>,
+    /// Backend type as a string (e.g., "llama_cpp", "llama_server").
+    /// Converted to BackendType when needed by tama-core.
+    pub backend_type: Option<String>,
     pub state: RwLock<JobState>,
     pub log_head: RwLock<VecDeque<String>>,
     pub log_tail: RwLock<VecDeque<String>>,
@@ -59,6 +74,25 @@ pub struct Job {
     /// Benchmark results JSON (set when benchmark completes)
     pub benchmark_results: RwLock<Option<String>>,
     pub child_pids: RwLock<Vec<u32>>,
+}
+
+impl std::fmt::Debug for Job {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Job")
+            .field("id", &self.id)
+            .field("kind", &self.kind)
+            .field("backend_type", &self.backend_type)
+            .field("state", &self.state.try_read().ok())
+            .field("log_head", &self.log_head.try_read().ok())
+            .field("log_tail", &self.log_tail.try_read().ok())
+            .field(
+                "log_dropped",
+                &self.log_dropped.load(std::sync::atomic::Ordering::Relaxed),
+            )
+            .field("benchmark_results", &self.benchmark_results.try_read().ok())
+            .field("child_pids", &self.child_pids.try_read().ok())
+            .finish()
+    }
 }
 
 /// Maximum number of log lines to retain in the head buffer (oldest 100 lines).
@@ -77,7 +111,7 @@ pub enum JobError {
     NotFound,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct JobManager {
     jobs: Arc<RwLock<HashMap<JobId, Arc<Job>>>>,
     finished_order: Arc<Mutex<VecDeque<JobId>>>,
@@ -97,7 +131,7 @@ impl JobManager {
     pub async fn submit(
         &self,
         kind: JobKind,
-        backend_type: Option<crate::backends::BackendType>,
+        backend_type: Option<BackendType>,
     ) -> Result<Arc<Job>, JobError> {
         let job_id = format!("j_{}", uuid::Uuid::new_v4().simple());
 
@@ -109,7 +143,7 @@ impl JobManager {
         let job = Arc::new(Job {
             id: job_id.clone(),
             kind,
-            backend_type,
+            backend_type: backend_type.map(|bt| bt.to_string()),
             state: RwLock::new(JobState {
                 status: JobStatus::Running,
                 started_at: now,
@@ -289,7 +323,7 @@ pub struct CapabilitiesDto {
     pub supported_cuda_versions: Vec<String>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct CapabilitiesCache {
     inner: Arc<tokio::sync::Mutex<Option<(std::time::Instant, CapabilitiesDto)>>>,
 }
@@ -303,7 +337,7 @@ impl CapabilitiesCache {
 
     pub async fn get_or_compute(
         &self,
-        detect_prereqs: fn() -> crate::gpu::BuildPrerequisites,
+        detect_prereqs: fn() -> BuildPrerequisites,
         detect_cuda: fn() -> Option<String>,
     ) -> anyhow::Result<CapabilitiesDto> {
         use std::time::Duration;
@@ -357,8 +391,31 @@ impl Default for CapabilitiesCache {
 // ── Upload types ─────────────────────────────────────────────────────────────
 
 /// Temporary upload entry for restore archives.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct UploadEntry {
     pub path: std::path::PathBuf,
     pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+// ── WebState ─────────────────────────────────────────────────────────────────
+
+/// Web UI state.
+///
+/// Contains only the fields needed by the web control plane (SSR + CSR).
+/// Defined in tama crate to avoid circular dependency with tama-core.
+#[derive(Debug, Clone)]
+pub struct WebState {
+    /// Job manager for backend install/update/restore/benchmark operations.
+    pub jobs: Option<Arc<JobManager>>,
+    /// Cache for backend capabilities.
+    pub capabilities: Option<Arc<CapabilitiesCache>>,
+    /// Shared update checker to prevent concurrent runs across requests.
+    pub update_checker: Arc<UpdateChecker>,
+    /// The version of the running tama binary (passed from the CLI at startup).
+    pub binary_version: String,
+    /// Broadcast sender for self-update progress messages.
+    /// `None` when no update is in progress.
+    pub update_tx: Arc<tokio::sync::Mutex<Option<tokio::sync::broadcast::Sender<String>>>>,
+    /// Temporary upload storage for restore archives.
+    pub upload_lock: Arc<tokio::sync::RwLock<std::collections::HashMap<String, UploadEntry>>>,
 }

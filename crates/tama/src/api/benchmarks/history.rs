@@ -1,13 +1,16 @@
 use super::*;
 use crate::api::error::error_response;
+use crate::web_types::WebState;
+use tama_core::proxy::ProxyState;
 
 // ── Handler: Get benchmark result ─────────────────────────────────────
 
 pub async fn get_benchmark_result(
-    State(state): State<Arc<ProxyState>>,
+    Extension(web_state): Extension<WebState>,
+    State(_state): State<Arc<ProxyState>>,
     Path(job_id): Path<String>,
 ) -> impl IntoResponse {
-    let jobs = match &state.web_jobs {
+    let jobs = match web_state.jobs.as_ref() {
         Some(j) => j.clone(),
         None => {
             return error_response(
@@ -19,7 +22,7 @@ pub async fn get_benchmark_result(
     };
 
     let job = match jobs.get(&job_id).await {
-        Some(j) => j,
+        Some(j) => j.clone(),
         None => {
             return error_response(
                 StatusCode::NOT_FOUND,
@@ -70,10 +73,11 @@ pub async fn get_benchmark_result(
 // ── Handler: SSE events for benchmark progress ────────────────────────
 
 pub async fn benchmark_events(
-    State(state): State<Arc<ProxyState>>,
+    Extension(web_state): Extension<WebState>,
+    State(_state): State<Arc<ProxyState>>,
     Path(job_id): Path<String>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, axum::Error>>>, StatusCode> {
-    let jobs = match &state.web_jobs {
+    let jobs = match web_state.jobs.as_ref() {
         Some(j) => j.clone(),
         None => {
             return Err(StatusCode::SERVICE_UNAVAILABLE);
@@ -81,7 +85,7 @@ pub async fn benchmark_events(
     };
 
     let job = match jobs.get(&job_id).await {
-        Some(j) => j,
+        Some(j) => j.clone(),
         None => {
             return Err(StatusCode::NOT_FOUND);
         }
@@ -189,8 +193,8 @@ pub async fn list_benchmark_history(State(_state): State<Arc<ProxyState>>) -> im
     };
 
     let entries = match tokio::task::spawn_blocking(move || {
-        let tama_core::db::OpenResult { conn, .. } = tama_core::db::open(&db_dir)?;
-        tama_core::db::queries::list_benchmarks(&conn)
+        let repo = tama_core::db::repository::Repository::open(&db_dir)?;
+        repo.list_benchmarks()
     })
     .await
     {
@@ -305,8 +309,8 @@ pub async fn delete_benchmark(
     };
 
     match tokio::task::spawn_blocking(move || {
-        let tama_core::db::OpenResult { conn, .. } = tama_core::db::open(&db_dir)?;
-        tama_core::db::queries::delete_benchmark(&conn, id)
+        let repo = tama_core::db::repository::Repository::open(&db_dir)?;
+        repo.delete_benchmark(id)
     })
     .await
     {

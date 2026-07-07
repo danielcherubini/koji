@@ -8,6 +8,7 @@
 //! Tama uses model cards to store quantization info, context settings, and sampling presets
 //! for each model. Model cards are stored in `~/.config/tama/configs/<company>--<model>.toml`
 //! and are automatically discovered when models are installed.
+#![allow(deprecated)]
 
 pub mod backends;
 pub mod backup;
@@ -25,9 +26,6 @@ pub mod profiles;
 pub mod proxy;
 pub mod self_update;
 pub mod updates;
-
-#[cfg(feature = "web-ui")]
-pub mod web_types;
 
 #[cfg(test)]
 mod tests {

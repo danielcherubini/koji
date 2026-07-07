@@ -1,13 +1,17 @@
 #![allow(dead_code)]
+#![allow(deprecated)]
+
+#[cfg(feature = "ssr")]
+pub mod app_state;
+
+#[cfg(feature = "ssr")]
+pub mod web_types;
 
 #[cfg(feature = "ssr")]
 pub mod router;
 
 #[cfg(feature = "ssr")]
 pub mod api;
-
-#[cfg(feature = "ssr")]
-pub mod jobs;
 
 #[cfg(feature = "ssr")]
 pub mod gpu;

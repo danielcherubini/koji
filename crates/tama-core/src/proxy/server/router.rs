@@ -113,9 +113,9 @@ pub async fn build_router(state: Arc<ProxyState>) -> Router {
 /// proxy sub-router — the web UI handles those. Only proxy-exclusive routes and
 /// specific sub-paths (e.g., `:id/load`, `:id/unload`) are included here.
 ///
-/// The `extra_routes` parameter is a `Router` already typed with `Arc<ProxyState>`
-/// but without `.with_state()` called. This function merges proxy routes first
-/// (higher priority), then extra routes, and applies shared layers + state.
+/// The `extra_routes` parameter is a `Router<Arc<ProxyState>>` without `.with_state()` called.
+/// This function merges proxy routes first (higher priority), then extra routes,
+/// and applies shared layers + state.
 #[cfg(feature = "web-ui")]
 pub async fn build_unified_router(
     state: Arc<ProxyState>,
@@ -258,7 +258,7 @@ mod tests {
 
         // Simulate web UI routes: PUT/DELETE on /tama/v1/models/:id
         // (GET is handled by web UI in the real app, not defined here to avoid overlap)
-        let extra_routes = Router::<Arc<crate::proxy::ProxyState>>::new().route(
+        let extra_routes = Router::new().route(
             "/tama/v1/models/:id",
             axum::routing::put(|| async { "web put " }).delete(|| async { "web delete " }),
         );

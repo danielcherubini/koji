@@ -28,7 +28,7 @@ pub async fn update_compaction(
 ) -> impl IntoResponse {
     // Update config
     {
-        let mut config = state.config.write().await;
+        let mut config = state.config().write().await;
         if let Some(device) = &req.device {
             config.compaction.device = device.clone();
         }
@@ -59,7 +59,7 @@ pub async fn update_compaction(
 
     // Check current running status
     let running = {
-        let models = state.models.read().await;
+        let models = state.models().read().await;
         models
             .get("compaction")
             .map(|s| s.is_ready())

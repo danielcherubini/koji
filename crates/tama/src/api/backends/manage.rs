@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Extension, Path, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
@@ -10,6 +10,7 @@ use std::sync::Arc;
 use super::types::*;
 use crate::api::error::error_response;
 use crate::api::helpers::open_backend_manager;
+use crate::web_types::WebState;
 use tama_core::proxy::ProxyState;
 
 /// Query params for POST /tama/v1/backends/:name/update
@@ -22,6 +23,7 @@ pub struct UpdateQuery {
 
 /// POST /tama/v1/backends/:name/update
 pub async fn update_backend(
+    Extension(web_state): Extension<WebState>,
     State(state): State<Arc<ProxyState>>,
     Path(name): Path<String>,
     axum::extract::Query(query): axum::extract::Query<UpdateQuery>,
@@ -35,8 +37,8 @@ pub async fn update_backend(
         );
     }
 
-    let jobs = match &state.web_jobs {
-        Some(j) => j,
+    let jobs = match web_state.jobs.as_ref() {
+        Some(j) => j.clone(),
         None => {
             return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -46,7 +48,7 @@ pub async fn update_backend(
         }
     };
 
-    let config_dir = state.db_dir.clone().unwrap_or_else(|| {
+    let config_dir = state.db_dir().clone().unwrap_or_else(|| {
         tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
     });
     let config_dir_clone = config_dir.clone();
@@ -136,13 +138,13 @@ pub async fn update_backend(
     // Submit job
     let job = match jobs
         .submit(
-            tama_core::web_types::JobKind::Update,
+            crate::web_types::JobKind::Update,
             Some(backend_type.clone()),
         )
         .await
     {
         Ok(j) => j,
-        Err(tama_core::web_types::JobError::AlreadyRunning(existing_id)) => {
+        Err(crate::web_types::JobError::AlreadyRunning(existing_id)) => {
             return (
                 StatusCode::CONFLICT,
                 Json(serde_json::json!({
@@ -228,7 +230,7 @@ pub async fn update_backend(
     };
 
     // Clone variables needed for the post-update check
-    let checker = state.web_update_checker.clone();
+    let checker = web_state.update_checker.clone();
     let backend_type_clone = backend_type.clone();
 
     // Spawn the update task
@@ -268,7 +270,7 @@ pub async fn update_backend(
         match result {
             Ok(_) => {
                 let _ = jobs_clone
-                    .finish(&job_clone, tama_core::web_types::JobStatus::Succeeded, None)
+                    .finish(&job_clone, crate::web_types::JobStatus::Succeeded, None)
                     .await;
                 // Refresh the update check record so the Updates Center reflects the new version
                 let _ = checker
@@ -282,7 +284,7 @@ pub async fn update_backend(
             }
             Err(e) => {
                 let _ = jobs_clone
-                    .finish(&job_clone, tama_core::web_types::JobStatus::Failed, Some(e))
+                    .finish(&job_clone, crate::web_types::JobStatus::Failed, Some(e))
                     .await;
             }
         }
@@ -303,8 +305,21 @@ pub async fn update_backend(
 mod tests {
     use axum::body::Body;
     use axum::http::Request;
+    use std::collections::HashMap;
     use std::sync::Arc;
     use tower::ServiceExt;
+
+    /// Create a minimal WebState for tests.
+    fn test_web_state() -> crate::web_types::WebState {
+        crate::web_types::WebState {
+            jobs: Some(Arc::new(crate::web_types::JobManager::new())),
+            capabilities: None,
+            update_checker: Arc::new(tama_core::updates::UpdateChecker::default()),
+            binary_version: "test".to_string(),
+            update_tx: Arc::new(tokio::sync::Mutex::new(None)),
+            upload_lock: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+        }
+    }
 
     /// Path traversal in update_backend name should return 400.
     #[tokio::test]
@@ -312,7 +327,12 @@ mod tests {
         let config = tama_core::config::Config::default();
         let state = Arc::new(tama_core::proxy::ProxyState::new(config, None));
 
-        let router = crate::router::build_web_routes().with_state(state);
+        let web_state_for_test = Arc::new(test_web_state());
+        let router = crate::router::build_web_routes(web_state_for_test.clone())
+            .with_state(state)
+            .layer(axum::extract::Extension(
+                web_state_for_test.as_ref().clone(),
+            ));
 
         // Valid CSRF token pair — cookie and header must match.
         let csrf_token = "test-csrf-token-12345";
@@ -368,7 +388,12 @@ mod tests {
         let config = tama_core::config::Config::default();
         let state = Arc::new(tama_core::proxy::ProxyState::new(config, None));
 
-        let router = crate::router::build_web_routes().with_state(state);
+        let web_state_for_test = Arc::new(test_web_state());
+        let router = crate::router::build_web_routes(web_state_for_test.clone())
+            .with_state(state)
+            .layer(axum::extract::Extension(
+                web_state_for_test.as_ref().clone(),
+            ));
 
         let csrf_token = "test-csrf-token-12345";
         let cookie_header = format!("{}={}", "tama_csrf_token", csrf_token);
@@ -427,7 +452,12 @@ mod tests {
         let config = tama_core::config::Config::default();
         let state = Arc::new(tama_core::proxy::ProxyState::new(config, None));
 
-        let router = crate::router::build_web_routes().with_state(state);
+        let web_state_for_test = Arc::new(test_web_state());
+        let router = crate::router::build_web_routes(web_state_for_test.clone())
+            .with_state(state)
+            .layer(axum::extract::Extension(
+                web_state_for_test.as_ref().clone(),
+            ));
 
         let csrf_token = "test-csrf-token-12345";
         let cookie_header = format!("{}={}", "tama_csrf_token", csrf_token);
@@ -468,6 +498,7 @@ pub struct RemoveVersionQuery {
 
 /// DELETE /tama/v1/backends/:name/versions/:version
 pub async fn remove_backend_version(
+    Extension(web_state): Extension<WebState>,
     State(state): State<Arc<ProxyState>>,
     Path((name, version)): Path<(String, String)>,
     axum::extract::Query(query): axum::extract::Query<RemoveVersionQuery>,
@@ -488,7 +519,7 @@ pub async fn remove_backend_version(
         );
     }
 
-    let config_dir = state.db_dir.clone().unwrap_or_else(|| {
+    let config_dir = state.db_dir().clone().unwrap_or_else(|| {
         tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
     });
 
@@ -579,7 +610,7 @@ pub async fn remove_backend_version(
     };
 
     // Check if a job is running for this backend
-    if let Some(jobs) = &state.web_jobs {
+    if let Some(jobs) = web_state.jobs.as_ref() {
         if let Some(active_job) = jobs.active().await {
             let active_type = active_job
                 .backend_type
@@ -629,17 +660,15 @@ pub async fn remove_backend_version(
 
     // Clean up update_check records — use LIKE pattern to match all variants
     // (e.g., "llama_cpp:cpu", "llama_cpp:cuda") plus legacy format.
-    if let Ok(open) = tama_core::db::open(&config_dir) {
+    if let Ok(repo) = tama_core::db::repository::Repository::open(&config_dir) {
         let escaped_name = name
             .replace('\\', "\\\\")
             .replace('_', "\\_")
             .replace('%', "\\%");
         let pattern = format!("{}:%", escaped_name);
-        let _ = tama_core::db::queries::delete_update_checks_by_pattern(
-            &open.conn, "backend", &pattern,
-        );
+        let _ = repo.delete_update_checks_by_pattern("backend", &pattern);
         // Also delete legacy format (no variant separator)
-        let _ = tama_core::db::queries::delete_update_check(&open.conn, "backend", &name);
+        let _ = repo.delete_update_check("backend", &name);
     }
 
     Json(DeleteResponse { removed: true }).into_response()
@@ -669,7 +698,7 @@ pub async fn activate_backend_version(
         );
     }
 
-    let config_dir = state.db_dir.clone().unwrap_or_else(|| {
+    let config_dir = state.db_dir().clone().unwrap_or_else(|| {
         tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
     });
 
@@ -828,7 +857,7 @@ pub async fn update_backend_default_args(
     axum::extract::Query(query): axum::extract::Query<DefaultArgsQuery>,
     Json(req): Json<UpdateDefaultArgsRequest>,
 ) -> impl IntoResponse {
-    let config_dir = state.db_dir.clone().unwrap_or_else(|| {
+    let config_dir = state.db_dir().clone().unwrap_or_else(|| {
         tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
     });
 
@@ -892,7 +921,7 @@ pub async fn update_backend_default_env(
         );
     }
 
-    let config_dir = state.db_dir.clone().unwrap_or_else(|| {
+    let config_dir = state.db_dir().clone().unwrap_or_else(|| {
         tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
     });
 
@@ -938,6 +967,7 @@ pub struct SourceQuery {
 /// POST /tama/v1/backends/:name/source
 /// Updates the build method (source vs prebuilt) for a backend.
 pub async fn update_backend_source(
+    Extension(web_state): Extension<WebState>,
     State(state): State<Arc<ProxyState>>,
     Path(name): Path<String>,
     axum::extract::Query(query): axum::extract::Query<SourceQuery>,
@@ -952,7 +982,7 @@ pub async fn update_backend_source(
         );
     }
 
-    let config_dir = state.db_dir.clone().unwrap_or_else(|| {
+    let config_dir = state.db_dir().clone().unwrap_or_else(|| {
         tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
     });
 
@@ -1026,7 +1056,7 @@ pub async fn update_backend_source(
     };
 
     // Check for active job conflict
-    if let Some(jobs) = &state.web_jobs {
+    if let Some(jobs) = web_state.jobs.as_ref() {
         if let Some(active_job) = jobs.active().await {
             if active_job.backend_type.as_ref().map(|b| b.to_string()) == Some(name.clone()) {
                 return error_response(

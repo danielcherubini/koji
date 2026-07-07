@@ -1,13 +1,22 @@
-use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
+use axum::{
+    extract::{Extension, State},
+    http::StatusCode,
+    response::IntoResponse,
+    Json,
+};
 use std::sync::Arc;
 
 use crate::api::error::error_response;
+use crate::web_types::WebState;
 use tama_core::proxy::ProxyState;
 
 /// GET /tama/v1/system/capabilities
-pub async fn system_capabilities(State(state): State<Arc<ProxyState>>) -> impl IntoResponse {
-    let cache = match &state.web_capabilities {
-        Some(c) => c,
+pub async fn system_capabilities(
+    State(_state): State<Arc<ProxyState>>,
+    Extension(web_state): Extension<WebState>,
+) -> impl IntoResponse {
+    let cache = match &web_state.capabilities {
+        Some(c) => c.clone(),
         None => {
             return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,

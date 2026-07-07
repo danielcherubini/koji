@@ -8,6 +8,7 @@
 //! - Standalone mode works (no proxy_config)
 //! - 410 Gone for raw TOML endpoints
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use tempfile::TempDir;
 
@@ -15,6 +16,18 @@ use tower::util::ServiceExt;
 
 use tama_core::proxy::ProxyState;
 use tama_web::router::build_web_routes;
+
+/// Create a minimal WebState for tests.
+fn test_web_state() -> tama_web::web_types::WebState {
+    tama_web::web_types::WebState {
+        jobs: Some(Arc::new(tama_web::web_types::JobManager::new())),
+        capabilities: None,
+        update_checker: Arc::new(tama_core::updates::UpdateChecker::default()),
+        binary_version: "test".to_string(),
+        update_tx: Arc::new(tokio::sync::Mutex::new(None)),
+        upload_lock: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+    }
+}
 
 /// Helper to extract CSRF token from response headers and set cookie.
 async fn get_csrf_token(router: &axum::Router) -> String {
@@ -74,7 +87,9 @@ fn build_test_state(_config_content: &str) -> (Arc<ProxyState>, TempDir) {
 #[tokio::test]
 async fn test_get_structured_config_returns_valid_json() {
     let (state, _temp_dir) = build_test_state("");
-    let router = build_web_routes().with_state(state);
+    let router = build_web_routes(Arc::new(test_web_state()))
+        .with_state(state)
+        .layer(axum::extract::Extension(test_web_state()));
 
     let req = axum::extract::Request::builder()
         .method("GET")
@@ -100,7 +115,9 @@ async fn test_get_structured_config_returns_valid_json() {
 #[tokio::test]
 async fn test_post_structured_config_persists_and_round_trips() {
     let (state, _temp_dir) = build_test_state("");
-    let router = build_web_routes().with_state(state);
+    let router = build_web_routes(Arc::new(test_web_state()))
+        .with_state(state)
+        .layer(axum::extract::Extension(test_web_state()));
 
     // Get CSRF token first
     let csrf_token = get_csrf_token(&router).await;
@@ -152,7 +169,9 @@ async fn test_post_structured_config_persists_and_round_trips() {
 #[tokio::test]
 async fn test_400_on_invalid_json() {
     let (state, _temp_dir) = build_test_state("");
-    let router = build_web_routes().with_state(state);
+    let router = build_web_routes(Arc::new(test_web_state()))
+        .with_state(state)
+        .layer(axum::extract::Extension(test_web_state()));
 
     let csrf_token = get_csrf_token(&router).await;
 
@@ -174,7 +193,9 @@ async fn test_get_structured_config_without_db_dir() {
 
     let config = tama_core::config::Config::default();
     let state = Arc::new(ProxyState::new(config, Some(temp_dir.path().to_path_buf())));
-    let router = build_web_routes().with_state(state);
+    let router = build_web_routes(Arc::new(test_web_state()))
+        .with_state(state)
+        .layer(axum::extract::Extension(test_web_state()));
 
     let req = axum::extract::Request::builder()
         .method("GET")

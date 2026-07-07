@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Extension, Path, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
@@ -10,11 +10,13 @@ use std::sync::Arc;
 use super::types::*;
 use crate::api::error::error_response;
 use crate::api::helpers::open_backend_manager;
+use crate::web_types::WebState;
 use tama_core::proxy::ProxyState;
 
 /// POST /tama/v1/backends/install
 pub async fn install_backend(
-    State(state): State<Arc<ProxyState>>,
+    Extension(web_state): Extension<WebState>,
+    State(_state): State<Arc<ProxyState>>,
     Json(req): Json<InstallRequest>,
 ) -> impl IntoResponse {
     // Validate backend_type: non-empty and <= 64 chars
@@ -69,8 +71,8 @@ pub async fn install_backend(
         );
     }
 
-    let jobs = match &state.web_jobs {
-        Some(j) => j,
+    let jobs = match web_state.jobs.as_ref() {
+        Some(j) => j.clone(),
         None => {
             return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -109,13 +111,13 @@ pub async fn install_backend(
         // For TTS backends: submit job first, then spawn the install task.
         let job = match jobs
             .submit(
-                tama_core::web_types::JobKind::Install,
+                crate::web_types::JobKind::Install,
                 Some(backend_type.clone()),
             )
             .await
         {
             Ok(j) => j,
-            Err(tama_core::web_types::JobError::AlreadyRunning(existing_id)) => {
+            Err(crate::web_types::JobError::AlreadyRunning(existing_id)) => {
                 return (
                     StatusCode::CONFLICT,
                     Json(serde_json::json!({
@@ -185,7 +187,7 @@ pub async fn install_backend(
                     let _ = jobs_clone
                         .finish(
                             &job_clone,
-                            tama_core::web_types::JobStatus::Failed,
+                            crate::web_types::JobStatus::Failed,
                             Some("Failed to open manager".to_string()),
                         )
                         .await;
@@ -205,7 +207,7 @@ pub async fn install_backend(
                             let _ = jobs_clone
                                 .finish(
                                     &job_clone,
-                                    tama_core::web_types::JobStatus::Failed,
+                                    crate::web_types::JobStatus::Failed,
                                     Some(e.to_string()),
                                 )
                                 .await;
@@ -223,7 +225,7 @@ pub async fn install_backend(
                     let _ = jobs_clone
                         .finish(
                             &job_clone,
-                            tama_core::web_types::JobStatus::Failed,
+                            crate::web_types::JobStatus::Failed,
                             Some("Unsupported backend type for TTS install".to_string()),
                         )
                         .await;
@@ -232,7 +234,7 @@ pub async fn install_backend(
             }
 
             let _ = jobs_clone
-                .finish(&job_clone, tama_core::web_types::JobStatus::Succeeded, None)
+                .finish(&job_clone, crate::web_types::JobStatus::Succeeded, None)
                 .await;
         });
 
@@ -266,8 +268,8 @@ pub async fn install_backend(
 
     // Check prerequisites if source build
     if effective_build_from_source {
-        let cache = match &state.web_capabilities {
-            Some(c) => c,
+        let cache = match web_state.capabilities.as_ref() {
+            Some(c) => c.clone(),
             None => {
                 return error_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -320,13 +322,13 @@ pub async fn install_backend(
     // Submit job
     let job = match jobs
         .submit(
-            tama_core::web_types::JobKind::Install,
+            crate::web_types::JobKind::Install,
             Some(backend_type.clone()),
         )
         .await
     {
         Ok(j) => j,
-        Err(tama_core::web_types::JobError::AlreadyRunning(existing_id)) => {
+        Err(crate::web_types::JobError::AlreadyRunning(existing_id)) => {
             return (
                 StatusCode::CONFLICT,
                 Json(serde_json::json!({
@@ -469,7 +471,7 @@ pub async fn install_backend(
                     }
                 }
                 let _ = jobs_clone
-                    .finish(&job_clone, tama_core::web_types::JobStatus::Succeeded, None)
+                    .finish(&job_clone, crate::web_types::JobStatus::Succeeded, None)
                     .await;
             }
             Err(e) => {
@@ -478,7 +480,7 @@ pub async fn install_backend(
                     .append_log(&job_clone, format!("Error: {}", e))
                     .await;
                 let _ = jobs_clone
-                    .finish(&job_clone, tama_core::web_types::JobStatus::Failed, Some(e))
+                    .finish(&job_clone, crate::web_types::JobStatus::Failed, Some(e))
                     .await;
             }
         }
@@ -503,12 +505,13 @@ pub struct RemoveQuery {
 
 /// DELETE /tama/v1/backends/:name
 pub async fn remove_backend(
+    Extension(web_state): Extension<WebState>,
     State(state): State<Arc<ProxyState>>,
     Path(name): Path<String>,
     axum::extract::Query(query): axum::extract::Query<RemoveQuery>,
 ) -> impl IntoResponse {
-    let jobs = match &state.web_jobs {
-        Some(j) => j,
+    let jobs = match web_state.jobs.as_ref() {
+        Some(j) => j.clone(),
         None => {
             return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -518,7 +521,7 @@ pub async fn remove_backend(
         }
     };
 
-    let config_dir = state.db_dir.clone().unwrap_or_else(|| {
+    let config_dir = state.db_dir().clone().unwrap_or_else(|| {
         tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
     });
 
@@ -634,17 +637,15 @@ pub async fn remove_backend(
 
     // Clean up update_check records — use LIKE pattern to match all variants
     // (e.g., "llama_cpp:cpu", "llama_cpp:cuda") plus legacy format.
-    if let Ok(open) = tama_core::db::open(&config_dir) {
+    if let Ok(repo) = tama_core::db::repository::Repository::open(&config_dir) {
         let escaped_name = name
             .replace('\\', "\\\\")
             .replace('_', "\\_")
             .replace('%', "\\%");
         let pattern = format!("{}:%", escaped_name);
-        let _ = tama_core::db::queries::delete_update_checks_by_pattern(
-            &open.conn, "backend", &pattern,
-        );
+        let _ = repo.delete_update_checks_by_pattern("backend", &pattern);
         // Also delete legacy format (no variant separator)
-        let _ = tama_core::db::queries::delete_update_check(&open.conn, "backend", &name);
+        let _ = repo.delete_update_check("backend", &name);
     }
 
     Json(DeleteResponse { removed: true }).into_response()

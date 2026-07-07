@@ -1,10 +1,12 @@
 //! Database module for SQLite
 //!
-//! Provides connection helpers and automatic migration system.
+//! Provides connection helpers, automatic migration system, and a Repository
+//! layer for domain-level database access.
 
 pub mod backfill;
 pub mod migrations;
 pub mod queries;
+pub mod repository;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -18,20 +20,6 @@ use crate::config::ModelConfig;
 pub struct OpenResult {
     pub conn: Connection,
     pub needs_backfill: bool,
-}
-
-/// Convert a config key (double-dash format, e.g. `unsloth--gemma-4-26b-a4b-it-gguf`)
-/// back to the original repo_id stored in the DB (e.g. `unsloth/gemma-4-26b-a4b-it-gguf`).
-///
-/// All external IDs (URLs, JSON responses, CLI args) use the double-dash format.
-/// The DB stores the original HF repo_id with a real slash.
-pub fn config_key_to_repo_id(config_key: &str) -> String {
-    if let Some(idx) = config_key.find("--") {
-        let (prefix, suffix) = config_key.split_at(idx);
-        format!("{}/{}", prefix, &suffix[2..])
-    } else {
-        config_key.to_string()
-    }
 }
 
 /// Load all model_configs rows and return them as a HashMap<config_key, ModelConfig>
@@ -84,7 +72,7 @@ pub fn save_model_config(
         .model
         .clone()
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| config_key_to_repo_id(config_key));
+        .unwrap_or_else(|| crate::models::config_key_to_repo_id(config_key));
     let mut record = mc.to_db_record(&repo_id);
     // Default api_name to repo_id at save time so the DB always stores a
     // concrete value. `from_db_record` used to backfill this on load, which

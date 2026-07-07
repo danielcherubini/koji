@@ -5,6 +5,7 @@ use regex::Regex;
 use std::sync::{Arc, OnceLock};
 
 use crate::api::error::{error_response, error_response_simple};
+use tama_core::db::repository::Repository;
 use tama_core::proxy::ProxyState;
 
 /// Regex for valid alias names: starts with alphanumeric, then alphanumeric/underscore/hyphen,
@@ -34,17 +35,21 @@ fn validate_alias_name(name: &str) -> Option<String> {
 /// GET /tama/v1/aliases
 /// Returns list of all aliases (enabled and disabled)
 pub async fn list_aliases(State(state): State<Arc<ProxyState>>) -> impl IntoResponse {
-    let mgr = match state.model_mgr() {
-        Some(m) => m,
-        None => {
+    let db_dir = state.db_dir().clone().unwrap_or_else(|| {
+        tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    });
+
+    let repo = match Repository::open(&db_dir) {
+        Ok(r) => r,
+        Err(e) => {
             return error_response_simple(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "Database not configured",
+                format!("Database not configured: {}", e),
             )
         }
     };
 
-    match tama_core::db::queries::get_all_aliases(mgr.conn()) {
+    match repo.get_all_aliases() {
         Ok(aliases) => Json(aliases).into_response(),
         Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     }
@@ -55,17 +60,21 @@ pub async fn get_alias(
     State(state): State<Arc<ProxyState>>,
     axum::extract::Path(id): axum::extract::Path<i64>,
 ) -> impl IntoResponse {
-    let mgr = match state.model_mgr() {
-        Some(m) => m,
-        None => {
+    let db_dir = state.db_dir().clone().unwrap_or_else(|| {
+        tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    });
+
+    let repo = match Repository::open(&db_dir) {
+        Ok(r) => r,
+        Err(e) => {
             return error_response_simple(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "Database not configured",
+                format!("Database not configured: {}", e),
             )
         }
     };
 
-    match tama_core::db::queries::get_alias_by_id(mgr.conn(), id) {
+    match repo.get_alias_by_id(id) {
         Ok(Some(alias)) => Json(alias).into_response(),
         Ok(None) => error_response(
             StatusCode::NOT_FOUND,
@@ -81,12 +90,16 @@ pub async fn create_alias(
     State(state): State<Arc<ProxyState>>,
     Json(payload): Json<CreateAliasRequest>,
 ) -> impl IntoResponse {
-    let mgr = match state.model_mgr() {
-        Some(m) => m,
-        None => {
+    let db_dir = state.db_dir().clone().unwrap_or_else(|| {
+        tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    });
+
+    let repo = match Repository::open(&db_dir) {
+        Ok(r) => r,
+        Err(e) => {
             return error_response_simple(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "Database not configured",
+                format!("Database not configured: {}", e),
             )
         }
     };
@@ -101,11 +114,7 @@ pub async fn create_alias(
     }
 
     // Validate model_id exists
-    let model_exists: bool = match mgr.conn().query_row(
-        "SELECT COUNT(*) > 0 FROM model_configs WHERE id = ?",
-        [payload.model_id],
-        |row| row.get(0),
-    ) {
+    let model_exists = match repo.model_exists(payload.model_id) {
         Ok(v) => v,
         Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     };
@@ -118,8 +127,7 @@ pub async fn create_alias(
         );
     }
 
-    let new_id = match tama_core::db::queries::insert_alias(
-        mgr.conn(),
+    let new_id = match repo.insert_alias(
         &payload.name,
         payload.model_id,
         payload.description.as_deref(),
@@ -134,7 +142,7 @@ pub async fn create_alias(
     }
 
     // Return the created alias
-    match tama_core::db::queries::get_alias_by_id(mgr.conn(), new_id) {
+    match repo.get_alias_by_id(new_id) {
         Ok(Some(alias)) => (StatusCode::CREATED, Json(alias)).into_response(),
         Ok(None) => error_response_simple(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -150,12 +158,16 @@ pub async fn update_alias(
     axum::extract::Path(id): axum::extract::Path<i64>,
     Json(payload): Json<UpdateAliasRequest>,
 ) -> impl IntoResponse {
-    let mgr = match state.model_mgr() {
-        Some(m) => m,
-        None => {
+    let db_dir = state.db_dir().clone().unwrap_or_else(|| {
+        tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    });
+
+    let repo = match Repository::open(&db_dir) {
+        Ok(r) => r,
+        Err(e) => {
             return error_response_simple(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "Database not configured",
+                format!("Database not configured: {}", e),
             )
         }
     };
@@ -173,11 +185,7 @@ pub async fn update_alias(
 
     // Validate model_id if provided
     if let Some(ref model_id) = payload.model_id {
-        let model_exists: bool = match mgr.conn().query_row(
-            "SELECT COUNT(*) > 0 FROM model_configs WHERE id = ?",
-            [model_id],
-            |row| row.get(0),
-        ) {
+        let model_exists = match repo.model_exists(*model_id) {
             Ok(v) => v,
             Err(e) => {
                 return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None)
@@ -193,8 +201,7 @@ pub async fn update_alias(
         }
     }
 
-    match tama_core::db::queries::update_alias(
-        mgr.conn(),
+    match repo.update_alias(
         id,
         payload.name.as_deref(),
         payload.model_id,
@@ -210,7 +217,7 @@ pub async fn update_alias(
         tracing::warn!("Failed to reload aliases after update: {}", e);
     }
 
-    match tama_core::db::queries::get_alias_by_id(mgr.conn(), id) {
+    match repo.get_alias_by_id(id) {
         Ok(Some(alias)) => Json(alias).into_response(),
         Ok(None) => error_response_simple(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -225,17 +232,21 @@ pub async fn delete_alias(
     State(state): State<Arc<ProxyState>>,
     axum::extract::Path(id): axum::extract::Path<i64>,
 ) -> impl IntoResponse {
-    let mgr = match state.model_mgr() {
-        Some(m) => m,
-        None => {
+    let db_dir = state.db_dir().clone().unwrap_or_else(|| {
+        tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    });
+
+    let repo = match Repository::open(&db_dir) {
+        Ok(r) => r,
+        Err(e) => {
             return error_response_simple(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "Database not configured",
+                format!("Database not configured: {}", e),
             )
         }
     };
 
-    match tama_core::db::queries::delete_alias(mgr.conn(), id) {
+    match repo.delete_alias(id) {
         Ok(()) => {}
         Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     }

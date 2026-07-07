@@ -1,6 +1,6 @@
 use async_stream::stream;
 use axum::{
-    extract::{Path, State},
+    extract::{Extension, Path, State},
     http::StatusCode,
     response::{
         sse::{Event, KeepAlive},
@@ -12,10 +12,12 @@ use futures_util::Stream;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+use crate::web_types::WebState;
 use tama_core::backends::{
     check_latest_version, get_backend_install_path, BackendManager, BackendSource, BackendType,
     InstallOptions,
 };
+use tama_core::db::repository::Repository;
 use tama_core::proxy::ProxyState;
 use tama_core::updates::UpdateEvent;
 
@@ -74,8 +76,11 @@ pub struct QuantDetailJson {
 }
 
 /// GET /tama/v1/updates - Returns cached results from DB
-pub async fn get_updates(State(state): State<Arc<ProxyState>>) -> impl IntoResponse {
-    let config_dir = match state.db_dir.clone() {
+pub async fn get_updates(
+    State(state): State<Arc<ProxyState>>,
+    Extension(web_state): Extension<WebState>,
+) -> impl IntoResponse {
+    let config_dir = match state.db_dir().clone() {
         Some(d) => d,
         None => {
             return (
@@ -86,14 +91,16 @@ pub async fn get_updates(State(state): State<Arc<ProxyState>>) -> impl IntoRespo
         }
     };
 
-    let checker = &state.web_update_checker;
+    let checker = &web_state.update_checker;
     match checker.get_results(&config_dir).await {
         Ok(records) => {
             let mut backends = Vec::new();
             let mut models = Vec::new();
             for r in records {
-                let details: Option<serde_json::Value> =
-                    r.details_json.and_then(|j| serde_json::from_str(&j).ok());
+                let details: Option<serde_json::Value> = r
+                    .details_json
+                    .as_ref()
+                    .and_then(|j| serde_json::from_str::<serde_json::Value>(j).ok());
 
                 // Extract repo_id from details JSON if present (for models)
                 let repo_id = details
@@ -118,13 +125,12 @@ pub async fn get_updates(State(state): State<Arc<ProxyState>>) -> impl IntoRespo
                 // item_id for models is the integer model ID as a string.
                 let display_name = if r.item_type == "model" {
                     r.item_id.parse::<i64>().ok().and_then(|model_id| {
-                        match tama_core::db::open(&config_dir) {
-                            Ok(open) => {
-                                tama_core::db::queries::get_model_config(&open.conn, model_id)
-                                    .ok()
-                                    .flatten()
-                                    .and_then(|m| m.display_name)
-                            }
+                        match Repository::open(&config_dir) {
+                            Ok(repo) => repo
+                                .get_model_config(model_id)
+                                .ok()
+                                .flatten()
+                                .and_then(|m| m.display_name),
                             Err(_) => None,
                         }
                     })
@@ -176,8 +182,11 @@ pub async fn get_updates(State(state): State<Arc<ProxyState>>) -> impl IntoRespo
 }
 
 /// POST /tama/v1/updates/check - Trigger full re-check
-pub async fn trigger_check(State(state): State<Arc<ProxyState>>) -> impl IntoResponse {
-    let config_dir = match state.db_dir.clone() {
+pub async fn trigger_check(
+    State(state): State<Arc<ProxyState>>,
+    Extension(web_state): Extension<WebState>,
+) -> impl IntoResponse {
+    let config_dir = match state.db_dir().clone() {
         Some(d) => d,
         None => {
             return (
@@ -188,7 +197,7 @@ pub async fn trigger_check(State(state): State<Arc<ProxyState>>) -> impl IntoRes
         }
     };
 
-    let checker = state.web_update_checker.clone();
+    let checker = web_state.update_checker.clone();
     // Run in background, return immediately
     tokio::spawn(async move {
         if let Err(e) = checker.run_check(&config_dir).await {
@@ -216,11 +225,12 @@ pub struct CheckSingleQuery {
 /// For backends, use `?gpu_variant=xxx` to check a specific variant.
 /// If not provided, checks the active variant (legacy behavior).
 pub async fn check_single(
+    Extension(web_state): Extension<WebState>,
     State(state): State<Arc<ProxyState>>,
     Path((item_type, item_id)): Path<(String, String)>,
     axum::extract::Query(query): axum::extract::Query<CheckSingleQuery>,
 ) -> impl IntoResponse {
-    let config_dir = match state.db_dir.clone() {
+    let config_dir = match state.db_dir().clone() {
         Some(d) => d,
         None => {
             return (
@@ -231,7 +241,7 @@ pub async fn check_single(
         }
     };
 
-    let checker = &state.web_update_checker;
+    let checker = &web_state.update_checker;
     let result = match item_type.as_str() {
         "backend" => {
             let config_dir_clone = config_dir.clone();
@@ -285,11 +295,10 @@ pub async fn check_single(
             let item_id_clone = item_id.clone();
             let rid_result = tokio::task::spawn_blocking(
                 move || -> anyhow::Result<(Option<i64>, Option<String>)> {
-                    let open = tama_core::db::open(&config_dir_clone)?;
+                    let repo = Repository::open(&config_dir_clone)?;
                     // Convert config_key to repo_id to look up model_id
-                    let repo_id = tama_core::db::config_key_to_repo_id(&item_id_clone);
-                    let record =
-                        tama_core::db::queries::get_model_config_by_repo_id(&open.conn, &repo_id)?;
+                    let repo_id = tama_core::models::config_key_to_repo_id(&item_id_clone);
+                    let record = repo.get_model_config_by_repo_id(&repo_id)?;
                     Ok(record
                         .map(|r| (Some(r.id), Some(r.repo_id.clone())))
                         .unwrap_or((None, None)))
@@ -330,10 +339,11 @@ pub async fn check_single(
 
 /// GET /tama/v1/updates/events — SSE stream of update check lifecycle events.
 pub async fn update_events_sse(
-    State(state): State<Arc<ProxyState>>,
+    Extension(web_state): Extension<WebState>,
+    State(_state): State<Arc<ProxyState>>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, axum::Error>>>, StatusCode> {
-    let tx = state
-        .web_update_checker
+    let checker = web_state.update_checker.clone();
+    let tx = checker
         .update_events_tx
         .as_ref()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
@@ -406,11 +416,12 @@ pub async fn update_events_sse(
 /// Use `?gpu_variant=xxx` to update a specific variant.
 /// If not provided, updates the active variant (legacy behavior).
 pub async fn apply_backend_update(
+    Extension(web_state): Extension<WebState>,
     State(state): State<Arc<ProxyState>>,
     Path(name): Path<String>,
     axum::extract::Query(query): axum::extract::Query<CheckSingleQuery>,
 ) -> impl IntoResponse {
-    let config_dir = match state.db_dir.clone() {
+    let config_dir = match state.db_dir().clone() {
         Some(d) => d,
         None => {
             return (
@@ -485,7 +496,7 @@ pub async fn apply_backend_update(
             .into_response();
     };
 
-    let jobs = match &state.web_jobs {
+    let jobs = match web_state.jobs.as_ref() {
         Some(j) => j.clone(),
         None => {
             return (
@@ -498,13 +509,13 @@ pub async fn apply_backend_update(
 
     let job = match jobs
         .submit(
-            tama_core::web_types::JobKind::Update,
+            crate::web_types::JobKind::Update,
             Some(backend_type.clone()),
         )
         .await
     {
         Ok(j) => j,
-        Err(tama_core::web_types::JobError::AlreadyRunning(existing_id)) => {
+        Err(crate::web_types::JobError::AlreadyRunning(existing_id)) => {
             return (StatusCode::CONFLICT, Json(serde_json::json!({ "error": "another backend job is already running", "job_id": existing_id }))).into_response();
         }
         Err(_) => {
@@ -614,14 +625,14 @@ pub async fn apply_backend_update(
         {
             Ok(_) => {
                 let _ = jobs_clone
-                    .finish(&job_clone, tama_core::web_types::JobStatus::Succeeded, None)
+                    .finish(&job_clone, crate::web_types::JobStatus::Succeeded, None)
                     .await;
             }
             Err(e) => {
                 let _ = jobs_clone
                     .finish(
                         &job_clone,
-                        tama_core::web_types::JobStatus::Failed,
+                        crate::web_types::JobStatus::Failed,
                         Some(e.to_string()),
                     )
                     .await;
@@ -640,7 +651,7 @@ pub async fn apply_model_update(
     Path(id): Path<i64>,
     Json(req): Json<ModelUpdateRequest>,
 ) -> impl IntoResponse {
-    let config_dir = match state.db_dir.clone() {
+    let config_dir = match state.db_dir().clone() {
         Some(d) => d,
         None => {
             return (
@@ -656,13 +667,14 @@ pub async fn apply_model_update(
     let res_result = tokio::task::spawn_blocking({
         let config_dir = config_dir.clone();
         move || -> anyhow::Result<(String, Vec<(String, String)>)> {
-            let open = tama_core::db::open(&config_dir)?;
-            let model_record = tama_core::db::queries::get_model_config(&open.conn, id)?
+            let repo = Repository::open(&config_dir)?;
+            let model_record = repo
+                .get_model_config(id)?
                 .ok_or_else(|| anyhow::anyhow!("Model not found"))?;
             let repo_id = model_record.repo_id;
 
             // Get model files for this model
-            let model_files = tama_core::db::queries::get_model_files(&open.conn, id)?;
+            let model_files = repo.get_model_files(id)?;
 
             // Filter to only the requested quant keys (where quant column matches).
             // Skip files with NULL/None quant — they won't match any requested key.
@@ -724,7 +736,7 @@ pub async fn apply_model_update(
         .collect();
 
     // 4. Pre-check for duplicate enqueues and enqueue each quant
-    let svc = match state.download_queue.as_ref() {
+    let svc = match state.download_queue().as_ref() {
         Some(s) => s,
         None => {
             return (
@@ -737,8 +749,8 @@ pub async fn apply_model_update(
 
     // Phase 1: Preflight — check all items for duplicates before creating any jobs.
     // This is read-only and returns early on the first conflict or error.
-    let mgr = match tama_core::models::ModelManager::open(&config_dir) {
-        Ok(m) => m,
+    let repo = match Repository::open(&config_dir) {
+        Ok(r) => r,
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -747,10 +759,9 @@ pub async fn apply_model_update(
                 .into_response();
         }
     };
-    let conn = mgr.conn();
 
     for (quant_key, filename) in &unique_files {
-        match tama_core::db::queries::get_active_item_by_repo_filename(conn, &repo_id, filename) {
+        match repo.get_active_download_by_filename(&repo_id, filename) {
             Ok(Some(existing)) => {
                 return (
                     StatusCode::CONFLICT,

@@ -3,6 +3,7 @@
 //! Provides REST endpoints to query the download queue (active + history),
 //! cancel items, and stream real-time events via SSE.
 use crate::api::error::error_body;
+use tama_core::proxy::ProxyState;
 
 use async_stream::stream;
 use axum::extract::{Path, State};
@@ -15,8 +16,6 @@ use futures_util::Stream;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::broadcast;
-
-use tama_core::proxy::ProxyState;
 
 // ── DTO types ────────────────────────────────────────────────────────────────
 
@@ -53,10 +52,10 @@ pub struct DownloadCancelResponse {
     pub message: Option<String>,
 }
 
-/// Convert a `tama_core::db::queries::DownloadQueueItem` to a DTO.
+/// Convert a `DownloadQueueDto` to a `DownloadQueueItemDto`.
 /// Note: progress_percent is computed client-side from bytes_downloaded
 /// and total_bytes, so it's not included in the API response.
-fn item_to_dto(item: &tama_core::db::queries::DownloadQueueItem) -> DownloadQueueItemDto {
+fn item_to_dto(item: &tama_core::db::repository::DownloadQueueDto) -> DownloadQueueItemDto {
     DownloadQueueItemDto {
         job_id: item.job_id.clone(),
         repo_id: item.repo_id.clone(),
@@ -97,7 +96,7 @@ fn default_offset() -> i64 {
 pub async fn get_active_downloads(
     State(state): State<Arc<ProxyState>>,
 ) -> Result<Json<DownloadsActiveResponse>, (StatusCode, Json<serde_json::Value>)> {
-    let svc = state.download_queue.as_ref().ok_or_else(|| {
+    let svc = state.download_queue().as_ref().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(error_body(
@@ -107,7 +106,7 @@ pub async fn get_active_downloads(
         )
     })?;
 
-    let items = svc.get_active_items().map_err(|e| {
+    let items = svc.get_active_items_dto().map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(error_body(e.to_string(), None)),
@@ -124,7 +123,7 @@ pub async fn get_download_history(
     State(state): State<Arc<ProxyState>>,
     axum::extract::Query(query): axum::extract::Query<HistoryQuery>,
 ) -> Result<Json<DownloadsHistoryResponse>, (StatusCode, Json<serde_json::Value>)> {
-    let svc = state.download_queue.as_ref().ok_or_else(|| {
+    let svc = state.download_queue().as_ref().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(error_body(
@@ -135,7 +134,7 @@ pub async fn get_download_history(
     })?;
 
     let items = svc
-        .get_history_items(query.limit, query.offset)
+        .get_history_items_dto(query.limit, query.offset)
         .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -163,7 +162,7 @@ pub async fn cancel_download(
     State(state): State<Arc<ProxyState>>,
     Path(job_id): axum::extract::Path<String>,
 ) -> Json<DownloadCancelResponse> {
-    let svc = match &state.download_queue {
+    let svc = match &state.download_queue() {
         Some(svc) => svc,
         None => {
             return Json(DownloadCancelResponse {
@@ -190,7 +189,7 @@ pub async fn download_events_sse(
     State(state): State<Arc<ProxyState>>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, axum::Error>>>, StatusCode> {
     let svc = state
-        .download_queue
+        .download_queue()
         .as_ref()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
 

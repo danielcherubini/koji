@@ -91,7 +91,7 @@ async fn main() -> Result<()> {
     }
 
     // Create shared proxy state
-    let state = Arc::new(ProxyState::new(config.clone(), db_dir));
+    let proxy_state = Arc::new(ProxyState::new(config.clone(), db_dir));
 
     #[cfg(feature = "ssr")]
     {
@@ -100,28 +100,47 @@ async fn main() -> Result<()> {
             let _ = std::fs::create_dir_all(&logs_dir);
         }
 
-        // Set the binary version for the web UI
-        let mut state_inner = (*state).clone();
-        state_inner.web_binary_version = env!("CARGO_PKG_VERSION").to_string();
-        let state = Arc::new(state_inner);
+        // Create WebState separately from ProxyState.
+        // WebState is owned by the tama crate, not tama-core.
+        let web_state = {
+            let (tx, _) = tokio::sync::broadcast::channel::<tama_core::updates::UpdateEvent>(256);
+            let mut checker = tama_core::updates::UpdateChecker::new();
+            checker.set_update_events_tx(tx);
+            Arc::new(tama_web::web_types::WebState {
+                jobs: Some(Arc::new(tama_web::web_types::JobManager::new())),
+                capabilities: Some(Arc::new(tama_web::web_types::CapabilitiesCache::new())),
+                update_checker: Arc::new(checker),
+                binary_version: env!("CARGO_PKG_VERSION").to_string(),
+                update_tx: Arc::new(tokio::sync::Mutex::new(None)),
+                upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            })
+        };
+
+        // Combined app state (used for shutdown cleanup)
+        let app_state = Arc::new(tama_web::app_state::AppState::new(
+            proxy_state.clone(),
+            web_state.clone(),
+        ));
 
         // Build the unified router: proxy routes + web UI routes on a single server.
-        let web_routes = tama_web::router::build_web_routes();
-        let server = ProxyServer::new(state.clone()).await;
+        // Proxy routes use State<Arc<ProxyState>> as before.
+        // Web routes use Extension<WebState> to access web-specific state.
+        let web_routes = tama_web::router::build_web_routes(web_state.clone());
+        let server = ProxyServer::new(proxy_state.clone()).await;
         let app = server.into_unified_router(web_routes).await;
 
-        // Clone state for shutdown cleanup (unloads TTS backends + kills job children)
-        let cleanup_state = Arc::clone(&state);
+        // Clone app state for shutdown cleanup (unloads TTS backends + kills job children)
+        let cleanup_state = Arc::clone(&app_state);
         let on_shutdown = async move {
             // Kill children of any active backend job
-            if let Some(jobs) = &cleanup_state.web_jobs {
+            if let Some(jobs) = &cleanup_state.web_state.jobs {
                 if let Some(active_job) = jobs.active().await {
                     tracing::info!("Killing children of active job {}...", active_job.id);
                     jobs.kill_children(&active_job).await;
                 }
             }
             // Unload TTS backends
-            let models = cleanup_state.models.read().await;
+            let models = cleanup_state.state.models().read().await;
             let tts_backends: Vec<String> = models
                 .iter()
                 .filter(|(_, ms)| ms.is_tts_backend())
@@ -129,7 +148,7 @@ async fn main() -> Result<()> {
                 .collect();
             drop(models);
             for name in tts_backends {
-                if let Err(e) = cleanup_state.unload_tts_backend(&name).await {
+                if let Err(e) = cleanup_state.state.unload_tts_backend(&name).await {
                     tracing::warn!("Failed to unload TTS backend '{}': {}", name, e);
                 }
             }
@@ -141,7 +160,7 @@ async fn main() -> Result<()> {
 
     #[cfg(not(feature = "ssr"))]
     {
-        let server = ProxyServer::new(state.clone()).await;
-        server.run(addr, None).await
+        // CSR-only build: nothing to run (web UI is handled by browser)
+        Ok(())
     }
 }

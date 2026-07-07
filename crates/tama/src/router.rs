@@ -96,10 +96,14 @@ async fn handle_root_forward(State(state): State<Arc<ProxyState>>, req: Request<
 
 /// Build the web UI routes without attaching state.
 ///
-/// The caller (e.g., the proxy server) must call `.with_state(state)` on the
-/// returned router before serving. This allows the proxy to merge web routes
-/// with its own routes under a single `ProxyState`.
-pub fn build_web_routes() -> Router<Arc<tama_core::proxy::ProxyState>> {
+/// The caller (e.g., the proxy server) merges this router with proxy routes
+/// and calls `.with_state(state)` on the merged result.
+///
+/// `web_state` is added as an Extension layer on sub-routers so that
+/// handlers can extract it via `Extension<WebState>`.
+pub fn build_web_routes(
+    web_state: Arc<crate::web_types::WebState>,
+) -> Router<Arc<tama_core::proxy::ProxyState>> {
     // Build sub-router for backends API with CORS and origin enforcement.
     // CorsLayer must be outermost (applied last) so it runs before same-origin check.
     let backend_routes = Router::new()
@@ -279,6 +283,8 @@ pub fn build_web_routes() -> Router<Arc<tama_core::proxy::ProxyState>> {
         .layer(middleware::from_fn(api::middleware::enforce_same_origin));
 
     Router::new()
+        // Add WebState as Extension for all routes
+        .layer(axum::extract::Extension(web_state.as_ref().clone()))
         // HF metadata endpoint — wildcard captures `owner/repo` with embedded slash
         .route("/tama/v1/hf/*repo_id", get(api::hf::hf_metadata))
         // Self-update GET routes (safe methods, no CSRF protection needed)

@@ -22,7 +22,7 @@ fn create_test_state() -> Arc<ProxyState> {
 
     let config = tama_core::config::Config::default();
     let mut state = ProxyState::new(config, Some(db_dir));
-    state.download_queue = Some(Arc::new(svc));
+    state.set_download_queue(Some(Arc::new(svc)));
     Arc::new(state)
 }
 
@@ -51,7 +51,7 @@ fn build_download_router(state: Arc<ProxyState>) -> Router {
 /// - 3 history items (completed, failed, cancelled)
 fn seed_test_data(state: &ProxyState) {
     let svc = state
-        .download_queue
+        .download_queue()
         .as_ref()
         .expect("download_queue configured");
 
@@ -273,7 +273,7 @@ async fn test_cancel_download_succeeds_for_queued_item() {
     let state = create_test_state();
     seed_test_data(&state);
 
-    let _svc = state.download_queue.as_ref().unwrap();
+    let _svc = state.download_queue().as_ref().unwrap();
 
     let app = build_download_router(state);
 

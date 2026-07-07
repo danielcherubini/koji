@@ -6,11 +6,11 @@ use axum::{
     Json,
 };
 use std::sync::Arc;
+use tama_core::proxy::ProxyState;
 
 use crate::api::helpers::{spawn_model_crud, DEFAULT_CRUD_STATUS};
 use crate::api::load_config_from_state;
 use crate::api::models::resolve_model_id;
-use tama_core::proxy::ProxyState;
 
 /// DELETE /tama/v1/models/:id/quants/:quant_key — delete a single quant's file
 /// and remove it from the config.
@@ -27,6 +27,15 @@ pub async fn delete_quant(
     };
 
     spawn_model_crud(state_clone, DEFAULT_CRUD_STATUS, move || {
+        // Open repository for reading
+        let repo = tama_core::db::repository::Repository::open(&config_dir).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error_body(e.to_string(), None),
+            )
+        })?;
+
+        // Open manager for writing
         let mgr = tama_core::models::ModelManager::open(&config_dir).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -35,8 +44,8 @@ pub async fn delete_quant(
         })?;
 
         // Find the model from DB
-        let model_record = mgr
-            .get_config(id)
+        let model_record = repo
+            .get_model_config(id)
             .map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -50,7 +59,8 @@ pub async fn delete_quant(
                 )
             })?;
 
-        let mut model_config = tama_core::config::ModelConfig::from_db_record(&model_record);
+        let mut model_config =
+            tama_core::config::ModelConfig::from_db_record_for_repo(&model_record);
 
         // Find the quant entry
         let quant_entry = model_config.quants.get(&quant_key).ok_or_else(|| {
@@ -130,14 +140,24 @@ pub async fn delete_model(
     };
 
     spawn_model_crud(state_clone, DEFAULT_CRUD_STATUS, move || {
-        // Capture the removed model for cleanup
+        // Open repository for reading
+        let repo = tama_core::db::repository::Repository::open(&config_dir).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error_body(e.to_string(), None),
+            )
+        })?;
+
+        // Open manager for writing model data
         let mut mgr = tama_core::models::ModelManager::open(&config_dir).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 error_body(e.to_string(), None),
             )
         })?;
-        let model_id = resolve_model_id(&id_str, &mgr)
+
+        // Resolve model_id using Repository
+        let model_id = resolve_model_id(&id_str, &repo)
             .map_err(|e| {
                 (
                     StatusCode::BAD_REQUEST,
@@ -150,8 +170,8 @@ pub async fn delete_model(
                     error_body("Model not found", Some("NotFoundError")),
                 )
             })?;
-        let model_record = mgr
-            .get_config(model_id)
+        let model_record = repo
+            .get_model_config(model_id)
             .map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -164,7 +184,7 @@ pub async fn delete_model(
                     error_body("Model not found", Some("NotFoundError")),
                 )
             })?;
-        let _model_config = tama_core::config::ModelConfig::from_db_record(&model_record);
+        let _model_config = tama_core::config::ModelConfig::from_db_record_for_repo(&model_record);
 
         // Step 1: Delete model config within a transaction — all-or-nothing semantics.
         // This ensures that if the transaction fails, no files are touched yet
@@ -191,9 +211,7 @@ pub async fn delete_model(
         // Step 1b: Delete the update check record (best-effort, separate from transaction).
         // Kept outside the transaction so a missing or corrupted update_checks table
         // doesn't block model deletion. Errors are logged for visibility.
-        if let Err(e) =
-            tama_core::db::queries::delete_update_check(mgr.conn(), "model", &model_id.to_string())
-        {
+        if let Err(e) = repo.delete_update_check("model", &model_id.to_string()) {
             tracing::warn!(
                 "Failed to delete update check record for model {}: {}",
                 model_id,

@@ -4,7 +4,8 @@ use tokio::sync::Mutex;
 use crate::backends::{BackendManager, BackendType};
 use crate::config::Config;
 use crate::db;
-use crate::db::queries::{get_all_model_configs, get_all_update_checks, get_oldest_check_time};
+use crate::db::queries::{get_all_model_configs, get_oldest_check_time};
+use crate::db::repository::UpdateCheckDto;
 
 mod backend;
 mod cache;
@@ -55,6 +56,12 @@ pub struct UpdateChecker {
     /// Broadcast sender for update events (web UI feature).
     #[cfg(feature = "web-ui")]
     pub update_events_tx: Option<tokio::sync::broadcast::Sender<UpdateEvent>>,
+}
+
+impl std::fmt::Debug for UpdateChecker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UpdateChecker").finish_non_exhaustive()
+    }
 }
 
 /// Results from an initial sync of backends and models to check for updates.
@@ -230,12 +237,12 @@ impl UpdateChecker {
     pub async fn get_results(
         &self,
         config_dir: &std::path::Path,
-    ) -> anyhow::Result<Vec<crate::db::queries::UpdateCheckRecord>> {
+    ) -> anyhow::Result<Vec<UpdateCheckDto>> {
         tokio::task::spawn_blocking({
             let config_dir = config_dir.to_path_buf();
-            move || -> anyhow::Result<Vec<crate::db::queries::UpdateCheckRecord>> {
-                let open = db::open(&config_dir)?;
-                get_all_update_checks(&open.conn)
+            move || -> anyhow::Result<Vec<UpdateCheckDto>> {
+                let repo = crate::db::repository::Repository::open(&config_dir)?;
+                repo.get_all_update_checks()
             }
         })
         .await?

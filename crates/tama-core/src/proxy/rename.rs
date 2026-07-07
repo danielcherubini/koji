@@ -57,7 +57,7 @@ impl ProxyState {
                 } else {
                     // Successfully saved new name, now remove the old config entry to avoid orphans
                     // Convert old_name (double-dash config key) to repo_id, then look up model_id
-                    let old_repo_id = crate::db::config_key_to_repo_id(old_name);
+                    let old_repo_id = crate::models::config_key_to_repo_id(old_name);
                     if let Some(record) = mgr.get_config_by_repo_id(&old_repo_id).ok().flatten() {
                         if let Err(e) = mgr.delete_config(record.id) {
                             tracing::error!(name = %old_name, error = %e, "Failed to delete old model config after rename");

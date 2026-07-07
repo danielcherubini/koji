@@ -48,10 +48,11 @@ fn default_context_size() -> Option<u32> {
 // ── Handler: Submit MTP benchmark job ─────────────────────────────────
 
 pub async fn run_mtp_benchmark(
+    Extension(web_state): Extension<WebState>,
     State(state): State<Arc<ProxyState>>,
     Json(req): Json<MtpBenchmarkRunRequest>,
 ) -> impl IntoResponse {
-    let jobs = match &state.web_jobs {
+    let jobs = match web_state.jobs.as_ref() {
         Some(j) => j.clone(),
         None => return job_manager_unavailable_response(),
     };
@@ -73,15 +74,15 @@ pub async fn run_mtp_benchmark(
     let job_id = job.id.clone();
 
     let db_path = state
-        .db_dir
+        .db_dir()
         .clone()
         .unwrap_or_else(|| {
             tama_core::config::Config::config_dir()
                 .unwrap_or_else(|_| std::path::PathBuf::from("."))
         })
         .join("tama.db");
-    let proxy_base_url = state.config.read().await.proxy_url();
-    let client = state.client.clone();
+    let proxy_base_url = state.config().read().await.proxy_url();
+    let client = state.client().clone();
 
     // Spawn the benchmark in the background
     tokio::spawn(async move {
@@ -108,7 +109,7 @@ pub async fn run_mtp_benchmark(
 
 pub async fn run_mtp_benchmark_inner(
     jobs: Arc<JobManager>,
-    job: &Arc<tama_core::web_types::Job>,
+    job: &Arc<crate::web_types::Job>,
     req: MtpBenchmarkRunRequest,
     db_path: Option<std::path::PathBuf>,
     proxy_base_url: String,
@@ -138,8 +139,8 @@ pub async fn run_mtp_benchmark_inner(
 
     // Resolve model path (same pattern as spec.rs)
     let db_dir = db_path.parent().context("db_path has no parent")?;
-    let tama_core::db::OpenResult { conn, .. } = tama_core::db::open(db_dir)?;
-    let model_configs = tama_core::db::load_model_configs(&conn)?;
+    let repo = tama_core::db::repository::Repository::open(db_dir)?;
+    let model_configs = repo.load_model_configs_for_benchmarks()?;
 
     // If model_id is an integer db_id, resolve it to the config key first.
     let resolved_id = if let Ok(db_id) = model_id.parse::<i64>() {
@@ -159,7 +160,7 @@ pub async fn run_mtp_benchmark_inner(
     let model_path = resolve_model_path(
         &config,
         db_dir,
-        &conn,
+        &repo,
         &model_configs,
         resolved_id,
         quant.as_deref(),
@@ -220,7 +221,7 @@ pub async fn run_mtp_benchmark_inner(
 
     // Store results in database
     let db_dir = db_path.parent().context("db_path has no parent")?;
-    let tama_core::db::OpenResult { conn, .. } = tama_core::db::open(db_dir)?;
+    let repo = tama_core::db::repository::Repository::open(db_dir)?;
 
     // Serialize the full result for storage
     let results_json =
@@ -232,29 +233,26 @@ pub async fn run_mtp_benchmark_inner(
     let vram = query_vram();
 
     // Insert into database
-    let _id = tama_core::db::queries::insert_benchmark(
-        &conn,
-        &tama_core::db::queries::BenchmarkInsertParams {
-            model_id: &model_id,
-            display_name: display_name.as_deref(),
-            quant: quant.as_deref(),
-            backend: target_backend.to_string().as_str(),
-            engine: "llama_cli_mtp",
-            pp_sizes_json,
-            tg_sizes_json,
-            threads_json: None,
-            ngl_range: None,
-            runs: 1,
-            warmup: 0,
-            results_json: &results_json,
-            load_time_ms: None,
-            vram_used_mib: vram.as_ref().map(|v| v.used_mib as i64),
-            vram_total_mib: vram.as_ref().map(|v| v.total_mib as i64),
-            duration_seconds: 0.0,
-            status: "success",
-            benchmark_type: benchmark_type.as_deref(),
-        },
-    )?;
+    let _id = repo.insert_benchmark(&tama_core::db::repository::BenchmarkParams {
+        model_id: model_id.clone(),
+        display_name: display_name.clone(),
+        quant: quant.clone(),
+        backend: target_backend.to_string(),
+        engine: "llama_cli_mtp".to_string(),
+        pp_sizes_json: pp_sizes_json.to_string(),
+        tg_sizes_json: tg_sizes_json.to_string(),
+        threads_json: None,
+        ngl_range: None,
+        runs: 1,
+        warmup: 0,
+        results_json,
+        load_time_ms: None,
+        vram_used_mib: vram.as_ref().map(|v| v.used_mib as i64),
+        vram_total_mib: vram.as_ref().map(|v| v.total_mib as i64),
+        duration_seconds: 0.0,
+        status: "success".to_string(),
+        benchmark_type: benchmark_type.clone(),
+    })?;
 
     tracing::info!(
         job_id = %job.id,
