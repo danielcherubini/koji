@@ -14,10 +14,10 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Quick Stats
 
-- **Total Plans**: 150
-- **Completed**: 139 ✅
+- **Total Plans**: 47
+- **Completed**: 39 ✅
 - **In Progress**: 0 🚧
-- **Draft**: 5 📋
+- **Draft**: 4 📋
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
 
@@ -27,9 +27,6 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 | Plan | Description | Status |
 |------|-------------|--------|
-| [Codebase Improvements](plan-144-codebase-improvements.md) | Quick wins: error_response helper, unwrap→expect, dead code removal, benchmark DRY, API boilerplate extraction, gpu_type→gpu_variant rename, server→backend rename, test fixture helpers | ✅ COMPLETED (#143) |
-| [File Splits — tama-core](plan-145-file-splits.md) | Split 5 god files (config/types.rs 1407, models.rs 1303, checker.rs 1079, forward.rs 1119, gpu/system.rs 1121) into focused modules | ✅ COMPLETED (#144) |
-| [Architectural Refactoring](plan-146-architectural-refactoring.md) | DB repository layer (35 direct query calls → Repository), ProxyState encapsulation (25 pub fields → pub(crate) + WebState), move web_types to tama crate | ✅ COMPLETED (#145) |
 | [Type Safety](plan-147-type-safety.md) | GpuVendor + ModelState enums, DB tuples → typed records, config enums (RestartPolicy, LogLevel, CompactionDevice) | 📋 DRAFT |
 | [Testability](plan-148-testability.md) | Backend lifecycle trait abstractions (HealthChecker, ProcessSpawner, PortAllocator) + tests, update checker + download queue processor tests | 📋 DRAFT |
 | [Web UI Splits](plan-149-web-ui-splits.md) | Split 3 large web UI files (types/config.rs 986, api/backends/manage.rs 1013, pages/config_editor.rs 937) into focused modules | 📋 DRAFT |
@@ -50,19 +47,9 @@ This directory contains implementation plans for the Tama project. Each plan doc
 | [GPU Env-Var Isolation (UUID)](plan-138-gpu-env-var-isolation.md) | Replace --device CLI flag with driver-level GPU isolation via env vars (ROCR/CUDA_VISIBLE_DEVICES) using hardware UUIDs; also fix mtp_model API response | #130 ✅ COMPLETED |
 | [GPU Card Name + Separators](plan-136-gpu-card-name-separators.md) | Add GPU product name + total VRAM subtitle under GPU label, horizontal separators in left/middle columns | #129 ✅ COMPLETED |
 | [Config TOML to SQLite](plan-135-config-to-db.md) | Eliminate config.toml — move all global settings to typed SQLite tables, unified TOML→DB migration, remove loaded_from, 410 Gone for raw TOML endpoints | #128 ✅ COMPLETED |
-
-### Recently Completed
-
-| Plan | Description | PR / Git References |
-|------|-------------|---------------------|
 | [Config Page Missing Fields](plan-134-config-page-missing-fields.md) | Add 4 missing config fields to web UI config editor: update_check_interval, download_queue_poll_interval_secs, authenticator_url, authenticator_skip_paths | #127 ✅ COMPLETED |
 | [Per-Model Inference Stats](plan-133-per-model-inference-stats.md) | Per-model tok/s on GPU cards (HashMap keyed by server_name) + always show 0 tok/s when idle | #126 `36456320`, `ec459321`, `b04ec5b9`, `858ac05e` ✅ COMPLETED |
 | [Cancel Loading Model](plan-132-cancel-loading-model.md) | Add Cancel button to model cards during loading state — kills backend process group and returns to idle | #125 `a12532b1`, `fe5570f6`, `c36b6120`, `c2bc9f7a`, `596a4233` ✅ COMPLETED |
-
-### Recently Completed
-
-| Plan | Description | PR / Git References |
-|------|-------------|---------------------|
 | [Split Large Files](plan-131-split-large-files.md) | Split 4 files exceeding 1,000 LOC (lifecycle 1410, crud 1222, server 1172, download 1096) into focused sub-modules | #124 `bbca22cb`, `ed3fe8a6`, `55bf5769`, `3625b42f`, `5821ef43` ✅ COMPLETED |
 | [GPU Card Responsive Layout](plan-130-gpu-card-responsive-layout.md) | Horizontal strip cards for 1-2 GPUs, portrait grid for 3+ — single internal structure reconfigured by CSS `:has()` | #123 `40b2969b` ✅ COMPLETED |
 | [Network Dashboard Card](plan-129-network-dashboard-card.md) | Replace GPU/VRAM stat cards with Network throughput card (↓/↑ MiB/s, dual-line sparkline) | #121 `d3f8ded5`, `64b16b55`, `faf483e8`, `b9847704`, `2cc6e44d` ✅ COMPLETED |
@@ -77,11 +64,6 @@ This directory contains implementation plans for the Tama project. Each plan doc
 | [/v1/opencode/models Capability Enrichment](plan-119-opencode-models-capabilities.md) | Add tool_call, reasoning, attachment, temperature fields to /v1/opencode/models from backend /props | #105 ✅ COMPLETED |
 | [Shared Components Consolidation](plan-117-list-card-refactor.md) | Consolidate duplicated UI patterns into 4 shared components: ListCard, SectionCard, AlertBanner, TabButtons | #102 ✅ COMPLETED |
 | [Extended Model Card Pips](plan-118-model-card-pips.md) | Add GPU variant (combined with backend), KV cache quant, and speculative decoding indicator pips to model cards | #103 ✅ COMPLETED |
-
-### Recently Completed
-
-| Plan | Description | PR / Git References |
-|------|-------------|---------------------|
 | [Aliases Page Redesign](plan-116-aliases-redesign.md) | Redesign aliases page with compact card layout, enabled dot indicator, proper page header, and dedicated CSS | #101 ✅ COMPLETED |
 | [Updates Center Fixes](plan-115-updates-center-fixes.md) | Fix 5 issues: page header layout, Tama card consistency, missing variant badges, stale entries for deleted items, no refresh after backend update | #100 ✅ COMPLETED |
 | [Faster HF Downloads](plan-114-faster-hf-downloads.md) | Replace hf-hub's slow downloader with enhanced parallel downloader + jitter backoff + auth headers; fix HF token passthrough for CLI | #99 ✅ COMPLETED |
@@ -91,20 +73,12 @@ This directory contains implementation plans for the Tama project. Each plan doc
 | [/v1/models Meta Enrichment](plan-107-v1-models-meta.md) | Forward /v1/models to backends for full GGUF meta, merge and inject ready | #92 ✅ COMPLETED |
 | [Wildcard Model Routing (whatevers-hot-n-fresh)](plan-105-whatevers-hot-n-fresh.md) | Virtual model alias that routes to most-recently-accessed loaded LLM, or loads last-used model from DB as fallback | `2048fb97`, `44c50a06`, `947f46b2`, `bcc95694`, `8e112e0a` 🔁 SUPERSEDED by model-aliases |
 | [Model Aliases](plan-111-model-aliases.md) | Replace hardcoded wildcard with user-managed global alias registry — DB table, ProxyState cache, handler integration, web API, and web UI | `c07193f2`, `cc9bdccc`, `6dff30f2`, `f21fcf4c`, `c11a7120`, `d122d403`, `4afee36f`, `fedd5789`, `16dee7ba` ✅ COMPLETED (#95) |
-
-### Recently Completed
-
-| Plan | Description | PR / Git References |
-|------|-------------|---------------------|
 | [Authentik Auth Middleware](plan-110-tama-authentik-auth.md) | Add Authentik API token validation middleware to tama proxy, supporting bearer tokens and Caddy forward_auth headers | `2c2fa70c` ✅ COMPLETED |
 | [Merged /metrics Endpoint](plan-109-merged-metrics.md) | Merge Tama proxy, backend (llama.cpp), and system (CPU/RAM/GPU/VRAM) metrics into Prometheus-format /metrics for Grafana | `340c7954` ✅ COMPLETED |
 | [GGUF Metadata Parsing](plan-103-gguf-metadata-parsing.md) | Parse GGUF file headers for authoritative model metadata, download queue with sequential processing, pull wizard rewrite with global SSE events, KV cache quantization in wizard | #90 ✅ COMPLETED |
 | [MTP Benchmark](plan-102-mtp-benchmark.md) | Add "MTP Testing" tab to Benchmarks page — sweep --spec-draft-n-max with --spec-type draft-mtp, 9 diverse prompts, per-prompt + aggregate metrics | `1ba9510` ✅ COMPLETED |
 | [Spec Decoding Config](plan-104-spec-decoding-config.md) | Add "Spec Decoding" section to model editor — checkboxes for draft-mtp/ngram-simple, n-max/n-min/draft-ngl params, injected as CLI flags | #91 ✅ COMPLETED |
 | [Remove llama.cpp Hardcoded Defaults](plan-101-remove-llama-defaults.md) | Remove hardcoded llama_cpp and ik_llama backend entries from default config and template, making tama backend-agnostic from first boot | `94184d8`, `41bd8b2`, `725758c` ✅ COMPLETED |
-
-| Plan | Description | PR / Git References |
-|------|-------------|---------------------|
 | [Model Manager Centralization](plan-100-model-manager-centralization.md) | Centralize all model DB access into a single ModelManager struct, replacing 29+ scattered db::open() calls across web, CLI, and proxy | #89 ✅ COMPLETED |
 | [Backend Manager Centralization](plan-099-backend-manager-centralization.md) | Centralize all backend data access into a single BackendManager struct, replacing scattered db::queries calls and absorbing BackendRegistry | `e6b163c` ✅ COMPLETED |
 | [Backend Config to Database](plan-098-backend-config-to-db.md) | Move backend config (default_args, health_check_url) from config.toml to SQLite backend_configs table, keyed by (name, gpu_variant) with unique DB id | #88 ✅ COMPLETED |
@@ -116,12 +90,8 @@ This directory contains implementation plans for the Tama project. Each plan doc
 | [Split config/resolve/tests.rs](plan-093-split-resolve-tests.md) | Split 2,214-line test file into 4 topic-grouped modules | `bb6c8f5` ✅ COMPLETED |
 | [Inference Stats Dashboard Cards](plan-092-inference-stats-dashboard.md) | Surface llama_cpp timings (Processing Speed, Gen Speed, Cache Hits, Spec Accept) as 4 sparkline stat cards | `4a88d10` ✅ COMPLETED |
 | [Shared Activity Panel + SSE Core](plan-095-shared-activity-panel-and-sse-core.md) | Extract duplicated SSE reconnection logic into shared utility, create generic ActivityPanel UI shell | `ca711f2` ✅ COMPLETED |
-| [Metrics Snapshot Stream](todo/plan-096-metrics-snapshot-stream.md) | Replace delta SSE with full snapshot delivery every 2s, unify inference stats into same pipeline, eliminate frontend desync | #86 `309c895`, `5d920b7`, `aff3c15`, `b024266` ✅ COMPLETED |
-| [Remove Windows Support](todo/plan-097-remove-windows-support.md) | Remove all Windows-specific code, CI, build targets, dependencies, and documentation | #87 `091b11f`, `5f6a1c4`, `91559b3`, `918e2dd`, `9d7dbf4`, `f1af925`, `8f30f52`, `3b8419f` ✅ COMPLETED |
-
-### Draft
-
-*(none)*
+| [Metrics Snapshot Stream](plan-096-metrics-snapshot-stream.md) | Replace delta SSE with full snapshot delivery every 2s, unify inference stats into same pipeline, eliminate frontend desync | #86 `309c895`, `5d920b7`, `aff3c15`, `b024266` ✅ COMPLETED |
+| [Remove Windows Support](plan-097-remove-windows-support.md) | Remove all Windows-specific code, CI, build targets, dependencies, and documentation | #87 `091b11f`, `5f6a1c4`, `91559b3`, `918e2dd`, `9d7dbf4`, `f1af925`, `8f30f52`, `3b8419f` ✅ COMPLETED |
 
 ### Completed Plans
 
@@ -214,7 +184,6 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 | Plan | Description | PR / Git References |
 |------|-------------|---------------------|
-| [Inference Stats Dashboard Cards](plan-092-inference-stats-dashboard.md) | Surface llama_cpp timings (Processing Speed, Gen Speed, Cache Hits, Spec Accept) as 4 sparkline stat cards on the dashboard | `4a88d10` ✅ COMPLETED |
 | [Fix Dashboard Stale Stats](plan-086-fix-dashboard-stale-stats.md) | Backfill metrics on SSE lag, tab visibility change, and SSE reconnect to prevent stale stats after browser idle | #84 `21f1a65` ✅ COMPLETED |
 | [System Metrics](plan-024-system-metrics.md) | CPU%, RAM, GPU metrics with background collection task | `67029b2`, `2465a4d`, `11d9287` |
 | [Persist Dashboard Metrics](plan-030-persist-dashboard-metrics.md) | SQLite persistence + SSE streaming for dashboard | `b657e22`, `8e6a5b5`, `fd12bf8`, `4c6d6e2`, `2892764` |
@@ -256,12 +225,6 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ---
 
-## Remaining Work
-
-| Plan | Description | Status |
-|------|-------------|--------|
-| [Split Remaining Long Files (draft)](todo/plan-094-split-remaining-files-spec.md) | Split args_building.rs (1,411), pull/download.rs (1,041), crud/mod.rs (1,007) | 📋 DRAFT |
-
 ## Code Quality Backlog
 
 Ideas from codebase review (2026-06-27) — architectural improvements and refactors, not bugs:
@@ -287,7 +250,9 @@ Longer-term features that don't yet have implementation plans:
 |------|-------------|--------|
 | [Dashboard Time Series Graphs](plan-028-dashboard-time-series-graphs.md) | Superseded by persist-dashboard-metrics and dashboard-redesign | 🔁 SUPERSEDED |
 | [Wildcard Model Routing (whatevers-hot-n-fresh)](plan-105-whatevers-hot-n-fresh.md) | Superseded by Model Aliases (2026-05-26) | 🔁 SUPERSEDED |
-| [Split Remaining Long Files (draft)](todo/plan-094-split-remaining-files-spec.md) | Superseded by updated plan (2026-05-27) | 🔁 SUPERSEDED |
+| [Split Remaining Long Files (draft)](plan-094-split-remaining-files-spec.md) | Superseded by updated plan (2026-05-27) | 🔁 SUPERSEDED |
+| [Dashboard Model Management Spec](plan-002-dashboard-model-management-spec.md) | Early 2024 spec, superseded by later plans | 🔁 SUPERSEDED |
+| [Dashboard Model Management Plan](plan-001-dashboard-model-management-implementation-plan.md) | Early 2024 plan, superseded by later plans | 🔁 SUPERSEDED |
 | [MTP Draft Model Fixes](plan-137-mtp-draft-model-fixes.md) | Superseded by GPU Env-Var Isolation (UUID) plan (2026-07-01) | 🔁 SUPERSEDED |
 
 ## Early Drafts & Specs
@@ -312,9 +277,9 @@ These files are companion specs or early drafts that were absorbed into their as
 
 1. **Find a plan** — Browse by category above
 2. **Read the plan** — Understand the goal, architecture, and tasks
-3. **Check status** — See if it's completed, in progress, or remaining
+3. **Check status** — See if it's completed or in draft
 4. **Verify implementation** — Follow PR numbers or git references to see commits
-5. **Track remaining work** — See "Remaining Work" section above
+5. **Track backlog** — See "Draft Plans" and "Code Quality Backlog" sections above
 
 ## Contributing
 
