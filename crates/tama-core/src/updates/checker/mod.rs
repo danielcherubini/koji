@@ -4,7 +4,8 @@ use tokio::sync::Mutex;
 use crate::backends::{BackendManager, BackendType};
 use crate::config::Config;
 use crate::db;
-use crate::db::queries::{get_all_model_configs, get_all_update_checks, get_oldest_check_time};
+use crate::db::queries::{get_all_model_configs, get_oldest_check_time};
+use crate::db::repository::UpdateCheckDto;
 
 mod backend;
 mod cache;
@@ -230,12 +231,12 @@ impl UpdateChecker {
     pub async fn get_results(
         &self,
         config_dir: &std::path::Path,
-    ) -> anyhow::Result<Vec<crate::db::queries::UpdateCheckRecord>> {
+    ) -> anyhow::Result<Vec<UpdateCheckDto>> {
         tokio::task::spawn_blocking({
             let config_dir = config_dir.to_path_buf();
-            move || -> anyhow::Result<Vec<crate::db::queries::UpdateCheckRecord>> {
-                let open = db::open(&config_dir)?;
-                get_all_update_checks(&open.conn)
+            move || -> anyhow::Result<Vec<UpdateCheckDto>> {
+                let repo = crate::db::repository::Repository::open(&config_dir)?;
+                repo.get_all_update_checks()
             }
         })
         .await?

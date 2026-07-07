@@ -135,12 +135,12 @@ pub async fn run_benchmark_inner(
 
     // Store results in database
     let db_dir = db_path.parent().context("db_path has no parent")?;
-    let tama_core::db::OpenResult { conn, .. } = tama_core::db::open(db_dir)?;
+    let repo = tama_core::db::repository::Repository::open(db_dir)?;
 
     // Get model display name from config. The request carries the db_id as a
     // string (e.g. "4") because that's what the model dropdown submits, so we
     // resolve it to the config key first — otherwise `.get("4")` never hits.
-    let model_configs = tama_core::db::load_model_configs(&conn)?;
+    let model_configs = tama_core::db::load_model_configs(repo.conn())?;
     let resolved_key = if let Ok(db_id) = model_id.parse::<i64>() {
         model_configs
             .iter()
@@ -176,29 +176,26 @@ pub async fn run_benchmark_inner(
     let vram = query_vram();
 
     // Insert into database
-    let _id = tama_core::db::queries::insert_benchmark(
-        &conn,
-        &tama_core::db::queries::BenchmarkInsertParams {
-            model_id: &req.model_id,
-            display_name: display_name.as_deref(),
-            quant: report.model_info.quant.as_deref(),
-            backend: &report.model_info.backend,
-            engine: "llama_bench",
-            pp_sizes_json: &pp_sizes_json,
-            tg_sizes_json: &tg_sizes_json,
-            threads_json: threads_json.as_deref(),
-            ngl_range: ngl_range_for_insert.as_deref(),
-            runs: req.runs,
-            warmup: req.warmup,
-            results_json: &results_json,
-            load_time_ms: Some(report.load_time_ms),
-            vram_used_mib: vram.as_ref().map(|v| v.used_mib as i64),
-            vram_total_mib: vram.as_ref().map(|v| v.total_mib as i64),
-            duration_seconds: 0.0, // duration tracked by job system
-            status: "success",
-            benchmark_type: benchmark_type.as_deref(),
-        },
-    )?;
+    let _id = repo.insert_benchmark(&tama_core::db::repository::BenchmarkParams {
+        model_id: req.model_id.clone(),
+        display_name: display_name.clone(),
+        quant: report.model_info.quant.clone(),
+        backend: report.model_info.backend.clone(),
+        engine: "llama_bench".to_string(),
+        pp_sizes_json,
+        tg_sizes_json,
+        threads_json,
+        ngl_range: ngl_range_for_insert,
+        runs: req.runs,
+        warmup: req.warmup,
+        results_json,
+        load_time_ms: Some(report.load_time_ms),
+        vram_used_mib: vram.as_ref().map(|v| v.used_mib as i64),
+        vram_total_mib: vram.as_ref().map(|v| v.total_mib as i64),
+        duration_seconds: 0.0, // duration tracked by job system
+        status: "success".to_string(),
+        benchmark_type: benchmark_type.clone(),
+    })?;
 
     tracing::info!(
         job_id = %job.id,
@@ -250,7 +247,7 @@ pub(super) async fn unload_model_before_benchmark(
 pub(super) fn resolve_model_path(
     config: &tama_core::config::Config,
     db_dir: &std::path::Path,
-    conn: &rusqlite::Connection,
+    repo: &tama_core::db::repository::Repository,
     model_configs: &std::collections::HashMap<String, tama_core::config::ModelConfig>,
     resolved_id: &str,
     quant_override: Option<&str>,
@@ -259,9 +256,10 @@ pub(super) fn resolve_model_path(
         .get(resolved_id)
         .with_context(|| format!("Model config '{}' not found", resolved_id))?;
     let rec_id = mc.db_id.context("Model config has no db_id")?;
-    let record = tama_core::db::queries::get_model_config(conn, rec_id)?
+    let record = repo
+        .get_model_config(rec_id)?
         .with_context(|| format!("Model config record (id={}) not found in database", rec_id))?;
-    let files = tama_core::db::queries::get_model_files(conn, record.id)?;
+    let files = repo.get_model_files(record.id)?;
 
     // Resolve the target filename: prefer quant_override, then mc.quant from config,
     // falling back to the first .gguf if quants map is empty (legacy configs).

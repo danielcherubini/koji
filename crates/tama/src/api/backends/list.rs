@@ -57,10 +57,10 @@ pub async fn list_backends(State(state): State<Arc<ProxyState>>) -> impl IntoRes
     // Load cached update checks from DB (keyed by "name:variant")
     let update_checks: std::collections::HashMap<
         String,
-        tama_core::db::queries::UpdateCheckRecord,
-    > = tama_core::db::open(&config_dir)
+        tama_core::db::repository::UpdateCheckDto,
+    > = tama_core::db::repository::Repository::open(&config_dir)
         .ok()
-        .and_then(|open| tama_core::db::queries::get_all_update_checks(&open.conn).ok())
+        .and_then(|repo| repo.get_all_update_checks().ok())
         .map(|records| {
             records
                 .into_iter()

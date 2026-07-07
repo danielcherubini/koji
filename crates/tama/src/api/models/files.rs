@@ -9,11 +9,12 @@ use std::sync::Arc;
 
 use super::resolve_model_id;
 use crate::api::load_config_from_state;
+use tama_core::db::repository::ModelFileDto;
 use tama_core::proxy::ProxyState;
 
-/// Serialize a `ModelFileRecord` into the same shape used by the enriched
+/// Serialize a `ModelFileDto` into the same shape used by the enriched
 /// quants response so refresh/verify callers get data identical to a GET.
-fn file_record_json(rec: &tama_core::db::queries::ModelFileRecord) -> serde_json::Value {
+fn file_record_json(rec: &ModelFileDto) -> serde_json::Value {
     serde_json::json!({
         "filename": rec.filename,
         "quant": rec.quant,
@@ -48,13 +49,13 @@ pub async fn refresh_model_metadata(
 
     // Step 1: resolve model_id (from id_str) and repo_id (DB operations on blocking pool).
     let resolved = tokio::task::spawn_blocking(move || {
-        let mgr = tama_core::models::ModelManager::open(&config_dir).map_err(|e| {
+        let repo = tama_core::db::repository::Repository::open(&config_dir).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 error_body(e.to_string(), None),
             )
         })?;
-        let model_id = resolve_model_id(&id_str, &mgr)
+        let model_id = resolve_model_id(&id_str, &repo)
             .map_err(|e| {
                 (
                     StatusCode::BAD_REQUEST,
@@ -67,8 +68,8 @@ pub async fn refresh_model_metadata(
                     error_body("Model not found", Some("NotFoundError")),
                 )
             })?;
-        let record = mgr
-            .get_config(model_id)
+        let record = repo
+            .get_model_config(model_id)
             .map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -158,7 +159,24 @@ pub async fn refresh_model_metadata(
 
     match write {
         Ok(Ok((pull, files))) => {
-            let files_json: Vec<_> = files.iter().map(file_record_json).collect();
+            // Convert ModelFileRecord to ModelFileDto for serialization
+            let files_dto: Vec<ModelFileDto> = files
+                .iter()
+                .map(|f| ModelFileDto {
+                    id: f.id,
+                    model_id: f.model_id,
+                    repo_id: f.repo_id.clone(),
+                    filename: f.filename.clone(),
+                    quant: f.quant.clone(),
+                    lfs_oid: f.lfs_oid.clone(),
+                    size_bytes: f.size_bytes,
+                    downloaded_at: f.downloaded_at.clone(),
+                    last_verified_at: f.last_verified_at.clone(),
+                    verified_ok: f.verified_ok,
+                    verify_error: f.verify_error.clone(),
+                })
+                .collect();
+            let files_json: Vec<_> = files_dto.iter().map(file_record_json).collect();
             Json(serde_json::json!({
                 "ok": true,
                 "id": model_id,
@@ -195,13 +213,13 @@ pub async fn verify_model_files(
     };
 
     let resolved = tokio::task::spawn_blocking(move || {
-        let mgr = tama_core::models::ModelManager::open(&config_dir).map_err(|e| {
+        let repo = tama_core::db::repository::Repository::open(&config_dir).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 error_body(e.to_string(), None),
             )
         })?;
-        let model_id = resolve_model_id(&id_str, &mgr)
+        let model_id = resolve_model_id(&id_str, &repo)
             .map_err(|e| {
                 (
                     StatusCode::BAD_REQUEST,
@@ -214,8 +232,8 @@ pub async fn verify_model_files(
                     error_body("Model not found", Some("NotFoundError")),
                 )
             })?;
-        let record = mgr
-            .get_config(model_id)
+        let record = repo
+            .get_model_config(model_id)
             .map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -270,7 +288,24 @@ pub async fn verify_model_files(
                     })
                 })
                 .collect();
-            let files_json: Vec<_> = files.iter().map(file_record_json).collect();
+            // Convert ModelFileRecord to ModelFileDto for serialization
+            let files_dto: Vec<ModelFileDto> = files
+                .iter()
+                .map(|f| ModelFileDto {
+                    id: f.id,
+                    model_id: f.model_id,
+                    repo_id: f.repo_id.clone(),
+                    filename: f.filename.clone(),
+                    quant: f.quant.clone(),
+                    lfs_oid: f.lfs_oid.clone(),
+                    size_bytes: f.size_bytes,
+                    downloaded_at: f.downloaded_at.clone(),
+                    last_verified_at: f.last_verified_at.clone(),
+                    verified_ok: f.verified_ok,
+                    verify_error: f.verify_error.clone(),
+                })
+                .collect();
+            let files_json: Vec<_> = files_dto.iter().map(file_record_json).collect();
             Json(serde_json::json!({
                 "ok": all_ok,
                 "any_unknown": any_unknown,

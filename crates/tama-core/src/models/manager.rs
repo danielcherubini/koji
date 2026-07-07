@@ -98,7 +98,7 @@ impl ModelManager {
         let mut configs = crate::db::load_model_configs(&self.conn)?;
         if let Some(mc) = configs.get_mut(config_key) {
             mc.enabled = true;
-            let repo_id = crate::db::config_key_to_repo_id(config_key);
+            let repo_id = crate::models::config_key_to_repo_id(config_key);
             let record = mc.to_db_record(&repo_id);
             crate::db::queries::upsert_model_config(&self.conn, &record)?;
         }
@@ -110,7 +110,7 @@ impl ModelManager {
         let mut configs = crate::db::load_model_configs(&self.conn)?;
         if let Some(mc) = configs.get_mut(config_key) {
             mc.enabled = false;
-            let repo_id = crate::db::config_key_to_repo_id(config_key);
+            let repo_id = crate::models::config_key_to_repo_id(config_key);
             let record = mc.to_db_record(&repo_id);
             crate::db::queries::upsert_model_config(&self.conn, &record)?;
         }
@@ -122,7 +122,7 @@ impl ModelManager {
     /// Converts config_key to repo_id, converts ModelConfig → ModelConfigRecord,
     /// sets api_name default, and calls upsert_config.
     pub fn save_model_config(&self, config_key: &str, mc: &ModelConfig) -> Result<i64> {
-        let repo_id = crate::db::config_key_to_repo_id(config_key);
+        let repo_id = crate::models::config_key_to_repo_id(config_key);
         let mut record = mc.to_db_record(&repo_id);
         if record.api_name.as_deref().is_none_or(str::is_empty) {
             record.api_name = Some(repo_id.clone());

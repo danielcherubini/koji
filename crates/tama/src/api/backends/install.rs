@@ -634,17 +634,15 @@ pub async fn remove_backend(
 
     // Clean up update_check records — use LIKE pattern to match all variants
     // (e.g., "llama_cpp:cpu", "llama_cpp:cuda") plus legacy format.
-    if let Ok(open) = tama_core::db::open(&config_dir) {
+    if let Ok(repo) = tama_core::db::repository::Repository::open(&config_dir) {
         let escaped_name = name
             .replace('\\', "\\\\")
             .replace('_', "\\_")
             .replace('%', "\\%");
         let pattern = format!("{}:%", escaped_name);
-        let _ = tama_core::db::queries::delete_update_checks_by_pattern(
-            &open.conn, "backend", &pattern,
-        );
+        let _ = repo.delete_update_checks_by_pattern("backend", &pattern);
         // Also delete legacy format (no variant separator)
-        let _ = tama_core::db::queries::delete_update_check(&open.conn, "backend", &name);
+        let _ = repo.delete_update_check("backend", &name);
     }
 
     Json(DeleteResponse { removed: true }).into_response()

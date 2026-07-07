@@ -16,6 +16,7 @@ use tama_core::backends::{
     check_latest_version, get_backend_install_path, BackendManager, BackendSource, BackendType,
     InstallOptions,
 };
+use tama_core::db::repository::Repository;
 use tama_core::proxy::ProxyState;
 use tama_core::updates::UpdateEvent;
 
@@ -118,13 +119,12 @@ pub async fn get_updates(State(state): State<Arc<ProxyState>>) -> impl IntoRespo
                 // item_id for models is the integer model ID as a string.
                 let display_name = if r.item_type == "model" {
                     r.item_id.parse::<i64>().ok().and_then(|model_id| {
-                        match tama_core::db::open(&config_dir) {
-                            Ok(open) => {
-                                tama_core::db::queries::get_model_config(&open.conn, model_id)
-                                    .ok()
-                                    .flatten()
-                                    .and_then(|m| m.display_name)
-                            }
+                        match Repository::open(&config_dir) {
+                            Ok(repo) => repo
+                                .get_model_config(model_id)
+                                .ok()
+                                .flatten()
+                                .and_then(|m| m.display_name),
                             Err(_) => None,
                         }
                     })
@@ -285,11 +285,10 @@ pub async fn check_single(
             let item_id_clone = item_id.clone();
             let rid_result = tokio::task::spawn_blocking(
                 move || -> anyhow::Result<(Option<i64>, Option<String>)> {
-                    let open = tama_core::db::open(&config_dir_clone)?;
+                    let repo = Repository::open(&config_dir_clone)?;
                     // Convert config_key to repo_id to look up model_id
-                    let repo_id = tama_core::db::config_key_to_repo_id(&item_id_clone);
-                    let record =
-                        tama_core::db::queries::get_model_config_by_repo_id(&open.conn, &repo_id)?;
+                    let repo_id = tama_core::models::config_key_to_repo_id(&item_id_clone);
+                    let record = repo.get_model_config_by_repo_id(&repo_id)?;
                     Ok(record
                         .map(|r| (Some(r.id), Some(r.repo_id.clone())))
                         .unwrap_or((None, None)))
@@ -656,13 +655,14 @@ pub async fn apply_model_update(
     let res_result = tokio::task::spawn_blocking({
         let config_dir = config_dir.clone();
         move || -> anyhow::Result<(String, Vec<(String, String)>)> {
-            let open = tama_core::db::open(&config_dir)?;
-            let model_record = tama_core::db::queries::get_model_config(&open.conn, id)?
+            let repo = Repository::open(&config_dir)?;
+            let model_record = repo
+                .get_model_config(id)?
                 .ok_or_else(|| anyhow::anyhow!("Model not found"))?;
             let repo_id = model_record.repo_id;
 
             // Get model files for this model
-            let model_files = tama_core::db::queries::get_model_files(&open.conn, id)?;
+            let model_files = repo.get_model_files(id)?;
 
             // Filter to only the requested quant keys (where quant column matches).
             // Skip files with NULL/None quant — they won't match any requested key.

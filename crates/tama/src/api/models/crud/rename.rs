@@ -34,27 +34,33 @@ pub async fn rename_model(
     };
 
     spawn_model_crud(state_clone, DEFAULT_CRUD_STATUS, move || {
-        let mgr = tama_core::models::ModelManager::open(&config_dir).map_err(|e| {
+        // Open repository for reading
+        let repo = tama_core::db::repository::Repository::open(&config_dir).map_err(|e| {
             (StatusCode::INTERNAL_SERVER_ERROR, error_body(e.to_string(), None))
         })?;
 
         // Check source ID exists
-        let model_id = resolve_model_id(&id_str, &mgr)
+        let model_id = resolve_model_id(&id_str, &repo)
             .map_err(|e| {
                 (StatusCode::BAD_REQUEST, error_body(e.to_string(), Some("ValidationError")))
             })?
             .ok_or_else(|| {
                 (StatusCode::NOT_FOUND, error_body("Model not found", Some("NotFoundError")))
             })?;
-        let existing_record = mgr
-            .get_config(model_id)
+        let existing_record = repo
+            .get_model_config(model_id)
             .map_err(|e| {
                 (StatusCode::INTERNAL_SERVER_ERROR, error_body(e.to_string(), None))
             })?
             .ok_or_else(|| {
                 (StatusCode::NOT_FOUND, error_body("Model not found", Some("NotFoundError")))
             })?;
-        let mut model_config = tama_core::config::ModelConfig::from_db_record(&existing_record);
+        let mut model_config = tama_core::config::ModelConfig::from_db_record_for_repo(&existing_record);
+
+        // Open manager for writing
+        let mgr = tama_core::models::ModelManager::open(&config_dir).map_err(|e| {
+            (StatusCode::INTERNAL_SERVER_ERROR, error_body(e.to_string(), None))
+        })?;
 
         let new_repo_id = body.new_repo_id.trim().to_string();
         if new_repo_id.is_empty() {

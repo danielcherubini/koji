@@ -1,8 +1,14 @@
 //! Record types for database query results.
+//!
+//! These types are `pub(crate)` — they are implementation details of the
+//! DB layer. The API layer should use DTO types from `db::repository` instead.
 
 use serde::{Deserialize, Serialize};
 
 /// Per-repo user configuration for a model.
+///
+/// This type is `pub` because it's part of `ModelManager`'s public API.
+/// API handlers should prefer Repository methods that return DTOs instead.
 #[derive(Debug, Clone)]
 pub struct ModelConfigRecord {
     pub id: i64,         // auto-increment primary key
@@ -43,7 +49,6 @@ pub struct ModelConfigRecord {
 }
 
 /// A stored pull record for a HuggingFace repo.
-#[derive(Debug, Clone)]
 pub struct ModelPullRecord {
     pub id: i64,         // auto-increment primary key
     pub model_id: i64,   // FK to model_configs.id
@@ -53,6 +58,9 @@ pub struct ModelPullRecord {
 }
 
 /// A stored file record for a downloaded GGUF.
+///
+/// This type is `pub` because it's part of `ModelManager`'s public API.
+/// API handlers should prefer Repository methods that return DTOs instead.
 #[derive(Debug, Clone)]
 pub struct ModelFileRecord {
     pub id: i64,         // auto-increment primary key
@@ -74,7 +82,6 @@ pub struct ModelFileRecord {
 }
 
 /// An entry in the download log (append-only).
-#[derive(Debug, Clone)]
 pub struct DownloadLogEntry {
     pub repo_id: String,
     pub filename: String,
@@ -87,7 +94,6 @@ pub struct DownloadLogEntry {
 }
 
 /// An active model entry tracking a running backend process.
-#[derive(Debug, Clone)]
 pub struct ActiveModelRecord {
     pub server_name: String,
     pub model_name: String,
@@ -100,7 +106,6 @@ pub struct ActiveModelRecord {
 }
 
 /// TTS engine configuration record.
-#[derive(Debug, Clone)]
 pub struct TtsConfigRecord {
     pub id: i64,        // auto-increment primary key
     pub engine: String, // TTS engine name (e.g., 'kokoro')
@@ -113,7 +118,6 @@ pub struct TtsConfigRecord {
 }
 
 /// A stored update check record for a backend or model.
-#[derive(Debug, Clone)]
 pub struct UpdateCheckRecord {
     pub item_type: String, // "backend" or "model"
     pub item_id: String,   // backend name or model config key
@@ -128,7 +132,8 @@ pub struct UpdateCheckRecord {
 
 /// A model alias record — maps a friendly name to a model config.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModelAliasRecord {
+#[allow(dead_code)]
+pub(crate) struct ModelAliasRecord {
     pub id: i64,
     pub name: String,
     pub model_id: i64,

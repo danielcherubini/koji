@@ -189,8 +189,8 @@ pub async fn list_benchmark_history(State(_state): State<Arc<ProxyState>>) -> im
     };
 
     let entries = match tokio::task::spawn_blocking(move || {
-        let tama_core::db::OpenResult { conn, .. } = tama_core::db::open(&db_dir)?;
-        tama_core::db::queries::list_benchmarks(&conn)
+        let repo = tama_core::db::repository::Repository::open(&db_dir)?;
+        repo.list_benchmarks()
     })
     .await
     {
@@ -305,8 +305,8 @@ pub async fn delete_benchmark(
     };
 
     match tokio::task::spawn_blocking(move || {
-        let tama_core::db::OpenResult { conn, .. } = tama_core::db::open(&db_dir)?;
-        tama_core::db::queries::delete_benchmark(&conn, id)
+        let repo = tama_core::db::repository::Repository::open(&db_dir)?;
+        repo.delete_benchmark(id)
     })
     .await
     {

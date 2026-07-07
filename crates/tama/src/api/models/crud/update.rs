@@ -33,14 +33,16 @@ pub async fn update_model(
     };
 
     spawn_model_crud(state_clone, DEFAULT_CRUD_STATUS, move || {
-        // Load existing from DB
-        let mgr = tama_core::models::ModelManager::open(&config_dir).map_err(|e| {
+        // Open repository for reading
+        let repo = tama_core::db::repository::Repository::open(&config_dir).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 error_body(e.to_string(), None),
             )
         })?;
-        let model_id = resolve_model_id(&id_str, &mgr)
+
+        // Load existing from DB
+        let model_id = resolve_model_id(&id_str, &repo)
             .map_err(|e| {
                 (
                     StatusCode::BAD_REQUEST,
@@ -53,8 +55,8 @@ pub async fn update_model(
                     error_body("Model not found", Some("NotFoundError")),
                 )
             })?;
-        let existing_record = mgr
-            .get_config(model_id)
+        let existing_record = repo
+            .get_model_config(model_id)
             .map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -67,7 +69,15 @@ pub async fn update_model(
                     error_body("Model not found", Some("NotFoundError")),
                 )
             })?;
-        let existing = tama_core::config::ModelConfig::from_db_record(&existing_record);
+        let existing = tama_core::config::ModelConfig::from_db_record_for_repo(&existing_record);
+
+        // Open manager for writing
+        let mgr = tama_core::models::ModelManager::open(&config_dir).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error_body(e.to_string(), None),
+            )
+        })?;
 
         let updated_config = apply_model_body(body, Some(existing));
 
