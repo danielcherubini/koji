@@ -42,10 +42,23 @@ pub(super) fn find_latest_stable_release(releases: &[GithubRelease]) -> Result<S
 /// For llama.cpp: uses /releases to filter out pre-release tags.
 /// For ik_llama: uses the latest commit on main, since ik_llama doesn't
 /// publish proper releases (only a single stale pre-release tag).
-pub async fn check_latest_version(backend: &BackendType) -> Result<String> {
-    let client = Client::builder()
-        .user_agent("tama-backend-manager")
-        .build()?;
+///
+/// Accepts optional `reqwest::Client` and `base_url` for dependency injection
+/// (testing). When `None`, creates a default client and uses the real
+/// GitHub API URL.
+pub async fn check_latest_version(
+    backend: &BackendType,
+    client: Option<Client>,
+    base_url: Option<&str>,
+) -> Result<String> {
+    let client = match client {
+        Some(c) => c,
+        None => Client::builder()
+            .user_agent("tama-backend-manager")
+            .build()
+            .context("Failed to create HTTP client for version check")?,
+    };
+    let base_url = base_url.unwrap_or("https://api.github.com");
 
     let token = github_token();
 
@@ -54,8 +67,11 @@ pub async fn check_latest_version(backend: &BackendType) -> Result<String> {
             // Use /releases endpoint to filter out pre-release tags.
             // GitHub's /releases/latest may return a pre-release, which is
             // not what we want for stable version checks.
-            let url = "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=100";
-            let mut request = client.get(url);
+            let url = format!(
+                "{}/repos/ggml-org/llama.cpp/releases?per_page=100",
+                base_url
+            );
+            let mut request = client.get(&url);
             if let Some(t) = token.as_deref() {
                 request = request.header("Authorization", format!("Bearer {}", t));
             }
@@ -70,8 +86,8 @@ pub async fn check_latest_version(backend: &BackendType) -> Result<String> {
         BackendType::IkLlama => {
             // ik_llama doesn't publish proper releases — their only release tag
             // is a stale pre-release. Use the latest commit SHA on main instead.
-            let url = "https://api.github.com/repos/ikawrakow/ik_llama.cpp/commits/main";
-            let mut request = client.get(url);
+            let url = format!("{}/repos/ikawrakow/ik_llama.cpp/commits/main", base_url);
+            let mut request = client.get(&url);
             if let Some(t) = token.as_deref() {
                 request = request.header("Authorization", format!("Bearer {}", t));
             }
@@ -113,7 +129,7 @@ pub struct UpdateCheck {
 }
 
 pub async fn check_updates(backend_info: &BackendInfo) -> Result<UpdateCheck> {
-    let latest = check_latest_version(&backend_info.backend_type).await?;
+    let latest = check_latest_version(&backend_info.backend_type, None, None).await?;
 
     Ok(UpdateCheck {
         current_version: backend_info.version.clone(),
@@ -148,7 +164,7 @@ pub async fn update_backend_with_progress(
     // Resolve "latest" to actual tag before storing in registry
     let resolved_version = if latest_version.to_lowercase() == "latest" {
         // Fetch the actual latest tag
-        let actual_latest = check_latest_version(&backend_type).await?;
+        let actual_latest = check_latest_version(&backend_type, None, None).await?;
         tracing::info!("Resolved 'latest' to actual tag: {}", actual_latest);
         actual_latest
     } else {
@@ -209,6 +225,8 @@ pub fn supports_update_check(backend_type: &BackendType) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     // ── is_rate_limited tests ─────────────────────────────────────────────
 
@@ -368,5 +386,141 @@ mod tests {
         }];
         let result = find_latest_stable_release(&releases).unwrap();
         assert_eq!(result, "v1.0.0");
+    }
+
+    // ── check_latest_version wiremock tests ───────────────────────────────
+
+    /// Test that `check_latest_version` correctly parses a GitHub releases
+    /// response and returns the latest stable tag when using a wiremock server.
+    #[tokio::test]
+    async fn test_check_latest_version_llamacpp_with_wiremock() {
+        let server = MockServer::start().await;
+
+        let releases_json = serde_json::json!([
+            // GitHub returns releases sorted by creation date (newest first)
+            {
+                "tag_name": "v1.0.0",
+                "prerelease": false
+            },
+            {
+                "tag_name": "v1.0.0-rc1",
+                "prerelease": true
+            },
+            {
+                "tag_name": "v0.9.0",
+                "prerelease": false
+            }
+        ]);
+
+        Mock::given(method("GET"))
+            .and(path("/repos/ggml-org/llama.cpp/releases"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&releases_json))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::builder()
+            .user_agent("tama-backend-manager")
+            .build()
+            .unwrap();
+
+        let result =
+            check_latest_version(&BackendType::LlamaCpp, Some(client), Some(&server.uri()))
+                .await
+                .unwrap();
+
+        assert_eq!(result, "v1.0.0");
+    }
+
+    /// Test that `check_latest_version` returns the latest stable tag when
+    /// all releases are pre-releases (should error).
+    #[tokio::test]
+    async fn test_check_latest_version_all_prereleases_with_wiremock() {
+        let server = MockServer::start().await;
+
+        let releases_json = serde_json::json!([
+            {
+                "tag_name": "v2.0.0-alpha",
+                "prerelease": true
+            },
+            {
+                "tag_name": "v2.0.0-beta",
+                "prerelease": true
+            }
+        ]);
+
+        Mock::given(method("GET"))
+            .and(path("/repos/ggml-org/llama.cpp/releases"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&releases_json))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::builder()
+            .user_agent("tama-backend-manager")
+            .build()
+            .unwrap();
+
+        let result =
+            check_latest_version(&BackendType::LlamaCpp, Some(client), Some(&server.uri())).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("No stable"));
+    }
+
+    /// Test that `check_latest_version` returns the latest stable tag when
+    /// a pre-release is followed by a stable release (releases sorted by date).
+    #[tokio::test]
+    async fn test_check_latest_version_prerelease_before_stable() {
+        let server = MockServer::start().await;
+
+        let releases_json = serde_json::json!([
+            {
+                "tag_name": "v1.1.0-rc1",
+                "prerelease": true
+            },
+            {
+                "tag_name": "v1.0.0",
+                "prerelease": false
+            }
+        ]);
+
+        Mock::given(method("GET"))
+            .and(path("/repos/ggml-org/llama.cpp/releases"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&releases_json))
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::builder()
+            .user_agent("tama-backend-manager")
+            .build()
+            .unwrap();
+
+        let result =
+            check_latest_version(&BackendType::LlamaCpp, Some(client), Some(&server.uri()))
+                .await
+                .unwrap();
+
+        assert_eq!(result, "v1.0.0");
+    }
+
+    /// Test that `check_latest_version` returns an error for unsupported
+    /// backend types (TtsKokoro, Compaction, Custom).
+    #[tokio::test]
+    async fn test_check_latest_version_unsupported_backend() {
+        let result = check_latest_version(&BackendType::TtsKokoro, None, None).await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Cannot check updates"));
+    }
+
+    /// Test that `check_latest_version` returns an error for custom backends.
+    #[tokio::test]
+    async fn test_check_latest_version_custom_backend() {
+        let result = check_latest_version(&BackendType::Custom, None, None).await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Cannot check updates"));
     }
 }

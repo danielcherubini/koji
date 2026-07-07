@@ -64,8 +64,12 @@ pub async fn install_backend_with_progress(
                     "Resolving 'latest' version tag for {:?}",
                     options.backend_type
                 );
-                let tag =
-                    crate::backends::updater::check_latest_version(&options.backend_type).await?;
+                let tag = crate::backends::updater::check_latest_version(
+                    &options.backend_type,
+                    None,
+                    None,
+                )
+                .await?;
                 tracing::info!(
                     target: "tama_core::backends::installer",
                     "Resolved 'latest' -> {}",

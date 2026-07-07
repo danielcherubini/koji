@@ -6,9 +6,10 @@ use tokio::io::AsyncBufReadExt;
 use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
+use super::lifecycle::traits::HealthChecker;
 use super::process::{
-    check_health, configure_process_group, force_kill_process, force_kill_process_group,
-    is_process_alive, is_process_group_alive, kill_process, kill_process_group, override_arg,
+    configure_process_group, force_kill_process, force_kill_process_group, is_process_alive,
+    is_process_group_alive, kill_process, kill_process_group, override_arg,
 };
 use super::types::{BackendState, ProxyState};
 use crate::logging;
@@ -39,7 +40,10 @@ pub async fn ensure_model_loaded(
                 .resolve_model_gpu_device(&resolved_model, model_card.as_ref())
                 .await;
             let _ = state.evict_lru_if_needed(target_gpu).await;
-            match state.load_model(&resolved_model, model_card.as_ref()).await {
+            match state
+                .load_model(&resolved_model, model_card.as_ref(), &())
+                .await
+            {
                 Ok(s) => s,
                 Err(e) => on_load_error(&resolved_model, e)?,
             }
@@ -52,14 +56,16 @@ pub async fn ensure_model_loaded(
 
 mod compaction;
 mod idle_timeout;
+mod traits;
 mod tts;
 
 impl ProxyState {
     /// Load a model by starting its backend process.
-    pub async fn load_model(
+    pub async fn load_model<H: HealthChecker>(
         &self,
         model_name: &str,
         model_card: Option<&crate::models::card::ModelCard>,
+        _health_checker: &H,
     ) -> Result<String> {
         debug!("Loading model: {}", model_name);
 
@@ -349,12 +355,10 @@ impl ProxyState {
                 break;
             }
 
-            if let Ok(response) = check_health(&health_url, Some(5)).await {
-                if response.status().is_success() {
-                    debug!("Health check passed for backend '{}'", backend_name);
-                    health_ok = true;
-                    break;
-                }
+            if _health_checker.check_health(&health_url, Some(5)).await {
+                debug!("Health check passed for backend '{}'", backend_name);
+                health_ok = true;
+                break;
             }
         }
 

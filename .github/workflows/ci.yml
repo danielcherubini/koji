@@ -22,22 +22,32 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
 
-      - name: Install system dependencies (libclang for TTS native deps)
-        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+      - name: Install system dependencies (libclang for TTS native deps, mold linker)
+        run: sudo apt-get update && sudo apt-get install -y libclang-dev mold
 
-      # Cache only dependency sources (no index, no debug artifacts).
-      # Registry index is ~200 MB of plain-text git repos that re-downloads fast.
-      # Debug target dirs are ephemeral and waste cache space — release key auto-evicts old caches.
-      - name: Cache cargo dependencies
+      - name: Cache cargo registry
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry/cache
             ~/.cargo/git/db
-            target/release
-          key: ${{ runner.os }}-cargo-deps-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys:
-            ${{ runner.os }}-cargo-deps-
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-registry-
+
+      - name: Cache sccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/sccache
+          key: ${{ runner.os }}-sccache-${{ github.run_id }}
+          restore-keys: ${{ runner.os }}-sccache-
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
 
       - name: Add wasm32 target
         run: rustup target add wasm32-unknown-unknown
@@ -68,4 +78,9 @@ jobs:
         run: cargo clippy --package tama --features ssr --all-targets -- -D warnings
 
       - name: Run tests (workspace)
-        run: cargo test --workspace -- --nocapture
+        env:
+          RUSTC_WRAPPER: sccache
+        run: cargo nextest run --workspace
+
+      - name: Run sccache stats
+        run: sccache --show-stats

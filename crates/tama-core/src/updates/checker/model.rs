@@ -128,7 +128,7 @@ impl UpdateChecker {
 
         // Phase 2 — ASYNC: fetch remote state (conn not referenced after this point)
         // Check cache before making network call to list_gguf_files
-        let remote_listing = match self.gguf_listing_cache.get(repo_id).await {
+        let remote_listing = match self.gguf_listing_cache.get(repo_id, None).await {
             Some((cached_sha, cached_files)) => {
                 tracing::debug!("GGUF listing cache hit for '{}'", repo_id);
                 // Use cached file list — no extra fetch needed; LFS hashes don't change for the same commit
@@ -148,6 +148,7 @@ impl UpdateChecker {
                         repo_id.to_string(),
                         listing.commit_sha.clone(),
                         listing.files.clone(),
+                        None,
                     )
                     .await;
                 listing

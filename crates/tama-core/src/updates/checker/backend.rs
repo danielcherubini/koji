@@ -45,7 +45,7 @@ impl UpdateChecker {
         // Async: Check latest version from network
         let latest_version = match backend_type {
             BackendType::LlamaCpp | BackendType::IkLlama => {
-                match check_latest_version(backend_type).await {
+                match check_latest_version(backend_type, None, None).await {
                     Ok(v) => Some(v),
                     Err(e) => {
                         self.save_check_result(

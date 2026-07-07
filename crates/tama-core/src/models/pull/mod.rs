@@ -72,7 +72,7 @@ pub(crate) async fn hf_api() -> Result<&'static Api> {
 }
 
 /// Information about a GGUF file in a HuggingFace repo.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RemoteGguf {
     /// Filename, e.g. "OmniCoder-8B-Q4_K_M.gguf"
     pub filename: String,
