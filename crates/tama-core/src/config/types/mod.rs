@@ -265,7 +265,7 @@ fn is_btreemap_empty<K, V>(map: &BTreeMap<K, V>) -> bool {
     map.is_empty()
 }
 
-pub fn default_enabled() -> bool {
+fn default_enabled() -> bool {
     true
 }
 

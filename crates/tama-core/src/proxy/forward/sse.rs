@@ -8,7 +8,7 @@ use super::stats::extract_inference_stats;
 /// If `inference_stats` is provided, also extracts `timings` from parsed JSON
 /// and updates the per-backend HashMap in the watch channel (streaming responses
 /// include timings in a final data chunk before `[DONE]`).
-pub(crate) fn process_sse_line(
+pub(super) fn process_sse_line(
     line: &str,
     model_name: Option<&str>,
     backend_name: &str,

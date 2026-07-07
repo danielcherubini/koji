@@ -1,7 +1,7 @@
 use crate::config::defaults;
 use serde::{Deserialize, Serialize};
 
-/// Top-level application configuration.
+/// General (non-backend) application settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct General {
     pub log_level: String,

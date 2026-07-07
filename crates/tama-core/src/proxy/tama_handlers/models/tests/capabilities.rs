@@ -4,8 +4,7 @@ use wiremock::Mock;
 use wiremock::MockServer;
 use wiremock::ResponseTemplate;
 
-use crate::proxy::tama_handlers::models::extract_capabilities;
-use crate::proxy::tama_handlers::models::fetch_capabilities_from_backend;
+use super::super::opencode::{extract_capabilities, fetch_capabilities_from_backend};
 
 /// Valid response with supports_tool_calls: true → (true, false)
 #[test]

@@ -105,7 +105,7 @@ pub async fn handle_opencode_list_models(state: State<Arc<ProxyState>>) -> Json<
 
 /// Extract capability flags from a /props response body.
 /// Returns (tool_call, reasoning) tuple. Defaults to (true, false) on any error.
-pub fn extract_capabilities(body: &[u8]) -> (bool, bool) {
+pub(super) fn extract_capabilities(body: &[u8]) -> (bool, bool) {
     let value = match serde_json::from_slice::<serde_json::Value>(body) {
         Ok(v) => v,
         Err(_) => return (true, false),
@@ -149,7 +149,7 @@ pub fn extract_capabilities(body: &[u8]) -> (bool, bool) {
 
 /// Query a single backend's /props endpoint and extract capability flags.
 /// Returns (tool_call, reasoning) tuple. Defaults to (true, false) on any error.
-pub async fn fetch_capabilities_from_backend(
+pub(super) async fn fetch_capabilities_from_backend(
     client: &reqwest::Client,
     backend_url: &str,
 ) -> (bool, bool) {

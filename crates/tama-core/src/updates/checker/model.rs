@@ -1,4 +1,6 @@
-use super::{UpdateChecker, UpdateEvent};
+use super::UpdateChecker;
+#[cfg(feature = "web-ui")]
+use super::UpdateEvent;
 use crate::db;
 use crate::db::queries::get_model_pull;
 use crate::models::pull;

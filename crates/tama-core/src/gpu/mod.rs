@@ -16,7 +16,7 @@ pub use detect::{
     GpuType, DEFAULT_CUDA_VERSION,
 };
 pub use discover::{discover_devices_via_binary, parse_llama_list_devices_output, GpuDeviceInfo};
-pub use system::{collect_system_metrics, collect_system_metrics_with, detect_gpu_devices};
+pub use system::{collect_system_metrics, collect_system_metrics_with};
 pub use types::{
     GpuDeviceStats, MetricBucket, MetricCurrent, MetricSample, MetricsSnapshot, ModelStatus,
     SystemMetrics,

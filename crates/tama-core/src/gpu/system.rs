@@ -7,7 +7,7 @@ use super::vram::VramInfo;
 
 /// Sort devices by (vendor, device_index) and assign position-based IDs (GPU0, GPU1, ...).
 /// Extracted so it can be tested without subprocesses.
-pub(crate) fn assign_position_ids(gpus: &mut [GpuDeviceStats]) {
+pub(super) fn assign_position_ids(gpus: &mut [GpuDeviceStats]) {
     gpus.sort_by(|a, b| {
         let extract_index = |id: &str| {
             let numeric_part: String = id.chars().skip_while(|c| c.is_alphabetic()).collect();
@@ -81,7 +81,7 @@ pub fn collect_system_metrics() -> SystemMetrics {
 
 /// Compute the mean utilization across all GPU devices.
 /// Only counts devices with a non-None utilization.
-pub(crate) fn aggregate_utilization_mean(devices: &[GpuDeviceStats]) -> Option<u8> {
+pub(super) fn aggregate_utilization_mean(devices: &[GpuDeviceStats]) -> Option<u8> {
     let values: Vec<u8> = devices.iter().filter_map(|d| d.utilization_pct).collect();
     if values.is_empty() {
         return None;
@@ -92,7 +92,7 @@ pub(crate) fn aggregate_utilization_mean(devices: &[GpuDeviceStats]) -> Option<u
 
 /// Sum VRAM across all GPU devices.
 /// Only sums devices with non-None vram.
-pub(crate) fn aggregate_vram_sum(devices: &[GpuDeviceStats]) -> Option<VramInfo> {
+pub(super) fn aggregate_vram_sum(devices: &[GpuDeviceStats]) -> Option<VramInfo> {
     let vrams: Vec<&VramInfo> = devices.iter().filter_map(|d| d.vram.as_ref()).collect();
     if vrams.is_empty() {
         return None;

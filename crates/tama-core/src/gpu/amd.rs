@@ -9,15 +9,15 @@ use super::vram::VramInfo;
 /// to avoid spawning rocm-smi on every metrics tick.
 /// Uses PCI bus (e.g. "0000:03:00.0") as the key since sysfs card numbers
 /// may not match rocm-smi's card indices.
-pub(crate) static AMD_DEVICE_NAMES: OnceLock<HashMap<String, String>> = OnceLock::new();
+static AMD_DEVICE_NAMES: OnceLock<HashMap<String, String>> = OnceLock::new();
 
 /// Cached map of PCI bus address → GPU hardware UUID from rocm-smi.
 /// Populated on first call to `query_amd_device_uuids` and reused thereafter.
-pub(crate) static AMD_DEVICE_UUIDS: OnceLock<HashMap<String, String>> = OnceLock::new();
+static AMD_DEVICE_UUIDS: OnceLock<HashMap<String, String>> = OnceLock::new();
 
 /// Query rocm-smi for GPU product names and cache the result.
 /// Returns a map of PCI bus address (e.g. "0000:03:00.0") → product name (e.g. "Radeon AI PRO R9700").
-pub(crate) fn query_amd_device_names() -> HashMap<String, String> {
+fn query_amd_device_names() -> HashMap<String, String> {
     AMD_DEVICE_NAMES
         .get_or_init(|| {
             let output = std::process::Command::new("rocm-smi")
@@ -66,7 +66,7 @@ pub(crate) fn query_amd_device_names() -> HashMap<String, String> {
 /// the UUID and hides all devices → "no ROCm-capable device is detected".
 ///
 /// Values already in `GPU-...` format pass through unchanged.
-pub(crate) fn normalize_amd_uuid(raw: &str) -> String {
+pub(super) fn normalize_amd_uuid(raw: &str) -> String {
     if let Some(hex) = raw.strip_prefix("0x") {
         format!("GPU-{hex}")
     } else {
@@ -76,7 +76,7 @@ pub(crate) fn normalize_amd_uuid(raw: &str) -> String {
 
 /// Query rocm-smi for GPU hardware UUIDs and cache the result.
 /// Returns a map of PCI bus address (e.g. "0000:03:00.0") → UUID (e.g. "GPU-b3780db0a262809e").
-pub(crate) fn query_amd_device_uuids() -> HashMap<String, String> {
+fn query_amd_device_uuids() -> HashMap<String, String> {
     AMD_DEVICE_UUIDS
         .get_or_init(|| {
             let output = std::process::Command::new("rocm-smi")
@@ -116,7 +116,7 @@ pub(crate) fn query_amd_device_uuids() -> HashMap<String, String> {
 
 /// Query all AMD GPU devices via sysfs.
 /// Returns one `GpuDeviceStats` per detected GPU card.
-pub(crate) fn query_amd_devices() -> Vec<GpuDeviceStats> {
+pub(super) fn query_amd_devices() -> Vec<GpuDeviceStats> {
     let pattern = "/sys/class/drm/card*/device";
     let Ok(paths) = glob::glob(pattern) else {
         return vec![];

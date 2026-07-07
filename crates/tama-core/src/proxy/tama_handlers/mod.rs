@@ -1,5 +1,5 @@
 pub mod backend_logs;
-pub mod models;
+mod models;
 mod pull;
 mod system;
 mod types;

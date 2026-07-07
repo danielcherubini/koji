@@ -7,7 +7,7 @@ use super::vram::VramInfo;
 /// `index,name,uuid,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,fan.speed`
 ///
 /// Returns `None` if the line is malformed or fields cannot be parsed.
-pub(crate) fn parse_nvidia_smi_csv_line(line: &str) -> Option<GpuDeviceStats> {
+pub(super) fn parse_nvidia_smi_csv_line(line: &str) -> Option<GpuDeviceStats> {
     let parts: Vec<&str> = line.split(",").collect();
     if parts.len() != 9 {
         return None;
@@ -46,7 +46,7 @@ pub(crate) fn parse_nvidia_smi_csv_line(line: &str) -> Option<GpuDeviceStats> {
 
 /// Query all NVIDIA GPU devices via nvidia-smi.
 /// Returns one `GpuDeviceStats` per detected GPU.
-pub(crate) fn query_nvidia_devices() -> Vec<GpuDeviceStats> {
+pub(super) fn query_nvidia_devices() -> Vec<GpuDeviceStats> {
     let output = std::process::Command::new("nvidia-smi")
         .args([
             "--query-gpu=index,name,uuid,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,fan.speed",

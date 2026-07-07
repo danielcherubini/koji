@@ -46,7 +46,7 @@ pub fn generate_display_name(hf_repo: &str) -> String {
 /// by the `COLLATE NOCASE` migration on `model_configs.repo_id`: the in-memory
 /// HashMap is keyed by the lowercased repo_id, so a repo id in any case
 /// resolves to the same bucket.
-pub(crate) async fn resolve_model_id(state: &ProxyState, raw: &str) -> String {
+pub(super) async fn resolve_model_id(state: &ProxyState, raw: &str) -> String {
     if let Ok(id) = raw.parse::<i64>() {
         let configs = state.model_configs.read().await;
         if let Some((key, _)) = configs.iter().find(|(_, c)| c.db_id == Some(id)) {
@@ -60,7 +60,7 @@ pub(crate) async fn resolve_model_id(state: &ProxyState, raw: &str) -> String {
 }
 
 /// Build a model JSON entry from a config entry.
-pub(crate) async fn build_model_entry(
+pub(super) async fn build_model_entry(
     state: &ProxyState,
     id: &str,
     cfg: &crate::config::ModelConfig,

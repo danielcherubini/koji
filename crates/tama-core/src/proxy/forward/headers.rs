@@ -1,7 +1,7 @@
 use axum::http::HeaderMap;
 
 /// Hop-by-hop headers that should be stripped from forwarded requests.
-pub const REQUEST_SKIP_HEADERS: &[&str] = &[
+const REQUEST_SKIP_HEADERS: &[&str] = &[
     "connection",
     "keep-alive",
     "proxy-authenticate",
@@ -14,7 +14,7 @@ pub const REQUEST_SKIP_HEADERS: &[&str] = &[
 ];
 
 /// Hop-by-hop headers (plus content-length) that should be stripped from forwarded responses.
-pub const RESPONSE_SKIP_HEADERS: &[&str] = &[
+const RESPONSE_SKIP_HEADERS: &[&str] = &[
     "connection",
     "keep-alive",
     "proxy-authenticate",
