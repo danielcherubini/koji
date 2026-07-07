@@ -1,7 +1,12 @@
+pub mod amd;
 pub mod detect;
 pub mod discover;
 pub mod env;
+pub mod nvidia;
 pub mod system;
+#[cfg(test)]
+mod tests;
+pub mod types;
 pub mod vram;
 
 // Re-export all public items for backward compatibility
@@ -11,8 +16,9 @@ pub use detect::{
     GpuType, DEFAULT_CUDA_VERSION,
 };
 pub use discover::{discover_devices_via_binary, parse_llama_list_devices_output, GpuDeviceInfo};
-pub use system::{
-    collect_system_metrics, collect_system_metrics_with, GpuDeviceStats, MetricBucket,
-    MetricCurrent, MetricSample, MetricsSnapshot, ModelStatus, SystemMetrics,
+pub use system::{collect_system_metrics, collect_system_metrics_with};
+pub use types::{
+    GpuDeviceStats, MetricBucket, MetricCurrent, MetricSample, MetricsSnapshot, ModelStatus,
+    SystemMetrics,
 };
 pub use vram::{query_vram, query_vram_per_device, VramInfo};
