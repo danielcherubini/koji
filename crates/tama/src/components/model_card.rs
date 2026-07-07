@@ -8,6 +8,7 @@ use leptos::prelude::*;
 use leptos_router::components::A;
 
 use crate::components::list_card::ListCard;
+use crate::gpu_types::ModelState;
 
 // ── Inline SVG helpers ───────────────────────────────────────────────────────
 
@@ -65,24 +66,24 @@ pub(crate) struct ModelPips {
 
 /// CSS class string used for the per-model status badge.
 /// Maps lifecycle states to colour classes.
-pub(crate) fn model_status_badge_class(state: &tama_core::gpu::ModelState) -> &'static str {
+pub(crate) fn model_status_badge_class(state: &ModelState) -> &'static str {
     match state {
-        tama_core::gpu::ModelState::Ready => "badge badge-success",
-        tama_core::gpu::ModelState::Loading => "badge badge-info",
-        tama_core::gpu::ModelState::Unloading => "badge badge-warning",
-        tama_core::gpu::ModelState::Failed => "badge badge-error",
-        tama_core::gpu::ModelState::Idle => "badge badge-muted",
+        ModelState::Ready => "badge badge-success",
+        ModelState::Loading => "badge badge-info",
+        ModelState::Unloading => "badge badge-warning",
+        ModelState::Failed => "badge badge-error",
+        ModelState::Idle => "badge badge-muted",
     }
 }
 
 /// Human-readable label that pairs with [`model_status_badge_class`].
-pub(crate) fn model_status_badge_label(state: &tama_core::gpu::ModelState) -> &'static str {
+pub(crate) fn model_status_badge_label(state: &ModelState) -> &'static str {
     match state {
-        tama_core::gpu::ModelState::Ready => "Loaded",
-        tama_core::gpu::ModelState::Loading => "Loading",
-        tama_core::gpu::ModelState::Unloading => "Unloading",
-        tama_core::gpu::ModelState::Failed => "Failed",
-        tama_core::gpu::ModelState::Idle => "Idle",
+        ModelState::Ready => "Loaded",
+        ModelState::Loading => "Loading",
+        ModelState::Unloading => "Unloading",
+        ModelState::Failed => "Failed",
+        ModelState::Idle => "Idle",
     }
 }
 
@@ -90,24 +91,24 @@ pub(crate) fn model_status_badge_label(state: &tama_core::gpu::ModelState) -> &'
 /// Ready models render an "Unload" button (btn-danger),
 /// loading/unloading show muted buttons,
 /// idle shows a "Load" button (btn-success).
-pub(crate) fn model_action_button_class(state: &tama_core::gpu::ModelState) -> &'static str {
+pub(crate) fn model_action_button_class(state: &ModelState) -> &'static str {
     match state {
-        tama_core::gpu::ModelState::Ready => "btn btn-danger btn-sm",
-        tama_core::gpu::ModelState::Loading => "btn btn-secondary btn-sm",
-        tama_core::gpu::ModelState::Unloading => "btn btn-secondary btn-sm",
-        tama_core::gpu::ModelState::Failed => "btn btn-warning btn-sm",
-        tama_core::gpu::ModelState::Idle => "btn btn-success btn-sm",
+        ModelState::Ready => "btn btn-danger btn-sm",
+        ModelState::Loading => "btn btn-secondary btn-sm",
+        ModelState::Unloading => "btn btn-secondary btn-sm",
+        ModelState::Failed => "btn btn-warning btn-sm",
+        ModelState::Idle => "btn btn-success btn-sm",
     }
 }
 
 /// Human-readable label that pairs with [`model_action_button_class`].
-pub(crate) fn model_action_button_label(state: &tama_core::gpu::ModelState) -> &'static str {
+pub(crate) fn model_action_button_label(state: &ModelState) -> &'static str {
     match state {
-        tama_core::gpu::ModelState::Ready => "Unload",
-        tama_core::gpu::ModelState::Loading => "Loading…",
-        tama_core::gpu::ModelState::Unloading => "Unloading…",
-        tama_core::gpu::ModelState::Failed => "Retry",
-        tama_core::gpu::ModelState::Idle => "Load",
+        ModelState::Ready => "Unload",
+        ModelState::Loading => "Loading…",
+        ModelState::Unloading => "Unloading…",
+        ModelState::Failed => "Retry",
+        ModelState::Idle => "Load",
     }
 }
 
@@ -131,16 +132,13 @@ pub(crate) fn format_context_length(n: u32) -> String {
 /// When `state` is not Idle, returns it as-is.
 /// When `state` is Idle: `loaded == Some(true)` → `Ready`, otherwise → `Idle`.
 /// This preserves the models page's existing `loaded` boolean fallback behavior.
-pub(crate) fn resolve_state(
-    state: &tama_core::gpu::ModelState,
-    loaded: Option<bool>,
-) -> tama_core::gpu::ModelState {
-    if !matches!(state, tama_core::gpu::ModelState::Idle) {
+pub(crate) fn resolve_state(state: &ModelState, loaded: Option<bool>) -> ModelState {
+    if !matches!(state, ModelState::Idle) {
         return state.clone();
     }
     match loaded {
-        Some(true) => tama_core::gpu::ModelState::Ready,
-        _ => tama_core::gpu::ModelState::Idle,
+        Some(true) => ModelState::Ready,
+        _ => ModelState::Idle,
     }
 }
 
@@ -201,7 +199,7 @@ pub fn ModelCard(
     #[prop(default = ModelPips::default())] pips: ModelPips,
     backend: String,
     log_source: Option<String>,
-    state: tama_core::gpu::ModelState,
+    state: ModelState,
     #[prop(default = None)] loaded: Option<bool>,
     #[prop(default = None)] enabled: Option<bool>,
     #[prop(default = None)] error_message: Option<String>,
@@ -220,29 +218,19 @@ pub fn ModelCard(
 
     // Map effective_state to ListCard state
     let card_state: Option<ReadSignal<Option<String>>> = match effective_state {
-        tama_core::gpu::ModelState::Ready => {
-            Some(RwSignal::new(Some("ready".to_string())).read_only())
-        }
-        tama_core::gpu::ModelState::Loading => {
-            Some(RwSignal::new(Some("loading".to_string())).read_only())
-        }
-        tama_core::gpu::ModelState::Unloading => {
-            Some(RwSignal::new(Some("unloading".to_string())).read_only())
-        }
-        tama_core::gpu::ModelState::Failed => {
-            Some(RwSignal::new(Some("failed".to_string())).read_only())
-        }
-        tama_core::gpu::ModelState::Idle => None, // idle → no state class (default gray strip)
+        ModelState::Ready => Some(RwSignal::new(Some("ready".to_string())).read_only()),
+        ModelState::Loading => Some(RwSignal::new(Some("loading".to_string())).read_only()),
+        ModelState::Unloading => Some(RwSignal::new(Some("unloading".to_string())).read_only()),
+        ModelState::Failed => Some(RwSignal::new(Some("failed".to_string())).read_only()),
+        ModelState::Idle => None, // idle → no state class (default gray strip)
     };
 
     // Determine action button to show
-    let is_ready = matches!(effective_state, tama_core::gpu::ModelState::Ready);
-    let is_loading_or_unloading = matches!(
-        effective_state,
-        tama_core::gpu::ModelState::Loading | tama_core::gpu::ModelState::Unloading
-    );
-    let is_loading = matches!(effective_state, tama_core::gpu::ModelState::Loading);
-    let is_failed = matches!(effective_state, tama_core::gpu::ModelState::Failed);
+    let is_ready = matches!(effective_state, ModelState::Ready);
+    let is_loading_or_unloading =
+        matches!(effective_state, ModelState::Loading | ModelState::Unloading);
+    let is_loading = matches!(effective_state, ModelState::Loading);
+    let is_failed = matches!(effective_state, ModelState::Failed);
 
     // Build edit URL — use db_id when Some, fall back to id string
     let edit_id = if let Some(db_id_val) = db_id {
@@ -362,7 +350,7 @@ pub fn ModelCard(
                 }}
                 // Error message for failed models
                 {if let Some(ref err) = error_message_clone {
-                    if matches!(effective_state_clone, tama_core::gpu::ModelState::Failed) {
+                    if matches!(effective_state_clone, ModelState::Failed) {
                         view! {
                             <div class="model-row__error">"Error: " {err.clone()}</div>
                         }.into_any()
@@ -486,7 +474,7 @@ mod tests {
     #[test]
     fn test_model_status_badge_class_uses_success_when_ready() {
         assert_eq!(
-            model_status_badge_class(&tama_core::gpu::ModelState::Ready),
+            model_status_badge_class(&ModelState::Ready),
             "badge badge-success"
         );
     }
@@ -494,27 +482,21 @@ mod tests {
     #[test]
     fn test_model_status_badge_class_uses_muted_when_idle() {
         assert_eq!(
-            model_status_badge_class(&tama_core::gpu::ModelState::Idle),
+            model_status_badge_class(&ModelState::Idle),
             "badge badge-muted"
         );
     }
 
     #[test]
     fn test_model_status_badge_label_distinguishes_ready_and_idle() {
-        assert_eq!(
-            model_status_badge_label(&tama_core::gpu::ModelState::Ready),
-            "Loaded"
-        );
-        assert_eq!(
-            model_status_badge_label(&tama_core::gpu::ModelState::Idle),
-            "Idle"
-        );
+        assert_eq!(model_status_badge_label(&ModelState::Ready), "Loaded");
+        assert_eq!(model_status_badge_label(&ModelState::Idle), "Idle");
     }
 
     #[test]
     fn test_model_action_button_class_uses_danger_when_ready() {
         assert_eq!(
-            model_action_button_class(&tama_core::gpu::ModelState::Ready),
+            model_action_button_class(&ModelState::Ready),
             "btn btn-danger btn-sm"
         );
     }
@@ -522,7 +504,7 @@ mod tests {
     #[test]
     fn test_model_action_button_class_uses_success_when_idle() {
         assert_eq!(
-            model_action_button_class(&tama_core::gpu::ModelState::Idle),
+            model_action_button_class(&ModelState::Idle),
             "btn btn-success btn-sm"
         );
     }
@@ -530,7 +512,7 @@ mod tests {
     #[test]
     fn test_model_action_button_class_uses_secondary_when_loading() {
         assert_eq!(
-            model_action_button_class(&tama_core::gpu::ModelState::Loading),
+            model_action_button_class(&ModelState::Loading),
             "btn btn-secondary btn-sm"
         );
     }
@@ -561,41 +543,35 @@ mod tests {
     #[test]
     fn test_resolve_state_passthrough_when_non_empty() {
         assert_eq!(
-            resolve_state(&tama_core::gpu::ModelState::Ready, Some(false)),
-            tama_core::gpu::ModelState::Ready
+            resolve_state(&ModelState::Ready, Some(false)),
+            ModelState::Ready
         );
         assert_eq!(
-            resolve_state(&tama_core::gpu::ModelState::Loading, None),
-            tama_core::gpu::ModelState::Loading
+            resolve_state(&ModelState::Loading, None),
+            ModelState::Loading
         );
         assert_eq!(
-            resolve_state(&tama_core::gpu::ModelState::Failed, Some(true)),
-            tama_core::gpu::ModelState::Failed
+            resolve_state(&ModelState::Failed, Some(true)),
+            ModelState::Failed
         );
-        assert_eq!(
-            resolve_state(&tama_core::gpu::ModelState::Idle, None),
-            tama_core::gpu::ModelState::Idle
-        );
+        assert_eq!(resolve_state(&ModelState::Idle, None), ModelState::Idle);
     }
 
     #[test]
     fn test_resolve_state_fallback_to_loaded_true() {
         assert_eq!(
-            resolve_state(&tama_core::gpu::ModelState::Idle, Some(true)),
-            tama_core::gpu::ModelState::Ready
+            resolve_state(&ModelState::Idle, Some(true)),
+            ModelState::Ready
         );
     }
 
     #[test]
     fn test_resolve_state_fallback_to_idle() {
         assert_eq!(
-            resolve_state(&tama_core::gpu::ModelState::Idle, Some(false)),
-            tama_core::gpu::ModelState::Idle
+            resolve_state(&ModelState::Idle, Some(false)),
+            ModelState::Idle
         );
-        assert_eq!(
-            resolve_state(&tama_core::gpu::ModelState::Idle, None),
-            tama_core::gpu::ModelState::Idle
-        );
+        assert_eq!(resolve_state(&ModelState::Idle, None), ModelState::Idle);
     }
 
     // ── Component compile-time smoke tests ──────────────────────────────────

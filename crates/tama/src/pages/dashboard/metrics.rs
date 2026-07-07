@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::gpu_types::{GpuVendor, ModelState};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkStats {
     pub download_mibps: f64,
@@ -85,7 +87,7 @@ pub struct MetricsSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GpuDeviceStats {
     pub device_id: String,
-    pub vendor: tama_core::gpu::GpuVendor,
+    pub vendor: GpuVendor,
     /// Human-readable GPU name (e.g. "Radeon AI PRO R9700", "GeForce RTX 4090").
     #[serde(default)]
     pub name: String,
@@ -123,7 +125,7 @@ pub struct ModelStatus {
     pub loaded: bool,
     /// Lifecycle state: idle, loading, ready, unloading, failed.
     #[serde(default)]
-    pub state: tama_core::gpu::ModelState,
+    pub state: ModelState,
     #[serde(default)]
     pub quant: Option<String>,
     #[serde(default)]
@@ -174,9 +176,7 @@ pub fn active_models(models: &[ModelStatus]) -> Vec<ModelStatus> {
         .filter(|m| {
             matches!(
                 m.state,
-                tama_core::gpu::ModelState::Ready
-                    | tama_core::gpu::ModelState::Loading
-                    | tama_core::gpu::ModelState::Unloading
+                ModelState::Ready | ModelState::Loading | ModelState::Unloading
             )
         })
         .cloned()
@@ -194,9 +194,7 @@ pub fn inactive_models(models: &[ModelStatus]) -> Vec<ModelStatus> {
         .filter(|m| {
             !matches!(
                 m.state,
-                tama_core::gpu::ModelState::Ready
-                    | tama_core::gpu::ModelState::Loading
-                    | tama_core::gpu::ModelState::Unloading
+                ModelState::Ready | ModelState::Loading | ModelState::Unloading
             )
         })
         .cloned()

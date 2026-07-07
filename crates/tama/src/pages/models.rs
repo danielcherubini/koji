@@ -5,6 +5,7 @@ use crate::components::alert_banner::{AlertBanner, AlertVariant};
 use crate::components::modal::Modal;
 use crate::components::model_card::{ModelCard, ModelPips};
 use crate::components::pull_quant_wizard::{CompletedQuant, PullQuantWizard};
+use crate::gpu_types::ModelState;
 use crate::utils::{get_request, post_request, rw_signal_to_signal, CheckAllModelsApiResponse};
 
 // ── Data structs ─────────────────────────────────────────────────────────────
@@ -20,7 +21,7 @@ struct ModelEntry {
     loaded: bool,
     /// Lifecycle state: idle, loading, ready, unloading, failed.
     #[serde(default)]
-    state: tama_core::gpu::ModelState,
+    state: ModelState,
     #[serde(default)]
     api_name: Option<String>,
     #[serde(default)]

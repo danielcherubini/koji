@@ -3,6 +3,7 @@ use crate::components::gpu_device_card::{
     derive_device_state, device_display_label, find_device_index, format_vram_short,
     loaded_model_display, model_gpu_label, GpuDeviceState,
 };
+use crate::gpu_types::{GpuVendor, ModelState};
 
 /// `MetricCurrent` must deserialize a payload that has no `models` field at
 /// all (older backend builds, cached responses) by defaulting to an empty
@@ -75,7 +76,7 @@ fn active_models_returns_ready_loading_unloading_entries() {
             api_name: None,
             display_name: None,
             backend: "llama_cpp".into(),
-            state: tama_core::gpu::ModelState::Ready,
+            state: ModelState::Ready,
             ..Default::default()
         },
         ModelStatus {
@@ -84,7 +85,7 @@ fn active_models_returns_ready_loading_unloading_entries() {
             api_name: None,
             display_name: None,
             backend: "llama_cpp".into(),
-            state: tama_core::gpu::ModelState::Idle,
+            state: ModelState::Idle,
             ..Default::default()
         },
         ModelStatus {
@@ -93,7 +94,7 @@ fn active_models_returns_ready_loading_unloading_entries() {
             api_name: None,
             display_name: None,
             backend: "ik_llama".into(),
-            state: tama_core::gpu::ModelState::Loading,
+            state: ModelState::Loading,
             ..Default::default()
         },
         ModelStatus {
@@ -102,7 +103,7 @@ fn active_models_returns_ready_loading_unloading_entries() {
             api_name: None,
             display_name: None,
             backend: "ik_llama".into(),
-            state: tama_core::gpu::ModelState::Failed,
+            state: ModelState::Failed,
             ..Default::default()
         },
         ModelStatus {
@@ -111,7 +112,7 @@ fn active_models_returns_ready_loading_unloading_entries() {
             api_name: None,
             display_name: None,
             backend: "llama_cpp".into(),
-            state: tama_core::gpu::ModelState::Unloading,
+            state: ModelState::Unloading,
             ..Default::default()
         },
     ];
@@ -119,11 +120,11 @@ fn active_models_returns_ready_loading_unloading_entries() {
     let active = active_models(&models);
     assert_eq!(active.len(), 3);
     assert_eq!(active[0].id, "a");
-    assert_eq!(active[0].state, tama_core::gpu::ModelState::Ready);
+    assert_eq!(active[0].state, ModelState::Ready);
     assert_eq!(active[1].id, "c");
-    assert_eq!(active[1].state, tama_core::gpu::ModelState::Loading);
+    assert_eq!(active[1].state, ModelState::Loading);
     assert_eq!(active[2].id, "e");
-    assert_eq!(active[2].state, tama_core::gpu::ModelState::Unloading);
+    assert_eq!(active[2].state, ModelState::Unloading);
 }
 
 /// `active_models` includes ready, loading, and unloading models.
@@ -132,22 +133,22 @@ fn active_models_filters_to_active_states() {
     let models = vec![
         ModelStatus {
             id: "a".into(),
-            state: tama_core::gpu::ModelState::Ready,
+            state: ModelState::Ready,
             ..Default::default()
         },
         ModelStatus {
             id: "b".into(),
-            state: tama_core::gpu::ModelState::Idle,
+            state: ModelState::Idle,
             ..Default::default()
         },
         ModelStatus {
             id: "c".into(),
-            state: tama_core::gpu::ModelState::Loading,
+            state: ModelState::Loading,
             ..Default::default()
         },
         ModelStatus {
             id: "d".into(),
-            state: tama_core::gpu::ModelState::Unloading,
+            state: ModelState::Unloading,
             ..Default::default()
         },
     ];
@@ -165,12 +166,12 @@ fn active_models_returns_empty_when_none_active() {
     let models = vec![
         ModelStatus {
             id: "a".into(),
-            state: tama_core::gpu::ModelState::Idle,
+            state: ModelState::Idle,
             ..Default::default()
         },
         ModelStatus {
             id: "b".into(),
-            state: tama_core::gpu::ModelState::Failed,
+            state: ModelState::Failed,
             ..Default::default()
         },
     ];
@@ -185,12 +186,12 @@ fn active_models_returns_all_when_all_active() {
     let models = vec![
         ModelStatus {
             id: "x".into(),
-            state: tama_core::gpu::ModelState::Ready,
+            state: ModelState::Ready,
             ..Default::default()
         },
         ModelStatus {
             id: "y".into(),
-            state: tama_core::gpu::ModelState::Loading,
+            state: ModelState::Loading,
             ..Default::default()
         },
     ];
@@ -216,27 +217,27 @@ fn inactive_models_returns_idle_failed_and_unknown_entries() {
     let models = vec![
         ModelStatus {
             id: "a".into(),
-            state: tama_core::gpu::ModelState::Ready,
+            state: ModelState::Ready,
             ..Default::default()
         },
         ModelStatus {
             id: "b".into(),
-            state: tama_core::gpu::ModelState::Idle,
+            state: ModelState::Idle,
             ..Default::default()
         },
         ModelStatus {
             id: "c".into(),
-            state: tama_core::gpu::ModelState::Loading,
+            state: ModelState::Loading,
             ..Default::default()
         },
         ModelStatus {
             id: "d".into(),
-            state: tama_core::gpu::ModelState::Failed,
+            state: ModelState::Failed,
             ..Default::default()
         },
         ModelStatus {
             id: "e".into(),
-            state: tama_core::gpu::ModelState::Unloading,
+            state: ModelState::Unloading,
             ..Default::default()
         },
     ];
@@ -244,9 +245,9 @@ fn inactive_models_returns_idle_failed_and_unknown_entries() {
     let inactive = inactive_models(&models);
     assert_eq!(inactive.len(), 2);
     assert_eq!(inactive[0].id, "b");
-    assert_eq!(inactive[0].state, tama_core::gpu::ModelState::Idle);
+    assert_eq!(inactive[0].state, ModelState::Idle);
     assert_eq!(inactive[1].id, "d");
-    assert_eq!(inactive[1].state, tama_core::gpu::ModelState::Failed);
+    assert_eq!(inactive[1].state, ModelState::Failed);
 }
 
 /// `inactive_models` returns an empty vec when all models are active
@@ -256,12 +257,12 @@ fn inactive_models_returns_empty_when_all_active() {
     let models = vec![
         ModelStatus {
             id: "a".into(),
-            state: tama_core::gpu::ModelState::Ready,
+            state: ModelState::Ready,
             ..Default::default()
         },
         ModelStatus {
             id: "b".into(),
-            state: tama_core::gpu::ModelState::Loading,
+            state: ModelState::Loading,
             ..Default::default()
         },
     ];
@@ -276,12 +277,12 @@ fn inactive_models_returns_all_when_none_active() {
     let models = vec![
         ModelStatus {
             id: "a".into(),
-            state: tama_core::gpu::ModelState::Idle,
+            state: ModelState::Idle,
             ..Default::default()
         },
         ModelStatus {
             id: "b".into(),
-            state: tama_core::gpu::ModelState::Failed,
+            state: ModelState::Failed,
             ..Default::default()
         },
     ];
@@ -312,7 +313,7 @@ fn inactive_models_preserves_all_fields() {
             api_name: Some("meta-llama/Llama-3-8B".into()),
             display_name: Some("Llama 3 8B".into()),
             backend: "llama_cpp".into(),
-            state: tama_core::gpu::ModelState::Ready,
+            state: ModelState::Ready,
             quant: Some("Q4_K_M".into()),
             context_length: Some(8192),
             ..Default::default()
@@ -323,7 +324,7 @@ fn inactive_models_preserves_all_fields() {
             api_name: Some("mistralai/Mistral-7B".into()),
             display_name: Some("Mistral 7B".into()),
             backend: "llama_cpp".into(),
-            state: tama_core::gpu::ModelState::Idle,
+            state: ModelState::Idle,
             quant: Some("Q4_0".into()),
             context_length: Some(32768),
             ..Default::default()
@@ -334,7 +335,7 @@ fn inactive_models_preserves_all_fields() {
             api_name: Some("google/gemma-2b".into()),
             display_name: Some("Gemma 2B".into()),
             backend: "llama_cpp".into(),
-            state: tama_core::gpu::ModelState::Failed,
+            state: ModelState::Failed,
             quant: Some("Q5_K_M".into()),
             context_length: Some(4096),
             ..Default::default()
@@ -347,7 +348,7 @@ fn inactive_models_preserves_all_fields() {
     // Verify idle model fields are preserved
     let idle_model = &inactive
         .iter()
-        .find(|m| m.state == tama_core::gpu::ModelState::Idle)
+        .find(|m| m.state == ModelState::Idle)
         .expect("idle model missing");
     assert_eq!(idle_model.id, "mistral-7b");
     assert_eq!(idle_model.db_id, Some(2));
@@ -359,7 +360,7 @@ fn inactive_models_preserves_all_fields() {
     // Verify failed model fields are preserved
     let failed_model = &inactive
         .iter()
-        .find(|m| m.state == tama_core::gpu::ModelState::Failed)
+        .find(|m| m.state == ModelState::Failed)
         .expect("failed model missing");
     assert_eq!(failed_model.id, "gemma-2b");
     assert_eq!(failed_model.db_id, Some(3));
@@ -376,22 +377,22 @@ fn active_and_inactive_models_are_symmetric_complements() {
     let models = vec![
         ModelStatus {
             id: "a".into(),
-            state: tama_core::gpu::ModelState::Ready,
+            state: ModelState::Ready,
             ..Default::default()
         },
         ModelStatus {
             id: "b".into(),
-            state: tama_core::gpu::ModelState::Idle,
+            state: ModelState::Idle,
             ..Default::default()
         },
         ModelStatus {
             id: "c".into(),
-            state: tama_core::gpu::ModelState::Loading,
+            state: ModelState::Loading,
             ..Default::default()
         },
         ModelStatus {
             id: "d".into(),
-            state: tama_core::gpu::ModelState::Failed,
+            state: ModelState::Failed,
             ..Default::default()
         },
     ];
@@ -432,24 +433,24 @@ fn metric_current_deserializes_models_field() {
     assert_eq!(cur.models[0].id, "alpha");
     assert_eq!(cur.models[0].api_name, Some("org/alpha".to_string()));
     assert_eq!(cur.models[0].backend, "llama_cpp");
-    assert_eq!(cur.models[0].state, tama_core::gpu::ModelState::Ready);
+    assert_eq!(cur.models[0].state, ModelState::Ready);
 
     assert_eq!(cur.models[1].id, "beta");
     assert_eq!(cur.models[1].api_name, Some("org/beta".to_string()));
     assert_eq!(cur.models[1].backend, "ik_llama");
-    assert_eq!(cur.models[1].state, tama_core::gpu::ModelState::Idle);
+    assert_eq!(cur.models[1].state, ModelState::Idle);
 }
 
 // ── GpuDeviceCard helper tests ────────────────────────────────────────────
 
 fn make_test_model(id: &str, state: &str, gpu_device: Option<&str>) -> ModelStatus {
     let model_state = match state {
-        "idle" => tama_core::gpu::ModelState::Idle,
-        "loading" => tama_core::gpu::ModelState::Loading,
-        "ready" => tama_core::gpu::ModelState::Ready,
-        "unloading" => tama_core::gpu::ModelState::Unloading,
-        "failed" => tama_core::gpu::ModelState::Failed,
-        _ => tama_core::gpu::ModelState::Idle,
+        "idle" => ModelState::Idle,
+        "loading" => ModelState::Loading,
+        "ready" => ModelState::Ready,
+        "unloading" => ModelState::Unloading,
+        "failed" => ModelState::Failed,
+        _ => ModelState::Idle,
     };
     ModelStatus {
         id: id.to_string(),
@@ -477,8 +478,8 @@ fn make_test_model(id: &str, state: &str, gpu_device: Option<&str>) -> ModelStat
 
 fn make_test_gpu(device_id: &str, vendor: &str) -> GpuDeviceStats {
     let gpu_vendor = match vendor {
-        "amd" => tama_core::gpu::GpuVendor::Amd,
-        _ => tama_core::gpu::GpuVendor::Nvidia,
+        "amd" => GpuVendor::Amd,
+        _ => GpuVendor::Nvidia,
     };
     GpuDeviceStats {
         device_id: device_id.to_string(),
@@ -608,12 +609,12 @@ fn make_sort_model(
     state: &str,
 ) -> ModelStatus {
     let model_state = match state {
-        "idle" => tama_core::gpu::ModelState::Idle,
-        "loading" => tama_core::gpu::ModelState::Loading,
-        "ready" => tama_core::gpu::ModelState::Ready,
-        "unloading" => tama_core::gpu::ModelState::Unloading,
-        "failed" => tama_core::gpu::ModelState::Failed,
-        _ => tama_core::gpu::ModelState::Idle,
+        "idle" => ModelState::Idle,
+        "loading" => ModelState::Loading,
+        "ready" => ModelState::Ready,
+        "unloading" => ModelState::Unloading,
+        "failed" => ModelState::Failed,
+        _ => ModelState::Idle,
     };
     ModelStatus {
         id: "test".to_string(),
