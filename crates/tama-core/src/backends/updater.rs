@@ -51,12 +51,13 @@ pub async fn check_latest_version(
     client: Option<Client>,
     base_url: Option<&str>,
 ) -> Result<String> {
-    let client = client.unwrap_or_else(|| {
-        Client::builder()
+    let client = match client {
+        Some(c) => c,
+        None => Client::builder()
             .user_agent("tama-backend-manager")
             .build()
-            .expect("Failed to create reqwest client")
-    });
+            .context("Failed to create HTTP client for version check")?,
+    };
     let base_url = base_url.unwrap_or("https://api.github.com");
 
     let token = github_token();
