@@ -1,9 +1,9 @@
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
+use super::traits::HealthChecker;
 use crate::proxy::process::{
-    check_health, force_kill_process_group, is_process_alive, is_process_group_alive,
-    kill_process_group,
+    force_kill_process_group, is_process_alive, is_process_group_alive, kill_process_group,
 };
 use crate::proxy::types::{BackendState, ProxyState};
 
@@ -15,7 +15,7 @@ impl ProxyState {
     /// - Transitions stuck Starting models to Failed
     /// - Auto-restarts dead models (respecting max_restarts and restart_delay_ms)
     /// - Cleans up Failed models
-    pub async fn check_idle_timeouts(&self) -> Vec<String> {
+    pub async fn check_idle_timeouts<H: HealthChecker>(&self, _health_checker: &H) -> Vec<String> {
         let now = Instant::now();
         let mut to_unload = Vec::new();
         let mut failed_to_remove = Vec::new();
@@ -128,10 +128,7 @@ impl ProxyState {
             dead_pid_candidates
         {
             let health_url = format!("{}/health", backend_url);
-            let still_dead = match check_health(&health_url, Some(5)).await {
-                Ok(resp) => !resp.status().is_success(),
-                Err(_) => true,
-            };
+            let still_dead = !_health_checker.check_health(&health_url, Some(5)).await;
 
             if still_dead {
                 info!(
@@ -309,7 +306,9 @@ impl ProxyState {
                 let total_timeout = Duration::from_millis(delay_ms) + startup_timeout;
                 tokio::spawn(async move {
                     tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-                    match tokio::time::timeout(total_timeout, state.load_model(&mn, None)).await {
+                    match tokio::time::timeout(total_timeout, state.load_model(&mn, None, &()))
+                        .await
+                    {
                         Ok(Ok(_)) => {
                             let mut models = state.models.write().await;
                             if let Some(BackendState::Ready {

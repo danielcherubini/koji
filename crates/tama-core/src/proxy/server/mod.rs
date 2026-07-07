@@ -188,7 +188,7 @@ impl ProxyServer {
                 };
                 tokio::time::sleep(interval).await;
                 // Always called — cleans up Failed backends even when auto_unload is off.
-                let _ = state.check_idle_timeouts().await;
+                let _ = state.check_idle_timeouts(&()).await;
             }
         })
     }

@@ -31,6 +31,7 @@ bytes.workspace = true
 serde_json.workspace = true
 http-body-util.workspace = true
 async-stream = "0.3"
+async-trait.workspace = true
 libc = "0.2.183"
 rusqlite.workspace = true
 uuid = { version = "1", features = ["v4"] }

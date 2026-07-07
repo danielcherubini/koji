@@ -103,7 +103,7 @@ pub async fn handle_tama_load_model(
         .resolve_model_gpu_device(&model_id, model_card.as_ref())
         .await;
     let _ = state.evict_lru_if_needed(target_gpu).await;
-    match state.load_model(&model_id, model_card.as_ref()).await {
+    match state.load_model(&model_id, model_card.as_ref(), &()).await {
         Ok(backend_name) => {
             let model_state = state.get_model_state(&backend_name).await;
             let loaded = model_state.as_ref().is_some_and(|ms| ms.is_ready());
