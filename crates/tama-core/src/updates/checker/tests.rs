@@ -11,6 +11,76 @@ fn test_determine_update_status_no_files() {
     assert_eq!(status, "up_to_date");
 }
 
+/// Test with a single Unchanged file — should be up_to_date.
+#[test]
+fn test_determine_update_status_single_unchanged() {
+    let statuses = vec![FileStatus::Unchanged];
+    let (available, status, _error) = determine_update_status(&statuses);
+    assert!(!available);
+    assert_eq!(status, "up_to_date");
+}
+
+/// Test with a mix of Changed and RemovedFromRemote — both count as changes.
+#[test]
+fn test_determine_update_status_mixed_changes() {
+    let statuses = vec![
+        FileStatus::Changed {
+            old_oid: "a".to_string(),
+            new_oid: "b".to_string(),
+        },
+        FileStatus::RemovedFromRemote,
+    ];
+    let (available, status, _error) = determine_update_status(&statuses);
+    assert!(available);
+    assert_eq!(status, "update_available");
+}
+
+/// Test with Unknown mixed with Unchanged — Unknown takes priority.
+#[test]
+fn test_determine_update_status_unknown_with_unchanged() {
+    let statuses = vec![FileStatus::Unchanged, FileStatus::Unknown];
+    let (available, status, error) = determine_update_status(&statuses);
+    assert!(!available);
+    assert_eq!(status, "verification_failed");
+    assert!(error.is_some());
+}
+
+/// Test with only RemovedFromRemote — counts as change.
+#[test]
+fn test_determine_update_status_only_removed() {
+    let statuses = vec![FileStatus::RemovedFromRemote, FileStatus::RemovedFromRemote];
+    let (available, status, _error) = determine_update_status(&statuses);
+    assert!(available);
+    assert_eq!(status, "update_available");
+}
+
+/// Test with only NewRemote — counts as change.
+#[test]
+fn test_determine_update_status_only_new_remote() {
+    let statuses = vec![FileStatus::NewRemote];
+    let (available, status, _error) = determine_update_status(&statuses);
+    assert!(available);
+    assert_eq!(status, "update_available");
+}
+
+/// Test with Unknown overriding both Changed and NewRemote.
+#[test]
+fn test_determine_update_status_unknown_overrides_all() {
+    let statuses = vec![
+        FileStatus::Changed {
+            old_oid: "a".to_string(),
+            new_oid: "b".to_string(),
+        },
+        FileStatus::NewRemote,
+        FileStatus::RemovedFromRemote,
+        FileStatus::Unknown,
+    ];
+    let (available, status, error) = determine_update_status(&statuses);
+    assert!(!available);
+    assert_eq!(status, "verification_failed");
+    assert!(error.is_some());
+}
+
 #[test]
 fn test_determine_update_status_all_unchanged() {
     let statuses = vec![FileStatus::Unchanged, FileStatus::Unchanged];
@@ -171,4 +241,141 @@ fn test_gguf_listing_cache_clone() {
     // Both should be usable independently
     let _ = cache1;
     let _ = cache2;
+}
+
+/// Test that a cache miss returns None for an unknown repo_id.
+#[tokio::test]
+async fn test_gguf_listing_cache_miss() {
+    let cache = GgufListingCache::new();
+    let result = cache.get("nonexistent/repo", None).await;
+    assert!(result.is_none(), "Cache miss should return None");
+}
+
+/// Test that a cache hit returns the stored entry.
+#[tokio::test]
+async fn test_gguf_listing_cache_hit() {
+    let cache = GgufListingCache::new();
+    let now = chrono::Utc::now().timestamp();
+    let files = vec![crate::models::pull::RemoteGguf {
+        filename: "model.gguf".to_string(),
+        quant: Some("Q4_K_M".to_string()),
+    }];
+    cache
+        .insert(
+            "test/repo".to_string(),
+            "abc123".to_string(),
+            files.clone(),
+            Some(now),
+        )
+        .await;
+    let result = cache.get("test/repo", None).await;
+    assert!(result.is_some(), "Cache hit should return Some");
+    let (sha, retrieved_files) = result.unwrap();
+    assert_eq!(sha, "abc123");
+    assert_eq!(retrieved_files, files);
+}
+
+/// Test that a cache entry is returned when accessed with the same timestamp
+/// (simulates a cache hit within TTL using the same time).
+#[tokio::test]
+async fn test_gguf_listing_cache_hit_with_time() {
+    let cache = GgufListingCache::new();
+    let now = 1000i64;
+    let files = vec![crate::models::pull::RemoteGguf {
+        filename: "model.gguf".to_string(),
+        quant: Some("Q4_K_M".to_string()),
+    }];
+    cache
+        .insert(
+            "test/repo".to_string(),
+            "abc123".to_string(),
+            files.clone(),
+            Some(now),
+        )
+        .await;
+    // Access with the same timestamp — should still be within TTL
+    let result = cache.get("test/repo", Some(now)).await;
+    assert!(
+        result.is_some(),
+        "Cache hit with same timestamp should return Some"
+    );
+    let (sha, retrieved_files) = result.unwrap();
+    assert_eq!(sha, "abc123");
+    assert_eq!(retrieved_files, files);
+}
+
+/// Test that a cache entry expires after TTL_SECS (300 seconds).
+#[tokio::test]
+async fn test_gguf_listing_cache_expiry() {
+    let cache = GgufListingCache::new();
+    let now = 1000i64;
+    let files = vec![crate::models::pull::RemoteGguf {
+        filename: "model.gguf".to_string(),
+        quant: Some("Q4_K_M".to_string()),
+    }];
+    cache
+        .insert(
+            "test/repo".to_string(),
+            "abc123".to_string(),
+            files,
+            Some(now),
+        )
+        .await;
+    // Access with a timestamp 301 seconds later — should be expired
+    let result = cache.get("test/repo", Some(now + 301)).await;
+    assert!(
+        result.is_none(),
+        "Cache entry should be expired after TTL_SECS (300s)"
+    );
+}
+
+/// Test that a cache entry is still valid just before TTL expiry.
+#[tokio::test]
+async fn test_gguf_listing_cache_valid_at_boundary() {
+    let cache = GgufListingCache::new();
+    let now = 1000i64;
+    let files = vec![crate::models::pull::RemoteGguf {
+        filename: "model.gguf".to_string(),
+        quant: Some("Q4_K_M".to_string()),
+    }];
+    cache
+        .insert(
+            "test/repo".to_string(),
+            "abc123".to_string(),
+            files,
+            Some(now),
+        )
+        .await;
+    // Access at exactly TTL_SECS — should still be valid (< 300)
+    // Actually, the check is `now - epoch < TTL_SECS`, so at exactly 300 it's NOT valid
+    let result = cache.get("test/repo", Some(now + 299)).await;
+    assert!(
+        result.is_some(),
+        "Cache entry should be valid at TTL_SECS - 1"
+    );
+}
+
+/// Test that a cache entry is expired at exactly TTL_SECS boundary.
+#[tokio::test]
+async fn test_gguf_listing_cache_expired_at_boundary() {
+    let cache = GgufListingCache::new();
+    let now = 1000i64;
+    let files = vec![crate::models::pull::RemoteGguf {
+        filename: "model.gguf".to_string(),
+        quant: Some("Q4_K_M".to_string()),
+    }];
+    cache
+        .insert(
+            "test/repo".to_string(),
+            "abc123".to_string(),
+            files,
+            Some(now),
+        )
+        .await;
+    // Access at exactly TTL_SECS — check is `now - epoch < TTL_SECS`, so 300 < 300 is false
+    let result = cache.get("test/repo", Some(now + 300)).await;
+    assert!(
+        result.is_none(),
+        "Cache entry should be expired at exactly TTL_SECS (300)"
+    );
 }

@@ -80,7 +80,7 @@ pub async fn install_from_source(
     let resolved_version = if version == "latest"
         && !matches!(options.backend_type, BackendType::TtsKokoro)
     {
-        match crate::backends::check_latest_version(&options.backend_type).await {
+        match crate::backends::check_latest_version(&options.backend_type, None, None).await {
             Ok(v) => {
                 emit(progress, format!("Resolved 'latest' to: {}", v));
                 v

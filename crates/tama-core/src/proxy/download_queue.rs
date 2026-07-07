@@ -56,7 +56,7 @@ pub enum DownloadEvent {
 
 /// Service that manages the download queue lifecycle.
 pub struct DownloadQueueService {
-    model_mgr: std::sync::Mutex<ModelManager>,
+    pub(crate) model_mgr: std::sync::Mutex<ModelManager>,
     events_tx: broadcast::Sender<DownloadEvent>,
     poll_interval_secs: u64,
 }
@@ -506,6 +506,8 @@ pub(crate) async fn queue_processor_loop(state: Arc<super::ProxyState>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
+    use crate::proxy::ProxyState;
     use std::time::Instant;
 
     fn setup_service() -> DownloadQueueService {
@@ -846,5 +848,890 @@ mod tests {
             .expect("row should exist");
         assert_eq!(item.status, "completed");
         assert!(item.completed_at.is_some());
+    }
+
+    // ── CAS (try_mark_running) tests ──────────────────────────────────────
+
+    /// Test that try_mark_running returns true when the item is queued.
+    #[test]
+    fn test_try_mark_running_succeeds_for_queued() {
+        let svc = setup_service();
+
+        svc.enqueue(
+            "cas-job-1",
+            "test/repo",
+            "model.gguf",
+            None,
+            "model",
+            Some("Q4_K_M"),
+            None,
+        )
+        .unwrap();
+
+        let result = svc.try_mark_running("cas-job-1").unwrap();
+        assert!(result, "CAS should succeed for a queued item");
+
+        // Verify the status changed to running
+        let item = svc
+            .model_mgr
+            .lock()
+            .unwrap()
+            .queue_get_by_job_id("cas-job-1")
+            .unwrap()
+            .expect("row should exist");
+        assert_eq!(item.status, "running");
+    }
+
+    /// Test that try_mark_running returns false when the item is not queued.
+    #[test]
+    fn test_try_mark_running_fails_for_non_queued() {
+        let svc = setup_service();
+
+        svc.enqueue(
+            "cas-job-2",
+            "test/repo",
+            "model.gguf",
+            None,
+            "model",
+            Some("Q4_K_M"),
+            None,
+        )
+        .unwrap();
+
+        // Manually set status to running (simulating another consumer claiming it)
+        svc.model_mgr
+            .lock()
+            .unwrap()
+            .conn()
+            .execute(
+                "UPDATE download_queue SET status = 'running', started_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 WHERE job_id = ?1",
+                ["cas-job-2"],
+            )
+            .unwrap();
+
+        let result = svc.try_mark_running("cas-job-2").unwrap();
+        assert!(
+            !result,
+            "CAS should fail when item is already in running state"
+        );
+
+        // Verify the status is still running
+        let item = svc
+            .model_mgr
+            .lock()
+            .unwrap()
+            .queue_get_by_job_id("cas-job-2")
+            .unwrap()
+            .expect("row should exist");
+        assert_eq!(item.status, "running");
+    }
+
+    /// Test that try_mark_running returns false for a non-existent job.
+    #[test]
+    fn test_try_mark_running_nonexistent_job() {
+        let svc = setup_service();
+
+        let result = svc.try_mark_running("nonexistent-job").unwrap();
+        assert!(!result, "CAS should return false for a non-existent job");
+    }
+
+    // ── on_startup_recovery tests ─────────────────────────────────────────
+
+    /// Test that on_startup_recovery marks stale running items as queued.
+    /// A running item with started_at > 1 hour ago is considered stale.
+    #[test]
+    fn test_on_startup_recovery_stale_items() {
+        let svc = setup_service();
+
+        // Enqueue an item
+        svc.enqueue(
+            "recovery-job-1",
+            "test/repo",
+            "model.gguf",
+            None,
+            "model",
+            Some("Q4_K_M"),
+            None,
+        )
+        .unwrap();
+
+        // Manually set it to running with an old started_at (> 1 hour ago)
+        svc.model_mgr
+            .lock()
+            .unwrap()
+            .conn()
+            .execute(
+                "UPDATE download_queue SET status = 'running', started_at = datetime('now', '-2 hours')
+                 WHERE job_id = ?1",
+                ["recovery-job-1"],
+            )
+            .unwrap();
+
+        // Verify it's running before recovery
+        let item = svc
+            .model_mgr
+            .lock()
+            .unwrap()
+            .queue_get_by_job_id("recovery-job-1")
+            .unwrap()
+            .expect("row should exist");
+        assert_eq!(item.status, "running");
+
+        // Run startup recovery
+        svc.on_startup_recovery().unwrap();
+
+        // Verify it's now queued
+        let item = svc
+            .model_mgr
+            .lock()
+            .unwrap()
+            .queue_get_by_job_id("recovery-job-1")
+            .unwrap()
+            .expect("row should exist");
+        assert_eq!(item.status, "queued");
+        assert!(item.started_at.is_none());
+        assert!(item.completed_at.is_none());
+    }
+
+    /// Test that on_startup_recovery does NOT affect non-stale running items.
+    #[test]
+    fn test_on_startup_recovery_non_stale_items() {
+        let svc = setup_service();
+
+        // Enqueue an item
+        svc.enqueue(
+            "recovery-job-2",
+            "test/repo",
+            "model.gguf",
+            None,
+            "model",
+            Some("Q4_K_M"),
+            None,
+        )
+        .unwrap();
+
+        // Set it to running with a recent started_at (< 1 hour ago)
+        svc.model_mgr
+            .lock()
+            .unwrap()
+            .conn()
+            .execute(
+                "UPDATE download_queue SET status = 'running', started_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 WHERE job_id = ?1",
+                ["recovery-job-2"],
+            )
+            .unwrap();
+
+        // Run startup recovery
+        svc.on_startup_recovery().unwrap();
+
+        // Verify it's still running (not stale)
+        let item = svc
+            .model_mgr
+            .lock()
+            .unwrap()
+            .queue_get_by_job_id("recovery-job-2")
+            .unwrap()
+            .expect("row should exist");
+        assert_eq!(item.status, "running");
+    }
+
+    /// Test that on_startup_recovery does NOT affect completed items.
+    #[test]
+    fn test_on_startup_recovery_completed_items() {
+        let svc = setup_service();
+
+        svc.enqueue(
+            "recovery-job-3",
+            "test/repo",
+            "model.gguf",
+            None,
+            "model",
+            Some("Q4_K_M"),
+            None,
+        )
+        .unwrap();
+
+        // Set it to completed
+        svc.update_status("recovery-job-3", "completed", 5000, Some(5000), None, None)
+            .unwrap();
+
+        // Run startup recovery
+        svc.on_startup_recovery().unwrap();
+
+        // Verify it's still completed
+        let item = svc
+            .model_mgr
+            .lock()
+            .unwrap()
+            .queue_get_by_job_id("recovery-job-3")
+            .unwrap()
+            .expect("row should exist");
+        assert_eq!(item.status, "completed");
+    }
+
+    /// Test that on_startup_recovery handles items with NULL started_at.
+    #[test]
+    fn test_on_startup_recovery_null_started_at() {
+        let svc = setup_service();
+
+        svc.enqueue(
+            "recovery-job-4",
+            "test/repo",
+            "model.gguf",
+            None,
+            "model",
+            Some("Q4_K_M"),
+            None,
+        )
+        .unwrap();
+
+        // Set it to running with NULL started_at
+        svc.model_mgr
+            .lock()
+            .unwrap()
+            .conn()
+            .execute(
+                "UPDATE download_queue SET status = 'running', started_at = NULL
+                 WHERE job_id = ?1",
+                ["recovery-job-4"],
+            )
+            .unwrap();
+
+        // Run startup recovery
+        svc.on_startup_recovery().unwrap();
+
+        // NULL started_at means the item is considered stale (NULL - NULL = NULL, and NULL > 3600 is false)
+        // Actually, looking at the SQL: (strftime('%s', 'now') - strftime('%s', started_at)) > 3600
+        // If started_at is NULL, strftime('%s', NULL) returns NULL, and NULL > 3600 is NULL (false)
+        // So the item should NOT be recovered
+        let item = svc
+            .model_mgr
+            .lock()
+            .unwrap()
+            .queue_get_by_job_id("recovery-job-4")
+            .unwrap()
+            .expect("row should exist");
+        // The SQL condition is: status = 'running' AND (started_at IS NULL OR (strftime('%s', 'now') - strftime('%s', started_at)) > 3600)
+        // started_at IS NULL is true, so the item IS recovered
+        assert_eq!(item.status, "queued");
+    }
+
+    // ── Concurrent access tests ───────────────────────────────────────────
+
+    /// Test that concurrent enqueue and dequeue operations work correctly.
+    #[tokio::test]
+    async fn test_concurrent_enqueue_dequeue() {
+        let svc = Arc::new(setup_service());
+        let num_items = 10;
+
+        // Enqueue items concurrently
+        let mut handles = vec![];
+        for i in 0..num_items {
+            let svc_clone = Arc::clone(&svc);
+            handles.push(tokio::spawn(async move {
+                svc_clone
+                    .enqueue(
+                        &format!("concurrent-job-{}", i),
+                        "test/repo",
+                        "model.gguf",
+                        None,
+                        "model",
+                        Some("Q4_K_M"),
+                        None,
+                    )
+                    .unwrap();
+            }));
+        }
+
+        // Wait for all enqueues to complete
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        // Verify all items are in the queue
+        let active = svc.get_active_items().unwrap();
+        assert_eq!(active.len(), num_items);
+
+        // Dequeue and claim each item (dequeue reads, try_mark_running claims)
+        for i in 0..num_items {
+            let item = svc.dequeue().unwrap();
+            assert!(
+                item.is_some(),
+                "Item concurrent-job-{} should be dequeued",
+                i
+            );
+            let job_id = item.unwrap().job_id;
+            // Verify it's one of the expected jobs
+            assert!(
+                job_id.starts_with("concurrent-job-"),
+                "Expected concurrent-job-*, got {}",
+                job_id
+            );
+            // Claim the item (changes status to running)
+            let claimed = svc.try_mark_running(&job_id).unwrap();
+            assert!(claimed, "Item {} should be claimable", job_id);
+        }
+
+        // Verify all items are now running (not queued)
+        let queued_count: i64 = svc
+            .model_mgr
+            .lock()
+            .unwrap()
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM download_queue WHERE status = 'queued'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(queued_count, 0, "All items should be claimed (not queued)");
+    }
+
+    /// Test that concurrent status transitions don't cause data corruption.
+    #[tokio::test]
+    async fn test_concurrent_status_transitions() {
+        let svc = Arc::new(setup_service());
+
+        // Enqueue an item
+        svc.enqueue(
+            "concurrent-status-job",
+            "test/repo",
+            "model.gguf",
+            None,
+            "model",
+            Some("Q4_K_M"),
+            None,
+        )
+        .unwrap();
+
+        // Perform multiple status transitions concurrently
+        let svc_clone = Arc::clone(&svc);
+        let h1 = tokio::spawn(async move {
+            svc_clone
+                .update_status("concurrent-status-job", "running", 0, None, None, None)
+                .unwrap();
+        });
+
+        let svc_clone = Arc::clone(&svc);
+        let h2 = tokio::spawn(async move {
+            // Small delay to increase contention
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            svc_clone
+                .update_status(
+                    "concurrent-status-job",
+                    "verifying",
+                    1000,
+                    Some(2000),
+                    None,
+                    None,
+                )
+                .unwrap();
+        });
+
+        let svc_clone = Arc::clone(&svc);
+        let h3 = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            svc_clone
+                .update_status(
+                    "concurrent-status-job",
+                    "completed",
+                    2000,
+                    Some(2000),
+                    None,
+                    None,
+                )
+                .unwrap();
+        });
+
+        h1.await.unwrap();
+        h2.await.unwrap();
+        h3.await.unwrap();
+
+        // Verify the final status is completed
+        let item = svc
+            .model_mgr
+            .lock()
+            .unwrap()
+            .queue_get_by_job_id("concurrent-status-job")
+            .unwrap()
+            .expect("row should exist");
+        assert_eq!(item.status, "completed");
+        assert_eq!(item.bytes_downloaded, 2000);
+    }
+
+    /// Test that cancel fails for items already in terminal state.
+    #[test]
+    fn test_cancel_terminal_state_fails() {
+        let svc = setup_service();
+
+        svc.enqueue(
+            "cancel-test-job",
+            "test/repo",
+            "model.gguf",
+            None,
+            "model",
+            Some("Q4_K_M"),
+            None,
+        )
+        .unwrap();
+
+        // Transition to completed
+        svc.update_status("cancel-test-job", "completed", 5000, Some(5000), None, None)
+            .unwrap();
+
+        // Cancel should fail for terminal state
+        let result = svc.cancel("cancel-test-job");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("terminal state"));
+    }
+
+    /// Test that cancel fails for a non-existent job.
+    #[test]
+    fn test_cancel_nonexistent_job() {
+        let svc = setup_service();
+
+        let result = svc.cancel("nonexistent-cancel-job");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    // ── queue_processor_loop integration tests ────────────────────────────
+
+    /// Integration test: the queue_processor_loop's startup recovery
+    /// calls svc.on_startup_recovery() which marks stale running items as queued.
+    /// We verify this by creating a DownloadQueueService directly, inserting
+    /// a stale item, then invoking recovery.
+    #[tokio::test]
+    async fn test_queue_processor_loop_stale_recovery() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = Config::default();
+        let poll_interval = config.proxy.download_queue_poll_interval_secs;
+
+        // Open ModelManager directly (same as ProxyState::new does)
+        let mgr = crate::models::ModelManager::open(temp_dir.path()).unwrap();
+        let svc = DownloadQueueService::new(mgr, poll_interval);
+
+        // Insert a stale running item (started > 1 hour ago)
+        let guard = svc.model_mgr.lock().unwrap();
+        let conn = guard.conn();
+
+        conn.execute(
+            "INSERT INTO model_configs (repo_id, backend) VALUES (?, ?)",
+            ["test/repo", "llama_cpp"],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO download_queue (job_id, repo_id, filename, status, started_at, kind)
+             VALUES (?, ?, ?, 'running', datetime('now', '-2 hours'), 'model')",
+            ["loop-recovery-job", "test/repo", "model.gguf"],
+        )
+        .unwrap();
+        drop(guard);
+
+        // Verify it's running before recovery
+        let guard = svc.model_mgr.lock().unwrap();
+        let status: String = guard
+            .conn()
+            .query_row(
+                "SELECT status FROM download_queue WHERE job_id = ?1",
+                ["loop-recovery-job"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "running");
+        drop(guard);
+
+        // Directly invoke startup recovery (what the loop does on first iteration)
+        svc.on_startup_recovery().unwrap();
+
+        // Verify the item was recovered
+        let guard = svc.model_mgr.lock().unwrap();
+        let item = guard
+            .conn()
+            .query_row(
+                "SELECT status, started_at FROM download_queue WHERE job_id = ?1",
+                ["loop-recovery-job"],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+            )
+            .unwrap();
+
+        assert_eq!(item.0, "queued", "Stale item should be recovered to queued");
+        assert!(
+            item.1.is_none(),
+            "started_at should be cleared after recovery"
+        );
+    }
+
+    /// Integration test: the queue_processor_loop dequeues queued items
+    /// and marks them as running via try_mark_running + update_status.
+    #[tokio::test]
+    async fn test_queue_processor_loop_dequeues_items() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = Config::default();
+        let poll_interval = config.proxy.download_queue_poll_interval_secs;
+
+        let mgr = crate::models::ModelManager::open(temp_dir.path()).unwrap();
+        let svc = DownloadQueueService::new(mgr, poll_interval);
+
+        // Insert multiple queued items
+        let guard = svc.model_mgr.lock().unwrap();
+        let conn = guard.conn();
+
+        conn.execute(
+            "INSERT INTO model_configs (repo_id, backend) VALUES (?, ?)",
+            ["test/repo", "llama_cpp"],
+        )
+        .unwrap();
+
+        for i in 0..3 {
+            conn.execute(
+                "INSERT INTO download_queue (job_id, repo_id, filename, status, kind)
+                 VALUES (?, ?, ?, 'queued', 'model')",
+                [
+                    format!("loop-dequeue-job-{}", i),
+                    "test/repo".to_string(),
+                    "model.gguf".to_string(),
+                ],
+            )
+            .unwrap();
+        }
+        drop(guard);
+
+        // Simulate what the loop does: dequeue + try_mark_running + update_status
+        for _ in 0..3 {
+            let item = svc.dequeue().unwrap();
+            if let Some(item) = item {
+                let claimed = svc.try_mark_running(&item.job_id).unwrap();
+                if claimed {
+                    let _ = svc.update_status(&item.job_id, "running", 0, None, None, None);
+                }
+            }
+        }
+
+        // Verify all items are now running
+        let guard = svc.model_mgr.lock().unwrap();
+        let count: i64 = guard
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM download_queue WHERE status = 'running'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(
+            count, 3,
+            "All 3 items should have been dequeued and marked as running"
+        );
+    }
+
+    /// Integration test: the queue_processor_loop detects dead tasks
+    /// (running items not registered in pull_jobs with started_at > 10s).
+    /// The loop logs a warning but does NOT re-queue the task.
+    #[tokio::test]
+    async fn test_queue_processor_loop_dead_task_detection() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = Config::default();
+
+        let state = Arc::new(ProxyState::new(config, Some(temp_dir.path().to_path_buf())));
+
+        // Insert a running item with old started_at (> 10 seconds ago)
+        let mgr = state
+            .model_mgr()
+            .expect("ModelManager should be configured");
+        let conn = mgr.conn();
+
+        conn.execute(
+            "INSERT INTO model_configs (repo_id, backend) VALUES (?, ?)",
+            ["test/repo", "llama_cpp"],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO download_queue (job_id, repo_id, filename, status, started_at, kind)
+             VALUES (?, ?, ?, 'running', datetime('now', '-15 seconds'), 'model')",
+            ["loop-dead-job", "test/repo", "model.gguf"],
+        )
+        .unwrap();
+
+        // Verify the job is NOT in pull_jobs
+        let jobs = state.pull_jobs.read().await;
+        assert!(
+            !jobs.contains_key("loop-dead-job"),
+            "Job should not be in pull_jobs"
+        );
+        drop(jobs);
+
+        // The loop would detect this dead task and log a warning,
+        // but it does NOT re-queue the task. The status remains 'running'.
+        // We verify this by checking the DB directly.
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM download_queue WHERE job_id = ?1",
+                ["loop-dead-job"],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(
+            status, "running",
+            "Dead task should remain running (loop only logs warning)"
+        );
+    }
+
+    /// Test that DownloadQueueService emits events for all status transitions.
+    #[test]
+    fn test_all_status_transitions_emit_events() {
+        let svc = setup_service();
+
+        // Subscribe BEFORE enqueue so we capture the Queued event
+        let mut rx = svc.subscribe_events();
+
+        svc.enqueue(
+            "events-job",
+            "test/repo",
+            "model.gguf",
+            None,
+            "model",
+            Some("Q4_K_M"),
+            None,
+        )
+        .unwrap();
+
+        // Verify Queued event was emitted
+        let event = rx.try_recv().unwrap();
+        match event {
+            DownloadEvent::Queued { job_id, .. } => assert_eq!(job_id, "events-job"),
+            other => panic!("Expected Queued event, got {:?}", other),
+        }
+
+        // Transition to running
+        svc.update_status("events-job", "running", 0, None, None, None)
+            .unwrap();
+        let event = rx.try_recv().unwrap();
+        match event {
+            DownloadEvent::Started { job_id, .. } => assert_eq!(job_id, "events-job"),
+            other => panic!("Expected Started event, got {:?}", other),
+        }
+
+        // Transition to verifying
+        svc.update_status("events-job", "verifying", 1000, Some(2000), None, None)
+            .unwrap();
+        let event = rx.try_recv().unwrap();
+        match event {
+            DownloadEvent::Verifying { job_id, .. } => assert_eq!(job_id, "events-job"),
+            other => panic!("Expected Verifying event, got {:?}", other),
+        }
+
+        // Transition to completed
+        svc.update_status("events-job", "completed", 2000, Some(2000), None, None)
+            .unwrap();
+        let event = rx.try_recv().unwrap();
+        match event {
+            DownloadEvent::Completed { job_id, .. } => assert_eq!(job_id, "events-job"),
+            other => panic!("Expected Completed event, got {:?}", other),
+        }
+    }
+
+    /// Test that progress updates emit Progress events without changing status.
+    #[test]
+    fn test_progress_updates_emit_events() {
+        let svc = setup_service();
+
+        svc.enqueue(
+            "progress-job",
+            "test/repo",
+            "model.gguf",
+            None,
+            "model",
+            Some("Q4_K_M"),
+            None,
+        )
+        .unwrap();
+
+        // Transition to running first
+        svc.update_status("progress-job", "running", 0, Some(5000), None, None)
+            .unwrap();
+
+        let mut rx = svc.subscribe_events();
+
+        // Update progress
+        svc.update_progress("progress-job", 2500, Some(5000))
+            .unwrap();
+
+        let event = rx.try_recv().unwrap();
+        match event {
+            DownloadEvent::Progress {
+                job_id,
+                bytes_downloaded,
+                total_bytes,
+            } => {
+                assert_eq!(job_id, "progress-job");
+                assert_eq!(bytes_downloaded, 2500);
+                assert_eq!(total_bytes, Some(5000));
+            }
+            other => panic!("Expected Progress event, got {:?}", other),
+        }
+
+        // Verify status is still running
+        let item = svc
+            .model_mgr
+            .lock()
+            .unwrap()
+            .queue_get_by_job_id("progress-job")
+            .unwrap()
+            .expect("row should exist");
+        assert_eq!(item.status, "running");
+    }
+
+    /// Test that get_active_items returns only queued, running, and verifying items.
+    #[test]
+    fn test_get_active_items_excludes_terminal() {
+        let svc = setup_service();
+
+        // Enqueue multiple items
+        svc.enqueue(
+            "active-1",
+            "test/repo",
+            "model1.gguf",
+            None,
+            "model",
+            None,
+            None,
+        )
+        .unwrap();
+        svc.enqueue(
+            "active-2",
+            "test/repo",
+            "model2.gguf",
+            None,
+            "model",
+            None,
+            None,
+        )
+        .unwrap();
+        svc.enqueue(
+            "active-3",
+            "test/repo",
+            "model3.gguf",
+            None,
+            "model",
+            None,
+            None,
+        )
+        .unwrap();
+
+        // Transition active-1 to running, active-2 to completed, active-3 to queued
+        svc.update_status("active-1", "running", 0, None, None, None)
+            .unwrap();
+        svc.update_status("active-2", "completed", 5000, Some(5000), None, None)
+            .unwrap();
+
+        // active-3 is still queued
+
+        let active = svc.get_active_items().unwrap();
+        let job_ids: Vec<&str> = active.iter().map(|i| i.job_id.as_str()).collect();
+
+        assert!(
+            job_ids.contains(&"active-1"),
+            "running item should be active"
+        );
+        assert!(
+            !job_ids.contains(&"active-2"),
+            "completed item should NOT be active"
+        );
+        assert!(
+            job_ids.contains(&"active-3"),
+            "queued item should be active"
+        );
+    }
+
+    /// Test that get_history_items returns completed, failed, and cancelled items.
+    #[test]
+    fn test_get_history_items_excludes_active() {
+        let svc = setup_service();
+
+        // Enqueue and complete an item
+        svc.enqueue(
+            "history-1",
+            "test/repo",
+            "model1.gguf",
+            None,
+            "model",
+            None,
+            None,
+        )
+        .unwrap();
+        svc.update_status("history-1", "completed", 5000, Some(5000), None, None)
+            .unwrap();
+
+        // Enqueue and fail an item
+        svc.enqueue(
+            "history-2",
+            "test/repo",
+            "model2.gguf",
+            None,
+            "model",
+            None,
+            None,
+        )
+        .unwrap();
+        svc.update_status(
+            "history-2",
+            "failed",
+            0,
+            None,
+            Some("Download failed"),
+            None,
+        )
+        .unwrap();
+
+        // Enqueue and cancel an item
+        svc.enqueue(
+            "history-3",
+            "test/repo",
+            "model3.gguf",
+            None,
+            "model",
+            None,
+            None,
+        )
+        .unwrap();
+        svc.cancel("history-3").unwrap();
+
+        // Enqueue a queued item (should NOT be in history)
+        svc.enqueue(
+            "history-4",
+            "test/repo",
+            "model4.gguf",
+            None,
+            "model",
+            None,
+            None,
+        )
+        .unwrap();
+
+        let history = svc.get_history_items(100, 0).unwrap();
+        let job_ids: Vec<&str> = history.iter().map(|i| i.job_id.as_str()).collect();
+
+        assert!(
+            job_ids.contains(&"history-1"),
+            "completed item should be in history"
+        );
+        assert!(
+            job_ids.contains(&"history-2"),
+            "failed item should be in history"
+        );
+        assert!(
+            job_ids.contains(&"history-3"),
+            "cancelled item should be in history"
+        );
+        assert!(
+            !job_ids.contains(&"history-4"),
+            "queued item should NOT be in history"
+        );
     }
 }

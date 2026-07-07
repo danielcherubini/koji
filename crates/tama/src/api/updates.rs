@@ -527,7 +527,7 @@ pub async fn apply_backend_update(
         }
     };
 
-    let latest_version = match check_latest_version(&backend_type).await {
+    let latest_version = match check_latest_version(&backend_type, None, None).await {
         Ok(v) => v,
         Err(e) => return (
             StatusCode::BAD_GATEWAY,

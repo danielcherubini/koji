@@ -124,16 +124,17 @@ pub async fn update_backend(
     let backend_type = backend_info.backend_type.clone();
 
     // Check latest version
-    let latest_version = match tama_core::backends::check_latest_version(&backend_type).await {
-        Ok(v) => v,
-        Err(e) => {
-            return error_response(
-                StatusCode::BAD_GATEWAY,
-                format!("Failed to check latest version: {}", e),
-                None,
-            )
-        }
-    };
+    let latest_version =
+        match tama_core::backends::check_latest_version(&backend_type, None, None).await {
+            Ok(v) => v,
+            Err(e) => {
+                return error_response(
+                    StatusCode::BAD_GATEWAY,
+                    format!("Failed to check latest version: {}", e),
+                    None,
+                )
+            }
+        };
 
     // Submit job
     let job = match jobs

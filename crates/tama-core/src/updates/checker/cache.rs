@@ -33,8 +33,9 @@ impl GgufListingCache {
     pub async fn get(
         &self,
         repo_id: &str,
+        now: Option<i64>,
     ) -> Option<(String, Vec<crate::models::pull::RemoteGguf>)> {
-        let now = chrono::Utc::now().timestamp();
+        let now = now.unwrap_or_else(|| chrono::Utc::now().timestamp());
         let mut cache = self.cache.lock().await;
         if let Some(entry) = cache.get(repo_id) {
             let (sha, files, epoch) = entry;
@@ -47,14 +48,15 @@ impl GgufListingCache {
         None
     }
 
-    /// Store a result in the cache with the current timestamp.
+    /// Store a result in the cache with the given timestamp.
     pub async fn insert(
         &self,
         repo_id: String,
         commit_sha: String,
         files: Vec<crate::models::pull::RemoteGguf>,
+        now: Option<i64>,
     ) {
-        let now = chrono::Utc::now().timestamp();
+        let now = now.unwrap_or_else(|| chrono::Utc::now().timestamp());
         let mut cache = self.cache.lock().await;
         cache.put(repo_id, (commit_sha, files, now));
     }
