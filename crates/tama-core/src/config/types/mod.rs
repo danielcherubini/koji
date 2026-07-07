@@ -1,5 +1,6 @@
 mod backend;
 mod compaction;
+mod enums;
 mod general;
 mod model;
 mod proxy;
@@ -16,6 +17,7 @@ mod model_tests;
 
 pub use backend::*;
 pub use compaction::*;
+pub use enums::*;
 pub use general::*;
 pub use model::*;
 pub use proxy::*;
@@ -76,7 +78,10 @@ impl Config {
         let general_row = crate::db::queries::get_general(&conn)?
             .ok_or_else(|| anyhow::anyhow!("app_general row not found after seeding"))?;
         let general = General {
-            log_level: general_row.log_level,
+            log_level: crate::config::types::LogLevel::from_str(&general_row.log_level)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("invalid log_level '{}' in DB", general_row.log_level)
+                })?,
             models_dir: general_row.models_dir,
             logs_dir: general_row.logs_dir,
             hf_token: general_row.hf_token,
@@ -105,7 +110,15 @@ impl Config {
         let supervisor_row = crate::db::queries::get_supervisor(&conn)?
             .ok_or_else(|| anyhow::anyhow!("app_supervisor row not found after seeding"))?;
         let supervisor = Supervisor {
-            restart_policy: supervisor_row.restart_policy,
+            restart_policy: crate::config::types::RestartPolicy::from_str(
+                &supervisor_row.restart_policy,
+            )
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "invalid restart_policy '{}' in DB",
+                    supervisor_row.restart_policy
+                )
+            })?,
             max_restarts: supervisor_row.max_restarts,
             restart_delay_ms: supervisor_row.restart_delay_ms,
             health_check_interval_ms: supervisor_row.health_check_interval_ms,
@@ -119,7 +132,13 @@ impl Config {
         let compaction = CompactionConfig {
             enabled: compaction_row.enabled,
             server_path: compaction_row.server_path,
-            device: compaction_row.device,
+            device: crate::config::types::CompactionDevice::from_str(&compaction_row.device)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "invalid compaction device '{}' in DB",
+                        compaction_row.device
+                    )
+                })?,
             port: compaction_row.port,
             request_timeout_ms: compaction_row.request_timeout_ms,
         };

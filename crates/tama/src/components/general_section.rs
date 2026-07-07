@@ -118,16 +118,18 @@ pub struct GeneralConfig {
 
 #[cfg(all(test, feature = "ssr"))]
 mod tests {
+    use tama_core::config::LogLevel;
+
     #[test]
     fn test_general_section_component_creation() {
         let general = crate::types::config::General {
-            log_level: "info".to_string(),
+            log_level: LogLevel::Info,
             models_dir: Some("/models".to_string()),
             logs_dir: None,
             hf_token: Some("hf_test123".to_string()),
             update_check_interval: 12,
         };
-        assert_eq!(general.log_level, "info");
+        assert_eq!(general.log_level, LogLevel::Info);
         assert_eq!(general.models_dir, Some("/models".to_string()));
         assert_eq!(general.logs_dir, None);
         assert_eq!(general.hf_token, Some("hf_test123".to_string()));
@@ -137,7 +139,7 @@ mod tests {
     #[test]
     fn test_general_section_default() {
         let general = crate::types::config::General::default();
-        assert_eq!(general.log_level, "");
+        assert_eq!(general.log_level, LogLevel::Info);
         assert_eq!(general.models_dir, None);
         assert_eq!(general.logs_dir, None);
         assert_eq!(general.hf_token, None);

@@ -1,9 +1,11 @@
 use serde::{Deserialize, Serialize};
 
+use crate::config::types::RestartPolicy;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Supervisor {
     #[serde(default = "default_restart_policy")]
-    pub restart_policy: String,
+    pub restart_policy: RestartPolicy,
     #[serde(default = "default_max_restarts")]
     pub max_restarts: u32,
     #[serde(default = "default_restart_delay_ms")]
@@ -29,8 +31,8 @@ impl Default for Supervisor {
     }
 }
 
-fn default_restart_policy() -> String {
-    "always".to_string()
+fn default_restart_policy() -> RestartPolicy {
+    RestartPolicy::Always
 }
 
 fn default_max_restarts() -> u32 {

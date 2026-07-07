@@ -11,9 +11,10 @@ use std::collections::BTreeMap;
 use crate::api::StructuredConfigBody;
 use tama_core::config::{
     BackendConfig as CoreBackendConfig, CompactionConfig as CoreCompactionConfig,
-    Config as CoreConfig, General as CoreGeneral, ModelConfig as CoreModelConfig,
+    CompactionDevice as CoreCompactionDevice, Config as CoreConfig, General as CoreGeneral,
+    LogLevel as CoreLogLevel, ModelConfig as CoreModelConfig,
     ModelModalities as CoreModelModalities, ProxyConfig as CoreProxyConfig,
-    Supervisor as CoreSupervisor,
+    RestartPolicy as CoreRestartPolicy, Supervisor as CoreSupervisor,
 };
 use tama_core::config::{
     HealthCheck as CoreHealthCheck, QuantEntry as CoreQuantEntry, QuantKind as CoreQuantKind,
@@ -85,7 +86,7 @@ pub struct SamplingParams {
 /// General configuration section.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct General {
-    pub log_level: String,
+    pub log_level: CoreLogLevel,
     #[serde(default)]
     pub models_dir: Option<String>,
     #[serde(default)]
@@ -219,7 +220,7 @@ impl From<ModelModalities> for CoreModelModalities {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Supervisor {
     #[serde(default = "default_restart_policy")]
-    pub restart_policy: String,
+    pub restart_policy: CoreRestartPolicy,
     #[serde(default = "default_max_restarts")]
     pub max_restarts: u32,
     #[serde(default = "default_restart_delay_ms")]
@@ -299,15 +300,15 @@ pub struct CompactionConfig {
     #[serde(default)]
     pub server_path: Option<String>,
     #[serde(default = "default_compaction_device")]
-    pub device: String,
+    pub device: CoreCompactionDevice,
     #[serde(default)]
     pub port: Option<u16>,
     #[serde(default = "default_compaction_request_timeout_ms")]
     pub request_timeout_ms: u64,
 }
 
-fn default_compaction_device() -> String {
-    "cpu".to_string()
+fn default_compaction_device() -> CoreCompactionDevice {
+    CoreCompactionDevice::Cpu
 }
 
 fn default_compaction_request_timeout_ms() -> u64 {
@@ -357,8 +358,8 @@ fn default_enabled() -> bool {
     true
 }
 
-fn default_restart_policy() -> String {
-    "always".to_string()
+fn default_restart_policy() -> CoreRestartPolicy {
+    CoreRestartPolicy::Always
 }
 
 fn default_max_restarts() -> u32 {
@@ -876,7 +877,7 @@ mod tests {
     #[test]
     fn test_general_serialization() {
         let general = General {
-            log_level: "info".to_string(),
+            log_level: CoreLogLevel::Info,
             models_dir: None,
             logs_dir: None,
             hf_token: None,
@@ -887,7 +888,7 @@ mod tests {
         let deserialized: General = serde_json::from_str(&json).unwrap();
 
         assert_eq!(deserialized.update_check_interval, 24);
-        assert_eq!(deserialized.log_level, "info");
+        assert_eq!(deserialized.log_level, CoreLogLevel::Info);
     }
 
     // ── Supervisor config serialization tests ─────────────────────────────
@@ -895,7 +896,7 @@ mod tests {
     #[test]
     fn test_supervisor_serialization() {
         let supervisor = Supervisor {
-            restart_policy: "always".to_string(),
+            restart_policy: CoreRestartPolicy::Always,
             max_restarts: 3,
             restart_delay_ms: 5000,
             health_check_interval_ms: 10000,
@@ -906,7 +907,7 @@ mod tests {
         let json = serde_json::to_string(&supervisor).unwrap();
         let deserialized: Supervisor = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(deserialized.restart_policy, "always");
+        assert_eq!(deserialized.restart_policy, CoreRestartPolicy::Always);
         assert_eq!(deserialized.max_restarts, 3);
     }
 

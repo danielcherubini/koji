@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::types::{CompactionDevice, LogLevel, RestartPolicy};
 
 #[test]
 fn test_default_sampling_templates() {
@@ -131,7 +132,7 @@ fn test_config_db_roundtrip() {
 
     let config = Config {
         general: General {
-            log_level: "debug".to_string(),
+            log_level: LogLevel::Debug,
             models_dir: Some("/data/models".to_string()),
             logs_dir: Some("/var/log/tama".to_string()),
             hf_token: Some("hf_test123".to_string()),
@@ -139,7 +140,7 @@ fn test_config_db_roundtrip() {
         },
         backends: HashMap::new(),
         supervisor: Supervisor {
-            restart_policy: "on-failure".to_string(),
+            restart_policy: RestartPolicy::OnFailure,
             max_restarts: 5,
             restart_delay_ms: 5000,
             health_check_interval_ms: 3000,
@@ -167,7 +168,7 @@ fn test_config_db_roundtrip() {
         compaction: CompactionConfig {
             enabled: true,
             server_path: Some("/opt/compaction/main.py".to_string()),
-            device: "cuda".to_string(),
+            device: CompactionDevice::Cuda,
             port: Some(8888),
             request_timeout_ms: 60000,
         },
@@ -181,14 +182,14 @@ fn test_config_db_roundtrip() {
     let loaded = Config::from_db(&db_path).unwrap();
 
     // Verify general
-    assert_eq!(loaded.general.log_level, "debug");
+    assert_eq!(loaded.general.log_level, LogLevel::Debug);
     assert_eq!(loaded.general.models_dir, Some("/data/models".to_string()));
     assert_eq!(loaded.general.logs_dir, Some("/var/log/tama".to_string()));
     assert_eq!(loaded.general.hf_token, Some("hf_test123".to_string()));
     assert_eq!(loaded.general.update_check_interval, 24);
 
     // Verify supervisor
-    assert_eq!(loaded.supervisor.restart_policy, "on-failure");
+    assert_eq!(loaded.supervisor.restart_policy, RestartPolicy::OnFailure);
     assert_eq!(loaded.supervisor.max_restarts, 5);
     assert_eq!(loaded.supervisor.restart_delay_ms, 5000);
     assert_eq!(loaded.supervisor.health_check_interval_ms, 3000);
@@ -225,7 +226,7 @@ fn test_config_db_roundtrip() {
         loaded.compaction.server_path,
         Some("/opt/compaction/main.py".to_string())
     );
-    assert_eq!(loaded.compaction.device, "cuda");
+    assert_eq!(loaded.compaction.device, CompactionDevice::Cuda);
     assert_eq!(loaded.compaction.port, Some(8888));
     assert_eq!(loaded.compaction.request_timeout_ms, 60000);
 
@@ -253,14 +254,14 @@ fn test_config_from_empty_db_seeds_defaults() {
     let config = Config::from_db(&db_path).unwrap();
 
     // Verify general defaults
-    assert_eq!(config.general.log_level, "info");
+    assert_eq!(config.general.log_level, LogLevel::Info);
     assert_eq!(config.general.models_dir, None);
     assert_eq!(config.general.logs_dir, None);
     assert_eq!(config.general.hf_token, None);
     assert_eq!(config.general.update_check_interval, 12);
 
     // Verify supervisor defaults
-    assert_eq!(config.supervisor.restart_policy, "always");
+    assert_eq!(config.supervisor.restart_policy, RestartPolicy::Always);
     assert_eq!(config.supervisor.max_restarts, 10);
     assert_eq!(config.supervisor.restart_delay_ms, 3000);
     assert_eq!(config.supervisor.health_check_interval_ms, 5000);
@@ -287,7 +288,7 @@ fn test_config_from_empty_db_seeds_defaults() {
     // Verify compaction defaults
     assert!(!config.compaction.enabled);
     assert_eq!(config.compaction.server_path, None);
-    assert_eq!(config.compaction.device, "cpu");
+    assert_eq!(config.compaction.device, CompactionDevice::Cpu);
     assert_eq!(config.compaction.port, None);
     assert_eq!(config.compaction.request_timeout_ms, 30000);
 

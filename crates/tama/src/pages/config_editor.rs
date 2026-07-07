@@ -5,6 +5,10 @@ use std::collections::BTreeMap;
 
 use crate::components::section_card::SectionCard;
 use crate::utils::{extract_and_store_csrf_token, get_request, post_request};
+use tama_core::config::{
+    CompactionDevice as CoreCompactionDevice, LogLevel as CoreLogLevel,
+    RestartPolicy as CoreRestartPolicy,
+};
 
 // ─── WASM-safe JSON mirror types ──────────────────────────────────────────
 // These match the shape served by /api/config/structured and accepted by POST.
@@ -33,7 +37,7 @@ pub struct Config {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct General {
     #[serde(default)]
-    pub log_level: String,
+    pub log_level: CoreLogLevel,
     #[serde(default)]
     pub models_dir: Option<String>,
     #[serde(default)]
@@ -62,7 +66,7 @@ pub struct BackendConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Supervisor {
     #[serde(default)]
-    pub restart_policy: String,
+    pub restart_policy: CoreRestartPolicy,
     #[serde(default)]
     pub max_restarts: u32,
     #[serde(default)]
@@ -110,15 +114,15 @@ pub struct CompactionConfig {
     #[serde(default)]
     pub server_path: Option<String>,
     #[serde(default = "default_compaction_device")]
-    pub device: String,
+    pub device: CoreCompactionDevice,
     #[serde(default)]
     pub port: Option<u16>,
     #[serde(default = "default_compaction_request_timeout_ms")]
     pub request_timeout_ms: u64,
 }
 
-fn default_compaction_device() -> String {
-    "cpu".to_string()
+fn default_compaction_device() -> CoreCompactionDevice {
+    CoreCompactionDevice::Cpu
 }
 
 fn default_compaction_request_timeout_ms() -> u64 {
@@ -335,11 +339,15 @@ fn GeneralForm(config: RwSignal<Option<Config>>) -> impl IntoView {
                     <select
                         on:change=move |ev| {
                             let v = target_value(&ev);
-                            config.update(|c| if let Some(c) = c { c.general.log_level = v; });
+                            config.update(|c| {
+                                if let Some(c) = c {
+                                    c.general.log_level = CoreLogLevel::from_str(&v)
+                                        .unwrap_or(CoreLogLevel::Info);
+                                }
+                            });
                         }
-                        prop:value=move || get_general().log_level
+                        prop:value=move || get_general().log_level.as_str().to_string()
                     >
-                        <option value="trace">"trace"</option>
                         <option value="debug">"debug"</option>
                         <option value="info">"info"</option>
                         <option value="warn">"warn"</option>
@@ -641,15 +649,19 @@ fn SupervisorForm(config: RwSignal<Option<Config>>) -> impl IntoView {
                 <div>
                     <label>"Restart Policy"</label>
                     <select
-                        prop:value=move || get_sup().restart_policy
+                        prop:value=move || get_sup().restart_policy.as_str().to_string()
                         on:change=move |ev| {
                             let v = target_value(&ev);
-                            config.update(|c| if let Some(c) = c { c.supervisor.restart_policy = v; });
+                            config.update(|c| {
+                                if let Some(c) = c {
+                                    c.supervisor.restart_policy = CoreRestartPolicy::from_str(&v)
+                                        .unwrap_or(CoreRestartPolicy::Always);
+                                }
+                            });
                         }
                     >
                         <option value="always">"always"</option>
                         <option value="on-failure">"on-failure"</option>
-                        <option value="never">"never"</option>
                     </select>
                 </div>
 
@@ -866,13 +878,25 @@ fn CompactionForm(config: RwSignal<Option<Config>>) -> impl IntoView {
                     <select
                         on:change=move |ev| {
                             let v = target_value(&ev);
-                            config.update(|c| if let Some(c) = c { c.compaction.device = v; });
+                            config.update(|c| {
+                                if let Some(c) = c {
+                                    c.compaction.device = CoreCompactionDevice::from_str(&v)
+                                        .unwrap_or(CoreCompactionDevice::Cpu);
+                                }
+                            });
                         }
-                        prop:value=move || get_compaction().device
+                        prop:value=move || get_compaction().device.as_str()
                     >
                         <option value="cpu">"cpu"</option>
                         <option value="cuda">"cuda"</option>
                         <option value="cuda:0">"cuda:0"</option>
+                        <option value="cuda:1">"cuda:1"</option>
+                        <option value="cuda:2">"cuda:2"</option>
+                        <option value="cuda:3">"cuda:3"</option>
+                        <option value="cuda:4">"cuda:4"</option>
+                        <option value="cuda:5">"cuda:5"</option>
+                        <option value="cuda:6">"cuda:6"</option>
+                        <option value="cuda:7">"cuda:7"</option>
                         <option value="mps">"mps"</option>
                     </select>
                     <p class="text-muted" style="font-size:0.85em;margin-top:0.25rem;">

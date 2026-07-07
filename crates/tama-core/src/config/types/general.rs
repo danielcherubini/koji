@@ -1,10 +1,11 @@
 use crate::config::defaults;
+use crate::config::types::LogLevel;
 use serde::{Deserialize, Serialize};
 
 /// General (non-backend) application settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct General {
-    pub log_level: String,
+    pub log_level: LogLevel,
     #[serde(default)]
     pub models_dir: Option<String>,
     #[serde(default)]
@@ -21,7 +22,7 @@ pub struct General {
 impl Default for General {
     fn default() -> Self {
         Self {
-            log_level: defaults::default_log_level(),
+            log_level: LogLevel::default(),
             models_dir: None,
             logs_dir: None,
             hf_token: None,

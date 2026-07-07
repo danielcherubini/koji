@@ -104,7 +104,7 @@ impl ProxyState {
             .arg("--port")
             .arg(port.to_string())
             .env("COMPACTION_PORT", port.to_string())
-            .env("COMPACTION_DEVICE", &compaction.device)
+            .env("COMPACTION_DEVICE", compaction.device.as_str())
             .current_dir(&server_dir);
 
         let mut child = child.spawn().with_context(|| {

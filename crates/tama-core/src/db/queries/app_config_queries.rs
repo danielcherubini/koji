@@ -8,6 +8,8 @@ use anyhow::{anyhow, Context, Result};
 use rusqlite::{params, Connection};
 use serde_json;
 
+use crate::config::types::{CompactionDevice, LogLevel, RestartPolicy};
+
 // ── Typed record structs ─────────────────────────────────────────────
 
 /// A row from the `app_general` table.
@@ -75,7 +77,7 @@ pub struct SamplingTemplateRecord {
 #[allow(clippy::too_many_arguments)]
 pub fn upsert_general(
     conn: &Connection,
-    log_level: &str,
+    log_level: &LogLevel,
     models_dir: Option<&str>,
     logs_dir: Option<&str>,
     hf_token: Option<&str>,
@@ -84,7 +86,7 @@ pub fn upsert_general(
     conn.execute(
         "INSERT OR REPLACE INTO app_general (id, log_level, models_dir, logs_dir, hf_token, update_check_interval)
          VALUES (1, ?1, ?2, ?3, ?4, ?5)",
-        params![log_level, models_dir, logs_dir, hf_token, update_check_interval as i64],
+        params![log_level.as_str(), models_dir, logs_dir, hf_token, update_check_interval as i64],
     )
     .context("Failed to upsert app_general")?;
     Ok(())
@@ -185,10 +187,20 @@ pub fn get_proxy(conn: &Connection) -> Result<Option<ProxyRecord>> {
     })?;
     match rows.next() {
         Some(Ok(record)) => {
-            let (host, port, auto_unload, idle_timeout_secs, startup_timeout_secs,
-                circuit_breaker_threshold, circuit_breaker_cooldown_seconds,
-                metrics_retention_secs, download_queue_poll_interval_secs,
-                max_loaded_models, authenticator_url, skip_paths_str) = record;
+            let (
+                host,
+                port,
+                auto_unload,
+                idle_timeout_secs,
+                startup_timeout_secs,
+                circuit_breaker_threshold,
+                circuit_breaker_cooldown_seconds,
+                metrics_retention_secs,
+                download_queue_poll_interval_secs,
+                max_loaded_models,
+                authenticator_url,
+                skip_paths_str,
+            ) = record;
             let authenticator_skip_paths: Vec<String> = serde_json::from_str(&skip_paths_str)
                 .map_err(|e| anyhow!("Failed to deserialize authenticator_skip_paths: {e}"))?;
             Ok(Some(ProxyRecord {
@@ -214,7 +226,7 @@ pub fn get_proxy(conn: &Connection) -> Result<Option<ProxyRecord>> {
 /// Insert or replace the supervisor config row (id=1).
 pub fn upsert_supervisor(
     conn: &Connection,
-    restart_policy: &str,
+    restart_policy: &RestartPolicy,
     max_restarts: u32,
     restart_delay_ms: u64,
     health_check_interval_ms: u64,
@@ -226,7 +238,7 @@ pub fn upsert_supervisor(
             health_check_interval_ms, health_check_timeout_ms, health_check_retries)
          VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)",
         params![
-            restart_policy,
+            restart_policy.as_str(),
             max_restarts as i64,
             restart_delay_ms,
             health_check_interval_ms,
@@ -267,7 +279,7 @@ pub fn upsert_compaction(
     conn: &Connection,
     enabled: bool,
     server_path: Option<&str>,
-    device: &str,
+    device: &CompactionDevice,
     port: Option<u16>,
     request_timeout_ms: u64,
 ) -> Result<()> {
@@ -277,7 +289,7 @@ pub fn upsert_compaction(
         params![
             enabled as i32,
             server_path,
-            device,
+            device.as_str(),
             port.map(|p| p as i64),
             request_timeout_ms,
         ],
@@ -497,6 +509,7 @@ pub fn seed_defaults(conn: &Connection) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::types::{CompactionDevice, LogLevel, RestartPolicy};
     use crate::db::open_in_memory;
 
     /// Helper: open an in-memory DB with migrations applied.
@@ -562,7 +575,7 @@ mod tests {
         // Upsert
         upsert_general(
             &conn,
-            "debug",
+            &LogLevel::Debug,
             Some("/data/models"),
             Some("/var/log/tama"),
             Some("hf_abc123"),
@@ -579,7 +592,7 @@ mod tests {
         assert_eq!(general.update_check_interval, 30);
 
         // Upsert again (update)
-        upsert_general(&conn, "warn", None, None, None, 60).unwrap();
+        upsert_general(&conn, &LogLevel::Warn, None, None, None, 60).unwrap();
 
         let general = get_general(&conn).unwrap().unwrap();
         assert_eq!(general.log_level, "warn");
@@ -667,7 +680,7 @@ mod tests {
 
         assert!(get_supervisor(&conn).unwrap().is_none());
 
-        upsert_supervisor(&conn, "on-failure", 5, 5000, 3000, 10000, 2).unwrap();
+        upsert_supervisor(&conn, &RestartPolicy::OnFailure, 5, 5000, 3000, 10000, 2).unwrap();
 
         let supervisor = get_supervisor(&conn).unwrap().unwrap();
         assert_eq!(supervisor.restart_policy, "on-failure");
@@ -678,7 +691,7 @@ mod tests {
         assert_eq!(supervisor.health_check_retries, 2);
 
         // Update
-        upsert_supervisor(&conn, "always", 20, 1000, 10000, 60000, 5).unwrap();
+        upsert_supervisor(&conn, &RestartPolicy::Always, 20, 1000, 10000, 60000, 5).unwrap();
 
         let supervisor = get_supervisor(&conn).unwrap().unwrap();
         assert_eq!(supervisor.restart_policy, "always");
@@ -698,7 +711,7 @@ mod tests {
             &conn,
             true,
             Some("/usr/local/bin/llmlingua"),
-            "cuda",
+            &CompactionDevice::Cuda,
             Some(8888),
             60000,
         )
@@ -715,7 +728,7 @@ mod tests {
         assert_eq!(compaction.request_timeout_ms, 60000);
 
         // Update with defaults
-        upsert_compaction(&conn, false, None, "cpu", None, 30000).unwrap();
+        upsert_compaction(&conn, false, None, &CompactionDevice::Cpu, None, 30000).unwrap();
 
         let compaction = get_compaction(&conn).unwrap().unwrap();
         assert!(!compaction.enabled);

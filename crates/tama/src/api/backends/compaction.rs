@@ -4,6 +4,7 @@ use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+use tama_core::config::CompactionDevice;
 use tama_core::proxy::ProxyState;
 
 #[derive(Debug, Deserialize)]
@@ -30,7 +31,8 @@ pub async fn update_compaction(
     {
         let mut config = state.config().write().await;
         if let Some(device) = &req.device {
-            config.compaction.device = device.clone();
+            config.compaction.device = CompactionDevice::from_str(device)
+                .unwrap_or(config.compaction.device.clone());
         }
         if let Some(port) = &req.port {
             config.compaction.port = *port;
