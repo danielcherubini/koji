@@ -12,8 +12,8 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Quick Stats
 
-- **Total Plans**: 47
-- **Backlog**: 0
+- **Total Plans**: 48
+- **Backlog**: 1
 - **Completed**: 43 ✅
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
@@ -22,7 +22,9 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Backlog
 
-_(empty — all plans executed)_
+| Plan | Description | PR / Git References |
+|------|-------------|---------------------|
+| [OAuth2/OIDC Login](plan-151-oauth2-login.md) | Native OAuth2 login flow with session cookies, replacing Caddy forward_auth dependency | In progress |
 
 ## Completed Plans
 
