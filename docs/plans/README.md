@@ -13,8 +13,8 @@ This directory contains implementation plans for the Tama project. Each plan doc
 ## Quick Stats
 
 - **Total Plans**: 48
-- **Backlog**: 1
-- **Completed**: 43 ✅
+- **Backlog**: 0
+- **Completed**: 44 ✅
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
 
@@ -22,9 +22,7 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Backlog
 
-| Plan | Description | PR / Git References |
-|------|-------------|---------------------|
-| [OAuth2/OIDC Login](plan-151-oauth2-login.md) | Native OAuth2 login flow with session cookies, replacing Caddy forward_auth dependency | In progress |
+_(empty — all plans executed)_
 
 ## Completed Plans
 
@@ -32,6 +30,7 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 | Plan | Description | PR / Git References |
 |------|-------------|---------------------|
+| [OAuth2/OIDC Login](plan-151-oauth2-login.md) | Native OAuth2 login flow with session cookies, replacing Caddy forward_auth dependency | #150 ✅ COMPLETED |
 | [Naming and Cleanup](done/plan-150-naming-and-cleanup.md) | Rename download→pull in model subsystem (60+ files, DB migration _0034), typed handler responses, remove deprecated `loaded` field, ModelConfig design note | #149 ✅ COMPLETED |
 | [Web UI Splits](done/plan-149-web-ui-splits.md) | Split 3 large web UI files (types/config.rs, api/backends/manage.rs, pages/config_editor.rs) into focused modules | #148 ✅ COMPLETED |
 | [Testability](done/plan-148-testability.md) | Backend lifecycle trait abstractions (HealthChecker, ProcessSpawner, PortAllocator, ProcessChecker) + tests, update checker + download queue processor tests | #147 ✅ COMPLETED |

@@ -46,6 +46,7 @@ impl ProxyState {
             inference_stats: tokio::sync::watch::channel(std::collections::HashMap::new()).0,
             gpu_devices_cache: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             model_tasks: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+            cookie_key: cookie::Key::generate(),
         };
 
         // Spawn the queue processor background task if pull queue is configured.

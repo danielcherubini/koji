@@ -231,6 +231,16 @@ fn migrate_global_config(conn: &Connection, config: &Config) -> Result<()> {
         config.proxy.max_loaded_models,
         config.proxy.authenticator_url.as_deref(),
         &config.proxy.authenticator_skip_paths,
+        config.proxy.oauth2.enabled,
+        &config.proxy.oauth2.client_id,
+        &config.proxy.oauth2.client_secret,
+        &config.proxy.oauth2.authorize_url,
+        &config.proxy.oauth2.token_url,
+        config.proxy.oauth2.userinfo_url.as_deref(),
+        config.proxy.oauth2.logout_url.as_deref(),
+        &config.proxy.oauth2.redirect_uri,
+        &config.proxy.oauth2.scopes,
+        config.proxy.oauth2.session_ttl_secs,
     )?;
 
     // Supervisor

@@ -1,5 +1,5 @@
 use super::*;
-use crate::config::types::{CompactionDevice, LogLevel, RestartPolicy};
+use crate::config::types::{CompactionDevice, LogLevel, OAuth2Config, RestartPolicy};
 
 #[test]
 fn test_default_sampling_templates() {
@@ -164,6 +164,7 @@ fn test_config_db_roundtrip() {
                 "/metrics".to_string(),
                 "/custom".to_string(),
             ],
+            oauth2: OAuth2Config::default(),
         },
         compaction: CompactionConfig {
             enabled: true,

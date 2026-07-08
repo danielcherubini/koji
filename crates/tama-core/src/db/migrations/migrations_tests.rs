@@ -1327,6 +1327,125 @@ fn test_migration_v31_sampling_templates_autoincrement() {
     assert_eq!(id2, 2);
 }
 
+/// Migration v35 must add all OAuth2 columns to app_proxy.
+#[test]
+fn test_migration_v35_adds_oauth2_columns() {
+    let conn = Connection::open_in_memory().unwrap();
+
+    // Bring DB up to v34 (pre-v35 schema)
+    run_up_to(&conn, 34).unwrap();
+
+    // Verify OAuth2 columns do NOT exist yet
+    for col in [
+        "oauth2_enabled",
+        "oauth2_client_id",
+        "oauth2_client_secret",
+        "oauth2_authorize_url",
+        "oauth2_token_url",
+        "oauth2_userinfo_url",
+        "oauth2_logout_url",
+        "oauth2_redirect_uri",
+        "oauth2_scopes",
+        "oauth2_session_ttl_secs",
+    ] {
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('app_proxy') WHERE name=?",
+                [col],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(exists, 0, "column '{}' should NOT exist before v35", col);
+    }
+
+    // Apply v35
+    run(&conn).unwrap();
+
+    // Verify all OAuth2 columns now exist
+    for col in [
+        "oauth2_enabled",
+        "oauth2_client_id",
+        "oauth2_client_secret",
+        "oauth2_authorize_url",
+        "oauth2_token_url",
+        "oauth2_userinfo_url",
+        "oauth2_logout_url",
+        "oauth2_redirect_uri",
+        "oauth2_scopes",
+        "oauth2_session_ttl_secs",
+    ] {
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('app_proxy') WHERE name=?",
+                [col],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(exists, 1, "column '{}' must exist after v35", col);
+    }
+
+    // Verify defaults: insert a row with only id, check OAuth2 defaults
+    conn.execute("INSERT INTO app_proxy (id) VALUES (1)", [])
+        .unwrap();
+
+    let enabled: i32 = conn
+        .query_row(
+            "SELECT oauth2_enabled FROM app_proxy WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(enabled, 0);
+
+    let client_id: String = conn
+        .query_row(
+            "SELECT oauth2_client_id FROM app_proxy WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(client_id, "");
+
+    let ttl: i64 = conn
+        .query_row(
+            "SELECT oauth2_session_ttl_secs FROM app_proxy WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(ttl, 86400);
+
+    // Verify scopes default
+    let scopes_str: String = conn
+        .query_row(
+            "SELECT oauth2_scopes FROM app_proxy WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let scopes: Vec<String> = serde_json::from_str(&scopes_str).unwrap();
+    assert_eq!(scopes, vec!["openid", "profile", "email"]);
+
+    // Verify NULL-able columns default to NULL
+    let userinfo: Option<String> = conn
+        .query_row(
+            "SELECT oauth2_userinfo_url FROM app_proxy WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(userinfo, None);
+
+    let logout: Option<String> = conn
+        .query_row(
+            "SELECT oauth2_logout_url FROM app_proxy WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(logout, None);
+}
+
 /// Singleton tables must use default values when no explicit values are given.
 #[test]
 fn test_migration_v31_singleton_defaults() {

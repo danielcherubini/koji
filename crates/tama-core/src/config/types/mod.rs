@@ -95,7 +95,7 @@ impl Config {
         // Read proxy
         let proxy_row = crate::db::queries::get_proxy(&conn)?
             .ok_or_else(|| anyhow::anyhow!("app_proxy row not found after seeding"))?;
-        let proxy = ProxyConfig {
+        let mut proxy = ProxyConfig {
             host: proxy_row.host,
             port: proxy_row.port,
             auto_unload: proxy_row.auto_unload,
@@ -108,7 +108,22 @@ impl Config {
             max_loaded_models: proxy_row.max_loaded_models,
             authenticator_url: proxy_row.authenticator_url,
             authenticator_skip_paths: proxy_row.authenticator_skip_paths,
+            oauth2: crate::config::types::OAuth2Config {
+                enabled: proxy_row.oauth2_enabled,
+                client_id: proxy_row.oauth2_client_id,
+                client_secret: proxy_row.oauth2_client_secret,
+                authorize_url: proxy_row.oauth2_authorize_url,
+                token_url: proxy_row.oauth2_token_url,
+                userinfo_url: proxy_row.oauth2_userinfo_url,
+                logout_url: proxy_row.oauth2_logout_url,
+                redirect_uri: proxy_row.oauth2_redirect_uri,
+                scopes: proxy_row.oauth2_scopes,
+                session_ttl_secs: proxy_row.oauth2_session_ttl_secs,
+            },
         };
+
+        // Resolve env var references in OAuth2 config
+        proxy.resolve_env_vars();
 
         // Read supervisor
         let supervisor_row = crate::db::queries::get_supervisor(&conn)?
@@ -231,6 +246,16 @@ impl Config {
             self.proxy.max_loaded_models,
             self.proxy.authenticator_url.as_deref(),
             &self.proxy.authenticator_skip_paths,
+            self.proxy.oauth2.enabled,
+            &self.proxy.oauth2.client_id,
+            &self.proxy.oauth2.client_secret,
+            &self.proxy.oauth2.authorize_url,
+            &self.proxy.oauth2.token_url,
+            self.proxy.oauth2.userinfo_url.as_deref(),
+            self.proxy.oauth2.logout_url.as_deref(),
+            &self.proxy.oauth2.redirect_uri,
+            &self.proxy.oauth2.scopes,
+            self.proxy.oauth2.session_ttl_secs,
         )?;
 
         // Upsert supervisor

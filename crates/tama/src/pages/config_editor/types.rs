@@ -82,6 +82,30 @@ pub struct Supervisor {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OAuth2Config {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub client_id: String,
+    #[serde(default)]
+    pub client_secret: String,
+    #[serde(default)]
+    pub authorize_url: String,
+    #[serde(default)]
+    pub token_url: String,
+    #[serde(default)]
+    pub userinfo_url: Option<String>,
+    #[serde(default)]
+    pub logout_url: Option<String>,
+    #[serde(default)]
+    pub redirect_uri: String,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    #[serde(default)]
+    pub session_ttl_secs: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProxyConfig {
     #[serde(default)]
     pub host: String,
@@ -107,6 +131,8 @@ pub struct ProxyConfig {
     pub authenticator_url: Option<String>,
     #[serde(default)]
     pub authenticator_skip_paths: Vec<String>,
+    #[serde(default)]
+    pub oauth2: OAuth2Config,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
