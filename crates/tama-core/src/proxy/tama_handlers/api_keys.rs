@@ -94,9 +94,7 @@ fn scopes_are_subset(granted: &[Scope], caller: &[Scope]) -> bool {
     for scope in granted {
         let has = match scope {
             Scope::Inference => caller.contains(&Scope::Inference),
-            Scope::ManagementRead => {
-                caller.contains(&Scope::ManagementRead) || caller_has_write
-            }
+            Scope::ManagementRead => caller.contains(&Scope::ManagementRead) || caller_has_write,
             Scope::ManagementWrite => caller_has_write,
         };
         if !has {
@@ -138,7 +136,11 @@ pub async fn handle_tama_api_keys_create(
 
     // Validate that caller's scopes are a superset of the scopes being granted.
     // OAuth2 users can grant any scope; API keys can only grant scopes they have.
-    if let AuthSubject::Key { scopes: caller_scopes, .. } = &subject {
+    if let AuthSubject::Key {
+        scopes: caller_scopes,
+        ..
+    } = &subject
+    {
         if !scopes_are_subset(&body.scopes, caller_scopes) {
             return json_error(
                 StatusCode::FORBIDDEN,
@@ -314,7 +316,11 @@ pub async fn handle_tama_api_keys_update(
     }
 
     // Validate that caller's scopes are a superset of the scopes being granted.
-    if let AuthSubject::Key { scopes: caller_scopes, .. } = &subject {
+    if let AuthSubject::Key {
+        scopes: caller_scopes,
+        ..
+    } = &subject
+    {
         if !scopes_are_subset(&body.scopes, caller_scopes) {
             return json_error(
                 StatusCode::FORBIDDEN,
