@@ -248,7 +248,7 @@ impl Clone for ProxyState {
             inference_stats: self.inference_stats.clone(),
             gpu_devices_cache: Arc::clone(&self.gpu_devices_cache),
             model_tasks: tokio::sync::RwLock::new(std::collections::HashMap::new()),
-            cookie_key: cookie::Key::generate(),
+            cookie_key: self.cookie_key.clone(),
         }
     }
 }
