@@ -20,6 +20,15 @@ pub async fn update_backend_default_args(
     axum::extract::Query(query): axum::extract::Query<DefaultArgsQuery>,
     Json(req): Json<UpdateDefaultArgsRequest>,
 ) -> impl IntoResponse {
+    // Validate path param to prevent path traversal attacks
+    if backend_name.contains('/') || backend_name.contains('\\') || backend_name.contains("..") {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "Invalid backend name: path separators or traversal sequences not allowed",
+            Some("ValidationError"),
+        );
+    }
+
     let config_dir = state.db_dir().clone().unwrap_or_else(|| {
         tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
     });
