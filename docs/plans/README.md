@@ -13,8 +13,8 @@ This directory contains implementation plans for the Tama project. Each plan doc
 ## Quick Stats
 
 - **Total Plans**: 47
-- **Backlog**: 2
-- **Completed**: 41 ✅
+- **Backlog**: 1
+- **Completed**: 42 ✅
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
 
@@ -24,7 +24,6 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 | Plan | Description |
 |------|-------------|
-| [Web UI Splits](plan-149-web-ui-splits.md) | Split 3 large web UI files (types/config.rs 986, api/backends/manage.rs 1013, pages/config_editor.rs 937) into focused modules |
 | [Naming and Cleanup](plan-150-naming-and-cleanup.md) | Rename download→pull in model subsystem (15+ locations + DB migration), typed handler responses, remove deprecated fields, set rename_legacy deadline |
 
 ## Completed Plans
@@ -33,6 +32,7 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 | Plan | Description | PR / Git References |
 |------|-------------|---------------------|
+| [Web UI Splits](done/plan-149-web-ui-splits.md) | Split 3 large web UI files (types/config.rs, api/backends/manage.rs, pages/config_editor.rs) into focused modules | #148 ✅ COMPLETED |
 | [Testability](done/plan-148-testability.md) | Backend lifecycle trait abstractions (HealthChecker, ProcessSpawner, PortAllocator, ProcessChecker) + tests, update checker + download queue processor tests | #147 ✅ COMPLETED |
 | [Type Safety](done/plan-14[0-7]-type-safety.md) | GpuVendor + ModelState enums, DB tuples → typed records, config enums (RestartPolicy, LogLevel, CompactionDevice) | #146 ✅ COMPLETED |
 | [Architectural Refactoring](done/plan-14[0-7]-architectural-refactoring.md) | DB repository layer, ProxyState encapsulation + WebState extraction, move web_types to tama crate | #145 ✅ COMPLETED |
