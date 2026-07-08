@@ -2,6 +2,7 @@ use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use std::sync::Arc;
 
 use crate::api::error::{error_body, error_response, error_response_simple};
+use crate::types::config::StructuredConfigBody;
 use tama_core::proxy::ProxyState;
 
 pub mod aliases;
@@ -92,24 +93,6 @@ async fn trigger_proxy_reload(
 ///
 /// Note: `models` is intentionally excluded — model configs are stored in the
 /// SQLite database and managed through the `/tama/v1/models/:id` CRUD endpoints.
-/// Only global config sections (general, backends, supervisor, proxy, etc.) are
-/// persisted to the SQLite database through this endpoint.
-#[derive(serde::Serialize, serde::Deserialize)]
-pub struct StructuredConfigBody {
-    pub general: crate::types::config::General,
-    #[serde(default)]
-    pub backends: std::collections::BTreeMap<String, crate::types::config::BackendConfig>,
-    #[serde(default)]
-    pub supervisor: crate::types::config::Supervisor,
-    #[serde(default)]
-    pub sampling_templates:
-        std::collections::BTreeMap<String, crate::types::config::SamplingParams>,
-    #[serde(default)]
-    pub proxy: crate::types::config::ProxyConfig,
-    #[serde(default)]
-    pub compaction: crate::types::config::CompactionConfig,
-}
-
 pub async fn save_config(
     State(_state): State<Arc<ProxyState>>,
     _body: Json<ConfigBody>,

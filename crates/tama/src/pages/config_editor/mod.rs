@@ -12,7 +12,7 @@ enum Section {
     Supervisor,
     Sampling,
     Compaction,
-    // Backup, // TODO: Fix compilation
+    // Backup, // Re-enable when BackupForm component is implemented
 }
 
 impl Section {
@@ -23,7 +23,7 @@ impl Section {
             Section::Supervisor => "Supervisor",
             Section::Sampling => "Sampling Templates",
             Section::Compaction => "Compaction",
-            // Section::Backup => "Backup & Restore", // TODO: Fix compilation
+            // Section::Backup => "Backup & Restore", // Re-enable when BackupForm is implemented
         }
     }
     fn icon(self) -> &'static str {
@@ -33,7 +33,7 @@ impl Section {
             Section::Supervisor => "👀",
             Section::Sampling => "🎲",
             Section::Compaction => "📦",
-            // Section::Backup => "💾", // TODO: Fix compilation
+            // Section::Backup => "💾", // Re-enable when BackupForm is implemented
         }
     }
 }
@@ -145,7 +145,7 @@ pub fn ConfigEditor() -> impl IntoView {
                                             Section::Supervisor => "cfg-supervisor",
                                             Section::Sampling => "cfg-sampling",
                                             Section::Compaction => "cfg-compaction",
-                                            // Section::Backup => "cfg-backup", // TODO: Fix compilation
+                                            // Section::Backup => "cfg-backup", // Re-enable when BackupForm is implemented
                                         };
                                         let active = move || current.get() == s;
                                         view! {

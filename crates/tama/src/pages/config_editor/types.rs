@@ -8,6 +8,12 @@ use crate::gpu_types::{
 
 // ─── WASM-safe JSON mirror types ──────────────────────────────────────────
 // These match the shape served by /api/config/structured and accepted by POST.
+//
+// NOTE: These types duplicate `crate::types::config::*` but use WASM-compatible
+// enums from `gpu_types` (LogLevel, RestartPolicy, CompactionDevice) instead of
+// `tama_core::config::*`. If you add/remove fields here, mirror the change in
+// `types/config/` to keep them in sync. The two Config structs must remain
+// structurally identical for the structured config API to work correctly.
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {

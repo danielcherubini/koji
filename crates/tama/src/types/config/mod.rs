@@ -27,7 +27,24 @@ pub use supervisor::*;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-use crate::api::StructuredConfigBody;
+/// Request body for POST /tama/v1/config/structured.
+///
+/// Mirrors the shape of `Config` but lives here so the API layer
+/// (`api.rs`) doesn't need a reverse dependency into `types::config`.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct StructuredConfigBody {
+    pub general: General,
+    #[serde(default)]
+    pub backends: std::collections::BTreeMap<String, BackendConfig>,
+    #[serde(default)]
+    pub supervisor: Supervisor,
+    #[serde(default)]
+    pub sampling_templates: std::collections::BTreeMap<String, SamplingParams>,
+    #[serde(default)]
+    pub proxy: ProxyConfig,
+    #[serde(default)]
+    pub compaction: CompactionConfig,
+}
 
 /// Main configuration struct.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
