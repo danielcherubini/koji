@@ -186,6 +186,18 @@ impl From<tama_core::config::ProxyConfig> for ProxyConfig {
             max_loaded_models: p.max_loaded_models,
             authenticator_url: p.authenticator_url,
             authenticator_skip_paths: p.authenticator_skip_paths,
+            oauth2: OAuth2Config {
+                enabled: p.oauth2.enabled,
+                client_id: p.oauth2.client_id,
+                client_secret: p.oauth2.client_secret,
+                authorize_url: p.oauth2.authorize_url,
+                token_url: p.oauth2.token_url,
+                userinfo_url: p.oauth2.userinfo_url,
+                logout_url: p.oauth2.logout_url,
+                redirect_uri: p.oauth2.redirect_uri,
+                scopes: p.oauth2.scopes,
+                session_ttl_secs: p.oauth2.session_ttl_secs,
+            },
         }
     }
 }
@@ -206,6 +218,18 @@ impl From<ProxyConfig> for tama_core::config::ProxyConfig {
             max_loaded_models: p.max_loaded_models,
             authenticator_url: p.authenticator_url,
             authenticator_skip_paths: p.authenticator_skip_paths,
+            oauth2: tama_core::config::OAuth2Config {
+                enabled: p.oauth2.enabled,
+                client_id: p.oauth2.client_id,
+                client_secret: p.oauth2.client_secret,
+                authorize_url: p.oauth2.authorize_url,
+                token_url: p.oauth2.token_url,
+                userinfo_url: p.oauth2.userinfo_url,
+                logout_url: p.oauth2.logout_url,
+                redirect_uri: p.oauth2.redirect_uri,
+                scopes: p.oauth2.scopes,
+                session_ttl_secs: p.oauth2.session_ttl_secs,
+            },
         }
     }
 }
