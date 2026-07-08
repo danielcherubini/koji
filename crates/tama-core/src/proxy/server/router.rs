@@ -5,7 +5,7 @@ use axum::{
 };
 use std::sync::Arc;
 
-use crate::proxy::auth::auth_middleware;
+use crate::proxy::auth::{auth_middleware, handle_login, handle_login_callback};
 use crate::proxy::scope_middleware::scope_middleware;
 #[cfg(feature = "web-ui")]
 use tower_http::catch_panic::CatchPanicLayer;
@@ -49,6 +49,9 @@ pub async fn build_router(state: Arc<ProxyState>) -> Router {
         .route("/status", get(handle_status))
         .route("/health", get(handle_health))
         .route("/metrics", get(handle_metrics))
+        // OAuth2 login flow
+        .route("/login", get(handle_login))
+        .route("/login/callback", get(handle_login_callback))
         // Tama management API — model lifecycle
         .route("/tama/v1/models", get(handle_tama_list_models))
         .route("/tama/v1/models/:id", get(handle_tama_get_model_fn))
@@ -155,6 +158,9 @@ pub async fn build_unified_router(
         .route("/status", get(handle_status))
         .route("/health", get(handle_health))
         .route("/metrics", get(handle_metrics))
+        // OAuth2 login flow
+        .route("/login", get(handle_login))
+        .route("/login/callback", get(handle_login_callback))
         // Tama management API — model lifecycle (specific routes before web catch-alls)
         .route("/tama/v1/models/:id/load", post(handle_tama_load_model))
         .route("/tama/v1/models/:id/unload", post(handle_tama_unload_model))

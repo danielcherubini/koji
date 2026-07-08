@@ -527,8 +527,8 @@ pub async fn handle_login(State(state): State<Arc<crate::proxy::ProxyState>>) ->
 /// Handle GET /login/callback — verify CSRF, exchange code, set session.
 pub async fn handle_login_callback(
     State(state): State<Arc<crate::proxy::ProxyState>>,
-    req: Request,
     query: Query<HashMap<String, String>>,
+    req: Request,
 ) -> impl IntoResponse {
     // Extract and verify CSRF state from signed cookie
     let raw_cookie = req
