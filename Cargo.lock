@@ -4003,6 +4003,7 @@ dependencies = [
  "sha2",
  "shlex",
  "strum",
+ "subtle",
  "sysinfo",
  "tar",
  "tempfile",
