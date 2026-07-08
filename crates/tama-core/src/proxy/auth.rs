@@ -356,10 +356,12 @@ fn extract_session(req: &Request, state: &crate::proxy::ProxyState) -> Option<Se
         .map(|p| p.trim())
         .find(|p| p.starts_with(&format!("{}=", SESSION_COOKIE_NAME)))
         .and_then(|p| p.split_once('=').map(|x| x.1))?;
-    // Build a jar from the raw cookie and verify signature
+    // Build a jar from the raw cookie and verify signature.
+    // Use parse_encoded to URL-decode the value (it was set via .encoded()),
+    // otherwise the HMAC signature won't verify.
     let mut jar = cookie::CookieJar::new();
     jar.add_original(
-        cookie::Cookie::parse(format!("{}={}", SESSION_COOKIE_NAME, cookie_value)).ok()?,
+        cookie::Cookie::parse_encoded(format!("{}={}", SESSION_COOKIE_NAME, cookie_value)).ok()?,
     );
     let verified = jar.signed(&state.cookie_key).get(SESSION_COOKIE_NAME)?;
     let claims: SessionClaims = serde_json::from_str(verified.value()).ok()?;
