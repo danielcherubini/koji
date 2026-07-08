@@ -204,7 +204,11 @@ pub fn list_keys(conn: &Connection) -> Result<Vec<ApiKeyRecord>> {
 ///
 /// If this was the last active (non-revoked) key, sets
 /// `api_keys_enabled = 0` on the `app_proxy` table.
-pub fn revoke_key(conn: &Connection, key_id: i64) -> Result<()> {
+/// Revoke an API key by setting `revoked_at` to the current time.
+///
+/// Returns the new value of `api_keys_enabled` (0 if this was the last active key,
+/// 1 otherwise). The caller must sync the in-memory config with this value.
+pub fn revoke_key(conn: &Connection, key_id: i64) -> Result<bool> {
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
     let tx = conn.unchecked_transaction()?;
@@ -224,12 +228,14 @@ pub fn revoke_key(conn: &Connection, key_id: i64) -> Result<()> {
         |row| row.get(0),
     )?;
 
-    if active_count == 0 {
-        tx.execute("UPDATE app_proxy SET api_keys_enabled = 0 WHERE id = 1", [])?;
-    }
+    let enabled = active_count > 0;
+    tx.execute(
+        "UPDATE app_proxy SET api_keys_enabled = ? WHERE id = 1",
+        rusqlite::params![enabled as i64],
+    )?;
 
     tx.commit()?;
-    Ok(())
+    Ok(enabled)
 }
 
 /// Update the scopes of an existing API key.

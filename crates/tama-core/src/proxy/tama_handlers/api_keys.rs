@@ -85,6 +85,34 @@ fn created_by(subject: &AuthSubject) -> String {
     }
 }
 
+/// Check whether `granted` is a subset of `caller`'s scopes.
+///
+/// A caller can only grant scopes they hold. `management:write` implies
+/// `management:read`, so a write-scoped caller can grant both read and write.
+fn scopes_are_subset(granted: &[Scope], caller: &[Scope]) -> bool {
+    let caller_has_write = caller.contains(&Scope::ManagementWrite);
+    for scope in granted {
+        let has = match scope {
+            Scope::Inference => caller.contains(&Scope::Inference),
+            Scope::ManagementRead => {
+                caller.contains(&Scope::ManagementRead) || caller_has_write
+            }
+            Scope::ManagementWrite => caller_has_write,
+        };
+        if !has {
+            return false;
+        }
+    }
+    true
+}
+
+/// Sync the in-memory `api_keys_enabled` config flag with the DB value.
+/// Must be called after create/revoke so the auth middleware sees the change.
+async fn sync_api_keys_enabled(state: &ProxyState, enabled: bool) {
+    let mut config = state.config.write().await;
+    config.proxy.api_keys_enabled = enabled;
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -106,6 +134,18 @@ pub async fn handle_tama_api_keys_create(
             "invalid_request",
             "scopes must not be empty",
         );
+    }
+
+    // Validate that caller's scopes are a superset of the scopes being granted.
+    // OAuth2 users can grant any scope; API keys can only grant scopes they have.
+    if let AuthSubject::Key { scopes: caller_scopes, .. } = &subject {
+        if !scopes_are_subset(&body.scopes, caller_scopes) {
+            return json_error(
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                "cannot grant scopes you do not have",
+            );
+        }
     }
 
     // Validate expires_at is valid RFC 3339 (if provided)
@@ -165,6 +205,9 @@ pub async fn handle_tama_api_keys_create(
     };
 
     info!(key_id, key_prefix = %key_prefix, creator = %created_by, "API key created");
+
+    // Sync in-memory config so auth_middleware picks up api_keys_enabled = true
+    sync_api_keys_enabled(&state, true).await;
 
     // Fetch the record to get the DB-assigned created_at
     let state_for_record = state.clone();
@@ -246,6 +289,7 @@ pub async fn handle_tama_api_keys_list(State(state): State<Arc<ProxyState>>) -> 
 pub async fn handle_tama_api_keys_update(
     Path(key_id_str): Path<String>,
     State(state): State<Arc<ProxyState>>,
+    Extension(subject): Extension<AuthSubject>,
     Json(body): Json<UpdateApiKeyRequest>,
 ) -> impl IntoResponse {
     // Parse key_id
@@ -267,6 +311,17 @@ pub async fn handle_tama_api_keys_update(
             "invalid_request",
             "scopes must not be empty",
         );
+    }
+
+    // Validate that caller's scopes are a superset of the scopes being granted.
+    if let AuthSubject::Key { scopes: caller_scopes, .. } = &subject {
+        if !scopes_are_subset(&body.scopes, caller_scopes) {
+            return json_error(
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                "cannot grant scopes you do not have",
+            );
+        }
     }
 
     // Validate key exists
@@ -412,8 +467,10 @@ pub async fn handle_tama_api_keys_revoke(
     .await;
 
     match revoke_result {
-        Ok(Ok(())) => {
+        Ok(Ok(enabled)) => {
             info!(key_id, "API key revoked");
+            // Sync in-memory config (revoke may have cleared api_keys_enabled)
+            sync_api_keys_enabled(&state, enabled).await;
             StatusCode::NO_CONTENT.into_response()
         }
         Ok(Err(e)) => {
