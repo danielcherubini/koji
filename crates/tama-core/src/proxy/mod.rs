@@ -1,3 +1,4 @@
+pub mod api_keys;
 pub mod auth;
 pub mod forward;
 mod handlers;
@@ -6,12 +7,14 @@ pub mod process;
 pub mod pull_jobs;
 pub mod pull_queue;
 mod rename;
+pub mod scope_middleware;
 pub mod server;
 mod state;
 mod status;
 pub mod tama_handlers;
 mod types;
 
+pub use api_keys::{ApiKeyRecord, AuthSubject, Scope};
 pub use forward::forward_request;
 pub use handlers::chat::{handle_chat_completions, handle_stream_chat_completions};
 pub use handlers::forward::{

@@ -48,6 +48,7 @@ pub struct ProxyRecord {
     pub oauth2_redirect_uri: String,
     pub oauth2_scopes: Vec<String>,
     pub oauth2_session_ttl_secs: u64,
+    pub api_keys_enabled: bool,
 }
 
 /// A row from the `app_supervisor` table.
@@ -152,6 +153,7 @@ pub fn upsert_proxy(
     oauth2_redirect_uri: &str,
     oauth2_scopes: &[String],
     oauth2_session_ttl_secs: u64,
+    api_keys_enabled: bool,
 ) -> Result<()> {
     let skip_paths_json = serde_json::to_string(authenticator_skip_paths)
         .context("Failed to serialize authenticator_skip_paths to JSON")?;
@@ -163,8 +165,9 @@ pub fn upsert_proxy(
             circuit_breaker_threshold, circuit_breaker_cooldown_seconds, metrics_retention_secs,
             download_queue_poll_interval_secs, max_loaded_models, authenticator_url, authenticator_skip_paths,
             oauth2_enabled, oauth2_client_id, oauth2_client_secret, oauth2_authorize_url, oauth2_token_url,
-            oauth2_userinfo_url, oauth2_logout_url, oauth2_redirect_uri, oauth2_scopes, oauth2_session_ttl_secs)
-         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+            oauth2_userinfo_url, oauth2_logout_url, oauth2_redirect_uri, oauth2_scopes, oauth2_session_ttl_secs,
+            api_keys_enabled)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
         params![
             host,
             port as i64,
@@ -188,6 +191,7 @@ pub fn upsert_proxy(
             oauth2_redirect_uri,
             scopes_json,
             oauth2_session_ttl_secs,
+            api_keys_enabled as i32,
         ],
     )
     .context("Failed to upsert app_proxy")?;
@@ -204,7 +208,8 @@ pub fn get_proxy(conn: &Connection) -> Result<Option<ProxyRecord>> {
                 max_loaded_models, authenticator_url, authenticator_skip_paths,
                 oauth2_enabled, oauth2_client_id, oauth2_client_secret,
                 oauth2_authorize_url, oauth2_token_url, oauth2_userinfo_url,
-                oauth2_logout_url, oauth2_redirect_uri, oauth2_scopes, oauth2_session_ttl_secs
+                oauth2_logout_url, oauth2_redirect_uri, oauth2_scopes, oauth2_session_ttl_secs,
+                api_keys_enabled
          FROM app_proxy WHERE id = 1",
     )?;
     let mut rows = stmt.query_map([], |row| {
@@ -231,6 +236,7 @@ pub fn get_proxy(conn: &Connection) -> Result<Option<ProxyRecord>> {
             row.get::<_, String>(19)?,
             row.get::<_, String>(20)?,
             row.get::<_, i64>(21)? as u64,
+            row.get::<_, i32>(22)? != 0,
         ))
     })?;
     match rows.next() {
@@ -258,6 +264,7 @@ pub fn get_proxy(conn: &Connection) -> Result<Option<ProxyRecord>> {
                 oauth2_redirect_uri,
                 scopes_str,
                 oauth2_session_ttl_secs,
+                api_keys_enabled,
             ) = record;
             let authenticator_skip_paths: Vec<String> = serde_json::from_str(&skip_paths_str)
                 .map_err(|e| anyhow!("Failed to deserialize authenticator_skip_paths: {e}"))?;
@@ -286,6 +293,7 @@ pub fn get_proxy(conn: &Connection) -> Result<Option<ProxyRecord>> {
                 oauth2_redirect_uri,
                 oauth2_scopes,
                 oauth2_session_ttl_secs,
+                api_keys_enabled,
             }))
         }
         Some(Err(e)) => Err(e.into()),
@@ -477,9 +485,10 @@ pub fn seed_defaults(conn: &Connection) -> Result<()> {
             circuit_breaker_threshold, circuit_breaker_cooldown_seconds, metrics_retention_secs,
             download_queue_poll_interval_secs, max_loaded_models, authenticator_url, authenticator_skip_paths,
             oauth2_enabled, oauth2_client_id, oauth2_client_secret, oauth2_authorize_url, oauth2_token_url,
-            oauth2_userinfo_url, oauth2_logout_url, oauth2_redirect_uri, oauth2_scopes, oauth2_session_ttl_secs)
+            oauth2_userinfo_url, oauth2_logout_url, oauth2_redirect_uri, oauth2_scopes, oauth2_session_ttl_secs,
+            api_keys_enabled)
          SELECT 1, '0.0.0.0', 11434, 0, 300, 120, 3, 60, 86400, 2, 1, NULL, '[\"/health\",\"/metrics\"]',
-            0, '', '', '', '', NULL, NULL, '', '[\"openid\",\"profile\",\"email\"]', 86400
+            0, '', '', '', '', NULL, NULL, '', '[\"openid\",\"profile\",\"email\"]', 86400, 0
          WHERE NOT EXISTS (SELECT 1 FROM app_proxy WHERE id = 1)",
         [],
     )
@@ -712,6 +721,7 @@ mod tests {
             "",
             &[],
             0,
+            false,
         )
         .unwrap();
 
@@ -757,6 +767,7 @@ mod tests {
             "",
             &[],
             0,
+            false,
         )
         .unwrap();
 
@@ -942,7 +953,8 @@ mod tests {
             Some("https://auth.example.com/logout"),
             "http://localhost:11434/callback",
             &scopes,
-            3600, // session_ttl_secs
+            3600,  // session_ttl_secs
+            false, // api_keys_enabled
         )
         .unwrap();
 
@@ -992,6 +1004,7 @@ mod tests {
             "",
             &["openid".to_string(), "profile".to_string()],
             86400,
+            false, // api_keys_enabled
         )
         .unwrap();
 

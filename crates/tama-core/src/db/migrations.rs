@@ -38,6 +38,7 @@ mod _0032_remove_gpu_type_column;
 mod _0033_add_default_env;
 mod _0034_rename_download_queue_to_pull_queue;
 mod _0035_add_oauth2_config;
+mod _0036_create_api_keys;
 
 #[cfg(test)]
 mod migrations_tests;
@@ -73,7 +74,7 @@ impl Drop for FkGuard<'_> {
 type Migration = (i32, bool, &'static str);
 
 /// Version number for the latest migration
-pub const LATEST_VERSION: i32 = 35;
+pub const LATEST_VERSION: i32 = 36;
 
 /// All migrations collected from individual files, sorted by version.
 const MIGRATIONS: &[Migration] = &[
@@ -112,6 +113,7 @@ const MIGRATIONS: &[Migration] = &[
     _0033_add_default_env::MIGRATION,
     _0034_rename_download_queue_to_pull_queue::MIGRATION,
     _0035_add_oauth2_config::MIGRATION,
+    _0036_create_api_keys::MIGRATION,
 ];
 
 /// Run all applicable migrations on the database

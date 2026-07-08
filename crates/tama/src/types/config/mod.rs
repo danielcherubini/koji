@@ -198,6 +198,7 @@ impl From<tama_core::config::ProxyConfig> for ProxyConfig {
                 scopes: p.oauth2.scopes,
                 session_ttl_secs: p.oauth2.session_ttl_secs,
             },
+            api_keys_enabled: p.api_keys_enabled,
         }
     }
 }
@@ -230,6 +231,7 @@ impl From<ProxyConfig> for tama_core::config::ProxyConfig {
                 scopes: p.oauth2.scopes,
                 session_ttl_secs: p.oauth2.session_ttl_secs,
             },
+            api_keys_enabled: p.api_keys_enabled,
         }
     }
 }

@@ -120,6 +120,7 @@ impl Config {
                 scopes: proxy_row.oauth2_scopes,
                 session_ttl_secs: proxy_row.oauth2_session_ttl_secs,
             },
+            api_keys_enabled: proxy_row.api_keys_enabled,
         };
 
         // Resolve env var references in OAuth2 config
@@ -256,6 +257,7 @@ impl Config {
             &self.proxy.oauth2.redirect_uri,
             &self.proxy.oauth2.scopes,
             self.proxy.oauth2.session_ttl_secs,
+            self.proxy.api_keys_enabled,
         )?;
 
         // Upsert supervisor
