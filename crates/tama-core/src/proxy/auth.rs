@@ -391,7 +391,7 @@ pub async fn handle_login_callback(
         .map(|v| v.to_str().ok())
         .unwrap_or(None);
     let expected_state = cookie_header
-        .map(|h| {
+        .and_then(|h| {
             for pair in h.split(';') {
                 let pair = pair.trim();
                 if let Some((name, value)) = pair.split_once('=') {
@@ -401,8 +401,7 @@ pub async fn handle_login_callback(
                 }
             }
             None
-        })
-        .flatten();
+        });
     let expected_state = match expected_state {
         Some(s) => s,
         None => return redirect_to_login_error("state", "CSRF state missing"),
