@@ -2,6 +2,31 @@
 
 use serde::{Deserialize, Serialize};
 
+/// OAuth2/OpenID Connect configuration (WASM mirror).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct OAuth2Config {
+    /// Whether OAuth2 login is enabled.
+    pub enabled: bool,
+    /// OAuth2 client ID.
+    pub client_id: String,
+    /// OAuth2 client secret.
+    pub client_secret: String,
+    /// Authorization endpoint URL.
+    pub authorize_url: String,
+    /// Token endpoint URL.
+    pub token_url: String,
+    /// Optional — userinfo endpoint URL.
+    pub userinfo_url: Option<String>,
+    /// Optional — RP-initiated logout endpoint.
+    pub logout_url: Option<String>,
+    /// Redirect URI registered with the OAuth2 provider.
+    pub redirect_uri: String,
+    /// Scopes to request.
+    pub scopes: Vec<String>,
+    /// Session TTL in seconds.
+    pub session_ttl_secs: u64,
+}
+
 /// Proxy configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProxyConfig {
@@ -43,6 +68,9 @@ pub struct ProxyConfig {
     /// Example: ["/health", "/metrics"]
     #[serde(default)]
     pub authenticator_skip_paths: Vec<String>,
+    /// OAuth2/OpenID Connect configuration for browser-based authentication.
+    #[serde(default)]
+    pub oauth2: OAuth2Config,
 }
 
 /// Default helper functions for ProxyConfig fields.
@@ -103,6 +131,7 @@ mod tests {
             max_loaded_models: 1,
             authenticator_url: None,
             authenticator_skip_paths: Vec::new(),
+            oauth2: OAuth2Config::default(),
         };
 
         let json = serde_json::to_string(&proxy).unwrap();

@@ -1,4 +1,72 @@
 use serde::{Deserialize, Serialize};
+use tracing;
+
+/// OAuth2/OpenID Connect configuration for browser-based authentication.
+///
+/// When `enabled` is true, the proxy will redirect unauthenticated browser
+/// requests to the configured authorize endpoint and exchange authorization
+/// codes for bearer tokens via the token endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OAuth2Config {
+    /// Whether OAuth2 login is enabled.
+    pub enabled: bool,
+    /// OAuth2 client ID.
+    pub client_id: String,
+    /// Supports env var interpolation: "${ENV_VAR_NAME}" is resolved at startup.
+    pub client_secret: String,
+    /// Authorization endpoint URL.
+    pub authorize_url: String,
+    /// Token endpoint URL.
+    pub token_url: String,
+    /// Optional — used to fetch user claims after token exchange.
+    pub userinfo_url: Option<String>,
+    /// Optional — RP-initiated logout endpoint.
+    pub logout_url: Option<String>,
+    /// Redirect URI registered with the OAuth2 provider.
+    pub redirect_uri: String,
+    /// Scopes to request. Default: ["openid", "profile", "email"].
+    pub scopes: Vec<String>,
+    /// Session TTL in seconds. Default: 86400 (24 hours).
+    pub session_ttl_secs: u64,
+}
+
+impl Default for OAuth2Config {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            client_id: String::new(),
+            client_secret: String::new(),
+            authorize_url: String::new(),
+            token_url: String::new(),
+            userinfo_url: None,
+            logout_url: None,
+            redirect_uri: String::new(),
+            scopes: vec![
+                "openid".to_string(),
+                "profile".to_string(),
+                "email".to_string(),
+            ],
+            session_ttl_secs: 86_400, // 24 hours
+        }
+    }
+}
+
+/// Resolve a `${VAR_NAME}` reference to the environment variable value.
+///
+/// If the env var is not set, the original string is kept with a warning.
+fn resolve_env_var_ref(value: &str) -> String {
+    if let Some(inner) = value.strip_prefix("$").and_then(|s| s.strip_suffix("}")) {
+        std::env::var(inner).unwrap_or_else(|_| {
+            tracing::warn!(
+                env_var = inner,
+                "Environment variable not set, using original value"
+            );
+            value.to_string()
+        })
+    } else {
+        value.to_string()
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxyConfig {
@@ -45,6 +113,9 @@ pub struct ProxyConfig {
     /// Default: ["/health", "/metrics"] — internal endpoints not exposed via Caddy.
     #[serde(default)]
     pub authenticator_skip_paths: Vec<String>,
+    /// OAuth2/OpenID Connect configuration for browser-based authentication.
+    #[serde(default)]
+    pub oauth2: OAuth2Config,
 }
 
 impl Default for ProxyConfig {
@@ -62,6 +133,19 @@ impl Default for ProxyConfig {
             max_loaded_models: default_max_loaded_models(),
             authenticator_url: None,
             authenticator_skip_paths: vec!["/health".to_string(), "/metrics".to_string()],
+            oauth2: OAuth2Config::default(),
+        }
+    }
+}
+
+impl ProxyConfig {
+    /// Resolve environment variable references in OAuth2 client_secret.
+    ///
+    /// "${VAR_NAME}" is replaced with the value of VAR_NAME at runtime.
+    /// If the env var is not set, the original string is kept (with a warning).
+    pub fn resolve_env_vars(&mut self) {
+        if self.oauth2.enabled {
+            self.oauth2.client_secret = resolve_env_var_ref(&self.oauth2.client_secret);
         }
     }
 }

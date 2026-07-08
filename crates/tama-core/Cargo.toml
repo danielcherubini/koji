@@ -50,6 +50,8 @@ strum = { version = "0.27", features = ["derive"] }
 include_dir.workspace = true
 gguf-parser = { git = "https://github.com/Defilan/gguf-parser", branch = "main" }
 nix = { workspace = true, optional = true }
+oauth2.workspace = true
+cookie.workspace = true
 
 [features]
 web-ui = ["dep:nix"]

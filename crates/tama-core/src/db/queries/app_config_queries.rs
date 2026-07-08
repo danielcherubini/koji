@@ -37,6 +37,17 @@ pub struct ProxyRecord {
     pub max_loaded_models: u32,
     pub authenticator_url: Option<String>,
     pub authenticator_skip_paths: Vec<String>,
+    // OAuth2 fields (added in migration v35)
+    pub oauth2_enabled: bool,
+    pub oauth2_client_id: String,
+    pub oauth2_client_secret: String,
+    pub oauth2_authorize_url: String,
+    pub oauth2_token_url: String,
+    pub oauth2_userinfo_url: Option<String>,
+    pub oauth2_logout_url: Option<String>,
+    pub oauth2_redirect_uri: String,
+    pub oauth2_scopes: Vec<String>,
+    pub oauth2_session_ttl_secs: u64,
 }
 
 /// A row from the `app_supervisor` table.
@@ -115,7 +126,7 @@ pub fn get_general(conn: &Connection) -> Result<Option<GeneralRecord>> {
 }
 
 /// Insert or replace the proxy config row (id=1).
-/// `authenticator_skip_paths` is stored as a JSON string.
+/// `authenticator_skip_paths` and `oauth2_scopes` are stored as JSON strings.
 #[allow(clippy::too_many_arguments)]
 pub fn upsert_proxy(
     conn: &Connection,
@@ -131,15 +142,29 @@ pub fn upsert_proxy(
     max_loaded_models: u32,
     authenticator_url: Option<&str>,
     authenticator_skip_paths: &[String],
+    oauth2_enabled: bool,
+    oauth2_client_id: &str,
+    oauth2_client_secret: &str,
+    oauth2_authorize_url: &str,
+    oauth2_token_url: &str,
+    oauth2_userinfo_url: Option<&str>,
+    oauth2_logout_url: Option<&str>,
+    oauth2_redirect_uri: &str,
+    oauth2_scopes: &[String],
+    oauth2_session_ttl_secs: u64,
 ) -> Result<()> {
     let skip_paths_json = serde_json::to_string(authenticator_skip_paths)
         .context("Failed to serialize authenticator_skip_paths to JSON")?;
+    let scopes_json = serde_json::to_string(oauth2_scopes)
+        .context("Failed to serialize oauth2_scopes to JSON")?;
 
     conn.execute(
         "INSERT OR REPLACE INTO app_proxy (id, host, port, auto_unload, idle_timeout_secs, startup_timeout_secs,
             circuit_breaker_threshold, circuit_breaker_cooldown_seconds, metrics_retention_secs,
-            download_queue_poll_interval_secs, max_loaded_models, authenticator_url, authenticator_skip_paths)
-         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            download_queue_poll_interval_secs, max_loaded_models, authenticator_url, authenticator_skip_paths,
+            oauth2_enabled, oauth2_client_id, oauth2_client_secret, oauth2_authorize_url, oauth2_token_url,
+            oauth2_userinfo_url, oauth2_logout_url, oauth2_redirect_uri, oauth2_scopes, oauth2_session_ttl_secs)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
         params![
             host,
             port as i64,
@@ -153,6 +178,16 @@ pub fn upsert_proxy(
             max_loaded_models as i64,
             authenticator_url,
             skip_paths_json,
+            oauth2_enabled as i32,
+            oauth2_client_id,
+            oauth2_client_secret,
+            oauth2_authorize_url,
+            oauth2_token_url,
+            oauth2_userinfo_url,
+            oauth2_logout_url,
+            oauth2_redirect_uri,
+            scopes_json,
+            oauth2_session_ttl_secs,
         ],
     )
     .context("Failed to upsert app_proxy")?;
@@ -160,13 +195,16 @@ pub fn upsert_proxy(
 }
 
 /// Get the proxy config row. Returns None if no row exists.
-/// `authenticator_skip_paths` is deserialized from JSON.
+/// `authenticator_skip_paths` and `oauth2_scopes` are deserialized from JSON.
 pub fn get_proxy(conn: &Connection) -> Result<Option<ProxyRecord>> {
     let mut stmt = conn.prepare(
         "SELECT host, port, auto_unload, idle_timeout_secs, startup_timeout_secs,
                 circuit_breaker_threshold, circuit_breaker_cooldown_seconds,
                 metrics_retention_secs, download_queue_poll_interval_secs,
-                max_loaded_models, authenticator_url, authenticator_skip_paths
+                max_loaded_models, authenticator_url, authenticator_skip_paths,
+                oauth2_enabled, oauth2_client_id, oauth2_client_secret,
+                oauth2_authorize_url, oauth2_token_url, oauth2_userinfo_url,
+                oauth2_logout_url, oauth2_redirect_uri, oauth2_scopes, oauth2_session_ttl_secs
          FROM app_proxy WHERE id = 1",
     )?;
     let mut rows = stmt.query_map([], |row| {
@@ -183,6 +221,16 @@ pub fn get_proxy(conn: &Connection) -> Result<Option<ProxyRecord>> {
             row.get::<_, i64>(9)? as u32,
             row.get::<_, Option<String>>(10)?,
             row.get::<_, String>(11)?,
+            row.get::<_, i32>(12)? != 0,
+            row.get::<_, String>(13)?,
+            row.get::<_, String>(14)?,
+            row.get::<_, String>(15)?,
+            row.get::<_, String>(16)?,
+            row.get::<_, Option<String>>(17)?,
+            row.get::<_, Option<String>>(18)?,
+            row.get::<_, String>(19)?,
+            row.get::<_, String>(20)?,
+            row.get::<_, i64>(21)? as u64,
         ))
     })?;
     match rows.next() {
@@ -200,9 +248,21 @@ pub fn get_proxy(conn: &Connection) -> Result<Option<ProxyRecord>> {
                 max_loaded_models,
                 authenticator_url,
                 skip_paths_str,
+                oauth2_enabled,
+                oauth2_client_id,
+                oauth2_client_secret,
+                oauth2_authorize_url,
+                oauth2_token_url,
+                oauth2_userinfo_url,
+                oauth2_logout_url,
+                oauth2_redirect_uri,
+                scopes_str,
+                oauth2_session_ttl_secs,
             ) = record;
             let authenticator_skip_paths: Vec<String> = serde_json::from_str(&skip_paths_str)
                 .map_err(|e| anyhow!("Failed to deserialize authenticator_skip_paths: {e}"))?;
+            let oauth2_scopes: Vec<String> = serde_json::from_str(&scopes_str)
+                .map_err(|e| anyhow!("Failed to deserialize oauth2_scopes: {e}"))?;
             Ok(Some(ProxyRecord {
                 host,
                 port,
@@ -216,6 +276,16 @@ pub fn get_proxy(conn: &Connection) -> Result<Option<ProxyRecord>> {
                 max_loaded_models,
                 authenticator_url,
                 authenticator_skip_paths,
+                oauth2_enabled,
+                oauth2_client_id,
+                oauth2_client_secret,
+                oauth2_authorize_url,
+                oauth2_token_url,
+                oauth2_userinfo_url,
+                oauth2_logout_url,
+                oauth2_redirect_uri,
+                oauth2_scopes,
+                oauth2_session_ttl_secs,
             }))
         }
         Some(Err(e)) => Err(e.into()),
@@ -405,8 +475,11 @@ pub fn seed_defaults(conn: &Connection) -> Result<()> {
     conn.execute(
         "INSERT OR IGNORE INTO app_proxy (id, host, port, auto_unload, idle_timeout_secs, startup_timeout_secs,
             circuit_breaker_threshold, circuit_breaker_cooldown_seconds, metrics_retention_secs,
-            download_queue_poll_interval_secs, max_loaded_models, authenticator_url, authenticator_skip_paths)
-         SELECT 1, '0.0.0.0', 11434, 0, 300, 120, 3, 60, 86400, 2, 1, NULL, '[\"/health\",\"/metrics\"]'
+            download_queue_poll_interval_secs, max_loaded_models, authenticator_url, authenticator_skip_paths,
+            oauth2_enabled, oauth2_client_id, oauth2_client_secret, oauth2_authorize_url, oauth2_token_url,
+            oauth2_userinfo_url, oauth2_logout_url, oauth2_redirect_uri, oauth2_scopes, oauth2_session_ttl_secs)
+         SELECT 1, '0.0.0.0', 11434, 0, 300, 120, 3, 60, 86400, 2, 1, NULL, '[\"/health\",\"/metrics\"]',
+            0, '', '', '', '', NULL, NULL, '', '[\"openid\",\"profile\",\"email\"]', 86400
          WHERE NOT EXISTS (SELECT 1 FROM app_proxy WHERE id = 1)",
         [],
     )
@@ -629,6 +702,16 @@ mod tests {
             2,
             Some("http://auth:8080"),
             &skip_paths,
+            false, // oauth2_enabled
+            "",
+            "",
+            "",
+            "",
+            None,
+            None,
+            "",
+            &[],
+            0,
         )
         .unwrap();
 
@@ -664,6 +747,16 @@ mod tests {
             1,
             None,
             &[],
+            false, // oauth2_enabled
+            "",
+            "",
+            "",
+            "",
+            None,
+            None,
+            "",
+            &[],
+            0,
         )
         .unwrap();
 
@@ -811,5 +904,100 @@ mod tests {
         // Delete all
         delete_all_sampling_templates(&conn).unwrap();
         assert!(get_all_sampling_templates(&conn).unwrap().is_empty());
+    }
+
+    // ── proxy OAuth2 ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_oauth2_proxy_roundtrip() {
+        let conn = test_conn();
+
+        assert!(get_proxy(&conn).unwrap().is_none());
+
+        let scopes = vec![
+            "openid".to_string(),
+            "profile".to_string(),
+            "email".to_string(),
+        ];
+        upsert_proxy(
+            &conn,
+            "0.0.0.0",
+            11434,
+            false,
+            300,
+            120,
+            3,
+            60,
+            86400,
+            2,
+            1,
+            None,
+            &[],
+            true, // oauth2_enabled
+            "my-client-id",
+            "my-client-secret",
+            "https://auth.example.com/authorize",
+            "https://auth.example.com/token",
+            Some("https://auth.example.com/userinfo"),
+            Some("https://auth.example.com/logout"),
+            "http://localhost:11434/callback",
+            &scopes,
+            3600, // session_ttl_secs
+        )
+        .unwrap();
+
+        let proxy = get_proxy(&conn).unwrap().unwrap();
+        assert!(proxy.oauth2_enabled);
+        assert_eq!(proxy.oauth2_client_id, "my-client-id");
+        assert_eq!(proxy.oauth2_client_secret, "my-client-secret");
+        assert_eq!(
+            proxy.oauth2_authorize_url,
+            "https://auth.example.com/authorize"
+        );
+        assert_eq!(proxy.oauth2_token_url, "https://auth.example.com/token");
+        assert_eq!(
+            proxy.oauth2_userinfo_url,
+            Some("https://auth.example.com/userinfo".to_string())
+        );
+        assert_eq!(
+            proxy.oauth2_logout_url,
+            Some("https://auth.example.com/logout".to_string())
+        );
+        assert_eq!(proxy.oauth2_redirect_uri, "http://localhost:11434/callback");
+        assert_eq!(proxy.oauth2_scopes, scopes);
+        assert_eq!(proxy.oauth2_session_ttl_secs, 3600);
+
+        // Update with disabled OAuth2 and default scopes
+        upsert_proxy(
+            &conn,
+            "0.0.0.0",
+            11434,
+            false,
+            300,
+            120,
+            3,
+            60,
+            86400,
+            2,
+            1,
+            None,
+            &[],
+            false, // oauth2_enabled
+            "",
+            "",
+            "",
+            "",
+            None,
+            None,
+            "",
+            &["openid".to_string(), "profile".to_string()],
+            86400,
+        )
+        .unwrap();
+
+        let proxy = get_proxy(&conn).unwrap().unwrap();
+        assert!(!proxy.oauth2_enabled);
+        assert_eq!(proxy.oauth2_scopes, vec!["openid", "profile"]);
+        assert_eq!(proxy.oauth2_session_ttl_secs, 86400);
     }
 }
