@@ -419,7 +419,7 @@ pub async fn handle_login_callback(
                 .and_then(|p| p.split_once('=').map(|x| x.1))
         })
         .and_then(|cookie_value| {
-            // Build a jar from the raw cookie and verify signature
+            // Build a jar from the raw cookie and verify HMAC signature
             let mut jar = cookie::CookieJar::new();
             jar.add_original(
                 cookie::Cookie::parse(format!("{}={}", CSRF_STATE_COOKIE_NAME, cookie_value))
@@ -428,16 +428,6 @@ pub async fn handle_login_callback(
             jar.signed(&state.cookie_key)
                 .get(CSRF_STATE_COOKIE_NAME)
                 .map(|c| c.value().to_string())
-        })
-        .or_else(|| {
-            // Fallback: try unsigned parsing (for cookies set before signing was added)
-            raw_cookie.and_then(|raw| {
-                raw.split(';')
-                    .map(|p| p.trim())
-                    .find(|p| p.starts_with(&format!("{}=", CSRF_STATE_COOKIE_NAME)))
-                    .and_then(|p| p.split_once('=').map(|x| x.1))
-                    .map(|v| v.trim().to_string())
-            })
         });
     let expected_state = match expected_state {
         Some(s) => s,
