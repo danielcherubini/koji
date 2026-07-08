@@ -290,7 +290,6 @@ pub struct ProxyState {
     /// Used for clean cancellation on unload.
     pub(crate) model_tasks: tokio::sync::RwLock<HashMap<String, JoinSet<()>>>,
     /// Signing key for session cookies (OAuth2 OIDC login).
-    #[allow(dead_code)]
     pub(crate) cookie_key: cookie::Key,
 }
 

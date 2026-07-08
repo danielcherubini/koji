@@ -19,6 +19,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, warn};
 
+use crate::config::types::OAuth2Config;
+
 // --- Auth config ---
 // AuthConfig is no longer used; auth settings are read live from ProxyState.
 // The type is retained for backward compatibility but is empty.
@@ -218,25 +220,30 @@ impl SessionClaims {
     }
 }
 
-/// Extract and validate session claims from request cookies.
-fn extract_session(req: &Request, _state: &crate::proxy::ProxyState) -> Option<SessionClaims> {
-    // Session cookies are stored as raw JSON (not signed), so parse directly from headers.
-    let cookie_header = req.headers().get(header::COOKIE)?.to_str().ok()?;
-    for pair in cookie_header.split(';') {
-        let pair = pair.trim();
-        if let Some((name, value)) = pair.split_once('=') {
-            if name.trim() == SESSION_COOKIE_NAME {
-                return serde_json::from_str(value.trim())
-                    .ok()
-                    .filter(|claims: &SessionClaims| claims.is_valid());
-            }
-        }
-    }
-    None
+/// Extract and validate session claims from request cookies (signature verified).
+fn extract_session(req: &Request, state: &crate::proxy::ProxyState) -> Option<SessionClaims> {
+    let raw = req.headers().get(header::COOKIE)?.to_str().ok()?;
+    let cookie_value = raw
+        .split(';')
+        .map(|p| p.trim())
+        .find(|p| p.starts_with(&format!("{}=", SESSION_COOKIE_NAME)))
+        .and_then(|p| p.split_once('=').map(|x| x.1))?;
+    // Build a jar from the raw cookie and verify signature
+    let mut jar = cookie::CookieJar::new();
+    jar.add_original(
+        cookie::Cookie::parse(format!("{}={}", SESSION_COOKIE_NAME, cookie_value)).ok()?,
+    );
+    let verified = jar.signed(&state.cookie_key).get(SESSION_COOKIE_NAME)?;
+    let claims: SessionClaims = serde_json::from_str(verified.value()).ok()?;
+    Some(claims).filter(|c| c.is_valid())
 }
 
-/// Build a Set-Cookie header value for the session.
-fn session_cookie(claims: &SessionClaims, is_secure: bool) -> cookie::Cookie<'_> {
+/// Build a Set-Cookie header value for the session (HMAC-signed).
+fn session_cookie(
+    claims: &SessionClaims,
+    is_secure: bool,
+    state: &crate::proxy::ProxyState,
+) -> String {
     let value = serde_json::to_string(claims).unwrap_or_default();
     let mut c = cookie::Cookie::build((SESSION_COOKIE_NAME, value))
         .path("/")
@@ -246,17 +253,22 @@ fn session_cookie(claims: &SessionClaims, is_secure: bool) -> cookie::Cookie<'_>
     if is_secure {
         c = c.secure(true);
     }
-    c.finish()
+    let finished = c.finish();
+    // Sign the cookie so the client cannot forge session claims
+    let mut jar = cookie::CookieJar::new();
+    jar.signed_mut(&state.cookie_key).add(finished);
+    jar.get(SESSION_COOKIE_NAME)
+        .map(|c| c.encoded().to_string())
+        .unwrap_or_default()
 }
 
-/// Build an OAuth2 BasicClient from the proxy config.
-fn build_oauth2_client(
-    config: &crate::config::Config,
+/// Build an OAuth2 BasicClient from an OAuth2Config directly (avoids holding config lock).
+fn build_oauth2_client_from_config(
+    oauth2: &OAuth2Config,
 ) -> Result<
     BasicClient<EndpointSet, EndpointNotSet, EndpointNotSet, EndpointNotSet, EndpointSet>,
     anyhow::Error,
 > {
-    let oauth2 = &config.proxy.oauth2;
     let client = BasicClient::new(ClientId::new(oauth2.client_id.clone()))
         .set_client_secret(ClientSecret::new(oauth2.client_secret.clone()))
         .set_auth_uri(AuthUrl::new(oauth2.authorize_url.clone())?)
@@ -285,7 +297,7 @@ async fn fetch_userinfo(
             let body: serde_json::Value = match r.json().await {
                 Ok(v) => v,
                 Err(e) => {
-                    warn!("Failed to parse userinfo response: {}", e);
+                    warn!(url = %url, error = %e, "Failed to parse userinfo JSON response");
                     return ("unknown".to_string(), None);
                 }
             };
@@ -303,11 +315,15 @@ async fn fetch_userinfo(
             (username, email)
         }
         Ok(r) => {
-            warn!("Userinfo endpoint returned {}: ", r.status());
+            warn!(
+                url = %url,
+                status = ?r.status(),
+                "Userinfo endpoint returned non-success status"
+            );
             ("unknown".to_string(), None)
         }
         Err(e) => {
-            warn!("Failed to call userinfo endpoint: {}", e);
+            warn!(url = %url, error = %e, "Failed to call userinfo endpoint");
             ("unknown".to_string(), None)
         }
     }
@@ -336,11 +352,12 @@ pub async fn handle_login(State(state): State<Arc<crate::proxy::ProxyState>>) ->
         )
             .into_response();
     }
+    let oauth2 = config.proxy.oauth2.clone();
+    drop(config);
 
-    let oauth2_client = match build_oauth2_client(&config) {
+    let oauth2_client = match build_oauth2_client_from_config(&oauth2) {
         Ok(c) => c,
         Err(e) => {
-            drop(config);
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
                 format!("OAuth2 misconfigured: {}", e),
@@ -350,29 +367,34 @@ pub async fn handle_login(State(state): State<Arc<crate::proxy::ProxyState>>) ->
     };
 
     let mut auth_request = oauth2_client.authorize_url(oauth2::CsrfToken::new_random);
-    for scope in &config.proxy.oauth2.scopes {
+    for scope in &oauth2.scopes {
         auth_request = auth_request.add_scope(oauth2::Scope::new(scope.clone()));
     }
     let (url, csrf_state) = auth_request.url();
 
     // Store CSRF state in a short-lived signed cookie (5 min TTL)
     let state_value = csrf_state.secret().clone();
-    let state_cookie = cookie::Cookie::build((CSRF_STATE_COOKIE_NAME, state_value))
+    let state_cookie_raw = cookie::Cookie::build((CSRF_STATE_COOKIE_NAME, state_value))
         .path("/login/callback")
         .http_only(true)
         .same_site(cookie::SameSite::Lax)
         .max_age(cookie::time::Duration::seconds(300))
         .finish();
-
-    drop(config);
+    let mut state_jar = cookie::CookieJar::new();
+    state_jar
+        .signed_mut(&state.cookie_key)
+        .add(state_cookie_raw);
+    let state_cookie = state_jar
+        .get(CSRF_STATE_COOKIE_NAME)
+        .map(|c| c.encoded().to_string())
+        .unwrap_or_default();
 
     let location = url.to_string();
-    let set_cookie = state_cookie.encoded().to_string();
     (
         StatusCode::FOUND,
         [
             (header::LOCATION, location),
-            (header::SET_COOKIE, set_cookie),
+            (header::SET_COOKIE, state_cookie.clone()),
         ],
     )
         .into_response()
@@ -384,23 +406,38 @@ pub async fn handle_login_callback(
     req: Request,
     query: Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    // Extract and verify CSRF state from cookie
-    let cookie_header = req
+    // Extract and verify CSRF state from signed cookie
+    let raw_cookie = req
         .headers()
         .get(header::COOKIE)
-        .map(|v| v.to_str().ok())
-        .unwrap_or(None);
-    let expected_state = cookie_header
-        .and_then(|h| {
-            for pair in h.split(';') {
-                let pair = pair.trim();
-                if let Some((name, value)) = pair.split_once('=') {
-                    if name.trim() == CSRF_STATE_COOKIE_NAME {
-                        return Some(value.trim().to_string());
-                    }
-                }
-            }
-            None
+        .and_then(|v| v.to_str().ok());
+    let expected_state = raw_cookie
+        .and_then(|raw| {
+            raw.split(';')
+                .map(|p| p.trim())
+                .find(|p| p.starts_with(&format!("{}=", CSRF_STATE_COOKIE_NAME)))
+                .and_then(|p| p.split_once('=').map(|x| x.1))
+        })
+        .and_then(|cookie_value| {
+            // Build a jar from the raw cookie and verify signature
+            let mut jar = cookie::CookieJar::new();
+            jar.add_original(
+                cookie::Cookie::parse(format!("{}={}", CSRF_STATE_COOKIE_NAME, cookie_value))
+                    .ok()?,
+            );
+            jar.signed(&state.cookie_key)
+                .get(CSRF_STATE_COOKIE_NAME)
+                .map(|c| c.value().to_string())
+        })
+        .or_else(|| {
+            // Fallback: try unsigned parsing (for cookies set before signing was added)
+            raw_cookie.and_then(|raw| {
+                raw.split(';')
+                    .map(|p| p.trim())
+                    .find(|p| p.starts_with(&format!("{}=", CSRF_STATE_COOKIE_NAME)))
+                    .and_then(|p| p.split_once('=').map(|x| x.1))
+                    .map(|v| v.trim().to_string())
+            })
         });
     let expected_state = match expected_state {
         Some(s) => s,
@@ -422,30 +459,28 @@ pub async fn handle_login_callback(
         return redirect_to_login_error("state", "CSRF state mismatch");
     }
 
-    // Exchange code for tokens
+    // Clone all needed config upfront — drop lock before any async I/O
     let config = state.config.read().await;
-    let oauth2_client = match build_oauth2_client(&config) {
-        Ok(c) => c,
-        Err(e) => {
-            drop(config);
-            return redirect_to_login_error("config", &e.to_string());
-        }
-    };
-    let http_client = state.client.clone();
-    let token_result = oauth2_client
-        .exchange_code(code)
-        .request_async(&http_client)
-        .await;
+    let oauth2_config = config.proxy.oauth2.clone();
     drop(config);
 
-    let token_response = match token_result {
+    // Exchange code for tokens
+    let oauth2_client = match build_oauth2_client_from_config(&oauth2_config) {
+        Ok(c) => c,
+        Err(e) => return redirect_to_login_error("config", &e.to_string()),
+    };
+    let http_client = state.client.clone();
+    let token_response = match oauth2_client
+        .exchange_code(code)
+        .request_async(&http_client)
+        .await
+    {
         Ok(t) => t,
         Err(e) => return redirect_to_login_error("token", &format!("{}", e)),
     };
 
     // Fetch userinfo if configured
-    let config = state.config.read().await;
-    let (username, email) = if let Some(ref userinfo_url) = config.proxy.oauth2.userinfo_url {
+    let (username, email) = if let Some(ref userinfo_url) = oauth2_config.userinfo_url {
         fetch_userinfo(
             &state.client,
             userinfo_url,
@@ -455,15 +490,10 @@ pub async fn handle_login_callback(
     } else {
         ("unknown".to_string(), None)
     };
-    let session_ttl_secs = config.proxy.oauth2.session_ttl_secs;
-    drop(config);
 
-    // Create session claims and cookie
-    let claims = SessionClaims::new(username, email, session_ttl_secs);
-    let session = session_cookie(&claims, false);
-
-    // Redirect to /tama with session cookie
-    let set_cookie = session.encoded().to_string();
+    // Create signed session claims and cookie
+    let claims = SessionClaims::new(username, email, oauth2_config.session_ttl_secs);
+    let set_cookie = session_cookie(&claims, false, &state);
     (
         StatusCode::FOUND,
         [
@@ -736,7 +766,26 @@ mod tests {
         assert!(!claims.is_valid());
     }
 
-    /// Test that a request with a valid session cookie passes auth middleware.
+    /// Create a signed session cookie header value for testing.
+    fn make_signed_session_cookie(
+        state: &crate::proxy::ProxyState,
+        claims: &SessionClaims,
+    ) -> String {
+        let value = serde_json::to_string(claims).unwrap();
+        let c = cookie::Cookie::build((SESSION_COOKIE_NAME, value))
+            .path("/")
+            .http_only(true)
+            .same_site(cookie::SameSite::Lax)
+            .finish();
+        let mut jar = cookie::CookieJar::new();
+        jar.signed_mut(&state.cookie_key).add(c);
+        // Return just "name=signed_value" (as it appears in the Cookie request header)
+        jar.get(SESSION_COOKIE_NAME)
+            .map(|c| format!("{}={}", c.name(), c.value()))
+            .unwrap_or_default()
+    }
+
+    /// Test that a request with a valid signed session cookie passes auth middleware.
     #[tokio::test]
     async fn test_session_cookie_auth_passes() {
         let claims = SessionClaims::new(
@@ -744,15 +793,15 @@ mod tests {
             Some("cookie@example.com".to_string()),
             3600,
         );
-        let value = serde_json::to_string(&claims).unwrap();
 
-        let app = make_app_oauth2(Some("https://auth.example.com".to_string()));
+        let (app, state) = make_app_oauth2(Some("https://auth.example.com".to_string()));
+        let cookie_value = make_signed_session_cookie(&state, &claims);
 
         let resp = app
             .oneshot(
                 Request::builder()
                     .uri("/")
-                    .header("Cookie", format!("{}={}", SESSION_COOKIE_NAME, value))
+                    .header("Cookie", cookie_value)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -761,7 +810,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
-    /// Test that an expired session cookie is rejected (401).
+    /// Test that an expired signed session cookie is rejected (401).
     #[tokio::test]
     async fn test_session_cookie_expired_rejected() {
         let now = std::time::SystemTime::now()
@@ -775,15 +824,15 @@ mod tests {
             iat: now - 7200,
             exp: now - 3600,
         };
-        let value = serde_json::to_string(&claims).unwrap();
 
-        let app = make_app_oauth2(Some("https://auth.example.com".to_string()));
+        let (app, state) = make_app_oauth2(Some("https://auth.example.com".to_string()));
+        let cookie_value = make_signed_session_cookie(&state, &claims);
 
         let resp = app
             .oneshot(
                 Request::builder()
                     .uri("/")
-                    .header("Cookie", format!("{}={}", SESSION_COOKIE_NAME, value))
+                    .header("Cookie", cookie_value)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -792,10 +841,38 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
+    /// Test that a forged (unsigned) session cookie is rejected (401).
+    #[tokio::test]
+    async fn test_session_cookie_unsigned_rejected() {
+        let claims = SessionClaims::new("attacker".to_string(), None, 3600);
+        let forged_value = serde_json::to_string(&claims).unwrap();
+
+        let (app, _state) = make_app_oauth2(Some("https://auth.example.com".to_string()));
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header(
+                        "Cookie",
+                        format!("{}={}", SESSION_COOKIE_NAME, forged_value),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "unsigned cookie must be rejected"
+        );
+    }
+
     /// Test that a missing session cookie returns 401 when auth is configured.
     #[tokio::test]
     async fn test_session_cookie_missing_rejected() {
-        let app = make_app_oauth2(Some("https://auth.example.com".to_string()));
+        let (app, _state) = make_app_oauth2(Some("https://auth.example.com".to_string()));
 
         let resp = app
             .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
@@ -808,7 +885,7 @@ mod tests {
     /// when OAuth2 is enabled and no auth is present.
     #[tokio::test]
     async fn test_browser_401_redirects_to_login_when_oauth2_enabled() {
-        let app = make_app_oauth2(Some("https://auth.example.com".to_string()));
+        let (app, _state) = make_app_oauth2(Some("https://auth.example.com".to_string()));
 
         let resp = app
             .oneshot(
@@ -829,7 +906,7 @@ mod tests {
     /// even when OAuth2 is enabled.
     #[tokio::test]
     async fn test_api_401_returns_json_when_oauth2_enabled() {
-        let app = make_app_oauth2(Some("https://auth.example.com".to_string()));
+        let (app, _state) = make_app_oauth2(Some("https://auth.example.com".to_string()));
 
         let resp = app
             .oneshot(
@@ -853,7 +930,7 @@ mod tests {
     #[tokio::test]
     async fn test_login_routes_in_skip_paths() {
         for path in &["/login", "/login/callback", "/login/error"] {
-            let app = make_app_oauth2(Some("https://auth.example.com".to_string()));
+            let (app, _state) = make_app_oauth2(Some("https://auth.example.com".to_string()));
             let resp = app
                 .oneshot(Request::builder().uri(*path).body(Body::empty()).unwrap())
                 .await
@@ -869,7 +946,7 @@ mod tests {
     }
 
     /// Helper: build an app with OAuth2 enabled (auth via OAuth2 config).
-    fn make_app_oauth2(auth_url: Option<String>) -> Router {
+    fn make_app_oauth2(auth_url: Option<String>) -> (Router, Arc<crate::proxy::ProxyState>) {
         let config = crate::config::Config {
             proxy: crate::config::ProxyConfig {
                 authenticator_url: auth_url,
@@ -897,7 +974,7 @@ mod tests {
         };
         let proxy_state = Arc::new(crate::proxy::ProxyState::new(config, None));
 
-        Router::new()
+        let app = Router::new()
             .route("/", get(test_handler))
             .route("/health", get(test_handler))
             .route("/metrics", get(test_handler))
@@ -906,6 +983,7 @@ mod tests {
                 proxy_state.clone(),
                 auth_middleware,
             ))
-            .with_state(proxy_state)
+            .with_state(proxy_state.clone());
+        (app, proxy_state)
     }
 }

@@ -55,7 +55,7 @@ impl Default for OAuth2Config {
 ///
 /// If the env var is not set, the original string is kept with a warning.
 fn resolve_env_var_ref(value: &str) -> String {
-    if let Some(inner) = value.strip_prefix("$").and_then(|s| s.strip_suffix("}")) {
+    if let Some(inner) = value.strip_prefix("${").and_then(|s| s.strip_suffix("}")) {
         std::env::var(inner).unwrap_or_else(|_| {
             tracing::warn!(
                 env_var = inner,
@@ -186,4 +186,68 @@ fn default_download_queue_poll_interval() -> u64 {
 
 fn default_max_loaded_models() -> u32 {
     1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test that `${VAR_NAME}` is resolved when env var is set.
+    #[test]
+    fn test_resolve_env_var_ref_resolves_set_var() {
+        std::env::set_var("TAMA_TEST_SECRET", "my-secret-value");
+        let result = resolve_env_var_ref("${TAMA_TEST_SECRET}");
+        assert_eq!(result, "my-secret-value");
+        std::env::remove_var("TAMA_TEST_SECRET");
+    }
+
+    /// Test that `${VAR_NAME}` keeps original value when env var is not set.
+    #[test]
+    fn test_resolve_env_var_ref_keeps_unset_var() {
+        std::env::remove_var("TAMA_NONEXISTENT_VAR");
+        let result = resolve_env_var_ref("${TAMA_NONEXISTENT_VAR}");
+        assert_eq!(result, "${TAMA_NONEXISTENT_VAR}");
+    }
+
+    /// Test that a literal value (no `${}`) is returned unchanged.
+    #[test]
+    fn test_resolve_env_var_ref_literal_unchanged() {
+        let result = resolve_env_var_ref("literal-secret-value");
+        assert_eq!(result, "literal-secret-value");
+    }
+
+    /// Test that `resolve_env_vars` resolves client_secret when OAuth2 is enabled.
+    #[test]
+    fn test_proxy_config_resolve_env_vars_enabled() {
+        std::env::set_var("TAMA_OAUTH_SECRET", "resolved-secret");
+        let mut config = ProxyConfig {
+            oauth2: OAuth2Config {
+                enabled: true,
+                client_secret: "${TAMA_OAUTH_SECRET}".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        config.resolve_env_vars();
+        assert_eq!(config.oauth2.client_secret, "resolved-secret");
+        std::env::remove_var("TAMA_OAUTH_SECRET");
+    }
+
+    /// Test that `resolve_env_vars` skips client_secret when OAuth2 is disabled.
+    #[test]
+    fn test_proxy_config_resolve_env_vars_disabled_skips() {
+        std::env::set_var("TAMA_OAUTH_SECRET", "resolved-secret");
+        let mut config = ProxyConfig {
+            oauth2: OAuth2Config {
+                enabled: false,
+                client_secret: "${TAMA_OAUTH_SECRET}".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        config.resolve_env_vars();
+        // Should NOT resolve because OAuth2 is disabled
+        assert_eq!(config.oauth2.client_secret, "${TAMA_OAUTH_SECRET}");
+        std::env::remove_var("TAMA_OAUTH_SECRET");
+    }
 }
