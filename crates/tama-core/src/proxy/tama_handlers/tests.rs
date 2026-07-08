@@ -238,15 +238,15 @@ fn test_pull_job_serializes_for_sse() {
         repo_id: "bartowski/Qwen3-8B-GGUF".to_string(),
         filename: "Qwen3-8B-Q4_K_M.gguf".to_string(),
         status: PullJobStatus::Running,
-        bytes_downloaded: 1_234_567,
+        bytes_pulled: 1_234_567,
         total_bytes: Some(4_800_000_000),
         ..Default::default()
     };
 
     let json = serde_json::to_string(&job).expect("PullJob serialization failed");
     assert!(
-        json.contains("\"bytes_downloaded\""),
-        "missing bytes_downloaded in: {json}"
+        json.contains("\"bytes_pulled\""),
+        "missing bytes_pulled in: {json}"
     );
     assert!(json.contains("\"status\""), "missing status in: {json}");
     assert!(

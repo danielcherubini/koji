@@ -136,17 +136,17 @@ pub struct BenchmarkDto {
     pub benchmark_type: Option<String>,
 }
 
-/// Data Transfer Object for a download queue item.
-/// Replaces `DownloadQueueItem` in the API layer.
+/// Data Transfer Object for a pull queue item.
+/// Replaces `PullQueueItem` in the API layer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DownloadQueueDto {
+pub struct PullQueueDto {
     pub id: i64,
     pub job_id: String,
     pub repo_id: String,
     pub filename: String,
     pub display_name: Option<String>,
     pub status: String,
-    pub bytes_downloaded: i64,
+    pub bytes_pulled: i64,
     pub total_bytes: Option<i64>,
     pub error_message: Option<String>,
     pub started_at: Option<String>,
@@ -185,7 +185,7 @@ pub struct ModelPullDto {
 /// Domain-level database access for API handlers.
 ///
 /// Wraps a SQLite connection and provides high-level methods for
-/// model configs, aliases, benchmarks, download queue, and update checks.
+/// model configs, aliases, benchmarks, pull queue, and update checks.
 pub struct Repository {
     conn: Connection,
 }
@@ -220,19 +220,19 @@ impl Repository {
         Ok(count > 0)
     }
 
-    /// Get an active download queue item by repo_id and filename.
+    /// Get an active pull queue item by repo_id and filename.
     ///
     /// Returns `None` if no active (queued/running/verifying) item exists
     /// for the given repo_id and filename combination.
-    pub fn get_active_download_by_filename(
+    pub fn get_active_pull_by_filename(
         &self,
         repo_id: &str,
         filename: &str,
-    ) -> anyhow::Result<Option<DownloadQueueDto>> {
+    ) -> anyhow::Result<Option<PullQueueDto>> {
         let item = queries::get_active_item_by_repo_filename(&self.conn, repo_id, filename)
             .with_context(|| {
                 format!(
-                    "Failed to get active download for repo_id={} filename={}",
+                    "Failed to get active pull for repo_id={} filename={}",
                     repo_id, filename
                 )
             })?;
@@ -393,11 +393,8 @@ impl Repository {
 
     // ── Download Queue ──────────────────────────────────────────────────
 
-    /// Get a download queue item by job_id.
-    pub fn get_download_queue_item(
-        &self,
-        job_id: &str,
-    ) -> anyhow::Result<Option<DownloadQueueDto>> {
+    /// Get a pull queue item by job_id.
+    pub fn get_pull_queue_item(&self, job_id: &str) -> anyhow::Result<Option<PullQueueDto>> {
         let item = queries::get_item_by_job_id(&self.conn, job_id)?;
         Ok(item.map(queue_item_to_dto))
     }
@@ -526,15 +523,15 @@ fn benchmark_row_to_dto(row: queries::BenchmarkRow) -> BenchmarkDto {
     }
 }
 
-fn queue_item_to_dto(item: queries::DownloadQueueItem) -> DownloadQueueDto {
-    DownloadQueueDto {
+fn queue_item_to_dto(item: queries::PullQueueItem) -> PullQueueDto {
+    PullQueueDto {
         id: item.id,
         job_id: item.job_id,
         repo_id: item.repo_id,
         filename: item.filename,
         display_name: item.display_name,
         status: item.status,
-        bytes_downloaded: item.bytes_downloaded,
+        bytes_pulled: item.bytes_pulled,
         total_bytes: item.total_bytes,
         error_message: item.error_message,
         started_at: item.started_at,

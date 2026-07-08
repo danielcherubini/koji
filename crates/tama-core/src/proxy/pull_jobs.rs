@@ -13,20 +13,20 @@ pub enum PullJobStatus {
     Failed,
 }
 
-/// A pull job for downloading a model from HuggingFace.
+/// A pull job for pulling a model from HuggingFace.
 #[derive(Debug, Clone, Serialize)]
 pub struct PullJob {
     pub job_id: String,
     pub repo_id: String,
     pub filename: String,
     pub status: PullJobStatus,
-    pub bytes_downloaded: u64,
+    pub bytes_pulled: u64,
     pub total_bytes: Option<u64>,
     pub error: Option<String>,
     /// Bytes hashed during the verify phase. Updated by the progress-poll task.
     #[serde(default)]
     pub verify_bytes_hashed: u64,
-    /// Total bytes to hash during the verify phase (== downloaded file size).
+    /// Total bytes to hash during the verify phase (== pulled file size).
     /// Set when the verify phase starts so the client can render a progress bar.
     #[serde(default)]
     pub verify_total_bytes: Option<u64>,
@@ -45,7 +45,7 @@ pub struct PullJob {
     /// `Instant::now().elapsed()`. Not serialized to SSE events.
     #[serde(skip)]
     pub duration_ms: Option<u64>,
-    /// Full GGUF metadata parsed after download verification. `None` if parsing failed
+    /// Full GGUF metadata parsed after pull verification. `None` if parsing failed
     /// or the file is not a GGUF (e.g. mmproj). Not serialized to SSE.
     #[serde(skip)]
     pub gguf_metadata: Option<crate::models::pull::GgufMetadata>,
@@ -66,7 +66,7 @@ impl Default for PullJob {
             repo_id: String::new(),
             filename: String::new(),
             status: PullJobStatus::Pending,
-            bytes_downloaded: 0,
+            bytes_pulled: 0,
             total_bytes: None,
             error: None,
             verify_bytes_hashed: 0,

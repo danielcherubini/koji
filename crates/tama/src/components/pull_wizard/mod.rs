@@ -52,7 +52,7 @@ pub struct JobProgress {
     pub job_id: String,
     pub filename: String,
     pub status: String,
-    pub bytes_downloaded: u64,
+    pub bytes_pulled: u64,
     pub total_bytes: Option<u64>,
     pub error: Option<String>,
 }
@@ -70,10 +70,10 @@ pub struct PullJobEntry {
 pub struct SsePayload {
     pub job_id: String,
     pub status: String,
-    pub bytes_downloaded: u64,
+    pub bytes_pulled: u64,
     pub total_bytes: Option<u64>,
     pub error: Option<String>,
-    /// GGUF-parsed context length from the backend (set during download completion).
+    /// GGUF-parsed context length from the backend (set during pull completion).
     #[serde(default)]
     pub gguf_context_length: Option<u64>,
 }
@@ -266,7 +266,7 @@ pub struct PullRequest {
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
-/// A quant that was successfully downloaded by the wizard. Emitted via the
+/// A quant that was successfully pulled by the wizard. Emitted via the
 /// `on_complete` callback so the host can merge new quants into its own state.
 /// Context length is model-level (same for all quants), populated from GGUF parsing.
 #[derive(Clone, Debug)]

@@ -9,51 +9,48 @@ use tama_web::api::downloads::{
     DownloadCancelResponse, DownloadsActiveResponse, DownloadsHistoryResponse,
 };
 
-/// Create a test ProxyState with an in-memory download queue service.
+/// Create a test ProxyState with an in-memory pull queue service.
 fn create_test_state() -> Arc<ProxyState> {
-    use tama_core::proxy::download_queue::DownloadQueueService;
+    use tama_core::proxy::pull_queue::PullQueueService;
 
     let tmp = tempfile::tempdir().unwrap();
     let db_dir = tmp.path().to_path_buf();
 
     // Initialize the database
     let mgr = tama_core::models::ModelManager::open(&db_dir).unwrap();
-    let svc = DownloadQueueService::new(mgr, 2);
+    let svc = PullQueueService::new(mgr, 2);
 
     let config = tama_core::config::Config::default();
     let mut state = ProxyState::new(config, Some(db_dir));
-    state.set_download_queue(Some(Arc::new(svc)));
+    state.set_pull_queue(Some(Arc::new(svc)));
     Arc::new(state)
 }
 
 /// Build the router with the given state, including only downloads routes.
-fn build_download_router(state: Arc<ProxyState>) -> Router {
+fn build_pull_router(state: Arc<ProxyState>) -> Router {
     use axum::routing::{get, post};
 
     Router::new()
         .route(
             "/tama/v1/downloads/active",
-            get(tama_web::api::downloads::get_active_downloads),
+            get(tama_web::api::downloads::get_active_pulls),
         )
         .route(
             "/tama/v1/downloads/history",
-            get(tama_web::api::downloads::get_download_history),
+            get(tama_web::api::downloads::get_pull_history),
         )
         .route(
             "/tama/v1/downloads/:job_id/cancel",
-            post(tama_web::api::downloads::cancel_download),
+            post(tama_web::api::downloads::cancel_pull),
         )
         .with_state(state)
 }
 
-/// Seed the download queue with test data:
+/// Seed the pull queue with test data:
 /// - 2 active items (queued + running)
 /// - 3 history items (completed, failed, cancelled)
 fn seed_test_data(state: &ProxyState) {
-    let svc = state
-        .download_queue()
-        .as_ref()
-        .expect("download_queue configured");
+    let svc = state.pull_queue().as_ref().expect("pull_queue configured");
 
     // Active items
     svc.enqueue(
@@ -138,11 +135,11 @@ fn seed_test_data(state: &ProxyState) {
 }
 
 #[tokio::test]
-async fn test_get_active_downloads_returns_correct_dtos() {
+async fn test_get_active_pulls_returns_correct_dtos() {
     let state = create_test_state();
     seed_test_data(&state);
 
-    let app = build_download_router(state);
+    let app = build_pull_router(state);
 
     let response = app
         .oneshot(
@@ -173,7 +170,7 @@ async fn test_get_active_downloads_returns_correct_dtos() {
         .find(|i| i.job_id == "job-active-1")
         .expect("should find queued item");
     assert_eq!(queued_item.status, "queued");
-    // progress_percent is computed client-side from bytes_downloaded/total_bytes
+    // progress_percent is computed client-side from bytes_pulled/total_bytes
 
     let running_item = response_obj
         .items
@@ -181,7 +178,7 @@ async fn test_get_active_downloads_returns_correct_dtos() {
         .find(|i| i.job_id == "job-active-2")
         .expect("should find running item");
     assert_eq!(running_item.status, "running");
-    // progress_percent is computed client-side from bytes_downloaded/total_bytes
+    // progress_percent is computed client-side from bytes_pulled/total_bytes
 
     // Verify DTO fields are populated
     assert_eq!(queued_item.repo_id, "unsloth/Qwen3.6-35B-A3B-GGUF");
@@ -191,12 +188,12 @@ async fn test_get_active_downloads_returns_correct_dtos() {
 }
 
 #[tokio::test]
-async fn test_get_download_history_with_pagination() {
+async fn test_get_pull_history_with_pagination() {
     let state = create_test_state();
     seed_test_data(&state);
 
     // Test default pagination (limit=50, offset=0)
-    let app = build_download_router(state.clone());
+    let app = build_pull_router(state.clone());
     let response = app
         .oneshot(
             Request::builder()
@@ -220,7 +217,7 @@ async fn test_get_download_history_with_pagination() {
     assert_eq!(response_obj.items.len(), 3);
 
     // Test with limit=1
-    let app = build_download_router(state.clone());
+    let app = build_pull_router(state.clone());
     let response = app
         .oneshot(
             Request::builder()
@@ -244,7 +241,7 @@ async fn test_get_download_history_with_pagination() {
     assert_eq!(response_obj.items.len(), 1);
 
     // Test with offset=1, limit=1
-    let app = build_download_router(state);
+    let app = build_pull_router(state);
     let response = app
         .oneshot(
             Request::builder()
@@ -269,13 +266,13 @@ async fn test_get_download_history_with_pagination() {
 }
 
 #[tokio::test]
-async fn test_cancel_download_succeeds_for_queued_item() {
+async fn test_cancel_pull_succeeds_for_queued_item() {
     let state = create_test_state();
     seed_test_data(&state);
 
-    let _svc = state.download_queue().as_ref().unwrap();
+    let _svc = state.pull_queue().as_ref().unwrap();
 
-    let app = build_download_router(state);
+    let app = build_pull_router(state);
 
     // Cancel the queued item (job-active-1)
     let response = app
@@ -303,11 +300,11 @@ async fn test_cancel_download_succeeds_for_queued_item() {
 }
 
 #[tokio::test]
-async fn test_cancel_download_returns_error_for_completed_item() {
+async fn test_cancel_pull_returns_error_for_completed_item() {
     let state = create_test_state();
     seed_test_data(&state);
 
-    let app = build_download_router(state);
+    let app = build_pull_router(state);
 
     // Try to cancel an already completed item (job-history-1)
     let response = app
@@ -341,7 +338,7 @@ async fn test_cancel_nonexistent_item_returns_error() {
     let state = create_test_state();
     seed_test_data(&state);
 
-    let app = build_download_router(state);
+    let app = build_pull_router(state);
 
     // Try to cancel a non-existent item
     let response = app

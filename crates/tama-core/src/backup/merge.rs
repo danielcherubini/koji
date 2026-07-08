@@ -131,7 +131,7 @@ pub struct DbMergeStats {
 ///
 /// Uses `INSERT OR IGNORE` to skip existing records.
 /// Only merges essential tables (model_pulls, model_files, backend_installations).
-/// Ephemeral tables (active_models, download_log, system_metrics_history) are skipped.
+/// Ephemeral tables (active_models, pull_log, system_metrics_history) are skipped.
 pub fn merge_database(
     local_db: &rusqlite::Connection,
     backup_db_path: &Path,

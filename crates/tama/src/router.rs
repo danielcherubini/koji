@@ -253,7 +253,7 @@ pub fn build_web_routes(
         )
         .route(
             "/tama/v1/downloads/:job_id/cancel",
-            post(api::downloads::cancel_download).layer(json_body_limit),
+            post(api::downloads::cancel_pull).layer(json_body_limit),
         )
         // Alias CRUD routes
         .route(
@@ -304,15 +304,15 @@ pub fn build_web_routes(
         // Downloads Center routes
         .route(
             "/tama/v1/downloads/active",
-            get(api::downloads::get_active_downloads),
+            get(api::downloads::get_active_pulls),
         )
         .route(
             "/tama/v1/downloads/history",
-            get(api::downloads::get_download_history),
+            get(api::downloads::get_pull_history),
         )
         .route(
             "/tama/v1/downloads/events",
-            get(api::downloads::download_events_sse),
+            get(api::downloads::pull_events_sse),
         )
         // API documentation (OpenAPI 3.1.0 spec)
         .route("/tama/v1/docs", get(api::openapi::serve_spec))

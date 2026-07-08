@@ -52,8 +52,8 @@ impl ToastStore {
         self.toasts.get()
     }
 
-    /// Convert a DownloadEvent to a Toast (some events don't produce toasts).
-    pub fn from_download_event(event: &DownloadEvent) -> Option<Toast> {
+    /// Convert a PullEvent to a Toast (some events don't produce toasts).
+    pub fn from_pull_event(event: &PullEvent) -> Option<Toast> {
         match event.event.as_str() {
             "Started" => Some(Toast {
                 id: format!("toast-{}", uuid::Uuid::new_v4()),
@@ -129,14 +129,14 @@ pub enum ToastSeverity {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct DownloadEvent {
+pub struct PullEvent {
     pub event: String,
     pub job_id: String,
     // These fields vary by event type
     pub filename: Option<String>,
     #[expect(dead_code)]
     pub repo_id: Option<String>,
-    pub bytes_downloaded: Option<u64>,
+    pub bytes_pulled: Option<u64>,
     pub total_bytes: Option<u64>,
     pub size_bytes: Option<u64>,
     pub duration_ms: Option<u64>,

@@ -81,7 +81,7 @@ pub fn ProxyAdvancedFields(
                 }
             />
             <p class="text-muted" style="font-size:0.85em;margin-top:0.25rem;">
-                "How often the download queue checks for new items. Minimum: 1 second."
+                "How often the pull queue checks for new items. Minimum: 1 second."
             </p>
         </div>
 

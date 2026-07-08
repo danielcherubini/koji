@@ -1,22 +1,22 @@
-//! Download queue service and event bus for managing download lifecycle.
+//! Pull queue service and event bus for managing pull lifecycle.
 //!
-//! Provides a `DownloadQueueService` that wraps the database query functions
-//! and emits `DownloadEvent`s via a broadcast channel for each state transition.
+//! Provides a `PullQueueService` that wraps the database query functions
+//! and emits `PullEvent`s via a broadcast channel for each state transition.
 
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use tokio::sync::broadcast;
 
-use crate::db::repository::DownloadQueueDto;
+use crate::db::repository::PullQueueDto;
 use crate::models::ModelManager;
 
 // Re-export query type for use in tests.
-use crate::db::queries::DownloadQueueItem;
+use crate::db::queries::PullQueueItem;
 
-/// Events emitted by the download queue service during lifecycle transitions.
+/// Events emitted by the pull queue service during lifecycle transitions.
 #[derive(Debug, Clone)]
-pub enum DownloadEvent {
+pub enum PullEvent {
     Started {
         job_id: String,
         repo_id: String,
@@ -25,7 +25,7 @@ pub enum DownloadEvent {
     },
     Progress {
         job_id: String,
-        bytes_downloaded: u64,
+        bytes_pulled: u64,
         total_bytes: Option<u64>,
     },
     Verifying {
@@ -54,18 +54,18 @@ pub enum DownloadEvent {
     },
 }
 
-/// Service that manages the download queue lifecycle.
-pub struct DownloadQueueService {
+/// Service that manages the pull queue lifecycle.
+pub struct PullQueueService {
     model_mgr: std::sync::Mutex<ModelManager>,
-    events_tx: broadcast::Sender<DownloadEvent>,
+    events_tx: broadcast::Sender<PullEvent>,
     poll_interval_secs: u64,
 }
 
-impl DownloadQueueService {
-    /// Create a new `DownloadQueueService` with a broadcast channel.
+impl PullQueueService {
+    /// Create a new `PullQueueService` with a broadcast channel.
     ///
     /// Capacity is set to 256 to accommodate rapid progress updates during
-    /// large downloads without dropping events. The SSE endpoint handles
+    /// large pulls without dropping events. The SSE endpoint handles
     /// dropped events via the `Lagged` marker event.
     pub fn new(model_mgr: ModelManager, poll_interval_secs: u64) -> Self {
         let events_tx = broadcast::channel(256).0;
@@ -86,9 +86,9 @@ impl DownloadQueueService {
         self.model_mgr.lock().unwrap()
     }
 
-    /// Enqueue a new download item.
+    /// Enqueue a new pull item.
     ///
-    /// Opens a DB connection, inserts the queue item, and emits `DownloadEvent::Queued`.
+    /// Opens a DB connection, inserts the queue item, and emits `PullEvent::Queued`.
     /// Returns `Err` if the job_id already exists (UNIQUE constraint violation).
     #[allow(clippy::too_many_arguments)]
     pub fn enqueue(
@@ -110,7 +110,7 @@ impl DownloadQueueService {
             quant,
             context_length,
         )?;
-        let _ = self.events_tx.send(DownloadEvent::Queued {
+        let _ = self.events_tx.send(PullEvent::Queued {
             job_id: job_id.to_string(),
             repo_id: repo_id.to_string(),
             filename: filename.to_string(),
@@ -121,7 +121,7 @@ impl DownloadQueueService {
     /// Dequeue the oldest queued item (FIFO).
     ///
     /// Opens a DB connection and returns the next item, or `None` if empty.
-    pub fn dequeue(&self) -> Result<Option<DownloadQueueItem>> {
+    pub fn dequeue(&self) -> Result<Option<PullQueueItem>> {
         self.model_mgr.lock().unwrap().queue_get_queued()
     }
 
@@ -133,7 +133,7 @@ impl DownloadQueueService {
         &self,
         job_id: &str,
         new_status: &str,
-        bytes_downloaded: i64,
+        bytes_pulled: i64,
         total_bytes: Option<i64>,
         error_message: Option<&str>,
         duration_ms: Option<u64>,
@@ -148,7 +148,7 @@ impl DownloadQueueService {
         self.model_mgr.lock().unwrap().queue_update_status(
             job_id,
             new_status,
-            bytes_downloaded,
+            bytes_pulled,
             total_bytes,
             error_message,
         )?;
@@ -157,28 +157,28 @@ impl DownloadQueueService {
             // Note: "progress" is intentionally not handled here. Progress events
             // are emitted by update_progress() which uses update_progress_only()
             // directly, avoiding any status field changes.
-            "running" => DownloadEvent::Started {
+            "running" => PullEvent::Started {
                 job_id: job_id.to_string(),
                 repo_id: item.repo_id.clone(),
                 filename: item.filename.clone(),
                 total_bytes: total_bytes.map(|b| b as u64),
             },
-            "verifying" => DownloadEvent::Verifying {
+            "verifying" => PullEvent::Verifying {
                 job_id: job_id.to_string(),
                 filename: item.filename.clone(),
             },
-            "completed" => DownloadEvent::Completed {
+            "completed" => PullEvent::Completed {
                 job_id: job_id.to_string(),
                 filename: item.filename.clone(),
-                size_bytes: bytes_downloaded as u64,
+                size_bytes: bytes_pulled as u64,
                 duration_ms: duration_ms.unwrap_or(0),
             },
-            "failed" => DownloadEvent::Failed {
+            "failed" => PullEvent::Failed {
                 job_id: job_id.to_string(),
                 filename: item.filename.clone(),
                 error: error_message.unwrap_or("Unknown error").to_string(),
             },
-            "cancelled" => DownloadEvent::Cancelled {
+            "cancelled" => PullEvent::Cancelled {
                 job_id: job_id.to_string(),
                 filename: item.filename.clone(),
             },
@@ -191,23 +191,22 @@ impl DownloadQueueService {
 
     /// Update only progress fields without changing status.
     ///
-    /// Emits `DownloadEvent::Progress` and updates bytes_downloaded/total_bytes
+    /// Emits `PullEvent::Progress` and updates bytes_pulled/total_bytes
     /// in the DB without overwriting the current status (running/verifying).
     pub fn update_progress(
         &self,
         job_id: &str,
-        bytes_downloaded: i64,
+        bytes_pulled: i64,
         total_bytes: Option<i64>,
     ) -> Result<()> {
-        self.model_mgr.lock().unwrap().queue_update_progress(
-            job_id,
-            bytes_downloaded,
-            total_bytes,
-        )?;
+        self.model_mgr
+            .lock()
+            .unwrap()
+            .queue_update_progress(job_id, bytes_pulled, total_bytes)?;
 
-        let _ = self.events_tx.send(DownloadEvent::Progress {
+        let _ = self.events_tx.send(PullEvent::Progress {
             job_id: job_id.to_string(),
-            bytes_downloaded: bytes_downloaded as u64,
+            bytes_pulled: bytes_pulled as u64,
             total_bytes: total_bytes.map(|b| b as u64),
         });
         Ok(())
@@ -215,7 +214,7 @@ impl DownloadQueueService {
 
     /// Cancel a queue item if it hasn't reached a terminal state.
     ///
-    /// Opens a DB connection, cancels the item, and emits `DownloadEvent::Cancelled`.
+    /// Opens a DB connection, cancels the item, and emits `PullEvent::Cancelled`.
     pub fn cancel(&self, job_id: &str) -> Result<()> {
         // Check if the item exists and is in a non-terminal state
         let item = self
@@ -235,7 +234,7 @@ impl DownloadQueueService {
 
         self.model_mgr.lock().unwrap().queue_cancel(job_id)?;
 
-        let _ = self.events_tx.send(DownloadEvent::Cancelled {
+        let _ = self.events_tx.send(PullEvent::Cancelled {
             job_id: job_id.to_string(),
             filename: item.filename.clone(),
         });
@@ -243,12 +242,12 @@ impl DownloadQueueService {
     }
 
     /// Get all active items (queued + running + verifying), ordered by status priority.
-    pub fn get_active_items(&self) -> Result<Vec<DownloadQueueItem>> {
+    pub fn get_active_items(&self) -> Result<Vec<PullQueueItem>> {
         self.model_mgr.lock().unwrap().queue_get_active()
     }
 
     /// Get all active items as DTOs (queued + running + verifying), ordered by status priority.
-    pub fn get_active_items_dto(&self) -> Result<Vec<DownloadQueueDto>> {
+    pub fn get_active_items_dto(&self) -> Result<Vec<PullQueueDto>> {
         self.model_mgr
             .lock()
             .unwrap()
@@ -257,7 +256,7 @@ impl DownloadQueueService {
     }
 
     /// Get history items (completed, failed, cancelled), sorted newest first.
-    pub fn get_history_items(&self, limit: i64, offset: i64) -> Result<Vec<DownloadQueueItem>> {
+    pub fn get_history_items(&self, limit: i64, offset: i64) -> Result<Vec<PullQueueItem>> {
         self.model_mgr
             .lock()
             .unwrap()
@@ -265,7 +264,7 @@ impl DownloadQueueService {
     }
 
     /// Get history items as DTOs (completed, failed, cancelled), sorted newest first.
-    pub fn get_history_items_dto(&self, limit: i64, offset: i64) -> Result<Vec<DownloadQueueDto>> {
+    pub fn get_history_items_dto(&self, limit: i64, offset: i64) -> Result<Vec<PullQueueDto>> {
         self.model_mgr
             .lock()
             .unwrap()
@@ -283,25 +282,25 @@ impl DownloadQueueService {
     }
 
     /// Get a single queue item by job ID.
-    pub fn get_queue_item(&self, job_id: &str) -> Result<Option<DownloadQueueItem>> {
+    pub fn get_queue_item(&self, job_id: &str) -> Result<Option<PullQueueItem>> {
         self.model_mgr.lock().unwrap().queue_get_by_job_id(job_id)
     }
 
-    /// Subscribe to download events via a broadcast channel receiver.
-    pub fn subscribe_events(&self) -> broadcast::Receiver<DownloadEvent> {
+    /// Subscribe to pull events via a broadcast channel receiver.
+    pub fn subscribe_events(&self) -> broadcast::Receiver<PullEvent> {
         self.events_tx.subscribe()
     }
 
     /// Perform startup recovery: re-queue stale running items so they get retried.
     ///
-    /// Clears started_at so the download restarts fresh (hf-hub resumes if the
-    /// partial file exists on disk, otherwise it downloads from scratch).
+    /// Clears started_at so the pull restarts fresh (hf-hub resumes if the
+    /// partial file exists on disk, otherwise it pulls from scratch).
     pub fn on_startup_recovery(&self) -> Result<()> {
         // Mark stale running items as queued by updating their status.
         // ModelManager doesn't have a dedicated method for this, so we use the
         // raw connection for the SQL update.
         self.model_mgr.lock().unwrap().conn().execute(
-            "UPDATE download_queue SET status = 'queued', started_at = NULL, completed_at = NULL
+            "UPDATE pull_queue SET status = 'queued', started_at = NULL, completed_at = NULL
              WHERE status = 'running' AND (started_at IS NULL OR
                (strftime('%s', 'now') - strftime('%s', started_at)) > 3600)",
             [],
@@ -315,7 +314,7 @@ impl DownloadQueueService {
     /// `false` if it was already started by someone else.
     pub fn try_mark_running(&self, job_id: &str) -> Result<bool> {
         let rows = self.model_mgr.lock().unwrap().conn().execute(
-            "UPDATE download_queue SET status = 'running', started_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            "UPDATE pull_queue SET status = 'running', started_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              WHERE job_id = ?1 AND status = 'queued'",
             [job_id],
         )?;
@@ -323,16 +322,16 @@ impl DownloadQueueService {
     }
 }
 
-/// Convert a `DownloadQueueItem` (DB record type) to a `DownloadQueueDto`.
-fn item_to_dto(item: DownloadQueueItem) -> DownloadQueueDto {
-    DownloadQueueDto {
+/// Convert a `PullQueueItem` (DB record type) to a `PullQueueDto`.
+fn item_to_dto(item: PullQueueItem) -> PullQueueDto {
+    PullQueueDto {
         id: item.id,
         job_id: item.job_id,
         repo_id: item.repo_id,
         filename: item.filename,
         display_name: item.display_name,
         status: item.status,
-        bytes_downloaded: item.bytes_downloaded,
+        bytes_pulled: item.bytes_pulled,
         total_bytes: item.total_bytes,
         error_message: item.error_message,
         started_at: item.started_at,
@@ -344,14 +343,14 @@ fn item_to_dto(item: DownloadQueueItem) -> DownloadQueueDto {
     }
 }
 
-/// Start a download from the queue.
+/// Start a pull from the queue.
 ///
 /// This is the ONLY code path that transitions items from `queued` → `running`.
 /// Reads the queued item from DB, constructs a QuantDownloadSpec, and calls
-/// the real download implementation from pull.rs.
-async fn start_download_from_queue(
+/// the real pull implementation from pull.rs.
+async fn start_pull_from_queue(
     state: Arc<super::ProxyState>,
-    svc: Arc<DownloadQueueService>,
+    svc: Arc<PullQueueService>,
     job_id: String,
 ) {
     // Read the queue item from DB to get details
@@ -367,17 +366,11 @@ async fn start_download_from_queue(
         context_length: item.context_length,
     };
 
-    // Delegate to the real download implementation in pull.rs.
+    // Delegate to the real pull implementation in pull.rs.
     // Note: the caller (queue_processor_loop) already spawned a task,
     // so we call directly without another spawn.
-    super::tama_handlers::start_download_from_queue(
-        state,
-        job_id,
-        item.repo_id,
-        item.filename,
-        spec,
-    )
-    .await;
+    super::tama_handlers::start_pull_from_queue(state, job_id, item.repo_id, item.filename, spec)
+        .await;
 }
 
 /// Background processor loop that picks up queued items one at a time.
@@ -385,9 +378,9 @@ async fn start_download_from_queue(
 /// This is the ONLY code path that transitions items from `queued` → `running`.
 pub(crate) async fn queue_processor_loop(state: Arc<super::ProxyState>) {
     let svc = state
-        .download_queue
+        .pull_queue
         .as_ref()
-        .expect("download_queue must be configured");
+        .expect("pull_queue must be configured");
 
     // Startup recovery: mark stale running items as failed
     if let Err(e) = svc.on_startup_recovery() {
@@ -402,7 +395,7 @@ pub(crate) async fn queue_processor_loop(state: Arc<super::ProxyState>) {
         let active = match svc.get_active_items() {
             Ok(items) => items,
             Err(e) => {
-                tracing::error!(error=%e, "Failed to check active downloads");
+                tracing::error!(error=%e, "Failed to check active pulls");
                 continue;
             }
         };
@@ -470,7 +463,7 @@ pub(crate) async fn queue_processor_loop(state: Arc<super::ProxyState>) {
                     "Download task died before registering in pull_jobs — re-queuing"
                 );
                 if let Err(e) = svc.model_mgr.lock().unwrap().conn().execute(
-                    "UPDATE download_queue SET status = 'queued', started_at = NULL WHERE job_id = ?1",
+                    "UPDATE pull_queue SET status = 'queued', started_at = NULL WHERE job_id = ?1",
                     [&item.job_id],
                 ) {
                     tracing::error!(error=%e, job_id=%item.job_id, "Failed to re-queue dead task");
@@ -518,12 +511,12 @@ pub(crate) async fn queue_processor_loop(state: Arc<super::ProxyState>) {
         if was_queued {
             // Emit Started event (reads filename from DB via update_status)
             let _ = svc.update_status(&item.job_id, "running", 0, None, None, None);
-            // Spawn the actual download (delegated to a separate async function)
+            // Spawn the actual pull (delegated to a separate async function)
             let job_id = item.job_id.clone();
             let state_clone = Arc::clone(&state);
             let svc_clone = Arc::clone(svc);
             tokio::spawn(async move {
-                start_download_from_queue(state_clone, svc_clone, job_id).await;
+                start_pull_from_queue(state_clone, svc_clone, job_id).await;
             });
         }
     }
@@ -534,17 +527,17 @@ mod tests {
     // NOTE: Tests use raw SQL via `svc.test_model_mgr().conn().execute(...)`
     // to set up specific DB states (timestamps, statuses) that the public API
     // doesn't expose. These queries are coupled to the schema — if the
-    // download_queue table structure changes, update these tests accordingly.
+    // pull_queue table structure changes, update these tests accordingly.
 
     use super::*;
     use crate::config::Config;
     use crate::proxy::ProxyState;
     use std::time::Instant;
 
-    fn setup_service() -> DownloadQueueService {
+    fn setup_service() -> PullQueueService {
         // Use in-memory DB for tests
         let mgr = ModelManager::open_in_memory().unwrap();
-        DownloadQueueService::new(mgr, 2)
+        PullQueueService::new(mgr, 2)
     }
 
     #[test]
@@ -593,7 +586,7 @@ mod tests {
 
         let event = rx.try_recv().unwrap();
         match event {
-            DownloadEvent::Started {
+            PullEvent::Started {
                 job_id,
                 repo_id,
                 filename,
@@ -629,7 +622,7 @@ mod tests {
 
         let event = rx.try_recv().unwrap();
         match event {
-            DownloadEvent::Cancelled { job_id, filename } => {
+            PullEvent::Cancelled { job_id, filename } => {
                 assert_eq!(job_id, "job-1");
                 assert_eq!(filename, "Qwen3.6-35B-Q4_K_M.gguf");
             }
@@ -645,12 +638,12 @@ mod tests {
         assert!(result.is_none());
     }
 
-    /// Integration test: verify that enqueue_download creates a download_queue row
+    /// Integration test: verify that enqueue_pull creates a pull_queue row
     /// with the correct fields including quant and context_length.
     #[test]
-    fn test_enqueue_download_creates_queue_row() {
+    fn test_enqueue_pull_creates_queue_row() {
         let mgr = ModelManager::open_in_memory().unwrap();
-        let svc = DownloadQueueService::new(mgr, 2);
+        let svc = PullQueueService::new(mgr, 2);
 
         // Subscribe before enqueue so we can receive the event
         let mut rx = svc.subscribe_events();
@@ -683,7 +676,7 @@ mod tests {
         // Verify the Queued event was emitted
         let event = rx.try_recv().unwrap();
         match event {
-            DownloadEvent::Queued {
+            PullEvent::Queued {
                 job_id,
                 repo_id,
                 filename,
@@ -700,7 +693,7 @@ mod tests {
     #[test]
     fn test_status_transitions_through_lifecycle() {
         let mgr = ModelManager::open_in_memory().unwrap();
-        let svc = DownloadQueueService::new(mgr, 2);
+        let svc = PullQueueService::new(mgr, 2);
 
         // Subscribe before enqueue so we can receive events
         let mut rx = svc.subscribe_events();
@@ -781,13 +774,13 @@ mod tests {
         // Drain any intermediate events and find the Completed event
         let mut completed_event = None;
         while let Ok(event) = rx.try_recv() {
-            if matches!(event, DownloadEvent::Completed { .. }) {
+            if matches!(event, PullEvent::Completed { .. }) {
                 completed_event = Some(event);
             }
         }
         let event = completed_event.expect("Expected Completed event");
         match event {
-            DownloadEvent::Completed {
+            PullEvent::Completed {
                 job_id,
                 filename,
                 size_bytes,
@@ -812,7 +805,7 @@ mod tests {
     #[test]
     fn test_duration_ms_computed_via_instant() {
         let mgr = ModelManager::open_in_memory().unwrap();
-        let svc = DownloadQueueService::new(mgr, 2);
+        let svc = PullQueueService::new(mgr, 2);
 
         // Subscribe before enqueue so we can receive events
         let mut rx = svc.subscribe_events();
@@ -851,13 +844,13 @@ mod tests {
         // Drain any intermediate events and find the Completed event
         let mut completed_event = None;
         while let Ok(event) = rx.try_recv() {
-            if matches!(event, DownloadEvent::Completed { .. }) {
+            if matches!(event, PullEvent::Completed { .. }) {
                 completed_event = Some(event);
             }
         }
         let event = completed_event.expect("Expected Completed event");
         match event {
-            DownloadEvent::Completed { duration_ms, .. } => {
+            PullEvent::Completed { duration_ms, .. } => {
                 assert!(
                     duration_ms >= computed_duration,
                     "duration_ms ({}) should be >= computed ({})",
@@ -933,7 +926,7 @@ mod tests {
         svc.test_model_mgr()
             .conn()
             .execute(
-                "UPDATE download_queue SET status = 'running', started_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                "UPDATE pull_queue SET status = 'running', started_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
                  WHERE job_id = ?1",
                 ["cas-job-2"],
             )
@@ -989,7 +982,7 @@ mod tests {
         svc.test_model_mgr()
             .conn()
             .execute(
-                "UPDATE download_queue SET status = 'running', started_at = datetime('now', '-2 hours')
+                "UPDATE pull_queue SET status = 'running', started_at = datetime('now', '-2 hours')
                  WHERE job_id = ?1",
                 ["recovery-job-1"],
             )
@@ -1042,7 +1035,7 @@ mod tests {
         svc.test_model_mgr()
             .conn()
             .execute(
-                "UPDATE download_queue SET status = 'running', started_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                "UPDATE pull_queue SET status = 'running', started_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
                  WHERE job_id = ?1",
                 ["recovery-job-2"],
             )
@@ -1116,7 +1109,7 @@ mod tests {
         svc.test_model_mgr()
             .conn()
             .execute(
-                "UPDATE download_queue SET status = 'running', started_at = NULL
+                "UPDATE pull_queue SET status = 'running', started_at = NULL
                  WHERE job_id = ?1",
                 ["recovery-job-4"],
             )
@@ -1204,7 +1197,7 @@ mod tests {
             .unwrap()
             .conn()
             .query_row(
-                "SELECT COUNT(*) FROM download_queue WHERE status = 'queued'",
+                "SELECT COUNT(*) FROM pull_queue WHERE status = 'queued'",
                 [],
                 |row| row.get(0),
             )
@@ -1281,7 +1274,7 @@ mod tests {
             .unwrap()
             .expect("row should exist");
         assert_eq!(item.status, "completed");
-        assert_eq!(item.bytes_downloaded, 2000);
+        assert_eq!(item.bytes_pulled, 2000);
     }
 
     /// Test that cancel fails for items already in terminal state.
@@ -1324,7 +1317,7 @@ mod tests {
 
     /// Integration test: the queue_processor_loop's startup recovery
     /// calls svc.on_startup_recovery() which marks stale running items as queued.
-    /// We verify this by creating a DownloadQueueService directly, inserting
+    /// We verify this by creating a PullQueueService directly, inserting
     /// a stale item, then invoking recovery.
     #[tokio::test]
     async fn test_queue_processor_loop_stale_recovery() {
@@ -1334,7 +1327,7 @@ mod tests {
 
         // Open ModelManager directly (same as ProxyState::new does)
         let mgr = crate::models::ModelManager::open(temp_dir.path()).unwrap();
-        let svc = DownloadQueueService::new(mgr, poll_interval);
+        let svc = PullQueueService::new(mgr, poll_interval);
 
         // Insert a stale running item (started > 1 hour ago)
         let guard = svc.test_model_mgr();
@@ -1347,7 +1340,7 @@ mod tests {
         .unwrap();
 
         conn.execute(
-            "INSERT INTO download_queue (job_id, repo_id, filename, status, started_at, kind)
+            "INSERT INTO pull_queue (job_id, repo_id, filename, status, started_at, kind)
              VALUES (?, ?, ?, 'running', datetime('now', '-2 hours'), 'model')",
             ["loop-recovery-job", "test/repo", "model.gguf"],
         )
@@ -1359,7 +1352,7 @@ mod tests {
         let status: String = guard
             .conn()
             .query_row(
-                "SELECT status FROM download_queue WHERE job_id = ?1",
+                "SELECT status FROM pull_queue WHERE job_id = ?1",
                 ["loop-recovery-job"],
                 |row| row.get(0),
             )
@@ -1375,7 +1368,7 @@ mod tests {
         let item = guard
             .conn()
             .query_row(
-                "SELECT status, started_at FROM download_queue WHERE job_id = ?1",
+                "SELECT status, started_at FROM pull_queue WHERE job_id = ?1",
                 ["loop-recovery-job"],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
             )
@@ -1397,7 +1390,7 @@ mod tests {
         let poll_interval = config.proxy.download_queue_poll_interval_secs;
 
         let mgr = crate::models::ModelManager::open(temp_dir.path()).unwrap();
-        let svc = DownloadQueueService::new(mgr, poll_interval);
+        let svc = PullQueueService::new(mgr, poll_interval);
 
         // Insert multiple queued items
         let guard = svc.test_model_mgr();
@@ -1411,7 +1404,7 @@ mod tests {
 
         for i in 0..3 {
             conn.execute(
-                "INSERT INTO download_queue (job_id, repo_id, filename, status, kind)
+                "INSERT INTO pull_queue (job_id, repo_id, filename, status, kind)
                  VALUES (?, ?, ?, 'queued', 'model')",
                 [
                     format!("loop-dequeue-job-{}", i),
@@ -1439,7 +1432,7 @@ mod tests {
         let count: i64 = guard
             .conn()
             .query_row(
-                "SELECT COUNT(*) FROM download_queue WHERE status = 'running'",
+                "SELECT COUNT(*) FROM pull_queue WHERE status = 'running'",
                 [],
                 |row| row.get(0),
             )
@@ -1474,7 +1467,7 @@ mod tests {
         .unwrap();
 
         conn.execute(
-            "INSERT INTO download_queue (job_id, repo_id, filename, status, started_at, kind)
+            "INSERT INTO pull_queue (job_id, repo_id, filename, status, started_at, kind)
              VALUES (?, ?, ?, 'running', datetime('now', '-15 seconds'), 'model')",
             ["loop-dead-job", "test/repo", "model.gguf"],
         )
@@ -1491,7 +1484,7 @@ mod tests {
         // Simulate what the loop does for dead task recovery:
         // detect dead task (running > 10s, not in pull_jobs) and re-queue
         conn.execute(
-            "UPDATE download_queue SET status = 'queued', started_at = NULL WHERE job_id = ?1",
+            "UPDATE pull_queue SET status = 'queued', started_at = NULL WHERE job_id = ?1",
             ["loop-dead-job"],
         )
         .unwrap();
@@ -1499,7 +1492,7 @@ mod tests {
         // Verify the task was re-queued
         let status: String = conn
             .query_row(
-                "SELECT status FROM download_queue WHERE job_id = ?1",
+                "SELECT status FROM pull_queue WHERE job_id = ?1",
                 ["loop-dead-job"],
                 |row| row.get(0),
             )
@@ -1508,7 +1501,7 @@ mod tests {
         assert_eq!(status, "queued", "Dead task should be re-queued for retry");
     }
 
-    /// Test that DownloadQueueService emits events for all status transitions.
+    /// Test that PullQueueService emits events for all status transitions.
     #[test]
     fn test_all_status_transitions_emit_events() {
         let svc = setup_service();
@@ -1530,7 +1523,7 @@ mod tests {
         // Verify Queued event was emitted
         let event = rx.try_recv().unwrap();
         match event {
-            DownloadEvent::Queued { job_id, .. } => assert_eq!(job_id, "events-job"),
+            PullEvent::Queued { job_id, .. } => assert_eq!(job_id, "events-job"),
             other => panic!("Expected Queued event, got {:?}", other),
         }
 
@@ -1539,7 +1532,7 @@ mod tests {
             .unwrap();
         let event = rx.try_recv().unwrap();
         match event {
-            DownloadEvent::Started { job_id, .. } => assert_eq!(job_id, "events-job"),
+            PullEvent::Started { job_id, .. } => assert_eq!(job_id, "events-job"),
             other => panic!("Expected Started event, got {:?}", other),
         }
 
@@ -1548,7 +1541,7 @@ mod tests {
             .unwrap();
         let event = rx.try_recv().unwrap();
         match event {
-            DownloadEvent::Verifying { job_id, .. } => assert_eq!(job_id, "events-job"),
+            PullEvent::Verifying { job_id, .. } => assert_eq!(job_id, "events-job"),
             other => panic!("Expected Verifying event, got {:?}", other),
         }
 
@@ -1557,7 +1550,7 @@ mod tests {
             .unwrap();
         let event = rx.try_recv().unwrap();
         match event {
-            DownloadEvent::Completed { job_id, .. } => assert_eq!(job_id, "events-job"),
+            PullEvent::Completed { job_id, .. } => assert_eq!(job_id, "events-job"),
             other => panic!("Expected Completed event, got {:?}", other),
         }
     }
@@ -1590,13 +1583,13 @@ mod tests {
 
         let event = rx.try_recv().unwrap();
         match event {
-            DownloadEvent::Progress {
+            PullEvent::Progress {
                 job_id,
-                bytes_downloaded,
+                bytes_pulled,
                 total_bytes,
             } => {
                 assert_eq!(job_id, "progress-job");
-                assert_eq!(bytes_downloaded, 2500);
+                assert_eq!(bytes_pulled, 2500);
                 assert_eq!(total_bytes, Some(5000));
             }
             other => panic!("Expected Progress event, got {:?}", other),

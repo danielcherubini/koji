@@ -14,13 +14,14 @@ pub use models::{
     handle_tama_unload_model,
 };
 pub use pull::{
-    enqueue_download, handle_pull_job_stream, handle_tama_get_pull_job, handle_tama_pull_model,
-    start_download_from_queue,
+    enqueue_pull, handle_pull_job_stream, handle_tama_get_pull_job, handle_tama_pull_model,
+    start_pull_from_queue,
 };
 pub use system::{
     handle_hf_list_quants, handle_system_metrics_stream, handle_tama_system_gpu_devices,
     handle_tama_system_gpu_devices_refresh, handle_tama_system_health, handle_tama_system_restart,
 };
 pub use types::{
-    max_concurrent_pulls, ModelResponse, PullRequest, PullResponse, QuantDownloadSpec, QuantEntry,
+    max_concurrent_pulls, ListModelsResponse, ListedModelResponse, ModelResponse, PullRequest,
+    PullResponse, QuantDownloadSpec, QuantEntry,
 };

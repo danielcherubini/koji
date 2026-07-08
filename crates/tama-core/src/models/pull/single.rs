@@ -23,7 +23,7 @@ fn exponential_backoff(attempt: u32) -> Duration {
 }
 
 /// Download a file using a single HTTP stream with retry support.
-pub async fn download_single(
+pub async fn pull_single(
     client: &Client,
     url: &str,
     dest: &Path,
@@ -34,14 +34,14 @@ pub async fn download_single(
 ) -> anyhow::Result<()> {
     let headers = headers.cloned().unwrap_or_default();
     let mut attempt = 0u32;
-    let mut downloaded: u64 = 0;
+    let mut pulled: u64 = 0;
 
     loop {
         attempt += 1;
 
         let mut request = client.get(url).headers(headers.clone());
-        if downloaded > 0 {
-            request = request.header("Range", format!("bytes={}-", downloaded));
+        if pulled > 0 {
+            request = request.header("Range", format!("bytes={}-", pulled));
         }
 
         let resp = match request.send().await {
@@ -61,11 +61,11 @@ pub async fn download_single(
 
         // Validate status code
         let status = resp.status().as_u16();
-        if downloaded > 0 && status != 206 {
+        if pulled > 0 && status != 206 {
             // Only bail immediately for permanent mismatch (un-ranged 200)
             if status == 200 {
                 anyhow::bail!(
-                    "Expected 206 Partial Content for resumed download, got {}",
+                    "Expected 206 Partial Content for resumed pull, got {}",
                     status
                 );
             }
@@ -82,7 +82,7 @@ pub async fn download_single(
             }
             anyhow::bail!("Download failed with status {}", status);
         }
-        if downloaded == 0 && !resp.status().is_success() {
+        if pulled == 0 && !resp.status().is_success() {
             if attempt <= MAX_RETRIES {
                 pb.suspend(|| {
                     println!(
@@ -96,7 +96,7 @@ pub async fn download_single(
             anyhow::bail!("Download failed with status {}", status);
         }
 
-        let mut file = if downloaded > 0 {
+        let mut file = if pulled > 0 {
             tokio::fs::OpenOptions::new()
                 .append(true)
                 .open(dest)
@@ -117,10 +117,10 @@ pub async fn download_single(
                     file.write_all(&chunk)
                         .await
                         .with_context(|| format!("Failed to write to {}", dest.display()))?;
-                    downloaded += chunk.len() as u64;
-                    pb.set_position(downloaded);
+                    pulled += chunk.len() as u64;
+                    pb.set_position(pulled);
                     if let Some(cb) = progress_callback {
-                        cb(downloaded, total_size);
+                        cb(pulled, total_size);
                     }
                 }
                 Ok(None) => break,
@@ -129,14 +129,14 @@ pub async fn download_single(
                         pb.suspend(|| {
                             println!(
                                 "  Stream interrupted at {:.1} MiB (attempt {}/{}), retrying... ({})",
-                                downloaded as f64 / 1_048_576.0,
+                                pulled as f64 / 1_048_576.0,
                                 attempt,
                                 MAX_RETRIES,
                                 _e
                             );
                         });
                         // Keep progress bar at current position for retry
-                        pb.set_position(downloaded);
+                        pb.set_position(pulled);
                         stream_failed = true;
                         break;
                     }

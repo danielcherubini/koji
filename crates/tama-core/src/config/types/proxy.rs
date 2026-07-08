@@ -22,7 +22,7 @@ pub struct ProxyConfig {
     pub circuit_breaker_cooldown_seconds: u64,
     #[serde(default = "default_metrics_retention")]
     pub metrics_retention_secs: u64,
-    /// How often the download queue processor checks for new items (in seconds).
+    /// How often the pull queue processor checks for new items (in seconds).
     /// Default is 2, minimum is 1.
     #[serde(default = "default_download_queue_poll_interval")]
     pub download_queue_poll_interval_secs: u64,

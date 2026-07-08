@@ -40,7 +40,7 @@ pub const MIGRATION: (i32, bool, &str) = (
             pulled_at  TEXT NOT NULL                               -- ISO 8601 timestamp
         );
 
-        -- Tracks per-file metadata for downloaded GGUFs
+        -- Tracks per-file metadata for pulled GGUFs
         CREATE TABLE model_files (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             model_id   INTEGER NOT NULL REFERENCES model_configs(id) ON DELETE CASCADE,

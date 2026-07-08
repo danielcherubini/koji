@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::config::ModelConfig;
-use crate::db::queries::{DownloadLogEntry, ModelConfigRecord, UpdateCheckParams};
+use crate::db::queries::{ModelConfigRecord, PullLogEntry, UpdateCheckParams};
 
 fn make_test_record(repo_id: &str) -> ModelConfigRecord {
     use chrono::{SecondsFormat, Utc};
@@ -203,10 +203,10 @@ fn test_pull_operations() {
 }
 
 #[test]
-fn test_log_download() {
+fn test_log_pull() {
     let manager = ModelManager::open_in_memory().unwrap();
 
-    let entry = DownloadLogEntry {
+    let entry = PullLogEntry {
         repo_id: "owner/test-model".to_string(),
         filename: "test.gguf".to_string(),
         started_at: "2025-01-01T00:00:00Z".to_string(),
@@ -217,7 +217,7 @@ fn test_log_download() {
         error_message: None,
     };
 
-    manager.log_download(&entry).unwrap();
+    manager.log_pull(&entry).unwrap();
 }
 
 #[test]
@@ -261,7 +261,7 @@ fn test_active_model_operations() {
 }
 
 #[test]
-fn test_download_queue_operations() {
+fn test_pull_queue_operations() {
     let manager = ModelManager::open_in_memory().unwrap();
 
     // Insert a queue item
@@ -294,7 +294,7 @@ fn test_download_queue_operations() {
     // Get by job_id
     let item = manager.queue_get_by_job_id("pull-abc123").unwrap().unwrap();
     assert_eq!(item.status, "running");
-    assert_eq!(item.bytes_downloaded, 500);
+    assert_eq!(item.bytes_pulled, 500);
 
     // Get active items
     let active = manager.queue_get_active().unwrap();

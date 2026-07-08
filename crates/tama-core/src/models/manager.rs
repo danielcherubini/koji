@@ -5,8 +5,8 @@ use rusqlite::Connection;
 
 use crate::config::ModelConfig;
 use crate::db::queries::{
-    ActiveModelRecord, DownloadLogEntry, DownloadQueueItem, ModelConfigRecord, ModelFileRecord,
-    ModelPullRecord, UpdateCheckParams, UpdateCheckRecord,
+    ActiveModelRecord, ModelConfigRecord, ModelFileRecord, ModelPullRecord, PullLogEntry,
+    PullQueueItem, UpdateCheckParams, UpdateCheckRecord,
 };
 
 /// Centralized model data access. Each caller opens its own instance.
@@ -142,7 +142,7 @@ impl ModelManager {
         crate::db::queries::get_all_model_files(&self.conn)
     }
 
-    /// Insert or update a file record for a downloaded GGUF.
+    /// Insert or update a file record for a pulled GGUF.
     pub fn upsert_file(
         &self,
         model_id: i64,
@@ -191,9 +191,9 @@ impl ModelManager {
         crate::db::queries::get_model_pull(&self.conn, model_id)
     }
 
-    /// Log a download event (append-only).
-    pub fn log_download(&self, entry: &DownloadLogEntry) -> Result<()> {
-        crate::db::queries::log_download(&self.conn, entry)
+    /// Log a pull event (append-only).
+    pub fn log_pull(&self, entry: &PullLogEntry) -> Result<()> {
+        crate::db::queries::log_pull(&self.conn, entry)
     }
 
     // ── Active models ──────────────────────────────────────────
@@ -236,7 +236,7 @@ impl ModelManager {
 
     // ── Download queue ─────────────────────────────────────────
 
-    /// Insert a new item into the download queue. Returns the new row id.
+    /// Insert a new item into the pull queue. Returns the new row id.
     #[allow(clippy::too_many_arguments)]
     pub fn queue_insert(
         &self,
@@ -261,17 +261,17 @@ impl ModelManager {
     }
 
     /// Retrieve the oldest queued item (FIFO).
-    pub fn queue_get_queued(&self) -> Result<Option<DownloadQueueItem>> {
+    pub fn queue_get_queued(&self) -> Result<Option<PullQueueItem>> {
         crate::db::queries::get_queued_item(&self.conn)
     }
 
     /// Get all active items (queued, running, verifying), ordered by status priority then queued_at.
-    pub fn queue_get_active(&self) -> Result<Vec<DownloadQueueItem>> {
+    pub fn queue_get_active(&self) -> Result<Vec<PullQueueItem>> {
         crate::db::queries::get_active_items(&self.conn)
     }
 
     /// Get history items (completed, failed, cancelled), sorted newest first.
-    pub fn queue_get_history(&self, limit: i64, offset: i64) -> Result<Vec<DownloadQueueItem>> {
+    pub fn queue_get_history(&self, limit: i64, offset: i64) -> Result<Vec<PullQueueItem>> {
         crate::db::queries::get_history_items(&self.conn, limit, offset)
     }
 
@@ -280,7 +280,7 @@ impl ModelManager {
         &self,
         job_id: &str,
         new_status: &str,
-        bytes_downloaded: i64,
+        bytes_pulled: i64,
         total_bytes: Option<i64>,
         error_message: Option<&str>,
     ) -> Result<()> {
@@ -288,21 +288,21 @@ impl ModelManager {
             &self.conn,
             job_id,
             new_status,
-            bytes_downloaded,
+            bytes_pulled,
             total_bytes,
             error_message,
         )
     }
 
-    /// Update only progress fields (bytes_downloaded, total_bytes) without
+    /// Update only progress fields (bytes_pulled, total_bytes) without
     /// changing the status. Used for real-time progress streaming via SSE.
     pub fn queue_update_progress(
         &self,
         job_id: &str,
-        bytes_downloaded: i64,
+        bytes_pulled: i64,
         total_bytes: Option<i64>,
     ) -> Result<()> {
-        crate::db::queries::update_progress_only(&self.conn, job_id, bytes_downloaded, total_bytes)
+        crate::db::queries::update_progress_only(&self.conn, job_id, bytes_pulled, total_bytes)
     }
 
     /// Cancel a queue item if it hasn't reached a terminal state.
@@ -311,7 +311,7 @@ impl ModelManager {
     }
 
     /// Retrieve a queue item by its job_id.
-    pub fn queue_get_by_job_id(&self, job_id: &str) -> Result<Option<DownloadQueueItem>> {
+    pub fn queue_get_by_job_id(&self, job_id: &str) -> Result<Option<PullQueueItem>> {
         crate::db::queries::get_item_by_job_id(&self.conn, job_id)
     }
 

@@ -64,6 +64,8 @@ pub struct HealthCheck {
     pub timeout_ms: Option<u64>,
 }
 
+// NOTE: Consider composing ModelConfig from BackendConfig, GpuConfig, SamplingConfig,
+// SpecDecodingConfig sub-structs. Deferred to future refactor.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ModelConfig {
     pub backend: String,

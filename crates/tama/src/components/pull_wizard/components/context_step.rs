@@ -6,7 +6,7 @@ pub fn ContextStep(
     /// GGUF-parsed context length (native max for the model).
     gguf_context_length: Signal<Option<u64>>,
     /// Downloaded quant files (model quants only, no mmproj).
-    download_jobs: Signal<Vec<JobProgress>>,
+    pull_jobs: Signal<Vec<JobProgress>>,
     /// The settings the user configures.
     settings: RwSignal<ContextSettings>,
     on_next: Callback<()>,
@@ -125,9 +125,9 @@ pub fn ContextStep(
         // Filter out mmproj files — this step is for model config only.
         <div class="form-section mb-3">
             <h3 class="form-label">"Downloaded Files"</h3>
-            <div class="download-summary">
+            <div class="pull-summary">
                 {move || {
-                    download_jobs.get().iter()
+                    pull_jobs.get().iter()
                         .filter(|job| !job.filename.starts_with("mmproj"))
                         .map(|job| {
                         let badge_class = if job.status == "completed" {

@@ -1,5 +1,4 @@
 pub mod card;
-pub mod download;
 pub mod gguf;
 pub mod manager;
 pub mod pull;

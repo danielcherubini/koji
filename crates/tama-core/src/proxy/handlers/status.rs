@@ -1,5 +1,6 @@
 //! Status, health, and metrics handlers.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -8,6 +9,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Json, Response},
 };
+use serde::{Deserialize, Serialize};
 use tracing;
 
 use crate::proxy::handlers::metrics::{
@@ -15,14 +17,55 @@ use crate::proxy::handlers::metrics::{
 };
 use crate::proxy::ProxyState;
 
+/// Typed response for the `/status` endpoint.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StatusResponse {
+    pub cpu_usage_pct: f32,
+    pub ram_used_mib: u64,
+    pub ram_total_mib: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_utilization_pct: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vram: Option<VramStatus>,
+    pub auto_unload: bool,
+    pub idle_timeout_secs: u64,
+    pub metrics: ProxyMetrics,
+    pub models: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct VramStatus {
+    pub used_mib: u64,
+    pub total_mib: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProxyMetrics {
+    pub total_requests: u64,
+    pub successful_requests: u64,
+    pub failed_requests: u64,
+    pub models_loaded: u64,
+    pub models_unloaded: u64,
+}
+
 /// Returns the current proxy status.
 ///
 /// Builds a JSON status response from the proxy state including backend
 /// information and runtime status.
 #[axum::debug_handler]
-pub async fn handle_status(state: State<Arc<ProxyState>>) -> Json<serde_json::Value> {
+pub async fn handle_status(
+    state: State<Arc<ProxyState>>,
+) -> Result<Json<StatusResponse>, (StatusCode, Json<serde_json::Value>)> {
     let response = state.build_status_response().await;
-    Json(response)
+    // Convert from serde_json::Value to typed StatusResponse
+    let result: StatusResponse = serde_json::from_value(response).map_err(|e| {
+        tracing::error!("Failed to build status response: {}", e);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("Failed to build status: {}", e) })),
+        )
+    })?;
+    Ok(Json(result))
 }
 
 /// Reloads model configurations from disk.

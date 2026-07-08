@@ -8,17 +8,17 @@ pub mod download;
 pub mod handlers;
 mod verify;
 
-pub use download::start_download_from_queue;
+pub use download::start_pull_from_queue;
 pub use handlers::{handle_pull_job_stream, handle_tama_get_pull_job, handle_tama_pull_model};
 #[cfg(test)]
 pub(crate) use verify::_setup_model_after_pull_with_config;
 
-/// Enqueue a download in the database queue.
+/// Enqueue a pull in the database queue.
 ///
-/// Creates a `download_queue` DB row with status='queued' and returns immediately.
-/// Does NOT start the download — the queue processor picks it up and starts it.
-/// If `download_queue` is None (no DB configured), this is a no-op.
-pub fn enqueue_download(
+/// Creates a `pull_queue` DB row with status='queued' and returns immediately.
+/// Does NOT start the pull — the queue processor picks it up and starts it.
+/// If `pull_queue` is None (no DB configured), this is a no-op.
+pub fn enqueue_pull(
     state: &Arc<ProxyState>,
     job_id: String,
     repo_id: String,
@@ -27,7 +27,7 @@ pub fn enqueue_download(
     quant: Option<&str>,
     context_length: Option<u32>,
 ) -> Result<(), anyhow::Error> {
-    if let Some(ref svc) = state.download_queue {
+    if let Some(ref svc) = state.pull_queue {
         svc.enqueue(
             &job_id,
             &repo_id,

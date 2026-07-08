@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
 
-/// Maximum number of quants that can be downloaded in a single pull request.
+/// Maximum number of quants that can be pulled concurrently in a single pull request.
 ///
 /// Configurable via `TAMA_MAX_CONCURRENT_PULLS` environment variable.
 /// Default is 8 (increased from original 4 for better parallelism).
-/// For network I/O bound downloads, higher values improve throughput
+/// For network I/O bound pulls, higher values improve throughput
 /// without significant CPU/memory overhead.
 pub fn max_concurrent_pulls() -> usize {
     std::env::var("TAMA_MAX_CONCURRENT_PULLS")
@@ -24,13 +24,13 @@ pub struct QuantEntry {
     pub kind: crate::config::QuantKind,
 }
 
-/// A single quantisation variant to download (used in multi-quant wizard format).
+/// A single quantisation variant to pull (used in multi-quant wizard format).
 #[derive(Debug, Deserialize, Clone)]
 pub struct QuantDownloadSpec {
     pub filename: String,
     pub quant: Option<String>,
     /// Kept for backward compat with DB queue. Always None from new wizard requests.
-    /// Populated from GGUF parsing during download.
+    /// Populated from GGUF parsing during pull.
     #[serde(default)]
     pub context_length: Option<u32>,
 }
@@ -39,14 +39,14 @@ pub struct QuantDownloadSpec {
 #[derive(Debug, Deserialize)]
 pub struct PullRequest {
     pub repo_id: String,
-    /// DB id of a pre-created model stub (created before downloading).
+    /// DB id of a pre-created model stub (created before pulling).
     /// When set, `setup_model_after_pull` updates the existing row instead of creating a new one.
     #[serde(default)]
     pub model_id: Option<u32>,
     /// Legacy single-quant support (kept for backward compat).
     #[serde(default)]
     pub quant: Option<String>,
-    /// Legacy multi-quant wizard format: list of quants to download.
+    /// Legacy multi-quant wizard format: list of quants to pull.
     #[serde(default)]
     pub quants: Vec<QuantDownloadSpec>,
     /// New simplified format: just filenames (model quants)
@@ -69,7 +69,7 @@ pub struct PullResponse {
     pub status: String,
     pub repo_id: String,
     pub filename: String,
-    pub bytes_downloaded: u64,
+    pub bytes_pulled: u64,
     pub total_bytes: Option<u64>,
     pub error: Option<String>,
 }
@@ -79,6 +79,43 @@ pub struct PullResponse {
 pub struct ModelResponse {
     pub id: String,
     pub loaded: bool,
+}
+
+/// A single model entry in the list models response.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ListedModelResponse {
+    pub id: Option<i64>,
+    pub display_name: Option<String>,
+    pub backend: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backend_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quant: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_length: Option<u32>,
+    pub enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_name: Option<String>,
+    /// Current lifecycle state: idle, loading, ready, unloading, failed.
+    pub state: crate::gpu::ModelState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backend_pid: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub load_time_secs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_accessed_secs_ago: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idle_timeout_remaining_secs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub consecutive_failures: Option<u32>,
+}
+
+/// Response for listing all configured models.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ListModelsResponse {
+    pub models: Vec<ListedModelResponse>,
 }
 
 /// Response for system restart.

@@ -124,7 +124,7 @@ fn apply_model_body(
         display_name: body.display_name.or(base.display_name),
         // Preserve server-side `size_bytes` on update: the UI exposes the field
         // read-only and callers must not be able to rewrite it via the API. The
-        // authoritative value comes from the download pipeline
+        // authoritative value comes from the pull pipeline
         // (`std::fs::metadata` after pull + the HF blob metadata that later
         // populates `model_files.size_bytes` during verify/refresh). If no
         // prior entry exists, accept the client's value to avoid regressing

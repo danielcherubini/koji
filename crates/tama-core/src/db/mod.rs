@@ -195,7 +195,7 @@ mod tests {
 
         let log_count: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE name='download_log'",
+                "SELECT COUNT(*) FROM sqlite_master WHERE name='pull_log'",
                 [],
                 |row| row.get(0),
             )
@@ -204,7 +204,7 @@ mod tests {
 
         let idx_count: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE name='idx_download_log_repo'",
+                "SELECT COUNT(*) FROM sqlite_master WHERE name='idx_pull_log_repo'",
                 [],
                 |row| row.get(0),
             )

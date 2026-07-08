@@ -1,4 +1,4 @@
-//! Query functions for the `download_queue` table.
+//! Query functions for the `pull_queue` table.
 //!
 //! All functions take a `&Connection` — the caller owns the connection.
 //! All functions are synchronous (no async).
@@ -6,16 +6,16 @@
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension};
 
-/// A row from the download_queue table.
+/// A row from the pull_queue table.
 #[derive(Debug, Clone)]
-pub struct DownloadQueueItem {
+pub struct PullQueueItem {
     pub id: i64,
     pub job_id: String,
     pub repo_id: String,
     pub filename: String,
     pub display_name: Option<String>,
     pub status: String, // "queued" | "running" | "verifying" | "completed" | "failed" | "cancelled"
-    pub bytes_downloaded: i64,
+    pub bytes_pulled: i64,
     pub total_bytes: Option<i64>,
     pub error_message: Option<String>,
     pub started_at: Option<String>,
@@ -26,7 +26,7 @@ pub struct DownloadQueueItem {
     pub context_length: Option<u32>,
 }
 
-/// Column indices for the download_queue table (used by query helpers).
+/// Column indices for the pull_queue table (used by query helpers).
 mod cols {
     pub const ID: usize = 0;
     pub const JOB_ID: usize = 1;
@@ -45,16 +45,16 @@ mod cols {
     pub const CONTEXT_LENGTH: usize = 14;
 }
 
-/// Helper to map a SQL row to a `DownloadQueueItem`.
-pub fn map_queue_item(row: &rusqlite::Row) -> rusqlite::Result<DownloadQueueItem> {
-    Ok(DownloadQueueItem {
+/// Helper to map a SQL row to a `PullQueueItem`.
+pub fn map_queue_item(row: &rusqlite::Row) -> rusqlite::Result<PullQueueItem> {
+    Ok(PullQueueItem {
         id: row.get(cols::ID)?,
         job_id: row.get(cols::JOB_ID)?,
         repo_id: row.get(cols::REPO_ID)?,
         filename: row.get(cols::FILENAME)?,
         display_name: row.get(cols::DISPLAY_NAME)?,
         status: row.get(cols::STATUS)?,
-        bytes_downloaded: row.get(cols::BYTES_DOWNLOADED)?,
+        bytes_pulled: row.get(cols::BYTES_DOWNLOADED)?,
         total_bytes: row.get(cols::TOTAL_BYTES)?,
         error_message: row.get(cols::ERROR_MESSAGE)?,
         started_at: row.get(cols::STARTED_AT)?,
@@ -66,7 +66,7 @@ pub fn map_queue_item(row: &rusqlite::Row) -> rusqlite::Result<DownloadQueueItem
     })
 }
 
-/// Insert a new item into the download queue.
+/// Insert a new item into the pull queue.
 /// Returns the new row id.
 #[allow(clippy::too_many_arguments)]
 pub fn insert_queue_item(
@@ -80,7 +80,7 @@ pub fn insert_queue_item(
     context_length: Option<u32>,
 ) -> Result<i64> {
     let id = conn.execute(
-        "INSERT INTO download_queue \
+        "INSERT INTO pull_queue \
          (job_id, repo_id, filename, display_name, status, kind, queued_at, quant, context_length) \
          VALUES (?1, ?2, ?3, ?4, 'queued', ?5, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?6, ?7)",
         (
@@ -97,12 +97,12 @@ pub fn insert_queue_item(
 }
 
 /// Retrieve the oldest queued item (FIFO).
-pub fn get_queued_item(conn: &Connection) -> Result<Option<DownloadQueueItem>> {
+pub fn get_queued_item(conn: &Connection) -> Result<Option<PullQueueItem>> {
     let mut stmt = conn.prepare(
         "SELECT id, job_id, repo_id, filename, display_name, status, \
-                bytes_downloaded, total_bytes, error_message, started_at, \
+                bytes_pulled, total_bytes, error_message, started_at, \
                 completed_at, queued_at, kind, quant, context_length \
-         FROM download_queue \
+         FROM pull_queue \
          WHERE status = 'queued' \
          ORDER BY queued_at ASC \
          LIMIT 1",
@@ -123,14 +123,14 @@ pub fn update_queue_status(
     conn: &Connection,
     job_id: &str,
     new_status: &str,
-    bytes_downloaded: i64,
+    bytes_pulled: i64,
     total_bytes: Option<i64>,
     error_message: Option<&str>,
 ) -> Result<()> {
     conn.execute(
-        "UPDATE download_queue SET \
+        "UPDATE pull_queue SET \
          status = ?1, \
-         bytes_downloaded = ?2, \
+         bytes_pulled = ?2, \
          total_bytes = ?3, \
          error_message = ?4, \
          started_at = COALESCE(started_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')), \
@@ -139,7 +139,7 @@ pub fn update_queue_status(
          WHERE job_id = ?6",
         (
             new_status,
-            bytes_downloaded,
+            bytes_pulled,
             total_bytes,
             error_message,
             new_status,
@@ -149,20 +149,20 @@ pub fn update_queue_status(
     Ok(())
 }
 
-/// Update only the progress fields (bytes_downloaded, total_bytes) without
+/// Update only the progress fields (bytes_pulled, total_bytes) without
 /// changing the status. Used for real-time progress streaming via SSE.
 pub fn update_progress_only(
     conn: &Connection,
     job_id: &str,
-    bytes_downloaded: i64,
+    bytes_pulled: i64,
     total_bytes: Option<i64>,
 ) -> Result<()> {
     conn.execute(
-        "UPDATE download_queue SET \
-         bytes_downloaded = ?1, \
+        "UPDATE pull_queue SET \
+         bytes_pulled = ?1, \
          total_bytes = ?2 \
          WHERE job_id = ?3",
-        (bytes_downloaded, total_bytes, job_id),
+        (bytes_pulled, total_bytes, job_id),
     )?;
     Ok(())
 }
@@ -171,10 +171,10 @@ pub fn update_progress_only(
 ///
 /// Returns `true` if a row was affected (item was queued, now running),
 /// `false` if no row matched (item already started by someone else).
-/// This is the atomic CAS guard that prevents double-starting downloads.
+/// This is the atomic CAS guard that prevents double-starting pulls.
 pub fn try_mark_running(conn: &Connection, job_id: &str) -> Result<bool> {
     let rows = conn.execute(
-        "UPDATE download_queue SET \
+        "UPDATE pull_queue SET \
          status = 'running', \
          started_at = COALESCE(started_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) \
          WHERE job_id = ?1 AND status = 'queued'",
@@ -184,12 +184,12 @@ pub fn try_mark_running(conn: &Connection, job_id: &str) -> Result<bool> {
 }
 
 /// Retrieve a queue item by its job_id.
-pub fn get_item_by_job_id(conn: &Connection, job_id: &str) -> Result<Option<DownloadQueueItem>> {
+pub fn get_item_by_job_id(conn: &Connection, job_id: &str) -> Result<Option<PullQueueItem>> {
     let mut stmt = conn.prepare(
         "SELECT id, job_id, repo_id, filename, display_name, status, \
-                bytes_downloaded, total_bytes, error_message, started_at, \
+                bytes_pulled, total_bytes, error_message, started_at, \
                 completed_at, queued_at, kind, quant, context_length \
-         FROM download_queue \
+         FROM pull_queue \
          WHERE job_id = ?1 \
          LIMIT 1",
     )?;
@@ -201,12 +201,12 @@ pub fn get_item_by_job_id(conn: &Connection, job_id: &str) -> Result<Option<Down
 }
 
 /// Get all active items (queued, running, verifying), ordered by status priority then queued_at.
-pub fn get_active_items(conn: &Connection) -> Result<Vec<DownloadQueueItem>> {
+pub fn get_active_items(conn: &Connection) -> Result<Vec<PullQueueItem>> {
     let mut stmt = conn.prepare(
         "SELECT id, job_id, repo_id, filename, display_name, status, \
-                bytes_downloaded, total_bytes, error_message, started_at, \
+                bytes_pulled, total_bytes, error_message, started_at, \
                 completed_at, queued_at, kind, quant, context_length \
-         FROM download_queue \
+         FROM pull_queue \
          WHERE status IN ('queued', 'running', 'verifying') \
          ORDER BY CASE status WHEN 'running' THEN 0 WHEN 'verifying' THEN 1 ELSE 2 END, \
                   queued_at ASC",
@@ -217,16 +217,12 @@ pub fn get_active_items(conn: &Connection) -> Result<Vec<DownloadQueueItem>> {
 }
 
 /// Get history items (completed, failed, cancelled), sorted newest first.
-pub fn get_history_items(
-    conn: &Connection,
-    limit: i64,
-    offset: i64,
-) -> Result<Vec<DownloadQueueItem>> {
+pub fn get_history_items(conn: &Connection, limit: i64, offset: i64) -> Result<Vec<PullQueueItem>> {
     let mut stmt = conn.prepare(
         "SELECT id, job_id, repo_id, filename, display_name, status, \
-                bytes_downloaded, total_bytes, error_message, started_at, \
+                bytes_pulled, total_bytes, error_message, started_at, \
                 completed_at, queued_at, kind, quant, context_length \
-         FROM download_queue \
+         FROM pull_queue \
          WHERE status IN ('completed', 'failed', 'cancelled') \
          ORDER BY completed_at DESC \
          LIMIT ?1 OFFSET ?2",
@@ -239,7 +235,7 @@ pub fn get_history_items(
 /// Count total history items (completed, failed, cancelled).
 pub fn count_history_items(conn: &Connection) -> Result<i64> {
     let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM download_queue \
+        "SELECT COUNT(*) FROM pull_queue \
          WHERE status IN ('completed', 'failed', 'cancelled')",
         [],
         |row| row.get(0),
@@ -250,7 +246,7 @@ pub fn count_history_items(conn: &Connection) -> Result<i64> {
 /// Cancel a queue item if it hasn't reached a terminal state.
 pub fn cancel_queue_item(conn: &Connection, job_id: &str) -> Result<()> {
     conn.execute(
-        "UPDATE download_queue SET \
+        "UPDATE pull_queue SET \
          status = 'cancelled', \
          completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
          WHERE job_id = ?1 AND status IN ('queued', 'running', 'verifying')",
@@ -260,12 +256,12 @@ pub fn cancel_queue_item(conn: &Connection, job_id: &str) -> Result<()> {
 }
 
 /// Get the currently running item (if any).
-pub fn get_running_item(conn: &Connection) -> Result<Option<DownloadQueueItem>> {
+pub fn get_running_item(conn: &Connection) -> Result<Option<PullQueueItem>> {
     let mut stmt = conn.prepare(
         "SELECT id, job_id, repo_id, filename, display_name, status, \
-                bytes_downloaded, total_bytes, error_message, started_at, \
+                bytes_pulled, total_bytes, error_message, started_at, \
                 completed_at, queued_at, kind, quant, context_length \
-         FROM download_queue \
+         FROM pull_queue \
          WHERE status IN ('running', 'verifying') \
          LIMIT 1",
     )?;
@@ -277,12 +273,12 @@ pub fn get_running_item(conn: &Connection) -> Result<Option<DownloadQueueItem>> 
 }
 
 /// Get all currently running/verifying items.
-pub fn get_all_running_items(conn: &Connection) -> Result<Vec<DownloadQueueItem>> {
+pub fn get_all_running_items(conn: &Connection) -> Result<Vec<PullQueueItem>> {
     let mut stmt = conn.prepare(
         "SELECT id, job_id, repo_id, filename, display_name, status, \
-                bytes_downloaded, total_bytes, error_message, started_at, \
+                bytes_pulled, total_bytes, error_message, started_at, \
                 completed_at, queued_at, kind, quant, context_length \
-         FROM download_queue \
+         FROM pull_queue \
          WHERE status IN ('running', 'verifying')",
     )?;
     let rows = stmt.query_map([], map_queue_item)?;
@@ -292,7 +288,7 @@ pub fn get_all_running_items(conn: &Connection) -> Result<Vec<DownloadQueueItem>
 /// Mark stale running items as failed (process died without completing).
 pub fn mark_stale_running_as_failed(conn: &Connection) -> Result<()> {
     conn.execute(
-        "UPDATE download_queue SET \
+        "UPDATE pull_queue SET \
          status = 'failed', \
          error_message = 'Download was interrupted (process restart)', \
          completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
@@ -303,10 +299,10 @@ pub fn mark_stale_running_as_failed(conn: &Connection) -> Result<()> {
 }
 
 /// Mark stale running items as queued so they get retried on next poll.
-/// Clears started_at so the download restarts fresh (hf-hub resumes if file exists).
+/// Clears started_at so the pull restarts fresh (hf-hub resumes if file exists).
 pub fn mark_stale_running_as_queued(conn: &Connection) -> Result<()> {
     conn.execute(
-        "UPDATE download_queue SET \
+        "UPDATE pull_queue SET \
          status = 'queued', \
          started_at = NULL \
          WHERE status IN ('running', 'verifying') AND completed_at IS NULL",
@@ -315,17 +311,17 @@ pub fn mark_stale_running_as_queued(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Check if there's an active download (queued/running/verifying) for this repo_id + filename.
+/// Check if there's an active pull (queued/running/verifying) for this repo_id + filename.
 pub fn get_active_item_by_repo_filename(
     conn: &Connection,
     repo_id: &str,
     filename: &str,
-) -> Result<Option<DownloadQueueItem>> {
+) -> Result<Option<PullQueueItem>> {
     let mut stmt = conn.prepare(
         "SELECT id, job_id, repo_id, filename, display_name, status, \
-                bytes_downloaded, total_bytes, error_message, started_at, \
+                bytes_pulled, total_bytes, error_message, started_at, \
                 completed_at, queued_at, kind, quant, context_length \
-         FROM download_queue \
+         FROM pull_queue \
          WHERE repo_id = ?1 AND filename = ?2 AND status IN ('queued', 'running', 'verifying') \
          LIMIT 1",
     )?;
@@ -648,7 +644,7 @@ mod tests {
 
         // Manually set to running without completed_at (simulates process crash)
         conn.execute(
-            "UPDATE download_queue SET status = 'running', started_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE job_id = 'pull-abc123'",
+            "UPDATE pull_queue SET status = 'running', started_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE job_id = 'pull-abc123'",
             [],
         )
         .unwrap();
@@ -705,7 +701,7 @@ mod tests {
 
         // Manually set to running so it's not queued anymore
         conn.execute(
-            "UPDATE download_queue SET status = 'running', started_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE job_id = 'pull-abc123'",
+            "UPDATE pull_queue SET status = 'running', started_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE job_id = 'pull-abc123'",
             [],
         )
         .unwrap();

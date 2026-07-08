@@ -2,15 +2,15 @@ use crate::components::pull_wizard::{format_bytes, JobProgress};
 use leptos::prelude::*;
 
 #[component]
-pub fn DownloadStep(
-    download_jobs: Signal<Vec<JobProgress>>,
+pub fn PullStep(
+    pull_jobs: Signal<Vec<JobProgress>>,
     on_close: Option<Callback<()>>,
     error_msg: RwSignal<Option<String>>,
 ) -> impl IntoView {
     view! {
         <div class="form-card__header">
             <h2 class="form-card__title">"Downloading"</h2>
-            <p class="form-card__desc text-muted">"Tracking download progress for each file."</p>
+            <p class="form-card__desc text-muted">"Tracking pull progress for each file."</p>
         </div>
 
         {move || error_msg.get().map(|e| view! {
@@ -20,18 +20,18 @@ pub fn DownloadStep(
             </div>
         })}
 
-        <div class="download-jobs">
-            {move || download_jobs.get().into_iter().map(|job| {
+        <div class="pull-jobs">
+            {move || pull_jobs.get().into_iter().map(|job| {
                 let progress_pct = job.total_bytes
                     .filter(|&total| total > 0)
-                    .map(|total| (job.bytes_downloaded as f64 / total as f64 * 100.0) as u32);
+                    .map(|total| (job.bytes_pulled as f64 / total as f64 * 100.0) as u32);
 
                 let (status_class, status_text) = if job.status == "completed" {
                     ("badge badge-success", "Completed ✓".to_string())
                 } else if job.status == "failed" {
                     ("badge badge-error", format!("Failed: {}", job.error.clone().unwrap_or_default()))
                 } else if job.status == "running" {
-                    let dl = format_bytes(job.bytes_downloaded as i64);
+                    let dl = format_bytes(job.bytes_pulled as i64);
                     let total = job.total_bytes
                         .map(|b| format_bytes(b as i64))
                         .unwrap_or_else(|| "?".to_string());
@@ -41,7 +41,7 @@ pub fn DownloadStep(
                 };
 
                 view! {
-                    <div class="download-job-card card mb-2">
+                    <div class="pull-job-card card mb-2">
                         <div class="flex-between mb-1">
                             <span class="text-mono text-sm">{job.filename.clone()}</span>
                             <span class=status_class>{status_text}</span>
@@ -66,7 +66,7 @@ pub fn DownloadStep(
         </div>
 
         {move || {
-            let jobs = download_jobs.get();
+            let jobs = pull_jobs.get();
             let all_finished = !jobs.is_empty() && jobs.iter().all(|j| {
                 j.status == "completed" || j.status == "failed"
             });
@@ -87,7 +87,7 @@ pub fn DownloadStep(
                     <div class="alert alert--error mt-3">
                         <span class="alert__icon">"✕"</span>
                         <div>
-                            <p>"Some downloads failed:"</p>
+                            <p>"Some pulls failed:"</p>
                             <ul class="error-list">
                                 {failures.into_iter().map(|msg| view! {
                                     <li>{msg}</li>
@@ -102,7 +102,7 @@ pub fn DownloadStep(
                      <div class="alert alert--success mt-3">
                          <span class="alert__icon">"✓"</span>
                          <div>
-                             <p>"All downloads completed successfully!"</p>
+                             <p>"All pulls completed successfully!"</p>
                              <a href="/tama/models" class="mt-1 d-inline">"Go to Models →"</a>
                          </div>
                      </div>

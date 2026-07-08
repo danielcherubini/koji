@@ -127,21 +127,6 @@ pub(crate) fn format_context_length(n: u32) -> String {
     }
 }
 
-/// Resolves the effective state for badge/button logic.
-///
-/// When `state` is not Idle, returns it as-is.
-/// When `state` is Idle: `loaded == Some(true)` → `Ready`, otherwise → `Idle`.
-/// This preserves the models page's existing `loaded` boolean fallback behavior.
-pub(crate) fn resolve_state(state: &ModelState, loaded: Option<bool>) -> ModelState {
-    if !matches!(state, ModelState::Idle) {
-        return state.clone();
-    }
-    match loaded {
-        Some(true) => ModelState::Ready,
-        _ => ModelState::Idle,
-    }
-}
-
 /// Format backend display with optional GPU variant: "llama_cpp (cuda)" or "llama_cpp".
 pub(crate) fn format_backend_with_variant(backend: &str, gpu_variant: Option<&str>) -> String {
     if let Some(variant) = gpu_variant {
@@ -200,7 +185,6 @@ pub fn ModelCard(
     backend: String,
     log_source: Option<String>,
     state: ModelState,
-    #[prop(default = None)] loaded: Option<bool>,
     #[prop(default = None)] enabled: Option<bool>,
     #[prop(default = None)] error_message: Option<String>,
     #[prop(optional)] on_load: Option<Callback<String>>,
@@ -210,14 +194,13 @@ pub fn ModelCard(
     #[prop(optional)] unload_busy: Option<RwSignal<bool>>,
     #[prop(optional)] cancel_busy: Option<RwSignal<bool>>,
 ) -> impl IntoView {
-    let effective_state = resolve_state(&state, loaded);
-    let badge_class = model_status_badge_class(&effective_state);
-    let badge_label = model_status_badge_label(&effective_state);
-    let button_class = model_action_button_class(&effective_state);
-    let button_label = model_action_button_label(&effective_state);
+    let badge_class = model_status_badge_class(&state);
+    let badge_label = model_status_badge_label(&state);
+    let button_class = model_action_button_class(&state);
+    let button_label = model_action_button_label(&state);
 
-    // Map effective_state to ListCard state
-    let card_state: Option<ReadSignal<Option<String>>> = match effective_state {
+    // Map state to ListCard state
+    let card_state: Option<ReadSignal<Option<String>>> = match state {
         ModelState::Ready => Some(RwSignal::new(Some("ready".to_string())).read_only()),
         ModelState::Loading => Some(RwSignal::new(Some("loading".to_string())).read_only()),
         ModelState::Unloading => Some(RwSignal::new(Some("unloading".to_string())).read_only()),
@@ -226,11 +209,10 @@ pub fn ModelCard(
     };
 
     // Determine action button to show
-    let is_ready = matches!(effective_state, ModelState::Ready);
-    let is_loading_or_unloading =
-        matches!(effective_state, ModelState::Loading | ModelState::Unloading);
-    let is_loading = matches!(effective_state, ModelState::Loading);
-    let is_failed = matches!(effective_state, ModelState::Failed);
+    let is_ready = matches!(state, ModelState::Ready);
+    let is_loading_or_unloading = matches!(state, ModelState::Loading | ModelState::Unloading);
+    let is_loading = matches!(state, ModelState::Loading);
+    let is_failed = matches!(state, ModelState::Failed);
 
     // Build edit URL — use db_id when Some, fall back to id string
     let edit_id = if let Some(db_id_val) = db_id {
@@ -258,7 +240,7 @@ pub fn ModelCard(
     let spec_types_clone = pips.spec_types.clone();
     let gpu_label_clone = pips.gpu_label.clone();
     let error_message_clone = error_message.clone();
-    let effective_state_clone = effective_state.clone();
+    let state_clone = state.clone();
 
     view! {
         <ListCard
@@ -350,7 +332,7 @@ pub fn ModelCard(
                 }}
                 // Error message for failed models
                 {if let Some(ref err) = error_message_clone {
-                    if matches!(effective_state_clone, ModelState::Failed) {
+                    if matches!(state_clone, ModelState::Failed) {
                         view! {
                             <div class="model-row__error">"Error: " {err.clone()}</div>
                         }.into_any()
@@ -536,42 +518,6 @@ mod tests {
     #[test]
     fn test_format_context_length_non_k() {
         assert_eq!(format_context_length(999), "999");
-    }
-
-    // ── Resolve state tests ─────────────────────────────────────────────────
-
-    #[test]
-    fn test_resolve_state_passthrough_when_non_empty() {
-        assert_eq!(
-            resolve_state(&ModelState::Ready, Some(false)),
-            ModelState::Ready
-        );
-        assert_eq!(
-            resolve_state(&ModelState::Loading, None),
-            ModelState::Loading
-        );
-        assert_eq!(
-            resolve_state(&ModelState::Failed, Some(true)),
-            ModelState::Failed
-        );
-        assert_eq!(resolve_state(&ModelState::Idle, None), ModelState::Idle);
-    }
-
-    #[test]
-    fn test_resolve_state_fallback_to_loaded_true() {
-        assert_eq!(
-            resolve_state(&ModelState::Idle, Some(true)),
-            ModelState::Ready
-        );
-    }
-
-    #[test]
-    fn test_resolve_state_fallback_to_idle() {
-        assert_eq!(
-            resolve_state(&ModelState::Idle, Some(false)),
-            ModelState::Idle
-        );
-        assert_eq!(resolve_state(&ModelState::Idle, None), ModelState::Idle);
     }
 
     // ── Component compile-time smoke tests ──────────────────────────────────

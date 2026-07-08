@@ -1,10 +1,10 @@
 pub mod auth;
-pub mod download_queue;
 pub mod forward;
 mod handlers;
 mod lifecycle;
 pub mod process;
 pub mod pull_jobs;
+pub mod pull_queue;
 mod rename;
 pub mod server;
 mod state;
@@ -123,11 +123,11 @@ mod tests {
         assert!(first_model.get("backend").is_some());
         assert!(first_model.get("backend_path").is_some());
         assert!(first_model.get("enabled").is_some());
-        assert!(first_model.get("loaded").is_some());
-        // Unloaded model should have loaded=false
+        assert!(first_model.get("state").is_some());
+        // Unloaded model should have state="idle"
         assert_eq!(
-            first_model.get("loaded").and_then(|v| v.as_bool()),
-            Some(false)
+            first_model.get("state").and_then(|v| v.as_str()),
+            Some("idle")
         );
     }
 
@@ -326,7 +326,7 @@ mod tests {
                 repo_id: "test/repo".to_string(),
                 filename: "test.gguf".to_string(),
                 status: PullJobStatus::Running,
-                bytes_downloaded: 1000,
+                bytes_pulled: 1000,
                 total_bytes: Some(2000),
                 ..Default::default()
             },

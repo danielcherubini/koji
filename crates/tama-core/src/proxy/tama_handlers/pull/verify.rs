@@ -12,8 +12,8 @@ use crate::models::pull::fetch_community_card;
 use crate::models::pull::infer_quant_from_filename;
 use crate::models::pull::GgufMetadata;
 use crate::models::QuantInfo;
-use crate::proxy::download_queue::DownloadQueueService;
 use crate::proxy::pull_jobs::{PullJob, PullJobStatus};
+use crate::proxy::pull_queue::PullQueueService;
 use crate::proxy::tama_handlers::generate_display_name;
 use crate::proxy::tama_handlers::QuantDownloadSpec;
 use crate::proxy::ProxyState;
@@ -28,9 +28,9 @@ pub(super) struct VerificationOutcome {
     pub err: Option<String>,
 }
 
-/// Run the post-download verification phase for a pull job.
+/// Run the post-pull verification phase for a pull job.
 ///
-/// Hashes the file at `dest_path` directly (file is already downloaded there),
+/// Hashes the file at `dest_path` directly (file is already pulled there),
 /// then:
 /// - Pass: file stays in place. Returns `passed = true`.
 /// - Fail / hash error: delete `dest_path` so no corrupt data lingers.
@@ -41,7 +41,7 @@ pub(super) struct VerificationOutcome {
 pub(super) async fn run_verification(
     pull_jobs: Arc<tokio::sync::RwLock<HashMap<String, PullJob>>>,
     _db_dir: Option<PathBuf>,
-    download_queue: Option<Arc<DownloadQueueService>>,
+    pull_queue: Option<Arc<PullQueueService>>,
     job_id: String,
     repo_id: String,
     filename: String,
@@ -72,7 +72,7 @@ pub(super) async fn run_verification(
     }
 
     // Update DB queue item to "verifying" so Downloads Center shows progress.
-    if let Some(ref svc) = download_queue {
+    if let Some(ref svc) = pull_queue {
         let _ = svc.update_status(
             &job_id,
             "verifying",
@@ -164,7 +164,7 @@ pub(super) async fn run_verification(
             tracing::info!(
                 job_id = %job_id,
                 verified_ok = ?ok,
-                bytes_downloaded = job.bytes_downloaded,
+                bytes_pulled = job.bytes_pulled,
                 map_addr = ?map_ptr,
                 "Job completed"
             );
@@ -177,7 +177,7 @@ pub(super) async fn run_verification(
         }
     } else {
         // Verification failed — delete the corrupt/mismatched file so it
-        // cannot be mistaken for a good download on the next attempt.
+        // cannot be mistaken for a good pull on the next attempt.
         tokio::fs::remove_file(&dest_path).await.ok();
         tracing::error!(job_id = %job_id, error = ?err, "Verification failed — file deleted");
 
@@ -200,7 +200,7 @@ pub(super) async fn run_verification(
     }
 }
 
-/// Inner implementation of post-download setup, accepting an explicit config.
+/// Inner implementation of post-pull setup, accepting an explicit config.
 /// Separated for testability — `setup_model_after_pull` delegates to this.
 pub(crate) async fn _setup_model_after_pull_with_config(
     configs_dir: &std::path::Path,
@@ -381,7 +381,7 @@ pub(crate) async fn _setup_model_after_pull_with_config(
             entry.hf_num_layers = meta.block_count.map(|v| v as u32);
         }
 
-        // Save card (best-effort — download is already marked Completed)
+        // Save card (best-effort — pull is already marked Completed)
         let _ = std::fs::create_dir_all(configs_dir);
         let _ = card.save(&card_path);
 
@@ -480,9 +480,9 @@ pub(crate) async fn _setup_model_after_pull_with_config(
     Some(key)
 }
 
-/// Post-download: auto-create model card and config entries.
+/// Post-pull: auto-create model card and config entries.
 ///
-/// Called after a quant download completes. Updates the model card, saves config to
+/// Called after a quant pull completes. Updates the model card, saves config to
 /// disk, and — critically — also inserts the new model entry into the live
 /// `ProxyState.config` so it appears immediately in the models list without a restart.
 ///

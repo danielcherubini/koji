@@ -3,7 +3,7 @@ pub const MIGRATION: (i32, bool, &str) = (
     5,
     false,
     r#"
-        -- Local SHA-256 verification tracking for previously downloaded quants.
+        -- Local SHA-256 verification tracking for previously pulled quants.
         -- last_verified_at is ISO 8601 of the most recent verification attempt.
         -- verified_ok is nullable: NULL = never verified or no upstream hash available.
         -- verify_error holds a short message on mismatch or verification failure.
