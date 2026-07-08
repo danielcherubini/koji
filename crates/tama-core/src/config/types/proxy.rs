@@ -116,6 +116,10 @@ pub struct ProxyConfig {
     /// OAuth2/OpenID Connect configuration for browser-based authentication.
     #[serde(default)]
     pub oauth2: OAuth2Config,
+    /// Whether API key authentication is enabled.
+    /// When true, bearer tokens starting with "tama_" are validated against the database.
+    #[serde(default)]
+    pub api_keys_enabled: bool,
 }
 
 impl Default for ProxyConfig {
@@ -134,6 +138,7 @@ impl Default for ProxyConfig {
             authenticator_url: None,
             authenticator_skip_paths: vec!["/health".to_string(), "/metrics".to_string()],
             oauth2: OAuth2Config::default(),
+            api_keys_enabled: false,
         }
     }
 }
@@ -147,6 +152,15 @@ impl ProxyConfig {
         if self.oauth2.enabled {
             self.oauth2.client_secret = resolve_env_var_ref(&self.oauth2.client_secret);
         }
+    }
+
+    /// Returns true if any authentication method is configured.
+    pub fn is_auth_configured(&self) -> bool {
+        let has_auth_url = self
+            .authenticator_url
+            .as_deref()
+            .is_some_and(|u| !u.is_empty());
+        has_auth_url || self.oauth2.enabled || self.api_keys_enabled
     }
 }
 

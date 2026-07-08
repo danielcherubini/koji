@@ -165,6 +165,7 @@ fn test_config_db_roundtrip() {
                 "/custom".to_string(),
             ],
             oauth2: OAuth2Config::default(),
+            api_keys_enabled: false,
         },
         compaction: CompactionConfig {
             enabled: true,

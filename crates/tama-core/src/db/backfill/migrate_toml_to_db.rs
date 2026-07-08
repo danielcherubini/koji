@@ -241,6 +241,7 @@ fn migrate_global_config(conn: &Connection, config: &Config) -> Result<()> {
         &config.proxy.oauth2.redirect_uri,
         &config.proxy.oauth2.scopes,
         config.proxy.oauth2.session_ttl_secs,
+        config.proxy.api_keys_enabled,
     )?;
 
     // Supervisor
