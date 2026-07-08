@@ -1,0 +1,61 @@
+use serde::Deserialize;
+
+/// Query params for POST /tama/v1/backends/:name/update
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct UpdateQuery {
+    #[serde(default)]
+    pub gpu_variant: Option<String>,
+}
+
+/// Query params for DELETE /tama/v1/backends/:name/versions/:version
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RemoveVersionQuery {
+    #[serde(default)]
+    pub gpu_variant: Option<String>,
+}
+
+/// Query params for POST /tama/v1/backends/:name/activate
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ActivateQuery {
+    #[serde(default)]
+    pub gpu_variant: Option<String>,
+}
+
+/// POST /tama/v1/backends/:name/default-args
+/// Update default_args for a backend in the backend_configs DB table.
+#[derive(Deserialize)]
+pub struct UpdateDefaultArgsRequest {
+    pub default_args: Vec<String>,
+}
+
+/// Query params for POST /tama/v1/backends/:name/default-args
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct DefaultArgsQuery {
+    pub gpu_variant: String,
+}
+
+/// POST /tama/v1/backends/:name/default-env
+/// Update default_env for a backend in the backend_configs DB table.
+#[derive(Deserialize)]
+pub struct UpdateDefaultEnvRequest {
+    pub default_env: Vec<String>,
+}
+
+/// Query params for POST /tama/v1/backends/:name/default-env
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct DefaultEnvQuery {
+    pub gpu_variant: String,
+}
+
+/// Query params for POST /tama/v1/backends/:name/source
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct SourceQuery {
+    #[serde(default)]
+    pub gpu_variant: Option<String>,
+}
