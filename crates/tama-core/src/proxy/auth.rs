@@ -96,13 +96,11 @@ pub async fn auth_middleware(
             let raw_token = bearer_token.clone();
             let raw_token_for_db = raw_token.clone();
             let db_result = tokio::task::spawn_blocking(move || {
-                proxy_state
-                    .open_db()
-                    .map(|conn| validate_key(&conn, &raw_token_for_db))
+                let db = proxy_state.open_db();
+                db.map(|conn| validate_key(&conn, &raw_token_for_db))
             })
             .await;
 
-            // db_result: Result<Option<Result<Option<(i64, Vec<Scope>)>, Error>>, JoinError>
             match db_result {
                 Ok(Some(Ok(Some((key_id, scopes))))) => {
                     // Successful validation

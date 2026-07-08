@@ -7,6 +7,7 @@ pub mod process;
 pub mod pull_jobs;
 pub mod pull_queue;
 mod rename;
+pub mod scope_middleware;
 pub mod server;
 mod state;
 mod status;

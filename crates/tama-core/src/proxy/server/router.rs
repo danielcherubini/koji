@@ -6,6 +6,7 @@ use axum::{
 use std::sync::Arc;
 
 use crate::proxy::auth::auth_middleware;
+use crate::proxy::scope_middleware::scope_middleware;
 #[cfg(feature = "web-ui")]
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::cors::CorsLayer;
@@ -93,6 +94,7 @@ pub async fn build_router(state: Arc<ProxyState>) -> Router {
         .route("/*path", post(handle_forward_post))
         .route("/*path", get(handle_forward_get))
         .fallback(handle_fallback)
+        .layer(middleware::from_fn(scope_middleware))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
@@ -191,6 +193,7 @@ pub async fn build_unified_router(
     Router::new()
         .merge(proxy_routes)
         .merge(extra_routes)
+        .layer(middleware::from_fn(scope_middleware))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
