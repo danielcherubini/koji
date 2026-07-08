@@ -12,8 +12,8 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Quick Stats
 
-- **Total Plans**: 48
-- **Backlog**: 0
+- **Total Plans**: 49
+- **Backlog**: 1
 - **Completed**: 44 ✅
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
@@ -22,7 +22,9 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Backlog
 
-_(empty — all plans executed)_
+| Plan | Description | PR / Git References |
+|------|-------------|---------------------|
+| [API Keys](plan-152-api-keys.md) | Named, scoped API keys (`tama_XXXX`) stored as SHA-256 hashes, with auth + scope middleware and CRUD management API | — |
 
 ## Completed Plans
 

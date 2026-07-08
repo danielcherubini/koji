@@ -47,3 +47,15 @@ _Avoid_: Download, fetch
 **Spec decoding** (short for "speculative decoding"):
 Technique to accelerate inference by having the main model predict multiple tokens at once using a draft model (MTP or ngram). Configured per-model via checkboxes and parameters in the model editor.
 _Avoid_: Draft decoding, speculative sampling
+
+**API Key**:
+A named, scoped credential stored as a SHA-256 hash in the DB. Format: `tama_<32 chars base62>`. Scopes: `inference`, `management:read`, `management:write`. The plaintext key is returned once on creation and never retrievable.
+_Avoid_: API token, secret key, bearer key
+
+**AuthSubject**:
+The authenticated identity attached to requests by the auth middleware: `User` (OAuth2 session, full access) or `Key` (API key, scoped access). Used by the scope middleware to enforce authorization.
+_Avoid_: Auth context, principal, identity
+
+**Scope middleware**:
+The authorization layer that runs after authentication. Checks `AuthSubject` against route requirements — `User` bypasses, `Key` must have matching scopes.
+_Avoid_: Permission middleware, ACL layer, role check
