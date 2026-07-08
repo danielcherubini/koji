@@ -1,14 +1,12 @@
 //! API key management types, generation, hashing, and database operations.
 //!
 //! Provides deterministic key generation (`tama_` + 32 base62 chars),
-//! SHA-256 hashing, constant-time comparison, and full CRUD operations
-//! backed by SQLite.
+//! SHA-256 hashing, and full CRUD operations backed by SQLite.
 
 use anyhow::{anyhow, Context, Result};
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use subtle::ConstantTimeEq;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -88,10 +86,15 @@ pub fn extract_prefix(key: &str) -> String {
 /// Validate a raw API key against the database.
 ///
 /// Returns `Some((key_id, scopes))` when the key is valid (not revoked,
-/// not expired, and exists). Uses constant-time comparison for the hash
-/// lookup to prevent timing attacks.
+/// not expired, and exists).
 ///
 /// Updates `last_used_at` on successful validation.
+///
+/// Note: Hash lookup via `WHERE key_hash = ?` leaks hash existence through
+/// DB query timing. A full constant-time comparison across all stored hashes
+/// would be more robust but is impractical for SQLite. The attack surface is
+/// mitigated by: (a) the management API is behind auth, (b) keys are 37 chars
+/// of base62 (~177 bits of entropy), and (c) rate limiting can be added later.
 pub fn validate_key(conn: &Connection, raw_key: &str) -> Result<Option<(i64, Vec<Scope>)>> {
     let key_hash = hash_key(raw_key);
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
@@ -114,39 +117,28 @@ pub fn validate_key(conn: &Connection, raw_key: &str) -> Result<Option<(i64, Vec
         Err(e) => return Err(e).context("failed to query api_keys by hash"),
     };
 
-    // Constant-time comparison to prevent timing attacks
-    let stored_hash: String =
-        conn.query_row("SELECT key_hash FROM api_keys WHERE id = ?", [id], |row| {
-            row.get(0)
-        })?;
+    // Check revocation
+    if revoked_at.is_some() {
+        return Ok(None);
+    }
 
-    if key_hash.as_bytes().ct_eq(stored_hash.as_bytes()).into() {
-        // Key hash matches — now check revocation and expiry
-        if let Some(_revoked) = &revoked_at {
-            // Revoked
+    // Check expiry
+    if let Some(ref expires) = expires_at {
+        let expiry = chrono::DateTime::parse_from_rfc3339(expires)
+            .context("invalid expires_at format in database")?;
+        if chrono::Utc::now() >= expiry {
             return Ok(None);
         }
-        if let Some(ref expires) = expires_at {
-            // Check if expired
-            let expiry = chrono::DateTime::parse_from_rfc3339(expires)
-                .context("invalid expires_at format in database")?;
-            if chrono::Utc::now() >= expiry {
-                return Ok(None);
-            }
-        }
-
-        // Update last_used_at
-        conn.execute(
-            "UPDATE api_keys SET last_used_at = ? WHERE id = ?",
-            rusqlite::params![now.as_str(), id],
-        )?;
-
-        let scopes = parse_scopes(&scopes_str);
-        Ok(Some((id, scopes)))
-    } else {
-        // Constant-time: always do the comparison even if no row matched
-        Ok(None)
     }
+
+    // Update last_used_at
+    conn.execute(
+        "UPDATE api_keys SET last_used_at = ? WHERE id = ?",
+        rusqlite::params![now.as_str(), id],
+    )?;
+
+    let scopes = parse_scopes(&scopes_str);
+    Ok(Some((id, scopes)))
 }
 
 /// Create a new API key in the database.
@@ -248,18 +240,24 @@ pub fn revoke_key(conn: &Connection, key_id: i64) -> Result<()> {
 /// Update the scopes of an existing API key.
 ///
 /// Validates that scopes are non-empty and contain only known values.
-pub fn update_key_scopes(conn: &Connection, key_id: i64, scopes: &[Scope]) -> Result<()> {
+/// Returns the updated `ApiKeyRecord` so callers don't need a second query.
+pub fn update_key_scopes(conn: &Connection, key_id: i64, scopes: &[Scope]) -> Result<ApiKeyRecord> {
     validate_scopes(scopes)?;
 
-    let scopes_str = serialize_scopes(scopes);
+    let tx = conn.unchecked_transaction()?;
 
-    conn.execute(
+    let scopes_str = serialize_scopes(scopes);
+    tx.execute(
         "UPDATE api_keys SET scopes = ? WHERE id = ?",
         rusqlite::params![scopes_str, key_id],
     )
     .context("failed to update api_key scopes")?;
 
-    Ok(())
+    // Return the updated record in the same transaction
+    let record = get_key(&tx, key_id)?.ok_or_else(|| anyhow!("key not found after update"))?;
+
+    tx.commit()?;
+    Ok(record)
 }
 
 /// Look up a single API key by its database ID.
@@ -306,8 +304,12 @@ fn serialize_scopes(scopes: &[Scope]) -> String {
 }
 
 /// Parse a JSON string of scopes back into a Vec.
+/// Warns if the stored value is malformed (e.g. corruption or unknown scope).
 fn parse_scopes(json: &str) -> Vec<Scope> {
-    serde_json::from_str(json).unwrap_or_default()
+    serde_json::from_str(json).unwrap_or_else(|e| {
+        tracing::warn!(error = %e, raw = %json, "malformed scopes in api_keys row");
+        Vec::new()
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -583,11 +585,10 @@ mod tests {
             .query_row("SELECT id FROM api_keys", [], |row| row.get(0))
             .unwrap();
 
-        update_key_scopes(&conn, id, &[Scope::ManagementRead, Scope::ManagementWrite]).unwrap();
-
-        let found = get_key(&conn, id).unwrap().unwrap();
+        let updated =
+            update_key_scopes(&conn, id, &[Scope::ManagementRead, Scope::ManagementWrite]).unwrap();
         assert_eq!(
-            found.scopes,
+            updated.scopes,
             vec![Scope::ManagementRead, Scope::ManagementWrite]
         );
     }

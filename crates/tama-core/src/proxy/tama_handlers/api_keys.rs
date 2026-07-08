@@ -76,13 +76,8 @@ fn json_error(status: StatusCode, error: &str, message: &str) -> Response {
         .expect("build error response")
 }
 
-/// Extract the `AuthSubject` from request extensions.
-/// Returns a 500 response if missing (should never happen — auth_middleware inserts it).
-fn extract_subject(ext: &AuthSubject) -> &AuthSubject {
-    ext
-}
-
 /// Get the `created_by` string from an `AuthSubject`.
+/// For API key subjects this is `key:{id}` (stable identifier).
 fn created_by(subject: &AuthSubject) -> String {
     match subject {
         AuthSubject::User { username } => username.clone(),
@@ -102,9 +97,7 @@ pub async fn handle_tama_api_keys_create(
     Extension(subject): Extension<AuthSubject>,
     Json(body): Json<CreateApiKeyRequest>,
 ) -> impl IntoResponse {
-    let subject = extract_subject(&subject);
-
-    let created_by = created_by(subject);
+    let created_by = created_by(&subject);
 
     // Validate scopes (non-empty, known values)
     if body.scopes.is_empty() {
@@ -125,9 +118,10 @@ pub async fn handle_tama_api_keys_create(
     let expires_at = body.expires_at.clone();
     let raw_key_for_db = raw_key.clone();
     let created_by_for_db = created_by.clone();
+    let state_for_create = state.clone();
 
     let result = tokio::task::spawn_blocking(move || {
-        let conn = state.open_db().unwrap();
+        let conn = state_for_create.open_db().unwrap();
         api_keys::create_key(
             &conn,
             &name,
@@ -161,6 +155,19 @@ pub async fn handle_tama_api_keys_create(
 
     info!(key_id, key_prefix = %key_prefix, creator = %created_by, "API key created");
 
+    // Fetch the record to get the DB-assigned created_at
+    let state_for_record = state.clone();
+    let record = tokio::task::spawn_blocking(move || {
+        let conn = state_for_record.open_db().unwrap();
+        api_keys::get_key(&conn, key_id)
+    })
+    .await;
+
+    let created_at = match record {
+        Ok(Ok(Some(r))) => r.created_at,
+        _ => chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+    };
+
     // Return 201 with plaintext key (ONCE)
     let response = CreateApiKeyResponse {
         id: key_id,
@@ -168,7 +175,7 @@ pub async fn handle_tama_api_keys_create(
         key: raw_key,
         scopes: body.scopes,
         expires_at: body.expires_at,
-        created_at: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+        created_at,
     };
 
     (StatusCode::CREATED, Json(response)).into_response()
@@ -286,7 +293,7 @@ pub async fn handle_tama_api_keys_update(
         }
     }
 
-    // Update scopes in DB
+    // Update scopes in DB (returns the updated record)
     let scopes = body.scopes.clone();
     let state_for_update = state.clone();
     let update_result = tokio::task::spawn_blocking(move || {
@@ -296,37 +303,20 @@ pub async fn handle_tama_api_keys_update(
     .await;
 
     match update_result {
-        Ok(Ok(())) => {
+        Ok(Ok(record)) => {
             info!(key_id, "API key scopes updated");
-            // Return updated key metadata
-            let state_for_record = state.clone();
-            let record_result = tokio::task::spawn_blocking(move || {
-                let conn = state_for_record.open_db().unwrap();
-                api_keys::get_key(&conn, key_id)
-            })
-            .await;
-
-            match record_result {
-                Ok(Ok(Some(record))) => {
-                    let response = ListApiKeyResponse {
-                        id: record.id,
-                        name: record.name,
-                        key_prefix: record.key_prefix,
-                        scopes: record.scopes,
-                        created_by: record.created_by,
-                        created_at: record.created_at,
-                        last_used_at: record.last_used_at,
-                        revoked_at: record.revoked_at,
-                        expires_at: record.expires_at,
-                    };
-                    (StatusCode::OK, Json(response)).into_response()
-                }
-                _ => json_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal_error",
-                    "failed to retrieve updated key",
-                ),
-            }
+            let response = ListApiKeyResponse {
+                id: record.id,
+                name: record.name,
+                key_prefix: record.key_prefix,
+                scopes: record.scopes,
+                created_by: record.created_by,
+                created_at: record.created_at,
+                last_used_at: record.last_used_at,
+                revoked_at: record.revoked_at,
+                expires_at: record.expires_at,
+            };
+            (StatusCode::OK, Json(response)).into_response()
         }
         Ok(Err(e)) => {
             warn!(error = %e, "failed to update API key scopes");
@@ -349,7 +339,7 @@ pub async fn handle_tama_api_keys_update(
 
 /// DELETE /tama/v1/keys/:id — Revoke an API key (soft delete).
 ///
-/// Returns 204 No Content on success.
+/// Idempotent — returns 204 for already-revoked keys.
 pub async fn handle_tama_api_keys_revoke(
     Path(key_id_str): Path<String>,
     State(state): State<Arc<ProxyState>>,
@@ -366,7 +356,7 @@ pub async fn handle_tama_api_keys_revoke(
         }
     };
 
-    // Validate key exists
+    // Validate key exists (already-revoked keys are accepted — revoke is idempotent)
     let state_for_check = state.clone();
     let key_exists = tokio::task::spawn_blocking(move || {
         let conn = state_for_check.open_db().unwrap();
@@ -376,8 +366,9 @@ pub async fn handle_tama_api_keys_revoke(
 
     match key_exists {
         Ok(Ok(Some(record))) => {
+            // Already revoked — idempotent, return 204
             if record.revoked_at.is_some() {
-                return json_error(StatusCode::NOT_FOUND, "not_found", "key not found");
+                return StatusCode::NO_CONTENT.into_response();
             }
         }
         Ok(Ok(None)) => {
@@ -972,7 +963,7 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
-        // 5. Try to revoke again — should return 404 (already revoked)
+        // 5. Revoke again — idempotent, returns 204
         let resp = app
             .oneshot(
                 Request::builder()
@@ -984,6 +975,6 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
     }
 }
