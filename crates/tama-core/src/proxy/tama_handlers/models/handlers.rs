@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use axum::{
     extract::{Path, State},
@@ -9,6 +9,7 @@ use axum::{
 };
 
 use super::utils::resolve_model_id;
+use crate::gpu::ModelState;
 use crate::proxy::process::{force_kill_process_group, is_process_group_alive, kill_process_group};
 use crate::proxy::tama_handlers::{ListModelsResponse, ListedModelResponse, ModelResponse};
 use crate::proxy::{BackendState, ProxyState};
@@ -16,19 +17,101 @@ use tracing::{info, warn};
 
 /// Handle listing all configured models (Tama management API).
 pub async fn handle_tama_list_models(state: State<Arc<ProxyState>>) -> Json<ListModelsResponse> {
-    let models = state.build_status_response().await;
-    let models_obj = models.get("models").and_then(|v| v.as_object());
+    use std::sync::atomic::Ordering::Relaxed;
 
-    let result: Vec<ListedModelResponse> = models_obj
-        .into_iter()
-        .flat_map(|models_obj| {
-            models_obj.iter().filter_map(|(_key, model)| {
-                model
-                    .as_object()
-                    .and_then(|obj| serde_json::from_value(serde_json::to_value(obj).ok()?).ok())
-            })
-        })
-        .collect();
+    let config = state.config.read().await;
+    let model_configs = state.model_configs.read().await;
+    let models = state.models.read().await;
+    let auto_unload = config.proxy.auto_unload;
+    let idle_timeout_secs = config.proxy.idle_timeout_secs;
+
+    let mut result: Vec<ListedModelResponse> = Vec::with_capacity(model_configs.len());
+
+    for (model_name, model_config) in model_configs.iter() {
+        let backend_path = config
+            .backends
+            .get(&model_config.backend)
+            .and_then(|b| b.path.clone());
+
+        let model_state = models.get(model_name);
+
+        let (
+            model_state,
+            backend_pid,
+            load_time_secs,
+            last_accessed_secs_ago,
+            idle_timeout_remaining_secs,
+            consecutive_failures,
+        ) = match model_state {
+            Some(BackendState::Ready {
+                backend_pid,
+                load_time,
+                last_accessed,
+                consecutive_failures,
+                ..
+            }) => {
+                let now = Instant::now();
+                let secs_ago = now.duration_since(*last_accessed).as_secs();
+                let elapsed = now.duration_since(*last_accessed);
+                let remaining = if auto_unload {
+                    let timeout = Duration::from_secs(idle_timeout_secs);
+                    if elapsed < timeout {
+                        Some((timeout - elapsed).as_secs())
+                    } else {
+                        Some(0)
+                    }
+                } else {
+                    None
+                };
+                let load_secs = load_time
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                (
+                    ModelState::Ready,
+                    Some(*backend_pid),
+                    Some(load_secs),
+                    Some(secs_ago),
+                    remaining,
+                    Some(consecutive_failures.load(Relaxed)),
+                )
+            }
+            Some(BackendState::Starting {
+                consecutive_failures,
+                ..
+            }) => (
+                ModelState::Loading,
+                None,
+                None,
+                None,
+                None,
+                Some(consecutive_failures.load(Relaxed)),
+            ),
+            Some(BackendState::Unloading { .. }) => {
+                (ModelState::Unloading, None, None, None, None, None)
+            }
+            Some(BackendState::Failed { .. }) => (ModelState::Failed, None, None, None, None, None),
+            _ => (ModelState::Idle, None, None, None, None, None),
+        };
+
+        result.push(ListedModelResponse {
+            id: model_config.db_id,
+            display_name: model_config.display_name.clone(),
+            backend: model_config.backend.clone(),
+            backend_path,
+            model: model_config.model.clone(),
+            quant: model_config.quant.clone(),
+            context_length: model_config.context_length,
+            enabled: model_config.enabled,
+            api_name: model_config.api_name.clone(),
+            state: model_state,
+            backend_pid,
+            load_time_secs,
+            last_accessed_secs_ago,
+            idle_timeout_remaining_secs,
+            consecutive_failures,
+        });
+    }
 
     Json(ListModelsResponse { models: result })
 }

@@ -53,30 +53,19 @@ pub struct ProxyMetrics {
 /// Builds a JSON status response from the proxy state including backend
 /// information and runtime status.
 #[axum::debug_handler]
-pub async fn handle_status(state: State<Arc<ProxyState>>) -> Json<StatusResponse> {
+pub async fn handle_status(
+    state: State<Arc<ProxyState>>,
+) -> Result<Json<StatusResponse>, (StatusCode, Json<serde_json::Value>)> {
     let response = state.build_status_response().await;
     // Convert from serde_json::Value to typed StatusResponse
-    let result: StatusResponse = serde_json::from_value(response).unwrap_or_else(|e| {
-        tracing::error!("Failed to deserialize status response: {}", e);
-        StatusResponse {
-            cpu_usage_pct: 0.0,
-            ram_used_mib: 0,
-            ram_total_mib: 0,
-            gpu_utilization_pct: None,
-            vram: None,
-            auto_unload: false,
-            idle_timeout_secs: 0,
-            metrics: ProxyMetrics {
-                total_requests: 0,
-                successful_requests: 0,
-                failed_requests: 0,
-                models_loaded: 0,
-                models_unloaded: 0,
-            },
-            models: BTreeMap::new(),
-        }
-    });
-    Json(result)
+    let result: StatusResponse = serde_json::from_value(response).map_err(|e| {
+        tracing::error!("Failed to build status response: {}", e);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("Failed to build status: {}", e) })),
+        )
+    })?;
+    Ok(Json(result))
 }
 
 /// Reloads model configurations from disk.

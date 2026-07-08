@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-/// Maximum number of quants that can be pulled in a single pull request.
+/// Maximum number of quants that can be pulled concurrently in a single pull request.
 ///
 /// Configurable via `TAMA_MAX_CONCURRENT_PULLS` environment variable.
 /// Default is 8 (increased from original 4 for better parallelism).
@@ -99,9 +99,9 @@ pub struct ListedModelResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_name: Option<String>,
     /// Current lifecycle state: idle, loading, ready, unloading, failed.
-    pub state: String,
+    pub state: crate::gpu::ModelState,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub backend_pid: Option<i32>,
+    pub backend_pid: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub load_time_secs: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
