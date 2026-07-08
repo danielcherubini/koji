@@ -3991,6 +3991,7 @@ dependencies = [
  "lru",
  "nix",
  "oauth2",
+ "percent-encoding",
  "rand 0.9.2",
  "regex",
  "reqwest 0.12.28",

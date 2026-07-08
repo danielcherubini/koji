@@ -248,6 +248,7 @@ impl Clone for ProxyState {
             inference_stats: self.inference_stats.clone(),
             gpu_devices_cache: Arc::clone(&self.gpu_devices_cache),
             model_tasks: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+            cookie_key: cookie::Key::generate(),
         }
     }
 }
@@ -288,6 +289,8 @@ pub struct ProxyState {
     /// Per-model JoinSets tracking spawned tasks (stdout/stderr readers, reaper).
     /// Used for clean cancellation on unload.
     pub(crate) model_tasks: tokio::sync::RwLock<HashMap<String, JoinSet<()>>>,
+    /// Signing key for session cookies (OAuth2 OIDC login).
+    pub(crate) cookie_key: cookie::Key,
 }
 
 impl ProxyState {

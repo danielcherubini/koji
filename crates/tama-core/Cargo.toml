@@ -52,6 +52,7 @@ gguf-parser = { git = "https://github.com/Defilan/gguf-parser", branch = "main" 
 nix = { workspace = true, optional = true }
 oauth2.workspace = true
 cookie.workspace = true
+percent-encoding = "2"
 
 [features]
 web-ui = ["dep:nix"]

@@ -55,7 +55,7 @@ regex = "1"
 log = "0.4"
 rand = "0.9"
 oauth2 = { version = "5", features = ["reqwest"] }
-cookie = { version = "0.18", features = ["secure"] }
+cookie = { version = "0.18", features = ["secure", "percent-encode", "signed"] }
 
 # Build performance: line-tables-only for workspace crates (backtraces work),
 # no debug info for dependencies. Use --profile debugging for full debug info.
