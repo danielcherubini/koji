@@ -63,8 +63,12 @@ pub async fn auth_middleware(
     }
 
     // 2. Check skip_paths (prefix matching: "/health" also matches "/healthcheck")
+    //    The OAuth2 login flow routes are ALWAYS skipped — they're the auth entry points.
     let path = req.uri().path().to_string();
-    if skip_paths.iter().any(|p| path.starts_with(p.as_str())) {
+    const LOGIN_SKIP_PATHS: &[&str] = &["/login", "/login/callback", "/login/error"];
+    if LOGIN_SKIP_PATHS.iter().any(|p| path.starts_with(p))
+        || skip_paths.iter().any(|p| path.starts_with(p.as_str()))
+    {
         return next.run(req).await;
     }
 
