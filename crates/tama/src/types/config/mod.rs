@@ -1,0 +1,194 @@
+//! Mirror types for Config that can be used from WASM.
+//!
+//! These types mirror the tama-core config types but use BTreeMap instead of HashMap
+//! for deterministic JSON serialization. They are designed to be serialized/deserialized
+//! with serde_json for the WASM frontend.
+
+mod backend;
+mod compaction;
+mod general;
+mod health;
+mod model;
+mod proxy;
+mod quant;
+mod sampling;
+mod supervisor;
+
+pub use backend::*;
+pub use compaction::*;
+pub use general::*;
+pub use health::*;
+pub use model::*;
+pub use proxy::*;
+pub use quant::*;
+pub use sampling::*;
+pub use supervisor::*;
+
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+use crate::api::StructuredConfigBody;
+
+/// Main configuration struct.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Config {
+    pub general: General,
+    #[serde(default)]
+    pub backends: BTreeMap<String, BackendConfig>,
+    #[serde(default)]
+    pub supervisor: Supervisor,
+    #[serde(default)]
+    pub sampling_templates: BTreeMap<String, SamplingParams>,
+    #[serde(default)]
+    pub proxy: ProxyConfig,
+    #[serde(default)]
+    pub compaction: CompactionConfig,
+}
+
+/// Convert from CoreConfig to mirror type.
+impl From<tama_core::config::Config> for Config {
+    fn from(c: tama_core::config::Config) -> Self {
+        Self {
+            general: c.general.into(),
+            backends: c.backends.into_iter().map(|(k, v)| (k, v.into())).collect(),
+            supervisor: c.supervisor.into(),
+            sampling_templates: c
+                .sampling_templates
+                .into_iter()
+                .map(|(k, v)| (k, v.into()))
+                .collect(),
+            proxy: c.proxy.into(),
+            compaction: c.compaction.into(),
+        }
+    }
+}
+
+/// Convert from mirror Config to CoreConfig.
+impl From<StructuredConfigBody> for tama_core::config::Config {
+    fn from(b: StructuredConfigBody) -> Self {
+        Self {
+            general: b.general.into(),
+            backends: b.backends.into_iter().map(|(k, v)| (k, v.into())).collect(),
+            supervisor: b.supervisor.into(),
+            sampling_templates: b
+                .sampling_templates
+                .into_iter()
+                .map(|(k, v)| (k, v.into()))
+                .collect(),
+            proxy: b.proxy.into(),
+            compaction: b.compaction.into(),
+        }
+    }
+}
+
+/// Convert from mirror Config to CoreConfig.
+impl From<Config> for tama_core::config::Config {
+    fn from(c: Config) -> Self {
+        Self {
+            general: c.general.into(),
+            backends: c.backends.into_iter().map(|(k, v)| (k, v.into())).collect(),
+            supervisor: c.supervisor.into(),
+            sampling_templates: c
+                .sampling_templates
+                .into_iter()
+                .map(|(k, v)| (k, v.into()))
+                .collect(),
+            proxy: c.proxy.into(),
+            compaction: c.compaction.into(),
+        }
+    }
+}
+
+/// Convert from CoreGeneral to mirror type.
+impl From<tama_core::config::General> for General {
+    fn from(g: tama_core::config::General) -> Self {
+        Self {
+            log_level: g.log_level,
+            models_dir: g.models_dir,
+            logs_dir: g.logs_dir,
+            hf_token: g.hf_token,
+            update_check_interval: g.update_check_interval,
+        }
+    }
+}
+
+/// Convert from mirror General to CoreGeneral.
+impl From<General> for tama_core::config::General {
+    fn from(g: General) -> Self {
+        Self {
+            log_level: g.log_level,
+            models_dir: g.models_dir,
+            logs_dir: g.logs_dir,
+            hf_token: g.hf_token,
+            update_check_interval: g.update_check_interval,
+        }
+    }
+}
+
+/// Convert from CoreSupervisor to mirror type.
+impl From<tama_core::config::Supervisor> for Supervisor {
+    fn from(s: tama_core::config::Supervisor) -> Self {
+        Self {
+            restart_policy: s.restart_policy,
+            max_restarts: s.max_restarts,
+            restart_delay_ms: s.restart_delay_ms,
+            health_check_interval_ms: s.health_check_interval_ms,
+            health_check_timeout_ms: s.health_check_timeout_ms,
+            health_check_retries: s.health_check_retries,
+        }
+    }
+}
+
+/// Convert from mirror Supervisor to CoreSupervisor.
+impl From<Supervisor> for tama_core::config::Supervisor {
+    fn from(s: Supervisor) -> Self {
+        Self {
+            restart_policy: s.restart_policy,
+            max_restarts: s.max_restarts,
+            restart_delay_ms: s.restart_delay_ms,
+            health_check_interval_ms: s.health_check_interval_ms,
+            health_check_timeout_ms: s.health_check_timeout_ms,
+            health_check_retries: s.health_check_retries,
+        }
+    }
+}
+
+/// Convert from CoreProxyConfig to mirror type.
+impl From<tama_core::config::ProxyConfig> for ProxyConfig {
+    fn from(p: tama_core::config::ProxyConfig) -> Self {
+        Self {
+            host: p.host,
+            port: p.port,
+            auto_unload: p.auto_unload,
+            idle_timeout_secs: p.idle_timeout_secs,
+            startup_timeout_secs: p.startup_timeout_secs,
+            circuit_breaker_threshold: p.circuit_breaker_threshold,
+            circuit_breaker_cooldown_seconds: p.circuit_breaker_cooldown_seconds,
+            metrics_retention_secs: p.metrics_retention_secs,
+            download_queue_poll_interval_secs: p.download_queue_poll_interval_secs,
+            max_loaded_models: p.max_loaded_models,
+            authenticator_url: p.authenticator_url,
+            authenticator_skip_paths: p.authenticator_skip_paths,
+        }
+    }
+}
+
+/// Convert from mirror ProxyConfig to CoreProxyConfig.
+impl From<ProxyConfig> for tama_core::config::ProxyConfig {
+    fn from(p: ProxyConfig) -> Self {
+        Self {
+            host: p.host,
+            port: p.port,
+            auto_unload: p.auto_unload,
+            idle_timeout_secs: p.idle_timeout_secs,
+            startup_timeout_secs: p.startup_timeout_secs,
+            circuit_breaker_threshold: p.circuit_breaker_threshold,
+            circuit_breaker_cooldown_seconds: p.circuit_breaker_cooldown_seconds,
+            metrics_retention_secs: p.metrics_retention_secs,
+            download_queue_poll_interval_secs: p.download_queue_poll_interval_secs,
+            max_loaded_models: p.max_loaded_models,
+            authenticator_url: p.authenticator_url,
+            authenticator_skip_paths: p.authenticator_skip_paths,
+        }
+    }
+}
