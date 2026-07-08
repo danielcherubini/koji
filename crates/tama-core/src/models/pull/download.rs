@@ -3,27 +3,27 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use reqwest::Client;
 
-use crate::models::download::ProgressCallback;
+use super::ProgressCallback;
 
-// ── Parallel downloader ─────────────────────────────────────────────────────
+// ── Pull implementation ─────────────────────────────────────────────────────
 
-/// Result of downloading a GGUF file.
+/// Result of pulling a GGUF file.
 #[derive(Debug)]
-pub struct DownloadResult {
+pub struct PullResult {
     /// Local path to the file
     pub path: PathBuf,
     /// File size in bytes
     pub size_bytes: u64,
 }
 
-/// Download a GGUF file from a HuggingFace repo using our parallel downloader.
+/// Pull a GGUF file from a HuggingFace repo using our parallel puller.
 /// Uses HTTP Range requests with auth headers for gated repos.
-pub async fn download_gguf_with_progress(
+pub async fn pull_gguf_with_progress(
     repo_id: &str,
     filename: &str,
     dest_dir: &Path,
     progress_callback: Option<ProgressCallback>,
-) -> Result<DownloadResult> {
+) -> Result<PullResult> {
     let endpoint =
         std::env::var("HF_ENDPOINT").unwrap_or_else(|_| "https://huggingface.co".to_string());
     let url = format!("{}/{}/resolve/main/{}", endpoint, repo_id, filename);
@@ -51,7 +51,7 @@ pub async fn download_gguf_with_progress(
         .build()
         .context("Failed to build HTTP client")?;
 
-    let size_bytes = crate::models::download::download_chunked_with_progress(
+    let size_bytes = super::pull_chunked_with_progress(
         &client,
         &url,
         &dest_path,
@@ -60,9 +60,9 @@ pub async fn download_gguf_with_progress(
         Some(&headers),
     )
     .await
-    .with_context(|| format!("Failed to download '{}' from '{}'", filename, repo_id))?;
+    .with_context(|| format!("Failed to pull '{}' from '{}'", filename, repo_id))?;
 
-    Ok(DownloadResult {
+    Ok(PullResult {
         path: dest_path,
         size_bytes,
     })
@@ -80,7 +80,7 @@ mod tests {
 
     /// Verifies that the HF resolve URL is constructed correctly
     #[test]
-    fn test_download_gguf_url_construction_default_endpoint() {
+    fn test_pull_gguf_url_construction_default_endpoint() {
         let _guard = ENV_GUARD.lock().unwrap();
         std::env::remove_var("HF_ENDPOINT");
 
@@ -100,7 +100,7 @@ mod tests {
 
     /// Verifies that HF_ENDPOINT env var is respected in URL construction
     #[test]
-    fn test_download_gguf_url_construction_custom_endpoint() {
+    fn test_pull_gguf_url_construction_custom_endpoint() {
         let _guard = ENV_GUARD.lock().unwrap();
         std::env::set_var("HF_ENDPOINT", "https://hf.mirror.example.com");
 
@@ -164,10 +164,10 @@ mod tests {
         std::env::remove_var("HF_TOKEN");
     }
 
-    /// Verifies DownloadResult contains expected fields
+    /// Verifies PullResult contains expected fields
     #[test]
-    fn test_download_result_structure() {
-        let result = DownloadResult {
+    fn test_pull_result_structure() {
+        let result = PullResult {
             path: PathBuf::from("/tmp/model.gguf"),
             size_bytes: 1234567890,
         };
@@ -175,13 +175,13 @@ mod tests {
         assert_eq!(result.size_bytes, 1234567890);
     }
 
-    /// Integration test: download a small public file from HuggingFace.
+    /// Integration test: pull a small public file from HuggingFace.
     /// Marked `#[ignore]` to skip in normal test runs.
     #[tokio::test]
     #[ignore]
-    async fn test_download_gguf_with_progress_real() {
+    async fn test_pull_gguf_with_progress_real() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let result = download_gguf_with_progress(
+        let result = pull_gguf_with_progress(
             "julien-c/dummy-unknown",
             "config.json",
             temp_dir.path(),

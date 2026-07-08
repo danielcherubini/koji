@@ -4,7 +4,7 @@
 //! 1. Quick check — compare stored `commit_sha` against remote `RepoInfo.sha`.
 //!    If identical, the model is up-to-date (single lightweight API call).
 //! 2. Per-file check — if the commit SHA differs, fetch blob metadata to compare
-//!    individual file LFS SHA256 hashes. This avoids re-downloading when only
+//!    individual file LFS SHA256 hashes. This avoids re-pulling when only
 //!    non-GGUF files changed (e.g., README updates).
 //!
 //! ## Design constraint
@@ -72,7 +72,7 @@ pub enum FileStatus {
         old_oid: String,
         new_oid: String,
     },
-    /// New remote file not locally downloaded
+    /// New remote file not locally pulled
     NewRemote,
     /// No stored hash to compare (legacy pull without DB)
     Unknown,
@@ -242,7 +242,7 @@ pub fn compare_files(
     results
 }
 
-/// Refresh DB metadata for a model without re-downloading.
+/// Refresh DB metadata for a model without re-pulling.
 ///
 /// Fetches current commit SHA and file LFS OIDs from HuggingFace and writes to DB
 /// **only for files that already exist on disk**. Used to establish a baseline for

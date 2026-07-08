@@ -899,7 +899,7 @@ pub fn ModelEditor() -> impl IntoView {
                                     }
                                 } else {
                                     // New row.
-                                    // context_length will be populated from GGUF parsing during download.
+                                    // context_length will be populated from GGUF parsing during pull.
                                     form.quants.insert(key, QuantInfo {
                                         file: cq.filename,
                                         kind,

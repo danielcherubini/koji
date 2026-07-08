@@ -11,7 +11,7 @@ use crate::proxy::pull_jobs::{PullJob, PullJobStatus};
 use crate::proxy::tama_handlers::types::{max_concurrent_pulls, PullRequest};
 use crate::proxy::ProxyState;
 
-use super::enqueue_download;
+use super::enqueue_pull;
 
 /// Handle starting a pull job (Tama management API).
 pub async fn handle_tama_pull_model(
@@ -136,14 +136,14 @@ pub async fn handle_tama_pull_model(
                 .and_then(|mc| mc.display_name.clone());
 
             // Enqueue with context_length = None (will be filled from GGUF parsing)
-            let _ = enqueue_download(
+            let _ = enqueue_pull(
                 &state,
                 job_id.clone(),
                 repo_id.clone(),
                 filename,
                 display_name.as_deref(),
                 quant.as_deref(),
-                None, // context_length: None — populated from GGUF during download
+                None, // context_length: None — populated from GGUF during pull
             );
 
             job_entries.push(serde_json::json!({
@@ -206,7 +206,7 @@ pub async fn handle_tama_pull_model(
             }
         }
 
-        // Reject if the request contains duplicate filenames — concurrent downloads
+        // Reject if the request contains duplicate filenames — concurrent pulls
         // to the same dest path would corrupt the shared temp part files.
         {
             let mut seen = std::collections::HashSet::new();
@@ -257,7 +257,7 @@ pub async fn handle_tama_pull_model(
                     spec.quant.as_deref().unwrap_or("unknown")
                 ))
                 .and_then(|mc| mc.display_name.clone());
-            let _ = enqueue_download(
+            let _ = enqueue_pull(
                 &state,
                 job_id.clone(),
                 repo_id.clone(),
@@ -387,7 +387,7 @@ pub async fn handle_tama_pull_model(
             quant.clone()
         ))
         .and_then(|mc| mc.display_name.clone());
-    let _ = enqueue_download(
+    let _ = enqueue_pull(
         &state,
         job_id.clone(),
         repo_id.clone(),
@@ -402,7 +402,7 @@ pub async fn handle_tama_pull_model(
         "status": "pending",
         "repo_id": repo_id,
         "filename": filename,
-        "bytes_downloaded": 0,
+        "bytes_pulled": 0,
         "total_bytes": null,
         "error": null
     }))
@@ -436,7 +436,7 @@ pub async fn handle_tama_get_pull_job(
             tracing::info!(
                 job_id = %job_id,
                 status = status_str,
-                bytes_downloaded = j.bytes_downloaded,
+                bytes_pulled = j.bytes_pulled,
                 "GET pull job"
             );
 
@@ -445,7 +445,7 @@ pub async fn handle_tama_get_pull_job(
                 "status": status_str,
                 "repo_id": j.repo_id,
                 "filename": j.filename,
-                "bytes_downloaded": j.bytes_downloaded,
+                "bytes_pulled": j.bytes_pulled,
                 "total_bytes": j.total_bytes,
                 "error": j.error,
                 "gguf_context_length": j.gguf_context_length,

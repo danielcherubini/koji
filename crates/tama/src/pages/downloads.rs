@@ -7,7 +7,7 @@ pub use crate::utils::format_size;
 use crate::utils::{extract_and_store_csrf_token, get_request, post_request};
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct DownloadQueueItemDto {
+pub struct PullQueueItemDto {
     pub job_id: String,
     #[expect(dead_code)]
     pub repo_id: String,
@@ -15,7 +15,7 @@ pub struct DownloadQueueItemDto {
     #[expect(dead_code)]
     pub display_name: Option<String>,
     pub status: String,
-    pub bytes_downloaded: i64,
+    pub bytes_pulled: i64,
     pub total_bytes: Option<i64>,
     #[expect(dead_code)]
     pub error_message: Option<String>,
@@ -29,25 +29,25 @@ pub struct DownloadQueueItemDto {
     pub kind: String,
 }
 
-impl DownloadQueueItemDto {
+impl PullQueueItemDto {
     /// Compute progress percentage from bytes. The API doesn't send this —
     /// it's computed client-side to save bandwidth.
     pub fn progress_percent(&self) -> f64 {
         match self.total_bytes {
-            Some(total) if total > 0 => (self.bytes_downloaded as f64 / total as f64) * 100.0,
+            Some(total) if total > 0 => (self.bytes_pulled as f64 / total as f64) * 100.0,
             _ => 0.0,
         }
     }
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct DownloadsActiveResponse {
-    pub items: Vec<DownloadQueueItemDto>,
+pub struct PullsActiveResponse {
+    pub items: Vec<PullQueueItemDto>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct DownloadsHistoryResponse {
-    pub items: Vec<DownloadQueueItemDto>,
+pub struct PullsHistoryResponse {
+    pub items: Vec<PullQueueItemDto>,
     pub total: i64,
 }
 
@@ -58,9 +58,9 @@ pub struct DownloadsHistoryResponse {
 /// disposed when its reactive Owner cleans up (component unmounts), which would
 /// cause `.get()` to panic on subsequent visits. `ArcRwSignal` is reference-
 /// counted and lives as long as references exist.
-pub static ACTIVE_DOWNLOADS: LazyLock<ArcRwSignal<Vec<DownloadQueueItemDto>>> =
+pub static ACTIVE_DOWNLOADS: LazyLock<ArcRwSignal<Vec<PullQueueItemDto>>> =
     LazyLock::new(|| ArcRwSignal::new(Vec::new()));
-pub static HISTORY_ITEMS: LazyLock<ArcRwSignal<Vec<DownloadQueueItemDto>>> =
+pub static HISTORY_ITEMS: LazyLock<ArcRwSignal<Vec<PullQueueItemDto>>> =
     LazyLock::new(|| ArcRwSignal::new(Vec::new()));
 pub static HISTORY_TOTAL: LazyLock<ArcRwSignal<i64>> = LazyLock::new(|| ArcRwSignal::new(0));
 pub static HISTORY_PAGE: LazyLock<ArcRwSignal<i64>> = LazyLock::new(|| ArcRwSignal::new(0));
@@ -82,7 +82,7 @@ pub fn Downloads() -> impl IntoView {
     wasm_bindgen_futures::spawn_local(async move {
         if let Ok(resp) = get_request("/tama/v1/downloads/active").send().await {
             extract_and_store_csrf_token(&resp);
-            if let Ok(data) = resp.json::<DownloadsActiveResponse>().await {
+            if let Ok(data) = resp.json::<PullsActiveResponse>().await {
                 active_downloads_init.set(data.items);
             }
         }
@@ -109,7 +109,7 @@ pub fn Downloads() -> impl IntoView {
                 .await
                 {
                     extract_and_store_csrf_token(&resp);
-                    if let Ok(data) = resp.json::<DownloadsHistoryResponse>().await {
+                    if let Ok(data) = resp.json::<PullsHistoryResponse>().await {
                         items_c.set(data.items);
                         total_c.set(data.total);
                     }
@@ -210,7 +210,7 @@ pub fn Downloads() -> impl IntoView {
     }
 }
 
-fn render_active_list(items: Vec<DownloadQueueItemDto>) -> AnyView {
+fn render_active_list(items: Vec<PullQueueItemDto>) -> AnyView {
     if items.is_empty() {
         view! { <p class="empty-state">"No active downloads"</p> }.into_any()
     } else {
@@ -222,7 +222,7 @@ fn render_active_list(items: Vec<DownloadQueueItemDto>) -> AnyView {
     }
 }
 
-fn render_history_list(items: Vec<DownloadQueueItemDto>) -> AnyView {
+fn render_history_list(items: Vec<PullQueueItemDto>) -> AnyView {
     if items.is_empty() {
         view! { <p class="empty-state">"No download history"</p> }.into_any()
     } else {
@@ -234,7 +234,7 @@ fn render_history_list(items: Vec<DownloadQueueItemDto>) -> AnyView {
     }
 }
 
-fn render_download_item(item: DownloadQueueItemDto) -> impl IntoView {
+fn render_download_item(item: PullQueueItemDto) -> impl IntoView {
     let status_str = item.status.clone();
     let status_label = match status_str.as_str() {
         "running" => "Downloading".to_string(),
@@ -244,7 +244,7 @@ fn render_download_item(item: DownloadQueueItemDto) -> impl IntoView {
     };
     let prog = item.progress_percent();
     let prog_u32 = prog as u32;
-    let bytes_down = item.bytes_downloaded as u64;
+    let bytes_down = item.bytes_pulled as u64;
     let bytes_total = item.total_bytes.map(|t| t as u64).unwrap_or(0);
 
     view! {
@@ -288,7 +288,7 @@ fn render_download_item(item: DownloadQueueItemDto) -> impl IntoView {
     }
 }
 
-fn render_history_item(item: DownloadQueueItemDto) -> impl IntoView {
+fn render_history_item(item: PullQueueItemDto) -> impl IntoView {
     let status_str = item.status.clone();
     let status_label = match status_str.as_str() {
         "completed" => "Completed".to_string(),
@@ -313,7 +313,7 @@ fn render_history_item(item: DownloadQueueItemDto) -> impl IntoView {
                 </span>
             </div>
             <div class="download-item__meta">
-                <span>{format_size(item.bytes_downloaded as u64)}</span>
+                <span>{format_size(item.bytes_pulled as u64)}</span>
                 <span>{item.status}</span>
             </div>
         </div>
@@ -327,7 +327,7 @@ pub async fn cancel_download(job_id: &str) {
             // Refresh active list
             if let Ok(resp2) = get_request("/tama/v1/downloads/active").send().await {
                 extract_and_store_csrf_token(&resp2);
-                if let Ok(data) = resp2.json::<DownloadsActiveResponse>().await {
+                if let Ok(data) = resp2.json::<PullsActiveResponse>().await {
                     ACTIVE_DOWNLOADS.set(data.items);
                 }
             }

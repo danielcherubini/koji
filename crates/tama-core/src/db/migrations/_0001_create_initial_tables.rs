@@ -1,4 +1,4 @@
-/// v1 — Initial schema: model_pulls, model_files, download_log
+/// v1 — Initial schema: model_pulls, model_files, pull_log
 pub const MIGRATION: (i32, bool, &str) = (
     1,
     false,
@@ -12,7 +12,7 @@ pub const MIGRATION: (i32, bool, &str) = (
             UNIQUE(repo_id)                 -- one row per repo, updated on re-pull
         );
 
-        -- Tracks per-file metadata for downloaded GGUFs
+        -- Tracks per-file metadata for pulled GGUFs
         CREATE TABLE IF NOT EXISTS model_files (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             repo_id TEXT NOT NULL,           -- FK-like reference to model_pulls.repo_id
@@ -25,7 +25,7 @@ pub const MIGRATION: (i32, bool, &str) = (
         );
 
         -- Download event log (append-only)
-        CREATE TABLE IF NOT EXISTS download_log (
+        CREATE TABLE IF NOT EXISTS pull_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             repo_id TEXT NOT NULL,
             filename TEXT NOT NULL,
@@ -37,7 +37,7 @@ pub const MIGRATION: (i32, bool, &str) = (
             error_message TEXT
         );
 
-        -- Index for querying download history by repo
-        CREATE INDEX IF NOT EXISTS idx_download_log_repo ON download_log(repo_id);
+        -- Index for querying pull history by repo
+        CREATE INDEX IF NOT EXISTS idx_pull_log_repo ON pull_log(repo_id);
     "#,
 );

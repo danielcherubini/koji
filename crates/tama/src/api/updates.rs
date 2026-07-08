@@ -643,7 +643,7 @@ pub async fn apply_backend_update(
     Json(serde_json::json!({ "job_id": job.id.to_string(), "kind": "update" })).into_response()
 }
 
-/// POST /tama/v1/updates/apply/model/:id - Enqueue selected quants through the download queue.
+/// POST /tama/v1/updates/apply/model/:id - Enqueue selected quants through the pull queue.
 ///
 /// Accepts `{ "quants": ["Q4_K_M", "Q8_0"] }` and returns immediately with job IDs.
 pub async fn apply_model_update(
@@ -736,7 +736,7 @@ pub async fn apply_model_update(
         .collect();
 
     // 4. Pre-check for duplicate enqueues and enqueue each quant
-    let svc = match state.download_queue().as_ref() {
+    let svc = match state.pull_queue().as_ref() {
         Some(s) => s,
         None => {
             return (
@@ -761,7 +761,7 @@ pub async fn apply_model_update(
     };
 
     for (quant_key, filename) in &unique_files {
-        match repo.get_active_download_by_filename(&repo_id, filename) {
+        match repo.get_active_pull_by_filename(&repo_id, filename) {
             Ok(Some(existing)) => {
                 return (
                     StatusCode::CONFLICT,

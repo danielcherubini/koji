@@ -9,8 +9,8 @@ use crate::components::pull_wizard::*;
 
 // Re-export CompletedQuant for use in pages
 use crate::components::pull_wizard::components::{
-    context_step::ContextStep, done_step::DoneStep, download_step::DownloadStep,
-    repo_input::RepoInput, selection_step::SelectionStep,
+    context_step::ContextStep, done_step::DoneStep, pull_step::PullStep, repo_input::RepoInput,
+    selection_step::SelectionStep,
 };
 pub use crate::components::pull_wizard::CompletedQuant;
 
@@ -29,7 +29,7 @@ pub fn PullQuantWizard(
     #[prop(optional)]
     is_open: Option<Signal<bool>>,
 
-    /// Called once after all downloads in the current session reach a terminal
+    /// Called once after all pulls in the current session reach a terminal
     /// state. Receives the list of quants that completed successfully (failed
     /// jobs are filtered out). Fires exactly once per session, guarded by
     /// `did_complete`.
@@ -54,7 +54,7 @@ pub fn PullQuantWizard(
     let context_settings = RwSignal::new(ContextSettings::default());
     let model_id = RwSignal::new(None::<u32>);
     let hf_metadata = RwSignal::new(HfModelMetadata::default());
-    let download_jobs = RwSignal::new(Vec::<JobProgress>::new());
+    let pull_jobs = RwSignal::new(Vec::<JobProgress>::new());
     let error_msg = RwSignal::new(Option::<String>::None);
     let did_complete = RwSignal::new(false);
 
@@ -65,7 +65,7 @@ pub fn PullQuantWizard(
     });
 
     // ── on_complete Effect (only if on_complete is Some) ─────────────────────
-    // Watches download_jobs signal for terminal state transitions.
+    // Watches pull_jobs signal for terminal state transitions.
     // Moved out of the view closure to avoid calling during render.
     if let Some(cb) = on_complete {
         Effect::new(move |_| {
@@ -78,7 +78,7 @@ pub fn PullQuantWizard(
             }
             did_complete.set(true);
 
-            let jobs = download_jobs.get_untracked();
+            let jobs = pull_jobs.get_untracked();
             let quants_listing = available_quants.get_untracked();
             let repo = repo_id.get_untracked();
 
@@ -94,7 +94,7 @@ pub fn PullQuantWizard(
                         repo_id: repo.clone(),
                         filename: j.filename.clone(),
                         quant,
-                        size_bytes: Some(j.bytes_downloaded),
+                        size_bytes: Some(j.bytes_pulled),
                     }
                 })
                 .collect();
@@ -104,10 +104,10 @@ pub fn PullQuantWizard(
     }
 
     // ── Downloading → SetContext transition Effect ──────────────────────────
-    // Watches download_jobs for terminal-state transitions and advances to
+    // Watches pull_jobs for terminal-state transitions and advances to
     // WizardStep::SetContext so the user can configure model settings.
     Effect::new(move |_| {
-        let jobs = download_jobs.get();
+        let jobs = pull_jobs.get();
         if jobs.is_empty() {
             return;
         }
@@ -142,7 +142,7 @@ pub fn PullQuantWizard(
             model_id.set(None);
             hf_metadata.set(HfModelMetadata::default());
             context_settings.set(ContextSettings::default());
-            download_jobs.set(Vec::new());
+            pull_jobs.set(Vec::new());
             error_msg.set(None);
             did_complete.set(false);
             wizard_step.set(WizardStep::RepoInput);
@@ -394,17 +394,17 @@ pub fn PullQuantWizard(
                                                         job_id: e.job_id.clone(),
                                                         filename: e.filename.clone(),
                                                         status: e.status.clone(),
-                                                        bytes_downloaded: 0,
+                                                        bytes_pulled: 0,
                                                         total_bytes: None,
                                                         error: None,
                                                     })
                                                     .collect();
-                                                download_jobs.set(jobs);
+                                                pull_jobs.set(jobs);
                                                 wizard_step.set(WizardStep::Downloading);
 
-                                                // Subscribe to global download events SSE stream.
+                                                // Subscribe to global pull events SSE stream.
                                                 #[cfg(not(feature = "ssr"))]
-                                                spawn_download_events_listener(entries, download_jobs, wizard_step, cancelled);
+                                                spawn_pull_events_listener(entries, pull_jobs, wizard_step, cancelled);
                                                 #[cfg(feature = "ssr")]
                                                 let _ = entries;
                                             }
@@ -428,7 +428,7 @@ pub fn PullQuantWizard(
                 WizardStep::SetContext => view! {
                     <ContextStep
                         gguf_context_length=gguf_context_length.into()
-                        download_jobs=download_jobs.into()
+                        pull_jobs=pull_jobs.into()
                         settings=context_settings
                         on_next=Callback::new(move |_| {
                             let settings = context_settings.get();
@@ -481,8 +481,8 @@ pub fn PullQuantWizard(
                 }.into_any(),
 
                 WizardStep::Downloading => view! {
-                    <DownloadStep
-                        download_jobs=download_jobs.into()
+                    <PullStep
+                        pull_jobs=pull_jobs.into()
                         on_close=on_close
                         error_msg=error_msg
                     />
@@ -490,7 +490,7 @@ pub fn PullQuantWizard(
 
                 WizardStep::Done => view! {
                     <DoneStep
-                        download_jobs=download_jobs.into()
+                        pull_jobs=pull_jobs.into()
                         on_close=on_close
                     />
                 }.into_any(),
@@ -518,10 +518,10 @@ fn advance_if_all_terminal(dj: &RwSignal<Vec<JobProgress>>, ws: &RwSignal<Wizard
     }
 }
 
-/// Subscribe to the global download events SSE stream and update job progress.
+/// Subscribe to the global pull events SSE stream and update job progress.
 /// Replaces per-job SSE streams + polling fallback with a single EventSource.
 #[cfg(not(feature = "ssr"))]
-fn spawn_download_events_listener(
+fn spawn_pull_events_listener(
     entries: Vec<PullJobEntry>,
     dj: RwSignal<Vec<JobProgress>>,
     ws: RwSignal<WizardStep>,
@@ -595,10 +595,9 @@ fn spawn_download_events_listener(
                             }
                             "Progress" => {
                                 j.status = "running".to_string();
-                                if let Some(bd) =
-                                    json.get("bytes_downloaded").and_then(|v| v.as_u64())
+                                if let Some(bd) = json.get("bytes_pulled").and_then(|v| v.as_u64())
                                 {
-                                    j.bytes_downloaded = bd;
+                                    j.bytes_pulled = bd;
                                 }
                                 if let Some(tb) = json.get("total_bytes").and_then(|v| v.as_u64()) {
                                     j.total_bytes = Some(tb);
@@ -610,7 +609,7 @@ fn spawn_download_events_listener(
                             "Completed" => {
                                 j.status = "completed".to_string();
                                 if let Some(sb) = json.get("size_bytes").and_then(|v| v.as_u64()) {
-                                    j.bytes_downloaded = sb;
+                                    j.bytes_pulled = sb;
                                     // Use size_bytes as total if we never got it from Progress
                                     if j.total_bytes.is_none() {
                                         j.total_bytes = Some(sb);

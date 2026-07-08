@@ -61,7 +61,7 @@ pub struct ModelPullRecord {
     pub pulled_at: String, // ISO 8601 from SQLite
 }
 
-/// A stored file record for a downloaded GGUF.
+/// A stored file record for a pulled GGUF.
 ///
 /// This type is part of `ModelManager`'s public API. API handlers should
 /// prefer Repository methods that return DTOs instead.
@@ -89,8 +89,8 @@ pub struct ModelFileRecord {
     pub verify_error: Option<String>,
 }
 
-/// An entry in the download log (append-only).
-pub struct DownloadLogEntry {
+/// An entry in the pull log (append-only).
+pub struct PullLogEntry {
     pub repo_id: String,
     pub filename: String,
     pub started_at: String,

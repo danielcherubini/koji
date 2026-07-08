@@ -17,7 +17,7 @@ pub fn SelectionStep(
         <div class="form-card__header">
             <h2 class="form-card__title">"Select Quantisations"</h2>
             <p class="form-card__desc text-muted">
-                "Choose one or more quantisation files to download from "
+                "Choose one or more quantisation files to pull from "
                 <code>{move || repo_id.get()}</code>"."
             </p>
         </div>

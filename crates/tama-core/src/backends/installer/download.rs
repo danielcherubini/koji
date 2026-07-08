@@ -8,7 +8,7 @@ use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 
 use crate::backends::ProgressSink;
-use crate::models::download::parse_content_length;
+use crate::models::pull::parse_content_length;
 
 /// Maximum number of download retries.
 const MAX_RETRIES: u32 = 3;

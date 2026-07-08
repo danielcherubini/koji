@@ -13,7 +13,7 @@ mod _0007_create_model_configs;
 mod _0008_rebuild_model_tables;
 mod _0009_rebuild_model_configs_nocase;
 mod _0010_add_model_pulls_unique_index;
-mod _0011_create_download_queue;
+mod _0011_create_pull_queue;
 mod _0012_add_queue_quant_context;
 mod _0013_create_benchmarks;
 mod _0014_add_num_parallel;
@@ -36,6 +36,7 @@ mod _0030_add_network_metrics;
 mod _0031_create_app_config;
 mod _0032_remove_gpu_type_column;
 mod _0033_add_default_env;
+mod _0034_rename_download_queue_to_pull_queue;
 
 #[cfg(test)]
 mod migrations_tests;
@@ -71,7 +72,7 @@ impl Drop for FkGuard<'_> {
 type Migration = (i32, bool, &'static str);
 
 /// Version number for the latest migration
-pub const LATEST_VERSION: i32 = 33;
+pub const LATEST_VERSION: i32 = 34;
 
 /// All migrations collected from individual files, sorted by version.
 const MIGRATIONS: &[Migration] = &[
@@ -85,7 +86,7 @@ const MIGRATIONS: &[Migration] = &[
     _0008_rebuild_model_tables::MIGRATION,
     _0009_rebuild_model_configs_nocase::MIGRATION,
     _0010_add_model_pulls_unique_index::MIGRATION,
-    _0011_create_download_queue::MIGRATION,
+    _0011_create_pull_queue::MIGRATION,
     _0012_add_queue_quant_context::MIGRATION,
     _0013_create_benchmarks::MIGRATION,
     _0014_add_num_parallel::MIGRATION,
@@ -108,6 +109,7 @@ const MIGRATIONS: &[Migration] = &[
     _0031_create_app_config::MIGRATION,
     _0032_remove_gpu_type_column::MIGRATION,
     _0033_add_default_env::MIGRATION,
+    _0034_rename_download_queue_to_pull_queue::MIGRATION,
 ];
 
 /// Run all applicable migrations on the database

@@ -127,7 +127,7 @@ pub fn ModelEditorFilesForm(
                     class="btn btn-secondary btn-sm ml-1"
                     prop:disabled=move || verify_busy.get()
                     on:click=move |_| { verify_action.dispatch(()); }
-                    title="Verify downloaded files against HuggingFace LFS hashes"
+                    title="Verify pulled files against HuggingFace LFS hashes"
                 >
                     {move || if verify_busy.get() { "Verifying..." } else { "Verify files" }}
                 </button>

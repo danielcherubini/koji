@@ -120,7 +120,7 @@ pub async fn refresh_model_metadata(
 
     // Step 3: DB writes (blocking pool, fresh connection).
     // Only update metadata for files that already exist locally — do NOT create
-    // new entries for quants the user never downloaded. This prevents the
+    // new entries for quants the user never pulled. This prevents the
     // "Check all for updates" button from polluting the model_files table.
     let repo_id_for_db = repo_id.clone();
     let config_dir_for_db = config_dir.clone();

@@ -27,7 +27,7 @@ fn exponential_backoff(attempt: u32) -> Duration {
 
 /// Download a file using parallel HTTP Range requests.
 #[allow(clippy::too_many_arguments)]
-pub async fn download_parallel(
+pub async fn pull_parallel(
     client: &Client,
     url: &str,
     dest: &Path,
@@ -60,19 +60,19 @@ pub async fn download_parallel(
         .collect();
 
     // Shared atomic counter for tracking total progress across all chunks
-    let total_downloaded = Arc::new(AtomicU64::new(0));
+    let total_pulled = Arc::new(AtomicU64::new(0));
 
     // Spawn a task to poll progress and call the callback
     let progress_handle = if let Some(callback) = progress_callback {
         let callback = callback.clone();
-        let total_downloaded = total_downloaded.clone();
+        let total_pulled = total_pulled.clone();
         let pb_clone = pb.clone();
         Some(tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_millis(200)).await;
-                let downloaded = total_downloaded.load(Ordering::Relaxed);
-                pb_clone.set_position(downloaded);
-                callback(downloaded, total_size);
+                let pulled = total_pulled.load(Ordering::Relaxed);
+                pb_clone.set_position(pulled);
+                callback(pulled, total_size);
             }
         }))
     } else {
@@ -94,11 +94,11 @@ pub async fn download_parallel(
         let url = url.to_string();
         let tmp_path = tmp_path.clone();
         let pb = pb.clone();
-        let total_downloaded = total_downloaded.clone();
+        let total_pulled = total_pulled.clone();
         let headers = headers.cloned();
 
         let handle = tokio::spawn(async move {
-            download_chunk_with_retry(
+            pull_chunk_with_retry(
                 &client,
                 &url,
                 &tmp_path,
@@ -106,7 +106,7 @@ pub async fn download_parallel(
                 end,
                 i,
                 &pb,
-                Some(&total_downloaded),
+                Some(&total_pulled),
                 &headers.unwrap_or_default(),
             )
             .await?;
@@ -161,7 +161,7 @@ pub async fn download_parallel(
 
 /// Download a single chunk with retry and exponential backoff.
 #[allow(clippy::too_many_arguments)]
-async fn download_chunk_with_retry(
+async fn pull_chunk_with_retry(
     client: &Client,
     url: &str,
     tmp_path: &Path,
@@ -169,7 +169,7 @@ async fn download_chunk_with_retry(
     end: u64,
     chunk_index: usize,
     pb: &ProgressBar,
-    total_downloaded: Option<&AtomicU64>,
+    total_pulled: Option<&AtomicU64>,
     headers: &HeaderMap,
 ) -> anyhow::Result<()> {
     let expected_size = end - start + 1;
@@ -223,7 +223,7 @@ async fn download_chunk_with_retry(
 
         let mut stream = resp.bytes_stream();
         let mut file = tokio::fs::File::create(tmp_path).await?;
-        let mut chunk_downloaded: u64 = 0;
+        let mut chunk_pulled: u64 = 0;
         let mut stream_failed = false;
 
         loop {
@@ -231,9 +231,9 @@ async fn download_chunk_with_retry(
                 Ok(Some(chunk)) => {
                     file.write_all(&chunk).await?;
                     let len = chunk.len() as u64;
-                    chunk_downloaded += len;
+                    chunk_pulled += len;
                     pb.inc(len);
-                    if let Some(counter) = total_downloaded {
+                    if let Some(counter) = total_pulled {
                         counter.fetch_add(len, Ordering::Relaxed);
                     }
                 }
@@ -255,28 +255,28 @@ async fn download_chunk_with_retry(
                     MAX_RETRIES
                 );
             }
-            pb.dec(chunk_downloaded);
+            pb.dec(chunk_pulled);
             tokio::time::sleep(exponential_backoff(attempt)).await;
             continue;
         }
 
         // Verify chunk size
-        if chunk_downloaded != expected_size {
+        if chunk_pulled != expected_size {
             if attempt <= MAX_RETRIES {
                 pb.suspend(|| {
                     println!(
                         "  Chunk {} short read ({}/{} bytes), retrying ({}/{})...",
-                        chunk_index, chunk_downloaded, expected_size, attempt, MAX_RETRIES
+                        chunk_index, chunk_pulled, expected_size, attempt, MAX_RETRIES
                     );
                 });
-                pb.dec(chunk_downloaded);
+                pb.dec(chunk_pulled);
                 tokio::time::sleep(exponential_backoff(attempt)).await;
                 continue;
             }
             anyhow::bail!(
                 "Chunk {} incomplete: got {} of {} bytes",
                 chunk_index,
-                chunk_downloaded,
+                chunk_pulled,
                 expected_size
             );
         }

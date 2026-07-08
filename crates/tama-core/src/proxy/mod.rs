@@ -1,10 +1,10 @@
 pub mod auth;
-pub mod download_queue;
 pub mod forward;
 mod handlers;
 mod lifecycle;
 pub mod process;
 pub mod pull_jobs;
+pub mod pull_queue;
 mod rename;
 pub mod server;
 mod state;
@@ -326,7 +326,7 @@ mod tests {
                 repo_id: "test/repo".to_string(),
                 filename: "test.gguf".to_string(),
                 status: PullJobStatus::Running,
-                bytes_downloaded: 1000,
+                bytes_pulled: 1000,
                 total_bytes: Some(2000),
                 ..Default::default()
             },

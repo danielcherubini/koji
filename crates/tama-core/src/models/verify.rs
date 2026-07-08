@@ -1,9 +1,9 @@
-//! Local SHA-256 verification of downloaded GGUF files.
+//! Local SHA-256 verification of pulled GGUF files.
 //!
 //! HuggingFace tracks every LFS-backed file with a SHA-256 hash (`lfs.sha256`).
 //! We store this hash in `model_files.lfs_oid` at pull time. This module re-hashes
 //! the on-disk file and compares it to the stored HF hash, detecting corruption,
-//! incomplete downloads, or tampering.
+//! incomplete pulls, or tampering.
 //!
 //! ## Design
 //! - Hashing is CPU-bound and synchronous. Callers that run inside an async context

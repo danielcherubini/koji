@@ -49,7 +49,7 @@ mod gpu_types;
 mod pages;
 pub mod utils;
 
-use crate::components::toast::{DownloadEvent, ToastStore};
+use crate::components::toast::{PullEvent, ToastStore};
 
 /// Timestamp (in ms) of the last processed progress event.
 /// Used to throttle SSE progress updates — only process events that are
@@ -83,7 +83,7 @@ pub fn App() -> impl IntoView {
     // `true` = connected, `false` = offline/error.
     let sse_connected = RwSignal::new(true);
 
-    // Open SSE connection on app mount to receive download events.
+    // Open SSE connection on app mount to receive pull events.
     // Handle creation failure gracefully — show offline indicator and retry periodically.
     let es_result = web_sys::EventSource::new("/tama/v1/downloads/events");
     let es: Option<web_sys::EventSource> = match es_result {
@@ -94,7 +94,7 @@ pub fn App() -> impl IntoView {
                 .as_string()
                 .unwrap_or_else(|| "unknown error".to_string());
             log_error(&format!(
-                "Failed to create EventSource for download events: {err_msg}. Showing offline indicator."
+                "Failed to create EventSource for pull events: {err_msg}. Showing offline indicator."
             ));
             // Retry periodically in the background every 5 seconds.
             let retry_url = "/tama/v1/downloads/events".to_string();
@@ -126,10 +126,10 @@ pub fn App() -> impl IntoView {
                                     Closure::wrap(Box::new(move |event: web_sys::MessageEvent| {
                                         if let Some(data) = event.data().as_string() {
                                             if let Ok(event_json) =
-                                                serde_json::from_str::<DownloadEvent>(&data)
+                                                serde_json::from_str::<PullEvent>(&data)
                                             {
                                                 if let Some(toast) =
-                                                    ToastStore::from_download_event(&event_json)
+                                                    ToastStore::from_pull_event(&event_json)
                                                 {
                                                     toast_store.add(toast);
                                                 }
@@ -177,8 +177,8 @@ pub fn App() -> impl IntoView {
             let toast_store = toast_store.clone();
             let handler = Closure::wrap(Box::new(move |event: web_sys::MessageEvent| {
                 if let Some(data) = event.data().as_string() {
-                    if let Ok(event_json) = serde_json::from_str::<DownloadEvent>(&data) {
-                        // Update active downloads from progress/started events
+                    if let Ok(event_json) = serde_json::from_str::<PullEvent>(&data) {
+                        // Update active pulls from progress/started events
                         // by updating the specific item in-place instead of a full refresh.
                         // Throttle Progress events to 1 per 200ms to avoid spawning too many async tasks.
                         if matches!(
@@ -201,7 +201,7 @@ pub fn App() -> impl IntoView {
                                     "Verifying" => "verifying",
                                     _ => "running",
                                 };
-                                let bytes_down = event_json.bytes_downloaded;
+                                let bytes_down = event_json.bytes_pulled;
                                 let total_bytes = event_json.total_bytes;
                                 // Use .set() with a new Vec so ArcRwSignal detects the change.
                                 // .update() mutates in-place but doesn't trigger re-renders.
@@ -212,7 +212,7 @@ pub fn App() -> impl IntoView {
                                         if item.job_id == job_id {
                                             item.status = status_label.to_string();
                                             if let Some(bytes) = bytes_down {
-                                                item.bytes_downloaded = bytes as i64;
+                                                item.bytes_pulled = bytes as i64;
                                             }
                                             if let Some(total) = total_bytes {
                                                 item.total_bytes = Some(total as i64);
@@ -232,9 +232,8 @@ pub fn App() -> impl IntoView {
                                 if let Ok(resp) =
                                     utils::get_request("/tama/v1/downloads/active").send().await
                                 {
-                                    if let Ok(data) = resp
-                                        .json::<pages::downloads::DownloadsActiveResponse>()
-                                        .await
+                                    if let Ok(data) =
+                                        resp.json::<pages::downloads::PullsActiveResponse>().await
                                     {
                                         // Only replace if this job isn't already in the list
                                         let job_exists = pages::downloads::ACTIVE_DOWNLOADS
@@ -266,9 +265,8 @@ pub fn App() -> impl IntoView {
                                 .send()
                                 .await
                                 {
-                                    if let Ok(data) = resp
-                                        .json::<pages::downloads::DownloadsHistoryResponse>()
-                                        .await
+                                    if let Ok(data) =
+                                        resp.json::<pages::downloads::PullsHistoryResponse>().await
                                     {
                                         pages::downloads::HISTORY_ITEMS.set(data.items);
                                         pages::downloads::HISTORY_TOTAL.set(data.total);
@@ -278,7 +276,7 @@ pub fn App() -> impl IntoView {
                         }
 
                         // Emit toasts for relevant events
-                        if let Some(toast) = ToastStore::from_download_event(&event_json) {
+                        if let Some(toast) = ToastStore::from_pull_event(&event_json) {
                             toast_store.add(toast);
                         }
                     }

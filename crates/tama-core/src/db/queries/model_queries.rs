@@ -3,7 +3,7 @@
 use anyhow::Result;
 use rusqlite::Connection;
 
-use super::types::{DownloadLogEntry, ModelFileRecord, ModelPullRecord};
+use super::types::{ModelFileRecord, ModelPullRecord, PullLogEntry};
 
 /// Insert or update the pull record for a model.
 /// Uses INSERT ... ON CONFLICT(model_id) DO UPDATE.
@@ -47,7 +47,7 @@ pub fn get_model_pull(conn: &Connection, model_id: i64) -> Result<Option<ModelPu
     }
 }
 
-/// Insert or update a file record for a downloaded GGUF.
+/// Insert or update a file record for a pulled GGUF.
 /// Uses INSERT ... ON CONFLICT(model_id, filename) DO UPDATE.
 /// Timestamp generated via SQLite's strftime('%Y-%m-%dT%H:%M:%fZ', 'now').
 ///
@@ -181,7 +181,7 @@ pub fn get_all_model_files(conn: &Connection) -> Result<Vec<ModelFileRecord>> {
 }
 
 /// Delete all records for a model (model_pulls, model_files cascade automatically).
-/// Does NOT delete download_log entries (they're historical).
+/// Does NOT delete pull_log entries (they're historical).
 pub fn delete_model_records(conn: &Connection, model_id: i64) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
     tx.execute("DELETE FROM model_configs WHERE id = ?1", [model_id])?;
@@ -200,10 +200,10 @@ pub fn delete_model_file(conn: &Connection, model_id: i64, filename: &str) -> Re
     Ok(())
 }
 
-/// Log a download event (append-only).
-pub fn log_download(conn: &Connection, entry: &DownloadLogEntry) -> Result<()> {
+/// Log a pull event (append-only).
+pub fn log_pull(conn: &Connection, entry: &PullLogEntry) -> Result<()> {
     conn.execute(
-        "INSERT INTO download_log
+        "INSERT INTO pull_log
              (repo_id, filename, started_at, completed_at,
               size_bytes, duration_ms, success, error_message)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",

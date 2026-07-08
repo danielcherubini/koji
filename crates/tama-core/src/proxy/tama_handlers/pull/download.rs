@@ -5,12 +5,12 @@ use crate::proxy::pull_jobs::PullJobStatus;
 use crate::proxy::tama_handlers::types::{is_safe_path_component, QuantDownloadSpec};
 use crate::proxy::ProxyState;
 
-/// Start a download from the queue.
+/// Start a pull from the queue.
 ///
-/// This is the ONLY code path that starts a download from the queue processor.
-/// Takes a `job_id`, `state`, and `QuantDownloadSpec`, performs the actual download,
+/// This is the ONLY code path that starts a pull from the queue processor.
+/// Takes a `job_id`, `state`, and `QuantDownloadSpec`, performs the actual pull,
 /// and updates both the DB queue item and in-memory PullJob on completion/failure.
-pub async fn start_download_from_queue(
+pub async fn start_pull_from_queue(
     state: Arc<ProxyState>,
     job_id: String,
     repo_id: String,
@@ -18,7 +18,7 @@ pub async fn start_download_from_queue(
     spec: QuantDownloadSpec,
 ) {
     let pull_jobs_arc = Arc::clone(&state.pull_jobs);
-    let in_flight_clone = Arc::clone(&state.in_flight_downloads);
+    let in_flight_clone = Arc::clone(&state.in_flight_pulls);
     let state_clone = Arc::clone(&state);
     let job_id_clone = job_id.clone();
     let repo_id_clone = repo_id.clone();
@@ -26,13 +26,13 @@ pub async fn start_download_from_queue(
     let spec_clone = spec.clone();
 
     // Record start time for duration calculation
-    let download_start = std::time::Instant::now();
+    let pull_start = std::time::Instant::now();
 
     tracing::info!(
         job_id = %job_id_clone,
         repo = %repo_id_clone,
         file = %filename_clone,
-        "Starting download job"
+        "Starting pull job"
     );
 
     // Validate filename and repo_id to prevent path traversal.
@@ -43,7 +43,7 @@ pub async fn start_download_from_queue(
             job.error = Some("Invalid filename".to_string());
         }
         drop(jobs);
-        if let Some(ref svc) = state_clone.download_queue {
+        if let Some(ref svc) = state_clone.pull_queue {
             let _ = svc.update_status(
                 &job_id_clone,
                 "failed",
@@ -62,7 +62,7 @@ pub async fn start_download_from_queue(
             job.error = Some("Invalid repo_id".to_string());
         }
         drop(jobs);
-        if let Some(ref svc) = state_clone.download_queue {
+        if let Some(ref svc) = state_clone.pull_queue {
             let _ = svc.update_status(
                 &job_id_clone,
                 "failed",
@@ -101,7 +101,7 @@ pub async fn start_download_from_queue(
                 job.error = Some(format!("Failed to get models dir: {}", e));
             }
             drop(jobs);
-            if let Some(ref svc) = state_clone.download_queue {
+            if let Some(ref svc) = state_clone.pull_queue {
                 let _ = svc.update_status(
                     &job_id_clone,
                     "failed",
@@ -124,7 +124,7 @@ pub async fn start_download_from_queue(
             job.error = Some(format!("Failed to create dest dir: {}", e));
         }
         drop(jobs);
-        if let Some(ref svc) = state_clone.download_queue {
+        if let Some(ref svc) = state_clone.pull_queue {
             let _ = svc.update_status(
                 &job_id_clone,
                 "failed",
@@ -139,7 +139,7 @@ pub async fn start_download_from_queue(
 
     let dest_path = dest_dir.join(&filename_clone);
 
-    // In-flight dedup guard: reject if another task is already downloading this path.
+    // In-flight dedup guard: reject if another task is already pulling this path.
     // This prevents two concurrent tasks from writing to the same temp part files,
     // which would silently corrupt the assembled output.
     {
@@ -149,19 +149,19 @@ pub async fn start_download_from_queue(
             if let Some(job) = jobs.get_mut(&job_id_clone) {
                 job.status = crate::proxy::pull_jobs::PullJobStatus::Failed;
                 job.error = Some(format!(
-                    "Another download of '{}' is already in progress",
+                    "Another pull of '{}' is already in progress",
                     filename_clone
                 ));
             }
             drop(jobs);
-            if let Some(ref svc) = state_clone.download_queue {
+            if let Some(ref svc) = state_clone.pull_queue {
                 let _ = svc.update_status(
                     &job_id_clone,
                     "failed",
                     0,
                     None,
                     Some(&format!(
-                        "Another download of '{}' is already in progress",
+                        "Another pull of '{}' is already in progress",
                         filename_clone
                     )),
                     None,
@@ -171,7 +171,7 @@ pub async fn start_download_from_queue(
         }
     }
 
-    // Resolve HF_ENDPOINT and build auth headers (shared by HEAD + download)
+    // Resolve HF_ENDPOINT and build auth headers (shared by HEAD + pull)
     let endpoint =
         std::env::var("HF_ENDPOINT").unwrap_or_else(|_| "https://huggingface.co".to_string());
     let resolve_url = format!(
@@ -194,7 +194,7 @@ pub async fn start_download_from_queue(
         .send()
         .await
     {
-        let total = crate::models::download::parse_content_length(resp.headers());
+        let total = crate::models::pull::parse_content_length(resp.headers());
         let mut jobs = pull_jobs_arc.write().await;
         if let Some(job) = jobs.get_mut(&job_id_clone) {
             job.total_bytes = total;
@@ -202,12 +202,12 @@ pub async fn start_download_from_queue(
         drop(jobs);
     }
 
-    // Spawn a task that polls file size every 500ms to update bytes_downloaded
+    // Spawn a task that polls file size every 500ms to update bytes_pulled
     // and pushes progress updates to the DB queue for SSE streaming.
     let poll_jobs = Arc::clone(&pull_jobs_arc);
     let poll_job_id = job_id_clone.clone();
     let poll_dest = dest_path.clone();
-    let poll_download_queue = state_clone.download_queue.clone();
+    let poll_pull_queue = state_clone.pull_queue.clone();
     let poll_handle = tokio::spawn(async move {
         let mut last_progress_pct: u32 = 0;
         loop {
@@ -225,21 +225,21 @@ pub async fn start_download_from_queue(
             }
             // Read file size from disk
             if let Ok(meta) = tokio::fs::metadata(&poll_dest).await {
-                let bytes_downloaded = meta.len();
+                let bytes_pulled = meta.len();
                 let mut jobs = poll_jobs.write().await;
                 if let Some(job) = jobs.get_mut(&poll_job_id) {
-                    job.bytes_downloaded = bytes_downloaded;
+                    job.bytes_pulled = bytes_pulled;
                     // Push progress to DB queue for SSE streaming (throttled to 1% steps)
                     if let Some(total) = job.total_bytes {
                         if total > 0 {
-                            let pct = (bytes_downloaded as f64 / total as f64 * 100.0) as u32;
+                            let pct = (bytes_pulled as f64 / total as f64 * 100.0) as u32;
                             if pct > last_progress_pct {
                                 last_progress_pct = pct;
                                 drop(jobs);
-                                if let Some(ref svc) = poll_download_queue {
+                                if let Some(ref svc) = poll_pull_queue {
                                     let _ = svc.update_progress(
                                         &poll_job_id,
-                                        bytes_downloaded as i64,
+                                        bytes_pulled as i64,
                                         Some(total as i64),
                                     );
                                 }
@@ -254,14 +254,14 @@ pub async fn start_download_from_queue(
     // Create progress callback that updates job status and emits SSE events
     let progress_jobs = Arc::clone(&pull_jobs_arc);
     let progress_job_id = job_id_clone.clone();
-    let progress_queue = state_clone.download_queue.clone();
-    let progress_callback: crate::models::download::ProgressCallback =
-        Arc::new(move |downloaded: u64, total: u64| {
+    let progress_queue = state_clone.pull_queue.clone();
+    let progress_callback: crate::models::pull::ProgressCallback =
+        Arc::new(move |pulled: u64, total: u64| {
             let job_id = progress_job_id.clone();
-            // Use try_write to avoid blocking the download task
+            // Use try_write to avoid blocking the pull task
             if let Ok(mut jobs) = progress_jobs.try_write() {
                 if let Some(job) = jobs.get_mut(&job_id) {
-                    job.bytes_downloaded = downloaded;
+                    job.bytes_pulled = pulled;
                     if total > 0 && job.total_bytes.is_none() {
                         job.total_bytes = Some(total);
                     }
@@ -269,7 +269,7 @@ pub async fn start_download_from_queue(
             }
             // Emit SSE progress event directly
             if let Some(ref svc) = progress_queue {
-                let _ = svc.update_progress(&job_id, downloaded as i64, Some(total as i64));
+                let _ = svc.update_progress(&job_id, pulled as i64, Some(total as i64));
             }
         });
 
@@ -277,14 +277,14 @@ pub async fn start_download_from_queue(
         job_id = %job_id_clone,
         repo = %repo_id_clone,
         file = %filename_clone,
-        "Beginning file download via parallel downloader"
+        "Beginning file pull via parallel puller"
     );
 
-    // Build download URL (endpoint + headers already resolved above for HEAD)
-    let download_url = resolve_url;
+    // Build pull URL (endpoint + headers already resolved above for HEAD)
+    let pull_url = resolve_url;
 
     // Build client with HTTP/2 keep-alive
-    let download_client = match reqwest::Client::builder()
+    let pull_client = match reqwest::Client::builder()
         .http2_keep_alive_timeout(std::time::Duration::from_secs(15))
         .build()
     {
@@ -298,7 +298,7 @@ pub async fn start_download_from_queue(
             drop(jobs);
             poll_handle.abort();
             in_flight_clone.lock().await.remove(&dest_path);
-            if let Some(ref svc) = state_clone.download_queue {
+            if let Some(ref svc) = state_clone.pull_queue {
                 let _ = svc.update_status(
                     &job_id_clone,
                     "failed",
@@ -313,9 +313,9 @@ pub async fn start_download_from_queue(
     };
 
     // Download directly to dest_path (no cache intermediary)
-    let total_size = match crate::models::download::download_chunked_with_progress(
-        &download_client,
-        &download_url,
+    let total_size = match crate::models::pull::pull_chunked_with_progress(
+        &pull_client,
+        &pull_url,
         &dest_path,
         8, // max connections
         Some(progress_callback),
@@ -333,7 +333,7 @@ pub async fn start_download_from_queue(
             drop(jobs);
             poll_handle.abort();
             in_flight_clone.lock().await.remove(&dest_path);
-            if let Some(ref svc) = state_clone.download_queue {
+            if let Some(ref svc) = state_clone.pull_queue {
                 let _ = svc.update_status(
                     &job_id_clone,
                     "failed",
@@ -347,22 +347,22 @@ pub async fn start_download_from_queue(
         }
     };
 
-    let download_duration = download_start.elapsed();
+    let pull_duration = pull_start.elapsed();
     tracing::info!(
         job_id = %job_id_clone,
         bytes = total_size,
-        duration = ?download_duration,
+        duration = ?pull_duration,
         "Download phase complete, entering verify phase"
     );
 
     // Stop the file size polling task.
     poll_handle.abort();
 
-    // Record final downloaded byte count.
+    // Record final pulled byte count.
     {
         let mut jobs = pull_jobs_arc.write().await;
         if let Some(job) = jobs.get_mut(&job_id_clone) {
-            job.bytes_downloaded = total_size;
+            job.bytes_pulled = total_size;
             job.total_bytes = Some(total_size);
         }
     }
@@ -372,7 +372,7 @@ pub async fn start_download_from_queue(
     let outcome = super::verify::run_verification(
         Arc::clone(&pull_jobs_arc),
         state_clone.db_dir.clone(),
-        state_clone.download_queue.clone(),
+        state_clone.pull_queue.clone(),
         job_id_clone.clone(),
         repo_id_clone.clone(),
         filename_clone.clone(),
@@ -383,9 +383,9 @@ pub async fn start_download_from_queue(
     .await;
 
     // Calculate duration for DB event
-    let duration_ms = Some(download_start.elapsed().as_millis() as u64);
+    let duration_ms = Some(pull_start.elapsed().as_millis() as u64);
 
-    // Parse GGUF metadata (soft failure — don't fail the download)
+    // Parse GGUF metadata (soft failure — don't fail the pull)
     // Skip mmproj files — they're vision projectors, not LLM models.
     // Skip MTP files too — they're draft models for speculative decoding,
     // not the main LLM, and their architecture metadata is not what we
@@ -544,7 +544,7 @@ pub async fn start_download_from_queue(
         None
     };
 
-    if let Some(ref svc) = state_clone.download_queue {
+    if let Some(ref svc) = state_clone.pull_queue {
         let _ = svc.update_status(
             &job_id_clone,
             final_status,

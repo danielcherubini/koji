@@ -20,13 +20,13 @@ use tokio::sync::broadcast;
 // ── DTO types ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DownloadQueueItemDto {
+pub struct PullQueueItemDto {
     pub job_id: String,
     pub repo_id: String,
     pub filename: String,
     pub display_name: Option<String>,
     pub status: String,
-    pub bytes_downloaded: i64,
+    pub bytes_pulled: i64,
     pub total_bytes: Option<i64>,
     pub error_message: Option<String>,
     pub started_at: Option<String>,
@@ -37,12 +37,12 @@ pub struct DownloadQueueItemDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadsActiveResponse {
-    pub items: Vec<DownloadQueueItemDto>,
+    pub items: Vec<PullQueueItemDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadsHistoryResponse {
-    pub items: Vec<DownloadQueueItemDto>,
+    pub items: Vec<PullQueueItemDto>,
     pub total: i64,
 }
 
@@ -52,17 +52,17 @@ pub struct DownloadCancelResponse {
     pub message: Option<String>,
 }
 
-/// Convert a `DownloadQueueDto` to a `DownloadQueueItemDto`.
-/// Note: progress_percent is computed client-side from bytes_downloaded
+/// Convert a `PullQueueDto` to a `PullQueueItemDto`.
+/// Note: progress_percent is computed client-side from bytes_pulled
 /// and total_bytes, so it's not included in the API response.
-fn item_to_dto(item: &tama_core::db::repository::DownloadQueueDto) -> DownloadQueueItemDto {
-    DownloadQueueItemDto {
+fn item_to_dto(item: &tama_core::db::repository::PullQueueDto) -> PullQueueItemDto {
+    PullQueueItemDto {
         job_id: item.job_id.clone(),
         repo_id: item.repo_id.clone(),
         filename: item.filename.clone(),
         display_name: item.display_name.clone(),
         status: item.status.clone(),
-        bytes_downloaded: item.bytes_downloaded,
+        bytes_pulled: item.bytes_pulled,
         total_bytes: item.total_bytes,
         error_message: item.error_message.clone(),
         started_at: item.started_at.clone(),
@@ -93,10 +93,10 @@ fn default_offset() -> i64 {
 // ── Handlers ─────────────────────────────────────────────────────────────────
 
 /// GET /tama/v1/downloads/active
-pub async fn get_active_downloads(
+pub async fn get_active_pulls(
     State(state): State<Arc<ProxyState>>,
 ) -> Result<Json<DownloadsActiveResponse>, (StatusCode, Json<serde_json::Value>)> {
-    let svc = state.download_queue().as_ref().ok_or_else(|| {
+    let svc = state.pull_queue().as_ref().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(error_body(
@@ -113,17 +113,17 @@ pub async fn get_active_downloads(
         )
     })?;
 
-    let dto_items: Vec<DownloadQueueItemDto> = items.iter().map(item_to_dto).collect();
+    let dto_items: Vec<PullQueueItemDto> = items.iter().map(item_to_dto).collect();
 
     Ok(Json(DownloadsActiveResponse { items: dto_items }))
 }
 
 /// GET /tama/v1/downloads/history?limit=50&offset=0
-pub async fn get_download_history(
+pub async fn get_pull_history(
     State(state): State<Arc<ProxyState>>,
     axum::extract::Query(query): axum::extract::Query<HistoryQuery>,
 ) -> Result<Json<DownloadsHistoryResponse>, (StatusCode, Json<serde_json::Value>)> {
-    let svc = state.download_queue().as_ref().ok_or_else(|| {
+    let svc = state.pull_queue().as_ref().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(error_body(
@@ -149,7 +149,7 @@ pub async fn get_download_history(
         )
     })?;
 
-    let dto_items: Vec<DownloadQueueItemDto> = items.iter().map(item_to_dto).collect();
+    let dto_items: Vec<PullQueueItemDto> = items.iter().map(item_to_dto).collect();
 
     Ok(Json(DownloadsHistoryResponse {
         items: dto_items,
@@ -158,11 +158,11 @@ pub async fn get_download_history(
 }
 
 /// POST /tama/v1/downloads/:job_id/cancel
-pub async fn cancel_download(
+pub async fn cancel_pull(
     State(state): State<Arc<ProxyState>>,
     Path(job_id): axum::extract::Path<String>,
 ) -> Json<DownloadCancelResponse> {
-    let svc = match &state.download_queue() {
+    let svc = match &state.pull_queue() {
         Some(svc) => svc,
         None => {
             return Json(DownloadCancelResponse {
@@ -185,11 +185,11 @@ pub async fn cancel_download(
 }
 
 /// GET /tama/v1/downloads/events — SSE stream of download lifecycle events.
-pub async fn download_events_sse(
+pub async fn pull_events_sse(
     State(state): State<Arc<ProxyState>>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, axum::Error>>>, StatusCode> {
     let svc = state
-        .download_queue()
+        .pull_queue()
         .as_ref()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
 
@@ -200,7 +200,7 @@ pub async fn download_events_sse(
             match rx.recv().await {
                 Ok(event) => {
                     let sse_event = match event {
-                        tama_core::proxy::download_queue::DownloadEvent::Started { job_id, repo_id, filename, total_bytes } => {
+                        tama_core::proxy::pull_queue::PullEvent::Started { job_id, repo_id, filename, total_bytes } => {
                             Event::default()
                                 .event("Started")
                                 .json_data(serde_json::json!({
@@ -211,17 +211,17 @@ pub async fn download_events_sse(
                                     "total_bytes": total_bytes,
                                 }))
                         }
-                        tama_core::proxy::download_queue::DownloadEvent::Progress { job_id, bytes_downloaded, total_bytes } => {
+                        tama_core::proxy::pull_queue::PullEvent::Progress { job_id, bytes_pulled, total_bytes } => {
                             Event::default()
                                 .event("Progress")
                                 .json_data(serde_json::json!({
                                     "event": "Progress",
                                     "job_id": job_id,
-                                    "bytes_downloaded": bytes_downloaded,
+                                    "bytes_pulled": bytes_pulled,
                                     "total_bytes": total_bytes,
                                 }))
                         }
-                        tama_core::proxy::download_queue::DownloadEvent::Verifying { job_id, filename } => {
+                        tama_core::proxy::pull_queue::PullEvent::Verifying { job_id, filename } => {
                             Event::default()
                                 .event("Verifying")
                                 .json_data(serde_json::json!({
@@ -230,7 +230,7 @@ pub async fn download_events_sse(
                                     "filename": filename,
                                 }))
                         }
-                        tama_core::proxy::download_queue::DownloadEvent::Completed { job_id, filename, size_bytes, duration_ms } => {
+                        tama_core::proxy::pull_queue::PullEvent::Completed { job_id, filename, size_bytes, duration_ms } => {
                             Event::default()
                                 .event("Completed")
                                 .json_data(serde_json::json!({
@@ -241,7 +241,7 @@ pub async fn download_events_sse(
                                     "duration_ms": duration_ms,
                                 }))
                         }
-                        tama_core::proxy::download_queue::DownloadEvent::Failed { job_id, filename, error } => {
+                        tama_core::proxy::pull_queue::PullEvent::Failed { job_id, filename, error } => {
                             Event::default()
                                 .event("Failed")
                                 .json_data(serde_json::json!({
@@ -251,7 +251,7 @@ pub async fn download_events_sse(
                                     "error": error,
                                 }))
                         }
-                        tama_core::proxy::download_queue::DownloadEvent::Cancelled { job_id, filename } => {
+                        tama_core::proxy::pull_queue::PullEvent::Cancelled { job_id, filename } => {
                             Event::default()
                                 .event("Cancelled")
                                 .json_data(serde_json::json!({
@@ -260,7 +260,7 @@ pub async fn download_events_sse(
                                     "filename": filename,
                                 }))
                         }
-                        tama_core::proxy::download_queue::DownloadEvent::Queued { job_id, repo_id, filename } => {
+                        tama_core::proxy::pull_queue::PullEvent::Queued { job_id, repo_id, filename } => {
                             Event::default()
                                 .event("Queued")
                                 .json_data(serde_json::json!({

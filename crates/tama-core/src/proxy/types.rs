@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::task::JoinSet;
 
-use super::download_queue::DownloadQueueService;
 use super::pull_jobs::PullJob;
+use super::pull_queue::PullQueueService;
 
 /// Cache entry for discovered GPU devices: (discovered_at, devices).
 type GpuDeviceCacheEntry = (Instant, Vec<crate::gpu::GpuDeviceInfo>);
@@ -240,9 +240,9 @@ impl Clone for ProxyState {
             db_dir: self.db_dir.clone(),
             pull_jobs: Arc::clone(&self.pull_jobs),
             system_metrics: Arc::clone(&self.system_metrics),
-            in_flight_downloads: Arc::clone(&self.in_flight_downloads),
+            in_flight_pulls: Arc::clone(&self.in_flight_pulls),
             metrics_tx: self.metrics_tx.clone(),
-            download_queue: self.download_queue.clone(),
+            pull_queue: self.pull_queue.clone(),
             config_write_semaphore: Arc::clone(&self.config_write_semaphore),
             backend_logs: self.backend_logs.clone(),
             inference_stats: self.inference_stats.clone(),
@@ -265,13 +265,13 @@ pub struct ProxyState {
     pub(crate) db_dir: Option<std::path::PathBuf>,
     pub(crate) pull_jobs: Arc<tokio::sync::RwLock<std::collections::HashMap<String, PullJob>>>,
     pub(crate) system_metrics: Arc<tokio::sync::RwLock<crate::gpu::SystemMetrics>>,
-    /// Set of destination paths currently being downloaded. Used to prevent
-    /// concurrent downloads writing to the same temp files, which would silently
+    /// Set of destination paths currently being pulled. Used to prevent
+    /// concurrent pulls writing to the same temp files, which would silently
     /// corrupt the assembled output.
-    pub(crate) in_flight_downloads:
+    pub(crate) in_flight_pulls:
         Arc<tokio::sync::Mutex<std::collections::HashSet<std::path::PathBuf>>>,
     pub(crate) metrics_tx: tokio::sync::broadcast::Sender<crate::gpu::MetricsSnapshot>,
-    pub(crate) download_queue: Option<Arc<DownloadQueueService>>,
+    pub(crate) pull_queue: Option<Arc<PullQueueService>>,
     /// Semaphore controlling concurrent post-pull config writes.
     /// Replaces the old global CONFIG_WRITE_LOCK to allow controlled
     /// parallelism (default capacity=4) instead of full serialization.
@@ -305,7 +305,7 @@ impl ProxyState {
     /// - Closes the metrics broadcast channel to stop metrics streaming
     /// - Clears all loaded models from the models map
     /// - Clears active pull jobs
-    /// - Clears in-flight downloads
+    /// - Clears in-flight pulls
     pub async fn shutdown(&self) {
         // Close the metrics broadcast channel to stop the metrics stream
         let _ = self.metrics_tx.send(crate::gpu::MetricsSnapshot::default());
@@ -324,8 +324,8 @@ impl ProxyState {
         let mut pull_jobs = self.pull_jobs.write().await;
         pull_jobs.clear();
 
-        // Clear in-flight downloads
-        let mut in_flight = self.in_flight_downloads.lock().await;
+        // Clear in-flight pulls
+        let mut in_flight = self.in_flight_pulls.lock().await;
         in_flight.clear();
 
         // Clear inference stats
@@ -386,11 +386,11 @@ impl ProxyState {
         &self.system_metrics
     }
 
-    /// Returns a reference to the in-flight downloads Mutex.
-    pub fn in_flight_downloads(
+    /// Returns a reference to the in-flight pulls Mutex.
+    pub fn in_flight_pulls(
         &self,
     ) -> &Arc<tokio::sync::Mutex<std::collections::HashSet<std::path::PathBuf>>> {
-        &self.in_flight_downloads
+        &self.in_flight_pulls
     }
 
     /// Returns a reference to the metrics broadcast sender.
@@ -398,14 +398,14 @@ impl ProxyState {
         &self.metrics_tx
     }
 
-    /// Returns a reference to the download queue service.
-    pub fn download_queue(&self) -> &Option<Arc<DownloadQueueService>> {
-        &self.download_queue
+    /// Returns a reference to the pull queue service.
+    pub fn pull_queue(&self) -> &Option<Arc<PullQueueService>> {
+        &self.pull_queue
     }
 
-    /// Sets the download queue service. Used by tests.
-    pub fn set_download_queue(&mut self, queue: Option<Arc<DownloadQueueService>>) {
-        self.download_queue = queue;
+    /// Sets the pull queue service. Used by tests.
+    pub fn set_pull_queue(&mut self, queue: Option<Arc<PullQueueService>>) {
+        self.pull_queue = queue;
     }
 
     /// Returns a reference to the config write semaphore.
@@ -464,9 +464,9 @@ mod tests {
             state.pull_jobs();
         let _: &Arc<tokio::sync::RwLock<crate::gpu::SystemMetrics>> = state.system_metrics();
         let _: &Arc<tokio::sync::Mutex<std::collections::HashSet<std::path::PathBuf>>> =
-            state.in_flight_downloads();
+            state.in_flight_pulls();
         let _: &tokio::sync::broadcast::Sender<crate::gpu::MetricsSnapshot> = state.metrics_tx();
-        let _: &Option<Arc<DownloadQueueService>> = state.download_queue();
+        let _: &Option<Arc<PullQueueService>> = state.pull_queue();
         let _: &Arc<tokio::sync::Semaphore> = state.config_write_semaphore();
         let _: &crate::backends::log_stream::BackendLogManager = state.backend_logs();
         let _: &tokio::sync::watch::Sender<HashMap<String, LatestInferenceStats>> =

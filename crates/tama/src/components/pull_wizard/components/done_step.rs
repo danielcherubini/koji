@@ -3,7 +3,7 @@ use leptos::prelude::*;
 
 #[component]
 pub fn DoneStep(
-    download_jobs: Signal<Vec<JobProgress>>,
+    pull_jobs: Signal<Vec<JobProgress>>,
     on_close: Option<Callback<()>>,
 ) -> impl IntoView {
     view! {
@@ -12,8 +12,8 @@ pub fn DoneStep(
             <p class="form-card__desc text-muted">"The following models are now available."</p>
         </div>
 
-        <div class="download-jobs mt-2">
-            {move || download_jobs.get().into_iter().map(|job| {
+        <div class="pull-jobs mt-2">
+            {move || pull_jobs.get().into_iter().map(|job| {
                 let badge_class = if job.status == "completed" {
                     "badge badge-success"
                 } else {
