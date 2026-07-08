@@ -108,6 +108,17 @@ pub async fn handle_tama_api_keys_create(
         );
     }
 
+    // Validate expires_at is valid RFC 3339 (if provided)
+    if let Some(ref expires_at) = body.expires_at {
+        if chrono::DateTime::parse_from_rfc3339(expires_at).is_err() {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "expires_at must be a valid RFC 3339 timestamp",
+            );
+        }
+    }
+
     // Generate key and hash
     let raw_key = api_keys::generate_key();
     let key_prefix = api_keys::extract_prefix(&raw_key);
@@ -483,12 +494,12 @@ mod tests {
                 "/tama/v1/keys/:id",
                 patch(handle_tama_api_keys_update).delete(handle_tama_api_keys_revoke),
             )
+            .layer(middleware::from_fn(
+                crate::proxy::scope_middleware::scope_middleware,
+            ))
             .layer(middleware::from_fn_with_state(
                 state.clone(),
                 crate::proxy::auth::auth_middleware,
-            ))
-            .layer(middleware::from_fn(
-                crate::proxy::scope_middleware::scope_middleware,
             ))
             .with_state(state)
     }

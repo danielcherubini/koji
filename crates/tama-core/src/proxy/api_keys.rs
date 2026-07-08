@@ -169,12 +169,8 @@ pub fn create_key(
 
     let id = tx.last_insert_rowid();
 
-    // Enable API keys on app_proxy (use INSERT OR REPLACE to handle
-    // the case where the app_proxy row hasn't been seeded yet)
-    tx.execute(
-        "INSERT OR REPLACE INTO app_proxy (id, api_keys_enabled) VALUES (1, 1)",
-        [],
-    )?;
+    // Enable API keys on app_proxy
+    tx.execute("UPDATE app_proxy SET api_keys_enabled = 1 WHERE id = 1", [])?;
 
     tx.commit()?;
     Ok(id)
@@ -227,10 +223,7 @@ pub fn revoke_key(conn: &Connection, key_id: i64) -> Result<()> {
     )?;
 
     if active_count == 0 {
-        tx.execute(
-            "INSERT OR REPLACE INTO app_proxy (id, api_keys_enabled) VALUES (1, 0)",
-            [],
-        )?;
+        tx.execute("UPDATE app_proxy SET api_keys_enabled = 0 WHERE id = 1", [])?;
     }
 
     tx.commit()?;
