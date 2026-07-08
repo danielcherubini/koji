@@ -215,9 +215,11 @@ pub fn revoke_key(conn: &Connection, key_id: i64) -> Result<()> {
         rusqlite::params![now.as_str(), key_id],
     )?;
 
-    // Check if any active keys remain
+    // Check if any active (non-revoked, non-expired) keys remain.
+    // Expired keys are excluded so we don't leave api_keys_enabled = 1
+    // with only expired keys — that would lock out the user.
     let active_count: i64 = tx.query_row(
-        "SELECT COUNT(*) FROM api_keys WHERE revoked_at IS NULL",
+        "SELECT COUNT(*) FROM api_keys WHERE revoked_at IS NULL AND (expires_at IS NULL OR expires_at > strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))",
         [],
         |row| row.get(0),
     )?;
