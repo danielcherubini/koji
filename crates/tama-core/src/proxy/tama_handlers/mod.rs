@@ -1,3 +1,4 @@
+pub mod api_keys;
 pub mod backend_logs;
 mod models;
 mod pull;
@@ -7,6 +8,10 @@ mod types;
 #[cfg(test)]
 mod tests;
 
+pub use api_keys::{
+    handle_tama_api_keys_create, handle_tama_api_keys_list, handle_tama_api_keys_revoke,
+    handle_tama_api_keys_update,
+};
 pub use backend_logs::handle_backend_log_sse;
 pub use models::{
     capitalize_first, generate_display_name, handle_opencode_list_models, handle_tama_cancel_load,

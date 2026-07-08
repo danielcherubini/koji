@@ -17,9 +17,10 @@ use oauth2::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::config::types::OAuth2Config;
+use crate::proxy::api_keys::{self, validate_key, AuthSubject};
 
 // --- Auth config ---
 // AuthConfig is no longer used; auth settings are read live from ProxyState.
@@ -51,10 +52,12 @@ pub async fn auth_middleware(
     let auth_url = config.proxy.authenticator_url.clone();
     let skip_paths = config.proxy.authenticator_skip_paths.clone();
     let oauth2_enabled = config.proxy.oauth2.enabled;
+    let api_keys_enabled = config.proxy.api_keys_enabled;
     drop(config);
 
-    // 1. If no auth configured at all, pass through
-    let auth_configured = auth_url.as_deref().is_some_and(|u| !u.is_empty()) || oauth2_enabled;
+    // 1. If no auth configured at all, pass through (open mode)
+    let auth_configured =
+        auth_url.as_deref().is_some_and(|u| !u.is_empty()) || oauth2_enabled || api_keys_enabled;
     if !auth_configured {
         return next.run(req).await;
     }
@@ -68,25 +71,106 @@ pub async fn auth_middleware(
     // 3. Check session cookie (OIDC login)
     if let Some(claims) = extract_session(&req, &proxy_state) {
         debug!("Authenticated user via session cookie: {}", claims.username);
+        let subject = AuthSubject::User {
+            username: claims.username,
+        };
+        let mut req = req;
+        req.extensions_mut().insert(subject);
         return next.run(req).await;
     }
 
     // 4. Check for bearer token
     if let Some(bearer_token) = extract_bearer_token(&req) {
-        let authenticator_url = auth_url.as_deref().unwrap_or("");
-        match validate_token_against_authentik(
-            &proxy_state.client,
-            authenticator_url,
-            &bearer_token,
-        )
-        .await
-        {
-            Ok(username) => {
-                debug!("Authenticated user via bearer token: {}", username);
-                return next.run(req).await;
+        // 4a. API key bearer token (tama_ prefix, case-sensitive)
+        if bearer_token.starts_with("tama_") {
+            // If API keys are disabled, reject
+            if !api_keys_enabled {
+                warn!(
+                    remote_addr = ?extract_remote_addr(&req),
+                    "API key rejected: api_keys_enabled is false"
+                );
+                return (StatusCode::UNAUTHORIZED, json_unauthorized_api_keys()).into_response();
             }
-            Err(status) => {
-                return (status, json_unauthorized()).into_response();
+
+            // Validate against database (spawn_blocking for rusqlite)
+            let raw_token = bearer_token.clone();
+            let raw_token_for_db = raw_token.clone();
+            let db_result = tokio::task::spawn_blocking(move || {
+                let db = proxy_state.open_db();
+                db.map(|conn| validate_key(&conn, &raw_token_for_db))
+            })
+            .await;
+
+            match db_result {
+                Ok(Some(Ok(Some((key_id, scopes))))) => {
+                    // Successful validation
+                    let key_prefix = api_keys::extract_prefix(&raw_token);
+                    info!(
+                        key_id,
+                        key_prefix = %key_prefix,
+                        "API key authenticated"
+                    );
+                    let subject = AuthSubject::Key { key_id, scopes };
+                    let mut req = req;
+                    req.extensions_mut().insert(subject);
+                    return next.run(req).await;
+                }
+                Ok(Some(Ok(None))) => {
+                    // Key not found in database
+                    let key_prefix_attempted = api_keys::extract_prefix(&raw_token);
+                    warn!(
+                        key_prefix_attempted = %key_prefix_attempted,
+                        reason = "key not found in database",
+                        "API key validation failed"
+                    );
+                    return (StatusCode::UNAUTHORIZED, json_unauthorized_invalid_key())
+                        .into_response();
+                }
+                Ok(Some(Err(e))) => {
+                    warn!(
+                        error = %e,
+                        reason = "database error during key validation",
+                        "API key validation failed"
+                    );
+                    return (StatusCode::UNAUTHORIZED, json_unauthorized()).into_response();
+                }
+                Ok(None) => {
+                    // No database connection available
+                    warn!(
+                        reason = "no database connection",
+                        "API key validation failed"
+                    );
+                    return (StatusCode::UNAUTHORIZED, json_unauthorized()).into_response();
+                }
+                Err(e) => {
+                    warn!(
+                        error = %e,
+                        reason = "spawn_blocking panicked",
+                        "API key validation failed"
+                    );
+                    return (StatusCode::UNAUTHORIZED, json_unauthorized()).into_response();
+                }
+            }
+        } else {
+            // 4b. Non-tama_ bearer token — validate against Authentik
+            let authenticator_url = auth_url.as_deref().unwrap_or("");
+            match validate_token_against_authentik(
+                &proxy_state.client,
+                authenticator_url,
+                &bearer_token,
+            )
+            .await
+            {
+                Ok(username) => {
+                    debug!("Authenticated user via bearer token: {}", username);
+                    let subject = AuthSubject::User { username };
+                    let mut req = req;
+                    req.extensions_mut().insert(subject);
+                    return next.run(req).await;
+                }
+                Err(status) => {
+                    return (status, json_unauthorized()).into_response();
+                }
             }
         }
     }
@@ -98,6 +182,11 @@ pub async fn auth_middleware(
         .and_then(|v| v.to_str().ok())
     {
         debug!("Authenticated user via Caddy forward_auth: {}", username);
+        let subject = AuthSubject::User {
+            username: username.to_string(),
+        };
+        let mut req = req;
+        req.extensions_mut().insert(subject);
         return next.run(req).await;
     }
 
@@ -170,6 +259,41 @@ fn json_unauthorized() -> Response {
         .header("Content-Type", "application/json")
         .body(Body::from(body))
         .expect("build unauthorized response")
+}
+
+/// JSON 401 response for API key validation failure.
+fn json_unauthorized_invalid_key() -> Response {
+    let body = serde_json::json!({
+        "error": "unauthorized",
+        "message": "invalid API key"
+    })
+    .to_string();
+    Response::builder()
+        .status(StatusCode::UNAUTHORIZED)
+        .header("Content-Type", "application/json")
+        .body(Body::from(body))
+        .expect("build unauthorized response")
+}
+
+/// JSON 401 response when API keys are disabled but a tama_ token was provided.
+fn json_unauthorized_api_keys() -> Response {
+    let body = serde_json::json!({
+        "error": "unauthorized",
+        "message": "API key authentication is not enabled"
+    })
+    .to_string();
+    Response::builder()
+        .status(StatusCode::UNAUTHORIZED)
+        .header("Content-Type", "application/json")
+        .body(Body::from(body))
+        .expect("build unauthorized response")
+}
+
+/// Extract the remote address from the request for logging.
+fn extract_remote_addr(req: &Request) -> Option<String> {
+    req.extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|addr| addr.0.to_string())
 }
 
 // ── Session claims and OAuth2 helpers ──────────────────────────────────────
@@ -537,6 +661,7 @@ pub async fn handle_logout(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::proxy::api_keys::Scope;
     use axum::middleware;
     use axum::{routing::get, Router};
     use std::sync::Arc;
@@ -975,5 +1100,382 @@ mod tests {
             ))
             .with_state(proxy_state.clone());
         (app, proxy_state)
+    }
+
+    // ── API key authentication tests ────────────────────────────────────
+
+    /// Helper: create a temporary directory with a DB containing an API key.
+    /// Returns the temp dir (kept alive by the returned TempDir) and the proxy state.
+    fn make_app_with_api_key(
+        api_keys_enabled: bool,
+    ) -> (
+        Router,
+        std::sync::Arc<crate::proxy::ProxyState>,
+        tempfile::TempDir,
+    ) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = temp_dir.path().join("tama.db");
+        let db_dir = temp_dir.path().to_path_buf();
+
+        // Initialize DB with migrations and seed
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        crate::db::queries::seed_defaults(&conn).unwrap();
+
+        // Create an API key
+        let key = api_keys::generate_key();
+        let scopes = vec![Scope::Inference];
+        api_keys::create_key(&conn, "test-key", &key, &scopes, "admin", None).unwrap();
+
+        // Build config with api_keys_enabled
+        let config = crate::config::Config {
+            proxy: crate::config::ProxyConfig {
+                authenticator_skip_paths: vec![
+                    "/health".to_string(),
+                    "/metrics".to_string(),
+                    "/login".to_string(),
+                    "/login/callback".to_string(),
+                    "/login/error".to_string(),
+                ],
+                api_keys_enabled,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let proxy_state = Arc::new(crate::proxy::ProxyState::new(config, Some(db_dir)));
+
+        let app = Router::new()
+            .route("/", get(test_handler))
+            .route("/health", get(test_handler))
+            .route("/metrics", get(test_handler))
+            .route("/v1/models", get(test_handler))
+            .layer(middleware::from_fn_with_state(
+                proxy_state.clone(),
+                auth_middleware,
+            ))
+            .with_state(proxy_state.clone());
+
+        // Store the key in a file so the test can read it
+        let key_path = temp_dir.path().join("test_key.txt");
+        std::fs::write(&key_path, &key).unwrap();
+
+        (app, proxy_state, temp_dir)
+    }
+
+    /// Test that a valid tama_ bearer token authenticates successfully.
+    #[tokio::test]
+    async fn test_tama_key_auth_passes() {
+        let (_app, state, temp_dir) = make_app_with_api_key(true);
+        let key = std::fs::read_to_string(temp_dir.path().join("test_key.txt")).unwrap();
+
+        let app = Router::new()
+            .route("/", get(test_handler))
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                auth_middleware,
+            ))
+            .with_state(state.clone());
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header("Authorization", format!("Bearer {}", key))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    /// Test that an invalid tama_ bearer token returns 401.
+    #[tokio::test]
+    async fn test_tama_key_auth_invalid_returns_401() {
+        let (_app, state, _temp_dir) = make_app_with_api_key(true);
+
+        let app = Router::new()
+            .route("/", get(test_handler))
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                auth_middleware,
+            ))
+            .with_state(state.clone());
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header(
+                        "Authorization",
+                        "Bearer tama_invalidtoken1234567890abcdef12345678",
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let body_bytes = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+        assert!(body_str.contains("unauthorized"));
+    }
+
+    /// Test that tama_ bearer tokens are rejected when api_keys_enabled is false
+    /// but another auth method is configured (auth is configured, just not API keys).
+    #[tokio::test]
+    async fn test_tama_key_disabled_returns_401() {
+        // Set up with Authentik configured but api_keys_enabled=false
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = temp_dir.path().join("tama.db");
+        let db_dir = temp_dir.path().to_path_buf();
+
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        crate::db::queries::seed_defaults(&conn).unwrap();
+
+        let key = api_keys::generate_key();
+        api_keys::create_key(&conn, "test-key", &key, &[Scope::Inference], "admin", None).unwrap();
+
+        let config = crate::config::Config {
+            proxy: crate::config::ProxyConfig {
+                authenticator_url: Some("https://auth.example.com".to_string()),
+                authenticator_skip_paths: vec!["/health".to_string(), "/metrics".to_string()],
+                api_keys_enabled: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let proxy_state = Arc::new(crate::proxy::ProxyState::new(config, Some(db_dir)));
+
+        let app = Router::new()
+            .route("/", get(test_handler))
+            .layer(middleware::from_fn_with_state(
+                proxy_state.clone(),
+                auth_middleware,
+            ))
+            .with_state(proxy_state.clone());
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header("Authorization", format!("Bearer {}", key))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// Test that non-tama_ bearer tokens still go to Authentik.
+    #[tokio::test]
+    async fn test_non_tama_bearer_still_validates_authentik() {
+        // Start mock Authentik server that returns a valid user response
+        let mock = Router::new().route(
+            "/api/v3/core/users/me/",
+            axum::routing::get(|| async {
+                axum::Json(serde_json::json!({
+                    "user": {"username": "daniel", "pk": 7, "is_active": true}
+                }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mock_addr = listener.local_addr().unwrap();
+        tokio::spawn(async { axum::serve(listener, mock).await.unwrap() });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let config = crate::config::Config {
+            proxy: crate::config::ProxyConfig {
+                authenticator_url: Some(format!("http://{}", mock_addr)),
+                authenticator_skip_paths: vec!["/health".to_string(), "/metrics".to_string()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let proxy_state = Arc::new(crate::proxy::ProxyState::new(config, None));
+
+        let app = Router::new()
+            .route("/", get(test_handler))
+            .layer(middleware::from_fn_with_state(
+                proxy_state.clone(),
+                auth_middleware,
+            ))
+            .with_state(proxy_state.clone());
+
+        // Non-tama_ token should be validated against Authentik
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header("Authorization", "Bearer some-authentik-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    /// Test that open mode (no auth configured) passes through.
+    #[tokio::test]
+    async fn test_auth_not_configured_open_mode() {
+        let config = crate::config::Config {
+            proxy: crate::config::ProxyConfig {
+                authenticator_skip_paths: vec!["/health".to_string(), "/metrics".to_string()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let proxy_state = Arc::new(crate::proxy::ProxyState::new(config, None));
+
+        let app = Router::new()
+            .route("/", get(test_handler))
+            .layer(middleware::from_fn_with_state(
+                proxy_state.clone(),
+                auth_middleware,
+            ))
+            .with_state(proxy_state.clone());
+
+        // No auth header — should pass through (open mode)
+        let resp = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    /// Test that API keys-only auth (no OAuth2, no Authentik) works.
+    #[tokio::test]
+    async fn test_auth_configured_with_api_keys_only() {
+        let (_app, state, temp_dir) = make_app_with_api_key(true);
+        let key = std::fs::read_to_string(temp_dir.path().join("test_key.txt")).unwrap();
+
+        let app = Router::new()
+            .route("/", get(test_handler))
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                auth_middleware,
+            ))
+            .with_state(state.clone());
+
+        // Valid key should pass
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header("Authorization", format!("Bearer {}", key))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // No auth should fail (api_keys_enabled = true means auth is configured)
+        let resp = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// Test that session cookie auth still works alongside API keys.
+    #[tokio::test]
+    async fn test_session_cookie_still_works() {
+        let (_app, state, _temp_dir) = make_app_with_api_key(true);
+
+        let claims = SessionClaims::new(
+            "cookieuser".to_string(),
+            Some("cookie@example.com".to_string()),
+            3600,
+        );
+        let cookie_value = make_signed_session_cookie(&state, &claims);
+
+        let app = Router::new()
+            .route("/", get(test_handler))
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                auth_middleware,
+            ))
+            .with_state(state.clone());
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header("Cookie", cookie_value)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    /// Test that tama_ prefix is case-sensitive (Tama_, TAMA_ should not match).
+    /// A key with uppercase prefix falls through to Authentik validation.
+    #[tokio::test]
+    async fn test_tama_prefix_case_sensitive() {
+        // Start mock Authentik server that returns 401 for any token
+        let mock = Router::new().route(
+            "/api/v3/core/users/me/",
+            axum::routing::get(|| async { StatusCode::UNAUTHORIZED }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mock_addr = listener.local_addr().unwrap();
+        tokio::spawn(async { axum::serve(listener, mock).await.unwrap() });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = temp_dir.path().join("tama.db");
+        let db_dir = temp_dir.path().to_path_buf();
+
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        crate::db::queries::seed_defaults(&conn).unwrap();
+
+        let key = api_keys::generate_key();
+        api_keys::create_key(&conn, "test-key", &key, &[Scope::Inference], "admin", None).unwrap();
+
+        let config = crate::config::Config {
+            proxy: crate::config::ProxyConfig {
+                authenticator_url: Some(format!("http://{}", mock_addr)),
+                authenticator_skip_paths: vec!["/health".to_string(), "/metrics".to_string()],
+                api_keys_enabled: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let proxy_state = Arc::new(crate::proxy::ProxyState::new(config, Some(db_dir)));
+
+        let app = Router::new()
+            .route("/", get(test_handler))
+            .layer(middleware::from_fn_with_state(
+                proxy_state.clone(),
+                auth_middleware,
+            ))
+            .with_state(proxy_state.clone());
+
+        // Uppercase prefix — should NOT match tama_ prefix check,
+        // so it falls through to Authentik, which returns 401
+        let upper_key = key.to_uppercase();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header("Authorization", format!("Bearer {}", upper_key))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // Should be rejected — uppercase prefix doesn't match tama_,
+        // falls through to Authentik which returns 401
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 }

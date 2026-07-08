@@ -71,6 +71,9 @@ pub struct ProxyConfig {
     /// OAuth2/OpenID Connect configuration for browser-based authentication.
     #[serde(default)]
     pub oauth2: OAuth2Config,
+    /// Whether API key authentication is enabled.
+    #[serde(default)]
+    pub api_keys_enabled: bool,
 }
 
 /// Default helper functions for ProxyConfig fields.
@@ -132,6 +135,7 @@ mod tests {
             authenticator_url: None,
             authenticator_skip_paths: Vec::new(),
             oauth2: OAuth2Config::default(),
+            api_keys_enabled: false,
         };
 
         let json = serde_json::to_string(&proxy).unwrap();

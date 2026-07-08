@@ -1,11 +1,12 @@
 use axum::{
     middleware,
-    routing::{get, post},
+    routing::{get, patch, post},
     Router,
 };
 use std::sync::Arc;
 
 use crate::proxy::auth::auth_middleware;
+use crate::proxy::scope_middleware::scope_middleware;
 #[cfg(feature = "web-ui")]
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::cors::CorsLayer;
@@ -23,9 +24,11 @@ use crate::proxy::handlers::tts::{
 use crate::proxy::tama_handlers::{
     backend_logs::handle_all_logs, handle_backend_log_sse, handle_hf_list_quants,
     handle_opencode_list_models, handle_pull_job_stream, handle_system_metrics_stream,
-    handle_tama_cancel_load, handle_tama_get_model as handle_tama_get_model_fn,
-    handle_tama_get_pull_job, handle_tama_list_models, handle_tama_load_model,
-    handle_tama_pull_model, handle_tama_system_gpu_devices, handle_tama_system_gpu_devices_refresh,
+    handle_tama_api_keys_create, handle_tama_api_keys_list, handle_tama_api_keys_revoke,
+    handle_tama_api_keys_update, handle_tama_cancel_load,
+    handle_tama_get_model as handle_tama_get_model_fn, handle_tama_get_pull_job,
+    handle_tama_list_models, handle_tama_load_model, handle_tama_pull_model,
+    handle_tama_system_gpu_devices, handle_tama_system_gpu_devices_refresh,
     handle_tama_system_health, handle_tama_system_restart, handle_tama_unload_model,
 };
 use crate::proxy::ProxyState;
@@ -60,6 +63,15 @@ pub async fn build_router(state: Arc<ProxyState>) -> Router {
         .route("/tama/v1/pulls/:job_id/stream", get(handle_pull_job_stream))
         // HuggingFace quant listing — wildcard captures `owner/repo` with embedded slash
         .route("/tama/v1/hf/*repo_id", get(handle_hf_list_quants))
+        // API keys management
+        .route(
+            "/tama/v1/keys",
+            get(handle_tama_api_keys_list).post(handle_tama_api_keys_create),
+        )
+        .route(
+            "/tama/v1/keys/:id",
+            patch(handle_tama_api_keys_update).delete(handle_tama_api_keys_revoke),
+        )
         // System
         .route("/tama/v1/system/health", get(handle_tama_system_health))
         .route(
@@ -93,6 +105,7 @@ pub async fn build_router(state: Arc<ProxyState>) -> Router {
         .route("/*path", post(handle_forward_post))
         .route("/*path", get(handle_forward_get))
         .fallback(handle_fallback)
+        .layer(middleware::from_fn(scope_middleware))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
@@ -153,6 +166,15 @@ pub async fn build_unified_router(
         .route("/tama/v1/pulls/:job_id", get(handle_tama_get_pull_job))
         .route("/tama/v1/pulls/:job_id/stream", get(handle_pull_job_stream))
         // NOTE: /tama/v1/hf/*repo_id excluded — web UI handles HF metadata
+        // API keys management
+        .route(
+            "/tama/v1/keys",
+            get(handle_tama_api_keys_list).post(handle_tama_api_keys_create),
+        )
+        .route(
+            "/tama/v1/keys/:id",
+            patch(handle_tama_api_keys_update).delete(handle_tama_api_keys_revoke),
+        )
         // System
         .route(
             "/tama/v1/system/reload-configs",
@@ -191,6 +213,7 @@ pub async fn build_unified_router(
     Router::new()
         .merge(proxy_routes)
         .merge(extra_routes)
+        .layer(middleware::from_fn(scope_middleware))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
