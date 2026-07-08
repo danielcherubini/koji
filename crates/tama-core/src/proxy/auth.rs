@@ -467,7 +467,41 @@ fn redirect_to_login_error(reason: &str, description: &str) -> Response {
     (StatusCode::FOUND, [(header::LOCATION, url)]).into_response()
 }
 
+/// Minimal HTML-escaper for the login error page.
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#x27;")
+}
+
 // ── OAuth2 handlers ────────────────────────────────────────────────────────
+
+/// Handle GET /login/error — display an OAuth2 login error to the user.
+pub async fn handle_login_error(Query(query): Query<HashMap<String, String>>) -> impl IntoResponse {
+    let reason = query.get("reason").map(String::as_str).unwrap_or("unknown");
+    let description = query
+        .get("description")
+        .map(String::as_str)
+        .unwrap_or("An unknown error occurred during login.");
+    let body = format!(
+        "<html><head><title>Login Error</title></head>\n\
+         <body style=\"font-family: sans-serif; max-width: 600px; margin: 80px auto; text-align: center;\">\n\
+         <h1>Login Error</h1>\n\
+         <p><strong>Reason:</strong> {}</p>\n\
+         <p>{}</p>\n\
+         <p><a href=\"/\">Try again</a></p>\n\
+         </body></html>",
+        html_escape(reason),
+        html_escape(description)
+    );
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        body,
+    )
+}
 
 /// Handle GET /login — redirect to the OAuth2 provider's authorize endpoint.
 pub async fn handle_login(State(state): State<Arc<crate::proxy::ProxyState>>) -> impl IntoResponse {
