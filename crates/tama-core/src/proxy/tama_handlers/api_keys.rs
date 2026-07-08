@@ -545,7 +545,7 @@ mod tests {
         let key_val = body["key"].as_str().unwrap();
         assert!(key_val.starts_with("tama_"), "key must start with tama_");
         assert_eq!(body["name"], "my-new-key");
-        assert_eq!(body["id"].as_i64().unwrap() > 0, true);
+        assert!(body["id"].as_i64().unwrap() > 0);
     }
 
     /// Test: GET /tama/v1/keys lists keys with key_prefix, no plaintext.
