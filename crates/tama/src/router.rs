@@ -283,8 +283,6 @@ pub fn build_web_routes(
         .layer(middleware::from_fn(api::middleware::enforce_same_origin));
 
     Router::new()
-        // Add WebState as Extension for all routes
-        .layer(axum::extract::Extension(web_state.as_ref().clone()))
         // HF metadata endpoint — wildcard captures `owner/repo` with embedded slash
         .route("/tama/v1/hf/*repo_id", get(api::hf::hf_metadata))
         // Self-update GET routes (safe methods, no CSRF protection needed)
@@ -331,5 +329,9 @@ pub fn build_web_routes(
         )
         // Backend forwarding for root-level paths (/slots, /tokenize, /health, etc.)
         .route("/*path", get(handle_root_forward))
+        // Add WebState as Extension for ALL routes (must be after .merge() so it
+        // wraps merged sub-routers too — axum layers before .merge() don't apply
+        // to the merged routes)
+        .layer(axum::extract::Extension(web_state.as_ref().clone()))
         .layer(CatchPanicLayer::new())
 }
