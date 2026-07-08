@@ -377,8 +377,6 @@ mod tests {
             api_name: None,
             display_name: None,
             backend: "llama_cpp".to_string(),
-            #[allow(deprecated)]
-            loaded: state == "ready",
             state: model_state,
             quant: None,
             context_length: None,

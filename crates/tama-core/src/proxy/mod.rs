@@ -123,11 +123,11 @@ mod tests {
         assert!(first_model.get("backend").is_some());
         assert!(first_model.get("backend_path").is_some());
         assert!(first_model.get("enabled").is_some());
-        assert!(first_model.get("loaded").is_some());
-        // Unloaded model should have loaded=false
+        assert!(first_model.get("state").is_some());
+        // Unloaded model should have state="idle"
         assert_eq!(
-            first_model.get("loaded").and_then(|v| v.as_bool()),
-            Some(false)
+            first_model.get("state").and_then(|v| v.as_str()),
+            Some("idle")
         );
     }
 

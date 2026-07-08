@@ -10,29 +10,27 @@ use axum::{
 
 use super::utils::resolve_model_id;
 use crate::proxy::process::{force_kill_process_group, is_process_group_alive, kill_process_group};
-use crate::proxy::tama_handlers::ModelResponse;
+use crate::proxy::tama_handlers::{ListModelsResponse, ListedModelResponse, ModelResponse};
 use crate::proxy::{BackendState, ProxyState};
 use tracing::{info, warn};
 
 /// Handle listing all configured models (Tama management API).
-pub async fn handle_tama_list_models(state: State<Arc<ProxyState>>) -> Json<serde_json::Value> {
+pub async fn handle_tama_list_models(state: State<Arc<ProxyState>>) -> Json<ListModelsResponse> {
     let models = state.build_status_response().await;
     let models_obj = models.get("models").and_then(|v| v.as_object());
 
-    let result: Vec<serde_json::Value> = models_obj
+    let result: Vec<ListedModelResponse> = models_obj
         .into_iter()
         .flat_map(|models_obj| {
             models_obj.iter().filter_map(|(_key, model)| {
                 model
                     .as_object()
-                    .and_then(|model| serde_json::to_value(model).ok())
+                    .and_then(|obj| serde_json::from_value(serde_json::to_value(obj).ok()?).ok())
             })
         })
         .collect();
 
-    Json(serde_json::json!({
-        "models": result
-    }))
+    Json(ListModelsResponse { models: result })
 }
 
 /// Handle getting a single model's state (Tama management API).

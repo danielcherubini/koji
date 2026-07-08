@@ -110,7 +110,6 @@ pub struct VramInfo {
 /// contract with the backend is the JSON field names, which must match the
 /// server-side struct exactly.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[allow(deprecated)]
 pub struct ModelStatus {
     pub id: String,
     #[serde(default)]
@@ -120,9 +119,6 @@ pub struct ModelStatus {
     #[serde(default)]
     pub display_name: Option<String>,
     pub backend: String,
-    #[deprecated(since = "1.45.0", note = "use state field instead")]
-    #[serde(default)]
-    pub loaded: bool,
     /// Lifecycle state: idle, loading, ready, unloading, failed.
     #[serde(default)]
     pub state: ModelState,

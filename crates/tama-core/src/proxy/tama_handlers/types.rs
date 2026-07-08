@@ -81,6 +81,43 @@ pub struct ModelResponse {
     pub loaded: bool,
 }
 
+/// A single model entry in the list models response.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ListedModelResponse {
+    pub id: Option<i64>,
+    pub display_name: Option<String>,
+    pub backend: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backend_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quant: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_length: Option<u32>,
+    pub enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_name: Option<String>,
+    /// Current lifecycle state: idle, loading, ready, unloading, failed.
+    pub state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backend_pid: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub load_time_secs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_accessed_secs_ago: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idle_timeout_remaining_secs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub consecutive_failures: Option<u32>,
+}
+
+/// Response for listing all configured models.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ListModelsResponse {
+    pub models: Vec<ListedModelResponse>,
+}
+
 /// Response for system restart.
 #[derive(Debug, Serialize)]
 #[allow(dead_code)]

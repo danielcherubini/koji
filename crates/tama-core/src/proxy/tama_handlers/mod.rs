@@ -22,5 +22,6 @@ pub use system::{
     handle_tama_system_gpu_devices_refresh, handle_tama_system_health, handle_tama_system_restart,
 };
 pub use types::{
-    max_concurrent_pulls, ModelResponse, PullRequest, PullResponse, QuantDownloadSpec, QuantEntry,
+    max_concurrent_pulls, ListModelsResponse, ListedModelResponse, ModelResponse, PullRequest,
+    PullResponse, QuantDownloadSpec, QuantEntry,
 };

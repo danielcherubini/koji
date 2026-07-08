@@ -17,8 +17,6 @@ struct ModelEntry {
     model: Option<String>,
     quant: Option<String>,
     enabled: bool,
-    #[serde(default)]
-    loaded: bool,
     /// Lifecycle state: idle, loading, ready, unloading, failed.
     #[serde(default)]
     state: ModelState,
@@ -282,7 +280,6 @@ pub fn Models() -> impl IntoView {
                                                 backend=m.backend.clone()
                                                 log_source=Some(m.backend.clone())
                                                 state=m.state.clone()
-                                                loaded=Some(m.loaded)
                                                 enabled=Some(m.enabled)
                                                 hf_architecture_type=m.hf_architecture_type.clone()
                                                 hf_base_model=m.hf_base_model.clone()

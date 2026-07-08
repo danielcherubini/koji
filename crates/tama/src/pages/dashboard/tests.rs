@@ -458,8 +458,6 @@ fn make_test_model(id: &str, state: &str, gpu_device: Option<&str>) -> ModelStat
         api_name: None,
         display_name: None,
         backend: "llama_cpp".to_string(),
-        #[allow(deprecated)]
-        loaded: state == "ready",
         state: model_state,
         quant: None,
         context_length: None,
@@ -622,8 +620,6 @@ fn make_sort_model(
         api_name: api_name.map(|s| s.to_string()),
         display_name: display_name.map(|s| s.to_string()),
         backend: "test".to_string(),
-        #[allow(deprecated)]
-        loaded: false,
         state: model_state,
         quant: None,
         context_length: None,

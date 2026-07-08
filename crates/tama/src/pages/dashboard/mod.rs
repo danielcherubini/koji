@@ -682,7 +682,6 @@ pub fn Dashboard() -> impl IntoView {
                                                     backend=m.backend.clone()
                                                     log_source=Some(format!("{}_{}", m.backend, m.id))
                                                     state=m.state.clone()
-                                                    loaded=None
                                                     enabled=None
                                                     error_message=m.error_message.clone()
                                                     on_load=on_load_cb

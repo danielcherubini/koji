@@ -6,11 +6,9 @@ impl ProxyState {
     /// Build the per-model status snapshot embedded in `MetricSample.models`.
     ///
     /// Iterates over every configured model, resolves its backends, and reports
-    /// `loaded: true` iff at least one of the backend entries returned by
-    /// `Config::resolve_backends_for_model` is in `BackendState::Ready`. The
-    /// returned vector is sorted by `id` so dashboard rows do not shuffle
+    /// the lifecycle state (`idle`, `loading`, `ready`, `unloading`, `failed`).
+    /// The returned vector is sorted by `id` so dashboard rows do not shuffle
     /// between SSE samples.
-    #[allow(deprecated)]
     pub async fn collect_model_statuses(&self) -> Vec<crate::gpu::ModelStatus> {
         let config = self.config.read().await;
         let model_configs = self.model_configs.read().await;
@@ -46,18 +44,14 @@ impl ProxyState {
                 }
             }
 
-            let (loaded, model_state, error_message) = match best_state {
-                Some(BackendState::Ready { .. }) => (true, crate::gpu::ModelState::Ready, None),
-                Some(BackendState::Starting { .. }) => {
-                    (false, crate::gpu::ModelState::Loading, None)
-                }
-                Some(BackendState::Unloading { .. }) => {
-                    (false, crate::gpu::ModelState::Unloading, None)
-                }
+            let (model_state, error_message) = match best_state {
+                Some(BackendState::Ready { .. }) => (crate::gpu::ModelState::Ready, None),
+                Some(BackendState::Starting { .. }) => (crate::gpu::ModelState::Loading, None),
+                Some(BackendState::Unloading { .. }) => (crate::gpu::ModelState::Unloading, None),
                 Some(BackendState::Failed { error, .. }) => {
-                    (false, crate::gpu::ModelState::Failed, Some(error.clone()))
+                    (crate::gpu::ModelState::Failed, Some(error.clone()))
                 }
-                None => (false, crate::gpu::ModelState::Idle, None),
+                None => (crate::gpu::ModelState::Idle, None),
             };
 
             // Look up the first matching backend's inference stats.
@@ -71,7 +65,6 @@ impl ProxyState {
                 api_name: model_cfg.api_name.clone(),
                 display_name: model_cfg.display_name.clone(),
                 backend: model_cfg.backend.clone(),
-                loaded,
                 state: model_state,
                 quant: model_cfg.quant.clone(),
                 context_length: model_cfg.context_length,
@@ -155,7 +148,6 @@ impl ProxyState {
                         "context_length": model_config.context_length,
                         "enabled": model_config.enabled,
                         "api_name": model_config.api_name,
-                        "loaded": true,
                         "state": "ready",
                         "backend_pid": *backend_pid,
                         "load_time_secs": load_time_secs,
@@ -178,7 +170,6 @@ impl ProxyState {
                         "context_length": model_config.context_length,
                         "enabled": model_config.enabled,
                         "api_name": model_config.api_name,
-                        "loaded": false,
                         "state": "loading",
                         "backend_pid": null,
                         "load_time_secs": null,
@@ -198,7 +189,6 @@ impl ProxyState {
                         "context_length": model_config.context_length,
                         "enabled": model_config.enabled,
                         "api_name": model_config.api_name,
-                        "loaded": false,
                         "state": "unloading",
                         "backend_pid": null,
                         "load_time_secs": null,
@@ -218,7 +208,6 @@ impl ProxyState {
                         "context_length": model_config.context_length,
                         "enabled": model_config.enabled,
                         "api_name": model_config.api_name,
-                        "loaded": false,
                         "state": "failed",
                         "backend_pid": null,
                         "load_time_secs": null,
@@ -239,7 +228,6 @@ impl ProxyState {
                         "context_length": model_config.context_length,
                         "enabled": model_config.enabled,
                         "api_name": model_config.api_name,
-                        "loaded": false,
                         "state": "idle",
                         "backend_pid": null,
                         "load_time_secs": null,
