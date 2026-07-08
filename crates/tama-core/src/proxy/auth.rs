@@ -581,10 +581,12 @@ pub async fn handle_login_callback(
                 .and_then(|p| p.split_once('=').map(|x| x.1))
         })
         .and_then(|cookie_value| {
-            // Build a jar from the raw cookie and verify HMAC signature
+            // Build a jar from the raw cookie and verify HMAC signature.
+            // Use parse_encoded to URL-decode the value (it was set via .encoded()),
+            // otherwise the HMAC signature won't verify.
             let mut jar = cookie::CookieJar::new();
             jar.add_original(
-                cookie::Cookie::parse(format!("{}={}", CSRF_STATE_COOKIE_NAME, cookie_value))
+                cookie::Cookie::parse_encoded(format!("{}={}", CSRF_STATE_COOKIE_NAME, cookie_value))
                     .ok()?,
             );
             jar.signed(&state.cookie_key)
