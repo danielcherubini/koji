@@ -90,6 +90,16 @@
   color: #fff;
 }
 
+.badge-pill--danger {
+  background: rgba(248, 81, 73, 0.12);
+  color: var(--accent-red);
+}
+
+.badge-pill--warning {
+  background: rgba(210, 153, 34, 0.12);
+  color: var(--accent-yellow);
+}
+
 /* List card — horizontal two-line card for dashboard and models page */
 .list-card {
   display: flex;
