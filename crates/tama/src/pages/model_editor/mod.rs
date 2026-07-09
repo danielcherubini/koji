@@ -560,7 +560,7 @@ pub fn ModelEditor() -> impl IntoView {
         form.update(|f| {
             if let Some(form) = f {
                 for rec in files {
-                    for (_name, q) in form.quants.iter_mut() {
+                    for q in form.quants.values_mut() {
                         if q.file == rec.filename {
                             q.lfs_oid = rec.lfs_oid.clone();
                             q.db_size_bytes = rec.size_bytes;

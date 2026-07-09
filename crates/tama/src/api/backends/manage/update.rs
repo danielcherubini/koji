@@ -182,7 +182,7 @@ pub async fn update_backend(
                 }
             }
             tama_core::backends::BackendSource::SourceCode {
-                git_url, commit: _, ..
+                git_url, ..
             } => tama_core::backends::BackendSource::SourceCode {
                 version: latest_version.clone(),
                 git_url,
