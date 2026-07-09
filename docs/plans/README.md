@@ -12,8 +12,8 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Quick Stats
 
-- **Total Plans**: 49
-- **Backlog**: 0
+- **Total Plans**: 50
+- **Backlog**: 1
 - **Completed**: 45 ✅
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
@@ -21,6 +21,10 @@ This directory contains implementation plans for the Tama project. Each plan doc
 ---
 
 ## Backlog
+
+| Plan | Description | PR / Git References |
+|------|-------------|---------------------|
+| [API Keys Web UI](plan-153-api-keys-web-ui.md) | Web UI page at `/tama/keys` for managing API keys — create, view, edit scopes, revoke — with one-time key reveal modal, active-only filter, and sidebar integration | — |
 
 ## Completed Plans
 
