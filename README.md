@@ -175,8 +175,7 @@ tama/
 │   ├── tama-mock/       # Mock LLM backend for testing
 │   └── tama/            # Main binary with web control plane (WASM + SSR)
 ├── config/              # Configuration templates
-├── docs/                # Documentation
-└── modelcards/         # Community model cards
+└── docs/                # Documentation
 ```
 
 ### Core components
