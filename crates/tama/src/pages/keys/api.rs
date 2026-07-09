@@ -48,6 +48,7 @@ pub async fn update_key_scopes(id: i64, scopes: &[String]) -> Result<ApiKey, Str
         .send()
         .await
         .map_err(|e| e.to_string())?;
+    extract_and_store_csrf_token(&resp);
     resp.json().await.map_err(|e| e.to_string())
 }
 

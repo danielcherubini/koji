@@ -588,8 +588,11 @@ pub async fn handle_login_callback(
             // otherwise the HMAC signature won't verify.
             let mut jar = cookie::CookieJar::new();
             jar.add_original(
-                cookie::Cookie::parse_encoded(format!("{}={}", CSRF_STATE_COOKIE_NAME, cookie_value))
-                    .ok()?,
+                cookie::Cookie::parse_encoded(format!(
+                    "{}={}",
+                    CSRF_STATE_COOKIE_NAME, cookie_value
+                ))
+                .ok()?,
             );
             jar.signed(&state.cookie_key)
                 .get(CSRF_STATE_COOKIE_NAME)

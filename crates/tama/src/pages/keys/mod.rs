@@ -111,12 +111,18 @@ pub fn KeysPage() -> impl IntoView {
     // Callback to close the key-created modal and refresh the list
     let close_and_refresh = {
         let keys_c = keys;
+        let save_status_c = save_status;
         Callback::new(move |_| {
             show_key_created.set(None);
+            let keys_c = keys_c;
+            let save_status_c = save_status_c;
             wasm_bindgen_futures::spawn_local(async move {
                 match fetch_keys().await {
                     Ok(list) => keys_c.set(list),
-                    Err(_) => { /* silently fail */ }
+                    Err(e) => {
+                        save_status_c
+                            .set(Some((false, format!("Failed to refresh key list: {}", e))));
+                    }
                 }
             });
         })
@@ -163,11 +169,11 @@ pub fn KeysPage() -> impl IntoView {
                 <label>
                     <input
                         type="checkbox"
-                        prop:checked=move || show_revoked.get()
+                        prop:checked=move || !show_revoked.get()
                         on:change=move |ev| {
                             use wasm_bindgen::JsCast;
                             if let Some(checked) = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok()) {
-                                show_revoked.set(checked.checked());
+                                show_revoked.set(!checked.checked());
                             }
                         }
                     />
@@ -248,12 +254,8 @@ fn KeyCreatedModal(
     show: RwSignal<Option<CreateKeyResponse>>,
     on_close: Callback<()>,
 ) -> impl IntoView {
-    let modal_open = RwSignal::new(false);
-
-    // Sync the open state with the signal
-    Effect::new(move |_| {
-        modal_open.set(show.get().is_some());
-    });
+    // Derive open state directly from show — no extra RwSignal needed
+    let modal_open = Signal::derive(move || show.get().is_some());
 
     let on_close_wrapped = Callback::new(move |_| {
         show.set(None);
@@ -262,7 +264,7 @@ fn KeyCreatedModal(
 
     view! {
         <Modal
-            open=rw_signal_to_signal(modal_open)
+            open=modal_open
             on_close=on_close_wrapped
             title="🔑 Key Created".to_string()
         >
@@ -322,10 +324,13 @@ fn key_created_modal_content(resp: CreateKeyResponse) -> impl IntoView {
                     </div>
                 </div>
                 {move || created_expires.as_ref().map(|exp| {
+                    let formatted = chrono::DateTime::parse_from_rfc3339(exp)
+                        .map(|dt| dt.format("%Y-%m-%d %H:%M UTC").to_string())
+                        .unwrap_or_else(|_| exp.clone());
                     view! {
                         <div class="form-group">
                             <label>"Expires"</label>
-                            <span>{exp.clone()}</span>
+                            <span>{formatted}</span>
                         </div>
                     }.into_any()
                 })}
@@ -380,7 +385,10 @@ fn KeyCard(
                                 match revoke_key(key_id_c).await {
                                     Ok(()) => {
                                         let mut list = keys_c.get_untracked();
-                                        list.retain(|k| k.id != key_id_c);
+                                        // Mark revoked in-place (soft delete) so it stays visible when "show all" is on
+                                        if let Some(k) = list.iter_mut().find(|k| k.id == key_id_c) {
+                                            k.revoked_at = Some(chrono::Utc::now().to_rfc3339());
+                                        }
                                         keys_c.set(list);
                                         save_status_c.set(Some((true, format!("Key \"{}\" revoked.", name_for_confirm))));
                                     }
@@ -477,14 +485,21 @@ fn CreateKeyForm(
         wasm_bindgen_futures::spawn_local(async move {
             match create_key(&name_val, &scopes_val, expires_formatted).await {
                 Ok(resp) => {
-                    // Add to list and notify
+                    // Extract key_prefix from the plaintext key (tama_ + first 8 chars of random)
+                    let key_prefix = if let Some(random) = resp.key.strip_prefix("tama_") {
+                        format!("tama_{}", &random[..8.min(random.len())])
+                    } else {
+                        resp.key.clone()
+                    };
+
+                    // Add to list — close_and_refresh will refetch for complete metadata
                     let mut list = keys_c.get_untracked();
                     list.push(ApiKey {
                         id: resp.id,
                         name: resp.name.clone(),
-                        key_prefix: "tama_****".to_string(), // masked for display
+                        key_prefix,
                         scopes: resp.scopes.clone(),
-                        created_by: "admin".to_string(),
+                        created_by: "—".to_string(), // placeholder — refetch fills real value
                         created_at: resp.created_at.clone(),
                         last_used_at: None,
                         revoked_at: None,

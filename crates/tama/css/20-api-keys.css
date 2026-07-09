@@ -38,8 +38,42 @@
     border-radius: var(--radius-sm);
 }
 
-/* Key reveal box in the KeyCreatedModal */
-.key-card__reveal-box {
+/* Key card icon */
+.key-card__icon {
+    font-size: var(--font-size-lg);
+}
+
+/* Key card name */
+.key-card__name {
+    font-weight: 600;
+}
+
+/* Scope checkbox group */
+.form-scope-checks {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-xs);
+    margin-top: var(--spacing-xs);
+}
+
+.form-scope-check {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    cursor: pointer;
+    font-size: var(--font-size-sm);
+}
+
+.form-scope-check input[type="checkbox"] {
+    accent-color: var(--color-primary);
+}
+
+/* Key created modal */
+.key-created-modal {
+    padding: var(--spacing-sm) 0;
+}
+
+.key-created-modal__key-box {
     display: flex;
     align-items: center;
     gap: var(--spacing-sm);
@@ -53,6 +87,18 @@
     word-break: break-all;
 }
 
-.key-card__reveal-box .btn {
+.key-created-modal__key-text {
+    flex: 1;
+    min-width: 0;
+}
+
+.key-created-modal__key-box .btn {
     flex-shrink: 0;
+}
+
+.key-created-modal__summary {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-sm);
+    margin-top: var(--spacing-md);
 }
