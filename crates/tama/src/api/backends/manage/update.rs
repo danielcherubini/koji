@@ -181,13 +181,13 @@ pub async fn update_backend(
                     version: latest_version.clone(),
                 }
             }
-            tama_core::backends::BackendSource::SourceCode {
-                git_url, ..
-            } => tama_core::backends::BackendSource::SourceCode {
-                version: latest_version.clone(),
-                git_url,
-                commit: None,
-            },
+            tama_core::backends::BackendSource::SourceCode { git_url, .. } => {
+                tama_core::backends::BackendSource::SourceCode {
+                    version: latest_version.clone(),
+                    git_url,
+                    commit: None,
+                }
+            }
         },
         None => {
             // Fallback: use source code if no source recorded
