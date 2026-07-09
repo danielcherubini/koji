@@ -13,8 +13,8 @@ This directory contains implementation plans for the Tama project. Each plan doc
 ## Quick Stats
 
 - **Total Plans**: 50
-- **Backlog**: 1
-- **Completed**: 45 ✅
+- **Backlog**: 0
+- **Completed**: 46 ✅
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
 
@@ -22,16 +22,13 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Backlog
 
-| Plan | Description | PR / Git References |
-|------|-------------|---------------------|
-| [API Keys Web UI](plan-153-api-keys-web-ui.md) | Web UI page at `/tama/keys` for managing API keys — create, view, edit scopes, revoke — with one-time key reveal modal, active-only filter, and sidebar integration | — |
-
 ## Completed Plans
 
 ### Recently Completed
 
 | Plan | Description | PR / Git References |
 |------|-------------|---------------------|
+| [API Keys Web UI](plan-153-api-keys-web-ui.md) | Web UI page at `/tama/keys` for managing API keys — create, view, edit scopes, revoke — with one-time key reveal modal, active-only filter, and sidebar integration | #152 ✅ COMPLETED | [`98e20d36`](../../commit/98e20d36), [`a73229d4`](../../commit/a73229d4), [`b3934606`](../../commit/b3934606), [`d2c92b17`](../../commit/d2c92b17) |
 | [API Keys](done/plan-152-api-keys.md) | Named, scoped API keys (`tama_XXXX`) stored as SHA-256 hashes, with auth + scope middleware and CRUD management API | #151 ✅ COMPLETED | [`a087b344`](../../commit/a087b344), [`c416427c`](../../commit/c416427c), [`21a5993e`](../../commit/21a5993e), [`c4f0d979`](../../commit/c4f0d979), [`db4eab95`](../../commit/db4eab95) |
 | [OAuth2/OIDC Login](done/plan-151-oauth2-login.md) | Native OAuth2 login flow with session cookies, replacing Caddy forward_auth dependency | #150 ✅ COMPLETED |
 | [Naming and Cleanup](done/plan-150-naming-and-cleanup.md) | Rename download→pull in model subsystem (60+ files, DB migration _0034), typed handler responses, remove deprecated `loaded` field, ModelConfig design note | #149 ✅ COMPLETED |
