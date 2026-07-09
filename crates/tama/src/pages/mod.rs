@@ -4,6 +4,7 @@ pub mod benchmarks;
 pub mod config_editor;
 pub mod dashboard;
 pub mod downloads;
+pub mod keys;
 pub mod logs;
 pub mod model_editor;
 pub mod models;

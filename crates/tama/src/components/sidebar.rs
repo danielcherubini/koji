@@ -127,6 +127,10 @@ pub fn Sidebar() -> impl IntoView {
                     <span class="sidebar-item__icon">"🏷️"</span>
                     <span class="sidebar-item__text">"Aliases"</span>
                 </A>
+                <A href="/tama/keys" attr:class="sidebar-item" attr:data-tooltip="Keys" on:click=move |_| mobile_open.set(false)>
+                    <span class="sidebar-item__icon">"🔑"</span>
+                    <span class="sidebar-item__text">"Keys"</span>
+                </A>
             </nav>
 
             <div class="sidebar-footer">
