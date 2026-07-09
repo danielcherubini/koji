@@ -26,6 +26,24 @@ pub(crate) fn is_active(key: &ApiKey) -> bool {
     true
 }
 
+/// Returns the display status of a key for badge rendering.
+/// - `None` if active (no badge needed)
+/// - `Some(("Revoked", "badge-pill--danger"))` if revoked
+/// - `Some(("Expired", "badge-pill--warning"))` if expired (not revoked)
+pub(crate) fn key_status(key: &ApiKey) -> Option<(&'static str, &'static str)> {
+    if key.revoked_at.is_some() {
+        return Some(("Revoked", "badge-pill--danger"));
+    }
+    if let Some(ref ts) = key.expires_at {
+        if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts) {
+            if chrono::Utc::now() >= dt {
+                return Some(("Expired", "badge-pill--warning"));
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -352,12 +370,14 @@ fn KeyCard(
     let key_scopes = key.scopes.clone();
     let show_edit = RwSignal::new(false);
     let key_active = is_active(&key);
+    let key_status = key_status(&key);
 
     let key_name_for_title = key_name.clone();
     let key_name_for_delete = key_name.clone();
     let key_prefix_actions = key_prefix.clone();
     let key_scopes_actions = key_scopes.clone();
-    let key_active_actions = key_active;
+    let _key_active_actions = key_active;
+    let key_status_actions = key_status;
 
     view! {
         <div class=if key_active { "".to_string() } else { "key-card--dimmed".to_string() }>
@@ -408,14 +428,12 @@ fn KeyCard(
                         {key_scopes_actions.iter().map(|scope| {
                             view! { <span class="badge-pill">{scope.clone()}</span> }.into_any()
                         }).collect::<Vec<_>>()}
-                        // Status badge
-                        {if !key_active_actions {
+                        // Status badge (Revoked or Expired)
+                        {key_status_actions.map(|(label, css_class)| {
                             view! {
-                                <span class="badge-pill badge-pill--danger">"Revoked"</span>
+                                <span class=format!("badge-pill {}", css_class)>{label}</span>
                             }.into_any()
-                        } else {
-                            view! { <span/> }.into_any()
-                        }}
+                        }).unwrap_or_else(|| view! { <span/> }.into_any())}
                     }
                 }.into_any()))
             >
@@ -479,7 +497,7 @@ fn CreateKeyForm(
 
         submit_error.set(None);
         let keys_c = keys;
-        let save_status_c = save_status;
+        let _save_status_c = save_status;
         let on_key_created_c = on_key_created;
         let on_close_c = on_close;
         wasm_bindgen_futures::spawn_local(async move {
@@ -511,7 +529,6 @@ fn CreateKeyForm(
                 }
                 Err(e) => {
                     submit_error.set(Some(format!("Failed to create key: {}", e)));
-                    save_status_c.set(Some((false, format!("Failed to create key: {}", e))));
                 }
             }
         });
@@ -640,7 +657,6 @@ fn EditKeyForm(
                 }
                 Err(e) => {
                     submit_error.set(Some(format!("Failed to update key: {}", e)));
-                    save_status_c.set(Some((false, format!("Failed to update key: {}", e))));
                 }
             }
         });
