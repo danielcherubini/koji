@@ -131,8 +131,8 @@ pub(super) async fn run_verification(
                 Some(false),
                 Some(format!(
                     "hash mismatch: expected {} got {}",
-                    &exp.chars().take(10).collect::<String>(),
-                    &act.chars().take(10).collect::<String>()
+                    exp.chars().take(10).collect::<String>(),
+                    act.chars().take(10).collect::<String>()
                 )),
             ),
         }

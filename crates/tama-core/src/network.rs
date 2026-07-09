@@ -81,7 +81,7 @@ fn parse_macos_route() -> Option<String> {
 
 fn sysinfo_fallback() -> Option<String> {
     let networks = Networks::new_with_refreshed_list();
-    for (key, _) in networks.iter() {
+    for key in networks.keys() {
         if !key.starts_with("lo") {
             return Some(key.to_string());
         }

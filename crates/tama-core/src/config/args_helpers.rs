@@ -82,14 +82,11 @@ pub fn flag_name(entry: &str) -> Option<&str> {
     }
     // Reject negative numbers like "-1", "-0.5", "-.5"
     let after = first.trim_start_matches('-');
-    if let Some(c) = after.chars().next() {
+    {
+        let c = after.chars().next()?;
         if c.is_ascii_digit() || c == '.' {
             return None;
         }
-    } else {
-        // After trimming all dashes, nothing remains. Already handled above
-        // by the "-"/"--" guards, but be defensive.
-        return None;
     }
     // Strip inline `=value` form: `--port=8080` → flag name `--port`
     Some(first.split('=').next().unwrap_or(first))

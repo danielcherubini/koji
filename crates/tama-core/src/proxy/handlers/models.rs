@@ -192,7 +192,7 @@ pub async fn handle_list_models(state: State<Arc<ProxyState>>) -> Json<serde_jso
                     for alias in aliases {
                         if let Some(alias_str) = alias.as_str() {
                             // Search all configs for a matching api_name
-                            for (_, cfg) in all_configs.iter() {
+                            for cfg in all_configs.values() {
                                 if cfg.enabled
                                     && cfg.api_name.as_deref().is_some_and(|n| n == alias_str)
                                 {

@@ -105,7 +105,7 @@ pub fn verify_tts_kokoro(info: &BackendInfo) -> anyhow::Result<()> {
                  Command: {:?}\n\
                  Stderr: {}",
                 output.status,
-                &["-c", "import uvicorn; import kokoro"],
+                ["-c", "import uvicorn; import kokoro"],
                 stderr
             ));
         }
