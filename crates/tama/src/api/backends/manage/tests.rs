@@ -181,3 +181,223 @@ async fn test_update_backend_source_missing_backend() {
         "update_backend_source should return 404 for non-existent backend"
     );
 }
+
+/// Path traversal in patch_backend name should return 400.
+/// Note: `/` cannot be tested via HTTP since it's a path separator.
+/// The handler still checks for it as defense-in-depth.
+#[tokio::test]
+async fn test_patch_backend_path_traversal_rejected() {
+    let config = tama_core::config::Config::default();
+    let state = Arc::new(tama_core::proxy::ProxyState::new(config, None));
+
+    let web_state_for_test = Arc::new(test_web_state());
+    let router = crate::router::build_web_routes(web_state_for_test.clone())
+        .with_state(state)
+        .layer(axum::extract::Extension(
+            web_state_for_test.as_ref().clone(),
+        ));
+
+    let csrf_token = "test-csrf-token-12345";
+    let cookie_header = format!("{}={}", "tama_csrf_token", csrf_token);
+    let body = serde_json::json!({}).to_string();
+
+    // Test with `\` in name — backslash won't be normalized by Axum.
+    let req = Request::builder()
+        .method("PATCH")
+        .uri("/tama/v1/backends/foo\\bar?gpu_variant=cpu")
+        .header(axum::http::header::COOKIE, cookie_header.as_str())
+        .header("X-CSRF-Token", csrf_token)
+        .header("Content-Type", "application/json")
+        .body(Body::from(body.clone()))
+        .unwrap();
+
+    let resp = router
+        .clone()
+        .oneshot(req)
+        .await
+        .expect("request should complete");
+
+    assert_eq!(
+        resp.status(),
+        axum::http::StatusCode::BAD_REQUEST,
+        "patch_backend should reject names containing '\\' with 400"
+    );
+
+    // Test with `..` in name — Axum normalizes `../` segments but not `..`
+    // embedded within a segment. The validation catches this.
+    let req = Request::builder()
+        .method("PATCH")
+        .uri("/tama/v1/backends/foo..bar?gpu_variant=cpu")
+        .header(axum::http::header::COOKIE, cookie_header.as_str())
+        .header("X-CSRF-Token", csrf_token)
+        .header("Content-Type", "application/json")
+        .body(Body::from(body))
+        .unwrap();
+
+    let resp = router
+        .clone()
+        .oneshot(req)
+        .await
+        .expect("request should complete");
+
+    assert_eq!(
+        resp.status(),
+        axum::http::StatusCode::BAD_REQUEST,
+        "patch_backend should reject names containing '..' with 400"
+    );
+}
+
+/// PATCH with all-None body preserves all backend config fields (no-op).
+#[tokio::test]
+async fn test_patch_backend_all_none_preserves() {
+    let config = tama_core::config::Config::default();
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
+    let state = Arc::new(tama_core::proxy::ProxyState::new(
+        config,
+        Some(tmp_dir.path().to_path_buf()),
+    ));
+
+    // Seed backend config via BackendManager
+    {
+        let mgr = tama_core::backends::BackendManager::open(tmp_dir.path()).unwrap();
+        mgr.save_config(
+            "llama_cpp",
+            "cpu",
+            &["-fa 1".to_string(), "-b 2048".to_string()],
+            &["RADV_PERFTEST=nogttspill".to_string()],
+            Some("http://localhost:8080/health"),
+        )
+        .unwrap();
+    }
+
+    let web_state_for_test = Arc::new(test_web_state());
+    let router = crate::router::build_web_routes(web_state_for_test.clone())
+        .with_state(state.clone())
+        .layer(axum::extract::Extension(
+            web_state_for_test.as_ref().clone(),
+        ));
+
+    let csrf_token = "test-csrf-token-67890";
+    let cookie_header = format!("{}={}", "tama_csrf_token", csrf_token);
+
+    // PATCH with empty body (all fields None/present as null)
+    let body = serde_json::json!({}).to_string();
+    let req = Request::builder()
+        .method("PATCH")
+        .uri("/tama/v1/backends/llama_cpp?gpu_variant=cpu")
+        .header(axum::http::header::COOKIE, cookie_header.as_str())
+        .header("X-CSRF-Token", csrf_token)
+        .header("Content-Type", "application/json")
+        .body(Body::from(body))
+        .unwrap();
+
+    let resp = router
+        .clone()
+        .oneshot(req)
+        .await
+        .expect("request should complete");
+
+    assert_eq!(
+        resp.status(),
+        axum::http::StatusCode::OK,
+        "patch_backend with all-None body should succeed"
+    );
+
+    let body_str = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("body should be readable");
+    let json: serde_json::Value =
+        serde_json::from_slice(&body_str).expect("body should be valid JSON");
+    assert_eq!(json["success"], true);
+
+    // Verify fields were preserved
+    let mgr = tama_core::backends::BackendManager::open(tmp_dir.path()).unwrap();
+    let args = mgr.get_default_args("llama_cpp", "cpu");
+    assert_eq!(args, vec!["-fa 1", "-b 2048"]);
+
+    let env = mgr.get_default_env("llama_cpp", "cpu");
+    assert_eq!(env, vec!["RADV_PERFTEST=nogttspill"]);
+
+    let health = mgr.get_health_check_url("llama_cpp", "cpu");
+    assert_eq!(health, Some("http://localhost:8080/health".to_string()));
+}
+
+/// PATCH default_args only changes args, preserves env.
+#[tokio::test]
+async fn test_patch_backend_default_args_only() {
+    let config = tama_core::config::Config::default();
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
+    let state = Arc::new(tama_core::proxy::ProxyState::new(
+        config,
+        Some(tmp_dir.path().to_path_buf()),
+    ));
+
+    // Seed backend config
+    {
+        let mgr = tama_core::backends::BackendManager::open(tmp_dir.path()).unwrap();
+        mgr.save_config(
+            "llama_cpp",
+            "cpu",
+            &["-fa 1".to_string(), "-b 2048".to_string()],
+            &["RADV_PERFTEST=nogttspill".to_string()],
+            Some("http://localhost:8080/health"),
+        )
+        .unwrap();
+    }
+
+    let web_state_for_test = Arc::new(test_web_state());
+    let router = crate::router::build_web_routes(web_state_for_test.clone())
+        .with_state(state.clone())
+        .layer(axum::extract::Extension(
+            web_state_for_test.as_ref().clone(),
+        ));
+
+    let csrf_token = "test-csrf-token-abcde";
+    let cookie_header = format!("{}={}", "tama_csrf_token", csrf_token);
+
+    // PATCH with only default_args changed
+    let body = serde_json::json!({
+        "default_args": ["-fa 2", "-b 4096"]
+    })
+    .to_string();
+    let req = Request::builder()
+        .method("PATCH")
+        .uri("/tama/v1/backends/llama_cpp?gpu_variant=cpu")
+        .header(axum::http::header::COOKIE, cookie_header.as_str())
+        .header("X-CSRF-Token", csrf_token)
+        .header("Content-Type", "application/json")
+        .body(Body::from(body))
+        .unwrap();
+
+    let resp = router
+        .clone()
+        .oneshot(req)
+        .await
+        .expect("request should complete");
+
+    assert_eq!(
+        resp.status(),
+        axum::http::StatusCode::OK,
+        "patch_backend should succeed"
+    );
+
+    let body_str = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("body should be readable");
+    let json: serde_json::Value =
+        serde_json::from_slice(&body_str).expect("body should be valid JSON");
+    assert_eq!(json["success"], true);
+
+    // Verify args changed
+    let mgr = tama_core::backends::BackendManager::open(tmp_dir.path()).unwrap();
+    let args = mgr.get_default_args("llama_cpp", "cpu");
+    assert_eq!(args, vec!["-fa 2", "-b 4096"]);
+
+    // Verify env preserved
+    let env = mgr.get_default_env("llama_cpp", "cpu");
+    assert_eq!(env, vec!["RADV_PERFTEST=nogttspill"]);
+
+    // Verify health_check_url preserved
+    let health = mgr.get_health_check_url("llama_cpp", "cpu");
+    assert_eq!(health, Some("http://localhost:8080/health".to_string()));
+}

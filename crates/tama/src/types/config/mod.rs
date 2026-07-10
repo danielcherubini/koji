@@ -24,6 +24,17 @@ pub use quant::*;
 pub use sampling::*;
 pub use supervisor::*;
 
+// ── PATCH types for /tama/v1/config/structured (PATCH) ──────────────────────
+
+mod patch;
+
+pub use patch::CompactionConfigPatch;
+pub use patch::ConfigPatchBody;
+pub use patch::GeneralPatch;
+pub use patch::OAuth2ConfigPatch;
+pub use patch::ProxyConfigPatch;
+pub use patch::SupervisorPatch;
+
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
