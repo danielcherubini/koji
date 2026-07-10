@@ -926,3 +926,263 @@ fn test_apply_model_body_cache_type_trims_whitespace() {
     assert_eq!(result.cache_type_k, Some("q4_0".to_string()));
     assert_eq!(result.cache_type_v, Some("q8_0".to_string()));
 }
+
+// ── Partial update preservation tests ──────────────────────────────────────
+
+/// When the body omits `context_length` (None), the existing DB value must be
+/// preserved — this is a partial update, not a full replacement.
+#[test]
+fn test_apply_model_body_context_length_preserves_base_when_omitted() {
+    let existing = ModelConfig {
+        backend: "llama-cpp".into(),
+        context_length: Some(4096),
+        ..Default::default()
+    };
+
+    let body = ModelBody {
+        backend: "llama-cpp".to_string(),
+        gpu_variant: None,
+        gpu_device: None,
+        model: Some("model.gguf".to_string()),
+        quant: None,
+        mmproj: None,
+        mtp_model: None,
+        args: vec![],
+        sampling: None,
+        enabled: None,
+        context_length: None, // omitted — should preserve existing
+        num_parallel: None,
+        port: None,
+        api_name: None,
+        gpu_layers: None,
+        quants: None,
+        modalities: None,
+        display_name: None,
+        kv_unified: None,
+        cache_type_k: None,
+        cache_type_v: None,
+        spec_decoding: None,
+    };
+
+    let result = apply_model_body(body, Some(existing));
+    assert_eq!(
+        result.context_length,
+        Some(4096),
+        "context_length must be preserved when body omits the field"
+    );
+}
+
+/// When the body omits `cache_type_k` (None), the existing DB value must be
+/// preserved — this is a partial update, not a full replacement.
+#[test]
+fn test_apply_model_body_cache_type_k_preserves_base_when_omitted() {
+    let existing = ModelConfig {
+        backend: "llama-cpp".into(),
+        cache_type_k: Some("q4_0".to_string()),
+        ..Default::default()
+    };
+
+    let body = ModelBody {
+        backend: "llama-cpp".to_string(),
+        gpu_variant: None,
+        gpu_device: None,
+        model: Some("model.gguf".to_string()),
+        quant: None,
+        mmproj: None,
+        mtp_model: None,
+        args: vec![],
+        sampling: None,
+        enabled: None,
+        context_length: None,
+        num_parallel: None,
+        port: None,
+        api_name: None,
+        gpu_layers: None,
+        quants: None,
+        modalities: None,
+        display_name: None,
+        kv_unified: None,
+        cache_type_k: None, // omitted — should preserve existing
+        cache_type_v: None,
+        spec_decoding: None,
+    };
+
+    let result = apply_model_body(body, Some(existing));
+    assert_eq!(
+        result.cache_type_k,
+        Some("q4_0".to_string()),
+        "cache_type_k must be preserved when body omits the field"
+    );
+}
+
+/// When the body omits `cache_type_v` (None), the existing DB value must be
+/// preserved — this is a partial update, not a full replacement.
+#[test]
+fn test_apply_model_body_cache_type_v_preserves_base_when_omitted() {
+    let existing = ModelConfig {
+        backend: "llama-cpp".into(),
+        cache_type_v: Some("q8_0".to_string()),
+        ..Default::default()
+    };
+
+    let body = ModelBody {
+        backend: "llama-cpp".to_string(),
+        gpu_variant: None,
+        gpu_device: None,
+        model: Some("model.gguf".to_string()),
+        quant: None,
+        mmproj: None,
+        mtp_model: None,
+        args: vec![],
+        sampling: None,
+        enabled: None,
+        context_length: None,
+        num_parallel: None,
+        port: None,
+        api_name: None,
+        gpu_layers: None,
+        quants: None,
+        modalities: None,
+        display_name: None,
+        kv_unified: None,
+        cache_type_k: None,
+        cache_type_v: None, // omitted — should preserve existing
+        spec_decoding: None,
+    };
+
+    let result = apply_model_body(body, Some(existing));
+    assert_eq!(
+        result.cache_type_v,
+        Some("q8_0".to_string()),
+        "cache_type_v must be preserved when body omits the field"
+    );
+}
+
+/// When the body sends whitespace-only `cache_type_k`, it is filtered to None
+/// and the existing DB value should be preserved (new behavior after fix).
+#[test]
+fn test_apply_model_body_cache_type_k_whitespace_preserves_base_when_existing() {
+    let existing = ModelConfig {
+        backend: "llama-cpp".into(),
+        cache_type_k: Some("q4_0".to_string()),
+        ..Default::default()
+    };
+
+    let body = ModelBody {
+        backend: "llama-cpp".to_string(),
+        gpu_variant: None,
+        gpu_device: None,
+        model: Some("model.gguf".to_string()),
+        quant: None,
+        mmproj: None,
+        mtp_model: None,
+        args: vec![],
+        sampling: None,
+        enabled: None,
+        context_length: None,
+        num_parallel: None,
+        port: None,
+        api_name: None,
+        gpu_layers: None,
+        quants: None,
+        modalities: None,
+        display_name: None,
+        kv_unified: None,
+        cache_type_k: Some("   ".to_string()), // whitespace-only — filtered to None
+        cache_type_v: None,
+        spec_decoding: None,
+    };
+
+    let result = apply_model_body(body, Some(existing));
+    assert_eq!(
+        result.cache_type_k,
+        Some("q4_0".to_string()),
+        "whitespace-only cache_type_k must fall back to existing value"
+    );
+}
+
+/// When the body sends whitespace-only `cache_type_v`, it is filtered to None
+/// and the existing DB value should be preserved (new behavior after fix).
+#[test]
+fn test_apply_model_body_cache_type_v_whitespace_preserves_base_when_existing() {
+    let existing = ModelConfig {
+        backend: "llama-cpp".into(),
+        cache_type_v: Some("q8_0".to_string()),
+        ..Default::default()
+    };
+
+    let body = ModelBody {
+        backend: "llama-cpp".to_string(),
+        gpu_variant: None,
+        gpu_device: None,
+        model: Some("model.gguf".to_string()),
+        quant: None,
+        mmproj: None,
+        mtp_model: None,
+        args: vec![],
+        sampling: None,
+        enabled: None,
+        context_length: None,
+        num_parallel: None,
+        port: None,
+        api_name: None,
+        gpu_layers: None,
+        quants: None,
+        modalities: None,
+        display_name: None,
+        kv_unified: None,
+        cache_type_k: None,
+        cache_type_v: Some("   ".to_string()), // whitespace-only — filtered to None
+        spec_decoding: None,
+    };
+
+    let result = apply_model_body(body, Some(existing));
+    assert_eq!(
+        result.cache_type_v,
+        Some("q8_0".to_string()),
+        "whitespace-only cache_type_v must fall back to existing value"
+    );
+}
+
+/// When the body explicitly provides `context_length`, it must override the
+/// existing DB value — body wins on explicit assignment.
+#[test]
+fn test_apply_model_body_context_length_body_wins_over_base() {
+    let existing = ModelConfig {
+        backend: "llama-cpp".into(),
+        context_length: Some(4096),
+        ..Default::default()
+    };
+
+    let body = ModelBody {
+        backend: "llama-cpp".to_string(),
+        gpu_variant: None,
+        gpu_device: None,
+        model: Some("model.gguf".to_string()),
+        quant: None,
+        mmproj: None,
+        mtp_model: None,
+        args: vec![],
+        sampling: None,
+        enabled: None,
+        context_length: Some(8192), // explicit override
+        num_parallel: None,
+        port: None,
+        api_name: None,
+        gpu_layers: None,
+        quants: None,
+        modalities: None,
+        display_name: None,
+        kv_unified: None,
+        cache_type_k: None,
+        cache_type_v: None,
+        spec_decoding: None,
+    };
+
+    let result = apply_model_body(body, Some(existing));
+    assert_eq!(
+        result.context_length,
+        Some(8192),
+        "body context_length must override existing value when explicitly provided"
+    );
+}

@@ -113,7 +113,7 @@ fn apply_model_body(
         args: body.args,
         sampling,
         enabled: body.enabled.unwrap_or(base.enabled),
-        context_length: body.context_length,
+        context_length: body.context_length.or(base.context_length),
         num_parallel: body.num_parallel.or(base.num_parallel),
         port: body.port.or(base.port),
         health_check: base.health_check,
@@ -154,11 +154,13 @@ fn apply_model_body(
         cache_type_k: body
             .cache_type_k
             .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty() && s != "__custom"),
+            .filter(|s| !s.is_empty() && s != "__custom")
+            .or(base.cache_type_k),
         cache_type_v: body
             .cache_type_v
             .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty() && s != "__custom"),
+            .filter(|s| !s.is_empty() && s != "__custom")
+            .or(base.cache_type_v),
         hf_format: base.hf_format,
         hf_base_model: base.hf_base_model,
         hf_pipeline_tag: base.hf_pipeline_tag,
