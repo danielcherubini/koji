@@ -221,6 +221,7 @@ pub fn build_web_routes(
             "/tama/v1/models/:id",
             get(api::get_model)
                 .put(api::update_model)
+                .patch(api::patch_model)
                 .delete(api::delete_model),
         )
         .route(

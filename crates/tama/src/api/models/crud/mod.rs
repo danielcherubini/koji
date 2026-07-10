@@ -54,6 +54,109 @@ pub struct ModelBody {
     pub spec_decoding: Option<tama_core::config::SpecDecodingConfig>,
 }
 
+/// Body for PATCH /tama/v1/models/:id — all fields optional for surgical updates.
+#[derive(serde::Deserialize, Default)]
+#[serde(default)]
+pub struct ModelPatchBody {
+    pub backend: Option<String>,
+    pub gpu_variant: Option<String>,
+    pub gpu_device: Option<String>,
+    pub model: Option<String>,
+    pub quant: Option<String>,
+    pub mmproj: Option<String>,
+    pub mtp_model: Option<String>,
+    pub args: Option<Vec<String>>,
+    pub sampling: Option<tama_core::profiles::SamplingParams>,
+    pub enabled: Option<bool>,
+    pub context_length: Option<u32>,
+    pub num_parallel: Option<u32>,
+    pub port: Option<u16>,
+    pub api_name: Option<String>,
+    pub display_name: Option<String>,
+    pub gpu_layers: Option<u32>,
+    pub quants: Option<std::collections::BTreeMap<String, tama_core::config::QuantEntry>>,
+    pub modalities: Option<tama_core::config::ModelModalities>,
+    pub kv_unified: Option<bool>,
+    pub cache_type_k: Option<String>,
+    pub cache_type_v: Option<String>,
+    pub spec_decoding: Option<tama_core::config::SpecDecodingConfig>,
+}
+
+pub fn apply_model_patch(
+    body: ModelPatchBody,
+    existing: &tama_core::config::ModelConfig,
+) -> tama_core::config::ModelConfig {
+    // Extract spec_decoding before consuming existing to avoid cloning the
+    // entire ModelConfig. Only the small SpecDecodingConfig is cloned if needed.
+    let existing_spec_decoding = existing.spec_decoding.clone();
+
+    tama_core::config::ModelConfig {
+        backend: body.backend.unwrap_or_else(|| existing.backend.clone()),
+        gpu_variant: body.gpu_variant.or(existing.gpu_variant.clone()),
+        gpu_device: body.gpu_device.or(existing.gpu_device.clone()),
+        model: body.model.or(existing.model.clone()),
+        quant: body.quant.or(existing.quant.clone()),
+        mmproj: body.mmproj.or(existing.mmproj.clone()),
+        mtp_model: body.mtp_model.or(existing.mtp_model.clone()),
+        args: body.args.unwrap_or_else(|| existing.args.clone()),
+        sampling: body.sampling.or(existing.sampling.clone()),
+        enabled: body.enabled.unwrap_or(existing.enabled),
+        context_length: body.context_length.or(existing.context_length),
+        num_parallel: body.num_parallel.or(existing.num_parallel),
+        port: body.port.or(existing.port),
+        health_check: existing.health_check.clone(),
+        profile: existing.profile.clone(), // PATCH preserves profile (PUT sets None)
+        api_name: body.api_name.or(existing.api_name.clone()),
+        gpu_layers: body.gpu_layers.or(existing.gpu_layers),
+        modalities: body.modalities.or(existing.modalities.clone()),
+        display_name: body.display_name.or(existing.display_name.clone()),
+        // Preserve server-side `size_bytes` on update — same logic as apply_model_body
+        quants: body
+            .quants
+            .unwrap_or_else(|| existing.quants.clone())
+            .into_iter()
+            .map(|(k, v)| {
+                let preserved_size = existing
+                    .quants
+                    .get(&k)
+                    .and_then(|existing_q| existing_q.size_bytes)
+                    .or(v.size_bytes);
+                (
+                    k,
+                    tama_core::config::QuantEntry {
+                        file: v.file,
+                        kind: v.kind,
+                        size_bytes: preserved_size,
+                        context_length: v.context_length,
+                    },
+                )
+            })
+            .collect(),
+        kv_unified: body.kv_unified.unwrap_or(existing.kv_unified),
+        cache_type_k: body
+            .cache_type_k
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty() && s != "__custom")
+            .or(existing.cache_type_k.clone()),
+        cache_type_v: body
+            .cache_type_v
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty() && s != "__custom")
+            .or(existing.cache_type_v.clone()),
+        hf_format: existing.hf_format.clone(),
+        hf_base_model: existing.hf_base_model.clone(),
+        hf_pipeline_tag: existing.hf_pipeline_tag.clone(),
+        hf_total_params: existing.hf_total_params.clone(),
+        hf_active_params: existing.hf_active_params.clone(),
+        hf_architecture_type: existing.hf_architecture_type.clone(),
+        hf_context_length: existing.hf_context_length,
+        hf_num_layers: existing.hf_num_layers,
+        hf_last_modified: existing.hf_last_modified.clone(),
+        db_id: existing.db_id,
+        spec_decoding: body.spec_decoding.unwrap_or(existing_spec_decoding),
+    }
+}
+
 fn apply_model_body(
     body: ModelBody,
     existing: Option<tama_core::config::ModelConfig>,
@@ -258,6 +361,74 @@ fn validate_model_body(body: &ModelBody) -> Result<(), String> {
     Ok(())
 }
 
+/// Validate ModelPatchBody field lengths. Only validates Some fields.
+/// An all-None body is valid (no-op).
+pub fn validate_model_patch(body: &ModelPatchBody) -> Result<(), String> {
+    if let Some(ref backend) = body.backend {
+        if backend.is_empty() {
+            return Err("backend cannot be empty".to_string());
+        }
+        if backend.len() > MAX_BACKEND {
+            return Err(format!("backend must be at most {MAX_BACKEND} characters"));
+        }
+    }
+    if let Some(ref model) = body.model {
+        if model.is_empty() {
+            return Err("model cannot be empty".to_string());
+        }
+        if model.len() > MAX_MODEL {
+            return Err(format!("model must be at most {MAX_MODEL} characters"));
+        }
+    }
+    if let Some(ref quant) = body.quant {
+        if !quant.is_empty() && quant.len() > MAX_QUANT {
+            return Err(format!("quant must be at most {MAX_QUANT} characters"));
+        }
+    }
+    if let Some(ref mmproj) = body.mmproj {
+        if !mmproj.is_empty() && mmproj.len() > MAX_MMPROJ {
+            return Err(format!("mmproj must be at most {MAX_MMPROJ} characters"));
+        }
+    }
+    if let Some(ref api_name) = body.api_name {
+        if !api_name.is_empty() && api_name.len() > MAX_API_NAME {
+            return Err(format!(
+                "api_name must be at most {MAX_API_NAME} characters"
+            ));
+        }
+    }
+    if let Some(ref display_name) = body.display_name {
+        if !display_name.is_empty() && display_name.len() > MAX_DISPLAY_NAME {
+            return Err(format!(
+                "display_name must be at most {MAX_DISPLAY_NAME} characters"
+            ));
+        }
+    }
+    if let Some(ref cache_type_k) = body.cache_type_k {
+        let trimmed = cache_type_k.trim();
+        if trimmed == "__custom" {
+            return Err("cache_type_k cannot be the sentinel value __custom".to_string());
+        }
+        if !trimmed.is_empty() && trimmed.len() > MAX_CACHE_TYPE {
+            return Err(format!(
+                "cache_type_k must be at most {MAX_CACHE_TYPE} characters"
+            ));
+        }
+    }
+    if let Some(ref cache_type_v) = body.cache_type_v {
+        let trimmed = cache_type_v.trim();
+        if trimmed == "__custom" {
+            return Err("cache_type_v cannot be the sentinel value __custom".to_string());
+        }
+        if !trimmed.is_empty() && trimmed.len() > MAX_CACHE_TYPE {
+            return Err(format!(
+                "cache_type_v must be at most {MAX_CACHE_TYPE} characters"
+            ));
+        }
+    }
+    Ok(())
+}
+
 // ── Sub-modules ─────────────────────────────────────────────────────────────
 
 pub mod create;
@@ -270,6 +441,7 @@ pub mod update;
 pub use create::create_model;
 pub use delete::{delete_model, delete_quant};
 pub use rename::rename_model;
+pub use update::patch_model;
 pub use update::update_model;
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

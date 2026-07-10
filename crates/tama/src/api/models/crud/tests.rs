@@ -1115,3 +1115,711 @@ fn test_apply_model_body_cache_type_v_body_wins_over_base() {
         "body cache_type_v must override existing value when explicitly provided"
     );
 }
+
+// ── PATCH /tama/v1/models/:id tests ────────────────────────────────────────
+
+/// Helper: create a ModelPatchBody with every field set to None.
+fn patch_body_all_none() -> ModelPatchBody {
+    ModelPatchBody {
+        backend: None,
+        gpu_variant: None,
+        gpu_device: None,
+        model: None,
+        quant: None,
+        mmproj: None,
+        mtp_model: None,
+        args: None,
+        sampling: None,
+        enabled: None,
+        context_length: None,
+        num_parallel: None,
+        port: None,
+        api_name: None,
+        display_name: None,
+        gpu_layers: None,
+        quants: None,
+        modalities: None,
+        kv_unified: None,
+        cache_type_k: None,
+        cache_type_v: None,
+        spec_decoding: None,
+    }
+}
+
+/// Helper: create a ModelPatchBody with a single field changed.
+fn patch_body_single_context_length(val: u32) -> ModelPatchBody {
+    ModelPatchBody {
+        backend: None,
+        gpu_variant: None,
+        gpu_device: None,
+        model: None,
+        quant: None,
+        mmproj: None,
+        mtp_model: None,
+        args: None,
+        sampling: None,
+        enabled: None,
+        context_length: Some(val),
+        num_parallel: None,
+        port: None,
+        api_name: None,
+        display_name: None,
+        gpu_layers: None,
+        quants: None,
+        modalities: None,
+        kv_unified: None,
+        cache_type_k: None,
+        cache_type_v: None,
+        spec_decoding: None,
+    }
+}
+
+/// Helper: create a ModelConfig with rich fields for patch testing.
+fn existing_config_rich() -> ModelConfig {
+    let mut quants = BTreeMap::new();
+    quants.insert(
+        "Q4_K_M".to_string(),
+        QuantEntry {
+            file: "model-Q4_K_M.gguf".to_string(),
+            kind: QuantKind::Model,
+            size_bytes: Some(4_567_890),
+            context_length: Some(4096),
+        },
+    );
+    ModelConfig {
+        backend: "llama-cpp".into(),
+        gpu_variant: Some("cuda".into()),
+        gpu_device: Some("0".into()),
+        model: Some("org/repo".into()),
+        quant: Some("Q4_K_M".into()),
+        mmproj: None,
+        mtp_model: None,
+        args: vec!["--ctx-size".to_string(), "4096".to_string()],
+        sampling: Some(tama_core::profiles::SamplingParams {
+            temperature: Some(0.7),
+            ..Default::default()
+        }),
+        enabled: true,
+        context_length: Some(4096),
+        num_parallel: Some(1),
+        port: Some(18910),
+        health_check: None,
+        profile: Some("default".to_string()),
+        api_name: Some("my-api".into()),
+        gpu_layers: Some(32),
+        quants,
+        modalities: None,
+        display_name: Some("My Model".into()),
+        kv_unified: false,
+        cache_type_k: Some("q4_0".into()),
+        cache_type_v: Some("q8_0".into()),
+        hf_format: None,
+        hf_base_model: None,
+        hf_pipeline_tag: None,
+        hf_total_params: None,
+        hf_active_params: None,
+        hf_architecture_type: None,
+        hf_context_length: None,
+        hf_num_layers: None,
+        hf_last_modified: None,
+        db_id: Some(42),
+        spec_decoding: Default::default(),
+    }
+}
+
+// ── apply_model_patch unit tests ───────────────────────────────────────────
+
+/// An all-None patch body must preserve every field in the existing config.
+#[test]
+fn test_apply_model_patch_all_none_preserves_all_fields() {
+    let existing = existing_config_rich();
+    let result = apply_model_patch(patch_body_all_none(), &existing);
+
+    assert_eq!(result.backend, "llama-cpp");
+    assert_eq!(result.gpu_variant, Some("cuda".into()));
+    assert_eq!(result.gpu_device, Some("0".into()));
+    assert_eq!(result.model, Some("org/repo".into()));
+    assert_eq!(result.quant, Some("Q4_K_M".into()));
+    assert_eq!(
+        result.args,
+        vec!["--ctx-size".to_string(), "4096".to_string()]
+    );
+    assert!(result.sampling.is_some());
+    assert_eq!(result.context_length, Some(4096));
+    assert_eq!(result.num_parallel, Some(1));
+    assert_eq!(result.port, Some(18910));
+    assert_eq!(result.api_name, Some("my-api".into()));
+    assert_eq!(result.gpu_layers, Some(32));
+    assert_eq!(result.display_name, Some("My Model".into()));
+    assert!(!result.kv_unified);
+    assert_eq!(result.cache_type_k, Some("q4_0".into()));
+    assert_eq!(result.cache_type_v, Some("q8_0".into()));
+    assert_eq!(result.profile, Some("default".to_string()));
+    assert_eq!(result.db_id, Some(42));
+    // quants preserved
+    let q = result.quants.get("Q4_K_M").unwrap();
+    assert_eq!(q.size_bytes, Some(4_567_890));
+    assert_eq!(q.file, "model-Q4_K_M.gguf");
+}
+
+/// A body with only `context_length: Some(8192)` changes only that field.
+#[test]
+fn test_apply_model_patch_single_field_changes_only_that_field() {
+    let existing = existing_config_rich();
+    let result = apply_model_patch(patch_body_single_context_length(8192), &existing);
+
+    assert_eq!(result.context_length, Some(8192));
+    // All other fields preserved
+    assert_eq!(result.backend, "llama-cpp");
+    assert_eq!(result.model, Some("org/repo".into()));
+    assert_eq!(result.cache_type_k, Some("q4_0".into()));
+}
+
+/// `args: Some(vec![])` must clear args to empty.
+#[test]
+fn test_apply_model_patch_args_some_empty_clears() {
+    let existing = existing_config_rich();
+    let mut body = patch_body_all_none();
+    body.args = Some(vec![]);
+
+    let result = apply_model_patch(body, &existing);
+    assert!(result.args.is_empty());
+}
+
+/// `args: None` must preserve existing args.
+#[test]
+fn test_apply_model_patch_args_none_preserves() {
+    let existing = existing_config_rich();
+    let result = apply_model_patch(patch_body_all_none(), &existing);
+
+    assert_eq!(
+        result.args,
+        vec!["--ctx-size".to_string(), "4096".to_string()]
+    );
+}
+
+/// `backend: None` must preserve existing backend.
+#[test]
+fn test_apply_model_patch_backend_none_preserves() {
+    let existing = existing_config_rich();
+    let result = apply_model_patch(patch_body_all_none(), &existing);
+
+    assert_eq!(result.backend, "llama-cpp");
+}
+
+/// `backend: Some("new")` must override the existing backend.
+#[test]
+fn test_apply_model_patch_backend_some_overrides() {
+    let existing = existing_config_rich();
+    let mut body = patch_body_all_none();
+    body.backend = Some("llama".to_string());
+
+    let result = apply_model_patch(body, &existing);
+    assert_eq!(result.backend, "llama");
+}
+
+/// Quants size_bytes must be preserved per-key (security check).
+#[test]
+fn test_apply_model_patch_quants_size_bytes_preserved() {
+    let existing = existing_config_rich();
+    let mut body = patch_body_all_none();
+
+    // Client sends a different size_bytes for the same key
+    let mut incoming_quants = BTreeMap::new();
+    incoming_quants.insert(
+        "Q4_K_M".to_string(),
+        QuantEntry {
+            file: "model-Q4_K_M.gguf".to_string(),
+            kind: QuantKind::Model,
+            size_bytes: Some(1), // malicious / stale
+            context_length: Some(8192),
+        },
+    );
+    body.quants = Some(incoming_quants);
+
+    let result = apply_model_patch(body, &existing);
+    let q = result.quants.get("Q4_K_M").unwrap();
+    assert_eq!(
+        q.size_bytes,
+        Some(4_567_890),
+        "existing size_bytes must be preserved against client override"
+    );
+    assert_eq!(q.context_length, Some(8192)); // non-size fields still update
+}
+
+/// `cache_type_k: Some("__custom")` must be filtered to None and fall back
+/// to the existing base value.
+#[test]
+fn test_apply_model_patch_cache_type_custom_filtered() {
+    let existing = existing_config_rich();
+    let mut body = patch_body_all_none();
+    body.cache_type_k = Some("__custom".to_string());
+
+    let result = apply_model_patch(body, &existing);
+    assert_eq!(
+        result.cache_type_k,
+        Some("q4_0".into()),
+        "__custom sentinel must be filtered, falling back to existing"
+    );
+}
+
+/// `profile` must be preserved by PATCH (deviation from PUT which sets None).
+#[test]
+fn test_apply_model_patch_profile_preserved() {
+    let existing = existing_config_rich();
+    let result = apply_model_patch(patch_body_all_none(), &existing);
+
+    assert_eq!(
+        result.profile,
+        Some("default".to_string()),
+        "PATCH must preserve profile (PUT sets None)"
+    );
+}
+
+/// `sampling: None` must preserve existing sampling params.
+#[test]
+fn test_apply_model_patch_sampling_preserved() {
+    let existing = existing_config_rich();
+    let result = apply_model_patch(patch_body_all_none(), &existing);
+
+    assert!(
+        result.sampling.is_some(),
+        "sampling must be preserved when body omits the field"
+    );
+}
+
+/// `cache_type_k` with valid value must override existing.
+#[test]
+fn test_apply_model_patch_cache_type_k_override() {
+    let existing = existing_config_rich();
+    let mut body = patch_body_all_none();
+    body.cache_type_k = Some("f16".to_string());
+
+    let result = apply_model_patch(body, &existing);
+    assert_eq!(result.cache_type_k, Some("f16".into()));
+}
+
+/// `cache_type_v` with valid value must override existing.
+#[test]
+fn test_apply_model_patch_cache_type_v_override() {
+    let existing = existing_config_rich();
+    let mut body = patch_body_all_none();
+    body.cache_type_v = Some("f8".to_string());
+
+    let result = apply_model_patch(body, &existing);
+    assert_eq!(result.cache_type_v, Some("f8".into()));
+}
+
+/// Server-side fields (hf_*) must always be preserved.
+#[test]
+fn test_apply_model_patch_server_side_fields_preserved() {
+    let mut existing = existing_config_rich();
+    existing.hf_format = Some("gguf".into());
+    existing.hf_base_model = Some("meta-llama/Llama-3".into());
+    existing.hf_pipeline_tag = Some("text-generation".into());
+    existing.hf_total_params = Some("7B".into());
+    existing.hf_active_params = Some("7B".into());
+    existing.hf_architecture_type = Some("llama".into());
+    existing.hf_context_length = Some(8192u32);
+    existing.hf_num_layers = Some(32u32);
+    existing.hf_last_modified = Some("2024-01-15T10:30:00Z".into());
+
+    let result = apply_model_patch(patch_body_all_none(), &existing);
+
+    assert_eq!(result.hf_format, Some("gguf".into()));
+    assert_eq!(result.hf_base_model, Some("meta-llama/Llama-3".into()));
+    assert_eq!(result.hf_pipeline_tag, Some("text-generation".into()));
+    assert_eq!(result.hf_total_params, Some("7B".into()));
+    assert_eq!(result.hf_active_params, Some("7B".into()));
+    assert_eq!(result.hf_architecture_type, Some("llama".into()));
+    assert_eq!(result.hf_context_length, Some(8192u32));
+    assert_eq!(result.hf_num_layers, Some(32u32));
+    assert_eq!(result.hf_last_modified, Some("2024-01-15T10:30:00Z".into()));
+}
+
+// ── validate_model_patch unit tests ────────────────────────────────────────
+
+/// `backend: Some("")` must be rejected.
+#[test]
+fn test_validate_model_patch_empty_backend_rejected() {
+    let body = ModelPatchBody {
+        backend: Some("".to_string()),
+        ..patch_body_all_none()
+    };
+    let result = validate_model_patch(&body);
+    assert!(result.is_err(), "empty backend must be rejected");
+    assert!(result.unwrap_err().contains("backend"));
+}
+
+/// `backend: Some("valid")` must pass validation.
+#[test]
+fn test_validate_model_patch_valid_backend_accepted() {
+    let body = ModelPatchBody {
+        backend: Some("llama-cpp".to_string()),
+        ..patch_body_all_none()
+    };
+    assert!(validate_model_patch(&body).is_ok());
+}
+
+/// An all-None body must pass validation (no-op).
+#[test]
+fn test_validate_model_patch_all_none_valid() {
+    let body = patch_body_all_none();
+    assert!(
+        validate_model_patch(&body).is_ok(),
+        "all-None body must be valid (no-op)"
+    );
+}
+
+/// `model: Some("")` must be rejected.
+#[test]
+fn test_validate_model_patch_empty_model_rejected() {
+    let body = ModelPatchBody {
+        model: Some("".to_string()),
+        ..patch_body_all_none()
+    };
+    let result = validate_model_patch(&body);
+    assert!(result.is_err(), "empty model must be rejected");
+}
+
+/// `model` exceeding MAX_MODEL must be rejected.
+#[test]
+fn test_validate_model_patch_model_too_long_rejected() {
+    let body = ModelPatchBody {
+        model: Some("a".repeat(MAX_MODEL + 1)),
+        ..patch_body_all_none()
+    };
+    let result = validate_model_patch(&body);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("model"));
+}
+
+/// `quant` exceeding MAX_QUANT must be rejected.
+#[test]
+fn test_validate_model_patch_quant_too_long_rejected() {
+    let body = ModelPatchBody {
+        quant: Some("a".repeat(MAX_QUANT + 1)),
+        ..patch_body_all_none()
+    };
+    let result = validate_model_patch(&body);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("quant"));
+}
+
+/// `cache_type_k: Some("__custom")` must be rejected during validation.
+#[test]
+fn test_validate_model_patch_cache_type_k_custom_rejected() {
+    let body = ModelPatchBody {
+        cache_type_k: Some("__custom".to_string()),
+        ..patch_body_all_none()
+    };
+    let result = validate_model_patch(&body);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("__custom"));
+}
+
+/// `cache_type_k` exceeding MAX_CACHE_TYPE must be rejected.
+#[test]
+fn test_validate_model_patch_cache_type_k_too_long() {
+    let body = ModelPatchBody {
+        cache_type_k: Some("a".repeat(MAX_CACHE_TYPE + 1)),
+        ..patch_body_all_none()
+    };
+    let result = validate_model_patch(&body);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("cache_type_k"));
+}
+
+/// `cache_type_v` exceeding MAX_CACHE_TYPE must be rejected.
+#[test]
+fn test_validate_model_patch_cache_type_v_too_long() {
+    let body = ModelPatchBody {
+        cache_type_v: Some("a".repeat(MAX_CACHE_TYPE + 1)),
+        ..patch_body_all_none()
+    };
+    let result = validate_model_patch(&body);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("cache_type_v"));
+}
+
+/// `api_name` exceeding MAX_API_NAME must be rejected.
+#[test]
+fn test_validate_model_patch_api_name_too_long() {
+    let body = ModelPatchBody {
+        api_name: Some("a".repeat(MAX_API_NAME + 1)),
+        ..patch_body_all_none()
+    };
+    let result = validate_model_patch(&body);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("api_name"));
+}
+
+/// `display_name` exceeding MAX_DISPLAY_NAME must be rejected.
+#[test]
+fn test_validate_model_patch_display_name_too_long() {
+    let body = ModelPatchBody {
+        display_name: Some("a".repeat(MAX_DISPLAY_NAME + 1)),
+        ..patch_body_all_none()
+    };
+    let result = validate_model_patch(&body);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("display_name"));
+}
+
+/// `mmproj` exceeding MAX_MMPROJ must be rejected.
+#[test]
+fn test_validate_model_patch_mmproj_too_long() {
+    let body = ModelPatchBody {
+        mmproj: Some("a".repeat(MAX_MMPROJ + 1)),
+        ..patch_body_all_none()
+    };
+    let result = validate_model_patch(&body);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("mmproj"));
+}
+
+/// `backend` exceeding MAX_BACKEND must be rejected.
+#[test]
+fn test_validate_model_patch_backend_too_long() {
+    let body = ModelPatchBody {
+        backend: Some("a".repeat(MAX_BACKEND + 1)),
+        ..patch_body_all_none()
+    };
+    let result = validate_model_patch(&body);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("backend"));
+}
+
+/// `kv_unified: Some(false)` must override existing true.
+#[test]
+fn test_apply_model_patch_kv_unified_override() {
+    let mut existing = existing_config_rich();
+    existing.kv_unified = true;
+    let mut body = patch_body_all_none();
+    body.kv_unified = Some(false);
+
+    let result = apply_model_patch(body, &existing);
+    assert!(!result.kv_unified);
+}
+
+/// `kv_unified: None` must preserve existing value.
+#[test]
+fn test_apply_model_patch_kv_unified_preserves() {
+    let existing = existing_config_rich();
+    let result = apply_model_patch(patch_body_all_none(), &existing);
+    assert!(!result.kv_unified);
+}
+
+/// `enabled: Some(false)` must override existing true.
+#[test]
+fn test_apply_model_patch_enabled_override() {
+    let existing = existing_config_rich();
+    let mut body = patch_body_all_none();
+    body.enabled = Some(false);
+
+    let result = apply_model_patch(body, &existing);
+    assert!(!result.enabled);
+}
+
+/// `enabled: None` must preserve existing value.
+#[test]
+fn test_apply_model_patch_enabled_preserves() {
+    let existing = existing_config_rich();
+    let result = apply_model_patch(patch_body_all_none(), &existing);
+    assert!(result.enabled);
+}
+
+/// `spec_decoding: Some(...)` must override existing.
+#[test]
+fn test_apply_model_patch_spec_decoding_override() {
+    let existing = existing_config_rich();
+    let mut body = patch_body_all_none();
+
+    let new_spec = tama_core::config::SpecDecodingConfig {
+        spec_types: vec!["draft-mtp".to_string()],
+        n_max: Some(4),
+        n_min: Some(2),
+        draft_ngl: Some(20),
+    };
+    body.spec_decoding = Some(new_spec.clone());
+
+    let result = apply_model_patch(body, &existing);
+    assert_eq!(
+        result.spec_decoding.spec_types,
+        vec!["draft-mtp".to_string()]
+    );
+    assert_eq!(result.spec_decoding.n_max, Some(4));
+}
+
+/// `spec_decoding: None` must preserve existing spec_decoding.
+#[test]
+fn test_apply_model_patch_spec_decoding_preserves() {
+    let existing = existing_config_rich();
+    let result = apply_model_patch(patch_body_all_none(), &existing);
+    // Default spec_decoding is preserved
+    assert_eq!(result.spec_decoding, Default::default());
+}
+
+/// `display_name: Some("New Name")` must override existing.
+#[test]
+fn test_apply_model_patch_display_name_override() {
+    let existing = existing_config_rich();
+    let mut body = patch_body_all_none();
+    body.display_name = Some("New Name".to_string());
+
+    let result = apply_model_patch(body, &existing);
+    assert_eq!(result.display_name, Some("New Name".into()));
+}
+
+/// `api_name: Some("new-api")` must override existing.
+#[test]
+fn test_apply_model_patch_api_name_override() {
+    let existing = existing_config_rich();
+    let mut body = patch_body_all_none();
+    body.api_name = Some("new-api".to_string());
+
+    let result = apply_model_patch(body, &existing);
+    assert_eq!(result.api_name, Some("new-api".into()));
+}
+
+/// `gpu_layers: Some(40)` must override existing.
+#[test]
+fn test_apply_model_patch_gpu_layers_override() {
+    let existing = existing_config_rich();
+    let mut body = patch_body_all_none();
+    body.gpu_layers = Some(40);
+
+    let result = apply_model_patch(body, &existing);
+    assert_eq!(result.gpu_layers, Some(40));
+}
+
+/// `modalities: Some(...)` must override existing.
+#[test]
+fn test_apply_model_patch_modalities_override() {
+    let existing = existing_config_rich();
+    let mut body = patch_body_all_none();
+    body.modalities = Some(tama_core::config::ModelModalities {
+        input: vec!["text".to_string()],
+        output: vec!["text".to_string()],
+    });
+
+    let result = apply_model_patch(body, &existing);
+    assert!(result.modalities.is_some());
+    let m = result.modalities.unwrap();
+    assert_eq!(m.input, vec!["text".to_string()]);
+    assert_eq!(m.output, vec!["text".to_string()]);
+}
+
+/// `port: Some(1234)` must override existing.
+#[test]
+fn test_apply_model_patch_port_override() {
+    let existing = existing_config_rich();
+    let mut body = patch_body_all_none();
+    body.port = Some(1234);
+
+    let result = apply_model_patch(body, &existing);
+    assert_eq!(result.port, Some(1234));
+}
+
+/// `num_parallel: Some(4)` must override existing.
+#[test]
+fn test_apply_model_patch_num_parallel_override() {
+    let existing = existing_config_rich();
+    let mut body = patch_body_all_none();
+    body.num_parallel = Some(4);
+
+    let result = apply_model_patch(body, &existing);
+    assert_eq!(result.num_parallel, Some(4));
+}
+
+/// `sampling: Some(...)` must override existing sampling params.
+#[test]
+fn test_apply_model_patch_sampling_override() {
+    let existing = existing_config_rich();
+    let mut body = patch_body_all_none();
+    body.sampling = Some(tama_core::profiles::SamplingParams {
+        temperature: Some(1.0),
+        ..Default::default()
+    });
+
+    let result = apply_model_patch(body, &existing);
+    assert!(result.sampling.is_some());
+    assert_eq!(result.sampling.unwrap().temperature, Some(1.0));
+}
+
+/// `model: Some("new/repo")` must override existing.
+#[test]
+fn test_apply_model_patch_model_override() {
+    let existing = existing_config_rich();
+    let mut body = patch_body_all_none();
+    body.model = Some("new/repo".to_string());
+
+    let result = apply_model_patch(body, &existing);
+    assert_eq!(result.model, Some("new/repo".into()));
+}
+
+/// `quant: Some("Q8_0")` must override existing.
+#[test]
+fn test_apply_model_patch_quant_override() {
+    let existing = existing_config_rich();
+    let mut body = patch_body_all_none();
+    body.quant = Some("Q8_0".to_string());
+
+    let result = apply_model_patch(body, &existing);
+    assert_eq!(result.quant, Some("Q8_0".into()));
+}
+
+/// `gpu_variant: Some("rocm")` must override existing.
+#[test]
+fn test_apply_model_patch_gpu_variant_override() {
+    let existing = existing_config_rich();
+    let mut body = patch_body_all_none();
+    body.gpu_variant = Some("rocm".to_string());
+
+    let result = apply_model_patch(body, &existing);
+    assert_eq!(result.gpu_variant, Some("rocm".into()));
+}
+
+/// `gpu_device: Some("1")` must override existing.
+#[test]
+fn test_apply_model_patch_gpu_device_override() {
+    let existing = existing_config_rich();
+    let mut body = patch_body_all_none();
+    body.gpu_device = Some("1".to_string());
+
+    let result = apply_model_patch(body, &existing);
+    assert_eq!(result.gpu_device, Some("1".into()));
+}
+
+/// `mmproj: Some("mmproj.gguf")` must override existing.
+#[test]
+fn test_apply_model_patch_mmproj_override() {
+    let existing = existing_config_rich();
+    let mut body = patch_body_all_none();
+    body.mmproj = Some("mmproj.gguf".to_string());
+
+    let result = apply_model_patch(body, &existing);
+    assert_eq!(result.mmproj, Some("mmproj.gguf".into()));
+}
+
+/// `mtp_model: Some("mtp.gguf")` must override existing.
+#[test]
+fn test_apply_model_patch_mtp_model_override() {
+    let existing = existing_config_rich();
+    let mut body = patch_body_all_none();
+    body.mtp_model = Some("mtp.gguf".to_string());
+
+    let result = apply_model_patch(body, &existing);
+    assert_eq!(result.mtp_model, Some("mtp.gguf".into()));
+}
+
+/// `context_length: Some(16384)` must override existing.
+#[test]
+fn test_apply_model_patch_context_length_override() {
+    let existing = existing_config_rich();
+    let mut body = patch_body_all_none();
+    body.context_length = Some(16384);
+
+    let result = apply_model_patch(body, &existing);
+    assert_eq!(result.context_length, Some(16384));
+}
