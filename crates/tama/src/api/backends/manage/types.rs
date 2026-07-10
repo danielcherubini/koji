@@ -59,3 +59,12 @@ pub struct SourceQuery {
     #[serde(default)]
     pub gpu_variant: Option<String>,
 }
+
+/// PATCH /tama/v1/backends/:name
+/// Consolidated backend config update for default_args, default_env, and health_check_url.
+#[derive(Deserialize)]
+pub struct BackendPatchBody {
+    pub default_args: Option<Vec<String>>,
+    pub default_env: Option<Vec<String>>,
+    pub health_check_url: Option<Option<String>>,
+}
