@@ -209,6 +209,7 @@ pub fn build_web_routes(
             "/tama/v1/config/structured",
             get(api::get_structured_config)
                 .post(api::save_structured_config)
+                .patch(api::patch_structured_config)
                 .layer(json_body_limit),
         )
         .route(
