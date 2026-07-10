@@ -13,7 +13,7 @@ This directory contains implementation plans for the Tama project. Each plan doc
 ## Quick Stats
 
 - **Total Plans**: 51
-- **Backlog**: 2
+- **Backlog**: 1
 - **Completed**: 47 ✅
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
@@ -22,8 +22,8 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Backlog
 
-| # | Bug | Location | Impact |
-|---|---|---|---|
+| Bug | Location | Impact |
+|---|---|---|
 | Add `PATCH /tama/v1/models/:id` for surgical updates | No PATCH route exists — only PUT (`crates/tama/src/router.rs:221`). The current PUT acts as a partial update for most fields but a strict replace for `context_length` / `cache_type_k` / `cache_type_v`. For a web form this is fine (the form has every field). For LLM-driven or programmatic clients, a true PATCH is safer — send only the fields to change, others stay intact. Standard REST split: PUT = full replace (require all fields, 400 if any missing), PATCH = surgical (only touch what body contains). Should likely be applied to other resources too: `/tama/v1/config`, `/tama/v1/backends/:name`, etc. | **Medium** — same root cause as the bug above, but bigger scope. Spec'ing this should subsume the partial-PUT bug fix. |
 
 ## Completed Plans
