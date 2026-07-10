@@ -176,6 +176,34 @@ fn apply_model_body_accepts_client_size_for_new_quant_key() {
     assert_eq!(result.quants.get("Q8_0").unwrap().size_bytes, Some(2_000));
 }
 
+/// Minimal ModelBody for tests — only required fields set, all optional None.
+fn body_minimal() -> ModelBody {
+    ModelBody {
+        backend: "llama-cpp".to_string(),
+        gpu_variant: None,
+        gpu_device: None,
+        model: Some("model.gguf".to_string()),
+        quant: None,
+        mmproj: None,
+        mtp_model: None,
+        args: vec![],
+        sampling: None,
+        enabled: None,
+        context_length: None,
+        num_parallel: None,
+        port: None,
+        api_name: None,
+        gpu_layers: None,
+        quants: None,
+        modalities: None,
+        display_name: None,
+        kv_unified: None,
+        cache_type_k: None,
+        cache_type_v: None,
+        spec_decoding: None,
+    }
+}
+
 // ── apply_model_body additional tests ─────────────────────────────────
 
 #[test]
@@ -939,32 +967,7 @@ fn test_apply_model_body_context_length_preserves_base_when_omitted() {
         ..Default::default()
     };
 
-    let body = ModelBody {
-        backend: "llama-cpp".to_string(),
-        gpu_variant: None,
-        gpu_device: None,
-        model: Some("model.gguf".to_string()),
-        quant: None,
-        mmproj: None,
-        mtp_model: None,
-        args: vec![],
-        sampling: None,
-        enabled: None,
-        context_length: None, // omitted — should preserve existing
-        num_parallel: None,
-        port: None,
-        api_name: None,
-        gpu_layers: None,
-        quants: None,
-        modalities: None,
-        display_name: None,
-        kv_unified: None,
-        cache_type_k: None,
-        cache_type_v: None,
-        spec_decoding: None,
-    };
-
-    let result = apply_model_body(body, Some(existing));
+    let result = apply_model_body(body_minimal(), Some(existing));
     assert_eq!(
         result.context_length,
         Some(4096),
@@ -982,32 +985,7 @@ fn test_apply_model_body_cache_type_k_preserves_base_when_omitted() {
         ..Default::default()
     };
 
-    let body = ModelBody {
-        backend: "llama-cpp".to_string(),
-        gpu_variant: None,
-        gpu_device: None,
-        model: Some("model.gguf".to_string()),
-        quant: None,
-        mmproj: None,
-        mtp_model: None,
-        args: vec![],
-        sampling: None,
-        enabled: None,
-        context_length: None,
-        num_parallel: None,
-        port: None,
-        api_name: None,
-        gpu_layers: None,
-        quants: None,
-        modalities: None,
-        display_name: None,
-        kv_unified: None,
-        cache_type_k: None, // omitted — should preserve existing
-        cache_type_v: None,
-        spec_decoding: None,
-    };
-
-    let result = apply_model_body(body, Some(existing));
+    let result = apply_model_body(body_minimal(), Some(existing));
     assert_eq!(
         result.cache_type_k,
         Some("q4_0".to_string()),
@@ -1025,32 +1003,7 @@ fn test_apply_model_body_cache_type_v_preserves_base_when_omitted() {
         ..Default::default()
     };
 
-    let body = ModelBody {
-        backend: "llama-cpp".to_string(),
-        gpu_variant: None,
-        gpu_device: None,
-        model: Some("model.gguf".to_string()),
-        quant: None,
-        mmproj: None,
-        mtp_model: None,
-        args: vec![],
-        sampling: None,
-        enabled: None,
-        context_length: None,
-        num_parallel: None,
-        port: None,
-        api_name: None,
-        gpu_layers: None,
-        quants: None,
-        modalities: None,
-        display_name: None,
-        kv_unified: None,
-        cache_type_k: None,
-        cache_type_v: None, // omitted — should preserve existing
-        spec_decoding: None,
-    };
-
-    let result = apply_model_body(body, Some(existing));
+    let result = apply_model_body(body_minimal(), Some(existing));
     assert_eq!(
         result.cache_type_v,
         Some("q8_0".to_string()),
@@ -1068,30 +1021,8 @@ fn test_apply_model_body_cache_type_k_whitespace_preserves_base_when_existing() 
         ..Default::default()
     };
 
-    let body = ModelBody {
-        backend: "llama-cpp".to_string(),
-        gpu_variant: None,
-        gpu_device: None,
-        model: Some("model.gguf".to_string()),
-        quant: None,
-        mmproj: None,
-        mtp_model: None,
-        args: vec![],
-        sampling: None,
-        enabled: None,
-        context_length: None,
-        num_parallel: None,
-        port: None,
-        api_name: None,
-        gpu_layers: None,
-        quants: None,
-        modalities: None,
-        display_name: None,
-        kv_unified: None,
-        cache_type_k: Some("   ".to_string()), // whitespace-only — filtered to None
-        cache_type_v: None,
-        spec_decoding: None,
-    };
+    let mut body = body_minimal();
+    body.cache_type_k = Some("   ".to_string()); // whitespace-only — filtered to None
 
     let result = apply_model_body(body, Some(existing));
     assert_eq!(
@@ -1111,30 +1042,8 @@ fn test_apply_model_body_cache_type_v_whitespace_preserves_base_when_existing() 
         ..Default::default()
     };
 
-    let body = ModelBody {
-        backend: "llama-cpp".to_string(),
-        gpu_variant: None,
-        gpu_device: None,
-        model: Some("model.gguf".to_string()),
-        quant: None,
-        mmproj: None,
-        mtp_model: None,
-        args: vec![],
-        sampling: None,
-        enabled: None,
-        context_length: None,
-        num_parallel: None,
-        port: None,
-        api_name: None,
-        gpu_layers: None,
-        quants: None,
-        modalities: None,
-        display_name: None,
-        kv_unified: None,
-        cache_type_k: None,
-        cache_type_v: Some("   ".to_string()), // whitespace-only — filtered to None
-        spec_decoding: None,
-    };
+    let mut body = body_minimal();
+    body.cache_type_v = Some("   ".to_string()); // whitespace-only — filtered to None
 
     let result = apply_model_body(body, Some(existing));
     assert_eq!(
@@ -1154,35 +1063,55 @@ fn test_apply_model_body_context_length_body_wins_over_base() {
         ..Default::default()
     };
 
-    let body = ModelBody {
-        backend: "llama-cpp".to_string(),
-        gpu_variant: None,
-        gpu_device: None,
-        model: Some("model.gguf".to_string()),
-        quant: None,
-        mmproj: None,
-        mtp_model: None,
-        args: vec![],
-        sampling: None,
-        enabled: None,
-        context_length: Some(8192), // explicit override
-        num_parallel: None,
-        port: None,
-        api_name: None,
-        gpu_layers: None,
-        quants: None,
-        modalities: None,
-        display_name: None,
-        kv_unified: None,
-        cache_type_k: None,
-        cache_type_v: None,
-        spec_decoding: None,
-    };
+    let mut body = body_minimal();
+    body.context_length = Some(8192); // explicit override
 
     let result = apply_model_body(body, Some(existing));
     assert_eq!(
         result.context_length,
         Some(8192),
         "body context_length must override existing value when explicitly provided"
+    );
+}
+
+/// When the body explicitly provides `cache_type_k`, it must override the
+/// existing DB value — body wins on explicit assignment.
+#[test]
+fn test_apply_model_body_cache_type_k_body_wins_over_base() {
+    let existing = ModelConfig {
+        backend: "llama-cpp".into(),
+        cache_type_k: Some("q4_0".to_string()),
+        ..Default::default()
+    };
+
+    let mut body = body_minimal();
+    body.cache_type_k = Some("f8".to_string()); // explicit override
+
+    let result = apply_model_body(body, Some(existing));
+    assert_eq!(
+        result.cache_type_k,
+        Some("f8".to_string()),
+        "body cache_type_k must override existing value when explicitly provided"
+    );
+}
+
+/// When the body explicitly provides `cache_type_v`, it must override the
+/// existing DB value — body wins on explicit assignment.
+#[test]
+fn test_apply_model_body_cache_type_v_body_wins_over_base() {
+    let existing = ModelConfig {
+        backend: "llama-cpp".into(),
+        cache_type_v: Some("q8_0".to_string()),
+        ..Default::default()
+    };
+
+    let mut body = body_minimal();
+    body.cache_type_v = Some("f16".to_string()); // explicit override
+
+    let result = apply_model_body(body, Some(existing));
+    assert_eq!(
+        result.cache_type_v,
+        Some("f16".to_string()),
+        "body cache_type_v must override existing value when explicitly provided"
     );
 }
