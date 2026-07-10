@@ -12,9 +12,9 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Quick Stats
 
-- **Total Plans**: 50
-- **Backlog**: 0
-- **Completed**: 46 ✅
+- **Total Plans**: 51
+- **Backlog**: 1
+- **Completed**: 47 ✅
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
 
@@ -22,12 +22,17 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Backlog
 
+| Bug | Location | Impact |
+|---|---|---|
+| Add `PATCH /tama/v1/models/:id` for surgical updates | No PATCH route exists — only PUT (`crates/tama/src/router.rs:221`). The current PUT acts as a partial update for most fields but a strict replace for `context_length` / `cache_type_k` / `cache_type_v`. For a web form this is fine (the form has every field). For LLM-driven or programmatic clients, a true PATCH is safer — send only the fields to change, others stay intact. Standard REST split: PUT = full replace (require all fields, 400 if any missing), PATCH = surgical (only touch what body contains). Should likely be applied to other resources too: `/tama/v1/config`, `/tama/v1/backends/:name`, etc. | **Medium** — same root cause as the bug above, but bigger scope. Spec'ing this should subsume the partial-PUT bug fix. |
+
 ## Completed Plans
 
 ### Recently Completed
 
 | Plan | Description | PR / Git References |
 |------|-------------|---------------------|
+| [Fix PUT Model Wipes Optional Fields](done/plan-154-fix-put-model-wipes-optional-fields.md) | Fix `context_length`, `cache_type_k`, `cache_type_v` to use `.or(base.field)` merge in `apply_model_body()` — matches documented partial-update semantics | #154 ✅ COMPLETED | [`cc660fb5`](../../commit/cc660fb5), [`13366178`](../../commit/13366178) |
 | [API Keys Web UI](done/plan-153-api-keys-web-ui.md) | Web UI page at `/tama/keys` for managing API keys — create, view, edit scopes, revoke — with one-time key reveal modal, active-only filter, and sidebar integration | #152 ✅ COMPLETED | [`98e20d36`](../../commit/98e20d36), [`a73229d4`](../../commit/a73229d4), [`b3934606`](../../commit/b3934606), [`d2c92b17`](../../commit/d2c92b17), [`8fc2adfc`](../../commit/8fc2adfc) |
 | [API Keys](done/plan-152-api-keys.md) | Named, scoped API keys (`tama_XXXX`) stored as SHA-256 hashes, with auth + scope middleware and CRUD management API | #151 ✅ COMPLETED | [`a087b344`](../../commit/a087b344), [`c416427c`](../../commit/c416427c), [`21a5993e`](../../commit/21a5993e), [`c4f0d979`](../../commit/c4f0d979), [`db4eab95`](../../commit/db4eab95) |
 | [OAuth2/OIDC Login](done/plan-151-oauth2-login.md) | Native OAuth2 login flow with session cookies, replacing Caddy forward_auth dependency | #150 ✅ COMPLETED |
