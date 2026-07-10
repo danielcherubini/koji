@@ -12,8 +12,8 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Quick Stats
 
-- **Total Plans**: 50
-- **Backlog**: 0
+- **Total Plans**: 51
+- **Backlog**: 3
 - **Completed**: 46 ✅
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
@@ -21,6 +21,11 @@ This directory contains implementation plans for the Tama project. Each plan doc
 ---
 
 ## Backlog
+
+| # | Bug/Plan | Location | Impact |
+|---|---|---|---|
+| [Fix PUT /tama/v1/models/:id wiping optional fields](plan-154-fix-put-model-wipes-optional-fields.md) | `crates/tama/src/api/models/crud/mod.rs:116, 154-161` — `apply_model_body()` uses direct assignment for `context_length`, `cache_type_k`, `cache_type_v` instead of `.or(base.field)`. Fixes the partial-PUT bug + adds 6 tests. | **High** — reloading after any config change silently degrades KV cache to unquantized. | `crates/tama/src/api/models/crud/mod.rs:132, 152-158` — handler uses direct assignment (`body.context_length`, `body.cache_type_k.map(...)`) instead of `body.context_length.or(base.context_length)`. Contradicts `docs/api/models.md` which says "PUT is a partial update." Doing `PUT {gpu_variant: vulkan}` then `POST /load` silently nulls the KV cache config. | **High** — reloading after any config change silently degrades KV cache to unquantized (uses more VRAM, no warning). Workaround: bundle `backend` + every optional field in every PUT body. |
+| Add `PATCH /tama/v1/models/:id` for surgical updates (related to bug above) | No PATCH route exists — only PUT (`crates/tama/src/router.rs:221`). The current PUT acts as a partial update for most fields but a strict replace for `context_length` / `cache_type_k` / `cache_type_v`. For a web form this is fine (the form has every field). For LLM-driven or programmatic clients, a true PATCH is safer — send only the fields to change, others stay intact. Standard REST split: PUT = full replace (require all fields, 400 if any missing), PATCH = surgical (only touch what body contains). Should likely be applied to other resources too: `/tama/v1/config`, `/tama/v1/backends/:name`, etc. | **Medium** — same root cause as the bug above, but bigger scope. Spec'ing this should subsume the partial-PUT bug fix. |
 
 ## Completed Plans
 
