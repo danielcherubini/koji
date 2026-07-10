@@ -178,6 +178,39 @@ Remove all versions of a backend (or a specific GPU variant). Deletes files and 
 - `404 Not Found` — Backend not found
 - `409 Conflict` — A job is running for this backend, or path is outside managed directory
 
+## PATCH /tama/v1/backends/:name
+
+Update backend config fields (default_args, default_env, health_check_url) with partial merge.
+
+**Query params:**
+- `gpu_variant` — Optional GPU variant (default: active variant)
+
+**Request body:** `BackendPatchBody` — all fields optional.
+
+```json
+{
+  "default_args": ["--flash-attn", "--cache-type-k q8_0"],
+  "default_env": ["CUDA_VISIBLE_DEVICES=0"],
+  "health_check_url": null
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `default_args` | string[] \| null | CLI arguments — `null` preserves current value, `[]` clears |
+| `default_env` | string[] \| null | Environment variables — `null` preserves current value, `[]` clears |
+| `health_check_url` | string \| null | Health check URL — `null` preserves current value, `""` clears, `Some(value)` sets |
+
+**Response (200 OK):**
+
+```json
+{ "success": true }
+```
+
+**Errors:**
+- `404 Not Found` — Backend not found
+- `422 Unprocessable Entity` — Validation failure
+
 ## DELETE /tama/v1/backends/:name/versions/:version
 
 Remove a specific version. If multiple variants share the same version, `gpu_variant` is required.

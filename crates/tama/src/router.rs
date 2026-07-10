@@ -281,6 +281,7 @@ pub fn build_web_routes(
                     axum::http::Method::POST,
                     axum::http::Method::PUT,
                     axum::http::Method::DELETE,
+                    axum::http::Method::PATCH,
                 ])
                 .allow_headers(tower_http::cors::Any)
                 // Expose X-CSRF-Token so JS can read it from GET responses

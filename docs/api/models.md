@@ -165,6 +165,39 @@ Update an existing model. Partial update — only provided fields change.
 
 **Errors:** `404 Not Found`, `422 Unprocessable Entity`
 
+## PATCH /tama/v1/models/:id
+
+Update an existing model. Surgical partial update — only provided fields change, all others preserved.
+
+**Path params:**
+- `id` — Integer ID or config_key (double-dash format, e.g. `bartowski--llama-3.1-8b-instruct-gguf`)
+
+**Request body:** `ModelPatchBody` — all fields optional.
+
+```json
+{
+  "backend": "llama_cpp",
+  "args": null,
+  "enabled": true
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `backend` | string \| null | Backend name (optional — unlike PUT where it was required) |
+| `args` | string[] | null | CLI arguments — `null` preserves current value, `[]` clears |
+| All other fields | Various | Same as `POST /tama/v1/models` body — all optional, `null` = preserve |
+
+**Response (200 OK):**
+
+```json
+{ "ok": true, "id": 1 }
+```
+
+**Errors:**
+- `404 Not Found` — Model does not exist
+- `422 Unprocessable Entity` — Validation failure
+
 ## POST /tama/v1/models/:id/rename
 
 Rename a model (change its `repo_id`). The integer `id` is preserved.

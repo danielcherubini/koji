@@ -68,6 +68,18 @@ pub fn spec() -> serde_json::Value {
             ),
         ),
         (
+            "/tama/v1/backends/{name}",
+            patch_op_p(
+                "patchBackend",
+                "Update backend config (partial)",
+                "Update backend config fields (default_args, default_env, health_check_url) with partial merge.",
+                &["backends"],
+                &[("name", "path")],
+                Some(("BackendPatchBody", "application/json")),
+                Some("OkResponse"),
+            ),
+        ),
+        (
             "/tama/v1/backends/{name}/default-args",
             post_op_p(
                 "updateBackendDefaultArgs",
@@ -368,6 +380,18 @@ pub fn spec() -> serde_json::Value {
         ),
         (
             "/tama/v1/models/{id}",
+            patch_op_p(
+                "patchModel",
+                "Update a model (partial/surgical)",
+                "Surgical partial update — only provided fields change, all others preserved. `backend` optional, `args` is `Option` (None=preserve, Some([])=clear).",
+                &["models"],
+                &[("id", "path")],
+                Some(("ModelPatchBody", "application/json")),
+                Some("OkResponse"),
+            ),
+        ),
+        (
+            "/tama/v1/models/{id}",
             delete_op_p(
                 "deleteModel",
                 "Delete a model config",
@@ -554,6 +578,18 @@ pub fn spec() -> serde_json::Value {
                 None,
             ),
         ),
+        (
+            "/tama/v1/config/structured",
+            patch_op_p(
+                "patchStructuredConfig",
+                "Update config (deep recursive merge)",
+                "Update config with deep recursive field-level merge. Only provided fields change. `backends` section omitted (read-only).",
+                &["web-api"],
+                &[],
+                Some(("ConfigPatchBody", "application/json")),
+                None,
+            ),
+        ),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), v))
@@ -597,38 +633,161 @@ pub fn spec() -> serde_json::Value {
 }
 
 fn schemas() -> serde_json::Value {
-    serde_json::json!({
-        "OkResponse": {"type": "object", "required": ["ok"], "properties": {"ok": {"type": "boolean", "example": true}, "id": {"type": "string"}}},
-        "ErrorResponse": {"type": "object", "required": ["error"], "properties": {"error": {"type": "string"}}},
-        "JobResponse": {"type": "object", "required": ["job_id"], "properties": {"job_id": {"type": "string"}, "message": {"type": "string"}}},
-        "CheckResponse": {"type": "object", "required": ["triggered", "message"], "properties": {"triggered": {"type": "boolean"}, "message": {"type": "string"}}},
-        "BackendEntry": {"type": "object", "required": ["name", "backend_type", "version"], "properties": {"name": {"type": "string"}, "backend_type": {"type": "string"}, "version": {"type": "string"}, "is_active": {"type": "boolean"}}},
-        "BackendVersion": {"type": "object", "required": ["version"], "properties": {"version": {"type": "string"}, "is_active": {"type": "boolean"}}},
-        "InstallRequest": {"type": "object", "required": ["backend_type", "version"], "properties": {"backend_type": {"type": "string"}, "version": {"type": "string"}}},
-        "UpdateRequest": {"type": "object", "required": ["backend_type"], "properties": {"backend_type": {"type": "string"}}},
-        "DefaultArgsRequest": {"type": "object", "required": ["default_args"], "properties": {"default_args": {"type": "array", "items": {"type": "string"}}}},
-        "ActivateRequest": {"type": "object", "required": ["version"], "properties": {"version": {"type": "string"}}},
-        "JobStatus": {"type": "object", "required": ["id", "status"], "properties": {"id": {"type": "string"}, "status": {"type": "string"}, "progress": {"type": "number"}, "error_message": {"type": ["string", "null"]}}},
-        "UpdatesListResponse": {"type": "object", "required": ["backends", "models"], "properties": {"backends": {"type": "array", "items": {"$ref": "#/components/schemas/UpdateCheckDto"}}, "models": {"type": "array", "items": {"$ref": "#/components/schemas/UpdateCheckDto"}}}},
-        "UpdateCheckDto": {"type": "object", "required": ["item_type", "item_id", "status"], "properties": {"item_type": {"type": "string"}, "item_id": {"type": "string"}, "update_available": {"type": "boolean"}, "status": {"type": "string"}}},
-        "ModelUpdateRequest": {"type": "object", "required": ["quants"], "properties": {"quants": {"type": "array", "items": {"type": "string"}}}},
-        "ModelUpdateResponse": {"type": "object", "required": ["job_ids", "total"], "properties": {"job_ids": {"type": "array", "items": {"type": "string"}}, "total": {"type": "integer"}}},
-        "DownloadJob": {"type": "object", "required": ["id", "status"], "properties": {"id": {"type": "string"}, "status": {"type": "string"}, "progress": {"type": "number"}, "speed_mbps": {"type": ["number", "null"]}}},
-        "SelfUpdateCheck": {"type": "object", "required": ["current_version"], "properties": {"current_version": {"type": "string"}, "latest_version": {"type": ["string", "null"]}, "update_available": {"type": "boolean"}}},
-        "SelfUpdateTrigger": {"type": "object", "required": ["triggered"], "properties": {"triggered": {"type": "boolean"}, "message": {"type": "string"}}},
-        "RestorePreviewResponse": {"type": "object", "properties": {"archive_name": {"type": "string"}, "tama_version": {"type": "string"}}},
-        "RestoreRequest": {"type": "object", "properties": {"upload_id": {"type": "string"}}},
-        "RestorePreviewRequest": {"type": "object", "properties": {"file": {"type": "string", "format": "binary"}}},
-        "Capabilities": {"type": "object", "properties": {"cuda_versions": {"type": "array", "items": {"type": "string"}}, "rocm_versions": {"type": "array", "items": {"type": "string"}}, "vulkan_support": {"type": "boolean"}}},
-        "ModelConfig": {"type": "object", "required": ["id", "backend", "args", "enabled"], "properties": {"id": {"type": "string"}, "backend": {"type": "string"}, "model": {"type": ["string", "null"]}, "quant": {"type": ["string", "null"]}, "args": {"type": "array", "items": {"type": "string"}}, "enabled": {"type": "boolean"}}},
-        "ModelBody": {"type": "object", "required": ["id", "backend"], "properties": {"id": {"type": "string"}, "backend": {"type": "string"}, "model": {"type": ["string", "null"]}, "quant": {"type": ["string", "null"]}, "args": {"type": "array", "items": {"type": "string"}}, "enabled": {"type": "boolean"}}},
-        "ModelsResponse": {"type": "object", "required": ["models", "backends"], "properties": {"models": {"type": "array", "items": {"$ref": "#/components/schemas/ModelConfig"}}, "backends": {"type": "array", "items": {"type": "string"}}}},
-        "RenameRequest": {"type": "object", "required": ["new_id"], "properties": {"new_id": {"type": "string"}}},
-        "BenchmarkRequest": {"type": "object", "required": ["model_id"], "properties": {"model_id": {"type": "string"}, "quant": {"type": ["string", "null"]}}},
-        "BenchmarkResult": {"type": "object", "required": ["id", "status"], "properties": {"id": {"type": "string"}, "model_id": {"type": "string"}, "status": {"type": "string"}, "results": {"type": ["object", "null"]}}},
-        "ConfigBody": {"type": "object", "required": ["content"], "properties": {"content": {"type": "string"}}},
-        "StructuredConfigBody": {"type": "object"}
-    })
+    let mut map = serde_json::Map::new();
+
+    // Core responses
+    map.insert(
+        "OkResponse".into(),
+        serde_json::json!({"type": "object", "required": ["ok"], "properties": {"ok": {"type": "boolean", "example": true}, "id": {"type": "string"}}}),
+    );
+    map.insert(
+        "ErrorResponse".into(),
+        serde_json::json!({"type": "object", "required": ["error"], "properties": {"error": {"type": "string"}}}),
+    );
+    map.insert(
+        "JobResponse".into(),
+        serde_json::json!({"type": "object", "required": ["job_id"], "properties": {"job_id": {"type": "string"}, "message": {"type": "string"}}}),
+    );
+    map.insert(
+        "CheckResponse".into(),
+        serde_json::json!({"type": "object", "required": ["triggered", "message"], "properties": {"triggered": {"type": "boolean"}, "message": {"type": "string"}}}),
+    );
+
+    // Backend schemas
+    map.insert(
+        "BackendEntry".into(),
+        serde_json::json!({"type": "object", "required": ["name", "backend_type", "version"], "properties": {"name": {"type": "string"}, "backend_type": {"type": "string"}, "version": {"type": "string"}, "is_active": {"type": "boolean"}}}),
+    );
+    map.insert(
+        "BackendVersion".into(),
+        serde_json::json!({"type": "object", "required": ["version"], "properties": {"version": {"type": "string"}, "is_active": {"type": "boolean"}}}),
+    );
+    map.insert(
+        "InstallRequest".into(),
+        serde_json::json!({"type": "object", "required": ["backend_type", "version"], "properties": {"backend_type": {"type": "string"}, "version": {"type": "string"}}}),
+    );
+    map.insert(
+        "UpdateRequest".into(),
+        serde_json::json!({"type": "object", "required": ["backend_type"], "properties": {"backend_type": {"type": "string"}}}),
+    );
+    map.insert(
+        "DefaultArgsRequest".into(),
+        serde_json::json!({"type": "object", "required": ["default_args"], "properties": {"default_args": {"type": "array", "items": {"type": "string"}}}}),
+    );
+    map.insert(
+        "ActivateRequest".into(),
+        serde_json::json!({"type": "object", "required": ["version"], "properties": {"version": {"type": "string"}}}),
+    );
+
+    // Job/Update schemas
+    map.insert(
+        "JobStatus".into(),
+        serde_json::json!({"type": "object", "required": ["id", "status"], "properties": {"id": {"type": "string"}, "status": {"type": "string"}, "progress": {"type": "number"}, "error_message": {"type": ["string", "null"]}}}),
+    );
+    map.insert(
+        "UpdatesListResponse".into(),
+        serde_json::json!({"type": "object", "required": ["backends", "models"], "properties": {"backends": {"type": "array", "items": {"$ref": "#/components/schemas/UpdateCheckDto"}}, "models": {"type": "array", "items": {"$ref": "#/components/schemas/UpdateCheckDto"}}}}),
+    );
+    map.insert(
+        "UpdateCheckDto".into(),
+        serde_json::json!({"type": "object", "required": ["item_type", "item_id", "status"], "properties": {"item_type": {"type": "string"}, "item_id": {"type": "string"}, "update_available": {"type": "boolean"}, "status": {"type": "string"}}}),
+    );
+
+    // Download/Update schemas
+    map.insert(
+        "ModelUpdateRequest".into(),
+        serde_json::json!({"type": "object", "required": ["quants"], "properties": {"quants": {"type": "array", "items": {"type": "string"}}}}),
+    );
+    map.insert(
+        "ModelUpdateResponse".into(),
+        serde_json::json!({"type": "object", "required": ["job_ids", "total"], "properties": {"job_ids": {"type": "array", "items": {"type": "string"}}, "total": {"type": "integer"}}}),
+    );
+    map.insert(
+        "DownloadJob".into(),
+        serde_json::json!({"type": "object", "required": ["id", "status"], "properties": {"id": {"type": "string"}, "status": {"type": "string"}, "progress": {"type": "number"}, "speed_mbps": {"type": ["number", "null"]}}}),
+    );
+    map.insert(
+        "SelfUpdateCheck".into(),
+        serde_json::json!({"type": "object", "required": ["current_version"], "properties": {"current_version": {"type": "string"}, "latest_version": {"type": ["string", "null"]}, "update_available": {"type": "boolean"}}}),
+    );
+    map.insert(
+        "SelfUpdateTrigger".into(),
+        serde_json::json!({"type": "object", "required": ["triggered"], "properties": {"triggered": {"type": "boolean"}, "message": {"type": "string"}}}),
+    );
+
+    // Restore schemas
+    map.insert(
+        "RestorePreviewResponse".into(),
+        serde_json::json!({"type": "object", "properties": {"archive_name": {"type": "string"}, "tama_version": {"type": "string"}}}),
+    );
+    map.insert(
+        "RestoreRequest".into(),
+        serde_json::json!({"type": "object", "properties": {"upload_id": {"type": "string"}}}),
+    );
+    map.insert(
+        "RestorePreviewRequest".into(),
+        serde_json::json!({"type": "object", "properties": {"file": {"type": "string", "format": "binary"}}}),
+    );
+
+    // System schemas
+    map.insert(
+        "Capabilities".into(),
+        serde_json::json!({"type": "object", "properties": {"cuda_versions": {"type": "array", "items": {"type": "string"}}, "rocm_versions": {"type": "array", "items": {"type": "string"}}, "vulkan_support": {"type": "boolean"}}}),
+    );
+
+    // Model schemas
+    map.insert(
+        "ModelConfig".into(),
+        serde_json::json!({"type": "object", "required": ["id", "backend", "args", "enabled"], "properties": {"id": {"type": "string"}, "backend": {"type": "string"}, "model": {"type": ["string", "null"]}, "quant": {"type": ["string", "null"]}, "args": {"type": "array", "items": {"type": "string"}}, "enabled": {"type": "boolean"}}}),
+    );
+    map.insert(
+        "ModelBody".into(),
+        serde_json::json!({"type": "object", "required": ["id", "backend"], "properties": {"id": {"type": "string"}, "backend": {"type": "string"}, "model": {"type": ["string", "null"]}, "quant": {"type": ["string", "null"]}, "args": {"type": "array", "items": {"type": "string"}}, "enabled": {"type": "boolean"}}}),
+    );
+    map.insert(
+        "ModelsResponse".into(),
+        serde_json::json!({"type": "object", "required": ["models", "backends"], "properties": {"models": {"type": "array", "items": {"$ref": "#/components/schemas/ModelConfig"}}, "backends": {"type": "array", "items": {"type": "string"}}}}),
+    );
+    map.insert(
+        "RenameRequest".into(),
+        serde_json::json!({"type": "object", "required": ["new_id"], "properties": {"new_id": {"type": "string"}}}),
+    );
+
+    // Benchmark schemas
+    map.insert(
+        "BenchmarkRequest".into(),
+        serde_json::json!({"type": "object", "required": ["model_id"], "properties": {"model_id": {"type": "string"}, "quant": {"type": ["string", "null"]}}}),
+    );
+    map.insert(
+        "BenchmarkResult".into(),
+        serde_json::json!({"type": "object", "required": ["id", "status"], "properties": {"id": {"type": "string"}, "model_id": {"type": "string"}, "status": {"type": "string"}, "results": {"type": ["object", "null"]}}}),
+    );
+
+    // Config schemas
+    map.insert(
+        "ConfigBody".into(),
+        serde_json::json!({"type": "object", "required": ["content"], "properties": {"content": {"type": "string"}}}),
+    );
+    map.insert(
+        "StructuredConfigBody".into(),
+        serde_json::json!({"type": "object"}),
+    );
+
+    // PATCH schemas
+    map.insert(
+        "ModelPatchBody".into(),
+        serde_json::json!({"type": "object", "properties": {"repo_id": {"type": ["string", "null"]}, "backend": {"type": ["string", "null"]}, "gpu_variant": {"type": ["string", "null"]}, "gpu_device": {"type": ["string", "null"]}, "model": {"type": ["string", "null"]}, "quant": {"type": ["string", "null"]}, "mmproj": {"type": ["string", "null"]}, "mtp_model": {"type": ["string", "null"]}, "args": {"type": ["array", "null"], "items": {"type": "string"}}, "sampling": {"type": ["object", "null"]}, "enabled": {"type": ["boolean", "null"]}, "context_length": {"type": ["integer", "null"]}, "num_parallel": {"type": ["integer", "null"]}, "port": {"type": ["integer", "null"]}, "api_name": {"type": ["string", "null"]}, "display_name": {"type": ["string", "null"]}, "gpu_layers": {"type": ["integer", "null"]}, "quants": {"type": ["object", "null"]}, "modalities": {"type": ["object", "null"]}, "kv_unified": {"type": ["boolean", "null"]}, "cache_type_k": {"type": ["string", "null"]}, "cache_type_v": {"type": ["string", "null"]}, "spec_decoding": {"type": ["object", "null"]}, "metadata": {"type": ["object", "null"]}}}),
+    );
+    map.insert(
+        "ConfigPatchBody".into(),
+        serde_json::json!({"type": "object", "properties": {"global": {"type": ["object", "null"]}, "proxy": {"type": ["object", "null"]}, "sampling_templates": {"type": ["object", "null"]}, "compaction": {"type": ["object", "null"]}}}),
+    );
+    map.insert(
+        "BackendPatchBody".into(),
+        serde_json::json!({"type": "object", "properties": {"default_args": {"type": ["array", "null"], "items": {"type": "string"}}, "default_env": {"type": ["array", "null"], "items": {"type": "string"}}, "health_check_url": {"type": ["string", "null"]}}}),
+    );
+
+    serde_json::Value::Object(map)
 }
 
 // ── Path item builders ────────────────────────────────────────────────────────
@@ -820,6 +979,38 @@ fn post_op_pp(
 }
 
 fn put_op_p(
+    op_id: &str,
+    summary: &str,
+    desc: &str,
+    tags: &[&str],
+    params: &[(&str, &str)],
+    request: Option<(&str, &str)>,
+    response: Option<&str>,
+) -> serde_json::Value {
+    let mut item = serde_json::Map::new();
+    item.insert("operationId".into(), op_id.into());
+    item.insert("summary".into(), summary.into());
+    item.insert("description".into(), desc.into());
+    item.insert("tags".into(), serde_json::json!(tags));
+    item.insert(
+        "parameters".into(),
+        serde_json::json!(params.iter().map(|(n, l)| param(n, l)).collect::<Vec<_>>()),
+    );
+    if let Some((schema, ct)) = request {
+        item.insert(
+            "requestBody".into(),
+            serde_json::json!({"required": true, "content": {ct: {"schema": schema_ref(schema)}}}),
+        );
+    }
+    if let Some(r) = response {
+        item.insert("responses".into(), responses_map([("200", r)]));
+    } else {
+        item.insert("responses".into(), responses_map([]));
+    }
+    serde_json::Value::Object(item)
+}
+
+fn patch_op_p(
     op_id: &str,
     summary: &str,
     desc: &str,
