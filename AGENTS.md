@@ -248,6 +248,57 @@ When bumping the version, update **all** of these files:
 
 After bumping, run `cargo fmt --all` before committing — CI will fail on formatting errors.
 
+## TAMA Management API
+
+The TAMA proxy exposes a management REST API for querying and modifying models, backends, downloads, benchmarks, and more.
+
+### Environment Variables
+
+Always use the environment variables for API access — never hardcode URLs or tokens:
+
+| Variable | Purpose |
+|----------|---------|
+| `$TAMA_URL` | Base URL of the TAMA proxy (e.g. `http://127.0.0.1:18910`) |
+| `$TAMA_TOKEN` | Bearer token for authentication |
+
+### API Docs
+
+Full API reference lives in `docs/api/`. Read the relevant file before making API calls:
+
+- `docs/api/models.md` — Model CRUD, refresh, verify
+- `docs/api/backends.md` — Backend install, update, activate, remove
+- `docs/api/aliases.md` — Alias management
+- `docs/api/downloads.md` — Download progress monitoring
+- `docs/api/huggingface.md` — HF metadata and quant listing
+- `docs/api/config.md` — Global config read/save
+- `docs/api/benchmarks.md` — Run and manage benchmarks
+- `docs/api/updates.md` — Check and apply updates
+- `docs/api/backup.md` — Backup and restore
+- `docs/api/self-update.md` — Binary self-update
+- `docs/api/system.md` — System capabilities
+- `docs/api/logs.md` — Log retrieval
+- `docs/api/sse.md` — SSE event streams
+- `docs/api/jobs.md` — Async job tracking
+- `docs/api/errors.md` — Error response format
+
+### Usage Pattern
+
+```bash
+# List models
+curl -s -H "Authorization: Bearer $TAMA_TOKEN" "$TAMA_URL/tama/v1/models" | jq .
+
+# Get a single model by ID
+curl -s -H "Authorization: Bearer $TAMA_TOKEN" "$TAMA_URL/tama/v1/models/306" | jq .
+
+# Create a model
+curl -s -X POST -H "Authorization: Bearer $TAMA_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"repo_id": "owner/repo", "backend": "llama_cpp"}' \
+  "$TAMA_URL/tama/v1/models" | jq .
+```
+
+All API paths are prefixed with `/tama/v1/`. Always prepend `$TAMA_URL` and include the `Authorization: Bearer $TAMA_TOKEN` header.
+
 ## No External Rules
 
 This project does not use Cursor rules (.cursor/) or Copilot instructions (.github/copilot-instructions.md).
