@@ -66,5 +66,5 @@ pub struct SourceQuery {
 pub struct BackendPatchBody {
     pub default_args: Option<Vec<String>>,
     pub default_env: Option<Vec<String>>,
-    pub health_check_url: Option<Option<String>>,
+    pub health_check_url: Option<String>, // None=preserve, Some(value)=set (clear via existing POST endpoints)
 }

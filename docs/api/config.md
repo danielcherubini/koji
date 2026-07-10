@@ -32,7 +32,7 @@ Update config with deep recursive field-level merge. Only provided fields change
 
 ```json
 {
-  "global": { "default_backend": "llama_cpp" },
+  "general": { "log_level": "debug" },
   "proxy": { "port": 18910 },
   "sampling_templates": null
 }
@@ -40,7 +40,8 @@ Update config with deep recursive field-level merge. Only provided fields change
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `global` | object \| null | Global config patch — all fields optional |
+| `general` | object \| null | General config patch — all fields optional |
+| `supervisor` | object \| null | Supervisor config patch — all fields optional |
 | `proxy` | object \| null | Proxy config patch — all fields optional |
 | `sampling_templates` | object \| null | Sampling templates patch |
 | `compaction` | object \| null | Compaction settings patch |

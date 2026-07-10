@@ -780,7 +780,7 @@ fn schemas() -> serde_json::Value {
     );
     map.insert(
         "ConfigPatchBody".into(),
-        serde_json::json!({"type": "object", "properties": {"global": {"type": ["object", "null"]}, "proxy": {"type": ["object", "null"]}, "sampling_templates": {"type": ["object", "null"]}, "compaction": {"type": ["object", "null"]}}}),
+        serde_json::json!({"type": "object", "properties": {"general": {"type": ["object", "null"]}, "supervisor": {"type": ["object", "null"]}, "proxy": {"type": ["object", "null"]}, "sampling_templates": {"type": ["object", "null"]}, "compaction": {"type": ["object", "null"]}}}),
     );
     map.insert(
         "BackendPatchBody".into(),

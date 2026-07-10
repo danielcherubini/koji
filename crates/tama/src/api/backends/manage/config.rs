@@ -156,10 +156,7 @@ pub async fn patch_backend(
         let default_args = patch_args.unwrap_or(existing_args);
         let default_env = patch_env.unwrap_or(existing_env);
         // health_check_url: None=preserve, Some(value)=set
-        let health_check_url = patch_health
-            .as_ref()
-            .and_then(|v| v.as_deref())
-            .or(existing_health.as_deref());
+        let health_check_url = patch_health.as_deref().or(existing_health.as_deref());
 
         mgr.save_config(
             &backend_name,
