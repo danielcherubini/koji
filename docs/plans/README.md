@@ -30,7 +30,7 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 | Plan | Description | PR / Git References |
 |------|-------------|---------------------|
-| [PATCH Endpoints](plan-155-patch-endpoints.md) | Add PATCH endpoints for models, config, and backends — surgical partial updates with deep recursive config merge | #155 `2c6a9119`, `9c49a2a8`, `f5fa655e`, `22556e3d` |
+| [PATCH Endpoints](done/plan-155-patch-endpoints.md) | Add PATCH endpoints for models, config, and backends — surgical partial updates with deep recursive config merge | #155 `2c6a9119`, `9c49a2a8`, `f5fa655e`, `22556e3d`, `38acc38d` |
 | [Fix PUT Model Wipes Optional Fields](done/plan-154-fix-put-model-wipes-optional-fields.md) | Fix `context_length`, `cache_type_k`, `cache_type_v` to use `.or(base.field)` merge in `apply_model_body()` — matches documented partial-update semantics | #154 ✅ COMPLETED | [`cc660fb5`](../../commit/cc660fb5), [`13366178`](../../commit/13366178) |
 | [API Keys Web UI](done/plan-153-api-keys-web-ui.md) | Web UI page at `/tama/keys` for managing API keys — create, view, edit scopes, revoke — with one-time key reveal modal, active-only filter, and sidebar integration | #152 ✅ COMPLETED | [`98e20d36`](../../commit/98e20d36), [`a73229d4`](../../commit/a73229d4), [`b3934606`](../../commit/b3934606), [`d2c92b17`](../../commit/d2c92b17), [`8fc2adfc`](../../commit/8fc2adfc) |
 | [API Keys](done/plan-152-api-keys.md) | Named, scoped API keys (`tama_XXXX`) stored as SHA-256 hashes, with auth + scope middleware and CRUD management API | #151 ✅ COMPLETED | [`a087b344`](../../commit/a087b344), [`c416427c`](../../commit/c416427c), [`21a5993e`](../../commit/21a5993e), [`c4f0d979`](../../commit/c4f0d979), [`db4eab95`](../../commit/db4eab95) |
