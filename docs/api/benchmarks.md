@@ -48,7 +48,7 @@ Run a standard llama-bench benchmark.
 | `flash_attn` | bool | Enable flash attention |
 | `benchmark_type` | string | Label for categorization (e.g. `"baseline"`, `"pp_sweep"`) |
 
-**Response (200 OK):**
+**Response (202 Accepted):**
 
 ```json
 { "jobId": "uuid-string" }
@@ -83,13 +83,47 @@ Run a speculative decoding benchmark.
 }
 ```
 
-**Response (200 OK):** `{ "jobId": "uuid-string" }`
+**Response (202 Accepted):** `{ "jobId": "uuid-string" }`
 
 ## POST /tama/v1/benchmarks/mtp-run
 
 Run a Multi-Token Prediction benchmark. Uses the same async job pattern.
 
-**Response (200 OK):** `{ "jobId": "uuid-string" }`
+**Request body:**
+
+```json
+{
+  "model_id": "1",
+  "quant": "Q4_K_M",
+  "backend_name": "llama_cpp",
+  "gpu_variant": "cuda",
+  "draft_max_values": [0, 1, 2, 3, 4, 5, 6, 7, 8],
+  "ngl": 99,
+  "draft_ngl": 99,
+  "flash_attn": true,
+  "context_size": 32768,
+  "benchmark_type": "mtp_scan"
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `model_id` | string | — | Model ID (accepts integer or config_key) |
+| `quant` | string | — | Optional quant label |
+| `backend_name` | string | — | Optional backend name override |
+| `gpu_variant` | string | — | Optional GPU variant override |
+| `draft_max_values` | int[] | `[0..8]` | Draft max values to test (must not be empty) |
+| `ngl` | int | `99` | GPU layers for main model |
+| `draft_ngl` | int | `99` | GPU layers for draft model |
+| `flash_attn` | bool | `true` | Enable flash attention |
+| `context_size` | int | `32768` | Context size |
+| `benchmark_type` | string | — | Label for categorization |
+
+**Errors:**
+- `400 Bad Request` — `draft_max_values` is empty
+- `409 Conflict` — Another job is already running
+
+**Response (202 Accepted):** `{ "jobId": "uuid-string" }`
 
 ## GET /tama/v1/benchmarks/jobs/:id
 

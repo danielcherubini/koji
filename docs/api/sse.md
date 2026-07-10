@@ -54,3 +54,11 @@ On connect, the stream replays the log head/tail snapshot, then switches to live
 ## GET /tama/v1/benchmarks/jobs/:id/events
 
 Stream benchmark job events. Same format as backend job events above.
+
+## GET /tama/v1/logs/:backend/events
+
+Stream real-time log lines for a specific backend. On connect, replays the log snapshot, then switches to live streaming.
+
+| Event | Data |
+|-------|------|
+| `log` | `{ line: "..." }` |
