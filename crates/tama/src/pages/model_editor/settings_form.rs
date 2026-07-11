@@ -337,7 +337,14 @@ pub fn ModelEditorSettingsForm(
                     let val = target_value(&e);
                     form.update(|f| {
                         if let Some(form) = f {
-                            form.gpu_device = if val.is_empty() { None } else { Some(val) };
+                            // Sentinel value "__clear__" tells the API to clear gpu_device
+                            // to None (since the partial-update body uses `null` to mean
+                            // "preserve", we need a distinct marker for "clear to None").
+                            form.gpu_device = if val.is_empty() {
+                                Some("__clear__".to_string())
+                            } else {
+                                Some(val)
+                            };
                         }
                     });
                 }

@@ -523,6 +523,76 @@ fn test_apply_model_body_gpu_device_preserves_base_when_omitted() {
     assert_eq!(result.gpu_device, Some("CUDA0".to_string()));
 }
 
+/// Verify that body.gpu_device = Some("__clear__") clears the existing gpu_device
+/// (the "None" option in the model editor means "don't isolate to a GPU").
+#[test]
+fn test_apply_model_body_gpu_device_clear_sentinel() {
+    let body = ModelBody {
+        backend: "llama-cpp".to_string(),
+        gpu_variant: None,
+        gpu_device: Some("__clear__".to_string()),
+        model: Some("model.gguf".to_string()),
+        quant: None,
+        mmproj: None,
+        mtp_model: None,
+        args: vec![],
+        sampling: None,
+        enabled: None,
+        context_length: None,
+        num_parallel: None,
+        port: None,
+        api_name: None,
+        gpu_layers: None,
+        quants: None,
+        modalities: None,
+        display_name: None,
+        kv_unified: None,
+        cache_type_k: None,
+        cache_type_v: None,
+        spec_decoding: None,
+    };
+
+    let existing = ModelConfig {
+        backend: "llama-cpp".into(),
+        gpu_variant: None,
+        gpu_device: Some("CUDA0".to_string()),
+        model: Some("model.gguf".into()),
+        quant: None,
+        mmproj: None,
+        mtp_model: None,
+        args: vec![],
+        sampling: None,
+        enabled: true,
+        context_length: None,
+        num_parallel: None,
+        port: None,
+        health_check: None,
+        profile: None,
+        api_name: None,
+        gpu_layers: None,
+        quants: std::collections::BTreeMap::new(),
+        modalities: None,
+        display_name: None,
+        kv_unified: false,
+        cache_type_k: None,
+        cache_type_v: None,
+        hf_format: None,
+        hf_base_model: None,
+        hf_pipeline_tag: None,
+        hf_total_params: None,
+        hf_active_params: None,
+        hf_architecture_type: None,
+        hf_context_length: None,
+        hf_num_layers: None,
+        hf_last_modified: None,
+        db_id: None,
+        spec_decoding: Default::default(),
+    };
+
+    let result = apply_model_body(body, Some(existing));
+    assert_eq!(result.gpu_device, None);
+}
+
 #[test]
 fn test_apply_model_body_context_length() {
     let body = ModelBody {
@@ -1767,6 +1837,18 @@ fn test_apply_model_patch_quant_override() {
 
     let result = apply_model_patch(body, &existing);
     assert_eq!(result.quant, Some("Q8_0".into()));
+}
+
+/// `gpu_device: Some("__clear__")` must clear the existing gpu_device
+/// (the "None" option in the model editor means "don't isolate to a GPU").
+#[test]
+fn test_apply_model_patch_gpu_device_clear_sentinel() {
+    let existing = existing_config_rich();
+    let mut body = patch_body_all_none();
+    body.gpu_device = Some("__clear__".to_string());
+
+    let result = apply_model_patch(body, &existing);
+    assert_eq!(result.gpu_device, None);
 }
 
 /// `gpu_variant: Some("rocm")` must override existing.

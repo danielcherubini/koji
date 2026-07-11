@@ -7,6 +7,22 @@ const MAX_API_NAME: usize = 128;
 const MAX_DISPLAY_NAME: usize = 256;
 const MAX_CACHE_TYPE: usize = 32;
 
+/// Sentinel value the model editor sends as `gpu_device` when the user picks
+/// the "None" option (meaning "don't isolate to a specific GPU"). The PUT/PATCH
+/// merge logic interprets this as "clear the field to None" — distinct from
+/// `null`/missing which means "preserve existing".
+const GPU_DEVICE_CLEAR_SENTINEL: &str = "__clear__";
+
+/// Resolve the effective `gpu_device` from the partial-update body and the
+/// existing value. `Some(GPU_DEVICE_CLEAR_SENTINEL)` clears the field; any
+/// other `Some` overrides; `None` preserves the existing value.
+fn resolve_gpu_device(body_value: Option<String>, existing: Option<String>) -> Option<String> {
+    match body_value {
+        Some(ref v) if v == GPU_DEVICE_CLEAR_SENTINEL => None,
+        other => other.or(existing),
+    }
+}
+
 /// Body for create/update model.
 #[derive(serde::Deserialize)]
 pub struct ModelBody {
@@ -93,7 +109,7 @@ pub fn apply_model_patch(
     tama_core::config::ModelConfig {
         backend: body.backend.unwrap_or_else(|| existing.backend.clone()),
         gpu_variant: body.gpu_variant.or(existing.gpu_variant.clone()),
-        gpu_device: body.gpu_device.or(existing.gpu_device.clone()),
+        gpu_device: resolve_gpu_device(body.gpu_device, existing.gpu_device.clone()),
         model: body.model.or(existing.model.clone()),
         quant: body.quant.or(existing.quant.clone()),
         mmproj: body.mmproj.or(existing.mmproj.clone()),
@@ -208,7 +224,7 @@ fn apply_model_body(
     tama_core::config::ModelConfig {
         backend: body.backend,
         gpu_variant: body.gpu_variant.or(base.gpu_variant),
-        gpu_device: body.gpu_device.or(base.gpu_device),
+        gpu_device: resolve_gpu_device(body.gpu_device, base.gpu_device),
         model: body.model.or(base.model),
         quant: body.quant.or(base.quant),
         mmproj: body.mmproj.or(base.mmproj),
