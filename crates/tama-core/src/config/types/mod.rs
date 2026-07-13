@@ -95,6 +95,15 @@ impl Config {
         // Read proxy
         let proxy_row = crate::db::queries::get_proxy(&conn)?
             .ok_or_else(|| anyhow::anyhow!("app_proxy row not found after seeding"))?;
+
+        // Derive `api_keys_enabled` from the actual `api_keys` table. The flag
+        // is a derived value — the source of truth is the `api_keys` table.
+        // Treating it as a stored field allowed it to drift on every config
+        // save; re-deriving on load ensures a stale DB value can never lock
+        // the operator out of their own proxy after a restart.
+        let active_keys = crate::proxy::api_keys::count_active_keys(&conn)?;
+        let api_keys_enabled = active_keys > 0;
+
         let mut proxy = ProxyConfig {
             host: proxy_row.host,
             port: proxy_row.port,
@@ -120,7 +129,7 @@ impl Config {
                 scopes: proxy_row.oauth2_scopes,
                 session_ttl_secs: proxy_row.oauth2_session_ttl_secs,
             },
-            api_keys_enabled: proxy_row.api_keys_enabled,
+            api_keys_enabled,
         };
 
         // Resolve env var references in OAuth2 config
