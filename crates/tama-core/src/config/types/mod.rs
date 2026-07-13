@@ -340,16 +340,18 @@ impl Config {
         // Upsert langfuse
         crate::db::queries::upsert_langfuse(
             &conn,
-            self.langfuse.enabled,
-            &self.langfuse.public_key,
-            &self.langfuse.secret_key,
-            &self.langfuse.host,
-            &self.langfuse.environment,
-            self.langfuse.capture_input,
-            self.langfuse.capture_output,
-            self.langfuse.capture_streaming,
-            self.langfuse.telemetry_max_bytes,
-            self.langfuse.electricity_price_per_kwh,
+            &crate::db::queries::LangfuseRecord {
+                enabled: self.langfuse.enabled,
+                public_key: self.langfuse.public_key.clone(),
+                secret_key: self.langfuse.secret_key.clone(),
+                host: self.langfuse.host.clone(),
+                environment: self.langfuse.environment.clone(),
+                capture_input: self.langfuse.capture_input,
+                capture_output: self.langfuse.capture_output,
+                capture_streaming: self.langfuse.capture_streaming,
+                telemetry_max_bytes: self.langfuse.telemetry_max_bytes,
+                electricity_price_per_kwh: self.langfuse.electricity_price_per_kwh,
+            },
         )?;
 
         Ok(())

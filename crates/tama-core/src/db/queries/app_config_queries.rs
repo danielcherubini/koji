@@ -414,34 +414,22 @@ pub fn get_compaction(conn: &Connection) -> Result<Option<CompactionRecord>> {
 }
 
 /// Insert or replace the langfuse config row (id=1).
-pub fn upsert_langfuse(
-    conn: &Connection,
-    enabled: bool,
-    public_key: &str,
-    secret_key: &str,
-    host: &str,
-    environment: &str,
-    capture_input: bool,
-    capture_output: bool,
-    capture_streaming: bool,
-    telemetry_max_bytes: usize,
-    electricity_price_per_kwh: f64,
-) -> Result<()> {
+pub fn upsert_langfuse(conn: &Connection, record: &LangfuseRecord) -> Result<()> {
     conn.execute(
         "INSERT OR REPLACE INTO app_langfuse (id, enabled, public_key, secret_key, host, environment,
             capture_input, capture_output, capture_streaming, telemetry_max_bytes, electricity_price_per_kwh)
          VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
-            enabled as i32,
-            public_key,
-            secret_key,
-            host,
-            environment,
-            capture_input as i32,
-            capture_output as i32,
-            capture_streaming as i32,
-            telemetry_max_bytes as i64,
-            electricity_price_per_kwh,
+            record.enabled as i32,
+            record.public_key,
+            record.secret_key,
+            record.host,
+            record.environment,
+            record.capture_input as i32,
+            record.capture_output as i32,
+            record.capture_streaming as i32,
+            record.telemetry_max_bytes as i64,
+            record.electricity_price_per_kwh,
         ],
     )
     .context("Failed to upsert app_langfuse")?;
@@ -948,16 +936,18 @@ mod tests {
 
         upsert_langfuse(
             &conn,
-            true,
-            "langpubkey123",
-            "langsecretkey456",
-            "https://custom.langfuse.example.com",
-            "production",
-            false,   // capture_input
-            true,    // capture_output
-            false,   // capture_streaming
-            2097152, // 2 MB
-            0.05,
+            &LangfuseRecord {
+                enabled: true,
+                public_key: "langpubkey123".to_string(),
+                secret_key: "langsecretkey456".to_string(),
+                host: "https://custom.langfuse.example.com".to_string(),
+                environment: "production".to_string(),
+                capture_input: false,
+                capture_output: true,
+                capture_streaming: false,
+                telemetry_max_bytes: 2097152, // 2 MB
+                electricity_price_per_kwh: 0.05,
+            },
         )
         .unwrap();
 
@@ -976,16 +966,18 @@ mod tests {
         // Update with defaults
         upsert_langfuse(
             &conn,
-            false,
-            "",
-            "",
-            "https://cloud.langfuse.com",
-            "default",
-            true,
-            true,
-            true,
-            1048576, // 1 MB
-            0.0,
+            &LangfuseRecord {
+                enabled: false,
+                public_key: String::new(),
+                secret_key: String::new(),
+                host: "https://cloud.langfuse.com".to_string(),
+                environment: "default".to_string(),
+                capture_input: true,
+                capture_output: true,
+                capture_streaming: true,
+                telemetry_max_bytes: 1048576, // 1 MB
+                electricity_price_per_kwh: 0.0,
+            },
         )
         .unwrap();
 
