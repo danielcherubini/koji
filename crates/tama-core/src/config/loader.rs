@@ -1,4 +1,4 @@
-use super::types::{CompactionConfig, Config, General, ProxyConfig, Supervisor};
+use super::types::{CompactionConfig, Config, General, LangfuseConfig, ProxyConfig, Supervisor};
 use crate::profiles::Profile;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -154,6 +154,7 @@ impl Default for Config {
             supervisor: Supervisor::default(),
             proxy: ProxyConfig::default(),
             compaction: CompactionConfig::default(),
+            langfuse: LangfuseConfig::default(),
             sampling_templates,
         }
     }

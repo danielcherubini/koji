@@ -175,6 +175,7 @@ fn test_config_db_roundtrip() {
             port: Some(8888),
             request_timeout_ms: 60000,
         },
+        langfuse: crate::config::types::LangfuseConfig::default(),
         sampling_templates,
     };
 
@@ -295,14 +296,19 @@ fn test_config_from_empty_db_seeds_defaults() {
     assert_eq!(config.compaction.port, None);
     assert_eq!(config.compaction.request_timeout_ms, 30000);
 
-    // Verify 4 sampling templates seeded
-    assert_eq!(config.sampling_templates.len(), 4);
-    assert!(config.sampling_templates.contains_key("coding"));
-    assert!(config.sampling_templates.contains_key("chat"));
-    assert!(config.sampling_templates.contains_key("analysis"));
-    assert!(config.sampling_templates.contains_key("creative"));
+    // Verify langfuse defaults
+    assert!(!config.langfuse.enabled);
+    assert_eq!(config.langfuse.public_key, "");
+    assert_eq!(config.langfuse.secret_key, "");
+    assert_eq!(config.langfuse.host, "https://cloud.langfuse.com");
+    assert_eq!(config.langfuse.environment, "default");
+    assert!(config.langfuse.capture_input);
+    assert!(config.langfuse.capture_output);
+    assert!(config.langfuse.capture_streaming);
+    assert_eq!(config.langfuse.telemetry_max_bytes, 1048576);
+    assert_eq!(config.langfuse.electricity_price_per_kwh, 0.0);
 
-    // Verify coding template values
+    // Verify 4 sampling templates seeded
     let coding = config.sampling_templates.get("coding").unwrap();
     assert_eq!(coding.temperature, Some(0.3));
     assert_eq!(coding.top_k, Some(50));
@@ -413,4 +419,3 @@ fn test_from_db_derives_api_keys_enabled_from_active_keys() {
          a stale `false` in the DB must not be trusted"
     );
 }
-

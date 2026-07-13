@@ -2,6 +2,7 @@ mod backend;
 mod compaction;
 mod enums;
 mod general;
+mod langfuse;
 mod model;
 mod proxy;
 mod supervisor;
@@ -19,6 +20,7 @@ pub use backend::*;
 pub use compaction::*;
 pub use enums::*;
 pub use general::*;
+pub use langfuse::*;
 pub use model::*;
 pub use proxy::*;
 pub use supervisor::*;
@@ -42,6 +44,8 @@ pub struct Config {
     pub proxy: ProxyConfig,
     #[serde(default)]
     pub compaction: CompactionConfig,
+    #[serde(default)]
+    pub langfuse: LangfuseConfig,
 }
 
 impl Config {
@@ -209,12 +213,29 @@ impl Config {
             );
         }
 
+        // Read langfuse
+        let langfuse_row = crate::db::queries::get_langfuse(&conn)?
+            .ok_or_else(|| anyhow::anyhow!("app_langfuse row not found after seeding"))?;
+        let langfuse = LangfuseConfig {
+            enabled: langfuse_row.enabled,
+            public_key: langfuse_row.public_key,
+            secret_key: langfuse_row.secret_key,
+            host: langfuse_row.host,
+            environment: langfuse_row.environment,
+            capture_input: langfuse_row.capture_input,
+            capture_output: langfuse_row.capture_output,
+            capture_streaming: langfuse_row.capture_streaming,
+            telemetry_max_bytes: langfuse_row.telemetry_max_bytes,
+            electricity_price_per_kwh: langfuse_row.electricity_price_per_kwh,
+        };
+
         Ok(Config {
             general,
             backends,
             supervisor,
             proxy,
             compaction,
+            langfuse,
             sampling_templates,
         })
     }
@@ -315,6 +336,21 @@ impl Config {
                 params.repeat_penalty,
             )?;
         }
+
+        // Upsert langfuse
+        crate::db::queries::upsert_langfuse(
+            &conn,
+            self.langfuse.enabled,
+            &self.langfuse.public_key,
+            &self.langfuse.secret_key,
+            &self.langfuse.host,
+            &self.langfuse.environment,
+            self.langfuse.capture_input,
+            self.langfuse.capture_output,
+            self.langfuse.capture_streaming,
+            self.langfuse.telemetry_max_bytes,
+            self.langfuse.electricity_price_per_kwh,
+        )?;
 
         Ok(())
     }

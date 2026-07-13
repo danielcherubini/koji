@@ -39,6 +39,7 @@ mod _0033_add_default_env;
 mod _0034_rename_download_queue_to_pull_queue;
 mod _0035_add_oauth2_config;
 mod _0036_create_api_keys;
+mod _0037_add_langfuse;
 
 #[cfg(test)]
 mod migrations_tests;
@@ -74,7 +75,7 @@ impl Drop for FkGuard<'_> {
 type Migration = (i32, bool, &'static str);
 
 /// Version number for the latest migration
-pub const LATEST_VERSION: i32 = 36;
+pub const LATEST_VERSION: i32 = 37;
 
 /// All migrations collected from individual files, sorted by version.
 const MIGRATIONS: &[Migration] = &[
@@ -114,6 +115,7 @@ const MIGRATIONS: &[Migration] = &[
     _0034_rename_download_queue_to_pull_queue::MIGRATION,
     _0035_add_oauth2_config::MIGRATION,
     _0036_create_api_keys::MIGRATION,
+    _0037_add_langfuse::MIGRATION,
 ];
 
 /// Run all applicable migrations on the database
