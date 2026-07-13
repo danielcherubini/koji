@@ -98,3 +98,41 @@
   color: var(--accent-blue);
 }
 
+/* Checkbox row: inline label + checkbox, with the label as a sibling
+   rather than a wrapper. Used for boolean toggles in forms. */
+.checkbox-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  margin-bottom: 0.25rem;
+  color: var(--text-primary);
+  font-weight: 500;
+  font-size: 0.9rem;
+}
+.checkbox-label input[type="checkbox"] {
+  width: auto;
+  flex-shrink: 0;
+}
+
+/* Fieldset used for grouped sub-sections inside a form (e.g. the
+   OAuth2 provider block nested inside the proxy form). */
+.form-subsection {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 1rem 1.25rem;
+  margin: 0.5rem 0 0 0;
+  background-color: var(--bg-tertiary);
+}
+.form-subsection legend {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 0 0.5rem;
+}
+.form-subsection .form-group:last-child {
+  margin-bottom: 0;
+}
+

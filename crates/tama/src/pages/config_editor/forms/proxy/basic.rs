@@ -11,9 +11,14 @@ pub fn ProxyBasicFields(
     let get_proxy = move || config.get().map(|c| c.proxy).unwrap_or_default();
 
     view! {
-        <div>
-            <label>"Host"</label>
+        <h3 style="font-size:1rem;font-weight:600;color:var(--text-secondary);margin:0 0 0.25rem 0;">
+            "Network"
+        </h3>
+
+        <div class="form-group">
+            <label class="form-label">"Host"</label>
             <input
+                class="form-input"
                 type="text"
                 prop:value=move || get_proxy().host
                 on:input=move |ev| {
@@ -23,9 +28,10 @@ pub fn ProxyBasicFields(
             />
         </div>
 
-        <div>
-            <label>"Port"</label>
+        <div class="form-group">
+            <label class="form-label">"Port"</label>
             <input
+                class="form-input"
                 type="number"
                 min="1"
                 max="65535"
@@ -38,7 +44,7 @@ pub fn ProxyBasicFields(
             />
         </div>
 
-        <div>
+        <div class="form-group">
             <label class="checkbox-label">
                 <input
                     type="checkbox"
@@ -55,9 +61,10 @@ pub fn ProxyBasicFields(
             </label>
         </div>
 
-        <div>
-            <label>"Idle Timeout (seconds)"</label>
+        <div class="form-group">
+            <label class="form-label">"Idle Timeout (seconds)"</label>
             <input
+                class="form-input"
                 type="number"
                 min="1"
                 prop:value=move || get_proxy().idle_timeout_secs.to_string()
@@ -69,9 +76,10 @@ pub fn ProxyBasicFields(
             />
         </div>
 
-        <div>
-            <label>"Startup Timeout (seconds)"</label>
+        <div class="form-group">
+            <label class="form-label">"Startup Timeout (seconds)"</label>
             <input
+                class="form-input"
                 type="number"
                 min="0"
                 prop:value=move || get_proxy().startup_timeout_secs.to_string()

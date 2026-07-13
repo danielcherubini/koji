@@ -2,3 +2,9 @@
 target = "index.html"
 dist = "dist"
 public-url = "/tama"
+# The `tama` crate's default features include `ssr` (which pulls in axum,
+# tokio, mio etc.). The WASM build must opt out of defaults and use the
+# `csr` feature instead — otherwise `cargo build --target wasm32-unknown-unknown`
+# fails with "This wasm target is unsupported by mio".
+no_default_features = true
+features = ["csr"]

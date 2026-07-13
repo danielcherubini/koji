@@ -10,9 +10,14 @@ pub fn ProxyAdvancedFields(
     let get_proxy = move || config.get().map(|c| c.proxy).unwrap_or_default();
 
     view! {
-        <div>
-            <label>"Circuit Breaker Threshold"</label>
+        <h3 style="font-size:1rem;font-weight:600;color:var(--text-secondary);margin:1.5rem 0 0.25rem 0;">
+            "Tuning"
+        </h3>
+
+        <div class="form-group">
+            <label class="form-label">"Circuit Breaker Threshold"</label>
             <input
+                class="form-input"
                 type="number"
                 min="0"
                 prop:value=move || get_proxy().circuit_breaker_threshold.to_string()
@@ -24,9 +29,10 @@ pub fn ProxyAdvancedFields(
             />
         </div>
 
-        <div>
-            <label>"Circuit Breaker Cooldown (seconds)"</label>
+        <div class="form-group">
+            <label class="form-label">"Circuit Breaker Cooldown (seconds)"</label>
             <input
+                class="form-input"
                 type="number"
                 min="0"
                 prop:value=move || get_proxy().circuit_breaker_cooldown_seconds.to_string()
@@ -38,9 +44,10 @@ pub fn ProxyAdvancedFields(
             />
         </div>
 
-        <div>
-            <label>"Metrics Retention (seconds)"</label>
+        <div class="form-group">
+            <label class="form-label">"Metrics Retention (seconds)"</label>
             <input
+                class="form-input"
                 type="number"
                 min="0"
                 prop:value=move || get_proxy().metrics_retention_secs.to_string()
@@ -52,9 +59,10 @@ pub fn ProxyAdvancedFields(
             />
         </div>
 
-        <div>
-            <label>"Max Loaded Models (per GPU)"</label>
+        <div class="form-group">
+            <label class="form-label">"Max Loaded Models (per GPU)"</label>
             <input
+                class="form-input"
                 type="number"
                 min="0"
                 prop:value=move || get_proxy().max_loaded_models.to_string()
@@ -69,9 +77,10 @@ pub fn ProxyAdvancedFields(
             </p>
         </div>
 
-        <div>
-            <label>"Download Queue Poll Interval (seconds)"</label>
+        <div class="form-group">
+            <label class="form-label">"Download Queue Poll Interval (seconds)"</label>
             <input
+                class="form-input"
                 type="number"
                 min="1"
                 prop:value=move || get_proxy().download_queue_poll_interval_secs.to_string()
@@ -86,9 +95,15 @@ pub fn ProxyAdvancedFields(
             </p>
         </div>
 
-        <div>
-            <label>"Authenticator URL"</label>
+        // ─── Security / Authentication ────────────────────────────────────
+        <h3 style="font-size:1rem;font-weight:600;color:var(--text-secondary);margin:1.5rem 0 0.25rem 0;">
+            "Authentication"
+        </h3>
+
+        <div class="form-group">
+            <label class="form-label">"Authenticator URL"</label>
             <input
+                class="form-input"
                 type="text"
                 placeholder="https://auth.example.com"
                 prop:value=move || get_proxy().authenticator_url.clone().unwrap_or_default()
@@ -108,9 +123,10 @@ pub fn ProxyAdvancedFields(
             .and_then(|c| c.proxy.authenticator_url)
             .map(|u| !u.is_empty())
             .unwrap_or(false)>
-            <div>
-                <label>"Auth Skip Paths"</label>
+            <div class="form-group">
+                <label class="form-label">"Auth Skip Paths"</label>
                 <textarea
+                    class="form-textarea"
                     rows="3"
                     placeholder="/health\n/metrics"
                     prop:value=move || config.get()
@@ -126,7 +142,6 @@ pub fn ProxyAdvancedFields(
                             c.proxy.authenticator_skip_paths = paths;
                         });
                     }
-                    class="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2 border"
                 />
                 <p class="text-muted" style="font-size:0.85em;margin-top:0.25rem;">
                     "Paths exempt from authentication, one per line. Default: /health, /metrics"
@@ -134,31 +149,57 @@ pub fn ProxyAdvancedFields(
             </div>
         </Show>
 
-        <div>
-            <label>"OAuth2 Login Enabled"</label>
-            <input
-                type="checkbox"
-                prop:checked=move || get_proxy().oauth2.enabled
-                on:change=move |ev| {
-                    let checked = ev.target()
-                        .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
-                        .map(|i| i.checked())
-                        .unwrap_or(false);
-                    config.update(|c| if let Some(c) = c { c.proxy.oauth2.enabled = checked; });
-                }
-            />
+        <div class="form-group">
+            <label class="checkbox-label">
+                <input
+                    type="checkbox"
+                    prop:checked=move || get_proxy().api_keys_enabled
+                    on:change=move |ev| {
+                        let checked = ev.target()
+                            .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
+                            .map(|i| i.checked())
+                            .unwrap_or(false);
+                        config.update(|c| if let Some(c) = c { c.proxy.api_keys_enabled = checked; });
+                    }
+                />
+                "Enable API key authentication"
+            </label>
+            <p class="text-muted" style="font-size:0.85em;margin-top:0.25rem;">
+                "When enabled, bearer tokens starting with " <code>"tama_"</code> " are validated against the database. "
+                "Manage keys on the " <a href="/tama/keys">"API Keys"</a> " page. "
+                "This flag is auto-set to true when you create your first key and false when the last key is revoked."
+            </p>
+        </div>
+
+        <div class="form-group">
+            <label class="checkbox-label">
+                <input
+                    type="checkbox"
+                    prop:checked=move || get_proxy().oauth2.enabled
+                    on:change=move |ev| {
+                        let checked = ev.target()
+                            .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
+                            .map(|i| i.checked())
+                            .unwrap_or(false);
+                        config.update(|c| if let Some(c) = c { c.proxy.oauth2.enabled = checked; });
+                    }
+                />
+                "Enable OAuth2/OIDC login"
+            </label>
+            <p class="text-muted" style="font-size:0.85em;margin-top:0.25rem;">
+                "When enabled, browser sessions are authenticated via your OAuth2 provider (e.g. Authentik). "
+                "Browser requests without a valid session are redirected to the login flow."
+            </p>
         </div>
 
         <Show when=move || get_proxy().oauth2.enabled>
-            <div
-                class="oauth2-config"
-                style="border:1px solid #ddd;padding:1rem;margin-top:0.5rem;border-radius:0.5rem;"
-            >
-                <h3>"OAuth2/OIDC Provider Configuration"</h3>
+            <fieldset class="form-subsection">
+                <legend>"OAuth2/OIDC Provider"</legend>
 
-                <div>
-                    <label>"Client ID"</label>
+                <div class="form-group">
+                    <label class="form-label">"Client ID"</label>
                     <input
+                        class="form-input"
                         type="text"
                         prop:value=move || get_proxy().oauth2.client_id.clone()
                         on:input=move |ev| {
@@ -168,9 +209,10 @@ pub fn ProxyAdvancedFields(
                     />
                 </div>
 
-                <div>
-                    <label>"Client Secret"</label>
+                <div class="form-group">
+                    <label class="form-label">"Client Secret"</label>
                     <input
+                        class="form-input"
                         type="password"
                         prop:value=move || get_proxy().oauth2.client_secret.clone()
                         on:input=move |ev| {
@@ -183,9 +225,10 @@ pub fn ProxyAdvancedFields(
                     </p>
                 </div>
 
-                <div>
-                    <label>"Authorize URL"</label>
+                <div class="form-group">
+                    <label class="form-label">"Authorize URL"</label>
                     <input
+                        class="form-input"
                         type="text"
                         placeholder="https://auth.example.com/application/o/authorize/"
                         prop:value=move || get_proxy().oauth2.authorize_url.clone()
@@ -196,9 +239,10 @@ pub fn ProxyAdvancedFields(
                     />
                 </div>
 
-                <div>
-                    <label>"Token URL"</label>
+                <div class="form-group">
+                    <label class="form-label">"Token URL"</label>
                     <input
+                        class="form-input"
                         type="text"
                         placeholder="https://auth.example.com/application/o/token/"
                         prop:value=move || get_proxy().oauth2.token_url.clone()
@@ -209,9 +253,10 @@ pub fn ProxyAdvancedFields(
                     />
                 </div>
 
-                <div>
-                    <label>"Userinfo URL (optional)"</label>
+                <div class="form-group">
+                    <label class="form-label">"Userinfo URL (optional)"</label>
                     <input
+                        class="form-input"
                         type="text"
                         placeholder="https://auth.example.com/application/o/userinfo/"
                         prop:value=move || get_proxy().oauth2.userinfo_url.clone().unwrap_or_default()
@@ -224,9 +269,10 @@ pub fn ProxyAdvancedFields(
                     />
                 </div>
 
-                <div>
-                    <label>"Logout URL (optional)"</label>
+                <div class="form-group">
+                    <label class="form-label">"Logout URL (optional)"</label>
                     <input
+                        class="form-input"
                         type="text"
                         placeholder="https://auth.example.com/application/o/app-slug/end-session/"
                         prop:value=move || get_proxy().oauth2.logout_url.clone().unwrap_or_default()
@@ -239,9 +285,10 @@ pub fn ProxyAdvancedFields(
                     />
                 </div>
 
-                <div>
-                    <label>"Redirect URI"</label>
+                <div class="form-group">
+                    <label class="form-label">"Redirect URI"</label>
                     <input
+                        class="form-input"
                         type="text"
                         placeholder="http://localhost:11434/login/callback"
                         prop:value=move || get_proxy().oauth2.redirect_uri.clone()
@@ -252,9 +299,10 @@ pub fn ProxyAdvancedFields(
                     />
                 </div>
 
-                <div>
-                    <label>"Scopes (comma-separated)"</label>
+                <div class="form-group">
+                    <label class="form-label">"Scopes (comma-separated)"</label>
                     <input
+                        class="form-input"
                         type="text"
                         placeholder="openid,profile,email"
                         prop:value=move || get_proxy().oauth2.scopes.join(", ")
@@ -270,9 +318,10 @@ pub fn ProxyAdvancedFields(
                     />
                 </div>
 
-                <div>
-                    <label>"Session TTL (seconds)"</label>
+                <div class="form-group">
+                    <label class="form-label">"Session TTL (seconds)"</label>
                     <input
+                        class="form-input"
                         type="number"
                         min="300"
                         prop:value=move || get_proxy().oauth2.session_ttl_secs.to_string()
@@ -286,7 +335,7 @@ pub fn ProxyAdvancedFields(
                         "How long a login session lasts. Default: 86400 (24 hours)."
                     </p>
                 </div>
-            </div>
+            </fieldset>
         </Show>
     }
 }

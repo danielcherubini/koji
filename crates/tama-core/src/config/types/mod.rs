@@ -232,6 +232,16 @@ impl Config {
             self.general.update_check_interval,
         )?;
 
+        // Derive `api_keys_enabled` from the actual `api_keys` table. The flag
+        // is a derived value — it must always reflect whether at least one
+        // active (non-revoked, non-expired) key exists. Treating it as a
+        // user-editable config field allowed it to drift to `false` on every
+        // config save whenever the form's mirror type was missing the field
+        // (and even when it didn't, an explicit `false` from a stale client
+        // could lock the operator out of their own proxy).
+        let active_keys = crate::proxy::api_keys::count_active_keys(&conn)?;
+        let api_keys_enabled = active_keys > 0;
+
         // Upsert proxy
         crate::db::queries::upsert_proxy(
             &conn,
@@ -257,7 +267,7 @@ impl Config {
             &self.proxy.oauth2.redirect_uri,
             &self.proxy.oauth2.scopes,
             self.proxy.oauth2.session_ttl_secs,
-            self.proxy.api_keys_enabled,
+            api_keys_enabled,
         )?;
 
         // Upsert supervisor
