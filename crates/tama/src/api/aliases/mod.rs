@@ -8,12 +8,12 @@ use crate::api::error::{error_response, error_response_simple};
 use tama_core::db::repository::Repository;
 use tama_core::proxy::ProxyState;
 
-/// Regex for valid alias names: starts with alphanumeric, then alphanumeric/underscore/hyphen,
+/// Regex for valid alias names: starts with alphanumeric, then alphanumeric/underscore/hyphen/period,
 /// max 128 characters total.
 fn alias_name_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$").expect("invalid alias name regex")
+        Regex::new(r"^[a-zA-Z0-9][a-zA-Z0-9_.\-]{0,127}$").expect("invalid alias name regex")
     })
 }
 
@@ -25,7 +25,7 @@ fn validate_alias_name(name: &str) -> Option<String> {
     if !alias_name_re().is_match(name) {
         return Some(format!(
             "Invalid alias name '{}': must start with a letter or digit, \
-            contain only letters, digits, underscores, and hyphens, and be at most 128 characters",
+            contain only letters, digits, underscores, hyphens, and periods, and be at most 128 characters",
             name
         ));
     }
