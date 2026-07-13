@@ -2,13 +2,13 @@ use super::headers::{filter_request_headers, strip_response_headers};
 use super::json::rewrite_json_model_name;
 use super::langfuse::{
     compute_energy_cost, extract_langfuse_headers, extract_request_fields, extract_timings,
-    extract_usage, get_gpu_power_watts, LangfuseTelemetry,
+    extract_usage, get_gpu_power_watts, parse_sse_accumulated, LangfuseTelemetry,
 };
 use super::sse::process_sse_line;
 use super::stats::extract_inference_stats;
 use crate::proxy::{BackendState, ProxyState};
 use axum::{body::Body, http::request::Parts, response::IntoResponse};
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use futures_util::stream::StreamExt;
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
@@ -169,11 +169,40 @@ pub async fn forward_request(
         query_string = format!("?{}", query_string);
     }
 
+    // Inject stream_options.include_usage: true for streaming chat completions
+    // when Langfuse telemetry is enabled (needed to receive usage in the final SSE chunk).
+    let is_chat_streaming = match serde_json::from_slice::<serde_json::Value>(body_bytes) {
+        Ok(body) => {
+            parts.uri.path().ends_with("/chat/completions")
+                && body
+                    .get("stream")
+                    .and_then(|s| s.as_bool())
+                    .unwrap_or(false)
+        }
+        Err(_) => false,
+    };
+
+    let body_to_send = if is_chat_streaming {
+        let mut body: serde_json::Value =
+            serde_json::from_slice(body_bytes).unwrap_or_else(|_| serde_json::json!({}));
+        if let Some(obj) = body.as_object_mut() {
+            let stream_opts = obj
+                .entry("stream_options")
+                .or_insert_with(|| serde_json::json!({}));
+            if let Some(opts) = stream_opts.as_object_mut() {
+                opts.insert("include_usage".to_string(), serde_json::json!(true));
+            }
+        }
+        serde_json::to_vec(&body).unwrap_or_else(|_| body_bytes.to_vec())
+    } else {
+        body_bytes.to_vec()
+    };
+
     match state
         .client
         .request(method, format!("{}{}", target_uri, query_string))
         .headers(headers)
-        .body(body_bytes.to_vec())
+        .body(body_to_send)
         .send()
         .await
     {
@@ -236,9 +265,16 @@ pub async fn forward_request(
                 .map(|ct| ct.contains("text/event-stream"))
                 .unwrap_or(false);
 
+            // Read langfuse config once for the streaming branch.
+            let langfuse_cfg = state.config.read().await.langfuse.clone();
+            let capture_streaming = langfuse_cfg.enabled && langfuse_cfg.capture_streaming;
+            let langfuse_client = state.langfuse_client.clone();
+
             let body = if is_streaming {
                 // Streaming response — rewrite the model name in each SSE chunk.
                 // Uses unfold to own the partial-line buffer across chunks (Send-safe).
+                // When Langfuse streaming capture is enabled, tee raw bytes via mpsc
+                // for background accumulation and telemetry reporting.
                 let model_name: Option<String> = model_name.map(|s| s.to_string());
                 let backend_name_owned = backend_name.to_string();
                 // Wrap inference_stats sender in Arc so it can be shared across
@@ -246,16 +282,83 @@ pub async fn forward_request(
                 // per-iteration cloning and keeps a single owned reference).
                 let inference_stats = Arc::new(state.inference_stats.clone());
                 let byte_stream = response.bytes_stream();
+
+                // Channel for tee'd bytes — None when capture disabled.
+                let (tx, rx) = if capture_streaming {
+                    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
+                    (Some(tx), Some(rx))
+                } else {
+                    (None, None)
+                };
+
+                // Spawn background accumulation + reporting (only if capture enabled).
+                if let Some(mut rx) = rx {
+                    let max_bytes = langfuse_cfg.telemetry_max_bytes;
+                    let (trace_id, user_id, session_id, metadata, tags) = langfuse_headers.clone();
+                    let (req_model, input, model_params) = langfuse_req_fields.clone();
+                    let start_time = telemetry_start;
+
+                    tokio::spawn(async move {
+                        let mut buf = BytesMut::new();
+                        let mut total_bytes = 0usize;
+                        while let Some(chunk) = rx.recv().await {
+                            if total_bytes + chunk.len() <= max_bytes {
+                                buf.extend_from_slice(&chunk);
+                                total_bytes += chunk.len();
+                            }
+                            // Keep draining the channel even if over limit (must consume all)
+                        }
+                        let raw = String::from_utf8_lossy(&buf).to_string();
+                        let (content, usage, timings) = parse_sse_accumulated(&raw);
+
+                        if let Some(client) = langfuse_client {
+                            let telemetry = LangfuseTelemetry {
+                                model: req_model,
+                                input: if langfuse_cfg.capture_input {
+                                    input
+                                } else {
+                                    None
+                                },
+                                model_params,
+                                output: if langfuse_cfg.capture_output {
+                                    content
+                                } else {
+                                    None
+                                },
+                                usage,
+                                timings,
+                                start_time,
+                                end_time: Some(std::time::Instant::now()),
+                                trace_id,
+                                user_id,
+                                session_id,
+                                metadata,
+                                tags,
+                                energy_cost: None,
+                                energy_wh: None,
+                                gpu_watts: None,
+                            };
+                            client.report_generation(telemetry).await;
+                        }
+                    });
+                }
+
                 let transformed_stream = futures_util::stream::unfold(
                     (byte_stream, String::new()),
                     move |(mut stream, mut line_buf)| {
                         let model_name = model_name.clone();
                         let backend_name = backend_name_owned.clone();
                         let inference_stats = inference_stats.clone();
+                        let tx = tx.clone(); // Option<UnboundedSender<Bytes>> clone for closure
                         async move {
                             let chunk_result = stream.next().await?;
                             let result: Result<Bytes, reqwest::Error> = match chunk_result {
                                 Ok(chunk) => {
+                                    // Tee: send clone to background accumulator (if channel active).
+                                    if let Some(ref sender) = tx {
+                                        let _ = sender.send(chunk.clone());
+                                    }
+
                                     let chunk_str = String::from_utf8_lossy(&chunk);
                                     let mut out = String::new();
 

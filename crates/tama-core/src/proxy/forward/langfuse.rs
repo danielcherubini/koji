@@ -309,6 +309,62 @@ impl LangfuseClient {
     }
 }
 
+/// Parse accumulated SSE text for Langfuse telemetry.
+///
+/// Extracts: accumulated content (delta.content concatenated), usage
+/// (from final chunk with `usage` field), and timings (from the same chunk).
+/// Skips malformed JSON lines and `[DONE]` markers gracefully.
+pub fn parse_sse_accumulated(
+    raw: &str,
+) -> (
+    Option<String>,
+    Option<LangfuseUsage>,
+    Option<LangfuseTimings>,
+) {
+    let mut content_parts = Vec::new();
+    let mut usage = None;
+    let mut timings = None;
+
+    for line in raw.lines() {
+        if let Some(data_content) = line.strip_prefix("data: ") {
+            let trimmed = data_content.trim_end();
+            if trimmed == "[DONE]" {
+                continue;
+            }
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                // Accumulate content from delta
+                if let Some(content) = json
+                    .get("choices")
+                    .and_then(|c| c.as_array())
+                    .and_then(|c| c.first())
+                    .and_then(|c| c.get("delta"))
+                    .and_then(|d| d.get("content"))
+                    .and_then(|c| c.as_str())
+                {
+                    if !content.is_empty() {
+                        content_parts.push(content.to_string());
+                    }
+                }
+                // Extract usage from final chunk (empty choices)
+                if json.get("usage").is_some() {
+                    usage = extract_usage(&json);
+                }
+                // Extract timings
+                if json.get("timings").is_some() {
+                    timings = extract_timings(&json);
+                }
+            }
+        }
+    }
+
+    let content = if content_parts.is_empty() {
+        None
+    } else {
+        Some(content_parts.join(""))
+    };
+    (content, usage, timings)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -691,5 +747,121 @@ mod tests {
             LangfuseClient::from_config(&config).is_some(),
             "Expected Some with valid credentials"
         );
+    }
+
+    // ── parse_sse_accumulated ────────────────────────────────────────
+
+    fn sample_sse_stream() -> &'static str {
+        r#"data: {"id":"chat-1","choices":[{"index":0,"delta":{"role":"assistant"}}]}
+data: {"id":"chat-1","choices":[{"index":0,"delta":{"content":"Hello"}}]}
+data: {"id":"chat-1","choices":[{"index":0,"delta":{"content":" world"}}]}
+data: {"id":"chat-1","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15},"timings":{"prompt_ms":3000.0,"predicted_ms":2000.0}}
+data: [DONE]
+"#
+    }
+
+    #[test]
+    fn test_parse_sse_accumulated_full_stream() {
+        let raw = sample_sse_stream();
+        let (content, usage, timings) = parse_sse_accumulated(raw);
+
+        // Content should be accumulated from delta chunks
+        assert!(content.is_some(), "Expected content to be Some, got None");
+        assert_eq!(content.unwrap(), "Hello world");
+
+        // Usage should be extracted from the final chunk
+        assert!(usage.is_some(), "Expected usage to be Some, got None");
+        let u = usage.unwrap();
+        assert_eq!(u.prompt_tokens, 10);
+        assert_eq!(u.completion_tokens, 5);
+        assert_eq!(u.total_tokens, 15);
+
+        // Timings should be extracted from the final chunk
+        assert!(timings.is_some(), "Expected timings to be Some, got None");
+        let t = timings.unwrap();
+        assert!((t.prompt_ms - 3000.0).abs() < f64::EPSILON);
+        assert!((t.predicted_ms - 2000.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_parse_sse_accumulated_empty_content() {
+        let raw = r#"data: {"id":"chat-1","choices":[{"index":0,"delta":{"role":"assistant"}}]}
+data: [DONE]
+"#;
+        let (content, usage, timings) = parse_sse_accumulated(raw);
+
+        // No content deltas — should be None
+        assert!(
+            content.is_none(),
+            "Expected content to be None when no delta.content present"
+        );
+        assert!(usage.is_none());
+        assert!(timings.is_none());
+    }
+
+    #[test]
+    fn test_parse_sse_accumulated_malformed_json() {
+        let raw = r#"data: {"id":"chat-1","choices":[{"index":0,"delta":{"content":"Hello"}}]}
+data: this is not json
+ data: [DONE]
+"#;
+        let (content, usage, timings) = parse_sse_accumulated(raw);
+
+        // Should gracefully skip malformed JSON and extract content from valid chunks
+        assert!(
+            content.is_some(),
+            "Expected content to be extracted despite malformed JSON lines"
+        );
+        assert_eq!(content.unwrap(), "Hello");
+        assert!(usage.is_none());
+        assert!(timings.is_none());
+    }
+
+    #[test]
+    fn test_parse_sse_accumulated_no_usage() {
+        let raw = r#"data: {"id":"chat-1","choices":[{"index":0,"delta":{"content":"Hi"}}]}
+data: [DONE]
+"#;
+        let (content, usage, timings) = parse_sse_accumulated(raw);
+
+        assert!(content.is_some());
+        assert_eq!(content.unwrap(), "Hi");
+        assert!(
+            usage.is_none(),
+            "Expected usage to be None when no usage field present"
+        );
+        assert!(timings.is_none());
+    }
+
+    #[test]
+    fn test_parse_sse_accumulated_empty_string() {
+        let (content, usage, timings) = parse_sse_accumulated("");
+        assert!(content.is_none());
+        assert!(usage.is_none());
+        assert!(timings.is_none());
+    }
+
+    #[test]
+    fn test_parse_sse_accumulated_only_done() {
+        let raw = "data: [DONE]\n";
+        let (content, usage, timings) = parse_sse_accumulated(raw);
+        assert!(content.is_none());
+        assert!(usage.is_none());
+        assert!(timings.is_none());
+    }
+
+    #[test]
+    fn test_parse_sse_accumulated_content_with_empty_deltas() {
+        // Some deltas have content: null or content: "" — should skip empty strings
+        let raw = r#"data: {"id":"chat-1","choices":[{"index":0,"delta":{"content":null}}]}
+data: {"id":"chat-1","choices":[{"index":0,"delta":{"content":""}}]}
+data: {"id":"chat-1","choices":[{"index":0,"delta":{"content":"Real content"}}]}
+data: [DONE]
+"#;
+        let (content, _usage, _timings) = parse_sse_accumulated(raw);
+
+        // Only non-empty content should be accumulated
+        assert!(content.is_some());
+        assert_eq!(content.unwrap(), "Real content");
     }
 }
