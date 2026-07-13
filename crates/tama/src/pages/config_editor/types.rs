@@ -133,6 +133,12 @@ pub struct ProxyConfig {
     pub authenticator_skip_paths: Vec<String>,
     #[serde(default)]
     pub oauth2: OAuth2Config,
+    /// Whether API key authentication is enabled.
+    /// Mirrors `tama_core::config::ProxyConfig::api_keys_enabled`.
+    /// MUST stay in sync with the core type — if it's missing here, every
+    /// config save silently disables API key auth.
+    #[serde(default)]
+    pub api_keys_enabled: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -173,4 +179,110 @@ pub struct SamplingParams {
     pub frequency_penalty: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repeat_penalty: Option<f64>,
+}
+
+// ─── Tests ─────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Build a JSON shape that mirrors what the server returns from
+    /// `GET /tama/v1/config/structured`. Every field is set to a non-default
+    /// value so any missing field in the form's mirror type round-trip can
+    /// be observed.
+    fn server_response_with_all_fields() -> serde_json::Value {
+        json!({
+            "general": {
+                "log_level": "debug",
+                "models_dir": "/mnt/models",
+                "logs_dir": "/var/log/tama",
+                "hf_token": "hf_testtoken",
+                "update_check_interval": 6,
+            },
+            "backends": {},
+            "supervisor": {
+                "restart_policy": "on-failure",
+                "max_restarts": 5,
+                "restart_delay_ms": 1000,
+                "health_check_interval_ms": 2000,
+                "health_check_timeout_ms": 5000,
+                "health_check_retries": 3,
+            },
+            "sampling_templates": {},
+            "proxy": {
+                "host": "127.0.0.1",
+                "port": 18910,
+                "auto_unload": true,
+                "idle_timeout_secs": 600,
+                "startup_timeout_secs": 90,
+                "circuit_breaker_threshold": 7,
+                "circuit_breaker_cooldown_seconds": 120,
+                "metrics_retention_secs": 172_800,
+                "max_loaded_models": 2,
+                "download_queue_poll_interval_secs": 3,
+                "authenticator_url": "https://auth.example.com",
+                "authenticator_skip_paths": ["/health", "/metrics"],
+                "oauth2": {
+                    "enabled": true,
+                    "client_id": "test-client",
+                    "client_secret": "test-secret",
+                    "authorize_url": "https://auth.example.com/authorize",
+                    "token_url": "https://auth.example.com/token",
+                    "userinfo_url": "https://auth.example.com/userinfo",
+                    "logout_url": "https://auth.example.com/logout",
+                    "redirect_uri": "http://localhost:11434/login/callback",
+                    "scopes": ["openid", "profile"],
+                    "session_ttl_secs": 7200,
+                },
+                "api_keys_enabled": true,
+            },
+            "compaction": {
+                "enabled": true,
+                "server_path": "/opt/compaction/main.py",
+                "device": "cuda",
+                "port": 8081,
+                "request_timeout_ms": 60_000,
+            },
+        })
+    }
+
+    /// Regression: `api_keys_enabled` was being dropped on every config save
+    /// because the form's mirror type did not include the field. serde silently
+    /// ignores unknown fields on deserialize, so the in-memory form ended up
+    /// with `api_keys_enabled = false` (default) and POSTed that to the server.
+    #[test]
+    fn api_keys_enabled_round_trips_through_form_config() {
+        let server_json = server_response_with_all_fields();
+        let form_cfg: Config = serde_json::from_value(server_json.clone())
+            .expect("form should accept the server's full structured config");
+
+        let round_trip: serde_json::Value =
+            serde_json::to_value(&form_cfg).expect("form should re-serialize its config");
+
+        assert_eq!(
+            round_trip["proxy"]["api_keys_enabled"], true,
+            "api_keys_enabled was dropped on the form's mirror type — \
+             this is the bug that silently disables API key auth on every config save"
+        );
+    }
+
+    /// Regression: every field in the form's mirror type must round-trip,
+    /// not just `api_keys_enabled`. Catches future drift if a new field is
+    /// added to the core config and forgotten in the form.
+    #[test]
+    fn full_config_round_trip_preserves_every_field() {
+        let original = server_response_with_all_fields();
+        let form_cfg: Config = serde_json::from_value(original.clone())
+            .expect("form should deserialize server's structured config");
+        let round_trip: serde_json::Value =
+            serde_json::to_value(&form_cfg).expect("form should re-serialize its config");
+
+        assert_eq!(
+            original, round_trip,
+            "form mirror type did not round-trip all fields — any missing \
+             field will be silently dropped on save"
+        );
+    }
 }

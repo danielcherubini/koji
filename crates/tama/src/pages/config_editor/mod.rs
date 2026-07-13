@@ -47,6 +47,7 @@ use crate::utils::extract_and_store_csrf_token;
 use crate::utils::get_request;
 use crate::utils::post_request;
 
+use crate::components::section_card::SectionCard;
 use crate::pages::config_editor::forms::{
     CompactionForm, GeneralForm, ProxyAdvancedFields, ProxyBasicFields, SamplingForm,
     SupervisorForm,
@@ -178,8 +179,15 @@ pub fn ConfigEditor() -> impl IntoView {
                         <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:1rem;">
                             <div id="cfg-general"><GeneralForm config=config /></div>
                             <div id="cfg-proxy">
-                                <ProxyBasicFields config=config />
-                                <ProxyAdvancedFields config=config />
+                                <SectionCard
+                                    title="Proxy".to_string()
+                                    description=Some("Network and authentication settings for the proxy.".to_string())
+                                >
+                                    <div style="display:flex;flex-direction:column;gap:1rem;margin-top:1rem;">
+                                        <ProxyBasicFields config=config />
+                                        <ProxyAdvancedFields config=config />
+                                    </div>
+                                </SectionCard>
                             </div>
                             <div id="cfg-supervisor"><SupervisorForm config=config /></div>
                             <div id="cfg-sampling"><SamplingForm config=config /></div>

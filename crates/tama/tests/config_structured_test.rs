@@ -220,3 +220,78 @@ async fn test_get_structured_config_without_db_dir() {
     // 422 Unprocessable Entity — body validation fails before CSRF check
     assert_eq!(response.status(), 422);
 }
+
+/// Regression: even if a client POSTs a config with `api_keys_enabled: false`,
+/// the server must derive the flag from the `api_keys` table. This prevents
+/// a stale client (e.g. the config editor with a missing field in its mirror
+/// type) from locking the operator out of their own proxy on every save.
+#[tokio::test]
+async fn test_post_structured_config_cannot_disable_api_keys_with_active_keys() {
+    use tama_core::proxy::api_keys::{self, Scope};
+
+    let (state, _temp_dir) = build_test_state("");
+    let db_path = _temp_dir.path().join("tama.db");
+
+    // Seed an active API key in the DB
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let raw_key = api_keys::generate_key();
+        api_keys::create_key(
+            &conn,
+            "test-key",
+            &raw_key,
+            &[Scope::Inference],
+            "admin",
+            None,
+        )
+        .unwrap();
+    }
+
+    let router = build_web_routes(Arc::new(test_web_state()))
+        .with_state(state)
+        .layer(axum::extract::Extension(test_web_state()));
+
+    let csrf_token = get_csrf_token(&router).await;
+
+    // GET the current (full) config, then flip api_keys_enabled to false to
+    // simulate the stale-client bug, then POST it back.
+    let req = axum::extract::Request::builder()
+        .method("GET")
+        .uri("/tama/v1/config/structured")
+        .header("origin", "http://localhost:11435")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let response = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), 200);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let mut config: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    config["proxy"]["api_keys_enabled"] = serde_json::Value::Bool(false);
+
+    let response = post_with_csrf(
+        router.clone(),
+        "/tama/v1/config/structured".to_string(),
+        axum::body::Body::from(serde_json::to_string(&config).unwrap()),
+        csrf_token,
+    )
+    .await;
+    assert_eq!(response.status(), 200);
+
+    // Reload and check that api_keys_enabled was corrected to true
+    let req = axum::extract::Request::builder()
+        .method("GET")
+        .uri("/tama/v1/config/structured")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let response = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), 200);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let loaded: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        loaded["proxy"]["api_keys_enabled"], true,
+        "api_keys_enabled must be derived from active keys, not from the saved value"
+    );
+}

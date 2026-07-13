@@ -1,5 +1,6 @@
 use super::*;
 use crate::config::types::{CompactionDevice, LogLevel, OAuth2Config, RestartPolicy};
+use crate::proxy::api_keys::{self, Scope};
 
 #[test]
 fn test_default_sampling_templates() {
@@ -309,3 +310,107 @@ fn test_config_from_empty_db_seeds_defaults() {
     assert_eq!(coding.min_p, Some(0.05));
     assert_eq!(coding.presence_penalty, Some(0.1));
 }
+
+/// Regression: `api_keys_enabled` is a *derived* value, not a user-editable
+/// config field. It must always reflect the actual `api_keys` table state
+/// after `to_db`, regardless of what the caller puts in `proxy.api_keys_enabled`.
+///
+/// This prevents a class of bugs where a stale client (e.g. the config editor
+/// with a missing field in its mirror type) would silently lock the operator
+/// out of their own proxy by writing `api_keys_enabled = false` on every save.
+#[test]
+fn test_to_db_derives_api_keys_enabled_from_active_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("tama.db");
+
+    // Initialize the DB and create one active key.
+    let init_config = Config::default();
+    init_config.to_db(&db_path).unwrap();
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let raw_key = api_keys::generate_key();
+        api_keys::create_key(
+            &conn,
+            "test-key",
+            &raw_key,
+            &[Scope::Inference],
+            "admin",
+            None,
+        )
+        .unwrap();
+    }
+
+    // Save a config that explicitly says `api_keys_enabled = false`. The
+    // stale-client bug would persist this and lock the operator out.
+    let mut config_with_false_flag = Config::default();
+    config_with_false_flag.proxy.api_keys_enabled = false;
+    config_with_false_flag.to_db(&db_path).unwrap();
+
+    // Reload — the flag must have been corrected to `true` based on the
+    // active key in the table.
+    let loaded = Config::from_db(&db_path).unwrap();
+    assert!(
+        loaded.proxy.api_keys_enabled,
+        "api_keys_enabled must be derived from the api_keys table, not from the saved config value"
+    );
+
+    // Now revoke the only active key and save a config with `api_keys_enabled = true`.
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        api_keys::revoke_key(&conn, 1).unwrap();
+    }
+    let mut config_with_true_flag = Config::default();
+    config_with_true_flag.proxy.api_keys_enabled = true;
+    config_with_true_flag.to_db(&db_path).unwrap();
+
+    // Reload — the flag must have been corrected to `false` since no keys remain.
+    let loaded = Config::from_db(&db_path).unwrap();
+    assert!(
+        !loaded.proxy.api_keys_enabled,
+        "api_keys_enabled must be derived from the api_keys table; with no active keys it must be false"
+    );
+}
+
+/// Regression: `from_db` must re-derive `api_keys_enabled` from the actual
+/// `api_keys` table, not trust the stored value. A stale `api_keys_enabled = 0`
+/// in the DB must not lock the operator out of their own proxy after a restart.
+#[test]
+fn test_from_db_derives_api_keys_enabled_from_active_keys() {
+    use crate::proxy::api_keys;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("tama.db");
+
+    // Initialize the DB and create one active key.
+    let init_config = Config::default();
+    init_config.to_db(&db_path).unwrap();
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let raw_key = api_keys::generate_key();
+        api_keys::create_key(
+            &conn,
+            "test-key",
+            &raw_key,
+            &[Scope::Inference],
+            "admin",
+            None,
+        )
+        .unwrap();
+    }
+
+    // Manually poison the stored value to `0` (simulates a stale DB after
+    // a buggy config save, which was the original bug).
+    rusqlite::Connection::open(&db_path)
+        .unwrap()
+        .execute("UPDATE app_proxy SET api_keys_enabled = 0", [])
+        .unwrap();
+
+    // from_db must correct this to `true` based on the active key.
+    let loaded = Config::from_db(&db_path).unwrap();
+    assert!(
+        loaded.proxy.api_keys_enabled,
+        "from_db must re-derive api_keys_enabled from the api_keys table; \
+         a stale `false` in the DB must not be trusted"
+    );
+}
+

@@ -194,3 +194,39 @@ fn style_css_defines_model_section_title_styling() {
         "`.model-section__title` rule must set typography and border styles; got: {body}"
     );
 }
+
+/// The `.checkbox-label` class is used throughout the config editor for
+/// boolean toggles (e.g. `api_keys_enabled`, `oauth2.enabled`). It must
+/// render the label and checkbox inline so they sit on a single row.
+#[test]
+fn style_css_defines_checkbox_label() {
+    let css = strip_css_comments(&combined_css());
+    let body =
+        rule_body(&css, ".checkbox-label").expect("style.css must define a `.checkbox-label` rule");
+    assert!(
+        body.contains("display: inline-flex") || body.contains("display:inline-flex"),
+        "`.checkbox-label` must use `display: inline-flex` to lay out the label and checkbox in a row; got: {body}"
+    );
+}
+
+/// The `.form-subsection` class wraps a sub-group of form fields (e.g. the
+/// OAuth2 provider config inside the proxy form). It must give the subsection
+/// a visible boundary so it reads as a distinct sub-section.
+#[test]
+fn style_css_defines_form_subsection() {
+    let css = strip_css_comments(&combined_css());
+    let body = rule_body(&css, ".form-subsection")
+        .expect("style.css must define a `.form-subsection` rule");
+    assert!(
+        body.contains("border") && body.contains("padding"),
+        "`.form-subsection` must have a border and padding to visually separate it from the surrounding form; got: {body}"
+    );
+    // The legend inside the fieldset should be styled to look like a section
+    // heading, not the browser's default.
+    let legend = rule_body(&css, ".form-subsection legend")
+        .expect("style.css must define a `.form-subsection legend` rule");
+    assert!(
+        legend.contains("font-size") && legend.contains("font-weight"),
+        "`.form-subsection legend` must have typography styling; got: {legend}"
+    );
+}
