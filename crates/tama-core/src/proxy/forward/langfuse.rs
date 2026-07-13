@@ -173,6 +173,142 @@ pub fn get_gpu_power_watts(system_metrics: &crate::gpu::SystemMetrics) -> Option
         .map(|w| w as f64)
 }
 
+// ── LangfuseClient wrapper ───────────────────────────────────────────────
+
+use std::sync::Arc;
+
+use langfuse_ergonomic::ClientBuilder;
+
+/// Wrapper around the `langfuse-ergonomic` SDK client.
+///
+/// Provides lazy initialization from `LangfuseConfig` and a single public method
+/// for reporting per-request telemetry as a Langfuse trace + generation.
+#[derive(Clone)]
+pub struct LangfuseClient {
+    inner: Arc<langfuse_ergonomic::LangfuseClient>,
+}
+
+impl LangfuseClient {
+    /// Create a new `LangfuseClient` from config.
+    ///
+    /// Returns `None` when langfuse is disabled or credentials are missing.
+    pub fn from_config(config: &crate::config::LangfuseConfig) -> Option<Self> {
+        if !config.enabled || config.public_key.is_empty() || config.secret_key.is_empty() {
+            return None;
+        }
+
+        let inner = ClientBuilder::new()
+            .public_key(&config.public_key)
+            .secret_key(&config.secret_key)
+            .base_url(config.host.clone())
+            .build()
+            .ok()?;
+
+        Some(Self {
+            inner: Arc::new(inner),
+        })
+    }
+
+    /// Report a generation to Langfuse.
+    ///
+    /// Creates a trace + generation with token usage, input/output, energy cost,
+    /// and trace context from headers. Runs asynchronously — failures are logged
+    /// but don't affect the response to the client.
+    pub async fn report_generation(&self, telemetry: LangfuseTelemetry) {
+        let inner = Arc::clone(&self.inner);
+        let model = telemetry.model.clone();
+        let user_id = telemetry.user_id;
+        let session_id = telemetry.session_id;
+        let tags = telemetry.tags.unwrap_or_default();
+        let input = telemetry.input;
+        let output = telemetry.output;
+        let energy_wh = telemetry.energy_wh;
+        let gpu_watts = telemetry.gpu_watts;
+
+        // Convert Instant to chrono DateTime<Utc> for the SDK.
+        // Instant → SystemTime: now - (now - instant)
+        let now = std::time::Instant::now();
+        let start_dt = chrono::DateTime::<chrono::Utc>::from(
+            std::time::SystemTime::now() - (now - telemetry.start_time),
+        );
+        let end_dt = match telemetry.end_time {
+            Some(end) => {
+                chrono::DateTime::<chrono::Utc>::from(std::time::SystemTime::now() - (now - end))
+            }
+            None => chrono::DateTime::<chrono::Utc>::from(std::time::SystemTime::now()),
+        };
+
+        tokio::spawn(async move {
+            // Build trace metadata with energy cost info.
+            let mut meta_map = serde_json::Map::new();
+            if let Some(wh) = energy_wh {
+                meta_map.insert("energy_wh".to_string(), serde_json::json!(wh));
+            }
+            if let Some(w) = gpu_watts {
+                meta_map.insert("gpu_watts".to_string(), serde_json::json!(w));
+            }
+
+            // Build trace input/output.
+            let trace_input = input.clone();
+            let trace_output = output.as_ref().map(|o| serde_json::json!({ "content": o }));
+
+            // Create trace using the SDK's builder API.
+            // bon generates methods that accept `T` directly for `Option<T>` parameters.
+            // We pass values directly (bon wraps them as Some internally).
+            let trace_result = inner
+                .trace()
+                .name(model.clone())
+                .user_id(user_id.unwrap_or_default())
+                .session_id(session_id.unwrap_or_default())
+                .input(trace_input.unwrap_or_default())
+                .output(trace_output.unwrap_or_default())
+                .metadata(serde_json::Value::Object(meta_map))
+                .tags(tags)
+                .call()
+                .await;
+
+            let trace_id = match trace_result {
+                Ok(resp) => resp.id,
+                Err(e) => {
+                    tracing::error!("Langfuse trace creation failed: {e}");
+                    return;
+                }
+            };
+
+            // Build generation metadata.
+            let mut gen_meta_map = serde_json::Map::new();
+            if let Some(cost) = telemetry.energy_cost {
+                gen_meta_map.insert("energy".to_string(), serde_json::json!(cost));
+            }
+            if let Some(wh) = energy_wh {
+                gen_meta_map.insert("energy_wh".to_string(), serde_json::json!(wh));
+            }
+
+            // Build generation input/output.
+            let gen_input = input;
+            let gen_output = output.map(|o| serde_json::json!({ "content": o }));
+
+            // Create generation using the SDK's builder API.
+            let gen_result = inner
+                .generation()
+                .trace_id(trace_id)
+                .name(model.clone())
+                .input(gen_input.unwrap_or_default())
+                .output(gen_output.unwrap_or_default())
+                .start_time(start_dt)
+                .end_time(end_dt)
+                .model(model)
+                .metadata(serde_json::Value::Object(gen_meta_map))
+                .call()
+                .await;
+
+            if let Err(e) = gen_result {
+                tracing::error!("Langfuse generation creation failed: {e}");
+            }
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -469,5 +605,91 @@ mod tests {
 
         let power = get_gpu_power_watts(&metrics);
         assert!(power.is_none());
+    }
+
+    // ── LangfuseClient::from_config ────────────────────────────────────────
+
+    #[test]
+    fn test_from_config_disabled_returns_none() {
+        let config = crate::config::LangfuseConfig {
+            enabled: false,
+            public_key: "pk-test".to_string(),
+            secret_key: "sk-test".to_string(),
+            host: "https://cloud.langfuse.com".to_string(),
+            environment: "test".to_string(),
+            capture_input: true,
+            capture_output: true,
+            capture_streaming: true,
+            telemetry_max_bytes: 1048576,
+            electricity_price_per_kwh: 0.0,
+        };
+
+        assert!(
+            LangfuseClient::from_config(&config).is_none(),
+            "Expected None when langfuse is disabled"
+        );
+    }
+
+    #[test]
+    fn test_from_config_empty_public_key_returns_none() {
+        let config = crate::config::LangfuseConfig {
+            enabled: true,
+            public_key: String::new(), // Empty public key
+            secret_key: "sk-test".to_string(),
+            host: "https://cloud.langfuse.com".to_string(),
+            environment: "test".to_string(),
+            capture_input: true,
+            capture_output: true,
+            capture_streaming: true,
+            telemetry_max_bytes: 1048576,
+            electricity_price_per_kwh: 0.0,
+        };
+
+        assert!(
+            LangfuseClient::from_config(&config).is_none(),
+            "Expected None when public_key is empty"
+        );
+    }
+
+    #[test]
+    fn test_from_config_empty_secret_key_returns_none() {
+        let config = crate::config::LangfuseConfig {
+            enabled: true,
+            public_key: "pk-test".to_string(),
+            secret_key: String::new(), // Empty secret key
+            host: "https://cloud.langfuse.com".to_string(),
+            environment: "test".to_string(),
+            capture_input: true,
+            capture_output: true,
+            capture_streaming: true,
+            telemetry_max_bytes: 1048576,
+            electricity_price_per_kwh: 0.0,
+        };
+
+        assert!(
+            LangfuseClient::from_config(&config).is_none(),
+            "Expected None when secret_key is empty"
+        );
+    }
+
+    #[test]
+    fn test_from_config_valid_returns_some() {
+        let config = crate::config::LangfuseConfig {
+            enabled: true,
+            public_key: "pk-test-langfuse".to_string(),
+            secret_key: "sk-test-langfuse".to_string(),
+            host: "https://cloud.langfuse.com".to_string(),
+            environment: "test".to_string(),
+            capture_input: true,
+            capture_output: true,
+            capture_streaming: true,
+            telemetry_max_bytes: 1048576,
+            electricity_price_per_kwh: 0.0,
+        };
+
+        assert!(
+            LangfuseClient::from_config(&config).is_some(),
+            "Expected Some with valid credentials"
+        );
     }
 }
