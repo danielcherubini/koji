@@ -1,5 +1,9 @@
 use super::headers::{filter_request_headers, strip_response_headers};
 use super::json::rewrite_json_model_name;
+use super::langfuse::{
+    compute_energy_cost, extract_langfuse_headers, extract_request_fields, extract_timings,
+    extract_usage, get_gpu_power_watts, LangfuseTelemetry,
+};
 use super::sse::process_sse_line;
 use super::stats::extract_inference_stats;
 use crate::proxy::{BackendState, ProxyState};
@@ -8,7 +12,7 @@ use bytes::Bytes;
 use futures_util::stream::StreamExt;
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 use tracing::info;
 
 pub async fn forward_request(
@@ -151,6 +155,14 @@ pub async fn forward_request(
     let method = parts.method.clone();
 
     let headers = filter_request_headers(&parts.headers);
+
+    // Capture Langfuse telemetry context before sending the request.
+    // extract_request_fields must be called here — body_bytes is a reference to the
+    // original request body and remains valid after .send(). It is shadowed later by
+    // response.body() inside the non-streaming else branch.
+    let langfuse_headers = extract_langfuse_headers(&parts.headers);
+    let telemetry_start = Instant::now();
+    let langfuse_req_fields = extract_request_fields(body_bytes).unwrap_or_default();
 
     let mut query_string = query.to_string();
     if !query_string.is_empty() {
@@ -295,6 +307,100 @@ pub async fn forward_request(
                     // Extract inference stats from timings (before rewrite — timings unaffected by model name change)
                     let _stats =
                         extract_inference_stats(backend_name, &parsed, &state.inference_stats);
+
+                    // Collect Langfuse telemetry (non-streaming path) — fire-and-forget.
+                    // MUST be before rewrite_json_model_name which consumes `parsed`.
+                    {
+                        let langfuse_cfg = state.config.read().await.langfuse.clone();
+                        if langfuse_cfg.enabled {
+                            let langfuse_client = state.langfuse_client.clone();
+
+                            // Use langfuse_req_fields captured before the send (body_bytes is shadowed here by response body)
+                            let (req_model, input, model_params) = langfuse_req_fields.clone();
+
+                            // Extract response fields from &parsed (borrow — parsed still owned)
+                            let usage = extract_usage(&parsed);
+                            let timings = extract_timings(&parsed);
+
+                            // Extract output (completion text)
+                            let output = if langfuse_cfg.capture_output {
+                                // Chat completions: choices[0].message.content
+                                parsed
+                                    .get("choices")
+                                    .and_then(|c| c.as_array())
+                                    .and_then(|c| c.first())
+                                    .and_then(|c| c.get("message"))
+                                    .and_then(|m| m.get("content"))
+                                    .and_then(|c| c.as_str())
+                                    .map(|s| s.to_string())
+                                    // Completions (non-chat): choices[0].text
+                                    .or_else(|| {
+                                        parsed
+                                            .get("choices")
+                                            .and_then(|c| c.as_array())
+                                            .and_then(|c| c.first())
+                                            .and_then(|c| c.get("text"))
+                                            .and_then(|t| t.as_str())
+                                            .map(|s| s.to_string())
+                                    })
+                            } else {
+                                None
+                            };
+
+                            // Compute energy cost (best-effort — uses first GPU's power_w)
+                            let (energy_cost, energy_wh, gpu_watts) = {
+                                let metrics = state.system_metrics.read().await;
+                                let power_w = get_gpu_power_watts(&metrics);
+                                if let (Some(pw), Some(t)) = (power_w, &timings) {
+                                    match compute_energy_cost(
+                                        pw,
+                                        t.prompt_ms,
+                                        t.predicted_ms,
+                                        langfuse_cfg.electricity_price_per_kwh,
+                                    ) {
+                                        Some((wh, cost)) => (Some(cost), Some(wh), Some(pw)),
+                                        None => (None, None, None),
+                                    }
+                                } else {
+                                    (None, None, None)
+                                }
+                            };
+
+                            // Build LangfuseTelemetry
+                            let (trace_id, user_id, session_id, metadata, tags) =
+                                langfuse_headers.clone();
+                            let telemetry = LangfuseTelemetry {
+                                model: req_model,
+                                input: if langfuse_cfg.capture_input {
+                                    input
+                                } else {
+                                    None
+                                },
+                                model_params,
+                                output,
+                                usage,
+                                timings,
+                                start_time: telemetry_start,
+                                end_time: Some(Instant::now()),
+                                trace_id,
+                                user_id,
+                                session_id,
+                                metadata,
+                                tags,
+                                energy_cost,
+                                energy_wh,
+                                gpu_watts,
+                            };
+
+                            // Spawn background reporting task
+                            if let Some(client) = langfuse_client {
+                                tokio::spawn(async move {
+                                    client.report_generation(telemetry).await;
+                                });
+                            }
+                        }
+                    }
+
                     let rewritten = rewrite_json_model_name(parsed, model_name);
                     serde_json::to_vec(&rewritten).unwrap_or(body_bytes.to_vec())
                 } else {
