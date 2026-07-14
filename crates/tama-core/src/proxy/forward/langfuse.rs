@@ -300,10 +300,19 @@ impl LangfuseClient {
             // bon generates methods that accept `T` directly for `Option<T>` parameters.
             // We pass values directly (bon wraps them as Some internally).
             // Pass user-provided trace ID when present (respects langfuse_trace_id header).
+            // When no header is present, do NOT set .id() so the SDK auto-generates a UUID.
             tracing::info!("Langfuse: calling inner.trace().call().await");
-            let trace_result = inner
-                .trace()
-                .id(trace_id_header.unwrap_or_default())
+            let trace_builder = inner.trace();
+            let trace_builder = if let Some(ref id) = trace_id_header {
+                if !id.is_empty() {
+                    trace_builder.id(id.clone())
+                } else {
+                    trace_builder
+                }
+            } else {
+                trace_builder
+            };
+            let trace_result = trace_builder
                 .name(model.clone())
                 .user_id(user_id.unwrap_or_default())
                 .session_id(session_id.unwrap_or_default())
