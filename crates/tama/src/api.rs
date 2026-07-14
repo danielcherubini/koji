@@ -46,11 +46,14 @@ pub async fn get_logs(
     // Use spawn_blocking for synchronous file I/O to avoid blocking the Tokio runtime.
     let log_path_clone = log_path.clone();
     let n = query.lines;
-    let lines = tokio::task::spawn_blocking(move || {
+    let lines: Vec<String> = tokio::task::spawn_blocking(move || {
         tama_core::logging::tail_lines(&log_path_clone, n).unwrap_or_default()
     })
     .await
-    .unwrap_or_default();
+    .unwrap_or_default()
+    .into_iter()
+    .map(|line| tama_core::logging::format_log_line(&line))
+    .collect();
     Json(serde_json::json!({ "lines": lines })).into_response()
 }
 

@@ -69,12 +69,15 @@ pub async fn handle_all_logs(
         // Collect tama.log
         let tama_path = dir.join("tama.log");
         if tama_path.exists() && seen_sources.insert("tama".to_string()) {
-            let lines =
+            let lines: Vec<String> =
                 match tokio::task::spawn_blocking(move || logging::tail_lines(&tama_path, n)).await
                 {
                     Ok(Ok(l)) => l,
                     _ => Vec::new(),
-                };
+                }
+                .into_iter()
+                .map(|line| logging::format_log_line(&line))
+                .collect();
             if !lines.is_empty() {
                 sources.push(SourceLogs {
                     name: "tama".to_string(),
@@ -102,13 +105,16 @@ pub async fn handle_all_logs(
                 let source_name = fname_str[..fname_str.len() - 4].to_string();
                 if seen_sources.insert(source_name.clone()) {
                     let path = entry.path();
-                    let lines =
+                    let lines: Vec<String> =
                         match tokio::task::spawn_blocking(move || logging::tail_lines(&path, n))
                             .await
                         {
                             Ok(Ok(l)) => l,
                             _ => Vec::new(),
-                        };
+                        }
+                        .into_iter()
+                        .map(|line| logging::format_log_line(&line))
+                        .collect();
                     if !lines.is_empty() {
                         sources.push(SourceLogs {
                             name: source_name,

@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use serde_json;
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 use tracing_subscriber::{fmt, EnvFilter};
@@ -133,6 +134,42 @@ pub fn rotate_logs(logs_dir: &Path, profile: &str) -> Result<()> {
     Ok(())
 }
 
+/// Parse a JSON log line (from tracing-subscriber's JSON format) and return
+/// a human-readable string: `"2024-01-01T12:00:00.000000Z INFO target: message"`.
+///
+/// Returns the original line unchanged if it's not valid JSON or doesn't contain
+/// the expected fields (e.g., backend logs that are plain text).
+pub fn format_log_line(line: &str) -> String {
+    // Fast path: if it doesn't start with '{', it's a plain text line
+    let trimmed = line.trim();
+    if !trimmed.starts_with('{') {
+        return line.to_string();
+    }
+
+    // Try to parse as JSON and extract fields
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        let timestamp = v.get("timestamp").and_then(|t| t.as_str()).unwrap_or("");
+        let level = v.get("level").and_then(|l| l.as_str()).unwrap_or("");
+        let target = v.get("target").and_then(|t| t.as_str()).unwrap_or("");
+        // Message is nested under fields.message in tracing-subscriber JSON format
+        let message = v
+            .pointer("/fields/message")
+            .and_then(|m| m.as_str())
+            .or_else(|| v.get("message").and_then(|m| m.as_str()))
+            .unwrap_or("");
+
+        if message.is_empty() {
+            // Fallback: return original line if we couldn't extract a message
+            return line.to_string();
+        }
+
+        format!("{} {} {}: {}", timestamp, level, target, message)
+    } else {
+        // Not valid JSON — return as-is (e.g., backend logs)
+        line.to_string()
+    }
+}
+
 /// Read the last N lines from a log file.
 pub fn tail_lines(path: &Path, n: usize) -> Result<Vec<String>> {
     use std::io::{BufRead, BufReader};
@@ -244,5 +281,45 @@ mod tests {
     fn test_max_log_files_constant() {
         // Verify the max number of log files
         assert_eq!(MAX_LOG_FILES, 5);
+    }
+
+    #[test]
+    fn test_format_log_line_json_tracing_subscriber() {
+        let json_line = r#"{"timestamp":"2024-01-01T12:00:00.000000Z","level":"INFO","target":"tama_core::proxy","fields":{"message":"Starting tama"}}"#;
+        let result = format_log_line(json_line);
+        assert_eq!(
+            result,
+            "2024-01-01T12:00:00.000000Z INFO tama_core::proxy: Starting tama"
+        );
+    }
+
+    #[test]
+    fn test_format_log_line_json_with_message_field() {
+        // Fallback: message at top level (not under fields)
+        let json_line = r#"{"timestamp":"2024-01-01T12:00:00Z","level":"ERROR","target":"backend","message":"Failed to load model"}"#;
+        let result = format_log_line(json_line);
+        assert_eq!(
+            result,
+            "2024-01-01T12:00:00Z ERROR backend: Failed to load model"
+        );
+    }
+
+    #[test]
+    fn test_format_log_line_plain_text_passthrough() {
+        let plain = "[2024-01-01] Backend started on port 8080";
+        assert_eq!(format_log_line(plain), plain);
+    }
+
+    #[test]
+    fn test_format_log_line_invalid_json_passthrough() {
+        let invalid = "{not valid json}";
+        assert_eq!(format_log_line(invalid), invalid);
+    }
+
+    #[test]
+    fn test_format_log_line_missing_message() {
+        // Valid JSON but no message field — should return original line
+        let json_no_msg = r#"{"timestamp":"2024-01-01T12:00:00Z","level":"INFO"}"#;
+        assert_eq!(format_log_line(json_no_msg), json_no_msg);
     }
 }
