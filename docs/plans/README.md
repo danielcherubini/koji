@@ -13,8 +13,8 @@ This directory contains implementation plans for the Tama project. Each plan doc
 ## Quick Stats
 
 - **Total Plans**: 54
-- **Backlog**: 1
-- **Completed**: 50 ✅
+- **Backlog**: 0
+- **Completed**: 51 ✅
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
 
@@ -22,9 +22,7 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Backlog
 
-| Plan | Description |
-|------|-------------|
-| [Improved Logging](plan-158-improved-logging.md) | Fix stale logs bug — two-layer tracing (pretty console + JSON file), non-blocking writes via tracing-appender, config-respecting log level, GPU structured fields on inference events, JSON→human-readable formatting in logs API |
+*(empty)*
 
 ## Completed Plans
 
@@ -32,6 +30,7 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 | Plan | Description | PR / Git References |
 |------|-------------|---------------------|
+| [Improved Logging](done/plan-158-improved-logging.md) | Fix stale logs bug — two-layer tracing (pretty console + JSON file), non-blocking writes via tracing-appender, config-respecting log level, GPU structured fields on inference events, JSON→human-readable formatting in logs API | #158 ✅ COMPLETED | [`03fbd767`](../../commit/03fbd767) |
 | [Langfuse Web UI](done/plan-157-langfuse-web-ui.md) | Wire Langfuse config into web UI — WASM mirror types, structured config API, config editor form with credential validation | #157 ✅ COMPLETED | [`4a2fee2e`](../../commit/4a2fee2e), [`c6f2b2f8`](../../commit/c6f2b2f8), [`8fa8880e`](../../commit/8fa8880e) |
 | [Langfuse Core Integration](done/plan-156-langfuse-core.md) | Langfuse observability — config persistence (migration 0037), telemetry structs, `langfuse-ergonomic` client wrapper, non-streaming + streaming request interception with energy cost | #156 ✅ COMPLETED |
 | [PATCH Endpoints](done/plan-155-patch-endpoints.md) | Add PATCH endpoints for models, config, and backends — surgical partial updates with deep recursive config merge | #155 `2c6a9119`, `9c49a2a8`, `f5fa655e`, `22556e3d`, `38acc38d` |
