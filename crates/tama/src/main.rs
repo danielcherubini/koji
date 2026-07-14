@@ -172,15 +172,18 @@ fn init_tracing(config: &Config) -> Result<tracing_appender::non_blocking::Worke
     use tracing_subscriber::{fmt, layer::Layer, layer::SubscriberExt, util::SubscriberInitExt};
 
     // Build EnvFilter with config log_level as the authoritative default.
-    // RUST_LOG directives are added on top (not replaced) so the config
-    // level is always the floor — prevents RUST_LOG from silencing the
-    // file logger by setting a restrictive default like `warn`.
+    // RUST_LOG target-specific directives (e.g. "tama_core::backends=debug")
+    // are added on top. Bare level directives (e.g. "warn") are ignored so
+    // they can't override the config's log_level and silence the file logger.
     let log_level: tracing::Level = config.general.log_level.into();
     let mut env_filter = tracing_subscriber::EnvFilter::new(format!("{}", log_level));
     if let Ok(rust_log) = std::env::var("RUST_LOG") {
         for directive in rust_log.split(',') {
             let directive = directive.trim();
-            if directive.is_empty() {
+            // Only add directives with a target (contain '='). Bare levels
+            // like "warn" or "info" would set the default and override the
+            // config level — we want the config to be authoritative.
+            if directive.is_empty() || !directive.contains('=') {
                 continue;
             }
             if let Ok(parsed) = directive.parse::<tracing_subscriber::filter::Directive>() {
