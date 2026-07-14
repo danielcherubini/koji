@@ -198,16 +198,38 @@ impl LangfuseClient {
     ///
     /// Returns `None` when langfuse is disabled or credentials are missing.
     pub fn from_config(config: &crate::config::LangfuseConfig) -> Option<Self> {
-        if !config.enabled || config.public_key.is_empty() || config.secret_key.is_empty() {
+        if !config.enabled {
+            tracing::info!("Langfuse disabled in config (enabled=false)");
+            return None;
+        }
+        if config.public_key.is_empty() {
+            tracing::warn!("Langfuse enabled but public_key is empty");
+            return None;
+        }
+        if config.secret_key.is_empty() {
+            tracing::warn!("Langfuse enabled but secret_key is empty");
             return None;
         }
 
-        let inner = ClientBuilder::new()
+        let inner = match ClientBuilder::new()
             .public_key(&config.public_key)
             .secret_key(&config.secret_key)
             .base_url(config.host.clone())
             .build()
-            .ok()?;
+        {
+            Ok(client) => {
+                tracing::info!(
+                    host = %config.host,
+                    environment = %config.environment,
+                    "Langfuse client initialized successfully"
+                );
+                client
+            }
+            Err(e) => {
+                tracing::error!("Langfuse client build failed: {e}");
+                return None;
+            }
+        };
 
         Some(Self {
             inner: Arc::new(inner),
