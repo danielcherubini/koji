@@ -1446,6 +1446,100 @@ fn test_migration_v35_adds_oauth2_columns() {
     assert_eq!(logout, None);
 }
 
+/// Migration v37 must create the app_langfuse table with correct schema.
+#[test]
+fn test_migration_v37_creates_app_langfuse_table() {
+    let conn = Connection::open_in_memory().unwrap();
+
+    // Bring DB up to v36 (pre-v37 schema)
+    run_up_to(&conn, 36).unwrap();
+
+    // Verify table does NOT exist yet
+    let table_before: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='app_langfuse'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(table_before, 0, "app_langfuse should not exist before v37");
+
+    // Apply v37 only (not run() which would apply all remaining migrations)
+    run_up_to(&conn, 37).unwrap();
+
+    // Verify table now exists
+    let table_after: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='app_langfuse'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(table_after, 1, "app_langfuse must exist after v37");
+
+    // Verify all columns
+    let columns = [
+        "id",
+        "enabled",
+        "public_key",
+        "secret_key",
+        "host",
+        "environment",
+        "capture_input",
+        "capture_output",
+        "capture_streaming",
+        "telemetry_max_bytes",
+        "electricity_price_per_kwh",
+    ];
+    for col in &columns {
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('app_langfuse') WHERE name=?",
+                [col],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(exists, 1, "column '{}' must exist", col);
+    }
+
+    // Verify CHECK (id = 1) constraint
+    conn.execute("INSERT INTO app_langfuse (id) VALUES (1)", [])
+        .unwrap();
+
+    let err = conn.execute("INSERT INTO app_langfuse (id) VALUES (2)", []);
+    assert!(
+        err.is_err(),
+        "id != 1 must fail CHECK constraint on app_langfuse"
+    );
+
+    // Verify defaults: insert with only id, check defaults
+    conn.execute("INSERT OR REPLACE INTO app_langfuse (id) VALUES (1)", [])
+        .unwrap();
+
+    let enabled: i32 = conn
+        .query_row("SELECT enabled FROM app_langfuse WHERE id = 1", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(enabled, 0);
+
+    let host: String = conn
+        .query_row("SELECT host FROM app_langfuse WHERE id = 1", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(host, "https://cloud.langfuse.com");
+
+    let environment: String = conn
+        .query_row(
+            "SELECT environment FROM app_langfuse WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(environment, "default");
+}
+
 /// Singleton tables must use default values when no explicit values are given.
 #[test]
 fn test_migration_v31_singleton_defaults() {

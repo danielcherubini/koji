@@ -8,6 +8,7 @@ mod backend;
 mod compaction;
 mod general;
 mod health;
+mod langfuse;
 mod model;
 mod proxy;
 mod quant;
@@ -18,6 +19,7 @@ pub use backend::*;
 pub use compaction::*;
 pub use general::*;
 pub use health::*;
+pub use langfuse::*;
 pub use model::*;
 pub use proxy::*;
 pub use quant::*;
@@ -31,6 +33,7 @@ mod patch;
 pub use patch::CompactionConfigPatch;
 pub use patch::ConfigPatchBody;
 pub use patch::GeneralPatch;
+pub use patch::LangfuseConfigPatch;
 pub use patch::OAuth2ConfigPatch;
 pub use patch::ProxyConfigPatch;
 pub use patch::SupervisorPatch;
@@ -55,6 +58,8 @@ pub struct StructuredConfigBody {
     pub proxy: ProxyConfig,
     #[serde(default)]
     pub compaction: CompactionConfig,
+    #[serde(default)]
+    pub langfuse: LangfuseConfig,
 }
 
 /// Main configuration struct.
@@ -71,6 +76,8 @@ pub struct Config {
     pub proxy: ProxyConfig,
     #[serde(default)]
     pub compaction: CompactionConfig,
+    #[serde(default)]
+    pub langfuse: LangfuseConfig,
 }
 
 /// Convert from CoreConfig to mirror type.
@@ -87,6 +94,7 @@ impl From<tama_core::config::Config> for Config {
                 .collect(),
             proxy: c.proxy.into(),
             compaction: c.compaction.into(),
+            langfuse: c.langfuse.into(),
         }
     }
 }
@@ -105,6 +113,7 @@ impl From<StructuredConfigBody> for tama_core::config::Config {
                 .collect(),
             proxy: b.proxy.into(),
             compaction: b.compaction.into(),
+            langfuse: b.langfuse.into(),
         }
     }
 }
@@ -123,6 +132,7 @@ impl From<Config> for tama_core::config::Config {
                 .collect(),
             proxy: c.proxy.into(),
             compaction: c.compaction.into(),
+            langfuse: c.langfuse.into(),
         }
     }
 }

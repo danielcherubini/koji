@@ -9,6 +9,11 @@ impl ProxyState {
     pub fn new(config: crate::config::Config, db_dir: Option<std::path::PathBuf>) -> Self {
         let (metrics_tx, _) = tokio::sync::broadcast::channel(3);
 
+        // Initialize Langfuse client from config before wrapping in Arc.
+        let langfuse_client =
+            crate::proxy::forward::langfuse::LangfuseClient::from_config(&config.langfuse)
+                .map(Arc::new);
+
         // Initialize pull queue service if db_dir is configured.
         let poll_interval = config.proxy.download_queue_poll_interval_secs;
         let pull_queue = db_dir.as_ref().and_then(|dir| {
@@ -47,6 +52,7 @@ impl ProxyState {
             gpu_devices_cache: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             model_tasks: tokio::sync::RwLock::new(std::collections::HashMap::new()),
             cookie_key: cookie::Key::generate(),
+            langfuse_client,
         };
 
         // Spawn the queue processor background task if pull queue is configured.

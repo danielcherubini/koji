@@ -1,14 +1,18 @@
 use super::headers::{filter_request_headers, strip_response_headers};
 use super::json::rewrite_json_model_name;
+use super::langfuse::{
+    compute_energy_cost, extract_langfuse_headers, extract_request_fields, extract_timings,
+    extract_usage, get_gpu_power_watts, parse_sse_accumulated, LangfuseTelemetry,
+};
 use super::sse::process_sse_line;
 use super::stats::extract_inference_stats;
 use crate::proxy::{BackendState, ProxyState};
 use axum::{body::Body, http::request::Parts, response::IntoResponse};
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use futures_util::stream::StreamExt;
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 use tracing::info;
 
 pub async fn forward_request(
@@ -152,16 +156,60 @@ pub async fn forward_request(
 
     let headers = filter_request_headers(&parts.headers);
 
+    // Capture Langfuse telemetry context before sending the request.
+    // extract_request_fields must be called here — body_bytes is a reference to the
+    // original request body and remains valid after .send(). It is shadowed later by
+    // response.body() inside the non-streaming else branch.
+    let langfuse_headers = extract_langfuse_headers(&parts.headers);
+    let telemetry_start = Instant::now();
+
+    // Read langfuse config once — reused for body injection (streaming) and
+    // telemetry collection (both streaming and non-streaming paths).
+    let langfuse_cfg = state.config.read().await.langfuse.clone();
+
+    // Extract request fields from body (before body_bytes is shadowed by response).
+    let langfuse_req_fields = extract_request_fields(body_bytes).unwrap_or_default();
+
     let mut query_string = query.to_string();
     if !query_string.is_empty() {
         query_string = format!("?{}", query_string);
     }
 
+    // Inject stream_options.include_usage: true for streaming chat completions
+    // ONLY when Langfuse telemetry is enabled (zero impact when disabled).
+    // Parse body once and reuse for both injection detection and field extraction.
+    let body_to_send = if langfuse_cfg.enabled {
+        if let Ok(mut body) = serde_json::from_slice::<serde_json::Value>(body_bytes) {
+            let is_streaming_chat = parts.uri.path().ends_with("/chat/completions")
+                && body
+                    .get("stream")
+                    .and_then(|s| s.as_bool())
+                    .unwrap_or(false);
+            if is_streaming_chat {
+                if let Some(obj) = body.as_object_mut() {
+                    let stream_opts = obj
+                        .entry("stream_options")
+                        .or_insert_with(|| serde_json::json!({}));
+                    if let Some(opts) = stream_opts.as_object_mut() {
+                        opts.insert("include_usage".to_string(), serde_json::json!(true));
+                    }
+                }
+                serde_json::to_vec(&body).unwrap_or_else(|_| body_bytes.to_vec())
+            } else {
+                body_bytes.to_vec()
+            }
+        } else {
+            body_bytes.to_vec()
+        }
+    } else {
+        body_bytes.to_vec()
+    };
+
     match state
         .client
         .request(method, format!("{}{}", target_uri, query_string))
         .headers(headers)
-        .body(body_bytes.to_vec())
+        .body(body_to_send)
         .send()
         .await
     {
@@ -224,9 +272,15 @@ pub async fn forward_request(
                 .map(|ct| ct.contains("text/event-stream"))
                 .unwrap_or(false);
 
+            // Langfuse config already read once above — reuse it here.
+            let capture_streaming = langfuse_cfg.enabled && langfuse_cfg.capture_streaming;
+            let langfuse_client = state.langfuse_client.clone();
+
             let body = if is_streaming {
                 // Streaming response — rewrite the model name in each SSE chunk.
                 // Uses unfold to own the partial-line buffer across chunks (Send-safe).
+                // When Langfuse streaming capture is enabled, tee raw bytes via mpsc
+                // for background accumulation and telemetry reporting.
                 let model_name: Option<String> = model_name.map(|s| s.to_string());
                 let backend_name_owned = backend_name.to_string();
                 // Wrap inference_stats sender in Arc so it can be shared across
@@ -234,16 +288,83 @@ pub async fn forward_request(
                 // per-iteration cloning and keeps a single owned reference).
                 let inference_stats = Arc::new(state.inference_stats.clone());
                 let byte_stream = response.bytes_stream();
+
+                // Channel for tee'd bytes — None when capture disabled.
+                let (tx, rx) = if capture_streaming {
+                    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
+                    (Some(tx), Some(rx))
+                } else {
+                    (None, None)
+                };
+
+                // Spawn background accumulation + reporting (only if capture enabled).
+                if let Some(mut rx) = rx {
+                    let max_bytes = langfuse_cfg.telemetry_max_bytes;
+                    let (trace_id, user_id, session_id, metadata, tags) = langfuse_headers.clone();
+                    let (req_model, input, model_params) = langfuse_req_fields.clone();
+                    let start_time = telemetry_start;
+
+                    tokio::spawn(async move {
+                        let mut buf = BytesMut::new();
+                        let mut total_bytes = 0usize;
+                        while let Some(chunk) = rx.recv().await {
+                            if total_bytes + chunk.len() <= max_bytes {
+                                buf.extend_from_slice(&chunk);
+                                total_bytes += chunk.len();
+                            }
+                            // Keep draining the channel even if over limit (must consume all)
+                        }
+                        let raw = String::from_utf8_lossy(&buf).into_owned();
+                        let (content, usage, timings) = parse_sse_accumulated(&raw);
+
+                        if let Some(client) = langfuse_client {
+                            let telemetry = LangfuseTelemetry {
+                                model: req_model,
+                                input: if langfuse_cfg.capture_input {
+                                    input
+                                } else {
+                                    None
+                                },
+                                model_params,
+                                output: if langfuse_cfg.capture_output {
+                                    content
+                                } else {
+                                    None
+                                },
+                                usage,
+                                timings,
+                                start_time,
+                                end_time: Some(std::time::Instant::now()),
+                                trace_id,
+                                user_id,
+                                session_id,
+                                metadata,
+                                tags,
+                                energy_cost: None,
+                                energy_wh: None,
+                                gpu_watts: None,
+                            };
+                            client.report_generation(telemetry).await;
+                        }
+                    });
+                }
+
                 let transformed_stream = futures_util::stream::unfold(
                     (byte_stream, String::new()),
                     move |(mut stream, mut line_buf)| {
                         let model_name = model_name.clone();
                         let backend_name = backend_name_owned.clone();
                         let inference_stats = inference_stats.clone();
+                        let tx = tx.clone(); // Option<UnboundedSender<Bytes>> clone for closure
                         async move {
                             let chunk_result = stream.next().await?;
                             let result: Result<Bytes, reqwest::Error> = match chunk_result {
                                 Ok(chunk) => {
+                                    // Tee: send clone to background accumulator (if channel active).
+                                    if let Some(ref sender) = tx {
+                                        let _ = sender.send(chunk.clone());
+                                    }
+
                                     let chunk_str = String::from_utf8_lossy(&chunk);
                                     let mut out = String::new();
 
@@ -295,6 +416,99 @@ pub async fn forward_request(
                     // Extract inference stats from timings (before rewrite — timings unaffected by model name change)
                     let _stats =
                         extract_inference_stats(backend_name, &parsed, &state.inference_stats);
+
+                    // Collect Langfuse telemetry (non-streaming path) — fire-and-forget.
+                    // MUST be before rewrite_json_model_name which consumes `parsed`.
+                    {
+                        if langfuse_cfg.enabled {
+                            let langfuse_client = state.langfuse_client.clone();
+
+                            // Use langfuse_req_fields captured before the send (body_bytes is shadowed here by response body)
+                            let (req_model, input, model_params) = langfuse_req_fields.clone();
+
+                            // Extract response fields from &parsed (borrow — parsed still owned)
+                            let usage = extract_usage(&parsed);
+                            let timings = extract_timings(&parsed);
+
+                            // Extract output (completion text)
+                            let output = if langfuse_cfg.capture_output {
+                                // Chat completions: choices[0].message.content
+                                parsed
+                                    .get("choices")
+                                    .and_then(|c| c.as_array())
+                                    .and_then(|c| c.first())
+                                    .and_then(|c| c.get("message"))
+                                    .and_then(|m| m.get("content"))
+                                    .and_then(|c| c.as_str())
+                                    .map(|s| s.to_string())
+                                    // Completions (non-chat): choices[0].text
+                                    .or_else(|| {
+                                        parsed
+                                            .get("choices")
+                                            .and_then(|c| c.as_array())
+                                            .and_then(|c| c.first())
+                                            .and_then(|c| c.get("text"))
+                                            .and_then(|t| t.as_str())
+                                            .map(|s| s.to_string())
+                                    })
+                            } else {
+                                None
+                            };
+
+                            // Compute energy cost (best-effort — uses first GPU's power_w)
+                            let (energy_cost, energy_wh, gpu_watts) = {
+                                let metrics = state.system_metrics.read().await;
+                                let power_w = get_gpu_power_watts(&metrics);
+                                if let (Some(pw), Some(t)) = (power_w, &timings) {
+                                    match compute_energy_cost(
+                                        pw,
+                                        t.prompt_ms,
+                                        t.predicted_ms,
+                                        langfuse_cfg.electricity_price_per_kwh,
+                                    ) {
+                                        Some((wh, cost)) => (Some(cost), Some(wh), Some(pw)),
+                                        None => (None, None, None),
+                                    }
+                                } else {
+                                    (None, None, None)
+                                }
+                            };
+
+                            // Build LangfuseTelemetry
+                            let (trace_id, user_id, session_id, metadata, tags) =
+                                langfuse_headers.clone();
+                            let telemetry = LangfuseTelemetry {
+                                model: req_model,
+                                input: if langfuse_cfg.capture_input {
+                                    input
+                                } else {
+                                    None
+                                },
+                                model_params,
+                                output,
+                                usage,
+                                timings,
+                                start_time: telemetry_start,
+                                end_time: Some(Instant::now()),
+                                trace_id,
+                                user_id,
+                                session_id,
+                                metadata,
+                                tags,
+                                energy_cost,
+                                energy_wh,
+                                gpu_watts,
+                            };
+
+                            // Spawn background reporting task
+                            if let Some(client) = langfuse_client {
+                                tokio::spawn(async move {
+                                    client.report_generation(telemetry).await;
+                                });
+                            }
+                        }
+                    }
+
                     let rewritten = rewrite_json_model_name(parsed, model_name);
                     serde_json::to_vec(&rewritten).unwrap_or(body_bytes.to_vec())
                 } else {

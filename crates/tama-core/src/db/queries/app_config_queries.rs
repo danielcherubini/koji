@@ -72,6 +72,21 @@ pub struct CompactionRecord {
     pub request_timeout_ms: u64,
 }
 
+/// A row from the `app_langfuse` table.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LangfuseRecord {
+    pub enabled: bool,
+    pub public_key: String,
+    pub secret_key: String,
+    pub host: String,
+    pub environment: String,
+    pub capture_input: bool,
+    pub capture_output: bool,
+    pub capture_streaming: bool,
+    pub telemetry_max_bytes: usize,
+    pub electricity_price_per_kwh: f64,
+}
+
 /// A row from the `sampling_templates` table.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SamplingTemplateRecord {
@@ -398,6 +413,58 @@ pub fn get_compaction(conn: &Connection) -> Result<Option<CompactionRecord>> {
     }
 }
 
+/// Insert or replace the langfuse config row (id=1).
+pub fn upsert_langfuse(conn: &Connection, record: &LangfuseRecord) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO app_langfuse (id, enabled, public_key, secret_key, host, environment,
+            capture_input, capture_output, capture_streaming, telemetry_max_bytes, electricity_price_per_kwh)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            record.enabled as i32,
+            record.public_key,
+            record.secret_key,
+            record.host,
+            record.environment,
+            record.capture_input as i32,
+            record.capture_output as i32,
+            record.capture_streaming as i32,
+            record.telemetry_max_bytes as i64,
+            record.electricity_price_per_kwh,
+        ],
+    )
+    .context("Failed to upsert app_langfuse")?;
+    Ok(())
+}
+
+/// Get the langfuse config row. Returns None if no row exists.
+pub fn get_langfuse(conn: &Connection) -> Result<Option<LangfuseRecord>> {
+    let mut stmt = conn.prepare(
+        "SELECT enabled, public_key, secret_key, host, environment,
+                capture_input, capture_output, capture_streaming,
+                telemetry_max_bytes, electricity_price_per_kwh
+         FROM app_langfuse WHERE id = 1",
+    )?;
+    let mut rows = stmt.query_map([], |row| {
+        Ok(LangfuseRecord {
+            enabled: row.get::<_, i32>(0)? != 0,
+            public_key: row.get::<_, String>(1)?,
+            secret_key: row.get::<_, String>(2)?,
+            host: row.get::<_, String>(3)?,
+            environment: row.get::<_, String>(4)?,
+            capture_input: row.get::<_, i32>(5)? != 0,
+            capture_output: row.get::<_, i32>(6)? != 0,
+            capture_streaming: row.get::<_, i32>(7)? != 0,
+            telemetry_max_bytes: row.get::<_, i64>(8)? as usize,
+            electricity_price_per_kwh: row.get::<_, f64>(9)?,
+        })
+    })?;
+    match rows.next() {
+        Some(Ok(record)) => Ok(Some(record)),
+        Some(Err(e)) => Err(e.into()),
+        None => Ok(None),
+    }
+}
+
 /// Insert or update a sampling template.
 #[allow(clippy::too_many_arguments)]
 pub fn upsert_sampling_template(
@@ -512,6 +579,10 @@ pub fn seed_defaults(conn: &Connection) -> Result<()> {
         [],
     )
     .context("Failed to seed app_compaction defaults")?;
+
+    // Langfuse defaults
+    conn.execute("INSERT OR IGNORE INTO app_langfuse (id) VALUES (1)", [])
+        .context("Failed to seed app_langfuse defaults")?;
 
     // Built-in sampling templates — must match Config::default() in loader.rs
     let templates = [
@@ -630,6 +701,19 @@ mod tests {
         let compaction = get_compaction(&conn).unwrap().unwrap();
         assert!(!compaction.enabled);
         assert_eq!(compaction.device, "cpu");
+
+        // Langfuse defaults
+        let langfuse = get_langfuse(&conn).unwrap().unwrap();
+        assert!(!langfuse.enabled);
+        assert_eq!(langfuse.public_key, "");
+        assert_eq!(langfuse.secret_key, "");
+        assert_eq!(langfuse.host, "https://cloud.langfuse.com");
+        assert_eq!(langfuse.environment, "default");
+        assert!(langfuse.capture_input);
+        assert!(langfuse.capture_output);
+        assert!(langfuse.capture_streaming);
+        assert_eq!(langfuse.telemetry_max_bytes, 1048576);
+        assert_eq!(langfuse.electricity_price_per_kwh, 0.0);
 
         // 4 sampling templates
         let templates = get_all_sampling_templates(&conn).unwrap();
@@ -840,6 +924,68 @@ mod tests {
         assert_eq!(compaction.device, "cpu");
         assert_eq!(compaction.port, None);
         assert_eq!(compaction.request_timeout_ms, 30000);
+    }
+
+    // ── langfuse ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_langfuse_roundtrip() {
+        let conn = test_conn();
+
+        assert!(get_langfuse(&conn).unwrap().is_none());
+
+        upsert_langfuse(
+            &conn,
+            &LangfuseRecord {
+                enabled: true,
+                public_key: "langpubkey123".to_string(),
+                secret_key: "langsecretkey456".to_string(),
+                host: "https://custom.langfuse.example.com".to_string(),
+                environment: "production".to_string(),
+                capture_input: false,
+                capture_output: true,
+                capture_streaming: false,
+                telemetry_max_bytes: 2097152, // 2 MB
+                electricity_price_per_kwh: 0.05,
+            },
+        )
+        .unwrap();
+
+        let langfuse = get_langfuse(&conn).unwrap().unwrap();
+        assert!(langfuse.enabled);
+        assert_eq!(langfuse.public_key, "langpubkey123");
+        assert_eq!(langfuse.secret_key, "langsecretkey456");
+        assert_eq!(langfuse.host, "https://custom.langfuse.example.com");
+        assert_eq!(langfuse.environment, "production");
+        assert!(!langfuse.capture_input);
+        assert!(langfuse.capture_output);
+        assert!(!langfuse.capture_streaming);
+        assert_eq!(langfuse.telemetry_max_bytes, 2097152);
+        assert_eq!(langfuse.electricity_price_per_kwh, 0.05);
+
+        // Update with defaults
+        upsert_langfuse(
+            &conn,
+            &LangfuseRecord {
+                enabled: false,
+                public_key: String::new(),
+                secret_key: String::new(),
+                host: "https://cloud.langfuse.com".to_string(),
+                environment: "default".to_string(),
+                capture_input: true,
+                capture_output: true,
+                capture_streaming: true,
+                telemetry_max_bytes: 1048576, // 1 MB
+                electricity_price_per_kwh: 0.0,
+            },
+        )
+        .unwrap();
+
+        let langfuse = get_langfuse(&conn).unwrap().unwrap();
+        assert!(!langfuse.enabled);
+        assert_eq!(langfuse.public_key, "");
+        assert_eq!(langfuse.host, "https://cloud.langfuse.com");
+        assert_eq!(langfuse.environment, "default");
     }
 
     // ── sampling templates ─────────────────────────────────────────────

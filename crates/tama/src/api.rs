@@ -232,6 +232,10 @@ pub fn merge_config_patch(
         Some(p) => merge_compaction(existing.compaction, p),
         None => existing.compaction,
     };
+    let langfuse = match patch.langfuse {
+        Some(p) => merge_langfuse(existing.langfuse, p),
+        None => existing.langfuse,
+    };
 
     crate::types::config::Config {
         general,
@@ -240,6 +244,7 @@ pub fn merge_config_patch(
         sampling_templates,
         proxy,
         compaction,
+        langfuse,
     }
 }
 
@@ -353,6 +358,30 @@ fn merge_compaction(
     }
 }
 
+fn merge_langfuse(
+    existing: crate::types::config::LangfuseConfig,
+    patch: crate::types::config::LangfuseConfigPatch,
+) -> crate::types::config::LangfuseConfig {
+    crate::types::config::LangfuseConfig {
+        enabled: patch.enabled.unwrap_or(existing.enabled),
+        public_key: patch.public_key.unwrap_or(existing.public_key),
+        secret_key: patch.secret_key.unwrap_or(existing.secret_key),
+        host: patch.host.unwrap_or(existing.host),
+        environment: patch.environment.unwrap_or(existing.environment),
+        capture_input: patch.capture_input.unwrap_or(existing.capture_input),
+        capture_output: patch.capture_output.unwrap_or(existing.capture_output),
+        capture_streaming: patch
+            .capture_streaming
+            .unwrap_or(existing.capture_streaming),
+        telemetry_max_bytes: patch
+            .telemetry_max_bytes
+            .unwrap_or(existing.telemetry_max_bytes),
+        electricity_price_per_kwh: patch
+            .electricity_price_per_kwh
+            .unwrap_or(existing.electricity_price_per_kwh),
+    }
+}
+
 fn merge_sampling_templates(
     mut existing: std::collections::BTreeMap<String, crate::types::config::SamplingParams>,
     patch: Option<std::collections::BTreeMap<String, crate::types::config::SamplingParams>>,
@@ -421,7 +450,8 @@ pub async fn patch_structured_config(
 mod tests {
     use super::*;
     use crate::types::config::{
-        CompactionConfig, Config, General, OAuth2Config, ProxyConfig, SamplingParams, Supervisor,
+        CompactionConfig, Config, General, LangfuseConfig, OAuth2Config, ProxyConfig,
+        SamplingParams, Supervisor,
     };
     use tama_core::config::{
         CompactionDevice as CoreCompactionDevice, LogLevel as CoreLogLevel,
@@ -470,6 +500,7 @@ mod tests {
                 port: None,
                 request_timeout_ms: 30000,
             },
+            langfuse: LangfuseConfig::default(),
         }
     }
 
@@ -483,6 +514,7 @@ mod tests {
             sampling_templates: None,
             proxy: None,
             compaction: None,
+            langfuse: None,
         };
 
         let merged = merge_config_patch(existing.clone(), patch);
@@ -530,6 +562,7 @@ mod tests {
                 ..Default::default()
             }),
             compaction: None,
+            langfuse: None,
         };
 
         let merged = merge_config_patch(existing, patch);
@@ -557,6 +590,7 @@ mod tests {
                 ..Default::default()
             }),
             compaction: None,
+            langfuse: None,
         };
 
         let merged = merge_config_patch(existing, patch);
@@ -621,6 +655,7 @@ mod tests {
             }),
             proxy: None,
             compaction: None,
+            langfuse: None,
         };
 
         let merged = merge_config_patch(existing, patch);

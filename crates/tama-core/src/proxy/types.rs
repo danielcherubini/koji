@@ -249,6 +249,7 @@ impl Clone for ProxyState {
             gpu_devices_cache: Arc::clone(&self.gpu_devices_cache),
             model_tasks: tokio::sync::RwLock::new(std::collections::HashMap::new()),
             cookie_key: self.cookie_key.clone(),
+            langfuse_client: self.langfuse_client.clone(),
         }
     }
 }
@@ -291,6 +292,8 @@ pub struct ProxyState {
     pub(crate) model_tasks: tokio::sync::RwLock<HashMap<String, JoinSet<()>>>,
     /// Signing key for session cookies (OAuth2 OIDC login).
     pub(crate) cookie_key: cookie::Key,
+    /// Langfuse observability client, initialized from config at startup.
+    pub(crate) langfuse_client: Option<Arc<crate::proxy::forward::langfuse::LangfuseClient>>,
 }
 
 impl ProxyState {
