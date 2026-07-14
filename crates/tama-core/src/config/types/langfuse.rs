@@ -69,7 +69,7 @@ mod tests {
         assert!(json.contains("\"host\":\"https://cloud.langfuse.com\""));
 
         let deserialized: LangfuseConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.enabled, false);
+        assert!(!deserialized.enabled);
         assert_eq!(deserialized.host, "https://cloud.langfuse.com");
     }
 }
