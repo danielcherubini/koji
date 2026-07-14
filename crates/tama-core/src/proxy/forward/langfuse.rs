@@ -246,6 +246,14 @@ impl LangfuseClient {
         let model = telemetry.model.clone();
         let user_id = telemetry.user_id;
         let session_id = telemetry.session_id;
+
+        tracing::debug!(
+            model = %model,
+            session_id = session_id.as_deref().unwrap_or("(none)"),
+            user_id = user_id.as_deref().unwrap_or("(none)"),
+            trace_id = telemetry.trace_id.as_deref().unwrap_or("(none)"),
+            "Langfuse: report_generation called"
+        );
         let tags = telemetry.tags.unwrap_or_default();
         let input = telemetry.input;
         let output = telemetry.output;
@@ -314,7 +322,10 @@ impl LangfuseClient {
                 .await;
 
             let trace_id = match trace_result {
-                Ok(resp) => resp.id,
+                Ok(resp) => {
+                    tracing::debug!(trace_id = %resp.id, "Langfuse trace sent to cloud");
+                    resp.id
+                }
                 Err(e) => {
                     tracing::error!("Langfuse trace creation failed: {e}");
                     return;
@@ -360,7 +371,7 @@ impl LangfuseClient {
             // Create generation using the SDK's builder API.
             let gen_result = inner
                 .generation()
-                .trace_id(trace_id)
+                .trace_id(trace_id.clone())
                 .name(model.clone())
                 .input(gen_input.unwrap_or_default())
                 .output(gen_output.unwrap_or_default())
@@ -373,6 +384,8 @@ impl LangfuseClient {
 
             if let Err(e) = gen_result {
                 tracing::error!("Langfuse generation creation failed: {e}");
+            } else {
+                tracing::debug!(trace_id = %trace_id, "Langfuse generation sent to cloud");
             }
         });
     }
