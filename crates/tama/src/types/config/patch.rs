@@ -79,6 +79,22 @@ pub struct CompactionConfigPatch {
     pub request_timeout_ms: Option<u64>,
 }
 
+/// PATCH body for LangfuseConfig section.
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LangfuseConfigPatch {
+    pub enabled: Option<bool>,
+    pub public_key: Option<String>,
+    pub secret_key: Option<String>,
+    pub host: Option<String>,
+    pub environment: Option<String>,
+    pub capture_input: Option<bool>,
+    pub capture_output: Option<bool>,
+    pub capture_streaming: Option<bool>,
+    pub telemetry_max_bytes: Option<usize>,
+    pub electricity_price_per_kwh: Option<f64>,
+}
+
 /// Top-level PATCH body for /tama/v1/config/structured.
 ///
 /// Each section is `Option<SectionPatch>` — if `None`, the existing section
@@ -100,4 +116,6 @@ pub struct ConfigPatchBody {
     pub proxy: Option<ProxyConfigPatch>,
     #[serde(default)]
     pub compaction: Option<CompactionConfigPatch>,
+    #[serde(default)]
+    pub langfuse: Option<LangfuseConfigPatch>,
 }
