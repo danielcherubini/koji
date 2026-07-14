@@ -12,8 +12,8 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Quick Stats
 
-- **Total Plans**: 53
-- **Backlog**: 0
+- **Total Plans**: 54
+- **Backlog**: 1
 - **Completed**: 50 ✅
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
@@ -22,7 +22,9 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Backlog
 
-*(empty)*
+| Plan | Description |
+|------|-------------|
+| [Improved Logging](plan-158-improved-logging.md) | Fix stale logs bug — two-layer tracing (pretty console + JSON file), non-blocking writes via tracing-appender, config-respecting log level, GPU structured fields on inference events, JSON→human-readable formatting in logs API |
 
 ## Completed Plans
 

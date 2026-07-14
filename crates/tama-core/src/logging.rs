@@ -3,8 +3,8 @@ use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 use tracing_subscriber::{fmt, EnvFilter};
 
-const MAX_LOG_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
-const MAX_LOG_FILES: usize = 5;
+pub const MAX_LOG_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
+pub const MAX_LOG_FILES: usize = 5;
 
 #[deprecated(note = "not used — remove in next major version")]
 pub fn init() {
@@ -107,7 +107,7 @@ pub fn open_log(logs_dir: &Path, profile: &str) -> Result<File> {
 
 /// Rotate log files: profile.log -> profile.1.log -> profile.2.log -> ...
 #[allow(deprecated)]
-fn rotate_logs(logs_dir: &Path, profile: &str) -> Result<()> {
+pub fn rotate_logs(logs_dir: &Path, profile: &str) -> Result<()> {
     // Remove oldest
     let oldest = logs_dir.join(format!("{}.{}.log", profile, MAX_LOG_FILES));
     if oldest.exists() {

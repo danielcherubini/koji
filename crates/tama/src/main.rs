@@ -3,7 +3,7 @@
 //! Starts the proxy server with web UI. All configuration is loaded from the
 //! config file — no CLI arguments are accepted.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tama_core::config::Config;
@@ -21,13 +21,13 @@ fn setup_hf_token(config: &Config) {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize tracing
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
-
-    // Load configuration
+    // Load configuration FIRST (needed for log_level and logs_dir)
     let config = Config::load()?;
+
+    // Initialize tracing with two layers: pretty console + JSON file
+    // The guard must stay in scope for the program's lifetime to keep the
+    // background writer thread alive — if dropped, file logging silently stops.
+    let _log_guard = init_tracing(&config)?;
 
     // Set up HF_TOKEN from config before any hf_hub usage
     setup_hf_token(&config);
@@ -95,11 +95,6 @@ async fn main() -> Result<()> {
 
     #[cfg(feature = "ssr")]
     {
-        // Ensure logs directory exists
-        if let Ok(logs_dir) = config.logs_dir() {
-            let _ = std::fs::create_dir_all(&logs_dir);
-        }
-
         // Create WebState separately from ProxyState.
         // WebState is owned by the tama crate, not tama-core.
         let web_state = {
@@ -163,4 +158,64 @@ async fn main() -> Result<()> {
         // CSR-only build: nothing to run (web UI is handled by browser)
         Ok(())
     }
+}
+
+/// Initialize tracing with two layers:
+/// - Console: pretty-formatted output to stdout
+/// - File: JSON lines written non-blockingly to tama.log with size-based rotation
+///
+/// Returns the WorkerGuard that must be kept alive for the program's lifetime.
+fn init_tracing(config: &Config) -> Result<tracing_appender::non_blocking::WorkerGuard> {
+    use tracing_subscriber::{fmt, layer::Layer, layer::SubscriberExt, util::SubscriberInitExt};
+
+    // Determine log level from config
+    let log_level: tracing::Level = config.general.log_level.into();
+    let env_filter = tracing_subscriber::EnvFilter::builder()
+        .with_default_directive(log_level.into())
+        .from_env_lossy();
+
+    // Ensure logs directory exists
+    let logs_dir = config
+        .logs_dir()
+        .with_context(|| "Failed to resolve logs directory from config")?;
+    std::fs::create_dir_all(&logs_dir)
+        .with_context(|| format!("Failed to create logs directory: {}", logs_dir.display()))?;
+
+    // Size-based rotation check on startup (reuses constants from logging module)
+    let log_path = logs_dir.join("tama.log");
+    if log_path.exists() {
+        if let Ok(meta) = std::fs::metadata(&log_path) {
+            if meta.len() > tama_core::logging::MAX_LOG_SIZE {
+                tama_core::logging::rotate_logs(&logs_dir, "tama")?;
+            }
+        }
+    }
+
+    // Open non-blocking file writer for JSON output
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .with_context(|| format!("Failed to open log file: {}", log_path.display()))?;
+
+    let (non_blocking, guard) = tracing_appender::non_blocking(file);
+
+    // Build two-layer subscriber
+    tracing_subscriber::registry()
+        .with(
+            fmt::layer()
+                .with_target(false)
+                .with_file(false)
+                .with_line_number(false)
+                .with_filter(env_filter.clone()),
+        )
+        .with(
+            fmt::layer()
+                .json()
+                .with_writer(non_blocking)
+                .with_filter(env_filter),
+        )
+        .init();
+
+    Ok(guard)
 }
