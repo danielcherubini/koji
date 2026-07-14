@@ -162,6 +162,12 @@ pub async fn forward_request(
     // response.body() inside the non-streaming else branch.
     let langfuse_headers = extract_langfuse_headers(&parts.headers);
     let telemetry_start = Instant::now();
+
+    // Read langfuse config once — reused for body injection (streaming) and
+    // telemetry collection (both streaming and non-streaming paths).
+    let langfuse_cfg = state.config.read().await.langfuse.clone();
+
+    // Extract request fields from body (before body_bytes is shadowed by response).
     let langfuse_req_fields = extract_request_fields(body_bytes).unwrap_or_default();
 
     let mut query_string = query.to_string();
@@ -170,30 +176,31 @@ pub async fn forward_request(
     }
 
     // Inject stream_options.include_usage: true for streaming chat completions
-    // when Langfuse telemetry is enabled (needed to receive usage in the final SSE chunk).
-    let is_chat_streaming = match serde_json::from_slice::<serde_json::Value>(body_bytes) {
-        Ok(body) => {
-            parts.uri.path().ends_with("/chat/completions")
+    // ONLY when Langfuse telemetry is enabled (zero impact when disabled).
+    // Parse body once and reuse for both injection detection and field extraction.
+    let body_to_send = if langfuse_cfg.enabled {
+        if let Ok(mut body) = serde_json::from_slice::<serde_json::Value>(body_bytes) {
+            let is_streaming_chat = parts.uri.path().ends_with("/chat/completions")
                 && body
                     .get("stream")
                     .and_then(|s| s.as_bool())
-                    .unwrap_or(false)
-        }
-        Err(_) => false,
-    };
-
-    let body_to_send = if is_chat_streaming {
-        let mut body: serde_json::Value =
-            serde_json::from_slice(body_bytes).unwrap_or_else(|_| serde_json::json!({}));
-        if let Some(obj) = body.as_object_mut() {
-            let stream_opts = obj
-                .entry("stream_options")
-                .or_insert_with(|| serde_json::json!({}));
-            if let Some(opts) = stream_opts.as_object_mut() {
-                opts.insert("include_usage".to_string(), serde_json::json!(true));
+                    .unwrap_or(false);
+            if is_streaming_chat {
+                if let Some(obj) = body.as_object_mut() {
+                    let stream_opts = obj
+                        .entry("stream_options")
+                        .or_insert_with(|| serde_json::json!({}));
+                    if let Some(opts) = stream_opts.as_object_mut() {
+                        opts.insert("include_usage".to_string(), serde_json::json!(true));
+                    }
+                }
+                serde_json::to_vec(&body).unwrap_or_else(|_| body_bytes.to_vec())
+            } else {
+                body_bytes.to_vec()
             }
+        } else {
+            body_bytes.to_vec()
         }
-        serde_json::to_vec(&body).unwrap_or_else(|_| body_bytes.to_vec())
     } else {
         body_bytes.to_vec()
     };
@@ -265,8 +272,7 @@ pub async fn forward_request(
                 .map(|ct| ct.contains("text/event-stream"))
                 .unwrap_or(false);
 
-            // Read langfuse config once for the streaming branch.
-            let langfuse_cfg = state.config.read().await.langfuse.clone();
+            // Langfuse config already read once above — reuse it here.
             let capture_streaming = langfuse_cfg.enabled && langfuse_cfg.capture_streaming;
             let langfuse_client = state.langfuse_client.clone();
 
@@ -308,7 +314,7 @@ pub async fn forward_request(
                             }
                             // Keep draining the channel even if over limit (must consume all)
                         }
-                        let raw = String::from_utf8_lossy(&buf).to_string();
+                        let raw = String::from_utf8_lossy(&buf).into_owned();
                         let (content, usage, timings) = parse_sse_accumulated(&raw);
 
                         if let Some(client) = langfuse_client {
@@ -414,7 +420,6 @@ pub async fn forward_request(
                     // Collect Langfuse telemetry (non-streaming path) — fire-and-forget.
                     // MUST be before rewrite_json_model_name which consumes `parsed`.
                     {
-                        let langfuse_cfg = state.config.read().await.langfuse.clone();
                         if langfuse_cfg.enabled {
                             let langfuse_client = state.langfuse_client.clone();
 

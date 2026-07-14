@@ -309,6 +309,11 @@ fn test_config_from_empty_db_seeds_defaults() {
     assert_eq!(config.langfuse.electricity_price_per_kwh, 0.0);
 
     // Verify 4 sampling templates seeded
+    assert_eq!(config.sampling_templates.len(), 4);
+    assert!(config.sampling_templates.contains_key("coding"));
+    assert!(config.sampling_templates.contains_key("chat"));
+    assert!(config.sampling_templates.contains_key("analysis"));
+    assert!(config.sampling_templates.contains_key("creative"));
     let coding = config.sampling_templates.get("coding").unwrap();
     assert_eq!(coding.temperature, Some(0.3));
     assert_eq!(coding.top_k, Some(50));

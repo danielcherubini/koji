@@ -76,7 +76,12 @@ pub fn extract_langfuse_headers(
     let tags = headers
         .get("langfuse_trace_tags")
         .and_then(|v| v.to_str().ok())
-        .map(|s| s.split(',').map(|t| t.trim().to_string()).collect());
+        .map(|s| {
+            s.split(',')
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+                .collect()
+        });
 
     (trace_id, user_id, session_id, metadata, tags)
 }
@@ -224,6 +229,10 @@ impl LangfuseClient {
         let output = telemetry.output;
         let energy_wh = telemetry.energy_wh;
         let gpu_watts = telemetry.gpu_watts;
+        let trace_id_header = telemetry.trace_id; // User-provided trace ID from header
+        let user_metadata = telemetry.metadata;
+        let usage = telemetry.usage;
+        let model_params = telemetry.model_params;
 
         // Convert Instant to chrono DateTime<Utc> for the SDK.
         // Instant → SystemTime: now - (now - instant)
@@ -239,8 +248,15 @@ impl LangfuseClient {
         };
 
         tokio::spawn(async move {
-            // Build trace metadata with energy cost info.
+            // Build trace metadata: merge user-provided metadata with energy info.
             let mut meta_map = serde_json::Map::new();
+            if let Some(user_meta) = &user_metadata {
+                if let Some(obj) = user_meta.as_object() {
+                    for (k, v) in obj {
+                        meta_map.insert(k.clone(), v.clone());
+                    }
+                }
+            }
             if let Some(wh) = energy_wh {
                 meta_map.insert("energy_wh".to_string(), serde_json::json!(wh));
             }
@@ -255,8 +271,10 @@ impl LangfuseClient {
             // Create trace using the SDK's builder API.
             // bon generates methods that accept `T` directly for `Option<T>` parameters.
             // We pass values directly (bon wraps them as Some internally).
+            // Pass user-provided trace ID when present (respects langfuse_trace_id header).
             let trace_result = inner
                 .trace()
+                .id(trace_id_header.unwrap_or_default())
                 .name(model.clone())
                 .user_id(user_id.unwrap_or_default())
                 .session_id(session_id.unwrap_or_default())
@@ -275,13 +293,36 @@ impl LangfuseClient {
                 }
             };
 
-            // Build generation metadata.
+            // Build generation metadata: embed usage, model_params, and energy cost.
+            // NOTE: langfuse-ergonomic v0.6.3 accepts _model_parameters, _prompt_tokens,
+            // _completion_tokens, _total_tokens params but they are prefixed with `_` and
+            // never wired to CreateGenerationBody — the SDK discards them. Embedding in
+            // metadata ensures data reaches Langfuse and is queryable.
             let mut gen_meta_map = serde_json::Map::new();
             if let Some(cost) = telemetry.energy_cost {
                 gen_meta_map.insert("energy".to_string(), serde_json::json!(cost));
             }
             if let Some(wh) = energy_wh {
                 gen_meta_map.insert("energy_wh".to_string(), serde_json::json!(wh));
+            }
+            // Embed token usage in metadata (SDK's dedicated fields are no-ops).
+            if let Some(u) = &usage {
+                gen_meta_map.insert(
+                    "prompt_tokens".to_string(),
+                    serde_json::json!(u.prompt_tokens),
+                );
+                gen_meta_map.insert(
+                    "completion_tokens".to_string(),
+                    serde_json::json!(u.completion_tokens),
+                );
+                gen_meta_map.insert(
+                    "total_tokens".to_string(),
+                    serde_json::json!(u.total_tokens),
+                );
+            }
+            // Embed model parameters in metadata (SDK's dedicated field is a no-op).
+            if let Some(mp) = &model_params {
+                gen_meta_map.insert("model_parameters".to_string(), mp.clone());
             }
 
             // Build generation input/output.
@@ -326,7 +367,10 @@ pub fn parse_sse_accumulated(
     let mut timings = None;
 
     for line in raw.lines() {
-        if let Some(data_content) = line.strip_prefix("data: ") {
+        if let Some(data_content) = line
+            .strip_prefix("data: ")
+            .or_else(|| line.strip_prefix("data:"))
+        {
             let trimmed = data_content.trim_end();
             if trimmed == "[DONE]" {
                 continue;
@@ -445,6 +489,16 @@ mod tests {
         assert!(session_id.is_none());
         assert!(metadata.is_none());
         assert!(tags.is_none());
+    }
+
+    #[test]
+    fn test_extract_langfuse_headers_empty_tags_filtered() {
+        let mut headers = HeaderMap::new();
+        headers.insert("langfuse_trace_tags", ",,,".parse().unwrap());
+
+        let (_, _, _, _, tags) = extract_langfuse_headers(&headers);
+        // Empty strings after trim should be filtered out
+        assert_eq!(tags, Some(vec![]));
     }
 
     // ── extract_usage ────────────────────────────────────────────────
@@ -863,5 +917,16 @@ data: [DONE]
         // Only non-empty content should be accumulated
         assert!(content.is_some());
         assert_eq!(content.unwrap(), "Real content");
+    }
+
+    #[test]
+    fn test_parse_sse_accumulated_no_space_prefix() {
+        // SSE spec allows "data:" without trailing space — some servers emit it
+        let raw = r#"data:{"id":"chat-1","choices":[{"index":0,"delta":{"content":"NoSpace"}}]}
+data: [DONE]
+"#;
+        let (content, _usage, _timings) = parse_sse_accumulated(raw);
+        assert!(content.is_some());
+        assert_eq!(content.unwrap(), "NoSpace");
     }
 }
