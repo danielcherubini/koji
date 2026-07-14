@@ -2,89 +2,16 @@ use anyhow::{Context, Result};
 use serde_json;
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
-use tracing_subscriber::{fmt, EnvFilter};
 
 pub const MAX_LOG_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
 pub const MAX_LOG_FILES: usize = 5;
 
-#[deprecated(note = "not used — remove in next major version")]
-pub fn init() {
-    if let Err(e) = fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()))
-        .try_init()
-    {
-        tracing::debug!("Tracing subscriber already initialized: {}", e);
-    }
-}
-
-/// Initialize tracing to write to a file in addition to stdout.
-///
-/// Opens `logs_dir/tama.log` and configures the global tracing subscriber
-/// to write there. Rotates the log if it exceeds MAX_LOG_SIZE.
-#[deprecated(note = "not used — remove in next major version")]
-pub fn init_with_file(logs_dir: &Path) -> Result<()> {
-    use std::sync::{Arc, Mutex};
-
-    let log_file = open_log(logs_dir, "tama")?;
-
-    // Create a multi-writer that writes to both stdout and the file
-    let multi_writer = MultiWriter {
-        stdout: Arc::new(Mutex::new(std::io::stdout())),
-        file: Arc::new(Mutex::new(log_file)),
-    };
-
-    let subscriber = fmt()
-        .with_writer(Mutex::new(multi_writer))
-        .with_env_filter(EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()))
-        .with_ansi(false) // No ANSI codes in log file
-        .finish();
-
-    tracing::subscriber::set_global_default(subscriber)
-        .context("Failed to set global tracing subscriber")?;
-
-    Ok(())
-}
-
-/// A writer that writes to multiple destinations.
-struct MultiWriter {
-    stdout: std::sync::Arc<std::sync::Mutex<std::io::Stdout>>,
-    file: std::sync::Arc<std::sync::Mutex<File>>,
-}
-
-impl std::io::Write for MultiWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        // Write to stdout
-        if let Ok(mut out) = self.stdout.lock() {
-            let _ = out.write_all(buf);
-        }
-
-        // Write to file
-        if let Ok(mut f) = self.file.lock() {
-            f.write_all(buf)?;
-        }
-
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        if let Ok(mut out) = self.stdout.lock() {
-            let _ = out.flush();
-        }
-        if let Ok(mut f) = self.file.lock() {
-            f.flush()?;
-        }
-        Ok(())
-    }
-}
-
 /// Get the log file path for a profile.
-#[deprecated(note = "not used externally — remove in next major version")]
 pub fn log_path(logs_dir: &Path, profile: &str) -> PathBuf {
     logs_dir.join(format!("{}.log", profile))
 }
 
 /// Open (or create) a log file for appending. Rotates if over MAX_LOG_SIZE.
-#[allow(deprecated)]
 pub fn open_log(logs_dir: &Path, profile: &str) -> Result<File> {
     fs::create_dir_all(logs_dir)
         .with_context(|| format!("Failed to create logs directory: {}", logs_dir.display()))?;
@@ -107,7 +34,6 @@ pub fn open_log(logs_dir: &Path, profile: &str) -> Result<File> {
 }
 
 /// Rotate log files: profile.log -> profile.1.log -> profile.2.log -> ...
-#[allow(deprecated)]
 pub fn rotate_logs(logs_dir: &Path, profile: &str) -> Result<()> {
     // Remove oldest
     let oldest = logs_dir.join(format!("{}.{}.log", profile, MAX_LOG_FILES));
@@ -191,7 +117,6 @@ pub fn tail_lines(path: &Path, n: usize) -> Result<Vec<String>> {
 }
 
 #[cfg(test)]
-#[allow(deprecated)]
 mod tests {
     use super::*;
     use std::io::Write;
