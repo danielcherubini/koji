@@ -300,26 +300,23 @@ impl LangfuseClient {
             // bon generates methods that accept `T` directly for `Option<T>` parameters.
             // We pass values directly (bon wraps them as Some internally).
             // Pass user-provided trace ID when present (respects langfuse_trace_id header).
-            // When no header is present, do NOT set .id() so the SDK auto-generates a UUID.
+            // When no header is present, generate a UUID ourselves so the SDK gets a
+            // valid (non-empty) trace ID. Passing an empty string would create a trace
+            // with an empty ID, which doesn't show up in the Langfuse UI.
             tracing::info!("Langfuse: calling inner.trace().call().await");
-            let trace_builder = inner.trace();
-            let trace_builder = if let Some(ref id) = trace_id_header {
-                if !id.is_empty() {
-                    trace_builder.id(id.clone())
-                } else {
-                    trace_builder
-                }
-            } else {
-                trace_builder
-            };
-            let trace_result = trace_builder
+            let resolved_trace_id = trace_id_header
+                .filter(|id| !id.is_empty())
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            let trace_result = inner
+                .trace()
+                .id(resolved_trace_id)
                 .name(model.clone())
-                .user_id(user_id.unwrap_or_default())
-                .session_id(session_id.unwrap_or_default())
-                .input(trace_input.unwrap_or_default())
-                .output(trace_output.unwrap_or_default())
-                .metadata(serde_json::Value::Object(meta_map))
-                .tags(tags)
+                .user_id(user_id.clone().unwrap_or_default())
+                .session_id(session_id.clone().unwrap_or_default())
+                .input(trace_input.clone().unwrap_or_default())
+                .output(trace_output.clone().unwrap_or_default())
+                .metadata(serde_json::Value::Object(meta_map.clone()))
+                .tags(tags.clone())
                 .call()
                 .await;
 
