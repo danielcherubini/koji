@@ -300,6 +300,16 @@ pub fn get_key(conn: &Connection, key_id: i64) -> Result<Option<ApiKeyRecord>> {
     Ok(row)
 }
 
+/// Look up the name of an API key by its database ID.
+pub fn get_key_name(conn: &Connection, key_id: i64) -> Result<Option<String>> {
+    let name: Option<String> = conn
+        .query_row("SELECT name FROM api_keys WHERE id = ?", [key_id], |row| {
+            row.get(0)
+        })
+        .optional()?;
+    Ok(name)
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -666,5 +676,34 @@ mod tests {
         let prefix = extract_prefix(&key);
         assert!(prefix.starts_with("tama_"));
         assert_eq!(prefix.len(), 13); // "tama_" (5) + 8 chars
+    }
+
+    #[test]
+    fn test_get_key_name() {
+        let conn = test_conn();
+        let key = generate_key();
+        create_key(
+            &conn,
+            "my-service-key",
+            &key,
+            &[Scope::Inference],
+            "admin",
+            None,
+        )
+        .unwrap();
+
+        let id: i64 = conn
+            .query_row("SELECT id FROM api_keys", [], |row| row.get(0))
+            .unwrap();
+
+        let name = get_key_name(&conn, id).unwrap().unwrap();
+        assert_eq!(name, "my-service-key");
+    }
+
+    #[test]
+    fn test_get_key_name_not_found() {
+        let conn = test_conn();
+        let result = get_key_name(&conn, 9999).unwrap();
+        assert!(result.is_none());
     }
 }

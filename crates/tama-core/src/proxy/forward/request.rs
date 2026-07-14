@@ -6,7 +6,8 @@ use super::langfuse::{
 };
 use super::sse::process_sse_line;
 use super::stats::extract_inference_stats;
-use crate::proxy::{BackendState, ProxyState};
+use crate::proxy::api_keys::get_key_name;
+use crate::proxy::{api_keys::AuthSubject, BackendState, ProxyState};
 use axum::{body::Body, http::request::Parts, response::IntoResponse};
 use bytes::{Bytes, BytesMut};
 use futures_util::stream::StreamExt;
@@ -171,6 +172,27 @@ pub async fn forward_request(
     // original request body and remains valid after .send(). It is shadowed later by
     // response.body() inside the non-streaming else branch.
     let langfuse_headers = extract_langfuse_headers(&parts.headers);
+
+    // Extract user_id from auth subject (AuthSubject in request extensions).
+    // Used as fallback for Langfuse when no langfuse_trace_user_id header is present.
+    let auth_subject: Option<AuthSubject> = parts.extensions.get::<AuthSubject>().cloned();
+    let auth_user_id: Option<String> = match auth_subject {
+        Some(AuthSubject::User { username }) => Some(username),
+        Some(AuthSubject::Key { key_id, .. }) => {
+            // DB lookup for key name — spawn_blocking since rusqlite is synchronous.
+            // Only done when langfuse is enabled (checked via langfuse_cfg below,
+            // but we always resolve here to keep the logic simple).
+            let db = state.open_db();
+            match db {
+                Some(conn) => {
+                    tokio::task::block_in_place(|| get_key_name(&conn, key_id).ok().flatten())
+                }
+                None => None,
+            }
+        }
+        None => None,
+    };
+
     let telemetry_start = Instant::now();
 
     // Read langfuse config once — reused for body injection (streaming) and
@@ -311,6 +333,7 @@ pub async fn forward_request(
                 if let Some(mut rx) = rx {
                     let max_bytes = langfuse_cfg.telemetry_max_bytes;
                     let (trace_id, user_id, session_id, metadata, tags) = langfuse_headers.clone();
+                    let auth_user_id = auth_user_id.clone();
                     let (req_model, input, model_params) = langfuse_req_fields.clone();
                     let start_time = telemetry_start;
 
@@ -346,7 +369,7 @@ pub async fn forward_request(
                                 start_time,
                                 end_time: Some(std::time::Instant::now()),
                                 trace_id,
-                                user_id,
+                                user_id: user_id.or(auth_user_id),
                                 session_id,
                                 metadata,
                                 tags,
@@ -487,6 +510,7 @@ pub async fn forward_request(
                             // Build LangfuseTelemetry
                             let (trace_id, user_id, session_id, metadata, tags) =
                                 langfuse_headers.clone();
+                            let auth_user_id = auth_user_id.clone();
                             let telemetry = LangfuseTelemetry {
                                 model: req_model,
                                 input: if langfuse_cfg.capture_input {
@@ -501,7 +525,7 @@ pub async fn forward_request(
                                 start_time: telemetry_start,
                                 end_time: Some(Instant::now()),
                                 trace_id,
-                                user_id,
+                                user_id: user_id.or(auth_user_id),
                                 session_id,
                                 metadata,
                                 tags,
