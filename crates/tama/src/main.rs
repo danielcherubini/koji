@@ -24,9 +24,12 @@ async fn main() -> Result<()> {
     // Load configuration FIRST (needed for log_level and logs_dir)
     let config = Config::load()?;
 
-    // Initialize tracing with two layers: pretty console + JSON file
+    // Initialize tracing with two layers: pretty console + JSON file.
     // The guard must stay in scope for the program's lifetime to keep the
     // background writer thread alive — if dropped, file logging silently stops.
+    // Note: on normal exit, WorkerGuard::Drop flushes remaining entries.
+    // On SIGKILL/panic-abort, the last few buffered lines may be lost
+    // (inherent trade-off of non-blocking writes; console layer is synchronous).
     let _log_guard = init_tracing(&config)?;
 
     // Set up HF_TOKEN from config before any hf_hub usage

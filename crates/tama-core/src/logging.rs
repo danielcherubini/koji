@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use serde_json;
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 
@@ -89,7 +88,11 @@ pub fn format_log_line(line: &str) -> String {
             return line.to_string();
         }
 
-        format!("{} {} {}: {}", timestamp, level, target, message)
+        // Extract GPU device from structured fields (added by proxy/lifecycle logging)
+        let gpu = v.pointer("/fields/gpu").and_then(|g| g.as_str());
+        let suffix = gpu.map(|g| format!(" [gpu={}]", g)).unwrap_or_default();
+
+        format!("{} {} {}: {}{}", timestamp, level, target, message, suffix)
     } else {
         // Not valid JSON — return as-is (e.g., backend logs)
         line.to_string()
@@ -246,5 +249,26 @@ mod tests {
         // Valid JSON but no message field — should return original line
         let json_no_msg = r#"{"timestamp":"2024-01-01T12:00:00Z","level":"INFO"}"#;
         assert_eq!(format_log_line(json_no_msg), json_no_msg);
+    }
+
+    #[test]
+    fn test_format_log_line_json_with_gpu_field() {
+        let json_line = r#"{"timestamp":"2024-01-01T12:00:00.000000Z","level":"INFO","target":"tama_core::proxy::forward","fields":{"message":"Forwarding request to: http://localhost:8080","gpu":"cuda:0"}}"#;
+        let result = format_log_line(json_line);
+        assert_eq!(
+            result,
+            "2024-01-01T12:00:00.000000Z INFO tama_core::proxy::forward: Forwarding request to: http://localhost:8080 [gpu=cuda:0]"
+        );
+    }
+
+    #[test]
+    fn test_format_log_line_json_without_gpu_field() {
+        // Line without gpu field — should not have [gpu=...] suffix
+        let json_line = r#"{"timestamp":"2024-01-01T12:00:00.000000Z","level":"INFO","target":"tama_core::proxy","fields":{"message":"Starting tama"}}"#;
+        let result = format_log_line(json_line);
+        assert_eq!(
+            result,
+            "2024-01-01T12:00:00.000000Z INFO tama_core::proxy: Starting tama"
+        );
     }
 }
