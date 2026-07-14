@@ -29,6 +29,8 @@ pub struct Config {
     pub proxy: ProxyConfig,
     #[serde(default)]
     pub compaction: CompactionConfig,
+    #[serde(default)]
+    pub langfuse: LangfuseConfig,
 }
 
 // Note: `models` is intentionally excluded from this Config struct.
@@ -163,6 +165,30 @@ fn default_compaction_request_timeout_ms() -> u64 {
     30_000
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LangfuseConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub public_key: String,
+    #[serde(default)]
+    pub secret_key: String,
+    #[serde(default)]
+    pub host: String,
+    #[serde(default)]
+    pub environment: String,
+    #[serde(default)]
+    pub capture_input: bool,
+    #[serde(default)]
+    pub capture_output: bool,
+    #[serde(default)]
+    pub capture_streaming: bool,
+    #[serde(default)]
+    pub telemetry_max_bytes: usize,
+    #[serde(default)]
+    pub electricity_price_per_kwh: f64,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct SamplingParams {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -244,6 +270,18 @@ mod tests {
                 "device": "cuda",
                 "port": 8081,
                 "request_timeout_ms": 60_000,
+            },
+            "langfuse": {
+                "enabled": true,
+                "public_key": "pk-lf-test123",
+                "secret_key": "sk-lf-test456",
+                "host": "https://cloud.langfuse.com",
+                "environment": "production",
+                "capture_input": true,
+                "capture_output": true,
+                "capture_streaming": true,
+                "telemetry_max_bytes": 1048576,
+                "electricity_price_per_kwh": 0.12,
             },
         })
     }
