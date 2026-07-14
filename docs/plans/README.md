@@ -12,9 +12,9 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Quick Stats
 
-- **Total Plans**: 52
+- **Total Plans**: 53
 - **Backlog**: 0
-- **Completed**: 48 ✅
+- **Completed**: 50 ✅
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
 
@@ -22,7 +22,7 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Backlog
 
-(Empty — all plans in progress or completed)
+*(empty)*
 
 ## Completed Plans
 
@@ -30,6 +30,8 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 | Plan | Description | PR / Git References |
 |------|-------------|---------------------|
+| [Langfuse Web UI](done/plan-157-langfuse-web-ui.md) | Wire Langfuse config into web UI — WASM mirror types, structured config API, config editor form with credential validation | #157 ✅ COMPLETED | [`4a2fee2e`](../../commit/4a2fee2e), [`c6f2b2f8`](../../commit/c6f2b2f8), [`8fa8880e`](../../commit/8fa8880e) |
+| [Langfuse Core Integration](done/plan-156-langfuse-core.md) | Langfuse observability — config persistence (migration 0037), telemetry structs, `langfuse-ergonomic` client wrapper, non-streaming + streaming request interception with energy cost | #156 ✅ COMPLETED |
 | [PATCH Endpoints](done/plan-155-patch-endpoints.md) | Add PATCH endpoints for models, config, and backends — surgical partial updates with deep recursive config merge | #155 `2c6a9119`, `9c49a2a8`, `f5fa655e`, `22556e3d`, `38acc38d` |
 | [Fix PUT Model Wipes Optional Fields](done/plan-154-fix-put-model-wipes-optional-fields.md) | Fix `context_length`, `cache_type_k`, `cache_type_v` to use `.or(base.field)` merge in `apply_model_body()` — matches documented partial-update semantics | #154 ✅ COMPLETED | [`cc660fb5`](../../commit/cc660fb5), [`13366178`](../../commit/13366178) |
 | [API Keys Web UI](done/plan-153-api-keys-web-ui.md) | Web UI page at `/tama/keys` for managing API keys — create, view, edit scopes, revoke — with one-time key reveal modal, active-only filter, and sidebar integration | #152 ✅ COMPLETED | [`98e20d36`](../../commit/98e20d36), [`a73229d4`](../../commit/a73229d4), [`b3934606`](../../commit/b3934606), [`d2c92b17`](../../commit/d2c92b17), [`8fc2adfc`](../../commit/8fc2adfc) |

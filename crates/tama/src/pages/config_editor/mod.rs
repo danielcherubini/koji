@@ -12,6 +12,7 @@ enum Section {
     Supervisor,
     Sampling,
     Compaction,
+    Langfuse,
     // Backup, // Re-enable when BackupForm component is implemented
 }
 
@@ -23,6 +24,7 @@ impl Section {
             Section::Supervisor => "Supervisor",
             Section::Sampling => "Sampling Templates",
             Section::Compaction => "Compaction",
+            Section::Langfuse => "Langfuse",
             // Section::Backup => "Backup & Restore", // Re-enable when BackupForm is implemented
         }
     }
@@ -33,6 +35,7 @@ impl Section {
             Section::Supervisor => "👀",
             Section::Sampling => "🎲",
             Section::Compaction => "📦",
+            Section::Langfuse => "📊",
             // Section::Backup => "💾", // Re-enable when BackupForm is implemented
         }
     }
@@ -49,7 +52,7 @@ use crate::utils::post_request;
 
 use crate::components::section_card::SectionCard;
 use crate::pages::config_editor::forms::{
-    CompactionForm, GeneralForm, ProxyAdvancedFields, ProxyBasicFields, SamplingForm,
+    CompactionForm, GeneralForm, LangfuseForm, ProxyAdvancedFields, ProxyBasicFields, SamplingForm,
     SupervisorForm,
 };
 
@@ -85,6 +88,16 @@ pub fn ConfigEditor() -> impl IntoView {
         let Some(cfg) = config.get() else {
             return;
         };
+        // Validate: Langfuse enabled requires credentials
+        if cfg.langfuse.enabled
+            && (cfg.langfuse.public_key.trim().is_empty()
+                || cfg.langfuse.secret_key.trim().is_empty())
+        {
+            save_status.set(Some(
+                "❌ Langfuse is enabled but public/secret key is empty".to_string(),
+            ));
+            return;
+        }
         save_status.set(Some("Saving…".to_string()));
         spawn_local(async move {
             let body = match serde_json::to_string(&cfg) {
@@ -138,7 +151,7 @@ pub fn ConfigEditor() -> impl IntoView {
                         // Side nav
                         <nav class="card" style="width:220px;flex-shrink:0;padding:0.75rem;position:sticky;top:0;">
                             <ul style="list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:0.25rem;">
-                                {[Section::General, Section::Proxy, Section::Supervisor, Section::Sampling, Section::Compaction]
+                                {[Section::General, Section::Proxy, Section::Supervisor, Section::Sampling, Section::Compaction, Section::Langfuse]
                                     .into_iter().map(|s| {
                                         let scroll_id = match s {
                                             Section::General => "cfg-general",
@@ -146,6 +159,7 @@ pub fn ConfigEditor() -> impl IntoView {
                                             Section::Supervisor => "cfg-supervisor",
                                             Section::Sampling => "cfg-sampling",
                                             Section::Compaction => "cfg-compaction",
+                                            Section::Langfuse => "cfg-langfuse",
                                             // Section::Backup => "cfg-backup", // Re-enable when BackupForm is implemented
                                         };
                                         let active = move || current.get() == s;
@@ -192,6 +206,7 @@ pub fn ConfigEditor() -> impl IntoView {
                             <div id="cfg-supervisor"><SupervisorForm config=config /></div>
                             <div id="cfg-sampling"><SamplingForm config=config /></div>
                             <div id="cfg-compaction"><CompactionForm config=config /></div>
+                            <div id="cfg-langfuse"><LangfuseForm config=config /></div>
                         </div>
                     </div>
                 }.into_any()
