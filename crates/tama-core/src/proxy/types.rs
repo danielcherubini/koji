@@ -249,7 +249,7 @@ impl Clone for ProxyState {
             gpu_devices_cache: Arc::clone(&self.gpu_devices_cache),
             model_tasks: tokio::sync::RwLock::new(std::collections::HashMap::new()),
             cookie_key: self.cookie_key.clone(),
-            langfuse_client: self.langfuse_client.clone(),
+            langfuse_client: Arc::clone(&self.langfuse_client),
         }
     }
 }
@@ -293,7 +293,9 @@ pub struct ProxyState {
     /// Signing key for session cookies (OAuth2 OIDC login).
     pub(crate) cookie_key: cookie::Key,
     /// Langfuse observability client, initialized from config at startup.
-    pub(crate) langfuse_client: Option<Arc<crate::proxy::forward::langfuse::LangfuseClient>>,
+    /// Wrapped in RwLock so it can be refreshed when config is updated via PATCH.
+    pub(crate) langfuse_client:
+        Arc<tokio::sync::RwLock<Option<Arc<crate::proxy::forward::langfuse::LangfuseClient>>>>,
 }
 
 impl ProxyState {
@@ -429,6 +431,15 @@ impl ProxyState {
         &self,
     ) -> &tokio::sync::watch::Sender<HashMap<String, LatestInferenceStats>> {
         &self.inference_stats
+    }
+
+    /// Returns a reference to the Langfuse client RwLock.
+    /// The client can be refreshed when config is updated via PATCH.
+    pub fn langfuse_client(
+        &self,
+    ) -> &Arc<tokio::sync::RwLock<Option<Arc<crate::proxy::forward::langfuse::LangfuseClient>>>>
+    {
+        &self.langfuse_client
     }
 
     /// Returns a reference to the GPU devices cache RwLock.

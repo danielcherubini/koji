@@ -198,16 +198,38 @@ impl LangfuseClient {
     ///
     /// Returns `None` when langfuse is disabled or credentials are missing.
     pub fn from_config(config: &crate::config::LangfuseConfig) -> Option<Self> {
-        if !config.enabled || config.public_key.is_empty() || config.secret_key.is_empty() {
+        if !config.enabled {
+            tracing::debug!("Langfuse disabled in config (enabled=false)");
+            return None;
+        }
+        if config.public_key.is_empty() {
+            tracing::warn!("Langfuse enabled but public_key is empty");
+            return None;
+        }
+        if config.secret_key.is_empty() {
+            tracing::warn!("Langfuse enabled but secret_key is empty");
             return None;
         }
 
-        let inner = ClientBuilder::new()
+        let inner = match ClientBuilder::new()
             .public_key(&config.public_key)
             .secret_key(&config.secret_key)
             .base_url(config.host.clone())
             .build()
-            .ok()?;
+        {
+            Ok(client) => {
+                tracing::info!(
+                    host = %config.host,
+                    environment = %config.environment,
+                    "Langfuse client initialized"
+                );
+                client
+            }
+            Err(e) => {
+                tracing::error!("Langfuse client build failed: {e}");
+                return None;
+            }
+        };
 
         Some(Self {
             inner: Arc::new(inner),
@@ -224,6 +246,14 @@ impl LangfuseClient {
         let model = telemetry.model.clone();
         let user_id = telemetry.user_id;
         let session_id = telemetry.session_id;
+
+        tracing::debug!(
+            model = %model,
+            session_id = session_id.as_deref().unwrap_or("(none)"),
+            user_id = user_id.as_deref().unwrap_or("(none)"),
+            trace_id = telemetry.trace_id.as_deref().unwrap_or("(none)"),
+            "Langfuse: report_generation called"
+        );
         let tags = telemetry.tags.unwrap_or_default();
         let input = telemetry.input;
         let output = telemetry.output;
@@ -272,21 +302,30 @@ impl LangfuseClient {
             // bon generates methods that accept `T` directly for `Option<T>` parameters.
             // We pass values directly (bon wraps them as Some internally).
             // Pass user-provided trace ID when present (respects langfuse_trace_id header).
+            // When no header is present, generate a UUID ourselves so the SDK gets a
+            // valid (non-empty) trace ID. Passing an empty string would create a trace
+            // with an empty ID, which doesn't show up in the Langfuse UI.
+            let resolved_trace_id = trace_id_header
+                .filter(|id| !id.is_empty())
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
             let trace_result = inner
                 .trace()
-                .id(trace_id_header.unwrap_or_default())
+                .id(resolved_trace_id)
                 .name(model.clone())
-                .user_id(user_id.unwrap_or_default())
-                .session_id(session_id.unwrap_or_default())
-                .input(trace_input.unwrap_or_default())
-                .output(trace_output.unwrap_or_default())
-                .metadata(serde_json::Value::Object(meta_map))
-                .tags(tags)
+                .user_id(user_id.clone().unwrap_or_default())
+                .session_id(session_id.clone().unwrap_or_default())
+                .input(trace_input.clone().unwrap_or_default())
+                .output(trace_output.clone().unwrap_or_default())
+                .metadata(serde_json::Value::Object(meta_map.clone()))
+                .tags(tags.clone())
                 .call()
                 .await;
 
             let trace_id = match trace_result {
-                Ok(resp) => resp.id,
+                Ok(resp) => {
+                    tracing::debug!(trace_id = %resp.id, "Langfuse trace sent to cloud");
+                    resp.id
+                }
                 Err(e) => {
                     tracing::error!("Langfuse trace creation failed: {e}");
                     return;
@@ -332,7 +371,7 @@ impl LangfuseClient {
             // Create generation using the SDK's builder API.
             let gen_result = inner
                 .generation()
-                .trace_id(trace_id)
+                .trace_id(trace_id.clone())
                 .name(model.clone())
                 .input(gen_input.unwrap_or_default())
                 .output(gen_output.unwrap_or_default())
@@ -345,6 +384,8 @@ impl LangfuseClient {
 
             if let Err(e) = gen_result {
                 tracing::error!("Langfuse generation creation failed: {e}");
+            } else {
+                tracing::debug!(trace_id = %trace_id, "Langfuse generation sent to cloud");
             }
         });
     }

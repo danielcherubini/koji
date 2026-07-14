@@ -52,7 +52,7 @@ impl ProxyState {
             gpu_devices_cache: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             model_tasks: tokio::sync::RwLock::new(std::collections::HashMap::new()),
             cookie_key: cookie::Key::generate(),
-            langfuse_client,
+            langfuse_client: Arc::new(tokio::sync::RwLock::new(langfuse_client)),
         };
 
         // Spawn the queue processor background task if pull queue is configured.
@@ -224,6 +224,21 @@ impl ProxyState {
         let mut model_configs = self.model_configs.write().await;
         *model_configs = configs;
         Ok(())
+    }
+
+    /// Refresh the Langfuse client from the current config.
+    ///
+    /// Called after config is updated via PATCH so that langfuse config changes
+    /// (enabled flag, keys, host) take effect without requiring a Tama restart.
+    /// If langfuse is disabled or credentials are missing in the new config,
+    /// the client is set to None (disabling tracing).
+    pub async fn refresh_langfuse_client(&self) {
+        let langfuse_cfg = self.config.read().await.langfuse.clone();
+        let new_client =
+            crate::proxy::forward::langfuse::LangfuseClient::from_config(&langfuse_cfg)
+                .map(Arc::new);
+        let mut current = self.langfuse_client.write().await;
+        *current = new_client;
     }
 
     /// Reload alias cache from the database.

@@ -284,7 +284,7 @@ pub async fn forward_request(
 
             // Langfuse config already read once above — reuse it here.
             let capture_streaming = langfuse_cfg.enabled && langfuse_cfg.capture_streaming;
-            let langfuse_client = state.langfuse_client.clone();
+            let langfuse_client = state.langfuse_client().read().await.clone();
 
             let body = if is_streaming {
                 // Streaming response — rewrite the model name in each SSE chunk.
@@ -431,7 +431,7 @@ pub async fn forward_request(
                     // MUST be before rewrite_json_model_name which consumes `parsed`.
                     {
                         if langfuse_cfg.enabled {
-                            let langfuse_client = state.langfuse_client.clone();
+                            let langfuse_client = state.langfuse_client().read().await.clone();
 
                             // Use langfuse_req_fields captured before the send (body_bytes is shadowed here by response body)
                             let (req_model, input, model_params) = langfuse_req_fields.clone();
