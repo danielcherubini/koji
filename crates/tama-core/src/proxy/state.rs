@@ -234,8 +234,9 @@ impl ProxyState {
     /// the client is set to None (disabling tracing).
     pub async fn refresh_langfuse_client(&self) {
         let langfuse_cfg = self.config.read().await.langfuse.clone();
-        let new_client = crate::proxy::forward::langfuse::LangfuseClient::from_config(&langfuse_cfg)
-            .map(Arc::new);
+        let new_client =
+            crate::proxy::forward::langfuse::LangfuseClient::from_config(&langfuse_cfg)
+                .map(Arc::new);
         let mut current = self.langfuse_client.write().await;
         *current = new_client;
     }

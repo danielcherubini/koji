@@ -294,7 +294,8 @@ pub struct ProxyState {
     pub(crate) cookie_key: cookie::Key,
     /// Langfuse observability client, initialized from config at startup.
     /// Wrapped in RwLock so it can be refreshed when config is updated via PATCH.
-    pub(crate) langfuse_client: Arc<tokio::sync::RwLock<Option<Arc<crate::proxy::forward::langfuse::LangfuseClient>>>>,
+    pub(crate) langfuse_client:
+        Arc<tokio::sync::RwLock<Option<Arc<crate::proxy::forward::langfuse::LangfuseClient>>>>,
 }
 
 impl ProxyState {
