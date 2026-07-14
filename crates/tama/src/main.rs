@@ -171,11 +171,23 @@ async fn main() -> Result<()> {
 fn init_tracing(config: &Config) -> Result<tracing_appender::non_blocking::WorkerGuard> {
     use tracing_subscriber::{fmt, layer::Layer, layer::SubscriberExt, util::SubscriberInitExt};
 
-    // Determine log level from config
+    // Build EnvFilter with config log_level as the authoritative default.
+    // RUST_LOG directives are added on top (not replaced) so the config
+    // level is always the floor — prevents RUST_LOG from silencing the
+    // file logger by setting a restrictive default like `warn`.
     let log_level: tracing::Level = config.general.log_level.into();
-    let env_filter = tracing_subscriber::EnvFilter::builder()
-        .with_default_directive(log_level.into())
-        .from_env_lossy();
+    let mut env_filter = tracing_subscriber::EnvFilter::new(format!("{}", log_level));
+    if let Ok(rust_log) = std::env::var("RUST_LOG") {
+        for directive in rust_log.split(',') {
+            let directive = directive.trim();
+            if directive.is_empty() {
+                continue;
+            }
+            if let Ok(parsed) = directive.parse::<tracing_subscriber::filter::Directive>() {
+                env_filter = env_filter.add_directive(parsed);
+            }
+        }
+    }
 
     // Ensure logs directory exists
     let logs_dir = config
