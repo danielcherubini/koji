@@ -150,7 +150,17 @@ pub async fn forward_request(
 
     let target_uri = format!("{}{}", backend_url, path);
 
-    info!("Forwarding request to: {}", target_uri);
+    // Resolve GPU device from model config using backend_name (the correct HashMap key).
+    // Clone to own the value — can't borrow from temporary RwLockReadGuard.
+    let gpu_info: String = state
+        .model_configs
+        .read()
+        .await
+        .get(backend_name)
+        .and_then(|mc| mc.gpu_device.clone())
+        .unwrap_or_else(|| "default".to_string());
+
+    info!(gpu = %gpu_info, "Forwarding request to: {}", target_uri);
 
     let method = parts.method.clone();
 

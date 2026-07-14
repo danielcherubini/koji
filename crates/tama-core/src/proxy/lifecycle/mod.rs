@@ -160,6 +160,13 @@ impl ProxyState {
         let mut args =
             config.build_full_args(&server_config, backend_config, None, &default_args)?;
 
+        tracing::debug!(
+            gpu = %server_config.gpu_device.as_deref().unwrap_or("default"),
+            "Loading model '{}' with backend '{}'",
+            model_name,
+            server_config.backend
+        );
+
         override_arg(&mut args, "--host", "127.0.0.1");
         override_arg(&mut args, "--port", &port.to_string());
 
@@ -626,7 +633,14 @@ impl ProxyState {
             }
         };
 
-        info!("Stopping backend '{}'", backend_name);
+        let gpu_info: String = self
+            .model_configs
+            .read()
+            .await
+            .get(backend_name)
+            .and_then(|mc| mc.gpu_device.clone())
+            .unwrap_or_else(|| "default".to_string());
+        info!(gpu = %gpu_info, "Stopping backend '{}'", backend_name);
 
         // Send SIGTERM for graceful shutdown
         info!("Sending SIGTERM to backend process {}", pid);
@@ -673,7 +687,7 @@ impl ProxyState {
             let _ = mgr.remove_active(backend_name);
         }
 
-        info!("Backend '{}' unloaded", backend_name);
+        info!(gpu = %gpu_info, "Backend '{}' unloaded", backend_name);
         self.metrics
             .models_unloaded
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
