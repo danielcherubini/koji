@@ -1,89 +1,16 @@
 use anyhow::{Context, Result};
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
-use tracing_subscriber::{fmt, EnvFilter};
 
-const MAX_LOG_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
-const MAX_LOG_FILES: usize = 5;
-
-#[deprecated(note = "not used — remove in next major version")]
-pub fn init() {
-    if let Err(e) = fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()))
-        .try_init()
-    {
-        tracing::debug!("Tracing subscriber already initialized: {}", e);
-    }
-}
-
-/// Initialize tracing to write to a file in addition to stdout.
-///
-/// Opens `logs_dir/tama.log` and configures the global tracing subscriber
-/// to write there. Rotates the log if it exceeds MAX_LOG_SIZE.
-#[deprecated(note = "not used — remove in next major version")]
-pub fn init_with_file(logs_dir: &Path) -> Result<()> {
-    use std::sync::{Arc, Mutex};
-
-    let log_file = open_log(logs_dir, "tama")?;
-
-    // Create a multi-writer that writes to both stdout and the file
-    let multi_writer = MultiWriter {
-        stdout: Arc::new(Mutex::new(std::io::stdout())),
-        file: Arc::new(Mutex::new(log_file)),
-    };
-
-    let subscriber = fmt()
-        .with_writer(Mutex::new(multi_writer))
-        .with_env_filter(EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()))
-        .with_ansi(false) // No ANSI codes in log file
-        .finish();
-
-    tracing::subscriber::set_global_default(subscriber)
-        .context("Failed to set global tracing subscriber")?;
-
-    Ok(())
-}
-
-/// A writer that writes to multiple destinations.
-struct MultiWriter {
-    stdout: std::sync::Arc<std::sync::Mutex<std::io::Stdout>>,
-    file: std::sync::Arc<std::sync::Mutex<File>>,
-}
-
-impl std::io::Write for MultiWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        // Write to stdout
-        if let Ok(mut out) = self.stdout.lock() {
-            let _ = out.write_all(buf);
-        }
-
-        // Write to file
-        if let Ok(mut f) = self.file.lock() {
-            f.write_all(buf)?;
-        }
-
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        if let Ok(mut out) = self.stdout.lock() {
-            let _ = out.flush();
-        }
-        if let Ok(mut f) = self.file.lock() {
-            f.flush()?;
-        }
-        Ok(())
-    }
-}
+pub const MAX_LOG_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
+pub const MAX_LOG_FILES: usize = 5;
 
 /// Get the log file path for a profile.
-#[deprecated(note = "not used externally — remove in next major version")]
 pub fn log_path(logs_dir: &Path, profile: &str) -> PathBuf {
     logs_dir.join(format!("{}.log", profile))
 }
 
 /// Open (or create) a log file for appending. Rotates if over MAX_LOG_SIZE.
-#[allow(deprecated)]
 pub fn open_log(logs_dir: &Path, profile: &str) -> Result<File> {
     fs::create_dir_all(logs_dir)
         .with_context(|| format!("Failed to create logs directory: {}", logs_dir.display()))?;
@@ -106,8 +33,7 @@ pub fn open_log(logs_dir: &Path, profile: &str) -> Result<File> {
 }
 
 /// Rotate log files: profile.log -> profile.1.log -> profile.2.log -> ...
-#[allow(deprecated)]
-fn rotate_logs(logs_dir: &Path, profile: &str) -> Result<()> {
+pub fn rotate_logs(logs_dir: &Path, profile: &str) -> Result<()> {
     // Remove oldest
     let oldest = logs_dir.join(format!("{}.{}.log", profile, MAX_LOG_FILES));
     if oldest.exists() {
@@ -133,6 +59,46 @@ fn rotate_logs(logs_dir: &Path, profile: &str) -> Result<()> {
     Ok(())
 }
 
+/// Parse a JSON log line (from tracing-subscriber's JSON format) and return
+/// a human-readable string: `"2024-01-01T12:00:00.000000Z INFO target: message"`.
+///
+/// Returns the original line unchanged if it's not valid JSON or doesn't contain
+/// the expected fields (e.g., backend logs that are plain text).
+pub fn format_log_line(line: &str) -> String {
+    // Fast path: if it doesn't start with '{', it's a plain text line
+    let trimmed = line.trim();
+    if !trimmed.starts_with('{') {
+        return line.to_string();
+    }
+
+    // Try to parse as JSON and extract fields
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        let timestamp = v.get("timestamp").and_then(|t| t.as_str()).unwrap_or("");
+        let level = v.get("level").and_then(|l| l.as_str()).unwrap_or("");
+        let target = v.get("target").and_then(|t| t.as_str()).unwrap_or("");
+        // Message is nested under fields.message in tracing-subscriber JSON format
+        let message = v
+            .pointer("/fields/message")
+            .and_then(|m| m.as_str())
+            .or_else(|| v.get("message").and_then(|m| m.as_str()))
+            .unwrap_or("");
+
+        if message.is_empty() {
+            // Fallback: return original line if we couldn't extract a message
+            return line.to_string();
+        }
+
+        // Extract GPU device from structured fields (added by proxy/lifecycle logging)
+        let gpu = v.pointer("/fields/gpu").and_then(|g| g.as_str());
+        let suffix = gpu.map(|g| format!(" [gpu={}]", g)).unwrap_or_default();
+
+        format!("{} {} {}: {}{}", timestamp, level, target, message, suffix)
+    } else {
+        // Not valid JSON — return as-is (e.g., backend logs)
+        line.to_string()
+    }
+}
+
 /// Read the last N lines from a log file.
 pub fn tail_lines(path: &Path, n: usize) -> Result<Vec<String>> {
     use std::io::{BufRead, BufReader};
@@ -154,7 +120,6 @@ pub fn tail_lines(path: &Path, n: usize) -> Result<Vec<String>> {
 }
 
 #[cfg(test)]
-#[allow(deprecated)]
 mod tests {
     use super::*;
     use std::io::Write;
@@ -244,5 +209,66 @@ mod tests {
     fn test_max_log_files_constant() {
         // Verify the max number of log files
         assert_eq!(MAX_LOG_FILES, 5);
+    }
+
+    #[test]
+    fn test_format_log_line_json_tracing_subscriber() {
+        let json_line = r#"{"timestamp":"2024-01-01T12:00:00.000000Z","level":"INFO","target":"tama_core::proxy","fields":{"message":"Starting tama"}}"#;
+        let result = format_log_line(json_line);
+        assert_eq!(
+            result,
+            "2024-01-01T12:00:00.000000Z INFO tama_core::proxy: Starting tama"
+        );
+    }
+
+    #[test]
+    fn test_format_log_line_json_with_message_field() {
+        // Fallback: message at top level (not under fields)
+        let json_line = r#"{"timestamp":"2024-01-01T12:00:00Z","level":"ERROR","target":"backend","message":"Failed to load model"}"#;
+        let result = format_log_line(json_line);
+        assert_eq!(
+            result,
+            "2024-01-01T12:00:00Z ERROR backend: Failed to load model"
+        );
+    }
+
+    #[test]
+    fn test_format_log_line_plain_text_passthrough() {
+        let plain = "[2024-01-01] Backend started on port 8080";
+        assert_eq!(format_log_line(plain), plain);
+    }
+
+    #[test]
+    fn test_format_log_line_invalid_json_passthrough() {
+        let invalid = "{not valid json}";
+        assert_eq!(format_log_line(invalid), invalid);
+    }
+
+    #[test]
+    fn test_format_log_line_missing_message() {
+        // Valid JSON but no message field — should return original line
+        let json_no_msg = r#"{"timestamp":"2024-01-01T12:00:00Z","level":"INFO"}"#;
+        assert_eq!(format_log_line(json_no_msg), json_no_msg);
+    }
+
+    #[test]
+    fn test_format_log_line_json_with_gpu_field() {
+        let json_line = r#"{"timestamp":"2024-01-01T12:00:00.000000Z","level":"INFO","target":"tama_core::proxy::forward","fields":{"message":"Forwarding request to: http://localhost:8080","gpu":"cuda:0"}}"#;
+        let result = format_log_line(json_line);
+        assert_eq!(
+            result,
+            "2024-01-01T12:00:00.000000Z INFO tama_core::proxy::forward: Forwarding request to: http://localhost:8080 [gpu=cuda:0]"
+        );
+    }
+
+    #[test]
+    fn test_format_log_line_json_without_gpu_field() {
+        // Line without gpu field — should not have [gpu=...] suffix
+        let json_line = r#"{"timestamp":"2024-01-01T12:00:00.000000Z","level":"INFO","target":"tama_core::proxy","fields":{"message":"Starting tama"}}"#;
+        let result = format_log_line(json_line);
+        assert_eq!(
+            result,
+            "2024-01-01T12:00:00.000000Z INFO tama_core::proxy: Starting tama"
+        );
     }
 }
