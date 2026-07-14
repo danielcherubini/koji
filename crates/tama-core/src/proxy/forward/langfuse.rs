@@ -242,6 +242,12 @@ impl LangfuseClient {
     /// and trace context from headers. Runs asynchronously — failures are logged
     /// but don't affect the response to the client.
     pub async fn report_generation(&self, telemetry: LangfuseTelemetry) {
+        tracing::info!(
+            model = %telemetry.model,
+            has_input = telemetry.input.is_some(),
+            has_output = telemetry.output.is_some(),
+            "Langfuse report_generation called"
+        );
         let inner = Arc::clone(&self.inner);
         let model = telemetry.model.clone();
         let user_id = telemetry.user_id;
@@ -294,6 +300,7 @@ impl LangfuseClient {
             // bon generates methods that accept `T` directly for `Option<T>` parameters.
             // We pass values directly (bon wraps them as Some internally).
             // Pass user-provided trace ID when present (respects langfuse_trace_id header).
+            tracing::info!("Langfuse: calling inner.trace().call().await");
             let trace_result = inner
                 .trace()
                 .id(trace_id_header.unwrap_or_default())
@@ -308,7 +315,10 @@ impl LangfuseClient {
                 .await;
 
             let trace_id = match trace_result {
-                Ok(resp) => resp.id,
+                Ok(resp) => {
+                    tracing::info!(trace_id = %resp.id, "Langfuse trace created successfully");
+                    resp.id
+                }
                 Err(e) => {
                     tracing::error!("Langfuse trace creation failed: {e}");
                     return;
@@ -352,6 +362,7 @@ impl LangfuseClient {
             let gen_output = output.map(|o| serde_json::json!({ "content": o }));
 
             // Create generation using the SDK's builder API.
+            tracing::info!(trace_id = %trace_id, "Langfuse: calling inner.generation().call().await");
             let gen_result = inner
                 .generation()
                 .trace_id(trace_id)
@@ -367,6 +378,8 @@ impl LangfuseClient {
 
             if let Err(e) = gen_result {
                 tracing::error!("Langfuse generation creation failed: {e}");
+            } else {
+                tracing::info!("Langfuse generation created successfully");
             }
         });
     }
