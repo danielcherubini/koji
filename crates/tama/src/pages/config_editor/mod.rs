@@ -88,6 +88,16 @@ pub fn ConfigEditor() -> impl IntoView {
         let Some(cfg) = config.get() else {
             return;
         };
+        // Validate: Langfuse enabled requires credentials
+        if cfg.langfuse.enabled
+            && (cfg.langfuse.public_key.trim().is_empty()
+                || cfg.langfuse.secret_key.trim().is_empty())
+        {
+            save_status.set(Some(
+                "❌ Langfuse is enabled but public/secret key is empty".to_string(),
+            ));
+            return;
+        }
         save_status.set(Some("Saving…".to_string()));
         spawn_local(async move {
             let body = match serde_json::to_string(&cfg) {
