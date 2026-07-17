@@ -28,9 +28,25 @@ pub(crate) fn build_cmake_args(
         "-S".to_string(),
         source_dir.to_string_lossy().to_string(),
         "-DCMAKE_BUILD_TYPE=Release".to_string(),
+        // Build all libraries (libggml, libllama, libllama-common, etc.) as
+        // static archives so the final binary is self-contained. Without this,
+        // llama.cpp produces a chain of .so files (libggml.so → libggml-base.so
+        // → libggml-hip.so, libllama-common.so → libllama-cli-impl.so) that
+        // must be findable at runtime via RPATH/LD_LIBRARY_PATH — fragile and
+        // causes "cannot open shared object" / version-mismatch crashes when
+        // stale .so files are picked up. Static linking eliminates all of that.
+        "-DBUILD_SHARED_LIBS=OFF".to_string(),
+        // Use mold as the linker instead of GNU ld. mold is 5-10x faster on
+        // the link step (saves ~30-60s on a full llama.cpp build) and uses
+        // much less memory, which matters because the final link of
+        // llama-server with all the GGML backends can OOM on systems with
+        // limited RAM. Falls back to system linker if mold is not installed.
+        "-DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold".to_string(),
+        "-DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld=mold".to_string(),
         // Set RUNPATH to $ORIGIN so the binary looks for shared libraries
-        // in its own directory. Combined with copying .so files during
-        // installation, this eliminates the need for ldconfig or LD_LIBRARY_PATH.
+        // in its own directory. Belt-and-suspenders with static linking —
+        // no .so files are produced, but if any third-party code adds a
+        // .so dependency later, the binary will still find it.
         "-DCMAKE_BUILD_RPATH=$ORIGIN".to_string(),
         // Ensure the build RPATH is used (don't replace with install RPATH)
         "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON".to_string(),
@@ -119,6 +135,48 @@ mod tests {
             "All builds must include -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON, got: {:?}",
             args
         );
+    }
+
+    /// All builds must set BUILD_SHARED_LIBS=OFF so llama.cpp produces a
+    /// single self-contained binary instead of a chain of .so files
+    /// (libggml.so, libllama-common.so, libllama-cli-impl.so, etc.) that
+    /// must be findable at runtime. Without this, stale .so files can be
+    /// picked up and cause "cannot open shared object" or version-mismatch
+    /// crashes.
+    #[test]
+    fn test_all_builds_use_static_libraries() {
+        for variant in ["cpu", "cuda", "vulkan", "rocm", "metal"] {
+            let opts = make_options(BackendType::LlamaCpp, variant);
+            let args = build_cmake_args(&opts, Path::new("/src"), Path::new("/build"), &[]);
+            assert!(
+                args.contains(&"-DBUILD_SHARED_LIBS=OFF".to_string()),
+                "{variant} build must include -DBUILD_SHARED_LIBS=OFF, got: {:?}",
+                args
+            );
+        }
+    }
+
+    /// All builds must use mold as the linker. mold is 5-10x faster than
+    /// GNU ld on the link step and uses much less memory, which matters
+    /// because linking llama-server with all GGML backends can OOM on
+    /// systems with limited RAM. Falls back to system linker if mold is
+    /// not installed (cmake is tolerant of missing -fuse-ld= values).
+    #[test]
+    fn test_all_builds_use_mold_linker() {
+        for variant in ["cpu", "cuda", "vulkan", "rocm", "metal"] {
+            let opts = make_options(BackendType::LlamaCpp, variant);
+            let args = build_cmake_args(&opts, Path::new("/src"), Path::new("/build"), &[]);
+            assert!(
+                args.contains(&"-DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold".to_string()),
+                "{variant} build must use mold linker for executables, got: {:?}",
+                args
+            );
+            assert!(
+                args.contains(&"-DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld=mold".to_string()),
+                "{variant} build must use mold linker for shared libs, got: {:?}",
+                args
+            );
+        }
     }
 
     /// ik_llama source builds must explicitly set GGML_IQK_FA_ALL_QUANTS=ON.
