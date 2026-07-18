@@ -12,8 +12,8 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Quick Stats
 
-- **Total Plans**: 54
-- **Backlog**: 0
+- **Total Plans**: 74
+- **Backlog**: 20
 - **Completed**: 51 ✅
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
@@ -22,7 +22,30 @@ This directory contains implementation plans for the Tama project. Each plan doc
 
 ## Backlog
 
-*(empty)*
+From the [2026-07-18 codebase audit](../reviews/2026-07-18-codebase-improvement.md) — 40 findings across 8 lenses. Recommended execution order: 159 (quick wins incl. the config↔proxy cycle break) → 160 (DB layer) → 161–163 → test plans (164–166, 171) → refactors (167–170, 172–178). Coordination flags between plans (170↔173, 160↔177, 159↔163) are noted inline in each plan.
+
+| Plan | Description | Findings |
+|------|-------------|----------|
+| [Quick Fixes](plan-159-quick-fixes.md) | Break config↔proxy cycle, restore 501 stopgap, CSRF route + middleware tests, route /logout, SvelteKit→Leptos docs fix | F3, F6, F21, F25, F35 |
+| [DB Access Consolidation](plan-160-db-access-consolidation.md) | Repository as single API-layer access point, absorb manager writes, delete DTO/Record duplication, shared Repository in state, pub(crate) the rusqlite leaks, amend ADR-0017 | F1, F2 |
+| [Error Contract Unification](plan-161-error-contract.md) | Migrate ~55 flat error sites to structured shape, shared tama-core error helper, fix OpenAPI ErrorResponse schema, shape-assertion tests | F4 |
+| [Model Identity ConfigKey](plan-162-model-identity-configkey.md) | ConfigKey newtype as single derivation site, replace 15 open-coded sites, rename dual resolve_model_id fns | F5 |
+| [Backup Restore](plan-163-backup-restore.md) | Implement restore for real (extract→validate→merge with job events), route create_backup, fix docs/api/backup.md | F6 |
+| [OAuth2 Flow Tests](plan-164-oauth2-flow-tests.md) | ~16 tests for login/callback/logout handlers — state CSRF, wiremock token/userinfo, session cookie | F8 |
+| [forward_request Tests](plan-165-forward-request-tests.md) | Dead-PID 502 + cleanup, circuit-breaker 503/trip+unload, metrics, wiremock success path | F9 |
+| [Pull Handler Tests](plan-166-pull-handler-tests.md) | Validation, enqueue, job GET/SSE, download+verify orchestration (hash mismatch → failed) via wiremock HF | F10 |
+| [File Splits Wave 2](plan-167-file-splits-wave2.md) | Split pull_queue.rs (1756), api/updates.rs (1022), auth.rs (1526) into module dirs, API preserved | F11 |
+| [Server SSE Consolidation](plan-168-server-sse-consolidation.md) | serde-tagged PullEvent/UpdateEvent + to_sse_event, shared job_event_stream/broadcast_to_sse, uniform KeepAlive | F12 |
+| [API Handler Boilerplate](plan-169-api-handler-boilerplate.md) | Wire submit_benchmark_job, resolve_model_record, resolve_config_dir/open_repository, spawn_blocking discipline, small dedup batch | F13–F15, F20, F37 |
+| [Newtypes](plan-170-newtypes.md) | GpuType FromStr/serde adoption, CompactionDevice 422, HfEndpoints + hf_auth_headers, is_valid_repo_id | F16–F18 |
+| [Test Coverage Wave 2](plan-171-test-coverage-wave2.md) | Compaction/TTS via lifecycle traits, update-check orchestration, bench/pull engines, un-ignore backends_api tests, tama-mock integration | F22–F24, F36 |
+| [Cleanup](plan-172-cleanup.md) | Delete ~1900 lines dead code (config/migrate, Leptos components, jobs.rs), unused deps, blanket allows, rename_legacy, println→tracing, style batch | F26, F34, F38, F39 |
+| [Naming Domain Terms](plan-173-naming-domain-terms.md) | GpuType→GpuVariant, server→backend leftovers, download→pull public surface (breaking, migrations), ModelCard→ModelToml, Loading→Starting, [supervisor]→[lifecycle] | F27, F28, F40 |
+| [Typed API Responses](plan-174-typed-api-responses.md) | StatusResponse/ModelEntry/OkResponse structs with golden shape tests, drift guards, scoped OpenAPI updates | F19 |
+| [DB Query from_row](plan-175-db-query-from-row.md) | Per-record from_row + COLUMNS const for 6 record types, column-drift guard test | F30 |
+| [Leptos UI Consolidation](plan-176-leptos-ui-consolidation.md) | Shared wasm-safe types via #[path] inclusion, collapse mirror types, DOM/request helpers + patch_request, benchmark form-state hook | F29, F31 |
+| [ProxyState Sub-structs](plan-177-proxystate-substructs.md) | RegistryState/MetricsState/PullState composition, domain methods over lock-guard accessors, shim migration | F32 |
+| [Router Consolidation](plan-178-router-consolidation.md) | Single-source route table (31 routes), process helpers to crate::process, cross-crate ownership test, fix shadowed /system/health | F33 |
 
 ## Completed Plans
 
@@ -309,4 +332,4 @@ When implementing a new feature:
 
 ---
 
-**Last Updated**: 2026-07-07
+**Last Updated**: 2026-07-18
