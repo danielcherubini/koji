@@ -231,9 +231,16 @@ pub async fn start_restore(
 ) -> impl IntoResponse {
     // Look up upload
     let upload_lock = web_state.upload_lock.clone();
-    let uploads = upload_lock.read().await;
-    let upload_path = match uploads.get(&body.upload_id) {
-        Some(entry) => entry.path.clone(),
+    let upload_path = {
+        let uploads = upload_lock.read().await;
+        match uploads.get(&body.upload_id) {
+            Some(entry) => Some(entry.path.clone()),
+            None => None,
+        }
+    };
+
+    let upload_path = match upload_path {
+        Some(path) => path,
         None => {
             return error_response(
                 StatusCode::NOT_FOUND,
@@ -242,14 +249,18 @@ pub async fn start_restore(
             )
         }
     };
-    drop(uploads);
 
     // Return 501 as a stopgap until plan-163 is implemented.
-    // The uploaded archive is kept on disk.
-    let _ = upload_path;
+    // We clean up the uploaded archive and the lock entry to avoid resource leaks.
+    let mut uploads = upload_lock.write().await;
+    uploads.remove(&body.upload_id);
+    drop(uploads);
+
+    let _ = std::fs::remove_file(&upload_path);
+
     error_response(
         StatusCode::NOT_IMPLEMENTED,
-        "Backup restore is not yet implemented. The uploaded archive was kept on disk.",
+        "Backup restore is not yet implemented. The uploaded archive has been removed.",
         Some("NotImplementedError"),
     )
 }
@@ -445,7 +456,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_start_restore_returns_501_and_keeps_upload() {
+    async fn test_start_restore_returns_501_and_cleans_up() {
         use axum::{body::Body, extract::Extension, routing::post, Router};
         use serde_json::json;
         use tower::ServiceExt;
@@ -482,7 +493,7 @@ mod tests {
             .layer(Extension(web_state))
             .with_state(proxy_state);
 
-        // Case 1: Valid upload_id -> 501
+        // Case 1: Valid upload_id -> 501 and cleanup
         let req = axum::http::Request::builder()
             .method("POST")
             .uri("/tama/v1/restore")
@@ -498,7 +509,7 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["type"], "NotImplementedError");
-        assert!(std::path::Path::new(&upload_path).exists());
+        assert!(!std::path::Path::new(&upload_path).exists(), "Upload file should be removed");
 
         // Case 2: Invalid upload_id -> 404
         let req_invalid = axum::http::Request::builder()

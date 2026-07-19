@@ -32,10 +32,10 @@ const CSRF_HEADER_NAME: &str = "X-CSRF-Token";
 
 /// Generate a cryptographically random CSRF token (32 bytes, hex-encoded).
 fn generate_csrf_token() -> String {
-    // Use uuid v4 for randomness; encode as hex string (no dashes)
+    // Use uuid v4 for randomness; encode as hex string (fixed 32 chars)
     let id = uuid::Uuid::new_v4();
     let (hi, lo) = id.as_u64_pair();
-    format!("{:x}{:x}", hi, lo)
+    format!("{:016x}{:016x}", hi, lo)
 }
 
 /// Enforce same-origin for state-changing methods (POST, DELETE, etc.).
@@ -426,7 +426,7 @@ mod tests {
         let t1 = generate_csrf_token();
         let t2 = generate_csrf_token();
         assert_ne!(t1, t2);
-        assert!(t1.len() <= 32);
+        assert_eq!(t1.len(), 32);
         assert!(t1.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
