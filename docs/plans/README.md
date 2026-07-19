@@ -13,8 +13,8 @@ This directory contains implementation plans for the Tama project. Each plan doc
 ## Quick Stats
 
 - **Total Plans**: 74
-- **Backlog**: 20
-- **Completed**: 51 ✅
+- **Backlog**: 19
+- **Completed**: 52 ✅
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan. The functionality it describes is already implemented via other plans.
 
@@ -26,7 +26,6 @@ From the [2026-07-18 codebase audit](../reviews/2026-07-18-codebase-improvement.
 
 | Plan | Description | Findings |
 |------|-------------|----------|
-| [Quick Fixes](plan-159-quick-fixes.md) | Break config↔proxy cycle, restore 501 stopgap, CSRF route + middleware tests, route /logout, SvelteKit→Leptos docs fix | F3, F6, F21, F25, F35 |
 | [DB Access Consolidation](plan-160-db-access-consolidation.md) | Repository as single API-layer access point, absorb manager writes, delete DTO/Record duplication, shared Repository in state, pub(crate) the rusqlite leaks, amend ADR-0017 | F1, F2 |
 | [Error Contract Unification](plan-161-error-contract.md) | Migrate ~55 flat error sites to structured shape, shared tama-core error helper, fix OpenAPI ErrorResponse schema, shape-assertion tests | F4 |
 | [Model Identity ConfigKey](plan-162-model-identity-configkey.md) | ConfigKey newtype as single derivation site, replace 15 open-coded sites, rename dual resolve_model_id fns | F5 |
@@ -53,6 +52,7 @@ From the [2026-07-18 codebase audit](../reviews/2026-07-18-codebase-improvement.
 
 | Plan | Description | PR / Git References |
 |------|-------------|---------------------|
+| [Quick Fixes](done/plan-159-quick-fixes.md) | Break config↔proxy cycle, restore 501 stopgap, CSRF route + middleware tests, route /logout, SvelteKit→Leptos docs fix | #160 ✅ COMPLETED | [`7412709b`](../../commit/7412709b) |
 | [Improved Logging](done/plan-158-improved-logging.md) | Fix stale logs bug — two-layer tracing (pretty console + JSON file), non-blocking writes via tracing-appender, config-respecting log level, GPU structured fields on inference events, JSON→human-readable formatting in logs API | #158 ✅ COMPLETED | [`03fbd767`](../../commit/03fbd767) |
 | [Langfuse Web UI](done/plan-157-langfuse-web-ui.md) | Wire Langfuse config into web UI — WASM mirror types, structured config API, config editor form with credential validation | #157 ✅ COMPLETED | [`4a2fee2e`](../../commit/4a2fee2e), [`c6f2b2f8`](../../commit/c6f2b2f8), [`8fa8880e`](../../commit/8fa8880e) |
 | [Langfuse Core Integration](done/plan-156-langfuse-core.md) | Langfuse observability — config persistence (migration 0037), telemetry structs, `langfuse-ergonomic` client wrapper, non-streaming + streaming request interception with energy cost | #156 ✅ COMPLETED |
