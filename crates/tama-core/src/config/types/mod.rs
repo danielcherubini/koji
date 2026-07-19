@@ -105,7 +105,7 @@ impl Config {
         // Treating it as a stored field allowed it to drift on every config
         // save; re-deriving on load ensures a stale DB value can never lock
         // the operator out of their own proxy after a restart.
-        let active_keys = crate::proxy::api_keys::count_active_keys(&conn)?;
+        let active_keys = crate::db::queries::count_active_keys(&conn)?;
         let api_keys_enabled = active_keys > 0;
 
         let mut proxy = ProxyConfig {
@@ -269,7 +269,7 @@ impl Config {
         // config save whenever the form's mirror type was missing the field
         // (and even when it didn't, an explicit `false` from a stale client
         // could lock the operator out of their own proxy).
-        let active_keys = crate::proxy::api_keys::count_active_keys(&conn)?;
+        let active_keys = crate::db::queries::count_active_keys(&conn)?;
         let api_keys_enabled = active_keys > 0;
 
         // Upsert proxy

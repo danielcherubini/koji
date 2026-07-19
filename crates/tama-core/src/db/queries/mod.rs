@@ -3,6 +3,7 @@
 //! All functions take a `&Connection` — the caller owns the connection.
 //! All functions are synchronous (no async).
 
+mod api_key_queries;
 mod active_model_queries;
 mod alias_queries;
 mod app_config_queries;
@@ -16,6 +17,7 @@ mod tts_config_queries;
 mod types;
 mod update_check_queries;
 
+pub use api_key_queries::*;
 pub use active_model_queries::*;
 pub use alias_queries::*;
 pub use app_config_queries::*;
