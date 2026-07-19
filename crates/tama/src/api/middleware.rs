@@ -213,8 +213,14 @@ mod tests {
             .map(|(_, val)| val)
             .expect("Cookie should contain a token value");
 
-        assert_eq!(cookie_token, csrf_header, "Cookie and header tokens must match");
-        assert!(!set_cookie.contains("; Secure"), "Cookie should not be Secure when no HTTPS proxy detected");
+        assert_eq!(
+            cookie_token, csrf_header,
+            "Cookie and header tokens must match"
+        );
+        assert!(
+            !set_cookie.contains("; Secure"),
+            "Cookie should not be Secure when no HTTPS proxy detected"
+        );
     }
 
     #[tokio::test]
@@ -406,7 +412,10 @@ mod tests {
             .and_then(|v| v.to_str().ok())
             .expect("Response should have Set-Cookie");
 
-        assert!(set_cookie.contains("; Secure"), "Cookie should be Secure when x-forwarded-proto is https");
+        assert!(
+            set_cookie.contains("; Secure"),
+            "Cookie should be Secure when x-forwarded-proto is https"
+        );
     }
 
     #[test]

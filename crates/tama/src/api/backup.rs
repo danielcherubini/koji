@@ -509,7 +509,10 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["type"], "NotImplementedError");
-        assert!(!std::path::Path::new(&upload_path).exists(), "Upload file should be removed");
+        assert!(
+            !std::path::Path::new(&upload_path).exists(),
+            "Upload file should be removed"
+        );
 
         // Case 2: Invalid upload_id -> 404
         let req_invalid = axum::http::Request::builder()
