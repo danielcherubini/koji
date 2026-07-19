@@ -231,9 +231,16 @@ pub async fn start_restore(
 ) -> impl IntoResponse {
     // Look up upload
     let upload_lock = web_state.upload_lock.clone();
-    let uploads = upload_lock.read().await;
-    let upload_path = match uploads.get(&body.upload_id) {
-        Some(entry) => entry.path.clone(),
+    let upload_path = {
+        let uploads = upload_lock.read().await;
+        match uploads.get(&body.upload_id) {
+            Some(entry) => Some(entry.path.clone()),
+            None => None,
+        }
+    };
+
+    let upload_path = match upload_path {
+        Some(path) => path,
         None => {
             return error_response(
                 StatusCode::NOT_FOUND,
@@ -242,65 +249,20 @@ pub async fn start_restore(
             )
         }
     };
+
+    // Return 501 as a stopgap until plan-163 is implemented.
+    // We clean up the uploaded archive and the lock entry to avoid resource leaks.
+    let mut uploads = upload_lock.write().await;
+    uploads.remove(&body.upload_id);
     drop(uploads);
 
-    // Create restore job
-    let Some(jobs) = web_state.jobs.as_ref() else {
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Jobs not configured",
-            None,
-        );
-    };
+    let _ = std::fs::remove_file(&upload_path);
 
-    let job = jobs
-        .submit(
-            crate::web_types::JobKind::Restore,
-            None, // No backend type for restore
-        )
-        .await;
-
-    match job {
-        Ok(job) => {
-            // Spawn background task for restore with safe error handling
-            let config_dir = match tama_core::config::Config::config_dir() {
-                Ok(d) => d,
-                Err(e) => {
-                    tracing::error!("Config dir not configured: {}", e);
-                    return error_response(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("Config dir not configured: {}", e),
-                        None,
-                    );
-                }
-            };
-            let temp_dir = config_dir.join("uploads");
-            let job_id = job.id.clone();
-
-            let cleanup_path = upload_path.clone();
-            tokio::spawn(async move {
-                let result = tokio::task::spawn_blocking(move || {
-                    // TODO: Implement actual restore logic
-                    // This would call tama_core::backup functions
-                    let _ = (config_dir, temp_dir, job);
-                    Ok::<(), anyhow::Error>(())
-                })
-                .await;
-
-                if let Err(e) = result {
-                    tracing::error!("Restore task panicked: {:?}", e);
-                }
-
-                // Clean up the uploaded archive after restore completes
-                if let Err(e) = std::fs::remove_file(&cleanup_path) {
-                    tracing::warn!("Failed to delete upload file: {}", e);
-                }
-            });
-
-            Json(RestoreResponse { job_id }).into_response()
-        }
-        Err(e) => error_response(StatusCode::CONFLICT, e.to_string(), Some("ConflictError")),
-    }
+    error_response(
+        StatusCode::NOT_IMPLEMENTED,
+        "Backup restore is not yet implemented. The uploaded archive has been removed.",
+        Some("NotImplementedError"),
+    )
 }
 
 /// Re-export from local web_types for backward compatibility.
@@ -491,5 +453,76 @@ mod tests {
         };
 
         assert_eq!(entry.source, "build");
+    }
+
+    #[tokio::test]
+    async fn test_start_restore_returns_501_and_cleans_up() {
+        use axum::{body::Body, extract::Extension, routing::post, Router};
+        use serde_json::json;
+        use tower::ServiceExt;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let upload_id = "up-1".to_string();
+        let upload_path = temp_dir.path().join(format!("{}.tar.gz", upload_id));
+        std::fs::write(&upload_path, b"fake backup").unwrap();
+
+        let proxy_state = Arc::new(tama_core::proxy::ProxyState::new(
+            tama_core::config::Config::default(),
+            None,
+        ));
+
+        let web_state = WebState {
+            jobs: None,
+            capabilities: None,
+            update_checker: Arc::new(tama_core::updates::UpdateChecker::default()),
+            binary_version: "2.0.0".to_string(),
+            update_tx: Arc::new(tokio::sync::Mutex::new(None)),
+            upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::from([
+                (
+                    upload_id.clone(),
+                    UploadEntry {
+                        path: upload_path.clone(),
+                        created_at: chrono::Utc::now(),
+                    },
+                ),
+            ]))),
+        };
+
+        let app = Router::new()
+            .route("/tama/v1/restore", post(start_restore))
+            .layer(Extension(web_state))
+            .with_state(proxy_state);
+
+        // Case 1: Valid upload_id -> 501 and cleanup
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/tama/v1/restore")
+            .header("Content-Type", "application/json")
+            .body(Body::from(json!({"upload_id": upload_id}).to_string()))
+            .unwrap();
+
+        let response = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["type"], "NotImplementedError");
+        assert!(
+            !std::path::Path::new(&upload_path).exists(),
+            "Upload file should be removed"
+        );
+
+        // Case 2: Invalid upload_id -> 404
+        let req_invalid = axum::http::Request::builder()
+            .method("POST")
+            .uri("/tama/v1/restore")
+            .header("Content-Type", "application/json")
+            .body(Body::from(json!({"upload_id": "unknown"}).to_string()))
+            .unwrap();
+
+        let response_invalid = app.oneshot(req_invalid).await.unwrap();
+        assert_eq!(response_invalid.status(), StatusCode::NOT_FOUND);
     }
 }

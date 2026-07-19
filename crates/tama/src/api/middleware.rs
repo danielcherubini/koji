@@ -32,10 +32,10 @@ const CSRF_HEADER_NAME: &str = "X-CSRF-Token";
 
 /// Generate a cryptographically random CSRF token (32 bytes, hex-encoded).
 fn generate_csrf_token() -> String {
-    // Use uuid v4 for randomness; encode as hex string (no dashes)
+    // Use uuid v4 for randomness; encode as hex string (fixed 32 chars)
     let id = uuid::Uuid::new_v4();
     let (hi, lo) = id.as_u64_pair();
-    format!("{:x}{:x}", hi, lo)
+    format!("{:016x}{:016x}", hi, lo)
 }
 
 /// Enforce same-origin for state-changing methods (POST, DELETE, etc.).
@@ -103,18 +103,10 @@ pub async fn enforce_same_origin(
             (Some(cookie_val), Some(header_val)) if cookie_val == header_val => {
                 Ok(next.run(req).await)
             }
-            // Cookie present but header missing — reject.
-            // This means the browser sent a cookie but the frontend didn't
-            // include the matching header, indicating a potential attack.
-            (Some(_), None) => Err((StatusCode::FORBIDDEN, "CSRF token validation failed")),
-            // Neither present — allow through.
-            // Security trade-off: This enables localhost development and
-            // environments where cookies are blocked, but means POST requests
-            // without any CSRF protection can reach the API from any origin.
-            // The X-CSRF-Token header (when present) provides defense-in-depth
-            // since an attacker can't guess it. For production deployments,
-            // ensure proper CORS restrictions and consider adding authentication.
-            _ => Ok(next.run(req).await),
+            // Neither present — allow through (e.g. for API calls using Bearer tokens).
+            (None, None) => Ok(next.run(req).await),
+            // Any other combination (one missing, or both present but mismatching) is rejected.
+            _ => Err((StatusCode::FORBIDDEN, "CSRF token validation failed")),
         }
     } else if matches!(method, axum::http::Method::DELETE) {
         // DELETE: check Origin if present (legacy fallback for non-POST methods)
@@ -151,4 +143,308 @@ fn extract_csrf_cookie(cookie_header: &str) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{HeaderMap, Method, Request};
+    use axum::middleware;
+    use axum::Router;
+    use tower::ServiceExt;
+
+    /// Helper: build a request with the given method and optional headers.
+    fn build_request(method: Method, headers: HeaderMap) -> Request<Body> {
+        let mut req = Request::builder()
+            .method(method)
+            .uri("/test")
+            .body(Body::empty())
+            .unwrap();
+        *req.headers_mut() = headers;
+        req
+    }
+
+    /// Helper: create a test app with the CSRF middleware layer.
+    fn test_app() -> Router {
+        Router::new()
+            .route(
+                "/test",
+                axum::routing::get(|| async { "ok" })
+                    .post(|| async { "ok" })
+                    .put(|| async { "ok" })
+                    .patch(|| async { "ok" })
+                    .delete(|| async { "ok" }),
+            )
+            .layer(middleware::from_fn(enforce_same_origin))
+    }
+
+    /// Helper: check if a response has a specific status code.
+    async fn get_status(response: axum::http::Response<Body>) -> StatusCode {
+        response.status()
+    }
+
+    // ---- GET / HEAD / OPTIONS: token generation ----
+
+    #[tokio::test]
+    async fn get_generates_csrf_token() {
+        let req = build_request(Method::GET, HeaderMap::new());
+        let app = test_app();
+        let response = app.oneshot(req).await.unwrap();
+
+        let set_cookie = response
+            .headers()
+            .get(axum::http::header::SET_COOKIE)
+            .and_then(|v| v.to_str().ok())
+            .expect("GET response should include Set-Cookie header");
+
+        let csrf_header = response
+            .headers()
+            .get(CSRF_HEADER_NAME)
+            .and_then(|v| v.to_str().ok())
+            .expect("GET response should include X-CSRF-Token header");
+
+        // Verify cookie name and token match
+        assert!(set_cookie.starts_with(CSRF_COOKIE_NAME));
+        let cookie_token = set_cookie
+            .split(';')
+            .next()
+            .and_then(|part| part.split_once('='))
+            .map(|(_, val)| val)
+            .expect("Cookie should contain a token value");
+
+        assert_eq!(
+            cookie_token, csrf_header,
+            "Cookie and header tokens must match"
+        );
+        assert!(
+            !set_cookie.contains("; Secure"),
+            "Cookie should not be Secure when no HTTPS proxy detected"
+        );
+    }
+
+    #[tokio::test]
+    async fn head_generates_csrf_token() {
+        let req = build_request(Method::HEAD, HeaderMap::new());
+        let app = test_app();
+        let response = app.oneshot(req).await.unwrap();
+
+        assert!(response
+            .headers()
+            .contains_key(axum::http::header::SET_COOKIE));
+        assert!(response.headers().contains_key(CSRF_HEADER_NAME));
+    }
+
+    // ---- POST: CSRF double-submit verification ----
+
+    #[tokio::test]
+    async fn post_matching_cookie_and_header_passes() {
+        let token = generate_csrf_token();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::COOKIE,
+            format!("{}={}", CSRF_COOKIE_NAME, token).parse().unwrap(),
+        );
+        headers.insert(CSRF_HEADER_NAME, token.parse().unwrap());
+
+        let req = build_request(Method::POST, headers);
+        let app = test_app();
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(get_status(response).await, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn post_no_cookie_no_header_passes() {
+        let req = build_request(Method::POST, HeaderMap::new());
+        let app = test_app();
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(get_status(response).await, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn post_cookie_only_rejected() {
+        let token = generate_csrf_token();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::COOKIE,
+            format!("{}={}", CSRF_COOKIE_NAME, token).parse().unwrap(),
+        );
+
+        let req = build_request(Method::POST, headers);
+        let app = test_app();
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(get_status(response).await, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn post_header_only_rejected() {
+        let token = generate_csrf_token();
+        let mut headers = HeaderMap::new();
+        headers.insert(CSRF_HEADER_NAME, token.parse().unwrap());
+
+        let req = build_request(Method::POST, headers);
+        let app = test_app();
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(get_status(response).await, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn post_mismatched_cookie_and_header_rejected() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::COOKIE,
+            format!("{}=cookie_value", CSRF_COOKIE_NAME)
+                .parse()
+                .unwrap(),
+        );
+        headers.insert(CSRF_HEADER_NAME, "different_header_value".parse().unwrap());
+
+        let req = build_request(Method::POST, headers);
+        let app = test_app();
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(get_status(response).await, StatusCode::FORBIDDEN);
+    }
+
+    // ---- PUT: CSRF double-submit verification ----
+
+    #[tokio::test]
+    async fn put_matching_cookie_and_header_passes() {
+        let token = generate_csrf_token();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::COOKIE,
+            format!("{}={}", CSRF_COOKIE_NAME, token).parse().unwrap(),
+        );
+        headers.insert(CSRF_HEADER_NAME, token.parse().unwrap());
+
+        let req = build_request(Method::PUT, headers);
+        let app = test_app();
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(get_status(response).await, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn put_no_cookie_no_header_passes() {
+        let req = build_request(Method::PUT, HeaderMap::new());
+        let app = test_app();
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(get_status(response).await, StatusCode::OK);
+    }
+
+    // ---- PATCH: CSRF double-submit verification ----
+
+    #[tokio::test]
+    async fn patch_matching_cookie_and_header_passes() {
+        let token = generate_csrf_token();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::COOKIE,
+            format!("{}={}", CSRF_COOKIE_NAME, token).parse().unwrap(),
+        );
+        headers.insert(CSRF_HEADER_NAME, token.parse().unwrap());
+
+        let req = build_request(Method::PATCH, headers);
+        let app = test_app();
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(get_status(response).await, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn patch_no_cookie_no_header_passes() {
+        let req = build_request(Method::PATCH, HeaderMap::new());
+        let app = test_app();
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(get_status(response).await, StatusCode::OK);
+    }
+
+    // ---- DELETE: origin check ----
+
+    #[tokio::test]
+    async fn delete_with_matching_origin_passes() {
+        let mut headers = HeaderMap::new();
+        headers.insert(axum::http::header::HOST, "localhost:18910".parse().unwrap());
+        headers.insert(
+            axum::http::header::ORIGIN,
+            "http://localhost:18910".parse().unwrap(),
+        );
+
+        let req = build_request(Method::DELETE, headers);
+        let app = test_app();
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(get_status(response).await, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn delete_without_origin_passes() {
+        let req = build_request(Method::DELETE, HeaderMap::new());
+        let app = test_app();
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(get_status(response).await, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn delete_with_mismatched_origin_rejected() {
+        let mut headers = HeaderMap::new();
+        headers.insert(axum::http::header::HOST, "example.com".parse().unwrap());
+        headers.insert(
+            axum::http::header::ORIGIN,
+            "http://evil.com".parse().unwrap(),
+        );
+
+        let req = build_request(Method::DELETE, headers);
+        let app = test_app();
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(get_status(response).await, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn get_sets_secure_flag_behind_https_proxy() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-proto", "https".parse().unwrap());
+
+        let req = build_request(Method::GET, headers);
+        let app = test_app();
+        let response = app.oneshot(req).await.unwrap();
+
+        let set_cookie = response
+            .headers()
+            .get(axum::http::header::SET_COOKIE)
+            .and_then(|v| v.to_str().ok())
+            .expect("Response should have Set-Cookie");
+
+        assert!(
+            set_cookie.contains("; Secure"),
+            "Cookie should be Secure when x-forwarded-proto is https"
+        );
+    }
+
+    #[test]
+    fn test_should_set_secure() {
+        let mut headers = HeaderMap::new();
+        assert!(!should_set_secure(&headers));
+
+        headers.insert("x-forwarded-proto", "https".parse().unwrap());
+        assert!(should_set_secure(&headers));
+
+        headers.insert("x-forwarded-proto", "http".parse().unwrap());
+        assert!(!should_set_secure(&headers));
+    }
+
+    #[test]
+    fn test_generate_csrf_token_format() {
+        let t1 = generate_csrf_token();
+        let t2 = generate_csrf_token();
+        assert_ne!(t1, t2);
+        assert_eq!(t1.len(), 32);
+        assert!(t1.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_extract_csrf_cookie() {
+        assert_eq!(
+            extract_csrf_cookie("a=1; tama_csrf_token=xyz; b=2"),
+            Some("xyz".to_string())
+        );
+        assert_eq!(extract_csrf_cookie("other_cookie=123"), None);
+    }
 }
