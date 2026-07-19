@@ -103,18 +103,10 @@ pub async fn enforce_same_origin(
             (Some(cookie_val), Some(header_val)) if cookie_val == header_val => {
                 Ok(next.run(req).await)
             }
-            // Cookie present but header missing — reject.
-            // This means the browser sent a cookie but the frontend didn't
-            // include the matching header, indicating a potential attack.
-            (Some(_), None) => Err((StatusCode::FORBIDDEN, "CSRF token validation failed")),
-            // Neither present — allow through.
-            // Security trade-off: This enables localhost development and
-            // environments where cookies are blocked, but means POST requests
-            // without any CSRF protection can reach the API from any origin.
-            // The X-CSRF-Token header (when present) provides defense-in-depth
-            // since an attacker can't guess it. For production deployments,
-            // ensure proper CORS restrictions and consider adding authentication.
-            _ => Ok(next.run(req).await),
+            // Neither present — allow through (e.g. for API calls using Bearer tokens).
+            (None, None) => Ok(next.run(req).await),
+            // Any other combination (one missing, or both present but mismatching) is rejected.
+            _ => Err((StatusCode::FORBIDDEN, "CSRF token validation failed")),
         }
     } else if matches!(method, axum::http::Method::DELETE) {
         // DELETE: check Origin if present (legacy fallback for non-POST methods)
@@ -256,11 +248,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn post_no_cookie_no_header_rejected() {
+    async fn post_no_cookie_no_header_passes() {
         let req = build_request(Method::POST, HeaderMap::new());
         let app = test_app();
         let response = app.oneshot(req).await.unwrap();
-        assert_eq!(get_status(response).await, StatusCode::FORBIDDEN);
+        assert_eq!(get_status(response).await, StatusCode::OK);
     }
 
     #[tokio::test]
@@ -326,11 +318,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn put_no_cookie_no_header_rejected() {
+    async fn put_no_cookie_no_header_passes() {
         let req = build_request(Method::PUT, HeaderMap::new());
         let app = test_app();
         let response = app.oneshot(req).await.unwrap();
-        assert_eq!(get_status(response).await, StatusCode::FORBIDDEN);
+        assert_eq!(get_status(response).await, StatusCode::OK);
     }
 
     // ---- PATCH: CSRF double-submit verification ----
@@ -352,11 +344,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn patch_no_cookie_no_header_rejected() {
+    async fn patch_no_cookie_no_header_passes() {
         let req = build_request(Method::PATCH, HeaderMap::new());
         let app = test_app();
         let response = app.oneshot(req).await.unwrap();
-        assert_eq!(get_status(response).await, StatusCode::FORBIDDEN);
+        assert_eq!(get_status(response).await, StatusCode::OK);
     }
 
     // ---- DELETE: origin check ----
