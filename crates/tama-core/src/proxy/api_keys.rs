@@ -176,7 +176,6 @@ pub fn create_key(
     Ok(id)
 }
 
-
 /// List all API keys (including revoked ones), ordered by creation date.
 pub fn list_keys(conn: &Connection) -> Result<Vec<ApiKeyRecord>> {
     let mut stmt = conn.prepare(

@@ -446,14 +446,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_start_restore_returns_501_and_keeps_upload() {
-        use axum::{
-            body::Body,
-            extract::Extension,
-            routing::post,
-            Router,
-        };
-        use tower::ServiceExt;
+        use axum::{body::Body, extract::Extension, routing::post, Router};
         use serde_json::json;
+        use tower::ServiceExt;
 
         let temp_dir = tempfile::tempdir().unwrap();
         let upload_id = "up-1".to_string();
@@ -471,17 +466,15 @@ mod tests {
             update_checker: Arc::new(tama_core::updates::UpdateChecker::default()),
             binary_version: "2.0.0".to_string(),
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
-            upload_lock: Arc::new(tokio::sync::RwLock::new(
-                std::collections::HashMap::from([
-                    (
-                        upload_id.clone(),
-                        UploadEntry {
-                            path: upload_path.clone(),
-                            created_at: chrono::Utc::now(),
-                        },
-                    ),
-                ]),
-            )),
+            upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::from([
+                (
+                    upload_id.clone(),
+                    UploadEntry {
+                        path: upload_path.clone(),
+                        created_at: chrono::Utc::now(),
+                    },
+                ),
+            ]))),
         };
 
         let app = Router::new()
@@ -500,7 +493,9 @@ mod tests {
         let response = app.clone().oneshot(req).await.unwrap();
         assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
 
-        let body = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["type"], "NotImplementedError");
         assert!(std::path::Path::new(&upload_path).exists());
