@@ -58,14 +58,14 @@ pub async fn create_model(
     };
 
     spawn_model_crud(state_clone, StatusCode::CREATED, move || {
-        let mgr = tama_core::models::ModelManager::open(&config_dir).map_err(|e| {
+        let repo = tama_core::db::repository::Repository::open(&config_dir).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 error_body(e.to_string(), None),
             )
         })?;
-        if mgr
-            .get_config_by_repo_id(&repo_id)
+        if repo
+            .get_model_config_by_repo_id(&repo_id)
             .map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -118,7 +118,7 @@ pub async fn create_model(
         } else {
             model_config
         };
-        let model_id = mgr
+        let model_id = repo
             .save_model_config(&repo_id, &model_config)
             .map_err(|e| {
                 (

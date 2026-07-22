@@ -74,19 +74,11 @@ pub async fn update_model(
             })?;
         let existing = tama_core::config::ModelConfig::from_db_record_for_repo(&existing_record);
 
-        // Open manager for writing
-        let mgr = tama_core::models::ModelManager::open(&config_dir).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                error_body(e.to_string(), None),
-            )
-        })?;
-
         let updated_config = apply_model_body(body, Some(existing));
 
         // Save to DB (save_model_config converts config_key to repo_id internally)
         let config_key = existing_record.repo_id.to_lowercase().replace('/', "--");
-        let new_model_id = mgr
+        let new_model_id = repo
             .save_model_config(&config_key, &updated_config)
             .map_err(|e| {
                 (
@@ -157,19 +149,11 @@ pub async fn patch_model(
             })?;
         let existing = tama_core::config::ModelConfig::from_db_record_for_repo(&existing_record);
 
-        // Open manager for writing
-        let mgr = tama_core::models::ModelManager::open(&config_dir).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                error_body(e.to_string(), None),
-            )
-        })?;
-
         let updated_config = apply_model_patch(body, &existing);
 
         // Save to DB (save_model_config converts config_key to repo_id internally)
         let config_key = existing_record.repo_id.to_lowercase().replace('/', "--");
-        let new_model_id = mgr
+        let new_model_id = repo
             .save_model_config(&config_key, &updated_config)
             .map_err(|e| {
                 (

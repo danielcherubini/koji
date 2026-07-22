@@ -199,6 +199,14 @@ impl Repository {
         })
     }
 
+    /// Open an in-memory repository for testing.
+    pub fn open_in_memory() -> anyhow::Result<Self> {
+        let open_result = crate::db::open_in_memory()?;
+        Ok(Self {
+            conn: open_result.conn,
+        })
+    }
+
     /// Returns a reference to the underlying SQLite connection.
     ///
     /// This is a permanent escape hatch for callers that need raw access.
@@ -424,6 +432,91 @@ impl Repository {
     ) -> anyhow::Result<()> {
         queries::delete_update_checks_by_pattern(&self.conn, item_type, item_id_pattern)?;
         Ok(())
+    }
+
+    // ── Model writes ── Model-domain write methods absorbed from ModelManager.
+    // These are the subset the `tama` API layer needs; queue/active-model/lifecycle
+    // methods stay on ModelManager for tama-core-internal use only.
+
+    /// Convenience method to save a ModelConfig as a DB record.
+    ///
+    /// Converts config_key to repo_id, converts ModelConfig → ModelConfigRecord,
+    /// sets api_name default, and upserts. Returns the model id.
+    pub fn save_model_config(
+        &self,
+        config_key: &str,
+        mc: &crate::config::ModelConfig,
+    ) -> anyhow::Result<i64> {
+        let repo_id = crate::models::config_key_to_repo_id(config_key);
+        let mut record = mc.to_db_record(&repo_id);
+        if record.api_name.as_deref().is_none_or(str::is_empty) {
+            record.api_name = Some(repo_id.clone());
+        }
+        queries::upsert_model_config(&self.conn, &record)
+    }
+
+    /// Get all stored file records for a model.
+    pub fn get_files(&self, model_id: i64) -> anyhow::Result<Vec<queries::ModelFileRecord>> {
+        queries::get_model_files(&self.conn, model_id)
+            .with_context(|| format!("Failed to get model files for id={}", model_id))
+    }
+
+    /// Insert or update a model file record.
+    pub fn upsert_file(
+        &self,
+        model_id: i64,
+        repo_id: &str,
+        filename: &str,
+        quant: Option<&str>,
+        lfs_oid: Option<&str>,
+        size_bytes: Option<i64>,
+    ) -> anyhow::Result<()> {
+        queries::upsert_model_file(
+            &self.conn, model_id, repo_id, filename, quant, lfs_oid, size_bytes,
+        )
+    }
+
+    /// Delete a single model file record by (model_id, filename).
+    pub fn delete_file(&self, model_id: i64, filename: &str) -> anyhow::Result<()> {
+        queries::delete_model_file(&self.conn, model_id, filename).with_context(|| {
+            format!(
+                "Failed to delete model file for id={} filename={}",
+                model_id, filename
+            )
+        })
+    }
+
+    /// Insert or update the pull record for a model.
+    pub fn upsert_pull(
+        &self,
+        model_id: i64,
+        repo_id: &str,
+        commit_sha: &str,
+    ) -> anyhow::Result<()> {
+        queries::upsert_model_pull(&self.conn, model_id, repo_id, commit_sha)
+    }
+
+    /// Get the stored pull record for a model. Returns None if never pulled.
+    pub fn get_pull(&self, model_id: i64) -> anyhow::Result<Option<queries::ModelPullRecord>> {
+        queries::get_model_pull(&self.conn, model_id)
+            .with_context(|| format!("Failed to get pull record for id={}", model_id))
+    }
+
+    /// Delete the model configuration by id. CASCADE deletes model_pulls and model_files.
+    pub fn delete_config(&self, id: i64) -> anyhow::Result<()> {
+        queries::delete_model_config(&self.conn, id)
+            .with_context(|| format!("Failed to delete model config for id={}", id))
+    }
+
+    /// Update the verification columns for a single file.
+    pub fn update_verification(
+        &self,
+        model_id: i64,
+        filename: &str,
+        verified_ok: Option<bool>,
+        verify_error: Option<&str>,
+    ) -> anyhow::Result<()> {
+        queries::update_verification(&self.conn, model_id, filename, verified_ok, verify_error)
     }
 }
 
@@ -904,5 +997,66 @@ mod tests {
         // Fresh DB: no models exist
         assert!(!repo.model_exists(1).unwrap());
         assert!(!repo.model_exists(0).unwrap());
+    }
+
+    // ── Model writes (absorbed from ModelManager) ──────────────────────────
+
+    #[test]
+    fn test_save_model_config_round_trip() {
+        let repo = test_repo();
+        let mc = crate::config::ModelConfig::default();
+        let id = repo.save_model_config("owner--repo", &mc).unwrap();
+        assert!(id > 0);
+        let record = repo.get_model_config(id).unwrap().unwrap();
+        assert_eq!(record.repo_id, "owner/repo");
+        assert_eq!(record.api_name.as_deref(), Some("owner/repo"));
+    }
+
+    #[test]
+    fn test_upsert_and_get_pull() {
+        let repo = test_repo();
+        let id = insert_model_config(&repo.conn, "owner/repo", Some("Test"), "llama_cpp");
+        repo.upsert_pull(id, "owner/repo", "abc123").unwrap();
+        let pull = repo.get_pull(id).unwrap().unwrap();
+        assert_eq!(pull.commit_sha, "abc123");
+    }
+
+    #[test]
+    fn test_upsert_file_and_delete_file() {
+        let repo = test_repo();
+        let id = insert_model_config(&repo.conn, "owner/repo", Some("Test"), "llama_cpp");
+        repo.upsert_file(
+            id,
+            "owner/repo",
+            "m-q4.gguf",
+            Some("Q4_K_M"),
+            None,
+            Some(123),
+        )
+        .unwrap();
+        let files = repo.get_files(id).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].filename, "m-q4.gguf");
+        repo.delete_file(id, "m-q4.gguf").unwrap();
+        assert!(repo.get_files(id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_delete_config_cascades() {
+        let repo = test_repo();
+        let id = insert_model_config(&repo.conn, "owner/repo", Some("Test"), "llama_cpp");
+        repo.upsert_file(
+            id,
+            "owner/repo",
+            "m-q4.gguf",
+            Some("Q4_K_M"),
+            None,
+            Some(123),
+        )
+        .unwrap();
+        assert!(!repo.get_model_config(id).unwrap().is_none());
+        repo.delete_config(id).unwrap();
+        assert!(repo.get_model_config(id).unwrap().is_none());
+        assert!(repo.get_files(id).unwrap().is_empty());
     }
 }

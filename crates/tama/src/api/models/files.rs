@@ -127,11 +127,11 @@ pub async fn refresh_model_metadata(
     let commit_sha = listing.commit_sha.clone();
     let files = listing.files.clone();
     let write = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
-        let mgr = tama_core::models::ModelManager::open(&config_dir_for_db)?;
-        mgr.upsert_pull(model_id, &repo_id_for_db, &commit_sha)?;
+        let repo = tama_core::db::repository::Repository::open(&config_dir_for_db)?;
+        repo.upsert_pull(model_id, &repo_id_for_db, &commit_sha)?;
 
         // Build a set of filenames already tracked locally.
-        let local_files = mgr.get_files(model_id)?;
+        let local_files = repo.get_files(model_id)?;
         let local_filenames: std::collections::HashSet<&str> =
             local_files.iter().map(|f| f.filename.as_str()).collect();
 
@@ -142,7 +142,7 @@ pub async fn refresh_model_metadata(
                 continue;
             }
             let blob = blobs.get(&file.filename);
-            mgr.upsert_file(
+            repo.upsert_file(
                 model_id,
                 &repo_id_for_db,
                 &file.filename,
@@ -151,8 +151,8 @@ pub async fn refresh_model_metadata(
                 blob.and_then(|b| b.size),
             )?;
         }
-        let files_out = mgr.get_files(model_id)?;
-        let pull_out = mgr.get_pull(model_id)?;
+        let files_out = repo.get_files(model_id)?;
+        let pull_out = repo.get_pull(model_id)?;
         Ok((pull_out, files_out))
     })
     .await;
@@ -254,10 +254,10 @@ pub async fn verify_model_files(
     let repo_id_clone = repo_id.clone();
 
     let task = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
-        let mgr = tama_core::models::ModelManager::open(&config_dir)?;
+        let repo = tama_core::db::repository::Repository::open(&config_dir)?;
         let results =
-            tama_core::models::verify::verify_model(&mgr, model_id, &repo_id_clone, &model_dir)?;
-        let files = mgr.get_files(model_id)?;
+            tama_core::models::verify::verify_model(&repo, model_id, &repo_id_clone, &model_dir)?;
+        let files = repo.get_files(model_id)?;
         Ok((results, files))
     })
     .await;

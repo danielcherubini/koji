@@ -57,11 +57,6 @@ pub async fn rename_model(
             })?;
         let mut model_config = tama_core::config::ModelConfig::from_db_record_for_repo(&existing_record);
 
-        // Open manager for writing
-        let mgr = tama_core::models::ModelManager::open(&config_dir).map_err(|e| {
-            (StatusCode::INTERNAL_SERVER_ERROR, error_body(e.to_string(), None))
-        })?;
-
         let new_repo_id = body.new_repo_id.trim().to_string();
         if new_repo_id.is_empty() {
             return Err((
@@ -83,8 +78,8 @@ pub async fn rename_model(
         }
 
         // Check target repo_id doesn't already exist
-        if mgr
-            .get_config_by_repo_id(&new_repo_id)
+        if repo
+            .get_model_config_by_repo_id(&new_repo_id)
             .map_err(|e| {
                 (StatusCode::INTERNAL_SERVER_ERROR, error_body(e.to_string(), None))
             })?
@@ -104,14 +99,14 @@ pub async fn rename_model(
 
         // Save with new repo_id (keeps same integer id)
         let config_key = new_repo_id.to_lowercase().replace('/', "--");
-        let _ = mgr
+        let _ = repo
             .save_model_config(&config_key, &model_config)
             .map_err(|e| {
                 (StatusCode::INTERNAL_SERVER_ERROR, error_body(e.to_string(), None))
             })?;
 
         // Clean up update_check record for old repo_id
-        let _ = mgr.delete_update_check("model", &existing_record.repo_id);
+        let _ = repo.delete_update_check("model", &existing_record.repo_id);
 
         Ok(serde_json::json!({ "ok": true, "id": model_id }))
     })

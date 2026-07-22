@@ -35,14 +35,6 @@ pub async fn delete_quant(
             )
         })?;
 
-        // Open manager for writing
-        let mgr = tama_core::models::ModelManager::open(&config_dir).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                error_body(e.to_string(), None),
-            )
-        })?;
-
         // Find the model from DB
         let model_record = repo
             .get_model_config(id)
@@ -87,7 +79,7 @@ pub async fn delete_quant(
 
         // Save to DB
         let config_key = repo_id.to_lowercase().replace('/', "--");
-        mgr.save_model_config(&config_key, &model_config)
+        repo.save_model_config(&config_key, &model_config)
             .map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -113,7 +105,7 @@ pub async fn delete_quant(
 
         // Clean up DB record (best-effort) - only after config is saved
         if !repo_id.is_empty() {
-            let _ = mgr.delete_file(id, &filename);
+            let _ = repo.delete_file(id, &filename);
         }
 
         Ok(serde_json::json!({
