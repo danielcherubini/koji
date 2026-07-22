@@ -51,8 +51,7 @@ pub async fn delete_quant(
                 )
             })?;
 
-        let mut model_config =
-            tama_core::config::ModelConfig::from_db_record_for_repo(&model_record);
+        let mut model_config = tama_core::config::ModelConfig::from_db_record(&model_record);
 
         // Find the quant entry
         let quant_entry = model_config.quants.get(&quant_key).ok_or_else(|| {
@@ -176,7 +175,7 @@ pub async fn delete_model(
                     error_body("Model not found", Some("NotFoundError")),
                 )
             })?;
-        let _model_config = tama_core::config::ModelConfig::from_db_record_for_repo(&model_record);
+        let _model_config = tama_core::config::ModelConfig::from_db_record(&model_record);
 
         // Step 1: Delete model config within a transaction — all-or-nothing semantics.
         // This ensures that if the transaction fails, no files are touched yet

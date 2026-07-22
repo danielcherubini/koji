@@ -55,7 +55,7 @@ pub async fn rename_model(
             .ok_or_else(|| {
                 (StatusCode::NOT_FOUND, error_body("Model not found", Some("NotFoundError")))
             })?;
-        let mut model_config = tama_core::config::ModelConfig::from_db_record_for_repo(&existing_record);
+        let mut model_config = tama_core::config::ModelConfig::from_db_record(&existing_record);
 
         let new_repo_id = body.new_repo_id.trim().to_string();
         if new_repo_id.is_empty() {

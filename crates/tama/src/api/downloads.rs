@@ -52,10 +52,10 @@ pub struct DownloadCancelResponse {
     pub message: Option<String>,
 }
 
-/// Convert a `PullQueueDto` to a `PullQueueItemDto`.
+/// Convert a `PullQueueItem` to a `PullQueueItemDto`.
 /// Note: progress_percent is computed client-side from bytes_pulled
 /// and total_bytes, so it's not included in the API response.
-fn item_to_dto(item: &tama_core::db::repository::PullQueueDto) -> PullQueueItemDto {
+fn item_to_dto(item: &tama_core::db::queries::PullQueueItem) -> PullQueueItemDto {
     PullQueueItemDto {
         job_id: item.job_id.clone(),
         repo_id: item.repo_id.clone(),

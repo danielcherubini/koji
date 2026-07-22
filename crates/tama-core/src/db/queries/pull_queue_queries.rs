@@ -5,9 +5,10 @@
 
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 
 /// A row from the pull_queue table.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PullQueueItem {
     pub id: i64,
     pub job_id: String,

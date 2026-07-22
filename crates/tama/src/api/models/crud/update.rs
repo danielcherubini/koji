@@ -72,7 +72,7 @@ pub async fn update_model(
                     error_body("Model not found", Some("NotFoundError")),
                 )
             })?;
-        let existing = tama_core::config::ModelConfig::from_db_record_for_repo(&existing_record);
+        let existing = tama_core::config::ModelConfig::from_db_record(&existing_record);
 
         let updated_config = apply_model_body(body, Some(existing));
 
@@ -147,7 +147,7 @@ pub async fn patch_model(
                     error_body("Model not found", Some("NotFoundError")),
                 )
             })?;
-        let existing = tama_core::config::ModelConfig::from_db_record_for_repo(&existing_record);
+        let existing = tama_core::config::ModelConfig::from_db_record(&existing_record);
 
         let updated_config = apply_model_patch(body, &existing);
 

@@ -10,7 +10,8 @@ use tama_core::proxy::ProxyState;
 
 use crate::api::load_config_from_state;
 use tama_core::backends::BackendOption;
-use tama_core::db::repository::{ModelConfigDto, ModelFileDto, Repository};
+use tama_core::db::queries::{ModelConfigRecord, ModelFileRecord};
+use tama_core::db::repository::Repository;
 
 /// Build the list of available backend options by querying installed variants from the DB.
 fn build_backend_options(
@@ -46,14 +47,14 @@ struct RepoDbMeta {
     commit_sha: Option<String>,
     pulled_at: Option<String>,
     /// Keyed by filename (matches `QuantEntry.file`), not by quant name.
-    files: std::collections::HashMap<String, ModelFileDto>,
+    files: std::collections::HashMap<String, ModelFileRecord>,
 }
 
 /// Load per-repo DB metadata for a model using Repository.
 fn load_repo_db_meta_from_repo(repo: &Repository, model_id: i64) -> RepoDbMeta {
     let mut meta = RepoDbMeta::default();
     // Pull metadata (commit SHA + pull timestamp)
-    if let Ok(Some(pull)) = repo.get_model_pull(model_id) {
+    if let Ok(Some(pull)) = repo.get_pull(model_id) {
         meta.commit_sha = Some(pull.commit_sha);
         meta.pulled_at = Some(pull.pulled_at);
     }
@@ -72,7 +73,7 @@ fn load_repo_db_meta_from_repo(repo: &Repository, model_id: i64) -> RepoDbMeta {
 /// commit SHA / last-pulled timestamp is surfaced at the top of the entry.
 fn model_entry_json(
     id: i64,
-    record: &ModelConfigDto,
+    record: &ModelConfigRecord,
     m: &tama_core::config::ModelConfig,
     _configs_dir: &std::path::Path,
     db_meta: Option<&RepoDbMeta>,
@@ -152,7 +153,7 @@ pub async fn list_models(State(state): State<Arc<ProxyState>>) -> impl IntoRespo
                     for config_dto in configs.values() {
                         // Get model config files for this model
                         let meta = load_repo_db_meta_from_repo(&repo, config_dto.id);
-                        let m = tama_core::config::ModelConfig::from_db_record_for_repo(config_dto);
+                        let m = tama_core::config::ModelConfig::from_db_record(config_dto);
                         // Populate quants from model_files
                         let mut model_config = m.clone();
                         for f in meta.files.values() {
@@ -243,7 +244,7 @@ pub async fn get_model(
 
             match model_opt {
                 Some(record) => {
-                    let m = tama_core::config::ModelConfig::from_db_record_for_repo(&record);
+                    let m = tama_core::config::ModelConfig::from_db_record(&record);
                     let mut config = m.clone();
                     let meta = load_repo_db_meta_from_repo(&repo, record.id);
                     // Populate quants from model_files
@@ -279,10 +280,10 @@ pub async fn get_model(
 mod tests {
     use super::*;
     use tama_core::config::ModelConfig;
-    use tama_core::db::repository::ModelConfigDto;
+    use tama_core::db::queries::ModelConfigRecord;
 
-    fn make_record() -> ModelConfigDto {
-        ModelConfigDto {
+    fn make_record() -> ModelConfigRecord {
+        ModelConfigRecord {
             id: 1,
             repo_id: "test/repo".to_string(),
             display_name: None,

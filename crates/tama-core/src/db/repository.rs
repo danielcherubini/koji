@@ -2,92 +2,16 @@
 //!
 //! This module provides a `Repository` struct that wraps SQLite connections
 //! and exposes domain-level methods. API handlers call repository methods
-//! instead of raw queries, and receive DTO types instead of DB record types.
-//!
-//! DB record types (`ModelConfigRecord`, `ModelFileRecord`, etc.) are
-//! `pub(crate)` — they are implementation details of the DB layer.
+//! instead of raw queries, and receive the canonical DB record types from
+//! `db::queries` directly.
 
 use anyhow::Context;
 use rusqlite::Connection;
-use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-// ── DTO types ────────────────────────────────────────────────────────────────
-
-/// Data Transfer Object for a model configuration.
-/// Replaces `ModelConfigRecord` in the API layer.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModelConfigDto {
-    pub id: i64,
-    pub repo_id: String,
-    pub display_name: Option<String>,
-    pub backend: String,
-    pub gpu_variant: Option<String>,
-    pub gpu_device: Option<String>,
-    pub enabled: bool,
-    pub selected_quant: Option<String>,
-    pub selected_mmproj: Option<String>,
-    pub selected_mtp_model: Option<String>,
-    pub context_length: Option<u32>,
-    pub num_parallel: Option<u32>,
-    pub kv_unified: bool,
-    pub gpu_layers: Option<u32>,
-    pub cache_type_k: Option<String>,
-    pub cache_type_v: Option<String>,
-    pub port: Option<u16>,
-    pub args: Option<String>,
-    pub sampling: Option<String>,
-    pub modalities: Option<String>,
-    pub profile: Option<String>,
-    pub api_name: Option<String>,
-    pub health_check: Option<String>,
-    pub hf_format: Option<String>,
-    pub hf_base_model: Option<String>,
-    pub hf_pipeline_tag: Option<String>,
-    pub hf_total_params: Option<String>,
-    pub hf_active_params: Option<String>,
-    pub hf_architecture_type: Option<String>,
-    pub hf_context_length: Option<u32>,
-    pub hf_num_layers: Option<u32>,
-    pub hf_last_modified: Option<String>,
-    pub spec_decoding: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-/// Data Transfer Object for a model file.
-/// Replaces `ModelFileRecord` in the API layer.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModelFileDto {
-    pub id: i64,
-    pub model_id: i64,
-    pub repo_id: String,
-    pub filename: String,
-    pub quant: Option<String>,
-    pub lfs_oid: Option<String>,
-    pub size_bytes: Option<i64>,
-    pub downloaded_at: String,
-    pub last_verified_at: Option<String>,
-    pub verified_ok: Option<bool>,
-    pub verify_error: Option<String>,
-}
-
-/// Data Transfer Object for a model alias.
-/// Reuses the existing `AliasResponse` shape from the alias queries.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AliasDto {
-    pub id: i64,
-    pub name: String,
-    pub model_id: i64,
-    pub model_name: String,
-    pub description: Option<String>,
-    pub enabled: bool,
-    pub created_at: String,
-    pub updated_at: String,
-}
+// ── Params type ──────────────────────────────────────────────────────────────
 
 /// Parameters for inserting a benchmark result.
-/// Replaces `BenchmarkInsertParams` in the API layer.
 #[derive(Debug, Clone)]
 pub struct BenchmarkParams {
     pub model_id: String,
@@ -108,76 +32,6 @@ pub struct BenchmarkParams {
     pub duration_seconds: f64,
     pub status: String,
     pub benchmark_type: Option<String>,
-}
-
-/// Data Transfer Object for a benchmark result.
-/// Replaces `BenchmarkRow` in the API layer.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BenchmarkDto {
-    pub id: i64,
-    pub created_at: i64,
-    pub model_id: String,
-    pub display_name: Option<String>,
-    pub quant: Option<String>,
-    pub backend: String,
-    pub engine: String,
-    pub pp_sizes: String,
-    pub tg_sizes: String,
-    pub threads: Option<String>,
-    pub ngl_range: Option<String>,
-    pub runs: u32,
-    pub warmup: u32,
-    pub results: String,
-    pub load_time_ms: Option<f64>,
-    pub vram_used_mib: Option<i64>,
-    pub vram_total_mib: Option<i64>,
-    pub duration_seconds: f64,
-    pub status: String,
-    pub benchmark_type: Option<String>,
-}
-
-/// Data Transfer Object for a pull queue item.
-/// Replaces `PullQueueItem` in the API layer.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PullQueueDto {
-    pub id: i64,
-    pub job_id: String,
-    pub repo_id: String,
-    pub filename: String,
-    pub display_name: Option<String>,
-    pub status: String,
-    pub bytes_pulled: i64,
-    pub total_bytes: Option<i64>,
-    pub error_message: Option<String>,
-    pub started_at: Option<String>,
-    pub completed_at: Option<String>,
-    pub queued_at: String,
-    pub kind: String,
-    pub quant: Option<String>,
-    pub context_length: Option<u32>,
-}
-
-/// Data Transfer Object for an update check record.
-/// Replaces `UpdateCheckRecord` in the API layer.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UpdateCheckDto {
-    pub item_type: String,
-    pub item_id: String,
-    pub current_version: Option<String>,
-    pub latest_version: Option<String>,
-    pub update_available: bool,
-    pub status: String,
-    pub error_message: Option<String>,
-    pub details_json: Option<String>,
-    pub checked_at: i64,
-}
-
-/// Data Transfer Object for a model pull record.
-/// Replaces `ModelPullRecord` in the API layer.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModelPullDto {
-    pub commit_sha: String,
-    pub pulled_at: String,
 }
 
 // ── Repository ───────────────────────────────────────────────────────────────
@@ -207,14 +61,6 @@ impl Repository {
         })
     }
 
-    /// Returns a reference to the underlying SQLite connection.
-    ///
-    /// This is a permanent escape hatch for callers that need raw access.
-    #[allow(dead_code)]
-    pub fn conn(&self) -> &rusqlite::Connection {
-        &self.conn
-    }
-
     /// Check if a model config exists by its integer id.
     pub fn model_exists(&self, id: i64) -> anyhow::Result<bool> {
         let count: i64 = self
@@ -236,15 +82,15 @@ impl Repository {
         &self,
         repo_id: &str,
         filename: &str,
-    ) -> anyhow::Result<Option<PullQueueDto>> {
-        let item = queries::get_active_item_by_repo_filename(&self.conn, repo_id, filename)
-            .with_context(|| {
+    ) -> anyhow::Result<Option<queries::PullQueueItem>> {
+        queries::get_active_item_by_repo_filename(&self.conn, repo_id, filename).with_context(
+            || {
                 format!(
                     "Failed to get active pull for repo_id={} filename={}",
                     repo_id, filename
                 )
-            })?;
-        Ok(item.map(queue_item_to_dto))
+            },
+        )
     }
 
     /// Load all model configs as a `HashMap<config_key, ModelConfig>`.
@@ -261,72 +107,50 @@ impl Repository {
     // ── Model Config ────────────────────────────────────────────────────
 
     /// Get a model configuration by its integer id.
-    pub fn get_model_config(&self, id: i64) -> anyhow::Result<Option<ModelConfigDto>> {
-        let record = queries::get_model_config(&self.conn, id)
-            .with_context(|| format!("Failed to get model config id={}", id))?;
-        Ok(record.map(record_to_dto))
+    pub fn get_model_config(&self, id: i64) -> anyhow::Result<Option<queries::ModelConfigRecord>> {
+        queries::get_model_config(&self.conn, id)
+            .with_context(|| format!("Failed to get model config id={}", id))
     }
 
     /// Get a model configuration by repo_id.
     pub fn get_model_config_by_repo_id(
         &self,
         repo_id: &str,
-    ) -> anyhow::Result<Option<ModelConfigDto>> {
-        let record = queries::get_model_config_by_repo_id(&self.conn, repo_id)
-            .with_context(|| format!("Failed to get model config by repo_id={}", repo_id))?;
-        Ok(record.map(record_to_dto))
+    ) -> anyhow::Result<Option<queries::ModelConfigRecord>> {
+        queries::get_model_config_by_repo_id(&self.conn, repo_id)
+            .with_context(|| format!("Failed to get model config by repo_id={}", repo_id))
     }
 
     /// Get all files for a model config by its id.
-    pub fn get_model_files(&self, config_id: i64) -> anyhow::Result<Vec<ModelFileDto>> {
-        let records = queries::get_model_files(&self.conn, config_id)
-            .with_context(|| format!("Failed to get model files for config id={}", config_id))?;
-        Ok(records.into_iter().map(file_record_to_dto).collect())
+    pub fn get_model_files(&self, config_id: i64) -> anyhow::Result<Vec<queries::ModelFileRecord>> {
+        queries::get_model_files(&self.conn, config_id)
+            .with_context(|| format!("Failed to get model files for config id={}", config_id))
     }
 
-    /// Load all model configs as a HashMap<config_key, ModelConfigDto>.
+    /// Load all model configs as a HashMap<config_key, ModelConfigRecord>.
     /// config_key = repo_id.to_lowercase().replace('/', "--").
     pub fn load_model_configs(
         &self,
-    ) -> anyhow::Result<std::collections::HashMap<String, ModelConfigDto>> {
+    ) -> anyhow::Result<std::collections::HashMap<String, queries::ModelConfigRecord>> {
         let records = queries::get_all_model_configs(&self.conn)?;
         let mut configs = std::collections::HashMap::new();
         for record in records {
             let config_key = record.repo_id.to_lowercase().replace('/', "--");
-            configs.insert(config_key, record_to_dto(record));
+            configs.insert(config_key, record);
         }
         Ok(configs)
-    }
-
-    /// Get pull metadata for a model (commit SHA and pull timestamp).
-    pub fn get_model_pull(&self, model_id: i64) -> anyhow::Result<Option<ModelPullDto>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT commit_sha, pulled_at FROM model_pulls WHERE model_id = ?1")
-            .with_context(|| format!("Failed to prepare get_model_pull for id={}", model_id))?;
-        let mut rows = stmt
-            .query_map([model_id], |row| {
-                Ok(ModelPullDto {
-                    commit_sha: row.get(0)?,
-                    pulled_at: row.get(1)?,
-                })
-            })
-            .with_context(|| format!("Failed to query model_pulls for id={}", model_id))?;
-        Ok(rows.next().transpose()?)
     }
 
     // ── Aliases ─────────────────────────────────────────────────────────
 
     /// Load all aliases with resolved model names.
-    pub fn get_all_aliases(&self) -> anyhow::Result<Vec<AliasDto>> {
-        let aliases = queries::get_all_aliases(&self.conn)?;
-        Ok(aliases.into_iter().map(alias_response_to_dto).collect())
+    pub fn get_all_aliases(&self) -> anyhow::Result<Vec<queries::AliasResponse>> {
+        queries::get_all_aliases(&self.conn)
     }
 
     /// Get a single alias by id.
-    pub fn get_alias_by_id(&self, id: i64) -> anyhow::Result<Option<AliasDto>> {
-        let alias = queries::get_alias_by_id(&self.conn, id)?;
-        Ok(alias.map(alias_response_to_dto))
+    pub fn get_alias_by_id(&self, id: i64) -> anyhow::Result<Option<queries::AliasResponse>> {
+        queries::get_alias_by_id(&self.conn, id)
     }
 
     /// Insert a new alias. Returns the new row's id.
@@ -388,9 +212,8 @@ impl Repository {
     }
 
     /// List all benchmarks ordered by created_at DESC.
-    pub fn list_benchmarks(&self) -> anyhow::Result<Vec<BenchmarkDto>> {
-        let rows = queries::list_benchmarks(&self.conn)?;
-        Ok(rows.into_iter().map(benchmark_row_to_dto).collect())
+    pub fn list_benchmarks(&self) -> anyhow::Result<Vec<queries::BenchmarkRow>> {
+        queries::list_benchmarks(&self.conn)
     }
 
     /// Delete a benchmark by id.
@@ -401,21 +224,11 @@ impl Repository {
 
     // ── Download Queue ──────────────────────────────────────────────────
 
-    /// Get a pull queue item by job_id.
-    pub fn get_pull_queue_item(&self, job_id: &str) -> anyhow::Result<Option<PullQueueDto>> {
-        let item = queries::get_item_by_job_id(&self.conn, job_id)?;
-        Ok(item.map(queue_item_to_dto))
-    }
-
     // ── Update Checks ───────────────────────────────────────────────────
 
     /// Get all update check records.
-    pub fn get_all_update_checks(&self) -> anyhow::Result<Vec<UpdateCheckDto>> {
-        let records = queries::get_all_update_checks(&self.conn)?;
-        Ok(records
-            .into_iter()
-            .map(update_check_record_to_dto)
-            .collect())
+    pub fn get_all_update_checks(&self) -> anyhow::Result<Vec<queries::UpdateCheckRecord>> {
+        queries::get_all_update_checks(&self.conn)
     }
 
     /// Delete an update check by item_type and item_id.
@@ -517,136 +330,6 @@ impl Repository {
         verify_error: Option<&str>,
     ) -> anyhow::Result<()> {
         queries::update_verification(&self.conn, model_id, filename, verified_ok, verify_error)
-    }
-}
-
-// ── Conversion helpers ───────────────────────────────────────────────────────
-
-fn record_to_dto(record: queries::ModelConfigRecord) -> ModelConfigDto {
-    ModelConfigDto {
-        id: record.id,
-        repo_id: record.repo_id,
-        display_name: record.display_name,
-        backend: record.backend,
-        gpu_variant: record.gpu_variant,
-        gpu_device: record.gpu_device,
-        enabled: record.enabled,
-        selected_quant: record.selected_quant,
-        selected_mmproj: record.selected_mmproj,
-        selected_mtp_model: record.selected_mtp_model,
-        context_length: record.context_length,
-        num_parallel: record.num_parallel,
-        kv_unified: record.kv_unified,
-        gpu_layers: record.gpu_layers,
-        cache_type_k: record.cache_type_k,
-        cache_type_v: record.cache_type_v,
-        port: record.port,
-        args: record.args,
-        sampling: record.sampling,
-        modalities: record.modalities,
-        profile: record.profile,
-        api_name: record.api_name,
-        health_check: record.health_check,
-        hf_format: record.hf_format,
-        hf_base_model: record.hf_base_model,
-        hf_pipeline_tag: record.hf_pipeline_tag,
-        hf_total_params: record.hf_total_params,
-        hf_active_params: record.hf_active_params,
-        hf_architecture_type: record.hf_architecture_type,
-        hf_context_length: record.hf_context_length,
-        hf_num_layers: record.hf_num_layers,
-        hf_last_modified: record.hf_last_modified,
-        spec_decoding: record.spec_decoding,
-        created_at: record.created_at,
-        updated_at: record.updated_at,
-    }
-}
-
-pub fn file_record_to_dto(record: queries::ModelFileRecord) -> ModelFileDto {
-    ModelFileDto {
-        id: record.id,
-        model_id: record.model_id,
-        repo_id: record.repo_id,
-        filename: record.filename,
-        quant: record.quant,
-        lfs_oid: record.lfs_oid,
-        size_bytes: record.size_bytes,
-        downloaded_at: record.downloaded_at,
-        last_verified_at: record.last_verified_at,
-        verified_ok: record.verified_ok,
-        verify_error: record.verify_error,
-    }
-}
-
-fn alias_response_to_dto(alias: queries::AliasResponse) -> AliasDto {
-    AliasDto {
-        id: alias.id,
-        name: alias.name,
-        model_id: alias.model_id,
-        model_name: alias.model_name,
-        description: alias.description,
-        enabled: alias.enabled,
-        created_at: alias.created_at,
-        updated_at: alias.updated_at,
-    }
-}
-
-fn benchmark_row_to_dto(row: queries::BenchmarkRow) -> BenchmarkDto {
-    BenchmarkDto {
-        id: row.id,
-        created_at: row.created_at,
-        model_id: row.model_id,
-        display_name: row.display_name,
-        quant: row.quant,
-        backend: row.backend,
-        engine: row.engine,
-        pp_sizes: row.pp_sizes,
-        tg_sizes: row.tg_sizes,
-        threads: row.threads,
-        ngl_range: row.ngl_range,
-        runs: row.runs,
-        warmup: row.warmup,
-        results: row.results,
-        load_time_ms: row.load_time_ms,
-        vram_used_mib: row.vram_used_mib,
-        vram_total_mib: row.vram_total_mib,
-        duration_seconds: row.duration_seconds,
-        status: row.status,
-        benchmark_type: row.benchmark_type,
-    }
-}
-
-fn queue_item_to_dto(item: queries::PullQueueItem) -> PullQueueDto {
-    PullQueueDto {
-        id: item.id,
-        job_id: item.job_id,
-        repo_id: item.repo_id,
-        filename: item.filename,
-        display_name: item.display_name,
-        status: item.status,
-        bytes_pulled: item.bytes_pulled,
-        total_bytes: item.total_bytes,
-        error_message: item.error_message,
-        started_at: item.started_at,
-        completed_at: item.completed_at,
-        queued_at: item.queued_at,
-        kind: item.kind,
-        quant: item.quant,
-        context_length: item.context_length,
-    }
-}
-
-fn update_check_record_to_dto(record: queries::UpdateCheckRecord) -> UpdateCheckDto {
-    UpdateCheckDto {
-        item_type: record.item_type,
-        item_id: record.item_id,
-        current_version: record.current_version,
-        latest_version: record.latest_version,
-        update_available: record.update_available,
-        status: record.status,
-        error_message: record.error_message,
-        details_json: record.details_json,
-        checked_at: record.checked_at,
     }
 }
 

@@ -10,11 +10,11 @@ use tama_core::proxy::ProxyState;
 
 use super::resolve_model_id;
 use crate::api::load_config_from_state;
-use tama_core::db::repository::ModelFileDto;
+use tama_core::db::queries::ModelFileRecord;
 
-/// Serialize a `ModelFileDto` into the same shape used by the enriched
+/// Serialize a `ModelFileRecord` into the same shape used by the enriched
 /// quants response so refresh/verify callers get data identical to a GET.
-fn file_record_json(rec: &ModelFileDto) -> serde_json::Value {
+fn file_record_json(rec: &ModelFileRecord) -> serde_json::Value {
     serde_json::json!({
         "filename": rec.filename,
         "quant": rec.quant,
@@ -159,12 +159,7 @@ pub async fn refresh_model_metadata(
 
     match write {
         Ok(Ok((pull, files))) => {
-            // Convert ModelFileRecord to ModelFileDto for serialization
-            let files_dto: Vec<ModelFileDto> = files
-                .iter()
-                .map(|f| tama_core::db::repository::file_record_to_dto(f.clone()))
-                .collect();
-            let files_json: Vec<_> = files_dto.iter().map(file_record_json).collect();
+            let files_json: Vec<_> = files.iter().map(file_record_json).collect();
             Json(serde_json::json!({
                 "ok": true,
                 "id": model_id,
@@ -276,12 +271,7 @@ pub async fn verify_model_files(
                     })
                 })
                 .collect();
-            // Convert ModelFileRecord to ModelFileDto for serialization
-            let files_dto: Vec<ModelFileDto> = files
-                .iter()
-                .map(|f| tama_core::db::repository::file_record_to_dto(f.clone()))
-                .collect();
-            let files_json: Vec<_> = files_dto.iter().map(file_record_json).collect();
+            let files_json: Vec<_> = files.iter().map(file_record_json).collect();
             Json(serde_json::json!({
                 "ok": all_ok,
                 "any_unknown": any_unknown,

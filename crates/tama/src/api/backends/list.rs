@@ -61,7 +61,7 @@ pub async fn list_backends(
     // Load cached update checks from DB (keyed by "name:variant")
     let update_checks: std::collections::HashMap<
         String,
-        tama_core::db::repository::UpdateCheckDto,
+        tama_core::db::queries::UpdateCheckRecord,
     > = tama_core::db::repository::Repository::open(&config_dir)
         .ok()
         .and_then(|repo| repo.get_all_update_checks().ok())
