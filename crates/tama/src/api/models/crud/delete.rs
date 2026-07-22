@@ -139,14 +139,6 @@ pub async fn delete_model(
             )
         })?;
 
-        // Open manager for writing model data
-        let mut mgr = tama_core::models::ModelManager::open(&config_dir).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                error_body(e.to_string(), None),
-            )
-        })?;
-
         // Resolve model_id using Repository
         let model_id = resolve_model_id(&id_str, &repo)
             .map_err(|e| {
@@ -177,20 +169,12 @@ pub async fn delete_model(
             })?;
         let _model_config = tama_core::config::ModelConfig::from_db_record(&model_record);
 
-        // Step 1: Delete model config within a transaction — all-or-nothing semantics.
-        // This ensures that if the transaction fails, no files are touched yet
-        // and the DB remains consistent. CASCADE handles model_files and model_pulls.
+        // Step 1: Delete model config — all-or-nothing. CASCADE handles
+        // model_files and model_pulls. If this fails, no files are touched yet
+        // and the DB remains consistent.
         {
             tracing::debug!("Deleting model config for id={}", model_id);
-            let result = mgr.transaction(|tx| {
-                tx.execute(
-                    "DELETE FROM model_configs WHERE id = ?1",
-                    rusqlite::params![model_id],
-                )?;
-                Ok(())
-            });
-
-            if let Err(e) = result {
+            if let Err(e) = repo.delete_config(model_id) {
                 tracing::error!("Failed to delete model records from database: {e}");
                 return Err((
                     StatusCode::INTERNAL_SERVER_ERROR,

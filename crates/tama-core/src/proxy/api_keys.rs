@@ -83,6 +83,91 @@ pub fn extract_prefix(key: &str) -> String {
 // Database operations
 // ---------------------------------------------------------------------------
 
+/// Database access for API keys.
+///
+/// Borrows a `Connection` for the duration of one request/operation;
+/// obtain the connection from `ProxyState::open_db()`.
+///
+/// This struct replaces the previous public free functions that took a
+/// raw `&Connection` parameter, encapsulating the connection within a
+/// small handle so callers don't pass raw connections around.
+pub struct ApiKeyStore<'a> {
+    conn: &'a Connection,
+}
+
+impl<'a> ApiKeyStore<'a> {
+    /// Create a new `ApiKeyStore` borrowing the given connection.
+    pub fn new(conn: &'a Connection) -> Self {
+        Self { conn }
+    }
+
+    /// Validate a raw API key against the database.
+    ///
+    /// Returns `Some((key_id, scopes))` when the key is valid (not revoked,
+    /// not expired, and exists).
+    ///
+    /// Updates `last_used_at` on successful validation.
+    ///
+    /// Note: Hash lookup via `WHERE key_hash = ?` leaks hash existence through
+    /// DB query timing. A full constant-time comparison across all stored hashes
+    /// would be more robust but is impractical for SQLite. The attack surface is
+    /// mitigated by: (a) the management API is behind auth, (b) keys are 37 chars
+    /// of base62 (~177 bits of entropy), and (c) rate limiting can be added later.
+    pub fn validate_key(&self, raw_key: &str) -> Result<Option<(i64, Vec<Scope>)>> {
+        validate_key(self.conn, raw_key)
+    }
+
+    /// Create a new API key in the database.
+    ///
+    /// Validates that scopes are non-empty and contain only known values.
+    /// Sets `api_keys_enabled = 1` on the `app_proxy` table.
+    pub fn create_key(
+        &self,
+        name: &str,
+        raw_key: &str,
+        scopes: &[Scope],
+        created_by: &str,
+        expires_at: Option<&str>,
+    ) -> Result<i64> {
+        create_key(self.conn, name, raw_key, scopes, created_by, expires_at)
+    }
+
+    /// List all API keys (including revoked ones), ordered by creation date.
+    pub fn list_keys(&self) -> Result<Vec<ApiKeyRecord>> {
+        list_keys(self.conn)
+    }
+
+    /// Revoke an API key by setting `revoked_at` to the current time.
+    ///
+    /// If this was the last active (non-revoked) key, sets
+    /// `api_keys_enabled = 0` on the `app_proxy` table.
+    /// Revoke an API key by setting `revoked_at` to the current time.
+    ///
+    /// Returns the new value of `api_keys_enabled` (0 if this was the last active key,
+    /// 1 otherwise). The caller must sync the in-memory config with this value.
+    pub fn revoke_key(&self, key_id: i64) -> Result<bool> {
+        revoke_key(self.conn, key_id)
+    }
+
+    /// Update the scopes of an existing API key.
+    ///
+    /// Validates that scopes are non-empty and contain only known values.
+    /// Returns the updated `ApiKeyRecord` so callers don't need a second query.
+    pub fn update_key_scopes(&self, key_id: i64, scopes: &[Scope]) -> Result<ApiKeyRecord> {
+        update_key_scopes(self.conn, key_id, scopes)
+    }
+
+    /// Look up a single API key by its database ID.
+    pub fn get_key(&self, key_id: i64) -> Result<Option<ApiKeyRecord>> {
+        get_key(self.conn, key_id)
+    }
+
+    /// Look up the name of an API key by its database ID.
+    pub fn get_key_name(&self, key_id: i64) -> Result<Option<String>> {
+        get_key_name(self.conn, key_id)
+    }
+}
+
 /// Validate a raw API key against the database.
 ///
 /// Returns `Some((key_id, scopes))` when the key is valid (not revoked,
@@ -95,7 +180,7 @@ pub fn extract_prefix(key: &str) -> String {
 /// would be more robust but is impractical for SQLite. The attack surface is
 /// mitigated by: (a) the management API is behind auth, (b) keys are 37 chars
 /// of base62 (~177 bits of entropy), and (c) rate limiting can be added later.
-pub fn validate_key(conn: &Connection, raw_key: &str) -> Result<Option<(i64, Vec<Scope>)>> {
+fn validate_key(conn: &Connection, raw_key: &str) -> Result<Option<(i64, Vec<Scope>)>> {
     let key_hash = hash_key(raw_key);
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
@@ -145,7 +230,7 @@ pub fn validate_key(conn: &Connection, raw_key: &str) -> Result<Option<(i64, Vec
 ///
 /// Validates that scopes are non-empty and contain only known values.
 /// Sets `api_keys_enabled = 1` on the `app_proxy` table.
-pub fn create_key(
+fn create_key(
     conn: &Connection,
     name: &str,
     raw_key: &str,
@@ -177,7 +262,7 @@ pub fn create_key(
 }
 
 /// List all API keys (including revoked ones), ordered by creation date.
-pub fn list_keys(conn: &Connection) -> Result<Vec<ApiKeyRecord>> {
+fn list_keys(conn: &Connection) -> Result<Vec<ApiKeyRecord>> {
     let mut stmt = conn.prepare(
         "SELECT id, name, key_prefix, scopes, created_by, created_at, last_used_at, revoked_at, expires_at FROM api_keys ORDER BY created_at DESC, id DESC",
     )?;
@@ -208,7 +293,7 @@ pub fn list_keys(conn: &Connection) -> Result<Vec<ApiKeyRecord>> {
 ///
 /// Returns the new value of `api_keys_enabled` (0 if this was the last active key,
 /// 1 otherwise). The caller must sync the in-memory config with this value.
-pub fn revoke_key(conn: &Connection, key_id: i64) -> Result<bool> {
+fn revoke_key(conn: &Connection, key_id: i64) -> Result<bool> {
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
     let tx = conn.unchecked_transaction()?;
@@ -242,7 +327,7 @@ pub fn revoke_key(conn: &Connection, key_id: i64) -> Result<bool> {
 ///
 /// Validates that scopes are non-empty and contain only known values.
 /// Returns the updated `ApiKeyRecord` so callers don't need a second query.
-pub fn update_key_scopes(conn: &Connection, key_id: i64, scopes: &[Scope]) -> Result<ApiKeyRecord> {
+fn update_key_scopes(conn: &Connection, key_id: i64, scopes: &[Scope]) -> Result<ApiKeyRecord> {
     validate_scopes(scopes)?;
 
     let tx = conn.unchecked_transaction()?;
@@ -262,7 +347,7 @@ pub fn update_key_scopes(conn: &Connection, key_id: i64, scopes: &[Scope]) -> Re
 }
 
 /// Look up a single API key by its database ID.
-pub fn get_key(conn: &Connection, key_id: i64) -> Result<Option<ApiKeyRecord>> {
+fn get_key(conn: &Connection, key_id: i64) -> Result<Option<ApiKeyRecord>> {
     let mut stmt = conn.prepare(
         "SELECT id, name, key_prefix, scopes, created_by, created_at, last_used_at, revoked_at, expires_at FROM api_keys WHERE id = ?",
     )?;
@@ -287,7 +372,7 @@ pub fn get_key(conn: &Connection, key_id: i64) -> Result<Option<ApiKeyRecord>> {
 }
 
 /// Look up the name of an API key by its database ID.
-pub fn get_key_name(conn: &Connection, key_id: i64) -> Result<Option<String>> {
+fn get_key_name(conn: &Connection, key_id: i64) -> Result<Option<String>> {
     let name: Option<String> = conn
         .query_row("SELECT name FROM api_keys WHERE id = ?", [key_id], |row| {
             row.get(0)
@@ -689,7 +774,55 @@ mod tests {
     #[test]
     fn test_get_key_name_not_found() {
         let conn = test_conn();
-        let result = get_key_name(&conn, 9999).unwrap();
+        let result = ApiKeyStore::new(&conn).get_key_name(9999).unwrap();
         assert!(result.is_none());
+    }
+
+    /// Smoke test: ApiKeyStore borrows a connection and exposes the same
+    /// CRUD surface as the old free functions.
+    #[test]
+    fn test_api_key_store_full_round_trip() {
+        let conn = test_conn();
+        let store = ApiKeyStore::new(&conn);
+
+        let raw_key = generate_key();
+        let scopes = vec![Scope::Inference, Scope::ManagementRead];
+        let id = store
+            .create_key("store-test", &raw_key, &scopes, "admin", None)
+            .unwrap();
+        assert!(id > 0);
+
+        // validate
+        let validated = store.validate_key(&raw_key).unwrap();
+        assert_eq!(validated.unwrap().0, id);
+
+        // get_key
+        let record = store.get_key(id).unwrap().unwrap();
+        assert_eq!(record.name, "store-test");
+
+        // list_keys
+        let keys = store.list_keys().unwrap();
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].name, "store-test");
+
+        // get_key_name
+        let name = store.get_key_name(id).unwrap().unwrap();
+        assert_eq!(name, "store-test");
+
+        // update_key_scopes
+        let updated = store
+            .update_key_scopes(id, &[Scope::ManagementRead, Scope::ManagementWrite])
+            .unwrap();
+        assert_eq!(
+            updated.scopes,
+            vec![Scope::ManagementRead, Scope::ManagementWrite]
+        );
+
+        // revoke_key
+        let still_active = store.revoke_key(id).unwrap();
+        assert!(!still_active, "last active key revoked should return false");
+
+        // validate after revoke returns None
+        assert!(store.validate_key(&raw_key).unwrap().is_none());
     }
 }

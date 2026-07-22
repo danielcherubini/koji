@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::{info, warn};
 
-use crate::proxy::api_keys::{self, AuthSubject, Scope};
+use crate::proxy::api_keys::{self, ApiKeyStore, AuthSubject, Scope};
 use crate::proxy::ProxyState;
 
 // ---------------------------------------------------------------------------
@@ -175,8 +175,7 @@ pub async fn handle_tama_api_keys_create(
 
     let result = tokio::task::spawn_blocking(move || {
         let conn = state_for_create.open_db().unwrap();
-        api_keys::create_key(
-            &conn,
+        ApiKeyStore::new(&conn).create_key(
             &name,
             &raw_key_for_db,
             &scopes,
@@ -215,7 +214,7 @@ pub async fn handle_tama_api_keys_create(
     let state_for_record = state.clone();
     let record = tokio::task::spawn_blocking(move || {
         let conn = state_for_record.open_db().unwrap();
-        api_keys::get_key(&conn, key_id)
+        ApiKeyStore::new(&conn).get_key(key_id)
     })
     .await;
 
@@ -243,7 +242,7 @@ pub async fn handle_tama_api_keys_create(
 pub async fn handle_tama_api_keys_list(State(state): State<Arc<ProxyState>>) -> impl IntoResponse {
     let result = tokio::task::spawn_blocking(move || {
         let conn = state.open_db().unwrap();
-        api_keys::list_keys(&conn)
+        ApiKeyStore::new(&conn).list_keys()
     })
     .await;
 
@@ -334,7 +333,7 @@ pub async fn handle_tama_api_keys_update(
     let state_for_check = state.clone();
     let key_exists = tokio::task::spawn_blocking(move || {
         let conn = state_for_check.open_db().unwrap();
-        api_keys::get_key(&conn, key_id)
+        ApiKeyStore::new(&conn).get_key(key_id)
     })
     .await;
 
@@ -370,7 +369,7 @@ pub async fn handle_tama_api_keys_update(
     let state_for_update = state.clone();
     let update_result = tokio::task::spawn_blocking(move || {
         let conn = state_for_update.open_db().unwrap();
-        api_keys::update_key_scopes(&conn, key_id, &scopes)
+        ApiKeyStore::new(&conn).update_key_scopes(key_id, &scopes)
     })
     .await;
 
@@ -432,7 +431,7 @@ pub async fn handle_tama_api_keys_revoke(
     let state_for_check = state.clone();
     let key_exists = tokio::task::spawn_blocking(move || {
         let conn = state_for_check.open_db().unwrap();
-        api_keys::get_key(&conn, key_id)
+        ApiKeyStore::new(&conn).get_key(key_id)
     })
     .await;
 
@@ -468,7 +467,7 @@ pub async fn handle_tama_api_keys_revoke(
     let state_for_revoke = state.clone();
     let revoke_result = tokio::task::spawn_blocking(move || {
         let conn = state_for_revoke.open_db().unwrap();
-        api_keys::revoke_key(&conn, key_id)
+        ApiKeyStore::new(&conn).revoke_key(key_id)
     })
     .await;
 
@@ -525,7 +524,9 @@ mod tests {
         crate::db::queries::seed_defaults(&conn).unwrap();
 
         let key = api_keys::generate_key();
-        api_keys::create_key(&conn, "test-key", &key, scopes, "admin", None).unwrap();
+        ApiKeyStore::new(&conn)
+            .create_key("test-key", &key, scopes, "admin", None)
+            .unwrap();
 
         let config = crate::config::Config {
             proxy: crate::config::ProxyConfig {
