@@ -13,8 +13,8 @@ Plans for features, refactors, and bug fixes in the Tama project.
 ## Quick Stats
 
 - **Total Plans**: 74
-- **Backlog**: 18
-- **Completed**: 53 ✅
+- **Backlog**: 17
+- **Completed**: 54 ✅
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan.
 
@@ -26,7 +26,6 @@ Current plans ready for execution, ordered by dependency-first cascade priority:
 
 | Plan | Description | Findings |
 |------|-------------|----------|
-| [Error Contract Unification](plan-161-error-contract.md) | Migrate ~55 flat error sites to structured shape | F4 |
 | [Model Identity ConfigKey](plan-162-model-identity-configkey.md) | ConfigKey newtype as single derivation site | F5 |
 | [Backup Restore](plan-163-backup-restore.md) | Implement restore for real (extract→validate→merge) | F6 |
 | [OAuth2 Flow Tests](plan-164-oauth2-flow-tests.md) | ~16 tests for login/callback/logout handlers | F8 |
