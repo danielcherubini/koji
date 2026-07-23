@@ -155,15 +155,15 @@ pub async fn list_models(
                 Ok(r) => r,
                 Err(resp) => return resp,
             };
-            let repo = repo.lock().unwrap();
-            let models = {
+            let repo = repo.clone();
+            let configs_dir_clone = configs_dir.clone();
+            let models = tokio::task::spawn_blocking(move || {
+                let repo = repo.lock().unwrap();
                 let configs = repo.load_model_configs().unwrap_or_default();
                 let mut result = Vec::new();
-                for config_dto in configs.values() {
-                    // Get model config files for this model
-                    let meta = load_repo_db_meta_from_repo(&repo, config_dto.id);
-                    let m = tama_core::config::ModelConfig::from_db_record(config_dto);
-                    // Populate quants from model_files
+                for config_record in configs.values() {
+                    let meta = load_repo_db_meta_from_repo(&repo, config_record.id);
+                    let m = tama_core::config::ModelConfig::from_db_record(config_record);
                     let mut model_config = m.clone();
                     for f in meta.files.values() {
                         let quant_key = f.quant.clone().unwrap_or_else(|| f.filename.clone());
@@ -178,15 +178,17 @@ pub async fn list_models(
                         );
                     }
                     result.push(model_entry_json(
-                        config_dto.id,
-                        config_dto,
+                        config_record.id,
+                        config_record,
                         &model_config,
-                        &configs_dir,
+                        &configs_dir_clone,
                         Some(&meta),
                     ));
                 }
                 result
-            };
+            })
+            .await
+            .unwrap_or_default();
 
             let sampling_templates: serde_json::Value =
                 serde_json::to_value(&cfg.sampling_templates).unwrap_or_default();
@@ -218,58 +220,60 @@ pub async fn get_model(
                 Ok(r) => r,
                 Err(resp) => return resp,
             };
-            let repo = repo.lock().unwrap();
-
-            // Resolve id (integer or config_key) to model_id
-            let model_id = match resolve_model_id(&id_str, &repo) {
-                Ok(Some(id)) => id,
-                Ok(None) => {
-                    return error_response(
-                        StatusCode::NOT_FOUND,
-                        "Model not found",
-                        Some("NotFoundError"),
-                    )
+            let repo = repo.clone();
+            let configs_dir_clone = configs_dir.clone();
+            let backend_options_clone = backend_options.clone();
+            let id_str_clone = id_str.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                let repo = repo.lock().unwrap();
+                // Resolve id (integer or config_key) to model_id
+                let model_id = match resolve_model_id(&id_str_clone, &repo) {
+                    Ok(Some(id)) => id,
+                    Ok(None) => return Err(StatusCode::NOT_FOUND),
+                    Err(_) => return Err(StatusCode::BAD_REQUEST),
+                };
+                // Load model from DB
+                let record = match repo.get_model_config(model_id).ok().flatten() {
+                    Some(r) => r,
+                    None => return Err(StatusCode::NOT_FOUND),
+                };
+                let m = tama_core::config::ModelConfig::from_db_record(&record);
+                let mut config = m.clone();
+                let meta = load_repo_db_meta_from_repo(&repo, record.id);
+                for f in meta.files.values() {
+                    let quant_key = f.quant.clone().unwrap_or_else(|| f.filename.clone());
+                    config.quants.insert(
+                        quant_key,
+                        tama_core::config::QuantEntry {
+                            file: f.filename.clone(),
+                            kind: tama_core::config::QuantKind::from_filename(&f.filename),
+                            size_bytes: f.size_bytes.map(|s| s as u64),
+                            context_length: None,
+                        },
+                    );
                 }
-                Err(e) => {
-                    return error_response(
-                        StatusCode::BAD_REQUEST,
-                        e.to_string(),
-                        Some("ValidationError"),
-                    )
-                }
-            };
-
-            // Load model from DB
-            let model_opt = repo.get_model_config(model_id).ok().flatten();
-
-            match model_opt {
-                Some(record) => {
-                    let m = tama_core::config::ModelConfig::from_db_record(&record);
-                    let mut config = m.clone();
-                    let meta = load_repo_db_meta_from_repo(&repo, record.id);
-                    // Populate quants from model_files
-                    for f in meta.files.values() {
-                        let quant_key = f.quant.clone().unwrap_or_else(|| f.filename.clone());
-                        config.quants.insert(
-                            quant_key,
-                            tama_core::config::QuantEntry {
-                                file: f.filename.clone(),
-                                kind: tama_core::config::QuantKind::from_filename(&f.filename),
-                                size_bytes: f.size_bytes.map(|s| s as u64),
-                                context_length: None,
-                            },
-                        );
-                    }
-                    let mut val =
-                        model_entry_json(record.id, &record, &config, &configs_dir, Some(&meta));
-                    val["backends"] = serde_json::json!(backend_options);
-                    Json(val).into_response()
-                }
-                None => error_response(
+                let mut val =
+                    model_entry_json(record.id, &record, &config, &configs_dir_clone, Some(&meta));
+                val["backends"] = serde_json::json!(backend_options_clone);
+                Ok::<_, StatusCode>(val)
+            })
+            .await;
+            match result {
+                Ok(Ok(val)) => Json(val).into_response(),
+                Ok(Err(StatusCode::NOT_FOUND)) => error_response(
                     StatusCode::NOT_FOUND,
                     "Model not found",
                     Some("NotFoundError"),
                 ),
+                Ok(Err(StatusCode::BAD_REQUEST)) => error_response(
+                    StatusCode::BAD_REQUEST,
+                    "Invalid model id",
+                    Some("ValidationError"),
+                ),
+                Ok(Err(_)) => {
+                    error_response(StatusCode::INTERNAL_SERVER_ERROR, "Unexpected error", None)
+                }
+                Err(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "Task panicked", None),
             }
         }
         Err((status, body)) => (status, Json(body)).into_response(),

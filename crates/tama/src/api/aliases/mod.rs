@@ -48,11 +48,16 @@ pub async fn list_aliases(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    let repo = repo.lock().unwrap();
-
-    match repo.get_all_aliases() {
-        Ok(aliases) => Json(aliases).into_response(),
-        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
+    let repo = repo.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let repo = repo.lock().unwrap();
+        repo.get_all_aliases()
+    })
+    .await;
+    match result {
+        Ok(Ok(aliases)) => Json(aliases).into_response(),
+        Ok(Err(e)) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
+        Err(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "Task panicked", None),
     }
 }
 
@@ -66,16 +71,21 @@ pub async fn get_alias(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    let repo = repo.lock().unwrap();
-
-    match repo.get_alias_by_id(id) {
-        Ok(Some(alias)) => Json(alias).into_response(),
-        Ok(None) => error_response(
+    let repo = repo.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let repo = repo.lock().unwrap();
+        repo.get_alias_by_id(id)
+    })
+    .await;
+    match result {
+        Ok(Ok(Some(alias))) => Json(alias).into_response(),
+        Ok(Ok(None)) => error_response(
             StatusCode::NOT_FOUND,
             "Alias not found",
             Some("NotFoundError"),
         ),
-        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
+        Ok(Err(e)) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
+        Err(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "Task panicked", None),
     }
 }
 
