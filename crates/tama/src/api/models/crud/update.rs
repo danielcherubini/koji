@@ -72,9 +72,9 @@ pub async fn update_model(
         let updated_config = apply_model_body(body, Some(existing));
 
         // Save to DB (save_model_config converts config_key to repo_id internally)
-        let config_key = existing_record.repo_id.to_lowercase().replace('/', "--");
+        let config_key = tama_core::models::ConfigKey::from_repo_id(&existing_record.repo_id);
         let new_model_id = repo
-            .save_model_config(&config_key, &updated_config)
+            .save_model_config(config_key.as_str(), &updated_config)
             .map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -142,9 +142,9 @@ pub async fn patch_model(
         let updated_config = apply_model_patch(body, &existing);
 
         // Save to DB (save_model_config converts config_key to repo_id internally)
-        let config_key = existing_record.repo_id.to_lowercase().replace('/', "--");
+        let config_key = tama_core::models::ConfigKey::from_repo_id(&existing_record.repo_id);
         let new_model_id = repo
-            .save_model_config(&config_key, &updated_config)
+            .save_model_config(config_key.as_str(), &updated_config)
             .map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,

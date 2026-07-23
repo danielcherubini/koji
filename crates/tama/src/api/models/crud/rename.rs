@@ -96,9 +96,9 @@ pub async fn rename_model(
         model_config.model = Some(new_repo_id.clone());
 
         // Save with new repo_id (keeps same integer id)
-        let config_key = new_repo_id.to_lowercase().replace('/', "--");
+        let config_key = tama_core::models::ConfigKey::from_repo_id(&new_repo_id);
         let _ = repo
-            .save_model_config(&config_key, &model_config)
+            .save_model_config(config_key.as_str(), &model_config)
             .map_err(|e| {
                 (StatusCode::INTERNAL_SERVER_ERROR, error_body(e.to_string(), None))
             })?;

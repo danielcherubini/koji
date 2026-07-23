@@ -79,8 +79,8 @@ pub async fn delete_quant(
         model_config.quants.remove(&quant_key);
 
         // Save to DB
-        let config_key = repo_id.to_lowercase().replace('/', "--");
-        repo.save_model_config(&config_key, &model_config)
+        let config_key = tama_core::models::ConfigKey::from_repo_id(&repo_id);
+        repo.save_model_config(config_key.as_str(), &model_config)
             .map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,

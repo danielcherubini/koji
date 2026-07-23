@@ -151,11 +151,42 @@ pub struct CheckAllModelEntry {
     pub id: i64,
 }
 
+/// Derive a model's config_key from its repo_id.
+///
+/// WASM-safe mirror of `tama_core::models::ConfigKey::from_repo_id` — the
+/// `tama` crate only links tama-core under the `ssr` feature, so Leptos
+/// components compiled to WASM cannot use the newtype. The rule MUST stay
+/// identical: `repo_id.to_lowercase().replace('/', "--")`.
+pub fn config_key_from_repo_id(repo_id: &str) -> String {
+    repo_id.to_lowercase().replace('/', "--")
+}
+
 #[cfg(test)]
 mod tests {
     use leptos::prelude::{GetUntracked, RwSignal, Set, Signal};
 
     use super::rw_signal_to_signal;
+
+    #[test]
+    fn test_config_key_from_repo_id_mirror_matches_config_key() {
+        // WASM-safe mirror of tama_core::models::ConfigKey::from_repo_id.
+        // Vectors kept in sync with tama-core's config_key tests.
+        assert_eq!(
+            super::config_key_from_repo_id("Unsloth/Gemma-4-26B-A4B-IT-GGUF"),
+            "unsloth--gemma-4-26b-a4b-it-gguf"
+        );
+        assert_eq!(super::config_key_from_repo_id("owner/repo"), "owner--repo");
+        assert_eq!(
+            super::config_key_from_repo_id("Org/Repo-Sub"),
+            "org--repo-sub"
+        );
+        assert_eq!(
+            super::config_key_from_repo_id("org/repo-sub"),
+            "org--repo-sub"
+        );
+        assert_eq!(super::config_key_from_repo_id("Local-Model"), "local-model");
+        assert_eq!(super::config_key_from_repo_id("a/b"), "a--b");
+    }
 
     #[test]
     fn rw_signal_to_signal_returns_read_half() {
