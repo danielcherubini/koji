@@ -8,7 +8,7 @@ use axum::{
     Json,
 };
 
-use super::utils::resolve_model_id;
+use super::utils::resolve_config_key;
 use crate::gpu::ModelState;
 use crate::proxy::process::{force_kill_process_group, is_process_group_alive, kill_process_group};
 use crate::proxy::tama_handlers::{ListModelsResponse, ListedModelResponse, ModelResponse};
@@ -121,7 +121,7 @@ pub async fn handle_tama_get_model(
     state: State<Arc<ProxyState>>,
     Path(model_id): Path<String>,
 ) -> Response {
-    let model_id = resolve_model_id(&state, &model_id).await;
+    let model_id = resolve_config_key(&state, &model_id).await;
     // Check if already loaded (by server name or model name)
     let model_state = state.get_model_state(&model_id).await;
 
@@ -178,7 +178,7 @@ pub async fn handle_tama_load_model(
     state: State<Arc<ProxyState>>,
     Path(model_id): Path<String>,
 ) -> Response {
-    let model_id = resolve_model_id(&state, &model_id).await;
+    let model_id = resolve_config_key(&state, &model_id).await;
     let model_card = state.get_model_card(&model_id).await;
     let target_gpu = state
         .resolve_model_gpu_device(&model_id, model_card.as_ref())
@@ -221,7 +221,7 @@ pub async fn handle_tama_cancel_load(
     state: State<Arc<ProxyState>>,
     Path(model_id): Path<String>,
 ) -> Response {
-    let model_id = resolve_model_id(&state, &model_id).await;
+    let model_id = resolve_config_key(&state, &model_id).await;
 
     // ── Step b: read lock — initial check ──────────────────────────────
     let (backend_name, pid) = {
@@ -359,7 +359,7 @@ pub async fn handle_tama_unload_model(
     state: State<Arc<ProxyState>>,
     Path(model_id): Path<String>,
 ) -> Response {
-    let model_id = resolve_model_id(&state, &model_id).await;
+    let model_id = resolve_config_key(&state, &model_id).await;
     // Get the server name for this model
     let backend_name = state.get_available_backend_for_model(&model_id).await;
 

@@ -13,7 +13,7 @@ use super::{
     apply_model_body, apply_model_patch, validate_model_body, validate_model_patch, ModelBody,
     ModelPatchBody,
 };
-use crate::api::models::resolve_model_id;
+use crate::api::models::resolve_db_id;
 use crate::web_types::WebState;
 
 /// PUT /tama/v1/models/:id — update an existing model.
@@ -40,7 +40,7 @@ pub async fn update_model(
         let repo = repo_handle.lock().unwrap();
 
         // Load existing from DB
-        let model_id = resolve_model_id(&id_str, &repo)
+        let model_id = resolve_db_id(&id_str, &repo)
             .map_err(|e| {
                 (
                     StatusCode::BAD_REQUEST,
@@ -110,7 +110,7 @@ pub async fn patch_model(
         let repo = repo_handle.lock().unwrap();
 
         // Load existing from DB
-        let model_id = resolve_model_id(&id_str, &repo)
+        let model_id = resolve_db_id(&id_str, &repo)
             .map_err(|e| {
                 (
                     StatusCode::BAD_REQUEST,

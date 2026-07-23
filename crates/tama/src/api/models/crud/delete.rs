@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tama_core::proxy::ProxyState;
 
 use crate::api::load_config_from_state;
-use crate::api::models::resolve_model_id;
+use crate::api::models::resolve_db_id;
 use crate::web_types::WebState;
 
 /// DELETE /tama/v1/models/:id/quants/:quant_key — delete a single quant's file
@@ -143,7 +143,7 @@ pub async fn delete_model(
         let repo = repo_handle.lock().unwrap();
 
         // Resolve model_id using Repository
-        let model_id = resolve_model_id(&id_str, &repo)
+        let model_id = resolve_db_id(&id_str, &repo)
             .map_err(|e| {
                 (
                     StatusCode::BAD_REQUEST,
