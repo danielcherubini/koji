@@ -1,6 +1,7 @@
 use crate::api::error::error_body;
+use crate::api::helpers::{shared_repository, spawn_model_crud, DEFAULT_CRUD_STATUS};
 use axum::{
-    extract::{Path, State},
+    extract::{Extension, Path, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
@@ -9,9 +10,8 @@ use std::sync::Arc;
 use tama_core::proxy::ProxyState;
 
 use super::is_valid_repo_id;
-use crate::api::helpers::{spawn_model_crud, DEFAULT_CRUD_STATUS};
-use crate::api::load_config_from_state;
 use crate::api::models::resolve_model_id;
+use crate::web_types::WebState;
 
 /// Body for rename endpoint.
 #[derive(serde::Deserialize)]
@@ -22,22 +22,20 @@ pub struct RenameBody {
 /// POST /tama/v1/models/:id/rename — rename a model config entry.
 pub async fn rename_model(
     State(state): State<Arc<ProxyState>>,
+    Extension(web_state): Extension<WebState>,
     Path(id_str): Path<String>,
     Json(body): Json<RenameBody>,
 ) -> impl IntoResponse {
     let state_clone = state.clone();
 
-    // Load config first (async, handles its own spawn_blocking)
-    let (_, config_dir) = match load_config_from_state(&state).await {
-        Ok(x) => x,
-        Err((status, body)) => return (status, Json(body)).into_response(),
+    let repo_handle = match shared_repository(&web_state) {
+        Ok(h) => h,
+        Err(resp) => return resp,
     };
 
     spawn_model_crud(state_clone, DEFAULT_CRUD_STATUS, move || {
         // Open repository for reading
-        let repo = tama_core::db::repository::Repository::open(&config_dir).map_err(|e| {
-            (StatusCode::INTERNAL_SERVER_ERROR, error_body(e.to_string(), None))
-        })?;
+        let repo = repo_handle.lock().unwrap();
 
         // Check source ID exists
         let model_id = resolve_model_id(&id_str, &repo)
@@ -55,12 +53,7 @@ pub async fn rename_model(
             .ok_or_else(|| {
                 (StatusCode::NOT_FOUND, error_body("Model not found", Some("NotFoundError")))
             })?;
-        let mut model_config = tama_core::config::ModelConfig::from_db_record_for_repo(&existing_record);
-
-        // Open manager for writing
-        let mgr = tama_core::models::ModelManager::open(&config_dir).map_err(|e| {
-            (StatusCode::INTERNAL_SERVER_ERROR, error_body(e.to_string(), None))
-        })?;
+        let mut model_config = tama_core::config::ModelConfig::from_db_record(&existing_record);
 
         let new_repo_id = body.new_repo_id.trim().to_string();
         if new_repo_id.is_empty() {
@@ -83,8 +76,8 @@ pub async fn rename_model(
         }
 
         // Check target repo_id doesn't already exist
-        if mgr
-            .get_config_by_repo_id(&new_repo_id)
+        if repo
+            .get_model_config_by_repo_id(&new_repo_id)
             .map_err(|e| {
                 (StatusCode::INTERNAL_SERVER_ERROR, error_body(e.to_string(), None))
             })?
@@ -104,14 +97,14 @@ pub async fn rename_model(
 
         // Save with new repo_id (keeps same integer id)
         let config_key = new_repo_id.to_lowercase().replace('/', "--");
-        let _ = mgr
+        let _ = repo
             .save_model_config(&config_key, &model_config)
             .map_err(|e| {
                 (StatusCode::INTERNAL_SERVER_ERROR, error_body(e.to_string(), None))
             })?;
 
         // Clean up update_check record for old repo_id
-        let _ = mgr.delete_update_check("model", &existing_record.repo_id);
+        let _ = repo.delete_update_check("model", &existing_record.repo_id);
 
         Ok(serde_json::json!({ "ok": true, "id": model_id }))
     })

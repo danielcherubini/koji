@@ -3,6 +3,7 @@ use crate::api::benchmarks::run::{resolve_model_path, unload_model_before_benchm
 use crate::api::benchmarks::{
     job_conflict_response, job_manager_unavailable_response, BenchmarkProgressSink,
 };
+use crate::api::helpers::shared_repository;
 
 // ── Request DTO ───────────────────────────────────────────────────────
 
@@ -84,6 +85,11 @@ pub async fn run_mtp_benchmark(
     let proxy_base_url = state.config().read().await.proxy_url();
     let client = state.client().clone();
 
+    let repo_handle = match shared_repository(&web_state) {
+        Ok(h) => h,
+        Err(resp) => return resp,
+    };
+
     // Spawn the benchmark in the background
     tokio::spawn(async move {
         if let Err(e) = run_mtp_benchmark_inner(
@@ -93,6 +99,7 @@ pub async fn run_mtp_benchmark(
             Some(db_path),
             proxy_base_url,
             client,
+            repo_handle,
         )
         .await
         {
@@ -114,6 +121,7 @@ pub async fn run_mtp_benchmark_inner(
     db_path: Option<std::path::PathBuf>,
     proxy_base_url: String,
     client: reqwest::Client,
+    repo_handle: std::sync::Arc<std::sync::Mutex<tama_core::db::repository::Repository>>,
 ) -> Result<()> {
     use tama_core::bench::llama_cli_mtp;
 
@@ -139,40 +147,45 @@ pub async fn run_mtp_benchmark_inner(
 
     // Resolve model path (same pattern as spec.rs)
     let db_dir = db_path.parent().context("db_path has no parent")?;
-    let repo = tama_core::db::repository::Repository::open(db_dir)?;
-    let model_configs = repo.load_model_configs_for_benchmarks()?;
+    let (model_path, target_backend, display_name, resolved_id_owned) = {
+        let repo = repo_handle.lock().unwrap();
+        let model_configs = repo.load_model_configs_for_benchmarks()?;
 
-    // If model_id is an integer db_id, resolve it to the config key first.
-    let resolved_id = if let Ok(db_id) = model_id.parse::<i64>() {
-        model_configs
-            .iter()
-            .find(|(_, mc)| mc.db_id == Some(db_id))
-            .map(|(key, _)| key.as_str())
-            .unwrap_or(&model_id)
-    } else {
-        &model_id
+        // If model_id is an integer db_id, resolve it to the config key first.
+        let resolved_id = if let Ok(db_id) = model_id.parse::<i64>() {
+            model_configs
+                .iter()
+                .find(|(_, mc)| mc.db_id == Some(db_id))
+                .map(|(key, _)| key.clone())
+                .unwrap_or(model_id.clone())
+        } else {
+            model_id.clone()
+        };
+
+        let (server_config, _) = config
+            .resolve_backend(&model_configs, &resolved_id)
+            .context("Failed to resolve server config for benchmark")?;
+
+        let model_path = resolve_model_path(
+            &config,
+            db_dir,
+            &repo,
+            &model_configs,
+            &resolved_id,
+            quant.as_deref(),
+        )?;
+        let display_name = model_configs.get(&resolved_id).and_then(|mc| {
+            mc.display_name
+                .clone()
+                .or_else(|| mc.api_name.clone())
+                .or_else(|| mc.model.clone())
+        });
+        let target_backend = backend_name
+            .as_deref()
+            .unwrap_or(&server_config.backend)
+            .to_string();
+        (model_path, target_backend, display_name, resolved_id)
     };
-
-    let (server_config, _) = config
-        .resolve_backend(&model_configs, resolved_id)
-        .context("Failed to resolve server config for benchmark")?;
-
-    let model_path = resolve_model_path(
-        &config,
-        db_dir,
-        &repo,
-        &model_configs,
-        resolved_id,
-        quant.as_deref(),
-    )?;
-
-    // Get model display name from config
-    let display_name = model_configs.get(resolved_id).and_then(|mc| {
-        mc.display_name
-            .clone()
-            .or_else(|| mc.api_name.clone())
-            .or_else(|| mc.model.clone())
-    });
 
     // Build MtpBenchConfig
     let mtp_config = llama_cli_mtp::MtpBenchConfig {
@@ -192,10 +205,9 @@ pub async fn run_mtp_benchmark_inner(
     });
 
     // Resolve backend path for llama-server discovery
-    let target_backend = backend_name.as_deref().unwrap_or(&server_config.backend);
     let manager = tama_core::backends::BackendManager::open(db_dir)?;
     let backend_path =
-        config.resolve_backend_path(target_backend, gpu_variant.as_deref(), &manager)?;
+        config.resolve_backend_path(&target_backend, gpu_variant.as_deref(), &manager)?;
 
     // Discover llama-server binary
     // The resolved path may be a file (llama-server) rather than the backend directory.
@@ -208,7 +220,7 @@ pub async fn run_mtp_benchmark_inner(
     ))?;
     tracing::info!(
         job_id = %job.id,
-        model = %resolved_id,
+        model = %resolved_id_owned,
         backend = %target_backend,
         draft_max = ?draft_max_for_trace,
         "Starting MTP benchmark",
@@ -220,8 +232,7 @@ pub async fn run_mtp_benchmark_inner(
         llama_cli_mtp::run_mtp_bench(&mtp_config, Some(server_binary), sink.clone()).await?;
 
     // Store results in database
-    let db_dir = db_path.parent().context("db_path has no parent")?;
-    let repo = tama_core::db::repository::Repository::open(db_dir)?;
+    let repo = repo_handle.lock().unwrap();
 
     // Serialize the full result for storage
     let results_json =

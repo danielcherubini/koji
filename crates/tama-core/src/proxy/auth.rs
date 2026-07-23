@@ -20,7 +20,7 @@ use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 use crate::config::types::OAuth2Config;
-use crate::proxy::api_keys::{self, validate_key, AuthSubject};
+use crate::proxy::api_keys::{self, ApiKeyStore, AuthSubject};
 
 // --- Auth config ---
 // AuthConfig is no longer used; auth settings are read live from ProxyState.
@@ -101,7 +101,7 @@ pub async fn auth_middleware(
             let raw_token_for_db = raw_token.clone();
             let db_result = tokio::task::spawn_blocking(move || {
                 let db = proxy_state.open_db();
-                db.map(|conn| validate_key(&conn, &raw_token_for_db))
+                db.map(|conn| ApiKeyStore::new(&conn).validate_key(&raw_token_for_db))
             })
             .await;
 
@@ -1170,7 +1170,9 @@ mod tests {
         // Create an API key
         let key = api_keys::generate_key();
         let scopes = vec![Scope::Inference];
-        api_keys::create_key(&conn, "test-key", &key, &scopes, "admin", None).unwrap();
+        ApiKeyStore::new(&conn)
+            .create_key("test-key", &key, &scopes, "admin", None)
+            .unwrap();
 
         // Build config with api_keys_enabled
         let config = crate::config::Config {
@@ -1282,7 +1284,9 @@ mod tests {
         crate::db::queries::seed_defaults(&conn).unwrap();
 
         let key = api_keys::generate_key();
-        api_keys::create_key(&conn, "test-key", &key, &[Scope::Inference], "admin", None).unwrap();
+        ApiKeyStore::new(&conn)
+            .create_key("test-key", &key, &[Scope::Inference], "admin", None)
+            .unwrap();
 
         let config = crate::config::Config {
             proxy: crate::config::ProxyConfig {
@@ -1485,7 +1489,9 @@ mod tests {
         crate::db::queries::seed_defaults(&conn).unwrap();
 
         let key = api_keys::generate_key();
-        api_keys::create_key(&conn, "test-key", &key, &[Scope::Inference], "admin", None).unwrap();
+        ApiKeyStore::new(&conn)
+            .create_key("test-key", &key, &[Scope::Inference], "admin", None)
+            .unwrap();
 
         let config = crate::config::Config {
             proxy: crate::config::ProxyConfig {

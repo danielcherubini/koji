@@ -143,17 +143,17 @@ pub fn verify_one(filename: &str, path: &Path, expected_lfs_oid: Option<&str>) -
 /// Blocking (DB + hashing). Wrap in `spawn_blocking` from async callers.
 /// Runs files **sequentially** to keep disk I/O predictable on HDDs.
 pub fn verify_model(
-    mgr: &crate::models::ModelManager,
+    repo: &crate::db::repository::Repository,
     model_id: i64,
     _repo_id: &str,
     model_dir: &Path,
 ) -> Result<Vec<FileVerification>> {
-    let records = mgr.get_files(model_id)?;
+    let records = repo.get_files(model_id)?;
     let mut results = Vec::with_capacity(records.len());
 
     for rec in records {
         let result = verify_record(&rec, model_dir);
-        write_verification(mgr, model_id, &result)?;
+        write_verification(repo, model_id, &result)?;
         results.push(result);
     }
 
@@ -168,11 +168,11 @@ pub fn verify_record(rec: &ModelFileRecord, model_dir: &Path) -> FileVerificatio
 
 /// Persist a verification result into the `model_files` verification columns.
 pub fn write_verification(
-    mgr: &crate::models::ModelManager,
+    repo: &crate::db::repository::Repository,
     model_id: i64,
     result: &FileVerification,
 ) -> Result<()> {
-    mgr.update_verification(
+    repo.update_verification(
         model_id,
         &result.filename,
         result.ok,
@@ -288,23 +288,23 @@ mod tests {
     /// the DB, and returns one `FileVerification` per tracked file.
     #[test]
     fn test_verify_model_writes_results_to_db() {
-        let mgr = crate::models::ModelManager::open_in_memory().unwrap();
+        let repo = crate::db::repository::Repository::open_in_memory().unwrap();
         let tmp = tempfile::tempdir().unwrap();
-        let repo = "test/repo";
+        let repo_id = "test/repo";
 
         // Create a model_config entry to get a model_id
         let mc = crate::config::ModelConfig {
             backend: "llama_cpp".to_string(),
             ..Default::default()
         };
-        let config_key = repo.to_lowercase().replace('/', "--");
-        let model_id = mgr.save_model_config(&config_key, &mc).unwrap();
+        let config_key = repo_id.to_lowercase().replace('/', "--");
+        let model_id = repo.save_model_config(&config_key, &mc).unwrap();
 
         // File with correct hash
         write_tmp(tmp.path(), "good.gguf", b"hello");
-        mgr.upsert_file(
+        repo.upsert_file(
             model_id,
-            repo,
+            repo_id,
             "good.gguf",
             None,
             Some(HELLO_SHA256),
@@ -314,19 +314,26 @@ mod tests {
 
         // File with wrong stored hash
         write_tmp(tmp.path(), "bad.gguf", b"hello");
-        mgr.upsert_file(model_id, repo, "bad.gguf", None, Some("deadbeef"), Some(5))
-            .unwrap();
+        repo.upsert_file(
+            model_id,
+            repo_id,
+            "bad.gguf",
+            None,
+            Some("deadbeef"),
+            Some(5),
+        )
+        .unwrap();
 
         // File with no upstream hash
         write_tmp(tmp.path(), "unknown.gguf", b"hello");
-        mgr.upsert_file(model_id, repo, "unknown.gguf", None, None, Some(5))
+        repo.upsert_file(model_id, repo_id, "unknown.gguf", None, None, Some(5))
             .unwrap();
 
-        let results = verify_model(&mgr, model_id, repo, tmp.path()).unwrap();
+        let results = verify_model(&repo, model_id, repo_id, tmp.path()).unwrap();
         assert_eq!(results.len(), 3);
 
         // Re-read from DB and assert the verification columns were written.
-        let files = mgr.get_files(model_id).unwrap();
+        let files = repo.get_files(model_id).unwrap();
         let good = files.iter().find(|f| f.filename == "good.gguf").unwrap();
         assert_eq!(good.verified_ok, Some(true));
         assert!(good.last_verified_at.is_some());

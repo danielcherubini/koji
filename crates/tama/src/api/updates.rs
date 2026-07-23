@@ -12,12 +12,12 @@ use futures_util::Stream;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+use crate::api::helpers::shared_repository;
 use crate::web_types::WebState;
 use tama_core::backends::{
     check_latest_version, get_backend_install_path, BackendManager, BackendSource, BackendType,
     InstallOptions,
 };
-use tama_core::db::repository::Repository;
 use tama_core::proxy::ProxyState;
 use tama_core::updates::UpdateEvent;
 
@@ -125,14 +125,13 @@ pub async fn get_updates(
                 // item_id for models is the integer model ID as a string.
                 let display_name = if r.item_type == "model" {
                     r.item_id.parse::<i64>().ok().and_then(|model_id| {
-                        match Repository::open(&config_dir) {
-                            Ok(repo) => repo
-                                .get_model_config(model_id)
+                        shared_repository(&web_state).ok().and_then(|repo_handle| {
+                            let repo = repo_handle.lock().unwrap();
+                            repo.get_model_config(model_id)
                                 .ok()
                                 .flatten()
-                                .and_then(|m| m.display_name),
-                            Err(_) => None,
-                        }
+                                .and_then(|m| m.display_name)
+                        })
                     })
                 } else {
                     None
@@ -291,19 +290,29 @@ pub async fn check_single(
             }
         }
         "model" => {
-            let config_dir_clone = config_dir.clone();
             let item_id_clone = item_id.clone();
-            let rid_result = tokio::task::spawn_blocking(
+            let repo_handle = match shared_repository(&web_state) {
+                Ok(h) => h,
+                Err(_) => {
+                    return (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        Json(serde_json::json!({ "error": "Database not configured" })),
+                    )
+                        .into_response();
+                }
+            };
+            let rid_result = tokio::task::spawn_blocking({
+                let repo_handle = repo_handle.clone();
                 move || -> anyhow::Result<(Option<i64>, Option<String>)> {
-                    let repo = Repository::open(&config_dir_clone)?;
+                    let repo = repo_handle.lock().unwrap();
                     // Convert config_key to repo_id to look up model_id
                     let repo_id = tama_core::models::config_key_to_repo_id(&item_id_clone);
                     let record = repo.get_model_config_by_repo_id(&repo_id)?;
                     Ok(record
                         .map(|r| (Some(r.id), Some(r.repo_id.clone())))
                         .unwrap_or((None, None)))
-                },
-            )
+                }
+            })
             .await;
 
             match rid_result {
@@ -648,26 +657,21 @@ pub async fn apply_backend_update(
 /// Accepts `{ "quants": ["Q4_K_M", "Q8_0"] }` and returns immediately with job IDs.
 pub async fn apply_model_update(
     State(state): State<Arc<ProxyState>>,
+    Extension(web_state): Extension<WebState>,
     Path(id): Path<i64>,
     Json(req): Json<ModelUpdateRequest>,
 ) -> impl IntoResponse {
-    let config_dir = match state.db_dir().clone() {
-        Some(d) => d,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({ "error": "config directory not configured" })),
-            )
-                .into_response()
-        }
+    let repo_handle = match shared_repository(&web_state) {
+        Ok(h) => h,
+        Err(resp) => return resp,
     };
 
     // 1. Resolve model: get repo_id and model files for requested quant keys
     let req_quants = req.quants.clone();
     let res_result = tokio::task::spawn_blocking({
-        let config_dir = config_dir.clone();
+        let repo_handle = repo_handle.clone();
         move || -> anyhow::Result<(String, Vec<(String, String)>)> {
-            let repo = Repository::open(&config_dir)?;
+            let repo = repo_handle.lock().unwrap();
             let model_record = repo
                 .get_model_config(id)?
                 .ok_or_else(|| anyhow::anyhow!("Model not found"))?;
@@ -749,16 +753,11 @@ pub async fn apply_model_update(
 
     // Phase 1: Preflight — check all items for duplicates before creating any jobs.
     // This is read-only and returns early on the first conflict or error.
-    let repo = match Repository::open(&config_dir) {
+    let repo = match shared_repository(&web_state) {
         Ok(r) => r,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": format!("Queue check failed: {}", e) })),
-            )
-                .into_response();
-        }
+        Err(resp) => return resp,
     };
+    let repo = repo.lock().unwrap();
 
     for (quant_key, filename) in &unique_files {
         match repo.get_active_pull_by_filename(&repo_id, filename) {

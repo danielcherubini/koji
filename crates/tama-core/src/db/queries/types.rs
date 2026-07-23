@@ -1,19 +1,15 @@
 //! Record types for database query results.
 //!
-//! These types are `pub(crate)` — they are implementation details of the
-//! DB layer. The API layer should use DTO types from `db::repository` instead.
+//! These types are the canonical row representations; the API layer uses
+//! them directly via `db::repository::Repository`.
 
 use serde::{Deserialize, Serialize};
 
 /// Per-repo user configuration for a model.
 ///
-/// This type is part of `ModelManager`'s public API. API handlers should
-/// prefer Repository methods that return DTOs instead.
-#[derive(Debug, Clone)]
-#[deprecated(
-    since = "2.1.0",
-    note = "Prefer Repository::get_model_config() which returns ModelConfigDto"
-)]
+/// This type is part of `ModelManager`'s public API and is also returned
+/// directly by `Repository` methods.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelConfigRecord {
     pub id: i64,         // auto-increment primary key
     pub repo_id: String, // HF repo name
@@ -53,6 +49,7 @@ pub struct ModelConfigRecord {
 }
 
 /// A stored pull record for a HuggingFace repo.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelPullRecord {
     pub id: i64,         // auto-increment primary key
     pub model_id: i64,   // FK to model_configs.id
@@ -63,13 +60,9 @@ pub struct ModelPullRecord {
 
 /// A stored file record for a pulled GGUF.
 ///
-/// This type is part of `ModelManager`'s public API. API handlers should
-/// prefer Repository methods that return DTOs instead.
-#[derive(Debug, Clone)]
-#[deprecated(
-    since = "2.1.0",
-    note = "Prefer Repository::get_model_files() which returns ModelFileDto"
-)]
+/// This type is part of `ModelManager`'s public API and is also returned
+/// directly by `Repository` methods.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelFileRecord {
     pub id: i64,         // auto-increment primary key
     pub model_id: i64,   // FK to model_configs.id
@@ -126,6 +119,7 @@ pub struct TtsConfigRecord {
 }
 
 /// A stored update check record for a backend or model.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateCheckRecord {
     pub item_type: String, // "backend" or "model"
     pub item_id: String,   // backend name or model config key

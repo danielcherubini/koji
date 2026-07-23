@@ -1,6 +1,7 @@
 use crate::api::error::error_response;
+use crate::api::helpers::shared_repository;
 use axum::{
-    extract::{Path, State},
+    extract::{Extension, Path, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
@@ -9,8 +10,10 @@ use std::sync::Arc;
 use tama_core::proxy::ProxyState;
 
 use crate::api::load_config_from_state;
+use crate::web_types::WebState;
 use tama_core::backends::BackendOption;
-use tama_core::db::repository::{ModelConfigDto, ModelFileDto, Repository};
+use tama_core::db::queries::{ModelConfigRecord, ModelFileRecord};
+use tama_core::db::repository::Repository;
 
 /// Build the list of available backend options by querying installed variants from the DB.
 fn build_backend_options(
@@ -46,14 +49,14 @@ struct RepoDbMeta {
     commit_sha: Option<String>,
     pulled_at: Option<String>,
     /// Keyed by filename (matches `QuantEntry.file`), not by quant name.
-    files: std::collections::HashMap<String, ModelFileDto>,
+    files: std::collections::HashMap<String, ModelFileRecord>,
 }
 
 /// Load per-repo DB metadata for a model using Repository.
 fn load_repo_db_meta_from_repo(repo: &Repository, model_id: i64) -> RepoDbMeta {
     let mut meta = RepoDbMeta::default();
     // Pull metadata (commit SHA + pull timestamp)
-    if let Ok(Some(pull)) = repo.get_model_pull(model_id) {
+    if let Ok(Some(pull)) = repo.get_pull(model_id) {
         meta.commit_sha = Some(pull.commit_sha);
         meta.pulled_at = Some(pull.pulled_at);
     }
@@ -72,7 +75,7 @@ fn load_repo_db_meta_from_repo(repo: &Repository, model_id: i64) -> RepoDbMeta {
 /// commit SHA / last-pulled timestamp is surfaced at the top of the entry.
 fn model_entry_json(
     id: i64,
-    record: &ModelConfigDto,
+    record: &ModelConfigRecord,
     m: &tama_core::config::ModelConfig,
     _configs_dir: &std::path::Path,
     db_meta: Option<&RepoDbMeta>,
@@ -138,50 +141,54 @@ fn model_entry_json(
 }
 
 /// GET /tama/v1/models — list all model configs plus available backends.
-pub async fn list_models(State(state): State<Arc<ProxyState>>) -> impl IntoResponse {
+pub async fn list_models(
+    State(state): State<Arc<ProxyState>>,
+    Extension(web_state): Extension<WebState>,
+) -> impl IntoResponse {
     match load_config_from_state(&state).await {
         Ok((cfg, config_dir)) => {
             let configs_dir = config_dir.join("configs");
             let backend_options = build_backend_options(&cfg, &config_dir);
 
-            // Load models from DB using Repository
-            let models = match Repository::open(&config_dir) {
-                Ok(repo) => {
-                    let configs = repo.load_model_configs().unwrap_or_default();
-                    let mut result = Vec::new();
-                    for config_dto in configs.values() {
-                        // Get model config files for this model
-                        let meta = load_repo_db_meta_from_repo(&repo, config_dto.id);
-                        let m = tama_core::config::ModelConfig::from_db_record_for_repo(config_dto);
-                        // Populate quants from model_files
-                        let mut model_config = m.clone();
-                        for f in meta.files.values() {
-                            let quant_key = f.quant.clone().unwrap_or_else(|| f.filename.clone());
-                            model_config.quants.insert(
-                                quant_key,
-                                tama_core::config::QuantEntry {
-                                    file: f.filename.clone(),
-                                    kind: tama_core::config::QuantKind::from_filename(&f.filename),
-                                    size_bytes: f.size_bytes.map(|s| s as u64),
-                                    context_length: None,
-                                },
-                            );
-                        }
-                        result.push(model_entry_json(
-                            config_dto.id,
-                            config_dto,
-                            &model_config,
-                            &configs_dir,
-                            Some(&meta),
-                        ));
-                    }
-                    result
-                }
-                Err(e) => {
-                    tracing::error!("Failed to open database for model list: {}", e);
-                    Vec::new()
-                }
+            // Load models from DB using shared Repository
+            let repo = match shared_repository(&web_state) {
+                Ok(r) => r,
+                Err(resp) => return resp,
             };
+            let repo = repo.clone();
+            let configs_dir_clone = configs_dir.clone();
+            let models = tokio::task::spawn_blocking(move || {
+                let repo = repo.lock().unwrap();
+                let configs = repo.load_model_configs().unwrap_or_default();
+                let mut result = Vec::new();
+                for config_record in configs.values() {
+                    let meta = load_repo_db_meta_from_repo(&repo, config_record.id);
+                    let m = tama_core::config::ModelConfig::from_db_record(config_record);
+                    let mut model_config = m.clone();
+                    for f in meta.files.values() {
+                        let quant_key = f.quant.clone().unwrap_or_else(|| f.filename.clone());
+                        model_config.quants.insert(
+                            quant_key,
+                            tama_core::config::QuantEntry {
+                                file: f.filename.clone(),
+                                kind: tama_core::config::QuantKind::from_filename(&f.filename),
+                                size_bytes: f.size_bytes.map(|s| s as u64),
+                                context_length: None,
+                            },
+                        );
+                    }
+                    result.push(model_entry_json(
+                        config_record.id,
+                        config_record,
+                        &model_config,
+                        &configs_dir_clone,
+                        Some(&meta),
+                    ));
+                }
+                result
+            })
+            .await
+            .unwrap_or_default();
 
             let sampling_templates: serde_json::Value =
                 serde_json::to_value(&cfg.sampling_templates).unwrap_or_default();
@@ -200,6 +207,7 @@ pub async fn list_models(State(state): State<Arc<ProxyState>>) -> impl IntoRespo
 /// Accepts integer id or config_key (double-dash format) for compatibility.
 pub async fn get_model(
     State(state): State<Arc<ProxyState>>,
+    Extension(web_state): Extension<WebState>,
     Path(id_str): Path<String>,
 ) -> impl IntoResponse {
     match load_config_from_state(&state).await {
@@ -208,67 +216,64 @@ pub async fn get_model(
             let backend_options = build_backend_options(&cfg, &config_dir);
 
             // Open repository
-            let repo = match Repository::open(&config_dir) {
+            let repo = match shared_repository(&web_state) {
                 Ok(r) => r,
-                Err(e) => {
-                    return error_response(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("Failed to open database: {}", e),
-                        None,
-                    )
-                }
+                Err(resp) => return resp,
             };
-
-            // Resolve id (integer or config_key) to model_id
-            let model_id = match resolve_model_id(&id_str, &repo) {
-                Ok(Some(id)) => id,
-                Ok(None) => {
-                    return error_response(
-                        StatusCode::NOT_FOUND,
-                        "Model not found",
-                        Some("NotFoundError"),
-                    )
+            let repo = repo.clone();
+            let configs_dir_clone = configs_dir.clone();
+            let backend_options_clone = backend_options.clone();
+            let id_str_clone = id_str.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                let repo = repo.lock().unwrap();
+                // Resolve id (integer or config_key) to model_id
+                let model_id = match resolve_model_id(&id_str_clone, &repo) {
+                    Ok(Some(id)) => id,
+                    Ok(None) => return Err(StatusCode::NOT_FOUND),
+                    Err(_) => return Err(StatusCode::BAD_REQUEST),
+                };
+                // Load model from DB
+                let record = match repo.get_model_config(model_id).ok().flatten() {
+                    Some(r) => r,
+                    None => return Err(StatusCode::NOT_FOUND),
+                };
+                let m = tama_core::config::ModelConfig::from_db_record(&record);
+                let mut config = m.clone();
+                let meta = load_repo_db_meta_from_repo(&repo, record.id);
+                for f in meta.files.values() {
+                    let quant_key = f.quant.clone().unwrap_or_else(|| f.filename.clone());
+                    config.quants.insert(
+                        quant_key,
+                        tama_core::config::QuantEntry {
+                            file: f.filename.clone(),
+                            kind: tama_core::config::QuantKind::from_filename(&f.filename),
+                            size_bytes: f.size_bytes.map(|s| s as u64),
+                            context_length: None,
+                        },
+                    );
                 }
-                Err(e) => {
-                    return error_response(
-                        StatusCode::BAD_REQUEST,
-                        e.to_string(),
-                        Some("ValidationError"),
-                    )
-                }
-            };
-
-            // Load model from DB
-            let model_opt = repo.get_model_config(model_id).ok().flatten();
-
-            match model_opt {
-                Some(record) => {
-                    let m = tama_core::config::ModelConfig::from_db_record_for_repo(&record);
-                    let mut config = m.clone();
-                    let meta = load_repo_db_meta_from_repo(&repo, record.id);
-                    // Populate quants from model_files
-                    for f in meta.files.values() {
-                        let quant_key = f.quant.clone().unwrap_or_else(|| f.filename.clone());
-                        config.quants.insert(
-                            quant_key,
-                            tama_core::config::QuantEntry {
-                                file: f.filename.clone(),
-                                kind: tama_core::config::QuantKind::from_filename(&f.filename),
-                                size_bytes: f.size_bytes.map(|s| s as u64),
-                                context_length: None,
-                            },
-                        );
-                    }
-                    let mut val =
-                        model_entry_json(record.id, &record, &config, &configs_dir, Some(&meta));
-                    val["backends"] = serde_json::json!(backend_options);
-                    Json(val).into_response()
-                }
-                None => error_response(
+                let mut val =
+                    model_entry_json(record.id, &record, &config, &configs_dir_clone, Some(&meta));
+                val["backends"] = serde_json::json!(backend_options_clone);
+                Ok::<_, StatusCode>(val)
+            })
+            .await;
+            match result {
+                Ok(Ok(val)) => Json(val).into_response(),
+                Ok(Err(StatusCode::NOT_FOUND)) => error_response(
                     StatusCode::NOT_FOUND,
                     "Model not found",
                     Some("NotFoundError"),
                 ),
+                Ok(Err(StatusCode::BAD_REQUEST)) => error_response(
+                    StatusCode::BAD_REQUEST,
+                    "Invalid model id",
+                    Some("ValidationError"),
+                ),
+                Ok(Err(_)) => {
+                    error_response(StatusCode::INTERNAL_SERVER_ERROR, "Unexpected error", None)
+                }
+                Err(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "Task panicked", None),
             }
         }
         Err((status, body)) => (status, Json(body)).into_response(),
@@ -279,10 +284,10 @@ pub async fn get_model(
 mod tests {
     use super::*;
     use tama_core::config::ModelConfig;
-    use tama_core::db::repository::ModelConfigDto;
+    use tama_core::db::queries::ModelConfigRecord;
 
-    fn make_record() -> ModelConfigDto {
-        ModelConfigDto {
+    fn make_record() -> ModelConfigRecord {
+        ModelConfigRecord {
             id: 1,
             repo_id: "test/repo".to_string(),
             display_name: None,

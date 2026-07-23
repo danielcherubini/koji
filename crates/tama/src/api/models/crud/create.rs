@@ -1,11 +1,16 @@
 use crate::api::error::{error_body, error_response};
-use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
+use crate::api::helpers::{shared_repository, spawn_model_crud};
+use axum::{
+    extract::{Extension, State},
+    http::StatusCode,
+    response::IntoResponse,
+    Json,
+};
 use std::sync::Arc;
 use tama_core::proxy::ProxyState;
 
 use super::{apply_model_body, is_valid_repo_id, validate_model_body, ModelBody};
-use crate::api::helpers::spawn_model_crud;
-use crate::api::load_config_from_state;
+use crate::web_types::WebState;
 
 /// POST /tama/v1/models — create a new model.
 /// The body contains `repo_id` (HuggingFace repo name). Returns the auto-generated integer id.
@@ -22,6 +27,7 @@ pub struct CreateModelBody {
 
 pub async fn create_model(
     State(state): State<Arc<ProxyState>>,
+    Extension(web_state): Extension<WebState>,
     Json(body): Json<CreateModelBody>,
 ) -> impl IntoResponse {
     let state_clone = state.clone();
@@ -51,21 +57,15 @@ pub async fn create_model(
         return error_response(StatusCode::UNPROCESSABLE_ENTITY, e, Some("ValidationError"));
     }
 
-    // Load config first (async, handles its own spawn_blocking)
-    let (_, config_dir) = match load_config_from_state(&state).await {
-        Ok(x) => x,
-        Err((status, body)) => return (status, Json(body)).into_response(),
+    let repo_handle = match shared_repository(&web_state) {
+        Ok(h) => h,
+        Err(resp) => return resp,
     };
 
     spawn_model_crud(state_clone, StatusCode::CREATED, move || {
-        let mgr = tama_core::models::ModelManager::open(&config_dir).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                error_body(e.to_string(), None),
-            )
-        })?;
-        if mgr
-            .get_config_by_repo_id(&repo_id)
+        let repo = repo_handle.lock().unwrap();
+        if repo
+            .get_model_config_by_repo_id(&repo_id)
             .map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -118,7 +118,7 @@ pub async fn create_model(
         } else {
             model_config
         };
-        let model_id = mgr
+        let model_id = repo
             .save_model_config(&repo_id, &model_config)
             .map_err(|e| {
                 (

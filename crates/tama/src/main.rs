@@ -94,10 +94,22 @@ async fn main() -> Result<()> {
     }
 
     // Create shared proxy state
-    let proxy_state = Arc::new(ProxyState::new(config.clone(), db_dir));
+    let proxy_state = Arc::new(ProxyState::new(config.clone(), db_dir.clone()));
 
     #[cfg(feature = "ssr")]
     {
+        // Shared repository for the management API — opened once; migrations
+        // already ran above (idempotent), so this open is cheap.
+        let repository = db_dir.as_ref().and_then(|dir| {
+            match tama_core::db::repository::Repository::open(dir) {
+                Ok(r) => Some(Arc::new(std::sync::Mutex::new(r))),
+                Err(e) => {
+                    tracing::error!("Failed to open shared repository: {}", e);
+                    None
+                }
+            }
+        });
+
         // Create WebState separately from ProxyState.
         // WebState is owned by the tama crate, not tama-core.
         let web_state = {
@@ -111,6 +123,7 @@ async fn main() -> Result<()> {
                 binary_version: env!("CARGO_PKG_VERSION").to_string(),
                 update_tx: Arc::new(tokio::sync::Mutex::new(None)),
                 upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+                repository,
             })
         };
 

@@ -528,7 +528,9 @@ mod tests {
         crate::db::queries::seed_defaults(&conn).unwrap();
 
         let key = crate::proxy::api_keys::generate_key();
-        crate::proxy::api_keys::create_key(&conn, "test-key", &key, scopes, "admin", None).unwrap();
+        crate::proxy::api_keys::ApiKeyStore::new(&conn)
+            .create_key("test-key", &key, scopes, "admin", None)
+            .unwrap();
 
         let config = crate::config::Config {
             proxy: crate::config::ProxyConfig {

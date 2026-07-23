@@ -1,5 +1,4 @@
 use crate::db::queries::ModelConfigRecord;
-use crate::db::repository::ModelConfigDto;
 use crate::profiles::SamplingParams;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -239,71 +238,6 @@ impl ModelConfig {
     /// Deserialise from a DB record. JSON fields are parsed; parse errors
     /// fall back to None / default so a bad JSON column never hard-fails.
     pub fn from_db_record(record: &ModelConfigRecord) -> Self {
-        Self {
-            backend: record.backend.clone(),
-            gpu_variant: record.gpu_variant.clone(),
-            gpu_device: record.gpu_device.clone(),
-            enabled: record.enabled,
-            display_name: record.display_name.clone(),
-            api_name: record
-                .api_name
-                .clone()
-                .filter(|s| !s.is_empty())
-                .or_else(|| Some(record.repo_id.clone())),
-            port: record.port,
-            context_length: record.context_length,
-            num_parallel: record.num_parallel,
-            kv_unified: record.kv_unified,
-            gpu_layers: record.gpu_layers,
-            cache_type_k: record.cache_type_k.clone(),
-            cache_type_v: record.cache_type_v.clone(),
-            model: Some(record.repo_id.clone()),
-            quant: record.selected_quant.clone(),
-            mmproj: record.selected_mmproj.clone(),
-            mtp_model: record.selected_mtp_model.clone().filter(|s| !s.is_empty()),
-            args: record
-                .args
-                .as_ref()
-                .and_then(|s| serde_json::from_str(s).ok())
-                .unwrap_or_default(),
-            sampling: record
-                .sampling
-                .as_ref()
-                .and_then(|s| serde_json::from_str(s).ok()),
-            modalities: record
-                .modalities
-                .as_ref()
-                .and_then(|s| serde_json::from_str(s).ok()),
-            health_check: record
-                .health_check
-                .as_ref()
-                .and_then(|s| serde_json::from_str(s).ok()),
-            hf_format: record.hf_format.clone().filter(|s| !s.is_empty()),
-            hf_base_model: record.hf_base_model.clone().filter(|s| !s.is_empty()),
-            hf_pipeline_tag: record.hf_pipeline_tag.clone().filter(|s| !s.is_empty()),
-            hf_total_params: record.hf_total_params.clone().filter(|s| !s.is_empty()),
-            hf_active_params: record.hf_active_params.clone().filter(|s| !s.is_empty()),
-            hf_architecture_type: record
-                .hf_architecture_type
-                .clone()
-                .filter(|s| !s.is_empty()),
-            hf_context_length: record.hf_context_length,
-            hf_num_layers: record.hf_num_layers,
-            hf_last_modified: record.hf_last_modified.clone().filter(|s| !s.is_empty()),
-            profile: record.profile.clone(),
-            quants: BTreeMap::new(), // Not stored in DB record
-            db_id: Some(record.id),
-            spec_decoding: record
-                .spec_decoding
-                .as_ref()
-                .and_then(|s| serde_json::from_str(s).ok())
-                .unwrap_or_default(),
-        }
-    }
-
-    /// Deserialise from a Repository DTO. JSON fields are parsed; parse errors
-    /// fall back to None / default so a bad JSON column never hard-fails.
-    pub fn from_db_record_for_repo(record: &ModelConfigDto) -> Self {
         Self {
             backend: record.backend.clone(),
             gpu_variant: record.gpu_variant.clone(),

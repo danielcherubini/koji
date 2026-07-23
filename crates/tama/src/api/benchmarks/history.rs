@@ -1,5 +1,6 @@
 use super::*;
 use crate::api::error::error_response;
+use crate::api::helpers::shared_repository;
 use crate::web_types::WebState;
 use tama_core::proxy::ProxyState;
 
@@ -186,14 +187,17 @@ pub async fn benchmark_events(
 
 // ── Handler: List benchmark history ───────────────────────────────────
 
-pub async fn list_benchmark_history(State(_state): State<Arc<ProxyState>>) -> impl IntoResponse {
-    let db_dir = match tama_core::config::Config::config_dir() {
-        Ok(d) => d,
-        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
+pub async fn list_benchmark_history(
+    State(_state): State<Arc<ProxyState>>,
+    Extension(web_state): Extension<WebState>,
+) -> impl IntoResponse {
+    let repo_handle = match shared_repository(&web_state) {
+        Ok(h) => h,
+        Err(resp) => return resp,
     };
 
     let entries = match tokio::task::spawn_blocking(move || {
-        let repo = tama_core::db::repository::Repository::open(&db_dir)?;
+        let repo = repo_handle.lock().unwrap();
         repo.list_benchmarks()
     })
     .await
@@ -301,15 +305,16 @@ pub async fn list_benchmark_history(State(_state): State<Arc<ProxyState>>) -> im
 
 pub async fn delete_benchmark(
     State(_state): State<Arc<ProxyState>>,
+    Extension(web_state): Extension<WebState>,
     Path(id): Path<i64>,
 ) -> impl IntoResponse {
-    let db_dir = match tama_core::config::Config::config_dir() {
-        Ok(d) => d,
-        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
+    let repo_handle = match shared_repository(&web_state) {
+        Ok(h) => h,
+        Err(resp) => return resp,
     };
 
     match tokio::task::spawn_blocking(move || {
-        let repo = tama_core::db::repository::Repository::open(&db_dir)?;
+        let repo = repo_handle.lock().unwrap();
         repo.delete_benchmark(id)
     })
     .await

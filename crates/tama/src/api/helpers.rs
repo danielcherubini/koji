@@ -50,6 +50,20 @@ where
     }
 }
 
+/// Clone the shared Repository handle from WebState, or an error response
+/// when the database is not configured.
+#[allow(clippy::result_large_err)]
+pub fn shared_repository(
+    web_state: &crate::web_types::WebState,
+) -> Result<
+    std::sync::Arc<std::sync::Mutex<tama_core::db::repository::Repository>>,
+    axum::response::Response,
+> {
+    web_state.repository.clone().ok_or_else(|| {
+        error_response_simple(StatusCode::SERVICE_UNAVAILABLE, "Database not configured")
+    })
+}
+
 /// Trigger the proxy to reload its model registry from the database.
 async fn trigger_proxy_reload(
     proxy_state: &Arc<ProxyState>,

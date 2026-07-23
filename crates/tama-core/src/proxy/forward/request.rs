@@ -6,7 +6,7 @@ use super::langfuse::{
 };
 use super::sse::process_sse_line;
 use super::stats::extract_inference_stats;
-use crate::proxy::api_keys::get_key_name;
+use crate::proxy::api_keys::ApiKeyStore;
 use crate::proxy::{api_keys::AuthSubject, BackendState, ProxyState};
 use axum::{body::Body, http::request::Parts, response::IntoResponse};
 use bytes::{Bytes, BytesMut};
@@ -184,9 +184,9 @@ pub async fn forward_request(
             // but we always resolve here to keep the logic simple).
             let db = state.open_db();
             match db {
-                Some(conn) => {
-                    tokio::task::block_in_place(|| get_key_name(&conn, key_id).ok().flatten())
-                }
+                Some(conn) => tokio::task::block_in_place(|| {
+                    ApiKeyStore::new(&conn).get_key_name(key_id).ok().flatten()
+                }),
                 None => None,
             }
         }

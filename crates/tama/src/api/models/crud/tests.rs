@@ -1895,6 +1895,107 @@ fn test_apply_model_patch_mtp_model_override() {
     assert_eq!(result.mtp_model, Some("mtp.gguf".into()));
 }
 
+// ── Route-level tests ──────────────────────────────────────────────────────\n
+/// Regression test: DELETE /tama/v1/models/:id removes the DB row via
+/// Repository::delete_config (no raw SQL, no ModelManager).
+#[tokio::test]
+async fn test_delete_model_removes_db_row() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use axum::http::StatusCode;
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
+
+    // Seed a model config in the DB.
+    let open_result = tama_core::db::open(tmp_dir.path()).unwrap();
+    let model_id = tama_core::db::queries::upsert_model_config(
+        &open_result.conn,
+        &tama_core::db::queries::ModelConfigRecord {
+            id: 0,
+            repo_id: "test-org/test-model".to_string(),
+            display_name: None,
+            backend: "llama_cpp".to_string(),
+            gpu_variant: None,
+            gpu_device: None,
+            enabled: true,
+            selected_quant: None,
+            selected_mmproj: None,
+            selected_mtp_model: None,
+            context_length: None,
+            num_parallel: None,
+            kv_unified: false,
+            gpu_layers: None,
+            cache_type_k: None,
+            cache_type_v: None,
+            port: None,
+            args: None,
+            sampling: None,
+            modalities: None,
+            profile: None,
+            api_name: Some("test-org/test-model".to_string()),
+            health_check: None,
+            hf_format: None,
+            hf_base_model: None,
+            hf_pipeline_tag: None,
+            hf_total_params: None,
+            hf_active_params: None,
+            hf_architecture_type: None,
+            hf_context_length: None,
+            hf_num_layers: None,
+            hf_last_modified: None,
+            spec_decoding: None,
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+        },
+    )
+    .unwrap();
+
+    // Build the proxy state with the tempdir as db_dir.
+    let config = tama_core::config::Config::default();
+    let state = Arc::new(tama_core::proxy::ProxyState::new(
+        config,
+        Some(tmp_dir.path().to_path_buf()),
+    ));
+
+    // Reuse the test WebState from backends/manage/tests.rs pattern.
+    let web_state = Arc::new(crate::web_types::WebState {
+        jobs: Some(Arc::new(crate::web_types::JobManager::new())),
+        capabilities: None,
+        update_checker: Arc::new(tama_core::updates::UpdateChecker::default()),
+        binary_version: "test".to_string(),
+        update_tx: Arc::new(tokio::sync::Mutex::new(None)),
+        upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        repository: Some(Arc::new(std::sync::Mutex::new(
+            tama_core::db::repository::Repository::open(tmp_dir.path()).unwrap(),
+        ))),
+    });
+
+    let router = crate::router::build_web_routes(web_state.clone())
+        .with_state(state)
+        .layer(axum::extract::Extension(web_state.as_ref().clone()));
+
+    // DELETE /tama/v1/models/:id — CSRF middleware allows DELETE without token.
+    let req = Request::builder()
+        .method("DELETE")
+        .uri(format!("/tama/v1/models/{}", model_id))
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = router
+        .clone()
+        .oneshot(req)
+        .await
+        .expect("request should complete");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Verify the DB row is gone.
+    let conn = tama_core::db::open(tmp_dir.path()).unwrap();
+    let record = tama_core::db::queries::get_model_config(&conn.conn, model_id).unwrap();
+    assert!(record.is_none(), "model config should be deleted from DB");
+}
+
 /// `context_length: Some(16384)` must override existing.
 #[test]
 fn test_apply_model_patch_context_length_override() {

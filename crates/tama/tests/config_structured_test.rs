@@ -26,6 +26,7 @@ fn test_web_state() -> tama_web::web_types::WebState {
         binary_version: "test".to_string(),
         update_tx: Arc::new(tokio::sync::Mutex::new(None)),
         upload_lock: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+        repository: None,
     }
 }
 
@@ -230,21 +231,14 @@ async fn test_post_structured_config_cannot_disable_api_keys_with_active_keys() 
     use tama_core::proxy::api_keys::{self, Scope};
 
     let (state, _temp_dir) = build_test_state("");
-    let db_path = _temp_dir.path().join("tama.db");
 
     // Seed an active API key in the DB
     {
-        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let open_result = tama_core::db::open(_temp_dir.path()).unwrap();
         let raw_key = api_keys::generate_key();
-        api_keys::create_key(
-            &conn,
-            "test-key",
-            &raw_key,
-            &[Scope::Inference],
-            "admin",
-            None,
-        )
-        .unwrap();
+        api_keys::ApiKeyStore::new(&open_result.conn)
+            .create_key("test-key", &raw_key, &[Scope::Inference], "admin", None)
+            .unwrap();
     }
 
     let router = build_web_routes(Arc::new(test_web_state()))

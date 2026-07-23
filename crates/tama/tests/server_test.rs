@@ -4,7 +4,15 @@ mod tests {
     use std::sync::Arc;
 
     /// Create a minimal WebState for tests.
-    fn test_web_state() -> tama_web::web_types::WebState {
+    fn test_web_state(db_dir: Option<std::path::PathBuf>) -> tama_web::web_types::WebState {
+        let repository = db_dir.and_then(|dir| {
+            tama_core::db::repository::Repository::open(&dir)
+                .ok()
+                .map(|r| {
+                    Arc::new(std::sync::Mutex::new(r))
+                        as Arc<std::sync::Mutex<tama_core::db::repository::Repository>>
+                })
+        });
         tama_web::web_types::WebState {
             jobs: Some(Arc::new(tama_web::web_types::JobManager::new())),
             capabilities: None,
@@ -12,6 +20,7 @@ mod tests {
             binary_version: "test".to_string(),
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            repository,
         }
     }
 
@@ -23,9 +32,9 @@ mod tests {
             let state = Arc::new(tama_core::proxy::ProxyState::new(config, None));
             axum::serve(
                 listener,
-                tama_web::router::build_web_routes(Arc::new(test_web_state()))
+                tama_web::router::build_web_routes(Arc::new(test_web_state(None)))
                     .with_state(state)
-                    .layer(axum::extract::Extension(test_web_state())),
+                    .layer(axum::extract::Extension(test_web_state(None))),
             )
             .await
             .unwrap();
@@ -151,9 +160,13 @@ mod tests {
                 ));
                 axum::serve(
                     listener,
-                    tama_web::router::build_web_routes(Arc::new(test_web_state()))
-                        .with_state(state)
-                        .layer(axum::extract::Extension(test_web_state())),
+                    tama_web::router::build_web_routes(Arc::new(test_web_state(Some(
+                        config_dir_server.clone(),
+                    ))))
+                    .with_state(state)
+                    .layer(axum::extract::Extension(test_web_state(Some(
+                        config_dir_server.clone(),
+                    )))),
                 )
                 .await
                 .unwrap();
@@ -384,9 +397,13 @@ mod tests {
                 ));
                 axum::serve(
                     listener,
-                    tama_web::router::build_web_routes(Arc::new(test_web_state()))
-                        .with_state(state)
-                        .layer(axum::extract::Extension(test_web_state())),
+                    tama_web::router::build_web_routes(Arc::new(test_web_state(Some(
+                        config_dir_server.clone(),
+                    ))))
+                    .with_state(state)
+                    .layer(axum::extract::Extension(test_web_state(Some(
+                        config_dir_server.clone(),
+                    )))),
                 )
                 .await
                 .unwrap();

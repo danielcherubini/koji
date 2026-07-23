@@ -1,6 +1,7 @@
 use crate::api::error::{error_body, error_response};
+use crate::api::helpers::shared_repository;
 use axum::{
-    extract::{Path, State},
+    extract::{Extension, Path, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
@@ -10,11 +11,12 @@ use tama_core::proxy::ProxyState;
 
 use super::resolve_model_id;
 use crate::api::load_config_from_state;
-use tama_core::db::repository::ModelFileDto;
+use crate::web_types::WebState;
+use tama_core::db::queries::ModelFileRecord;
 
-/// Serialize a `ModelFileDto` into the same shape used by the enriched
+/// Serialize a `ModelFileRecord` into the same shape used by the enriched
 /// quants response so refresh/verify callers get data identical to a GET.
-fn file_record_json(rec: &ModelFileDto) -> serde_json::Value {
+fn file_record_json(rec: &ModelFileRecord) -> serde_json::Value {
     serde_json::json!({
         "filename": rec.filename,
         "quant": rec.quant,
@@ -39,22 +41,24 @@ fn file_record_json(rec: &ModelFileDto) -> serde_json::Value {
 ///   4. `spawn_blocking` — open DB, upsert pull + files, read back
 pub async fn refresh_model_metadata(
     State(state): State<Arc<ProxyState>>,
+    Extension(web_state): Extension<WebState>,
     Path(id_str): Path<String>,
 ) -> impl IntoResponse {
     // Load config first (async, handles its own spawn_blocking)
-    let (cfg, config_dir) = match load_config_from_state(&state).await {
+    let (cfg, _config_dir) = match load_config_from_state(&state).await {
         Ok(x) => x,
         Err((status, body)) => return (status, Json(body)).into_response(),
     };
 
+    let repo_handle = match shared_repository(&web_state) {
+        Ok(h) => h,
+        Err(resp) => return resp,
+    };
+    let repo_handle_for_write = repo_handle.clone();
+
     // Step 1: resolve model_id (from id_str) and repo_id (DB operations on blocking pool).
     let resolved = tokio::task::spawn_blocking(move || {
-        let repo = tama_core::db::repository::Repository::open(&config_dir).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                error_body(e.to_string(), None),
-            )
-        })?;
+        let repo = repo_handle.lock().unwrap();
         let model_id = resolve_model_id(&id_str, &repo)
             .map_err(|e| {
                 (
@@ -88,10 +92,10 @@ pub async fn refresh_model_metadata(
                 error_body(e.to_string(), None),
             )
         })?;
-        Ok::<_, (StatusCode, serde_json::Value)>((model_id, record.repo_id, config_dir, models_dir))
+        Ok::<_, (StatusCode, serde_json::Value)>((model_id, record.repo_id, models_dir))
     })
     .await;
-    let (model_id, repo_id, config_dir, _models_dir) = match resolved {
+    let (model_id, repo_id, _models_dir) = match resolved {
         Ok(Ok(x)) => x,
         Ok(Err((s, b))) => return (s, Json(b)).into_response(),
         Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
@@ -123,15 +127,14 @@ pub async fn refresh_model_metadata(
     // new entries for quants the user never pulled. This prevents the
     // "Check all for updates" button from polluting the model_files table.
     let repo_id_for_db = repo_id.clone();
-    let config_dir_for_db = config_dir.clone();
     let commit_sha = listing.commit_sha.clone();
     let files = listing.files.clone();
     let write = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
-        let mgr = tama_core::models::ModelManager::open(&config_dir_for_db)?;
-        mgr.upsert_pull(model_id, &repo_id_for_db, &commit_sha)?;
+        let repo = repo_handle_for_write.lock().unwrap();
+        repo.upsert_pull(model_id, &repo_id_for_db, &commit_sha)?;
 
         // Build a set of filenames already tracked locally.
-        let local_files = mgr.get_files(model_id)?;
+        let local_files = repo.get_files(model_id)?;
         let local_filenames: std::collections::HashSet<&str> =
             local_files.iter().map(|f| f.filename.as_str()).collect();
 
@@ -142,7 +145,7 @@ pub async fn refresh_model_metadata(
                 continue;
             }
             let blob = blobs.get(&file.filename);
-            mgr.upsert_file(
+            repo.upsert_file(
                 model_id,
                 &repo_id_for_db,
                 &file.filename,
@@ -151,20 +154,15 @@ pub async fn refresh_model_metadata(
                 blob.and_then(|b| b.size),
             )?;
         }
-        let files_out = mgr.get_files(model_id)?;
-        let pull_out = mgr.get_pull(model_id)?;
+        let files_out = repo.get_files(model_id)?;
+        let pull_out = repo.get_pull(model_id)?;
         Ok((pull_out, files_out))
     })
     .await;
 
     match write {
         Ok(Ok((pull, files))) => {
-            // Convert ModelFileRecord to ModelFileDto for serialization
-            let files_dto: Vec<ModelFileDto> = files
-                .iter()
-                .map(|f| tama_core::db::repository::file_record_to_dto(f.clone()))
-                .collect();
-            let files_json: Vec<_> = files_dto.iter().map(file_record_json).collect();
+            let files_json: Vec<_> = files.iter().map(file_record_json).collect();
             Json(serde_json::json!({
                 "ok": true,
                 "id": model_id,
@@ -192,21 +190,23 @@ pub async fn refresh_model_metadata(
 /// the wizard already streams them during pulls.
 pub async fn verify_model_files(
     State(state): State<Arc<ProxyState>>,
+    Extension(web_state): Extension<WebState>,
     Path(id_str): Path<String>,
 ) -> impl IntoResponse {
     // Load config first (async, handles its own spawn_blocking)
-    let (_cfg, config_dir) = match load_config_from_state(&state).await {
+    let (cfg, _config_dir) = match load_config_from_state(&state).await {
         Ok(x) => x,
         Err((status, body)) => return (status, Json(body)).into_response(),
     };
 
+    let repo_handle = match shared_repository(&web_state) {
+        Ok(h) => h,
+        Err(resp) => return resp,
+    };
+    let repo_handle_for_write = repo_handle.clone();
+
     let resolved = tokio::task::spawn_blocking(move || {
-        let repo = tama_core::db::repository::Repository::open(&config_dir).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                error_body(e.to_string(), None),
-            )
-        })?;
+        let repo = repo_handle.lock().unwrap();
         let model_id = resolve_model_id(&id_str, &repo)
             .map_err(|e| {
                 (
@@ -234,16 +234,16 @@ pub async fn verify_model_files(
                     error_body("Model not found", Some("NotFoundError")),
                 )
             })?;
-        let models_dir = _cfg.models_dir().map_err(|e| {
+        let models_dir = cfg.models_dir().map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 error_body(e.to_string(), None),
             )
         })?;
-        Ok::<_, (StatusCode, serde_json::Value)>((model_id, record.repo_id, config_dir, models_dir))
+        Ok::<_, (StatusCode, serde_json::Value)>((model_id, record.repo_id, models_dir))
     })
     .await;
-    let (model_id, repo_id, config_dir, models_dir) = match resolved {
+    let (model_id, repo_id, models_dir) = match resolved {
         Ok(Ok(x)) => x,
         Ok(Err((s, b))) => return (s, Json(b)).into_response(),
         Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
@@ -254,10 +254,10 @@ pub async fn verify_model_files(
     let repo_id_clone = repo_id.clone();
 
     let task = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
-        let mgr = tama_core::models::ModelManager::open(&config_dir)?;
+        let repo = repo_handle_for_write.lock().unwrap();
         let results =
-            tama_core::models::verify::verify_model(&mgr, model_id, &repo_id_clone, &model_dir)?;
-        let files = mgr.get_files(model_id)?;
+            tama_core::models::verify::verify_model(&repo, model_id, &repo_id_clone, &model_dir)?;
+        let files = repo.get_files(model_id)?;
         Ok((results, files))
     })
     .await;
@@ -276,12 +276,7 @@ pub async fn verify_model_files(
                     })
                 })
                 .collect();
-            // Convert ModelFileRecord to ModelFileDto for serialization
-            let files_dto: Vec<ModelFileDto> = files
-                .iter()
-                .map(|f| tama_core::db::repository::file_record_to_dto(f.clone()))
-                .collect();
-            let files_json: Vec<_> = files_dto.iter().map(file_record_json).collect();
+            let files_json: Vec<_> = files.iter().map(file_record_json).collect();
             Json(serde_json::json!({
                 "ok": all_ok,
                 "any_unknown": any_unknown,

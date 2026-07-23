@@ -35,10 +35,6 @@ pub async fn list_backends(
         None
     };
 
-    let config_dir = state.db_dir().clone().unwrap_or_else(|| {
-        tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-    });
-
     let mgr_result = open_backend_manager(&state).await;
 
     // Load backend configs from DB (keyed by (name, gpu_variant)), reusing the manager
@@ -61,10 +57,13 @@ pub async fn list_backends(
     // Load cached update checks from DB (keyed by "name:variant")
     let update_checks: std::collections::HashMap<
         String,
-        tama_core::db::repository::UpdateCheckDto,
-    > = tama_core::db::repository::Repository::open(&config_dir)
+        tama_core::db::queries::UpdateCheckRecord,
+    > = crate::api::helpers::shared_repository(&web_state)
         .ok()
-        .and_then(|repo| repo.get_all_update_checks().ok())
+        .and_then(|repo_handle| {
+            let repo = repo_handle.lock().unwrap();
+            repo.get_all_update_checks().ok()
+        })
         .map(|records| {
             records
                 .into_iter()

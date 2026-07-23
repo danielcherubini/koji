@@ -2,9 +2,10 @@
 
 use anyhow::Result;
 use rusqlite::{params, Connection};
+use serde::{Deserialize, Serialize};
 
 /// Row from the benchmarks table.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BenchmarkRow {
     pub id: i64,
     pub created_at: i64,

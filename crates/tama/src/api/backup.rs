@@ -233,10 +233,7 @@ pub async fn start_restore(
     let upload_lock = web_state.upload_lock.clone();
     let upload_path = {
         let uploads = upload_lock.read().await;
-        match uploads.get(&body.upload_id) {
-            Some(entry) => Some(entry.path.clone()),
-            None => None,
-        }
+        uploads.get(&body.upload_id).map(|entry| entry.path.clone())
     };
 
     let upload_path = match upload_path {
@@ -486,6 +483,7 @@ mod tests {
                     },
                 ),
             ]))),
+            repository: None,
         };
 
         let app = Router::new()

@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::Context;
-pub use rusqlite::Connection;
+pub(crate) use rusqlite::Connection;
 
 use crate::config::ModelConfig;
 

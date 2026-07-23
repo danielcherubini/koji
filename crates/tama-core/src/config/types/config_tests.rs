@@ -340,15 +340,9 @@ fn test_to_db_derives_api_keys_enabled_from_active_keys() {
     {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         let raw_key = api_keys::generate_key();
-        api_keys::create_key(
-            &conn,
-            "test-key",
-            &raw_key,
-            &[Scope::Inference],
-            "admin",
-            None,
-        )
-        .unwrap();
+        api_keys::ApiKeyStore::new(&conn)
+            .create_key("test-key", &raw_key, &[Scope::Inference], "admin", None)
+            .unwrap();
     }
 
     // Save a config that explicitly says `api_keys_enabled = false`. The
@@ -368,7 +362,7 @@ fn test_to_db_derives_api_keys_enabled_from_active_keys() {
     // Now revoke the only active key and save a config with `api_keys_enabled = true`.
     {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        api_keys::revoke_key(&conn, 1).unwrap();
+        api_keys::ApiKeyStore::new(&conn).revoke_key(1).unwrap();
     }
     let mut config_with_true_flag = Config::default();
     config_with_true_flag.proxy.api_keys_enabled = true;
@@ -398,15 +392,9 @@ fn test_from_db_derives_api_keys_enabled_from_active_keys() {
     {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         let raw_key = api_keys::generate_key();
-        api_keys::create_key(
-            &conn,
-            "test-key",
-            &raw_key,
-            &[Scope::Inference],
-            "admin",
-            None,
-        )
-        .unwrap();
+        api_keys::ApiKeyStore::new(&conn)
+            .create_key("test-key", &raw_key, &[Scope::Inference], "admin", None)
+            .unwrap();
     }
 
     // Manually poison the stored value to `0` (simulates a stale DB after

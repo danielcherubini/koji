@@ -48,7 +48,6 @@ thiserror = { workspace = true, optional = true }
 nix = { workspace = true, optional = true }
 regex = { workspace = true, optional = true }
 uuid = { version = "1", features = ["v4", "js"] }
-rusqlite = { workspace = true, optional = true }
 urlencoding = "2.1"
 chrono = "0.4.44"
 tempfile.workspace = true
@@ -60,7 +59,7 @@ ssr = [
   "dep:axum", "dep:axum-server", "dep:tokio", "dep:async-stream", "dep:anyhow", "dep:include_dir",
   "dep:reqwest", "dep:mime_guess", "dep:tracing", "dep:tracing-subscriber", "dep:tracing-appender",
   "dep:tama-core", "dep:toml", "dep:tower-http", "dep:thiserror",
-  "dep:rusqlite", "dep:nix", "dep:utoipa", "dep:utoipa-gen",
+  "dep:nix", "dep:utoipa", "dep:utoipa-gen",
   "dep:regex",
   "tama-core/web-ui",
 ]

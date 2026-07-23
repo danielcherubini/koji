@@ -34,15 +34,17 @@ impl ModelManager {
 
     /// Returns reference to the underlying connection.
     ///
-    /// This is a permanent escape hatch for callers that need raw access:
+    /// Crate-internal escape hatch for tama-core lifecycle code
+    /// (`PullQueueService`, `ProxyState`, etc.) that needs raw access:
     /// - Async functions that must not hold `&Connection` across `.await`
     /// - Transactional operations that need to create a `Transaction` directly
-    pub fn conn(&self) -> &Connection {
+    pub(crate) fn conn(&self) -> &Connection {
         &self.conn
     }
 
     /// Execute a closure within a transaction for atomic multi-step operations.
-    pub fn transaction<F, T>(&mut self, f: F) -> Result<T>
+    #[allow(dead_code)]
+    pub(crate) fn transaction<F, T>(&mut self, f: F) -> Result<T>
     where
         F: FnOnce(&rusqlite::Transaction) -> Result<T>,
     {
