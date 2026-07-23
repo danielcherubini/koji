@@ -483,6 +483,7 @@ mod tests {
                     },
                 ),
             ]))),
+            repository: None,
         };
 
         let app = Router::new()

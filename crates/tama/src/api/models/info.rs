@@ -1,6 +1,7 @@
 use crate::api::error::error_response;
+use crate::api::helpers::shared_repository;
 use axum::{
-    extract::{Path, State},
+    extract::{Extension, Path, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
@@ -9,6 +10,7 @@ use std::sync::Arc;
 use tama_core::proxy::ProxyState;
 
 use crate::api::load_config_from_state;
+use crate::web_types::WebState;
 use tama_core::backends::BackendOption;
 use tama_core::db::queries::{ModelConfigRecord, ModelFileRecord};
 use tama_core::db::repository::Repository;
@@ -139,49 +141,51 @@ fn model_entry_json(
 }
 
 /// GET /tama/v1/models — list all model configs plus available backends.
-pub async fn list_models(State(state): State<Arc<ProxyState>>) -> impl IntoResponse {
+pub async fn list_models(
+    State(state): State<Arc<ProxyState>>,
+    Extension(web_state): Extension<WebState>,
+) -> impl IntoResponse {
     match load_config_from_state(&state).await {
         Ok((cfg, config_dir)) => {
             let configs_dir = config_dir.join("configs");
             let backend_options = build_backend_options(&cfg, &config_dir);
 
-            // Load models from DB using Repository
-            let models = match Repository::open(&config_dir) {
-                Ok(repo) => {
-                    let configs = repo.load_model_configs().unwrap_or_default();
-                    let mut result = Vec::new();
-                    for config_dto in configs.values() {
-                        // Get model config files for this model
-                        let meta = load_repo_db_meta_from_repo(&repo, config_dto.id);
-                        let m = tama_core::config::ModelConfig::from_db_record(config_dto);
-                        // Populate quants from model_files
-                        let mut model_config = m.clone();
-                        for f in meta.files.values() {
-                            let quant_key = f.quant.clone().unwrap_or_else(|| f.filename.clone());
-                            model_config.quants.insert(
-                                quant_key,
-                                tama_core::config::QuantEntry {
-                                    file: f.filename.clone(),
-                                    kind: tama_core::config::QuantKind::from_filename(&f.filename),
-                                    size_bytes: f.size_bytes.map(|s| s as u64),
-                                    context_length: None,
-                                },
-                            );
-                        }
-                        result.push(model_entry_json(
-                            config_dto.id,
-                            config_dto,
-                            &model_config,
-                            &configs_dir,
-                            Some(&meta),
-                        ));
+            // Load models from DB using shared Repository
+            let repo = match shared_repository(&web_state) {
+                Ok(r) => r,
+                Err(resp) => return resp,
+            };
+            let repo = repo.lock().unwrap();
+            let models = {
+                let configs = repo.load_model_configs().unwrap_or_default();
+                let mut result = Vec::new();
+                for config_dto in configs.values() {
+                    // Get model config files for this model
+                    let meta = load_repo_db_meta_from_repo(&repo, config_dto.id);
+                    let m = tama_core::config::ModelConfig::from_db_record(config_dto);
+                    // Populate quants from model_files
+                    let mut model_config = m.clone();
+                    for f in meta.files.values() {
+                        let quant_key = f.quant.clone().unwrap_or_else(|| f.filename.clone());
+                        model_config.quants.insert(
+                            quant_key,
+                            tama_core::config::QuantEntry {
+                                file: f.filename.clone(),
+                                kind: tama_core::config::QuantKind::from_filename(&f.filename),
+                                size_bytes: f.size_bytes.map(|s| s as u64),
+                                context_length: None,
+                            },
+                        );
                     }
-                    result
+                    result.push(model_entry_json(
+                        config_dto.id,
+                        config_dto,
+                        &model_config,
+                        &configs_dir,
+                        Some(&meta),
+                    ));
                 }
-                Err(e) => {
-                    tracing::error!("Failed to open database for model list: {}", e);
-                    Vec::new()
-                }
+                result
             };
 
             let sampling_templates: serde_json::Value =
@@ -201,6 +205,7 @@ pub async fn list_models(State(state): State<Arc<ProxyState>>) -> impl IntoRespo
 /// Accepts integer id or config_key (double-dash format) for compatibility.
 pub async fn get_model(
     State(state): State<Arc<ProxyState>>,
+    Extension(web_state): Extension<WebState>,
     Path(id_str): Path<String>,
 ) -> impl IntoResponse {
     match load_config_from_state(&state).await {
@@ -209,16 +214,11 @@ pub async fn get_model(
             let backend_options = build_backend_options(&cfg, &config_dir);
 
             // Open repository
-            let repo = match Repository::open(&config_dir) {
+            let repo = match shared_repository(&web_state) {
                 Ok(r) => r,
-                Err(e) => {
-                    return error_response(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("Failed to open database: {}", e),
-                        None,
-                    )
-                }
+                Err(resp) => return resp,
             };
+            let repo = repo.lock().unwrap();
 
             // Resolve id (integer or config_key) to model_id
             let model_id = match resolve_model_id(&id_str, &repo) {

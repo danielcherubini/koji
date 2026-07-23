@@ -1,5 +1,6 @@
 use super::*;
 use crate::api::benchmarks::BenchmarkProgressSink;
+use crate::api::helpers::shared_repository;
 
 // ── Handler: Submit benchmark job ─────────────────────────────────────
 
@@ -31,6 +32,11 @@ pub async fn run_benchmark(
     let proxy_base_url = state.config().read().await.proxy_url();
     let client = state.client().clone();
 
+    let repo_handle = match shared_repository(&web_state) {
+        Ok(h) => h,
+        Err(resp) => return resp,
+    };
+
     // Spawn the benchmark in the background
     tokio::spawn(async move {
         if let Err(e) = run_benchmark_inner(
@@ -40,6 +46,7 @@ pub async fn run_benchmark(
             Some(db_path),
             proxy_base_url,
             client,
+            repo_handle,
         )
         .await
         {
@@ -61,6 +68,7 @@ pub async fn run_benchmark_inner(
     db_path: Option<std::path::PathBuf>,
     proxy_base_url: String,
     client: reqwest::Client,
+    repo_handle: std::sync::Arc<std::sync::Mutex<tama_core::db::repository::Repository>>,
 ) -> Result<()> {
     use tama_core::bench::llama_bench::{self, LlamaBenchConfig};
 
@@ -135,8 +143,7 @@ pub async fn run_benchmark_inner(
     .await?;
 
     // Store results in database
-    let db_dir = db_path.parent().context("db_path has no parent")?;
-    let repo = tama_core::db::repository::Repository::open(db_dir)?;
+    let repo = repo_handle.lock().unwrap();
 
     // Get model display name from config. The request carries the db_id as a
     // string (e.g. "4") because that's what the model dropdown submits, so we

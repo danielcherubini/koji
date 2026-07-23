@@ -40,8 +40,19 @@ pub struct BenchmarkParams {
 ///
 /// Wraps a SQLite connection and provides high-level methods for
 /// model configs, aliases, benchmarks, pull queue, and update checks.
+#[derive(Debug)]
 pub struct Repository {
     conn: Connection,
+}
+
+// Manual Clone impl: rusqlite::Connection is not Clone, but
+// WebState derives Clone and holds Option<Arc<Mutex<Repository>>>.
+// Arc::clone() does not call Repository::clone(), so this is never
+// actually invoked — it exists only to satisfy the derive(Clone) bound.
+impl Clone for Repository {
+    fn clone(&self) -> Self {
+        panic!("Repository cannot be cloned; wrap in Arc<Mutex<Repository>> instead")
+    }
 }
 
 impl Repository {

@@ -418,4 +418,14 @@ pub struct WebState {
     pub update_tx: Arc<tokio::sync::Mutex<Option<tokio::sync::broadcast::Sender<String>>>>,
     /// Temporary upload storage for restore archives.
     pub upload_lock: Arc<tokio::sync::RwLock<std::collections::HashMap<String, UploadEntry>>>,
+    pub repository: Option<std::sync::Arc<std::sync::Mutex<tama_core::db::repository::Repository>>>,
 }
+
+// Compile-time check: WebState must be Clone + Send + Sync + 'static for the
+// axum Extension extractor to work.
+const _: () = {
+    fn assert_clone_send_sync<T: Clone + Send + Sync + 'static>() {}
+    fn check() {
+        assert_clone_send_sync::<WebState>();
+    }
+};

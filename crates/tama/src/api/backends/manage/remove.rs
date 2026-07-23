@@ -176,7 +176,8 @@ pub async fn remove_backend_version(
 
     // Clean up update_check records — use LIKE pattern to match all variants
     // (e.g., "llama_cpp:cpu", "llama_cpp:cuda") plus legacy format.
-    if let Ok(repo) = tama_core::db::repository::Repository::open(&config_dir) {
+    if let Ok(repo_handle) = crate::api::helpers::shared_repository(&web_state) {
+        let repo = repo_handle.lock().unwrap();
         let escaped_name = name
             .replace('\\', "\\\\")
             .replace('_', "\\_")

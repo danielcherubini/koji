@@ -1967,6 +1967,9 @@ async fn test_delete_model_removes_db_row() {
         binary_version: "test".to_string(),
         update_tx: Arc::new(tokio::sync::Mutex::new(None)),
         upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        repository: Some(Arc::new(std::sync::Mutex::new(
+            tama_core::db::repository::Repository::open(tmp_dir.path()).unwrap(),
+        ))),
     });
 
     let router = crate::router::build_web_routes(web_state.clone())

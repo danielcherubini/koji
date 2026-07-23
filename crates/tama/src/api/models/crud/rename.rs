@@ -1,6 +1,7 @@
 use crate::api::error::error_body;
+use crate::api::helpers::{shared_repository, spawn_model_crud, DEFAULT_CRUD_STATUS};
 use axum::{
-    extract::{Path, State},
+    extract::{Extension, Path, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
@@ -9,9 +10,8 @@ use std::sync::Arc;
 use tama_core::proxy::ProxyState;
 
 use super::is_valid_repo_id;
-use crate::api::helpers::{spawn_model_crud, DEFAULT_CRUD_STATUS};
-use crate::api::load_config_from_state;
 use crate::api::models::resolve_model_id;
+use crate::web_types::WebState;
 
 /// Body for rename endpoint.
 #[derive(serde::Deserialize)]
@@ -22,22 +22,20 @@ pub struct RenameBody {
 /// POST /tama/v1/models/:id/rename — rename a model config entry.
 pub async fn rename_model(
     State(state): State<Arc<ProxyState>>,
+    Extension(web_state): Extension<WebState>,
     Path(id_str): Path<String>,
     Json(body): Json<RenameBody>,
 ) -> impl IntoResponse {
     let state_clone = state.clone();
 
-    // Load config first (async, handles its own spawn_blocking)
-    let (_, config_dir) = match load_config_from_state(&state).await {
-        Ok(x) => x,
-        Err((status, body)) => return (status, Json(body)).into_response(),
+    let repo_handle = match shared_repository(&web_state) {
+        Ok(h) => h,
+        Err(resp) => return resp,
     };
 
     spawn_model_crud(state_clone, DEFAULT_CRUD_STATUS, move || {
         // Open repository for reading
-        let repo = tama_core::db::repository::Repository::open(&config_dir).map_err(|e| {
-            (StatusCode::INTERNAL_SERVER_ERROR, error_body(e.to_string(), None))
-        })?;
+        let repo = repo_handle.lock().unwrap();
 
         // Check source ID exists
         let model_id = resolve_model_id(&id_str, &repo)
