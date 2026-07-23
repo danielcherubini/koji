@@ -1,4 +1,5 @@
 pub mod card;
+pub mod config_key;
 pub mod gguf;
 pub mod manager;
 pub mod pull;
@@ -8,6 +9,7 @@ pub mod update;
 pub mod verify;
 
 pub use card::{ModelCard, ModelMeta, QuantInfo};
+pub use config_key::ConfigKey;
 pub use manager::ModelManager;
 pub use pull::infer_quant_from_filename;
 pub use registry::{InstalledModel, ModelRegistry};
@@ -24,13 +26,11 @@ mod manager_tests;
 ///
 /// This function was moved from `tama_core::db` to `tama_core::models` because
 /// it semantically belongs to model configuration handling.
+///
+/// Delegates to [`ConfigKey::to_repo_id`], which is the canonical home for
+/// the inverse rule (split on the FIRST `--` only).
 pub fn config_key_to_repo_id(config_key: &str) -> String {
-    if let Some(idx) = config_key.find("--") {
-        let (prefix, suffix) = config_key.split_at(idx);
-        format!("{}/{}", prefix, &suffix[2..])
-    } else {
-        config_key.to_string()
-    }
+    ConfigKey::new(config_key).to_repo_id()
 }
 
 /// Append a HuggingFace `repo_id` (e.g. `"org/repo-name"`) to a base path using
