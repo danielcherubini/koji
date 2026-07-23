@@ -642,7 +642,20 @@ fn schemas() -> serde_json::Value {
     );
     map.insert(
         "ErrorResponse".into(),
-        serde_json::json!({"type": "object", "required": ["error"], "properties": {"error": {"type": "string"}}}),
+        serde_json::json!({
+            "type": "object",
+            "required": ["error"],
+            "properties": {
+                "error": {
+                    "type": "object",
+                    "required": ["message"],
+                    "properties": {
+                        "message": {"type": "string"},
+                        "type": {"type": "string"}
+                    }
+                }
+            }
+        }),
     );
     map.insert(
         "JobResponse".into(),
@@ -1120,4 +1133,58 @@ fn responses_map<'a>(entries: impl IntoIterator<Item = (&'a str, &'a str)>) -> s
 pub async fn serve_spec() -> impl IntoResponse {
     let spec = spec();
     (StatusCode::OK, Json(spec)).into_response()
+}
+
+#[cfg(all(test, feature = "ssr"))]
+mod tests {
+    use super::*;
+    use crate::api::error::error_response;
+
+    /// The `ErrorResponse` schema must describe the nested error shape
+    /// `{"error":{"message":"...","type":"..."}}` — not the flat
+    /// `{"error":"..."}` shape.
+    #[tokio::test]
+    async fn test_error_response_schema_is_nested() {
+        let schemas = schemas();
+
+        // The "error" property must be an object, not a string.
+        assert_eq!(
+            schemas["ErrorResponse"]["properties"]["error"]["type"], "object",
+            "ErrorResponse.error should be an object, not a string"
+        );
+
+        // The nested "message" property must be a string.
+        assert_eq!(
+            schemas["ErrorResponse"]["properties"]["error"]["properties"]["message"]["type"],
+            "string",
+            "ErrorResponse.error.message should be a string"
+        );
+
+        // "message" must be required inside the nested error object.
+        let required = schemas["ErrorResponse"]["properties"]["error"]["required"]
+            .as_array()
+            .expect("required should be an array");
+        assert!(
+            required.contains(&serde_json::Value::String("message".to_string())),
+            "message should be required in ErrorResponse.error"
+        );
+
+        // The schema must validate against an actual error body produced by
+        // error_response().
+        let response = error_response(
+            axum::http::StatusCode::NOT_FOUND,
+            "model not found",
+            Some("NotFoundError"),
+        );
+        let body = response.into_body();
+        let bytes = axum::body::to_bytes(body, usize::MAX)
+            .await
+            .expect("body should be readable");
+        let error_json: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("body should be valid JSON");
+
+        // The body should have the nested structure described by the schema.
+        assert_eq!(error_json["error"]["message"], "model not found");
+        assert_eq!(error_json["error"]["type"], "NotFoundError");
+    }
 }
