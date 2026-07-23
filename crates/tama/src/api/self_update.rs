@@ -21,6 +21,7 @@ use std::sync::Arc;
 use tama_core::proxy::ProxyState;
 use tokio::sync::broadcast;
 
+use crate::api::error::error_body;
 use crate::web_types::WebState;
 
 /// Response for `GET /tama/v1/self-update/check`.
@@ -59,7 +60,10 @@ pub async fn check_update(
         })),
         Err(e) => Err((
             StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": format!("Failed to check for updates: {e}") })),
+            Json(error_body(
+                format!("Failed to check for updates: {e}"),
+                None,
+            )),
         )),
     }
 }
@@ -83,7 +87,10 @@ pub async fn trigger_update(
             if tx.receiver_count() > 0 || !tx.is_empty() {
                 return Err((
                     StatusCode::CONFLICT,
-                    Json(json!({ "error": "An update is already in progress" })),
+                    Json(error_body(
+                        "An update is already in progress",
+                        Some("ConflictError"),
+                    )),
                 ));
             }
         }

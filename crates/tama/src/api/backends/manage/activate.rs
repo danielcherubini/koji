@@ -50,22 +50,18 @@ pub async fn activate_backend_version(
             let versions = match infer_result {
                 Ok(Some(v)) => v,
                 Ok(None) => {
-                    return (
+                    return error_response(
                         StatusCode::NOT_FOUND,
-                        Json(serde_json::json!({
-                            "error": format!("Backend '{}' not found", name)
-                        })),
+                        format!("Backend '{}' not found", name),
+                        Some("NotFoundError"),
                     )
-                        .into_response();
                 }
                 Err(e) => {
-                    return (
+                    return error_response(
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({
-                            "error": format!("Failed to query backend: {}", e)
-                        })),
+                        format!("Failed to query backend: {}", e),
+                        None,
                     )
-                        .into_response();
                 }
             };
 
@@ -92,33 +88,29 @@ pub async fn activate_backend_version(
                 match matching.len() {
                     1 => matching.into_iter().next().unwrap(),
                     0 => {
-                        return (
+                        return error_response(
                             StatusCode::NOT_FOUND,
-                            Json(serde_json::json!({
-                                "error": format!(
-                                    "Version '{}' not found for backend '{}'. Available variants: {}",
-                                    version_clone,
-                                    name,
-                                    variants.join(", ")
-                                )
-                            })),
+                            format!(
+                                "Version '{}' not found for backend '{}'. Available variants: {}",
+                                version_clone,
+                                name,
+                                variants.join(", ")
+                            ),
+                            Some("NotFoundError"),
                         )
-                            .into_response();
                     }
                     _ => {
                         // Multiple variants have the same version — ambiguous
-                        return (
+                        return error_response(
                             StatusCode::BAD_REQUEST,
-                            Json(serde_json::json!({
-                                "error": format!(
-                                    "Version '{}' exists in multiple variants for backend '{}'. Please specify gpu_variant. Available variants: {}",
-                                    version_clone,
-                                    name,
-                                    matching.join(", ")
-                                )
-                            })),
-                        )
-                            .into_response();
+                            format!(
+                                "Version '{}' exists in multiple variants for backend '{}'. Please specify gpu_variant. Available variants: {}",
+                                version_clone,
+                                name,
+                                matching.join(", ")
+                            ),
+                            Some("ValidationError"),
+                        );
                     }
                 }
             }
@@ -143,13 +135,14 @@ pub async fn activate_backend_version(
     match mgr_result {
         Ok((_, activated)) => {
             if !activated {
-                return (
+                return error_response(
                     StatusCode::NOT_FOUND,
-                    Json(serde_json::json!({
-                        "error": format!("Version '{}' not found for backend '{}'", version_for_error, name)
-                    })),
-                )
-                    .into_response();
+                    format!(
+                        "Version '{}' not found for backend '{}'",
+                        version_for_error, name
+                    ),
+                    Some("NotFoundError"),
+                );
             }
 
             Json(ActivateResponse {

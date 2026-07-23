@@ -12,6 +12,7 @@ use futures_util::Stream;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+use crate::api::error::{error_body, error_response};
 use crate::api::helpers::shared_repository;
 use crate::web_types::WebState;
 use tama_core::backends::{
@@ -83,11 +84,11 @@ pub async fn get_updates(
     let config_dir = match state.db_dir().clone() {
         Some(d) => d,
         None => {
-            return (
+            return error_response(
                 StatusCode::NOT_FOUND,
-                Json(serde_json::json!({ "error": "config directory not configured" })),
+                "config directory not configured",
+                Some("NotFoundError"),
             )
-                .into_response()
         }
     };
 
@@ -172,11 +173,7 @@ pub async fn get_updates(
             }
             Json(UpdatesListResponse { backends, models }).into_response()
         }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": e.to_string() })),
-        )
-            .into_response(),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     }
 }
 
@@ -188,11 +185,11 @@ pub async fn trigger_check(
     let config_dir = match state.db_dir().clone() {
         Some(d) => d,
         None => {
-            return (
+            return error_response(
                 StatusCode::NOT_FOUND,
-                Json(serde_json::json!({ "error": "config directory not configured" })),
+                "config directory not configured",
+                Some("NotFoundError"),
             )
-                .into_response()
         }
     };
 
@@ -232,11 +229,11 @@ pub async fn check_single(
     let config_dir = match state.db_dir().clone() {
         Some(d) => d,
         None => {
-            return (
+            return error_response(
                 StatusCode::NOT_FOUND,
-                Json(serde_json::json!({ "error": "config directory not configured" })),
+                "config directory not configured",
+                Some("NotFoundError"),
             )
-                .into_response()
         }
     };
 
@@ -294,11 +291,11 @@ pub async fn check_single(
             let repo_handle = match shared_repository(&web_state) {
                 Ok(h) => h,
                 Err(_) => {
-                    return (
+                    return error_response(
                         StatusCode::SERVICE_UNAVAILABLE,
-                        Json(serde_json::json!({ "error": "Database not configured" })),
+                        "Database not configured",
+                        Some("ServiceUnavailableError"),
                     )
-                        .into_response();
                 }
             };
             let rid_result = tokio::task::spawn_blocking({
@@ -328,21 +325,17 @@ pub async fn check_single(
             }
         }
         _ => {
-            return (
+            return error_response(
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({ "error": "Invalid item_type" })),
+                "Invalid item_type",
+                Some("ValidationError"),
             )
-                .into_response()
         }
     };
 
     match result {
         Ok(_) => Json(serde_json::json!({ "ok": true })).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": e.to_string() })),
-        )
-            .into_response(),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     }
 }
 
@@ -433,11 +426,11 @@ pub async fn apply_backend_update(
     let config_dir = match state.db_dir().clone() {
         Some(d) => d,
         None => {
-            return (
+            return error_response(
                 StatusCode::NOT_FOUND,
-                Json(serde_json::json!({ "error": "config directory not configured" })),
+                "config directory not configured",
+                Some("NotFoundError"),
             )
-                .into_response()
         }
     };
 
@@ -482,37 +475,27 @@ pub async fn apply_backend_update(
     let (backend_type, current_version) = match bt_result {
         Ok(Ok(res)) => res,
         Ok(Err(e)) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": e.to_string() })),
-            )
-                .into_response()
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None)
         }
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": e.to_string() })),
-            )
-                .into_response()
-        }
+        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     };
 
     let (Some(backend_type), Some(_version)) = (backend_type, current_version) else {
-        return (
+        return error_response(
             StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "error": "Backend not found" })),
-        )
-            .into_response();
+            "Backend not found",
+            Some("NotFoundError"),
+        );
     };
 
     let jobs = match web_state.jobs.as_ref() {
         Some(j) => j.clone(),
         None => {
-            return (
+            return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": "job manager not configured" })),
+                "job manager not configured",
+                None,
             )
-                .into_response()
         }
     };
 
@@ -525,24 +508,31 @@ pub async fn apply_backend_update(
     {
         Ok(j) => j,
         Err(crate::web_types::JobError::AlreadyRunning(existing_id)) => {
-            return (StatusCode::CONFLICT, Json(serde_json::json!({ "error": "another backend job is already running", "job_id": existing_id }))).into_response();
+            let mut body = error_body(
+                "another backend job is already running",
+                Some("ConflictError"),
+            );
+            body["job_id"] = serde_json::json!(existing_id);
+            return (StatusCode::CONFLICT, Json(body)).into_response();
         }
         Err(_) => {
-            return (
+            return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": "failed to create job" })),
+                "failed to create job",
+                None,
             )
-                .into_response()
         }
     };
 
     let latest_version = match check_latest_version(&backend_type, None, None).await {
         Ok(v) => v,
-        Err(e) => return (
-            StatusCode::BAD_GATEWAY,
-            Json(serde_json::json!({ "error": format!("Failed to check latest version: {}", e) })),
-        )
-            .into_response(),
+        Err(e) => {
+            return error_response(
+                StatusCode::BAD_GATEWAY,
+                format!("Failed to check latest version: {}", e),
+                None,
+            )
+        }
     };
 
     let jobs_clone = jobs.clone();
@@ -696,18 +686,14 @@ pub async fn apply_model_update(
     let (repo_id, files_to_update) = match res_result {
         Ok(Ok(val)) => val,
         Ok(Err(e)) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": e.to_string() })),
-            )
-                .into_response()
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None)
         }
         Err(e) => {
-            return (
+            return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": format!("Join error: {}", e) })),
+                format!("Join error: {}", e),
+                None,
             )
-                .into_response()
         }
     };
 
@@ -722,14 +708,9 @@ pub async fn apply_model_update(
         .collect();
 
     if !invalid_quants.is_empty() {
-        return (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(serde_json::json!({
-                "error": "Invalid quant keys",
-                "invalid_quants": invalid_quants
-            })),
-        )
-            .into_response();
+        let mut body = error_body("Invalid quant keys", Some("ValidationError"));
+        body["invalid_quants"] = serde_json::json!(invalid_quants);
+        return (StatusCode::UNPROCESSABLE_ENTITY, Json(body)).into_response();
     }
 
     // 3. Deduplicate within this request (avoid double-enqueue if same filename appears twice)
@@ -743,11 +724,11 @@ pub async fn apply_model_update(
     let svc = match state.pull_queue().as_ref() {
         Some(s) => s,
         None => {
-            return (
+            return error_response(
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(serde_json::json!({ "error": "Download queue not configured" })),
+                "Download queue not configured",
+                Some("ServiceUnavailableError"),
             )
-                .into_response()
         }
     };
 
@@ -762,24 +743,23 @@ pub async fn apply_model_update(
     for (quant_key, filename) in &unique_files {
         match repo.get_active_pull_by_filename(&repo_id, filename) {
             Ok(Some(existing)) => {
-                return (
-                    StatusCode::CONFLICT,
-                    Json(serde_json::json!({
-                        "error": format!("Download already in progress for quant '{}' ({})", quant_key, filename),
-                        "existing_job_id": existing.job_id
-                    })),
-                )
-                    .into_response();
+                let mut body = error_body(
+                    format!(
+                        "Download already in progress for quant '{}' ({})",
+                        quant_key, filename
+                    ),
+                    Some("ConflictError"),
+                );
+                body["existing_job_id"] = serde_json::json!(existing.job_id);
+                return (StatusCode::CONFLICT, Json(body)).into_response();
             }
             Ok(None) => {}
             Err(e) => {
-                return (
+                return error_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({
-                        "error": format!("Queue check failed for '{}': {}", filename, e)
-                    })),
+                    format!("Queue check failed for '{}': {}", filename, e),
+                    None,
                 )
-                    .into_response();
             }
         }
     }
@@ -798,11 +778,7 @@ pub async fn apply_model_update(
             Some(quant_key.as_str()),
             None,
         ) {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": e.to_string() })),
-            )
-                .into_response();
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None);
         }
 
         job_ids.push(job_id);

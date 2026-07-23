@@ -4,7 +4,6 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use serde_json::json;
 use std::sync::Arc;
 use tama_core::proxy::ProxyState;
 
@@ -544,11 +543,11 @@ pub async fn list_backend_versions(
 ) -> impl IntoResponse {
     // Validate name (prevent path traversal)
     if name.contains('/') || name.contains('\\') || name.contains("..") {
-        return (
+        return error_response(
             StatusCode::BAD_REQUEST,
-            Json(json!({"error": "Invalid backend name"})),
-        )
-            .into_response();
+            "Invalid backend name",
+            Some("ValidationError"),
+        );
     }
 
     let mgr_result = open_backend_manager(&state).await;
@@ -558,22 +557,22 @@ pub async fn list_backend_versions(
             let versions_opt = match mgr.list_versions(&name, None) {
                 Ok(v) => v,
                 Err(e) => {
-                    return (
+                    return error_response(
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({"error": format!("Failed to list versions: {}", e)})),
+                        format!("Failed to list versions: {}", e),
+                        None,
                     )
-                        .into_response();
                 }
             };
 
             let versions = match versions_opt {
                 Some(v) => v,
                 None => {
-                    return (
+                    return error_response(
                         StatusCode::NOT_FOUND,
-                        Json(json!({"error": format!("Backend '{}' not found", name)})),
+                        format!("Backend '{}' not found", name),
+                        Some("NotFoundError"),
                     )
-                        .into_response();
                 }
             };
 
@@ -616,10 +615,10 @@ pub async fn list_backend_versions(
             })
             .into_response()
         }
-        Err(e) => (
+        Err(e) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("Failed to open backend manager: {:?}", e.status())})),
-        )
-            .into_response(),
+            format!("Failed to open backend manager: {:?}", e.status()),
+            None,
+        ),
     }
 }

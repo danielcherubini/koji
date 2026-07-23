@@ -8,7 +8,7 @@ use serde::Deserialize;
 use std::sync::Arc;
 
 use super::types::*;
-use crate::api::error::error_response;
+use crate::api::error::{error_body, error_response};
 use crate::api::helpers::open_backend_manager;
 use crate::web_types::WebState;
 use tama_core::proxy::ProxyState;
@@ -118,14 +118,12 @@ pub async fn install_backend(
         {
             Ok(j) => j,
             Err(crate::web_types::JobError::AlreadyRunning(existing_id)) => {
-                return (
-                    StatusCode::CONFLICT,
-                    Json(serde_json::json!({
-                        "error": "another backend job is already running",
-                        "job_id": existing_id
-                    })),
-                )
-                    .into_response();
+                let mut body = error_body(
+                    "another backend job is already running",
+                    Some("ConflictError"),
+                );
+                body["job_id"] = serde_json::json!(existing_id);
+                return (StatusCode::CONFLICT, Json(body)).into_response();
             }
             Err(_) => {
                 return error_response(
@@ -288,11 +286,11 @@ pub async fn install_backend(
         {
             Ok(c) => c,
             Err(e) => {
-                return (
+                return error_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({ "error": format!("Capability detection failed: {}", e) })),
+                    format!("Capability detection failed: {}", e),
+                    None,
                 )
-                    .into_response();
             }
         };
 
@@ -329,14 +327,12 @@ pub async fn install_backend(
     {
         Ok(j) => j,
         Err(crate::web_types::JobError::AlreadyRunning(existing_id)) => {
-            return (
-                StatusCode::CONFLICT,
-                Json(serde_json::json!({
-                    "error": "another backend job is already running",
-                    "job_id": existing_id
-                })),
-            )
-                .into_response();
+            let mut body = error_body(
+                "another backend job is already running",
+                Some("ConflictError"),
+            );
+            body["job_id"] = serde_json::json!(existing_id);
+            return (StatusCode::CONFLICT, Json(body)).into_response();
         }
         Err(_) => {
             return error_response(
@@ -523,13 +519,11 @@ pub async fn remove_backend(
 
     // Open manager and get backend
     if name.contains('/') || name.contains('\\') || name.contains("..") {
-        return (
+        return error_response(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "Invalid backend name: path separators or traversal sequences not allowed"
-            })),
-        )
-            .into_response();
+            "Invalid backend name: path separators or traversal sequences not allowed",
+            Some("ValidationError"),
+        );
     }
 
     let gpu_variant = query.gpu_variant;
@@ -590,13 +584,11 @@ pub async fn remove_backend(
             .map(|b| b.to_string())
             .unwrap_or_default();
         if active_type == backends_to_remove[0].backend_type.to_string() {
-            return (
+            return error_response(
                 StatusCode::CONFLICT,
-                Json(serde_json::json!({
-                    "error": "a job is currently running for this backend"
-                })),
-            )
-                .into_response();
+                "a job is currently running for this backend",
+                Some("ConflictError"),
+            );
         }
     }
 
@@ -605,13 +597,11 @@ pub async fn remove_backend(
         if let Err(e) = tama_core::backends::safe_remove_installation(info) {
             let err_msg = e.to_string();
             if err_msg.contains("outside the managed backends directory") {
-                return (
+                return error_response(
                     StatusCode::CONFLICT,
-                    Json(serde_json::json!({
-                        "error": "path is outside the managed backends directory; remove manually"
-                    })),
-                )
-                    .into_response();
+                    "path is outside the managed backends directory; remove manually",
+                    Some("ConflictError"),
+                );
             }
             return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,

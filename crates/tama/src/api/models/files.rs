@@ -105,13 +105,11 @@ pub async fn refresh_model_metadata(
     let listing = match tama_core::models::pull::list_gguf_files(&repo_id).await {
         Ok(l) => l,
         Err(e) => {
-            return (
+            return error_response(
                 StatusCode::BAD_GATEWAY,
-                Json(serde_json::json!({
-                    "error": format!("HuggingFace listing failed: {}", e)
-                })),
+                format!("HuggingFace listing failed: {}", e),
+                None,
             )
-                .into_response();
         }
     };
     let blobs = match tama_core::models::pull::fetch_blob_metadata(&listing.repo_id).await {

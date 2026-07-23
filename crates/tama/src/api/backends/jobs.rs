@@ -9,6 +9,7 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 
 use super::types::*;
+use crate::api::error::error_body;
 use crate::web_types::WebState;
 use tama_core::proxy::ProxyState;
 
@@ -122,7 +123,7 @@ pub async fn job_events_sse(
                 .json_data(json!({ "status": status}))?);
             if let Some(err) = error {
                 yield Ok(Event::default().event("error")
-                    .json_data(json!({ "error": err}))?);
+                    .json_data(error_body(err, None))?);
             }
             return; // Close after terminal job
         }

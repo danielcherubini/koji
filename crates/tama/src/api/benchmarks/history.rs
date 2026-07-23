@@ -1,5 +1,5 @@
 use super::*;
-use crate::api::error::error_response;
+use crate::api::error::{error_body, error_response};
 use crate::api::helpers::shared_repository;
 use crate::web_types::WebState;
 use tama_core::proxy::ProxyState;
@@ -142,7 +142,7 @@ pub async fn benchmark_events(
                 .json_data(json!({ "status": status}))?);
             if let Some(err) = error {
                 yield Ok(Event::default().event("error")
-                    .json_data(json!({ "error": err}))?);
+                    .json_data(error_body(err, None))?);
             }
             return; // Close after terminal job
         }

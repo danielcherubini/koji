@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use super::types::UpdateQuery;
 use crate::api::backends::types::{InstallResponse, JobAdapter};
-use crate::api::error::error_response;
+use crate::api::error::{error_body, error_response};
 use crate::api::helpers::open_backend_manager;
 use crate::web_types::WebState;
 use tama_core::proxy::ProxyState;
@@ -79,17 +79,15 @@ pub async fn update_backend(
             match variants.len() {
                 1 => variants.into_iter().next().unwrap(),
                 _ => {
-                    return (
+                    return error_response(
                         StatusCode::BAD_REQUEST,
-                        Json(serde_json::json!({
-                            "error": format!(
-                                "Backend '{}' has multiple variants. Please specify gpu_variant. Available: {}",
-                                name,
-                                variants.join(", ")
-                            )
-                        })),
+                        format!(
+                            "Backend '{}' has multiple variants. Please specify gpu_variant. Available: {}",
+                            name,
+                            variants.join(", ")
+                        ),
+                        Some("ValidationError"),
                     )
-                        .into_response();
                 }
             }
         }
@@ -138,14 +136,12 @@ pub async fn update_backend(
     {
         Ok(j) => j,
         Err(crate::web_types::JobError::AlreadyRunning(existing_id)) => {
-            return (
-                StatusCode::CONFLICT,
-                Json(serde_json::json!({
-                    "error": "another backend job is already running",
-                    "job_id": existing_id
-                })),
-            )
-                .into_response();
+            let mut body = error_body(
+                "another backend job is already running",
+                Some("ConflictError"),
+            );
+            body["job_id"] = serde_json::json!(existing_id);
+            return (StatusCode::CONFLICT, Json(body)).into_response();
         }
         Err(_) => {
             return error_response(

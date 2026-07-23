@@ -67,13 +67,11 @@ pub async fn remove_backend_version(
     let versions = match mgr.list_versions(&name, gpu_variant_filter.as_deref()) {
         Ok(Some(v)) => v,
         Ok(None) => {
-            return (
+            return error_response(
                 StatusCode::NOT_FOUND,
-                Json(serde_json::json!({
-                    "error": format!("Backend '{}' version '{}' not found", name, version)
-                })),
+                format!("Backend '{}' version '{}' not found", name, version),
+                Some("NotFoundError"),
             )
-                .into_response();
         }
         Err(e) => {
             return error_response(
@@ -88,29 +86,25 @@ pub async fn remove_backend_version(
     let matches: Vec<_> = versions.iter().filter(|v| v.version == version).collect();
     let info = match matches.len() {
         0 => {
-            return (
+            return error_response(
                 StatusCode::NOT_FOUND,
-                Json(serde_json::json!({
-                    "error": format!("Backend '{}' version '{}' not found", name, version)
-                })),
+                format!("Backend '{}' version '{}' not found", name, version),
+                Some("NotFoundError"),
             )
-                .into_response();
         }
         1 => matches[0].clone(),
         _ if gpu_variant_filter.is_some() => matches[0].clone(),
         _ => {
             // Multiple variants have the same version - require gpu_variant
             let variant_list: Vec<String> = matches.iter().map(|v| v.gpu_variant.clone()).collect();
-            return (
+            return error_response(
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": format!(
-                        "Version '{}' exists in multiple variants for backend '{}'. Please specify gpu_variant. Available: {}",
-                        version, name, variant_list.join(", ")
-                    )
-                })),
-            )
-                .into_response();
+                format!(
+                    "Version '{}' exists in multiple variants for backend '{}'. Please specify gpu_variant. Available: {}",
+                    version, name, variant_list.join(", ")
+                ),
+                Some("ValidationError"),
+            );
         }
     };
 
@@ -134,13 +128,11 @@ pub async fn remove_backend_version(
                 .map(|b| b.to_string())
                 .unwrap_or_default();
             if active_type == info.backend_type.to_string() {
-                return (
+                return error_response(
                     StatusCode::CONFLICT,
-                    Json(serde_json::json!({
-                        "error": "a job is currently running for this backend"
-                    })),
-                )
-                    .into_response();
+                    "a job is currently running for this backend",
+                    Some("ConflictError"),
+                );
             }
         }
     }
@@ -149,13 +141,11 @@ pub async fn remove_backend_version(
         if let Err(e) = tama_core::backends::safe_remove_installation(&info_to_remove) {
             let err_msg = e.to_string();
             if err_msg.contains("outside the managed backends directory") {
-                return (
+                return error_response(
                     StatusCode::CONFLICT,
-                    Json(serde_json::json!({
-                        "error": "path is outside the managed backends directory; remove manually"
-                    })),
-                )
-                    .into_response();
+                    "path is outside the managed backends directory; remove manually",
+                    Some("ConflictError"),
+                );
             }
             return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,

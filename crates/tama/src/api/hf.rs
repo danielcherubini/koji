@@ -6,6 +6,7 @@ use axum::{
 };
 use std::sync::Arc;
 
+use crate::api::error::error_response;
 use tama_core::config::QuantKind;
 use tama_core::proxy::ProxyState;
 
@@ -27,22 +28,18 @@ pub async fn hf_metadata(
         .split('/')
         .all(|s| !s.is_empty() && s != ".." && !s.contains('\0'))
     {
-        return (
+        return error_response(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "Invalid repo_id" })),
-        )
-            .into_response();
+            "Invalid repo_id",
+            Some("ValidationError"),
+        );
     }
 
     // Metadata requests fetch HF repo info; all others fetch quant lists.
     if path.ends_with("/metadata") {
         match tama_core::models::pull::fetch_hf_metadata(&repo_id).await {
             Ok(meta) => (StatusCode::OK, Json(meta)).into_response(),
-            Err(e) => (
-                StatusCode::BAD_GATEWAY,
-                Json(serde_json::json!({ "error": e.to_string() })),
-            )
-                .into_response(),
+            Err(e) => error_response(StatusCode::BAD_GATEWAY, e.to_string(), None),
         }
     } else {
         // Quant list — call fetch_blob_metadata directly instead of looping
@@ -66,11 +63,7 @@ pub async fn hf_metadata(
                 quants.sort_by(|a, b| a.filename.cmp(&b.filename));
                 (StatusCode::OK, Json(quants)).into_response()
             }
-            Err(e) => (
-                StatusCode::BAD_GATEWAY,
-                Json(serde_json::json!({ "error": e.to_string() })),
-            )
-                .into_response(),
+            Err(e) => error_response(StatusCode::BAD_GATEWAY, e.to_string(), None),
         }
     }
 }
