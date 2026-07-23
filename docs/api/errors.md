@@ -31,3 +31,7 @@ All API errors follow a consistent structure:
 | `ValidationError` | Request body or params failed validation (400/422) |
 | `ConflictError` | Resource conflict — duplicate, job already running (409) |
 | `ServiceUnavailableError` | Required service not configured (503) |
+| `BadRequestError` | Bad request — request body too large (400) |
+| `ForbiddenError` | Caller lacks required scope for this operation (403) |
+| `UpstreamError` | Upstream service (e.g. HuggingFace) returned an error (502) |
+| `ServerError` | Internal server error from a backend service (500/502) |

@@ -266,9 +266,9 @@ pub async fn handle_tama_pull_model(
                 Json(serde_json::json!({
                     "error": {
                         "message": "quant is required",
-                        "type": "ValidationError",
-                        "available_quants": available
-                    }
+                        "type": "ValidationError"
+                    },
+                    "available_quants": available
                 })),
             )
                 .into_response();
@@ -306,9 +306,9 @@ pub async fn handle_tama_pull_model(
                 Json(serde_json::json!({
                     "error": {
                         "message": format!("Quant '{}' not found in repo '{}'", quant, repo_id),
-                        "type": "ValidationError",
-                        "available_quants": available
-                    }
+                        "type": "ValidationError"
+                    },
+                    "available_quants": available
                 })),
             )
                 .into_response();

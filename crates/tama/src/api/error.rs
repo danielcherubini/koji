@@ -78,7 +78,7 @@ pub(crate) mod tests {
     /// JSON shape.
     pub(crate) async fn assert_error_shape(response: Response) -> ErrorDetail {
         let body = response.into_body();
-        let bytes = axum::body::to_bytes(body, usize::MAX)
+        let bytes = axum::body::to_bytes(body, 1024 * 1024)
             .await
             .expect("body should be readable");
         let detail: ErrorResponse =
