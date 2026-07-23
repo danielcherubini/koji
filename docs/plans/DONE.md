@@ -2,8 +2,9 @@
 
 ## Recently Completed
 
-| Plan | Description | PR / Git References |
-|------|-------------|---------------------|
+| Plan | Description | PR | Git References |
+|------|-------------|-----|---------------------|
+| [Model Identity ConfigKey](done/plan-162-model-identity-configkey.md) | Introduce `ConfigKey` newtype as single derivation site for `repo_id.to_lowercase().replace('/', "--")`; replace 9 open-coded sites in tama-core + 5 in tama crate (WASM-safe mirror); extract case-preserving `card_slug` for card filenames; rename ambiguous `resolve_model_id` to `resolve_config_key`/`resolve_db_id` | #163 ✅ COMPLETED | [`048d44bc`](../../commit/048d44bc), [`6eddb183`](../../commit/6eddb183), [`7bc4b236`](../../commit/7bc4b236), [`432d6880`](../../commit/432d6880), [`b19c1e09`](../../commit/b19c1e09), [`8782ed97`](../../commit/8782ed97) |
 | [Error Contract Unification](done/plan-161-error-contract.md) | Unify management API error responses on nested `{"error":{"message":"...","type":"..."}}` shape — add shared `json_error` helper in tama-core, migrate 53 flat sites in `crates/tama` + 51 sites in tama-core (tts.rs, pull/handlers.rs, api_keys.rs), fix OpenAPI `ErrorResponse` schema, add `assert_error_shape` test helper + 6 shape-assertion tests across 6 modules, migrate `backends/jobs.rs` `get_job` from bare `StatusCode` to `error_response` | #162 ✅ COMPLETED | [`53a463cc`](../../commit/53a463cc), [`1765f700`](../../commit/1765f700), [`6cc04560`](../../commit/6cc04560), [`3624a233`](../../commit/3624a233), [`d275e688`](../../commit/d275e688) |
 | [DB Access Consolidation](done/plan-160-db-access-consolidation.md) | Repository as single API-layer access point — absorb model writes, collapse DTO/Record duplication, seal escape hatches + ApiKeyStore, share one Repository via WebState, amend ADR-0017 | #161 ✅ COMPLETED | [`90a06e0b`](../../commit/90a06e0b) |
 | [Quick Fixes](done/plan-159-quick-fixes.md) | Break config↔proxy cycle, restore 501 stopgap, CSRF route + middleware tests, route /logout, SvelteKit→Leptos docs fix | #160 ✅ COMPLETED | [`7412709b`](../../commit/7412709b) |
