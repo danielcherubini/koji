@@ -229,7 +229,8 @@ pub async fn delete_model(
             }
             // 2. Delete model card
             if let Ok(configs_dir) = cfg.configs_dir() {
-                let card_path = configs_dir.join(format!("{}.toml", repo_id.replace('/', "--")));
+                let card_path =
+                    configs_dir.join(format!("{}.toml", tama_core::models::card_slug(&repo_id)));
                 if card_path.exists() {
                     let _ = std::fs::remove_file(&card_path);
                 }

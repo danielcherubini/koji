@@ -14,7 +14,7 @@ async fn test_setup_model_creates_card() {
 
     let repo_id = "bartowski/Qwen3-8B-GGUF";
     let filename = "Qwen3-8B-Q4_K_M.gguf";
-    let repo_slug = repo_id.replace('/', "--");
+    let repo_slug = crate::models::card_slug(repo_id);
     // dest_dir uses the two-level org/repo structure (matches production behaviour)
     let dest_dir = models_dir.join(repo_id);
     std::fs::create_dir_all(&dest_dir).unwrap();

@@ -210,7 +210,7 @@ pub(crate) async fn _setup_model_after_pull_with_config(
     dest_dir: &std::path::Path,
     gguf_metadata: Option<&GgufMetadata>,
 ) -> Option<String> {
-    let repo_slug = repo_id.replace('/', "--");
+    let repo_slug = crate::models::card_slug(repo_id);
     let card_path = configs_dir.join(format!("{}.toml", repo_slug));
 
     // Load existing or build a new card

@@ -198,13 +198,8 @@ impl ProxyState {
         let configs_dir = self.config.read().await.configs_dir().ok()?;
 
         // Try to find the model card file
-        // Format: configs/<company>--<model>.toml
-        let (org, name) = model_name.split_once('/').unwrap_or(("", model_name));
-        let card_filename = if org.is_empty() {
-            format!("{}.toml", name)
-        } else {
-            format!("{}--{}.toml", org, name)
-        };
+        // Format: configs/<slug>.toml — slug is case-preserving (see card_slug)
+        let card_filename = format!("{}.toml", crate::models::card_slug(model_name));
         let card_path = configs_dir.join(card_filename);
 
         let content = tokio::fs::read_to_string(&card_path).await.ok()?;
