@@ -791,6 +791,13 @@ pub async fn apply_model_update(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::error::tests::assert_error_shape;
+    use axum::body::Body;
+    use axum::http::Request;
+    use std::sync::Arc;
+    use tama_core::config::Config;
+    use tama_core::proxy::ProxyState;
+    use tower::ServiceExt;
 
     // ── UpdateCheckDto serialization tests ────────────────────────────────
 
@@ -993,5 +1000,56 @@ mod tests {
         let deserialized: CheckResponse = serde_json::from_str(&json).unwrap();
 
         assert!(!deserialized.triggered);
+    }
+
+    // ── Error shape tests ────────────────────────────────────────────────
+
+    /// POST /tama/v1/updates/check/bogus/123 — invalid item_type should return
+    /// 400 with canonical error shape and type=ValidationError.
+    #[tokio::test]
+    async fn test_check_single_invalid_item_type_error_shape() {
+        let config = Config::default();
+        let tmp_dir = tempfile::tempdir().expect("tempdir");
+        let state = Arc::new(ProxyState::new(config, Some(tmp_dir.path().to_path_buf())));
+
+        let web_state = Arc::new(crate::web_types::WebState {
+            jobs: Some(Arc::new(crate::web_types::JobManager::new())),
+            capabilities: None,
+            update_checker: Arc::new(tama_core::updates::UpdateChecker::default()),
+            binary_version: "test".to_string(),
+            update_tx: Arc::new(tokio::sync::Mutex::new(None)),
+            upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            repository: None,
+        });
+
+        let router = crate::router::build_web_routes(web_state.clone())
+            .with_state(state)
+            .layer(axum::extract::Extension(web_state.as_ref().clone()));
+
+        let csrf_token = "test-csrf-token-12345";
+        let cookie_header = format!("{}={}", "tama_csrf_token", csrf_token);
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/tama/v1/updates/check/bogus/123")
+            .header(axum::http::header::COOKIE, cookie_header.as_str())
+            .header("X-CSRF-Token", csrf_token)
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = router.oneshot(req).await.expect("request should complete");
+
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::BAD_REQUEST,
+            "check_single should return 400 for invalid item_type"
+        );
+
+        let detail = assert_error_shape(resp).await;
+        assert_eq!(
+            detail.r#type,
+            Some("ValidationError".to_string()),
+            "invalid item_type should return ValidationError type"
+        );
     }
 }

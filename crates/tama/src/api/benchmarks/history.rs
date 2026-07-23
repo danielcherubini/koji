@@ -324,3 +324,57 @@ pub async fn delete_benchmark(
         Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::api::error::tests::assert_error_shape;
+    use axum::body::Body;
+    use axum::http::Request;
+    use std::sync::Arc;
+    use tama_core::config::Config;
+    use tama_core::proxy::ProxyState;
+    use tower::ServiceExt;
+
+    /// GET /tama/v1/benchmarks/jobs/:id — a non-existent job should return
+    /// 404 with the canonical error shape.
+    #[tokio::test]
+    async fn test_get_benchmark_result_not_found_error_shape() {
+        let config = Config::default();
+        let state = Arc::new(ProxyState::new(config, None));
+
+        let web_state = Arc::new(crate::web_types::WebState {
+            jobs: Some(Arc::new(crate::web_types::JobManager::new())),
+            capabilities: None,
+            update_checker: Arc::new(tama_core::updates::UpdateChecker::default()),
+            binary_version: "test".to_string(),
+            update_tx: Arc::new(tokio::sync::Mutex::new(None)),
+            upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            repository: None,
+        });
+
+        let router = crate::router::build_web_routes(web_state.clone())
+            .with_state(state)
+            .layer(axum::extract::Extension(web_state.as_ref().clone()));
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/tama/v1/benchmarks/jobs/nonexistent")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = router.oneshot(req).await.expect("request should complete");
+
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::NOT_FOUND,
+            "get_benchmark_result should return 404 for non-existent job"
+        );
+
+        let detail = assert_error_shape(resp).await;
+        assert_eq!(
+            detail.r#type,
+            Some("NotFoundError".to_string()),
+            "not-found job should return NotFoundError type"
+        );
+    }
+}

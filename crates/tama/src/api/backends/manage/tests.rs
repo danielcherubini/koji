@@ -1,3 +1,4 @@
+use crate::api::error::tests::assert_error_shape;
 use axum::body::Body;
 use axum::http::Request;
 use std::collections::HashMap;
@@ -401,4 +402,85 @@ async fn test_patch_backend_default_args_only() {
     // Verify health_check_url preserved
     let health = mgr.get_health_check_url("llama_cpp", "cpu");
     assert_eq!(health, Some("http://localhost:8080/health".to_string()));
+}
+
+/// DELETE /tama/v1/backends/:name with path traversal in name should return
+/// 400 with canonical error shape.
+#[tokio::test]
+async fn test_remove_backend_error_shape() {
+    let config = tama_core::config::Config::default();
+    let state = Arc::new(tama_core::proxy::ProxyState::new(config, None));
+
+    let web_state_for_test = Arc::new(test_web_state());
+    let router = crate::router::build_web_routes(web_state_for_test.clone())
+        .with_state(state)
+        .layer(axum::extract::Extension(
+            web_state_for_test.as_ref().clone(),
+        ));
+
+    // Path traversal in name — `..` embedded within a segment.
+    let req = Request::builder()
+        .method("DELETE")
+        .uri("/tama/v1/backends/foo..bar")
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = router.oneshot(req).await.expect("request should complete");
+
+    assert_eq!(
+        resp.status(),
+        axum::http::StatusCode::BAD_REQUEST,
+        "remove_backend should reject names containing '..' with 400"
+    );
+
+    let detail = assert_error_shape(resp).await;
+    assert_eq!(
+        detail.r#type,
+        Some("ValidationError".to_string()),
+        "path traversal should return ValidationError type"
+    );
+}
+
+/// POST /tama/v1/backends/:name/activate with path traversal in name should
+/// return 400 with canonical error shape.
+#[tokio::test]
+async fn test_activate_backend_error_shape() {
+    let config = tama_core::config::Config::default();
+    let state = Arc::new(tama_core::proxy::ProxyState::new(config, None));
+
+    let web_state_for_test = Arc::new(test_web_state());
+    let router = crate::router::build_web_routes(web_state_for_test.clone())
+        .with_state(state)
+        .layer(axum::extract::Extension(
+            web_state_for_test.as_ref().clone(),
+        ));
+
+    let csrf_token = "test-csrf-token-12345";
+    let cookie_header = format!("{}={}", "tama_csrf_token", csrf_token);
+
+    let body = serde_json::json!({ "version": "1.0.0" }).to_string();
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/tama/v1/backends/foo..bar/activate")
+        .header(axum::http::header::COOKIE, cookie_header.as_str())
+        .header("X-CSRF-Token", csrf_token)
+        .header("Content-Type", "application/json")
+        .body(Body::from(body))
+        .unwrap();
+
+    let resp = router.oneshot(req).await.expect("request should complete");
+
+    assert_eq!(
+        resp.status(),
+        axum::http::StatusCode::BAD_REQUEST,
+        "activate_backend_version should reject names containing '..' with 400"
+    );
+
+    let detail = assert_error_shape(resp).await;
+    assert_eq!(
+        detail.r#type,
+        Some("ValidationError".to_string()),
+        "path traversal should return ValidationError type"
+    );
 }
