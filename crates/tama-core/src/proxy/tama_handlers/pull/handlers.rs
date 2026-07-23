@@ -7,6 +7,7 @@ use futures_util::stream;
 use reqwest::StatusCode;
 use std::sync::Arc;
 
+use crate::models::ConfigKey;
 use crate::proxy::handlers::json_error;
 use crate::proxy::pull_jobs::{PullJob, PullJobStatus};
 use crate::proxy::tama_handlers::types::{max_concurrent_pulls, PullRequest};
@@ -105,13 +106,15 @@ pub async fn handle_tama_pull_model(
 
             // Infer quant from filename for display name lookup
             let quant = crate::models::pull::infer_quant_from_filename(filename);
+            // NOTE: quant-suffixed lookup key can never match `model_configs`
+            // (keyed by bare ConfigKey). Known limitation — tracked separately.
             let display_name = state
                 .model_configs
                 .read()
                 .await
                 .get(&format!(
                     "{}--{}",
-                    repo_id.replace('/', "--"),
+                    ConfigKey::from_repo_id(&repo_id),
                     quant.as_deref().unwrap_or("unknown")
                 ))
                 .and_then(|mc| mc.display_name.clone());
@@ -208,13 +211,15 @@ pub async fn handle_tama_pull_model(
             }
 
             // Enqueue in the DB queue (best-effort — don't fail the pull if enqueue fails)
+            // NOTE: quant-suffixed lookup key can never match `model_configs`
+            // (keyed by bare ConfigKey). Known limitation — tracked separately.
             let display_name = state
                 .model_configs
                 .read()
                 .await
                 .get(&format!(
                     "{}--{}",
-                    repo_id.replace('/', "--"),
+                    ConfigKey::from_repo_id(&repo_id),
                     spec.quant.as_deref().unwrap_or("unknown")
                 ))
                 .and_then(|mc| mc.display_name.clone());
@@ -333,13 +338,15 @@ pub async fn handle_tama_pull_model(
     }
 
     // Enqueue in the DB queue (best-effort — don't fail the pull if enqueue fails)
+    // NOTE: quant-suffixed lookup key can never match `model_configs`
+    // (keyed by bare ConfigKey). Known limitation — tracked separately.
     let display_name = state
         .model_configs
         .read()
         .await
         .get(&format!(
             "{}--{}",
-            repo_id.replace('/', "--"),
+            ConfigKey::from_repo_id(&repo_id),
             quant.clone()
         ))
         .and_then(|mc| mc.display_name.clone());

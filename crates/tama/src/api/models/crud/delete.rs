@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tama_core::proxy::ProxyState;
 
 use crate::api::load_config_from_state;
-use crate::api::models::resolve_model_id;
+use crate::api::models::resolve_db_id;
 use crate::web_types::WebState;
 
 /// DELETE /tama/v1/models/:id/quants/:quant_key — delete a single quant's file
@@ -79,8 +79,8 @@ pub async fn delete_quant(
         model_config.quants.remove(&quant_key);
 
         // Save to DB
-        let config_key = repo_id.to_lowercase().replace('/', "--");
-        repo.save_model_config(&config_key, &model_config)
+        let config_key = tama_core::models::ConfigKey::from_repo_id(&repo_id);
+        repo.save_model_config(config_key.as_str(), &model_config)
             .map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -143,7 +143,7 @@ pub async fn delete_model(
         let repo = repo_handle.lock().unwrap();
 
         // Resolve model_id using Repository
-        let model_id = resolve_model_id(&id_str, &repo)
+        let model_id = resolve_db_id(&id_str, &repo)
             .map_err(|e| {
                 (
                     StatusCode::BAD_REQUEST,
@@ -229,7 +229,8 @@ pub async fn delete_model(
             }
             // 2. Delete model card
             if let Ok(configs_dir) = cfg.configs_dir() {
-                let card_path = configs_dir.join(format!("{}.toml", repo_id.replace('/', "--")));
+                let card_path =
+                    configs_dir.join(format!("{}.toml", tama_core::models::card_slug(&repo_id)));
                 if card_path.exists() {
                     let _ = std::fs::remove_file(&card_path);
                 }

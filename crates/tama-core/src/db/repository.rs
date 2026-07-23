@@ -139,14 +139,14 @@ impl Repository {
     }
 
     /// Load all model configs as a HashMap<config_key, ModelConfigRecord>.
-    /// config_key = repo_id.to_lowercase().replace('/', "--").
+    /// config_key is derived via `crate::models::ConfigKey::from_repo_id`.
     pub fn load_model_configs(
         &self,
     ) -> anyhow::Result<std::collections::HashMap<String, queries::ModelConfigRecord>> {
         let records = queries::get_all_model_configs(&self.conn)?;
         let mut configs = std::collections::HashMap::new();
         for record in records {
-            let config_key = record.repo_id.to_lowercase().replace('/', "--");
+            let config_key = crate::models::ConfigKey::from_repo_id(&record.repo_id).to_string();
             configs.insert(config_key, record);
         }
         Ok(configs)

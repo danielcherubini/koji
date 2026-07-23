@@ -1,3 +1,4 @@
+use crate::models::ConfigKey;
 use crate::proxy::ProxyState;
 
 use super::ModelCapabilities;
@@ -33,7 +34,7 @@ pub fn generate_display_name(hf_repo: &str) -> String {
     format!("{}: {}", capitalize_first(org), model_name_processed)
 }
 
-/// Resolve an incoming `:id` path param to the internal config_key.
+/// Resolve a raw model identifier (db id, repo id, or config key) to a config_key string.
 ///
 /// Accepts three forms (in priority order):
 /// 1. Integer db_id — looked up against `config.db_id` in the in-memory map.
@@ -46,7 +47,7 @@ pub fn generate_display_name(hf_repo: &str) -> String {
 /// by the `COLLATE NOCASE` migration on `model_configs.repo_id`: the in-memory
 /// HashMap is keyed by the lowercased repo_id, so a repo id in any case
 /// resolves to the same bucket.
-pub(super) async fn resolve_model_id(state: &ProxyState, raw: &str) -> String {
+pub(super) async fn resolve_config_key(state: &ProxyState, raw: &str) -> String {
     if let Ok(id) = raw.parse::<i64>() {
         let configs = state.model_configs.read().await;
         if let Some((key, _)) = configs.iter().find(|(_, c)| c.db_id == Some(id)) {
@@ -54,7 +55,7 @@ pub(super) async fn resolve_model_id(state: &ProxyState, raw: &str) -> String {
         }
     }
     if raw.contains('/') {
-        return raw.to_lowercase().replace('/', "--");
+        return ConfigKey::from_repo_id(raw).to_string();
     }
     raw.to_string()
 }

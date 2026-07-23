@@ -448,7 +448,7 @@ pub fn PullQuantWizard(
                                 let model_key = if let Some(id) = mid {
                                     id.to_string()
                                 } else {
-                                    repo.replace('/', "--").to_lowercase()
+                                    crate::utils::config_key_from_repo_id(&repo)
                                 };
 
                                 match put_request(&format!("/tama/v1/models/{}", model_key))

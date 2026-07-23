@@ -297,8 +297,8 @@ mod tests {
             backend: "llama_cpp".to_string(),
             ..Default::default()
         };
-        let config_key = repo_id.to_lowercase().replace('/', "--");
-        let model_id = repo.save_model_config(&config_key, &mc).unwrap();
+        let config_key = crate::models::ConfigKey::from_repo_id(repo_id);
+        let model_id = repo.save_model_config(config_key.as_str(), &mc).unwrap();
 
         // File with correct hash
         write_tmp(tmp.path(), "good.gguf", b"hello");

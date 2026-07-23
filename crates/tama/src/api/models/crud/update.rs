@@ -13,7 +13,7 @@ use super::{
     apply_model_body, apply_model_patch, validate_model_body, validate_model_patch, ModelBody,
     ModelPatchBody,
 };
-use crate::api::models::resolve_model_id;
+use crate::api::models::resolve_db_id;
 use crate::web_types::WebState;
 
 /// PUT /tama/v1/models/:id — update an existing model.
@@ -40,7 +40,7 @@ pub async fn update_model(
         let repo = repo_handle.lock().unwrap();
 
         // Load existing from DB
-        let model_id = resolve_model_id(&id_str, &repo)
+        let model_id = resolve_db_id(&id_str, &repo)
             .map_err(|e| {
                 (
                     StatusCode::BAD_REQUEST,
@@ -72,9 +72,9 @@ pub async fn update_model(
         let updated_config = apply_model_body(body, Some(existing));
 
         // Save to DB (save_model_config converts config_key to repo_id internally)
-        let config_key = existing_record.repo_id.to_lowercase().replace('/', "--");
+        let config_key = tama_core::models::ConfigKey::from_repo_id(&existing_record.repo_id);
         let new_model_id = repo
-            .save_model_config(&config_key, &updated_config)
+            .save_model_config(config_key.as_str(), &updated_config)
             .map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -110,7 +110,7 @@ pub async fn patch_model(
         let repo = repo_handle.lock().unwrap();
 
         // Load existing from DB
-        let model_id = resolve_model_id(&id_str, &repo)
+        let model_id = resolve_db_id(&id_str, &repo)
             .map_err(|e| {
                 (
                     StatusCode::BAD_REQUEST,
@@ -142,9 +142,9 @@ pub async fn patch_model(
         let updated_config = apply_model_patch(body, &existing);
 
         // Save to DB (save_model_config converts config_key to repo_id internally)
-        let config_key = existing_record.repo_id.to_lowercase().replace('/', "--");
+        let config_key = tama_core::models::ConfigKey::from_repo_id(&existing_record.repo_id);
         let new_model_id = repo
-            .save_model_config(&config_key, &updated_config)
+            .save_model_config(config_key.as_str(), &updated_config)
             .map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,

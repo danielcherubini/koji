@@ -49,6 +49,15 @@ pub struct QuantInfo {
     pub context_length: Option<u32>,
 }
 
+/// Filename slug for a model card (`<slug>.toml` in the configs directory).
+///
+/// Deliberately CASE-PRESERVING (unlike `ConfigKey::from_repo_id`): card
+/// files already exist on disk with mixed-case names, and lowercasing the
+/// rule would orphan them. Never "unify" this with the config_key rule.
+pub fn card_slug(repo_id: &str) -> String {
+    repo_id.replace('/', "--")
+}
+
 pub fn load(path: &std::path::Path) -> anyhow::Result<ModelCard> {
     let contents = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read model card at {}", path.display()))?;
@@ -208,5 +217,20 @@ source = "someone/tiny-model-GGUF"
         assert!(card.quants.is_empty());
         assert!(card.sampling.is_empty());
         assert_eq!(card.model.default_context_length, None);
+    }
+
+    #[test]
+    fn test_card_slug_preserves_case() {
+        // Case-preserving: "Owner/Repo-GGUF" → "Owner--Repo-GGUF" (NOT lowercased)
+        let slug = card_slug("Owner/Repo-GGUF");
+        assert_eq!(slug, "Owner--Repo-GGUF");
+        assert_eq!(slug.to_lowercase(), "owner--repo-gguf");
+    }
+
+    #[test]
+    fn test_card_slug_no_slash_unchanged() {
+        // Names without a slash pass through unchanged.
+        let slug = card_slug("local-model");
+        assert_eq!(slug, "local-model");
     }
 }

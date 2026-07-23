@@ -197,14 +197,16 @@ impl ProxyState {
     pub async fn get_model_card(&self, model_name: &str) -> Option<crate::models::card::ModelCard> {
         let configs_dir = self.config.read().await.configs_dir().ok()?;
 
-        // Try to find the model card file
-        // Format: configs/<company>--<model>.toml
-        let (org, name) = model_name.split_once('/').unwrap_or(("", model_name));
-        let card_filename = if org.is_empty() {
-            format!("{}.toml", name)
-        } else {
-            format!("{}--{}.toml", org, name)
-        };
+        // Try to find the model card file.
+        // Format: configs/<slug>.toml — slug is case-preserving (see card_slug).
+        //
+        // `card_slug` (a simple `replace('/', "--")`) is equivalent to the old
+        // `split_once('/').unwrap_or(("", model_name))` logic for well-formed
+        // repo_ids (no leading/trailing slash). The only divergence is the
+        // degenerate case of a leading slash (e.g. "/name"): the old code
+        // dropped it ("name.toml") while `card_slug` preserves it ("--name.toml").
+        // This never occurs with real HF repo_ids.
+        let card_filename = format!("{}.toml", crate::models::card_slug(model_name));
         let card_path = configs_dir.join(card_filename);
 
         let content = tokio::fs::read_to_string(&card_path).await.ok()?;

@@ -27,9 +27,8 @@ fn build_backend_options(
     mgr.available_backends().unwrap_or_default()
 }
 
-/// Resolve a model identifier string to an integer id.
-/// Accepts either an integer id or a config_key (double-dash format).
-pub(crate) fn resolve_model_id(id_str: &str, repo: &Repository) -> anyhow::Result<Option<i64>> {
+/// Resolve a model identifier string (integer DB id or config_key) to the integer DB id.
+pub(crate) fn resolve_db_id(id_str: &str, repo: &Repository) -> anyhow::Result<Option<i64>> {
     // Try parsing as integer id first
     if let Ok(id) = id_str.parse::<i64>() {
         return Ok(Some(id));
@@ -227,7 +226,7 @@ pub async fn get_model(
             let result = tokio::task::spawn_blocking(move || {
                 let repo = repo.lock().unwrap();
                 // Resolve id (integer or config_key) to model_id
-                let model_id = match resolve_model_id(&id_str_clone, &repo) {
+                let model_id = match resolve_db_id(&id_str_clone, &repo) {
                     Ok(Some(id)) => id,
                     Ok(None) => return Err(StatusCode::NOT_FOUND),
                     Err(_) => return Err(StatusCode::BAD_REQUEST),

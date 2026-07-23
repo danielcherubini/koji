@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tama_core::proxy::ProxyState;
 
 use super::is_valid_repo_id;
-use crate::api::models::resolve_model_id;
+use crate::api::models::resolve_db_id;
 use crate::web_types::WebState;
 
 /// Body for rename endpoint.
@@ -38,7 +38,7 @@ pub async fn rename_model(
         let repo = repo_handle.lock().unwrap();
 
         // Check source ID exists
-        let model_id = resolve_model_id(&id_str, &repo)
+        let model_id = resolve_db_id(&id_str, &repo)
             .map_err(|e| {
                 (StatusCode::BAD_REQUEST, error_body(e.to_string(), Some("ValidationError")))
             })?
@@ -96,9 +96,9 @@ pub async fn rename_model(
         model_config.model = Some(new_repo_id.clone());
 
         // Save with new repo_id (keeps same integer id)
-        let config_key = new_repo_id.to_lowercase().replace('/', "--");
+        let config_key = tama_core::models::ConfigKey::from_repo_id(&new_repo_id);
         let _ = repo
-            .save_model_config(&config_key, &model_config)
+            .save_model_config(config_key.as_str(), &model_config)
             .map_err(|e| {
                 (StatusCode::INTERNAL_SERVER_ERROR, error_body(e.to_string(), None))
             })?;
