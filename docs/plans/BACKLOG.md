@@ -10,8 +10,7 @@ See [execution-order.md](execution-order.md) for the full dependency-first casca
 
 | Phase | Plans | Description |
 |-------|-------|-------------|
-| 1 | plan-160 | DB Access Consolidation — gates everything downstream |
-| 2 | plan-161, 162, 163 | Error Contract, Model Identity, Backup Restore |
+| 1 | plan-161, 162, 163 | Error Contract, Model Identity, Backup Restore |
 | 3 (parallel) | plan-164, 165, 166 | OAuth tests, forward_request tests, pull handler tests |
 | 4 (parallel) | plan-167, 168, 169 | Cleanup, API boilerplate, router consolidation |
 | 5 (parallel) | plan-170, 171 | Newtypes, DB query from_row pattern |
@@ -23,7 +22,6 @@ See [execution-order.md](execution-order.md) for the full dependency-first casca
 
 | Plan | Description | Findings |
 |------|-------------|----------|
-| [DB Access Consolidation](plan-160-db-access-consolidation.md) | Repository as single API-layer access point, absorb manager writes, delete DTO/Record duplication, shared Repository in state, pub(crate) the rusqlite leaks, amend ADR-0017 | F1, F2 |
 | [Error Contract Unification](plan-161-error-contract.md) | Migrate ~55 flat error sites to structured shape, shared tama-core error helper, fix OpenAPI ErrorResponse schema, shape-assertion tests | F4 |
 | [Model Identity ConfigKey](plan-162-model-identity-configkey.md) | ConfigKey newtype as single derivation site, replace 15 open-coded sites, rename dual resolve_model_id fns | F5 |
 | [Backup Restore](plan-163-backup-restore.md) | Implement restore for real (extract→validate→merge with job events), route create_backup, fix docs/api/backup.md | F6 |
