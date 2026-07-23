@@ -1,5 +1,6 @@
 use super::pull::_setup_model_after_pull_with_config;
 use super::types::QuantEntry;
+use crate::models::ConfigKey;
 use crate::proxy::pull_jobs::{PullJob, PullJobStatus};
 
 /// Verifies that `setup_model_after_pull` creates a model card and config entry.
@@ -108,7 +109,7 @@ async fn test_mmproj_pull_auto_enables_vision_on_parent() {
     )
     .await;
 
-    let key = repo_id.replace('/', "--").to_lowercase();
+    let key = ConfigKey::from_repo_id(repo_id).to_string();
     assert!(models[&key].mmproj.is_none(), "mmproj should start unset");
 
     // Pull 2: mmproj sibling.
@@ -182,7 +183,7 @@ async fn test_mmproj_pull_before_parent_creates_stub_then_promotes() {
     )
     .await;
 
-    let key = repo_id.replace('/', "--").to_lowercase();
+    let key = ConfigKey::from_repo_id(repo_id).to_string();
     let stub = &models[&key];
     assert_eq!(stub.quant, None, "stub should start without quant");
     assert!(!stub.enabled, "stub should start disabled");

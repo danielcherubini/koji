@@ -1,3 +1,4 @@
+use crate::models::ConfigKey;
 use crate::proxy::ProxyState;
 
 use super::ModelCapabilities;
@@ -54,7 +55,7 @@ pub(super) async fn resolve_model_id(state: &ProxyState, raw: &str) -> String {
         }
     }
     if raw.contains('/') {
-        return raw.to_lowercase().replace('/', "--");
+        return ConfigKey::from_repo_id(raw).to_string();
     }
     raw.to_string()
 }

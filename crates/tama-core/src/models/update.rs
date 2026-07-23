@@ -268,8 +268,8 @@ pub async fn refresh_metadata(conn: &Connection, models_dir: &Path, repo_id: &st
                 backend: "llama_cpp".to_string(),
                 ..Default::default()
             };
-            let config_key = repo_id.to_lowercase().replace('/', "--");
-            let model_id = crate::db::save_model_config(conn, &config_key, &mc)?;
+            let config_key = crate::models::ConfigKey::from_repo_id(repo_id);
+            let model_id = crate::db::save_model_config(conn, config_key.as_str(), &mc)?;
             crate::db::queries::get_model_config(conn, model_id)?
                 .expect("just-created model config should exist")
         }

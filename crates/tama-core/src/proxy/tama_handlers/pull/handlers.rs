@@ -7,6 +7,7 @@ use futures_util::stream;
 use reqwest::StatusCode;
 use std::sync::Arc;
 
+use crate::models::ConfigKey;
 use crate::proxy::handlers::json_error;
 use crate::proxy::pull_jobs::{PullJob, PullJobStatus};
 use crate::proxy::tama_handlers::types::{max_concurrent_pulls, PullRequest};
@@ -111,7 +112,7 @@ pub async fn handle_tama_pull_model(
                 .await
                 .get(&format!(
                     "{}--{}",
-                    repo_id.replace('/', "--"),
+                    ConfigKey::from_repo_id(&repo_id),
                     quant.as_deref().unwrap_or("unknown")
                 ))
                 .and_then(|mc| mc.display_name.clone());
@@ -214,7 +215,7 @@ pub async fn handle_tama_pull_model(
                 .await
                 .get(&format!(
                     "{}--{}",
-                    repo_id.replace('/', "--"),
+                    ConfigKey::from_repo_id(&repo_id),
                     spec.quant.as_deref().unwrap_or("unknown")
                 ))
                 .and_then(|mc| mc.display_name.clone());
@@ -339,7 +340,7 @@ pub async fn handle_tama_pull_model(
         .await
         .get(&format!(
             "{}--{}",
-            repo_id.replace('/', "--"),
+            ConfigKey::from_repo_id(&repo_id),
             quant.clone()
         ))
         .and_then(|mc| mc.display_name.clone());

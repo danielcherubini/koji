@@ -23,7 +23,7 @@ pub struct OpenResult {
 }
 
 /// Load all model_configs rows and return them as a HashMap<config_key, ModelConfig>
-/// where config_key = repo_id.to_lowercase().replace('/', "--").
+/// where config_key is derived via `crate::models::ConfigKey::from_repo_id`.
 ///
 /// NOTE: this is only used internally by the proxy to build its in-memory registry.
 /// All external API lookups should use the integer `id` column directly.
@@ -32,7 +32,7 @@ pub fn load_model_configs(conn: &Connection) -> anyhow::Result<HashMap<String, M
     let mut configs = HashMap::new();
 
     for record in records {
-        let config_key = record.repo_id.to_lowercase().replace('/', "--");
+        let config_key = crate::models::ConfigKey::from_repo_id(&record.repo_id).to_string();
         let mut config = ModelConfig::from_db_record(&record);
         config.db_id = Some(record.id);
 
