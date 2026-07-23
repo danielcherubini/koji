@@ -7,6 +7,7 @@ use futures_util::stream;
 use reqwest::StatusCode;
 use std::sync::Arc;
 
+use crate::proxy::handlers::json_error;
 use crate::proxy::pull_jobs::{PullJob, PullJobStatus};
 use crate::proxy::tama_handlers::types::{max_concurrent_pulls, PullRequest};
 use crate::proxy::ProxyState;
@@ -37,29 +38,22 @@ pub async fn handle_tama_pull_model(
 
         let max_pulls = max_concurrent_pulls();
         if all_files.len() > max_pulls {
-            return (
+            return json_error(
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": format!("Too many files requested. Maximum is {}.", max_pulls)
-                })),
-            )
-                .into_response();
+                format!("Too many files requested. Maximum is {}.", max_pulls),
+                Some("ValidationError"),
+            );
         }
 
         // Fetch the HF listing once and validate every requested filename against it.
         let listing = match crate::models::pull::list_gguf_files(&repo_id).await {
             Ok(l) => l,
             Err(e) => {
-                return (
+                return json_error(
                     StatusCode::BAD_GATEWAY,
-                    Json(serde_json::json!({
-                        "error": {
-                            "message": format!("Failed to fetch file list from HuggingFace: {}", e),
-                            "type": "UpstreamError"
-                        }
-                    })),
-                )
-                    .into_response();
+                    format!("Failed to fetch file list from HuggingFace: {}", e),
+                    Some("UpstreamError"),
+                );
             }
         };
         let allowed_filenames: std::collections::HashSet<&str> =
@@ -67,19 +61,14 @@ pub async fn handle_tama_pull_model(
 
         for filename in &all_files {
             if !allowed_filenames.contains(filename.as_str()) {
-                return (
+                return json_error(
                     StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({
-                        "error": {
-                            "message": format!(
-                                "Filename '{}' is not a valid GGUF file for repo '{}'",
-                                filename, repo_id
-                            ),
-                            "type": "ValidationError"
-                        }
-                    })),
-                )
-                    .into_response();
+                    format!(
+                        "Filename '{}' is not a valid GGUF file for repo '{}'",
+                        filename, repo_id
+                    ),
+                    Some("ValidationError"),
+                );
             }
         }
 
@@ -88,19 +77,11 @@ pub async fn handle_tama_pull_model(
             let mut seen = std::collections::HashSet::new();
             for filename in &all_files {
                 if !seen.insert(filename.as_str()) {
-                    return (
+                    return json_error(
                         StatusCode::BAD_REQUEST,
-                        Json(serde_json::json!({
-                            "error": {
-                                "message": format!(
-                                    "Duplicate filename '{}' in request",
-                                    filename
-                                ),
-                                "type": "ValidationError"
-                            }
-                        })),
-                    )
-                        .into_response();
+                        format!("Duplicate filename '{}' in request", filename),
+                        Some("ValidationError"),
+                    );
                 }
             }
         }
@@ -160,29 +141,22 @@ pub async fn handle_tama_pull_model(
     if !request.quants.is_empty() {
         let max_pulls = max_concurrent_pulls();
         if request.quants.len() > max_pulls {
-            return (
+            return json_error(
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": format!("Too many quants requested. Maximum is {}.", max_pulls)
-                })),
-            )
-                .into_response();
+                format!("Too many quants requested. Maximum is {}.", max_pulls),
+                Some("ValidationError"),
+            );
         }
 
         // Fetch the HF listing once and validate every requested filename against it.
         let listing = match crate::models::pull::list_gguf_files(&repo_id).await {
             Ok(l) => l,
             Err(e) => {
-                return (
+                return json_error(
                     StatusCode::BAD_GATEWAY,
-                    Json(serde_json::json!({
-                        "error": {
-                            "message": format!("Failed to fetch file list from HuggingFace: {}", e),
-                            "type": "UpstreamError"
-                        }
-                    })),
-                )
-                    .into_response();
+                    format!("Failed to fetch file list from HuggingFace: {}", e),
+                    Some("UpstreamError"),
+                );
             }
         };
         let allowed_filenames: std::collections::HashSet<&str> =
@@ -190,19 +164,14 @@ pub async fn handle_tama_pull_model(
 
         for spec in &request.quants {
             if !allowed_filenames.contains(spec.filename.as_str()) {
-                return (
+                return json_error(
                     StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({
-                        "error": {
-                            "message": format!(
-                                "Filename '{}' is not a valid GGUF file for repo '{}'",
-                                spec.filename, repo_id
-                            ),
-                            "type": "ValidationError"
-                        }
-                    })),
-                )
-                    .into_response();
+                    format!(
+                        "Filename '{}' is not a valid GGUF file for repo '{}'",
+                        spec.filename, repo_id
+                    ),
+                    Some("ValidationError"),
+                );
             }
         }
 
@@ -212,19 +181,11 @@ pub async fn handle_tama_pull_model(
             let mut seen = std::collections::HashSet::new();
             for spec in &request.quants {
                 if !seen.insert(&spec.filename) {
-                    return (
+                    return json_error(
                         StatusCode::BAD_REQUEST,
-                        Json(serde_json::json!({
-                            "error": {
-                                "message": format!(
-                                    "Duplicate filename '{}' in request",
-                                    spec.filename
-                                ),
-                                "type": "ValidationError"
-                            }
-                        })),
-                    )
-                        .into_response();
+                        format!("Duplicate filename '{}' in request", spec.filename),
+                        Some("ValidationError"),
+                    );
                 }
             }
         }
@@ -318,16 +279,11 @@ pub async fn handle_tama_pull_model(
     let listing = match crate::models::pull::list_gguf_files(&repo_id).await {
         Ok(l) => l,
         Err(e) => {
-            return (
+            return json_error(
                 StatusCode::BAD_GATEWAY,
-                Json(serde_json::json!({
-                    "error": {
-                        "message": format!("Failed to fetch file list from HuggingFace: {}", e),
-                        "type": "UpstreamError"
-                    }
-                })),
-            )
-                .into_response();
+                format!("Failed to fetch file list from HuggingFace: {}", e),
+                Some("UpstreamError"),
+            );
         }
     };
 
@@ -454,16 +410,11 @@ pub async fn handle_tama_get_pull_job(
         }
         None => {
             tracing::warn!(job_id = %job_id, "GET pull job - not found in map");
-            (
+            json_error(
                 StatusCode::NOT_FOUND,
-                Json(serde_json::json!({
-                    "error": {
-                        "message": "Pull job not found",
-                        "type": "NotFoundError"
-                    }
-                })),
+                "Pull job not found",
+                Some("NotFoundError"),
             )
-                .into_response()
         }
     }
 }

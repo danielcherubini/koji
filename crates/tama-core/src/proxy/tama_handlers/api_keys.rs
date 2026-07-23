@@ -2,7 +2,7 @@
 //!
 //! Provides CRUD endpoints for managing API keys under `/tama/v1/keys`.
 
-use axum::response::{IntoResponse, Response};
+use axum::response::IntoResponse;
 use axum::{
     extract::{Extension, Path, State},
     http::StatusCode,
@@ -13,6 +13,7 @@ use std::sync::Arc;
 use tracing::{info, warn};
 
 use crate::proxy::api_keys::{self, ApiKeyStore, AuthSubject, Scope};
+use crate::proxy::handlers::json_error;
 use crate::proxy::ProxyState;
 
 // ---------------------------------------------------------------------------
@@ -61,20 +62,6 @@ pub struct ListApiKeyResponse {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Build a JSON error response.
-fn json_error(status: StatusCode, error: &str, message: &str) -> Response {
-    let body = serde_json::json!({
-        "error": error,
-        "message": message,
-    })
-    .to_string();
-    Response::builder()
-        .status(status)
-        .header("Content-Type", "application/json")
-        .body(axum::body::Body::from(body))
-        .expect("build error response")
-}
 
 /// Get the `created_by` string from an `AuthSubject`.
 /// For API key subjects this is `key:{id}` (stable identifier).
@@ -129,8 +116,8 @@ pub async fn handle_tama_api_keys_create(
     if body.scopes.is_empty() {
         return json_error(
             StatusCode::BAD_REQUEST,
-            "invalid_request",
             "scopes must not be empty",
+            Some("ValidationError"),
         );
     }
 
@@ -144,8 +131,8 @@ pub async fn handle_tama_api_keys_create(
         if !scopes_are_subset(&body.scopes, caller_scopes) {
             return json_error(
                 StatusCode::FORBIDDEN,
-                "forbidden",
                 "cannot grant scopes you do not have",
+                Some("ForbiddenError"),
             );
         }
     }
@@ -155,8 +142,8 @@ pub async fn handle_tama_api_keys_create(
         if chrono::DateTime::parse_from_rfc3339(expires_at).is_err() {
             return json_error(
                 StatusCode::BAD_REQUEST,
-                "invalid_request",
                 "expires_at must be a valid RFC 3339 timestamp",
+                Some("ValidationError"),
             );
         }
     }
@@ -191,16 +178,16 @@ pub async fn handle_tama_api_keys_create(
             warn!(error = %e, "failed to create API key");
             return json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "internal_error",
                 "failed to create API key",
+                None,
             );
         }
         Err(e) => {
             warn!(error = %e, "spawn_blocking panicked creating API key");
             return json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "internal_error",
                 "failed to create API key",
+                None,
             );
         }
     };
@@ -252,16 +239,16 @@ pub async fn handle_tama_api_keys_list(State(state): State<Arc<ProxyState>>) -> 
             warn!(error = %e, "failed to list API keys");
             return json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "internal_error",
                 "failed to list API keys",
+                None,
             );
         }
         Err(e) => {
             warn!(error = %e, "spawn_blocking panicked listing API keys");
             return json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "internal_error",
                 "failed to list API keys",
+                None,
             );
         }
     };
@@ -299,8 +286,8 @@ pub async fn handle_tama_api_keys_update(
         Err(_) => {
             return json_error(
                 StatusCode::BAD_REQUEST,
-                "invalid_request",
                 "invalid key ID format",
+                Some("ValidationError"),
             );
         }
     };
@@ -309,8 +296,8 @@ pub async fn handle_tama_api_keys_update(
     if body.scopes.is_empty() {
         return json_error(
             StatusCode::BAD_REQUEST,
-            "invalid_request",
             "scopes must not be empty",
+            Some("ValidationError"),
         );
     }
 
@@ -323,8 +310,8 @@ pub async fn handle_tama_api_keys_update(
         if !scopes_are_subset(&body.scopes, caller_scopes) {
             return json_error(
                 StatusCode::FORBIDDEN,
-                "forbidden",
                 "cannot grant scopes you do not have",
+                Some("ForbiddenError"),
             );
         }
     }
@@ -340,26 +327,34 @@ pub async fn handle_tama_api_keys_update(
     match key_exists {
         Ok(Ok(Some(record))) => {
             if record.revoked_at.is_some() {
-                return json_error(StatusCode::NOT_FOUND, "not_found", "key not found");
+                return json_error(
+                    StatusCode::NOT_FOUND,
+                    "key not found",
+                    Some("NotFoundError"),
+                );
             }
         }
         Ok(Ok(None)) => {
-            return json_error(StatusCode::NOT_FOUND, "not_found", "key not found");
+            return json_error(
+                StatusCode::NOT_FOUND,
+                "key not found",
+                Some("NotFoundError"),
+            );
         }
         Ok(Err(e)) => {
             warn!(error = %e, "failed to get API key");
             return json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "internal_error",
                 "failed to get API key",
+                None,
             );
         }
         Err(e) => {
             warn!(error = %e, "spawn_blocking panicked getting API key");
             return json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "internal_error",
                 "failed to get API key",
+                None,
             );
         }
     }
@@ -393,16 +388,16 @@ pub async fn handle_tama_api_keys_update(
             warn!(error = %e, "failed to update API key scopes");
             json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "internal_error",
                 "failed to update API key scopes",
+                None,
             )
         }
         Err(e) => {
             warn!(error = %e, "spawn_blocking panicked updating API key scopes");
             json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "internal_error",
                 "failed to update API key scopes",
+                None,
             )
         }
     }
@@ -421,8 +416,8 @@ pub async fn handle_tama_api_keys_revoke(
         Err(_) => {
             return json_error(
                 StatusCode::BAD_REQUEST,
-                "invalid_request",
                 "invalid key ID format",
+                Some("ValidationError"),
             );
         }
     };
@@ -443,22 +438,26 @@ pub async fn handle_tama_api_keys_revoke(
             }
         }
         Ok(Ok(None)) => {
-            return json_error(StatusCode::NOT_FOUND, "not_found", "key not found");
+            return json_error(
+                StatusCode::NOT_FOUND,
+                "key not found",
+                Some("NotFoundError"),
+            );
         }
         Ok(Err(e)) => {
             warn!(error = %e, "failed to get API key");
             return json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "internal_error",
                 "failed to get API key",
+                None,
             );
         }
         Err(e) => {
             warn!(error = %e, "spawn_blocking panicked getting API key");
             return json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "internal_error",
                 "failed to get API key",
+                None,
             );
         }
     }
@@ -482,16 +481,16 @@ pub async fn handle_tama_api_keys_revoke(
             warn!(error = %e, "failed to revoke API key");
             json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "internal_error",
                 "failed to revoke API key",
+                None,
             )
         }
         Err(e) => {
             warn!(error = %e, "spawn_blocking panicked revoking API key");
             json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "internal_error",
                 "failed to revoke API key",
+                None,
             )
         }
     }
@@ -799,8 +798,8 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        assert_eq!(body["error"], "invalid_request");
-        assert_eq!(body["message"], "scopes must not be empty");
+        assert_eq!(body["error"]["type"], "ValidationError");
+        assert_eq!(body["error"]["message"], "scopes must not be empty");
     }
 
     /// Test: DELETE /tama/v1/keys/:id revokes key, returns 204.
@@ -880,7 +879,8 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        assert_eq!(body["error"], "not_found");
+        assert_eq!(body["error"]["type"], "NotFoundError");
+        assert_eq!(body["error"]["message"], "key not found");
     }
 
     /// Test: POST with empty scopes returns 400.
@@ -917,8 +917,8 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        assert_eq!(body["error"], "invalid_request");
-        assert_eq!(body["message"], "scopes must not be empty");
+        assert_eq!(body["error"]["type"], "ValidationError");
+        assert_eq!(body["error"]["message"], "scopes must not be empty");
     }
 
     /// Test: Full CRUD flow — create → list → update → validate scopes → revoke → validate fails.

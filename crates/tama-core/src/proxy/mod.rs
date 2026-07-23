@@ -20,7 +20,6 @@ pub use handlers::chat::{handle_chat_completions, handle_stream_chat_completions
 pub use handlers::forward::{
     forward_to_backend, handle_fallback, handle_forward_get, handle_forward_post,
 };
-pub use handlers::json_error_response;
 pub use handlers::models::{
     fetch_models_from_backend, handle_get_model, handle_list_models, parse_models_response,
 };
@@ -28,6 +27,7 @@ pub use handlers::status::{handle_health, handle_metrics, handle_reload_configs,
 pub use handlers::tts::{
     handle_audio_models, handle_audio_speech, handle_audio_stream, handle_audio_voices,
 };
+pub use handlers::{json_error, json_error_response};
 pub use process::{check_health, force_kill_process, is_process_alive, kill_process, override_arg};
 pub use server::ProxyServer;
 pub use types::{BackendState, ProxyMetrics, ProxyState};

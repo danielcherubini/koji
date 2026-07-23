@@ -15,6 +15,7 @@ use serde::Deserialize;
 use std::sync::Arc;
 
 use super::helpers::get_backend_url;
+use super::json_error;
 
 /// Request body for speech synthesis.
 #[derive(Debug, Deserialize)]
@@ -94,27 +95,13 @@ pub async fn handle_audio_voices(State(state): State<Arc<ProxyState>>) -> impl I
                 || err_msg.contains("config directory")
                 || err_msg.contains("backend registry")
             {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(serde_json::json!({
-                        "error": {
-                            "message": err_msg,
-                            "type": "NotFoundError"
-                        }
-                    })),
-                )
-                    .into_response();
+                return json_error(StatusCode::NOT_FOUND, err_msg, Some("NotFoundError"));
             }
-            return (
+            return json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "error": {
-                        "message": format!("Failed to load TTS backend: {}", e),
-                        "type": "ServerError"
-                    }
-                })),
-            )
-                .into_response();
+                format!("Failed to load TTS backend: {}", e),
+                Some("ServerError"),
+            );
         }
     };
 
@@ -124,43 +111,28 @@ pub async fn handle_audio_voices(State(state): State<Arc<ProxyState>>) -> impl I
             let body = match response.text().await {
                 Ok(text) => text,
                 Err(e) => {
-                    return (
+                    return json_error(
                         StatusCode::BAD_GATEWAY,
-                        Json(serde_json::json!({
-                            "error": {
-                                "message": format!("Failed to read backend response: {}", e),
-                                "type": "ServerError"
-                            }
-                        })),
-                    )
-                        .into_response();
+                        format!("Failed to read backend response: {}", e),
+                        Some("ServerError"),
+                    );
                 }
             };
 
             match serde_json::from_str::<serde_json::Value>(&body) {
                 Ok(parsed) => Json(parsed).into_response(),
-                Err(e) => (
+                Err(e) => json_error(
                     StatusCode::BAD_GATEWAY,
-                    Json(serde_json::json!({
-                        "error": {
-                            "message": format!("Backend returned invalid JSON: {}", e),
-                            "type": "ServerError"
-                        }
-                    })),
-                )
-                    .into_response(),
+                    format!("Backend returned invalid JSON: {}", e),
+                    Some("ServerError"),
+                ),
             }
         }
-        Err(e) => (
+        Err(e) => json_error(
             StatusCode::BAD_GATEWAY,
-            Json(serde_json::json!({
-                "error": {
-                    "message": format!("Failed to reach TTS backend: {}", e),
-                    "type": "ServerError"
-                }
-            })),
-        )
-            .into_response(),
+            format!("Failed to reach TTS backend: {}", e),
+            Some("ServerError"),
+        ),
     }
 }
 
@@ -175,27 +147,13 @@ pub async fn handle_audio_models(State(state): State<Arc<ProxyState>>) -> impl I
                 || err_msg.contains("config directory")
                 || err_msg.contains("backend registry")
             {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(serde_json::json!({
-                        "error": {
-                            "message": err_msg,
-                            "type": "NotFoundError"
-                        }
-                    })),
-                )
-                    .into_response();
+                return json_error(StatusCode::NOT_FOUND, err_msg, Some("NotFoundError"));
             }
-            return (
+            return json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "error": {
-                        "message": format!("Failed to load TTS backend: {}", e),
-                        "type": "ServerError"
-                    }
-                })),
-            )
-                .into_response();
+                format!("Failed to load TTS backend: {}", e),
+                Some("ServerError"),
+            );
         }
     };
 
@@ -206,43 +164,28 @@ pub async fn handle_audio_models(State(state): State<Arc<ProxyState>>) -> impl I
             let body = match response.text().await {
                 Ok(text) => text,
                 Err(e) => {
-                    return (
+                    return json_error(
                         StatusCode::BAD_GATEWAY,
-                        Json(serde_json::json!({
-                            "error": {
-                                "message": format!("Failed to read backend response: {}", e),
-                                "type": "ServerError"
-                            }
-                        })),
-                    )
-                        .into_response();
+                        format!("Failed to read backend response: {}", e),
+                        Some("ServerError"),
+                    );
                 }
             };
 
             match serde_json::from_str::<serde_json::Value>(&body) {
                 Ok(parsed) => Json(parsed).into_response(),
-                Err(e) => (
+                Err(e) => json_error(
                     StatusCode::BAD_GATEWAY,
-                    Json(serde_json::json!({
-                        "error": {
-                            "message": format!("Backend returned invalid JSON: {}", e),
-                            "type": "ServerError"
-                        }
-                    })),
-                )
-                    .into_response(),
+                    format!("Backend returned invalid JSON: {}", e),
+                    Some("ServerError"),
+                ),
             }
         }
-        Err(e) => (
+        Err(e) => json_error(
             StatusCode::BAD_GATEWAY,
-            Json(serde_json::json!({
-                "error": {
-                    "message": format!("Failed to reach TTS backend: {}", e),
-                    "type": "ServerError"
-                }
-            })),
-        )
-            .into_response(),
+            format!("Failed to reach TTS backend: {}", e),
+            Some("ServerError"),
+        ),
     }
 }
 
@@ -259,27 +202,13 @@ pub async fn handle_audio_speech(
                 || err_msg.contains("config directory")
                 || err_msg.contains("backend registry")
             {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(serde_json::json!({
-                        "error": {
-                            "message": err_msg,
-                            "type": "NotFoundError"
-                        }
-                    })),
-                )
-                    .into_response();
+                return json_error(StatusCode::NOT_FOUND, err_msg, Some("NotFoundError"));
             }
-            return (
+            return json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "error": {
-                        "message": format!("Failed to load TTS backend: {}", e),
-                        "type": "ServerError"
-                    }
-                })),
-            )
-                .into_response();
+                format!("Failed to load TTS backend: {}", e),
+                Some("ServerError"),
+            );
         }
     };
 
@@ -303,16 +232,11 @@ pub async fn handle_audio_speech(
             let bytes = match response.bytes().await {
                 Ok(b) => b,
                 Err(e) => {
-                    return (
+                    return json_error(
                         StatusCode::BAD_GATEWAY,
-                        Json(serde_json::json!({
-                            "error": {
-                                "message": format!("Failed to read backend response: {}", e),
-                                "type": "ServerError"
-                            }
-                        })),
-                    )
-                        .into_response();
+                        format!("Failed to read backend response: {}", e),
+                        Some("ServerError"),
+                    );
                 }
             };
             Response::builder()
@@ -323,16 +247,11 @@ pub async fn handle_audio_speech(
                     (StatusCode::INTERNAL_SERVER_ERROR, "Internal error").into_response()
                 })
         }
-        Err(e) => (
+        Err(e) => json_error(
             StatusCode::BAD_GATEWAY,
-            Json(serde_json::json!({
-                "error": {
-                    "message": format!("Failed to reach TTS backend: {}", e),
-                    "type": "ServerError"
-                }
-            })),
-        )
-            .into_response(),
+            format!("Failed to reach TTS backend: {}", e),
+            Some("ServerError"),
+        ),
     }
 }
 
@@ -349,27 +268,13 @@ pub async fn handle_audio_stream(
                 || err_msg.contains("config directory")
                 || err_msg.contains("backend registry")
             {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(serde_json::json!({
-                        "error": {
-                            "message": err_msg,
-                            "type": "NotFoundError"
-                        }
-                    })),
-                )
-                    .into_response();
+                return json_error(StatusCode::NOT_FOUND, err_msg, Some("NotFoundError"));
             }
-            return (
+            return json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "error": {
-                        "message": format!("Failed to load TTS backend: {}", e),
-                        "type": "ServerError"
-                    }
-                })),
-            )
-                .into_response();
+                format!("Failed to load TTS backend: {}", e),
+                Some("ServerError"),
+            );
         }
     };
 
@@ -400,16 +305,11 @@ pub async fn handle_audio_stream(
                     (StatusCode::INTERNAL_SERVER_ERROR, "Internal error").into_response()
                 })
         }
-        Err(e) => (
+        Err(e) => json_error(
             StatusCode::BAD_GATEWAY,
-            Json(serde_json::json!({
-                "error": {
-                    "message": format!("Failed to reach TTS backend: {}", e),
-                    "type": "ServerError"
-                }
-            })),
-        )
-            .into_response(),
+            format!("Failed to reach TTS backend: {}", e),
+            Some("ServerError"),
+        ),
     }
 }
 
