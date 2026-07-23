@@ -106,6 +106,8 @@ pub async fn handle_tama_pull_model(
 
             // Infer quant from filename for display name lookup
             let quant = crate::models::pull::infer_quant_from_filename(filename);
+            // NOTE: quant-suffixed lookup key can never match `model_configs`
+            // (keyed by bare ConfigKey). Known limitation — tracked separately.
             let display_name = state
                 .model_configs
                 .read()
@@ -209,6 +211,8 @@ pub async fn handle_tama_pull_model(
             }
 
             // Enqueue in the DB queue (best-effort — don't fail the pull if enqueue fails)
+            // NOTE: quant-suffixed lookup key can never match `model_configs`
+            // (keyed by bare ConfigKey). Known limitation — tracked separately.
             let display_name = state
                 .model_configs
                 .read()
@@ -334,6 +338,8 @@ pub async fn handle_tama_pull_model(
     }
 
     // Enqueue in the DB queue (best-effort — don't fail the pull if enqueue fails)
+    // NOTE: quant-suffixed lookup key can never match `model_configs`
+    // (keyed by bare ConfigKey). Known limitation — tracked separately.
     let display_name = state
         .model_configs
         .read()

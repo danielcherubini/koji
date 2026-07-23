@@ -122,6 +122,27 @@ mod tests {
         assert_eq!(key.to_repo_id(), "owner/repo");
     }
 
+    /// Known limitation: `to_repo_id` splits on the FIRST `--` only.
+    ///
+    /// For a repo_id like `"my--org/repo"` (where the org itself contains a
+    /// double-dash), `from_repo_id` produces `"my--org--repo"`. Splitting on
+    /// the first `--` yields `"my"` + `"org--repo"`, so `to_repo_id`
+    /// incorrectly returns `"my/org--repo"` instead of `"my--org/repo"`.
+    ///
+    /// This is pre-existing behavior — repo_ids with `--` in the org segment
+    /// are not supported by the inverse mapping. Documented here for future
+    /// reference.
+    #[test]
+    fn test_to_repo_id_known_limitation_double_dash_in_org() {
+        // from_repo_id lowercases and replaces '/' with '--'.
+        let key = ConfigKey::from_repo_id("my--org/repo");
+        assert_eq!(key.as_str(), "my--org--repo");
+
+        // to_repo_id splits on the FIRST '--' only, so the second '--' (from
+        // the slash) is left in the suffix — producing an incorrect result.
+        assert_eq!(key.to_repo_id(), "my/org--repo");
+    }
+
     #[test]
     fn test_new_and_from_str_wrap_verbatim() {
         // `new` wraps VERBATIM — no transformation.

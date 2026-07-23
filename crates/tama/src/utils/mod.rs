@@ -167,6 +167,36 @@ mod tests {
 
     use super::rw_signal_to_signal;
 
+    /// Drift detection: assert the WASM mirror function stays in lockstep
+    /// with the canonical `ConfigKey::from_repo_id` newtype.
+    ///
+    /// The `tama` crate only links `tama-core` under the `ssr` feature, so Leptos
+    /// components compiled to WASM use the mirror `config_key_from_repo_id`.
+    /// This test guards against the two implementations diverging.
+    #[cfg(feature = "ssr")]
+    #[test]
+    fn test_mirror_matches_config_key_newtype() {
+        let cases = [
+            "Unsloth/Gemma-4-26B-A4B-IT-GGUF",
+            "owner/repo",
+            "Org/Repo-Sub",
+            "org/repo-sub",
+            "Local-Model",
+            "a/b",
+            "my--org/repo",
+            "user/deep-quest-v1",
+        ];
+        for repo_id in cases {
+            let mirror = super::config_key_from_repo_id(repo_id);
+            let canonical = tama_core::models::ConfigKey::from_repo_id(repo_id);
+            assert_eq!(
+                mirror,
+                canonical.as_str(),
+                "config_key mirror diverged from ConfigKey newtype for repo_id: {repo_id}",
+            );
+        }
+    }
+
     #[test]
     fn test_config_key_from_repo_id_mirror_matches_config_key() {
         // WASM-safe mirror of tama_core::models::ConfigKey::from_repo_id.
