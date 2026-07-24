@@ -148,7 +148,7 @@ pub async fn start_pull_from_queue(
             let mut jobs = pull_jobs_arc.write().await;
             if let Some(job) = jobs.get_mut(&job_id_clone) {
                 job.status = crate::proxy::pull_jobs::PullJobStatus::Failed;
-                job.error = Some(format!("Failed to create dest subdir: {}", e));
+                job.error = Some(format!("Failed to create destination subdirectory: {}", e));
             }
             drop(jobs);
             if let Some(ref svc) = state_clone.pull_queue {
@@ -157,7 +157,7 @@ pub async fn start_pull_from_queue(
                     "failed",
                     0,
                     None,
-                    Some(&format!("Failed to create dest subdir: {}", e)),
+                    Some(&format!("Failed to create destination subdirectory: {}", e)),
                     None,
                 );
             }

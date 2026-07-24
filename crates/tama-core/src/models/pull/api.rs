@@ -92,6 +92,16 @@ pub async fn list_gguf_files(repo_id: &str) -> Result<RepoGgufListing> {
     )
 }
 
+/// Extract the directory prefix from a sharded filename (everything before
+/// the last `/`). Returns `None` for single-file filenames that contain no `/`.
+///
+/// Used by both `group_sharded_quants` (for grouping) and
+/// `determine_primary_shard` (for sibling matching) to ensure consistent
+/// directory-prefix extraction.
+pub fn directory_prefix(filename: &str) -> Option<&str> {
+    filename.rfind('/').map(|pos| &filename[..pos])
+}
+
 /// Fetch per-file blob metadata from HuggingFace using the blobs API.
 ///
 /// Uses `hf_hub`'s authenticated client to call the HF API with `?blobs=true`,
@@ -370,10 +380,9 @@ pub fn group_sharded_quants(blobs: HashMap<String, BlobInfo>) -> Vec<GroupedQuan
     // filename itself (for single-file quants).
     let mut groups: HashMap<String, Vec<BlobInfo>> = HashMap::new();
     for blob in blobs.into_values() {
-        let key = match blob.filename.rfind('/') {
-            Some(pos) => blob.filename[..pos].to_string(),
-            None => blob.filename.clone(),
-        };
+        let key = directory_prefix(&blob.filename)
+            .map(|p| p.to_string())
+            .unwrap_or_else(|| blob.filename.clone());
         groups.entry(key).or_default().push(blob);
     }
 
@@ -388,9 +397,7 @@ pub fn group_sharded_quants(blobs: HashMap<String, BlobInfo>) -> Vec<GroupedQuan
 
             // Quant name: directory name for sharded, inferred for single-file.
             let quant = if primary_filename.contains('/') {
-                primary_filename
-                    .rfind('/')
-                    .map(|pos| primary_filename[..pos].to_string())
+                directory_prefix(&primary_filename).map(|p| p.to_string())
             } else {
                 infer_quant_from_filename(&primary_filename)
             };
@@ -623,5 +630,71 @@ mod tests {
         assert!(q80.shards.is_empty());
         assert_eq!(q80.size_bytes, Some(600));
         assert_eq!(q80.kind, crate::config::QuantKind::Model);
+    }
+
+    /// Empty input should produce an empty result.
+    #[test]
+    fn test_group_sharded_quants_empty() {
+        let blobs: HashMap<String, BlobInfo> = HashMap::new();
+        let result = group_sharded_quants(blobs);
+        assert!(result.is_empty(), "empty input should produce empty output");
+    }
+
+    /// A directory with only one file should produce a GroupedQuant with
+    /// shards.len() == 1 (the file is both primary and only shard).
+    #[test]
+    fn test_group_sharded_quants_single_file_in_directory() {
+        let mut blobs: HashMap<String, BlobInfo> = HashMap::new();
+        blobs.insert(
+            "Q4_K_M/model-Q4_K_M.gguf".to_string(),
+            BlobInfo {
+                filename: "Q4_K_M/model-Q4_K_M.gguf".to_string(),
+                blob_id: None,
+                size: Some(400),
+                lfs_sha256: None,
+            },
+        );
+
+        let result = group_sharded_quants(blobs);
+        assert_eq!(result.len(), 1);
+        let entry = &result[0];
+        assert_eq!(entry.filename, "Q4_K_M/model-Q4_K_M.gguf");
+        assert_eq!(entry.quant.as_deref(), Some("Q4_K_M"));
+        assert_eq!(entry.shards.len(), 1);
+        assert_eq!(entry.size_bytes, Some(400));
+    }
+
+    /// Deeply nested paths (a/b/c/file.gguf) should group by the full
+    /// directory prefix (a/b/c), with the quant name being the last
+    /// directory component (c).
+    #[test]
+    fn test_group_sharded_quants_deeply_nested() {
+        let mut blobs: HashMap<String, BlobInfo> = HashMap::new();
+        blobs.insert(
+            "a/b/c/model-00001-of-00002.gguf".to_string(),
+            BlobInfo {
+                filename: "a/b/c/model-00001-of-00002.gguf".to_string(),
+                blob_id: None,
+                size: Some(100),
+                lfs_sha256: None,
+            },
+        );
+        blobs.insert(
+            "a/b/c/model-00002-of-00002.gguf".to_string(),
+            BlobInfo {
+                filename: "a/b/c/model-00002-of-00002.gguf".to_string(),
+                blob_id: None,
+                size: Some(200),
+                lfs_sha256: None,
+            },
+        );
+
+        let result = group_sharded_quants(blobs);
+        assert_eq!(result.len(), 1);
+        let entry = &result[0];
+        // Primary shard is first by sorted filename
+        assert_eq!(entry.filename, "a/b/c/model-00001-of-00002.gguf");
+        assert_eq!(entry.shards.len(), 2);
+        assert_eq!(entry.size_bytes, Some(300)); // 100 + 200
     }
 }

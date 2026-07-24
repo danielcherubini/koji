@@ -510,8 +510,9 @@ pub struct HfModelMetadata {
 
 pub use super::gguf::GgufMetadata;
 pub use api::{
-    fetch_blob_metadata, fetch_hf_metadata, fetch_model_pipeline_tag, group_sharded_quants,
-    infer_modalities_from_pipeline, list_gguf_files, parse_blob_siblings, GroupedQuant,
+    directory_prefix, fetch_blob_metadata, fetch_hf_metadata, fetch_model_pipeline_tag,
+    group_sharded_quants, infer_modalities_from_pipeline, list_gguf_files, parse_blob_siblings,
+    GroupedQuant,
 };
 pub use download::{pull_gguf_with_progress, PullResult};
 pub use metadata::{fetch_community_card, parse_readme_metadata};

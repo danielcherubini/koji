@@ -143,9 +143,9 @@ pub(super) fn is_safe_relative_path(s: &str) -> bool {
     if s.is_empty() || s.contains('\\') || s.contains('\0') {
         return false;
     }
-    // Reject any `..` segment — split on '/' and check each component
+    // Reject any `..` or `.` segment, and empty components — split on '/' and check each
     s.split('/')
-        .all(|component| component != ".." && !component.is_empty())
+        .all(|component| component != ".." && component != "." && !component.is_empty())
 }
 
 #[cfg(test)]
@@ -231,6 +231,9 @@ mod tests {
         assert!(!is_safe_relative_path("../etc"));
         assert!(!is_safe_relative_path("foo/../bar"));
         assert!(!is_safe_relative_path("UD-Q4_K_XL/../../etc"));
+        // Single-dot segments are no-ops but rejected for defensiveness
+        assert!(!is_safe_relative_path("./model.gguf"));
+        assert!(!is_safe_relative_path("foo/./bar.gguf"));
     }
 
     #[test]

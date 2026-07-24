@@ -44,15 +44,16 @@ pub(super) struct VerificationOutcome {
 /// This is a pure function so it can be unit-tested without network calls.
 fn determine_primary_shard(filename: &str, blobs: &HashMap<String, BlobInfo>) -> bool {
     // Single-file quant (no directory) is always primary
-    if !filename.contains('/') {
-        return true;
-    }
-    // Extract directory prefix (everything before the last '/')
-    let dir_prefix = filename.rsplit_once('/').unwrap().0;
-    // Find all blobs in the same directory, sort, and check if current is first
+    let dir_prefix = match crate::models::pull::directory_prefix(filename) {
+        Some(prefix) => prefix,
+        None => return true,
+    };
+    // Find all blobs in the exact same directory (not nested subdirs),
+    // sort, and check if current is first. Uses the shared directory_prefix
+    // helper for consistent directory-prefix extraction.
     let mut siblings: Vec<&String> = blobs
         .keys()
-        .filter(|k| k.starts_with(&format!("{}/", dir_prefix)))
+        .filter(|k| crate::models::pull::directory_prefix(k) == Some(dir_prefix))
         .collect();
     siblings.sort();
     siblings.first().map(|f| *f == filename).unwrap_or(true)
@@ -650,6 +651,28 @@ mod tests {
                 &blobs,
             ),
             "third shard should not be primary"
+        );
+    }
+
+    /// Verifies that nested subdirectories are handled correctly — files
+    /// in `a/b/` and `a/b/c/` are treated as separate groups, not merged.
+    #[test]
+    fn test_determine_primary_shard_nested_directories() {
+        let mut blobs = HashMap::new();
+        // File in a/b/ directory
+        blobs.insert("a/b/file1.gguf".to_string(), make_blob(100, None));
+        // File in nested a/b/c/ directory — should NOT be grouped with a/b/
+        blobs.insert("a/b/c/file2.gguf".to_string(), make_blob(200, None));
+
+        // file1 should be primary of its group (a/b/ — only file in that dir)
+        assert!(
+            determine_primary_shard("a/b/file1.gguf", &blobs),
+            "file1 should be primary of group a/b/"
+        );
+        // file2 should be primary of its group (a/b/c/ — only file in that dir)
+        assert!(
+            determine_primary_shard("a/b/c/file2.gguf", &blobs),
+            "file2 should be primary of group a/b/c/"
         );
     }
 }
