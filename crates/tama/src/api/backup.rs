@@ -269,6 +269,54 @@ pub use crate::web_types::UploadEntry;
 mod tests {
     use super::*;
 
+    // ── Shared test helpers ───────────────────────────────────────────────
+
+    /// Create a minimal WebState for route tests.
+    fn test_web_state() -> crate::web_types::WebState {
+        use std::collections::HashMap;
+        crate::web_types::WebState {
+            jobs: Some(Arc::new(crate::web_types::JobManager::new())),
+            capabilities: None,
+            update_checker: Arc::new(tama_core::updates::UpdateChecker::default()),
+            binary_version: "test".to_string(),
+            update_tx: Arc::new(tokio::sync::Mutex::new(None)),
+            upload_lock: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            repository: None,
+        }
+    }
+
+    /// Seed a config directory with a minimal `tama.db` for backup tests.
+    ///
+    /// Creates `configs/` directory and a `tama.db` with the three-table DDL
+    /// (model_pulls, model_files, backend_installations) and one model_pulls
+    /// row for `test/repo`. Does NOT call `tama_core::db::open` — the raw DDL
+    /// keeps the test independent of migration details.
+    fn seed_config_dir(dir: &std::path::Path) {
+        std::fs::create_dir_all(dir.join("configs")).expect("create configs dir");
+
+        let db_path = dir.join("tama.db");
+        let conn = rusqlite::Connection::open(&db_path).expect("open db");
+        conn.execute_batch(
+            "CREATE TABLE model_pulls (id INTEGER PRIMARY KEY AUTOINCREMENT, repo_id TEXT NOT NULL, commit_sha TEXT NOT NULL, pulled_at TEXT NOT NULL, UNIQUE(repo_id));
+             CREATE TABLE model_files (id INTEGER PRIMARY KEY AUTOINCREMENT, repo_id TEXT NOT NULL, filename TEXT NOT NULL, quant TEXT, lfs_oid TEXT, size_bytes INTEGER NOT NULL, downloaded_at TEXT NOT NULL, last_verified_at TEXT, verified_ok INTEGER, verify_error TEXT, UNIQUE(repo_id, filename));
+             CREATE TABLE backend_installations (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, backend_type TEXT NOT NULL, version TEXT NOT NULL, path TEXT NOT NULL, installed_at INTEGER NOT NULL, gpu_variant TEXT NOT NULL DEFAULT 'cpu', source TEXT, is_active INTEGER NOT NULL DEFAULT 0, UNIQUE(name, gpu_variant, version));",
+        ).expect("create tables");
+        conn.execute(
+            "INSERT INTO model_pulls (repo_id, commit_sha, pulled_at) VALUES ('test/repo', 'abc123', '2024-01-01T00:00:00Z');",
+            [],
+        ).expect("insert model pull");
+    }
+
+    /// Build a test app router with the given ProxyState and WebState.
+    fn test_app(
+        state: Arc<ProxyState>,
+        web_state: &Arc<crate::web_types::WebState>,
+    ) -> axum::Router {
+        crate::router::build_web_routes(web_state.clone())
+            .with_state(state)
+            .layer(axum::extract::Extension(web_state.as_ref().clone()))
+    }
+
     // ── RestorePreviewRequest tests ───────────────────────────────────────
 
     #[test]
@@ -522,5 +570,71 @@ mod tests {
 
         let response_invalid = app.oneshot(req_invalid).await.unwrap();
         assert_eq!(response_invalid.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_create_backup_route_returns_gzip_download() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        seed_config_dir(temp_dir.path());
+
+        let state = Arc::new(ProxyState::new(
+            tama_core::config::Config::default(),
+            Some(temp_dir.path().to_path_buf()),
+        ));
+
+        let web_state = Arc::new(test_web_state());
+        let app = test_app(state, &web_state);
+
+        let request = axum::http::Request::builder()
+            .method("GET")
+            .uri("/tama/v1/backup")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let content_type = response
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert_eq!(content_type, "application/gzip");
+
+        let content_disposition = response
+            .headers()
+            .get(axum::http::header::CONTENT_DISPOSITION)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            content_disposition.starts_with("attachment"),
+            "content-disposition should start with 'attachment', got: {}",
+            content_disposition
+        );
+
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+
+        // Gzip magic bytes: 0x1f 0x8b
+        assert!(
+            body_bytes.len() >= 2 && &body_bytes[..2] == &[0x1f, 0x8b],
+            "body should start with gzip magic bytes 0x1f 0x8b"
+        );
+
+        // Write body to temp file and verify manifest is parseable
+        let archive_path = temp_dir.path().join("test_backup_archive.tar.gz");
+        std::fs::write(&archive_path, &body_bytes).unwrap();
+
+        let manifest = tama_core::backup::extract_manifest(&archive_path).unwrap();
+        assert!(
+            manifest.models.iter().any(|m| m.repo_id == "test/repo"),
+            "manifest should contain test/repo model, got models: {:?}",
+            manifest.models
+        );
     }
 }
