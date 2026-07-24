@@ -13,8 +13,8 @@ Plans for features, refactors, and bug fixes in the Tama project.
 ## Quick Stats
 
 - **Total Plans**: 75
-- **Backlog**: 18
-- **Completed**: 55 ✅
+- **Backlog**: 17
+- **Completed**: 56 ✅
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan.
 
@@ -42,8 +42,6 @@ Current plans ready for execution, ordered by dependency-first cascade priority:
 | [Leptos UI Consolidation](plan-176-leptos-ui-consolidation.md) | Shared wasm-safe types via #[path] inclusion, collapse mirror types | F29, F31 |
 | [ProxyState Sub-structs](plan-177-proxystate-substructs.md) | RegistryState/MetricsState/PullState composition | F32 |
 | [Test Coverage Wave 2](plan-178-test-coverage-wave2.md) | Compaction/TTS via lifecycle traits, tama-mock integration | F22–F24, F36 |
-| [Sharded GGUF Pull](plan-179-sharded-gguf-pull.md) | Support pulling sharded GGUF models (multi-file quants in subdirectories) | New |
-
 **Full execution order & dependencies**: [execution-order.md](execution-order.md)  
 **All completed plans**: [done.md](done.md)
 
