@@ -36,7 +36,9 @@ async fn test_setup_model_creates_card() {
 
     // Call the inner helper directly (avoids relying on system Config::load())
     let mut models = std::collections::HashMap::new();
-    _setup_model_after_pull_with_config(&configs_dir, &mut models, repo_id, &spec, &dest_dir, None)
+    _setup_model_after_pull_with_config(
+        &configs_dir, &mut models, repo_id, &spec, &dest_dir, None, true,
+    )
         .await;
 
     // Assert the card file exists
@@ -106,6 +108,7 @@ async fn test_mmproj_pull_auto_enables_vision_on_parent() {
         &parent_spec,
         &dest_dir,
         None,
+        true,
     )
     .await;
 
@@ -126,6 +129,7 @@ async fn test_mmproj_pull_auto_enables_vision_on_parent() {
         &mmproj_spec,
         &dest_dir,
         None,
+        true,
     )
     .await;
 
@@ -180,6 +184,7 @@ async fn test_mmproj_pull_before_parent_creates_stub_then_promotes() {
         &mmproj_spec,
         &dest_dir,
         None,
+        true,
     )
     .await;
 
@@ -206,6 +211,7 @@ async fn test_mmproj_pull_before_parent_creates_stub_then_promotes() {
         &parent_spec,
         &dest_dir,
         None,
+        true,
     )
     .await;
 

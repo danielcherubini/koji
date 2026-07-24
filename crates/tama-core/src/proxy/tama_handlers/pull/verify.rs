@@ -247,6 +247,7 @@ pub(crate) async fn _setup_model_after_pull_with_config(
     spec: &QuantDownloadSpec,
     dest_dir: &std::path::Path,
     gguf_metadata: Option<&GgufMetadata>,
+    is_primary_shard: bool,
 ) -> Option<String> {
     let repo_slug = crate::models::card_slug(repo_id);
     let card_path = configs_dir.join(format!("{}.toml", repo_slug));
@@ -303,18 +304,21 @@ pub(crate) async fn _setup_model_after_pull_with_config(
         .ok()
         .map(|m| m.len());
 
-    // Insert/update quant entry in card. Detect mmproj files by filename so
-    // they get tagged with `kind = Mmproj` and tracked separately from real
-    // model quants.
-    card.quants.insert(
-        quant_key.clone(),
-        QuantInfo {
-            file: spec.filename.clone(),
-            kind: QuantKind::from_filename(&spec.filename),
-            size_bytes,
-            context_length,
-        },
-    );
+    // Insert/update quant entry in card — only for the primary shard of a
+    // sharded quant. Non-primary shards are tracked via model_files (upsert_file)
+    // but do not get their own card entry, since the primary shard's filename is
+    // what the model card records as the canonical file for the quant.
+    if is_primary_shard {
+        card.quants.insert(
+            quant_key.clone(),
+            QuantInfo {
+                file: spec.filename.clone(),
+                kind: QuantKind::from_filename(&spec.filename),
+                size_bytes,
+                context_length,
+            },
+        );
+    }
 
     // Find an existing model entry for this repo (if any), regardless of
     // its key format. This prevents creating duplicate model entries when
@@ -533,6 +537,7 @@ pub(crate) async fn setup_model_after_pull(
     spec: &QuantDownloadSpec,
     dest_dir: &std::path::Path,
     gguf_metadata: Option<GgufMetadata>,
+    is_primary_shard: bool,
 ) -> Option<i64> {
     let _permit = state.config_write_semaphore.acquire().await.ok()?;
     // Clone needed data from config before awaiting — don't hold the read guard
@@ -551,6 +556,7 @@ pub(crate) async fn setup_model_after_pull(
         spec,
         dest_dir,
         gguf_metadata.as_ref(),
+        is_primary_shard,
     )
     .await;
 

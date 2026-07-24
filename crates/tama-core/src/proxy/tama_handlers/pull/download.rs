@@ -464,6 +464,7 @@ pub async fn start_pull_from_queue(
             &spec_clone,
             &dest_dir,
             gguf_metadata.clone(),
+            outcome.is_primary_shard,
         )
         .await;
 
