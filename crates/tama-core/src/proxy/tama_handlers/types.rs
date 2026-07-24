@@ -144,7 +144,8 @@ pub(super) fn is_safe_relative_path(s: &str) -> bool {
         return false;
     }
     // Reject any `..` segment — split on '/' and check each component
-    s.split('/').all(|component| component != ".." && !component.is_empty())
+    s.split('/')
+        .all(|component| component != ".." && !component.is_empty())
 }
 
 #[cfg(test)]
@@ -214,8 +215,12 @@ mod tests {
         // Single filename
         assert!(is_safe_relative_path("model.gguf"));
         // Subdirectory path (sharded GGUF)
-        assert!(is_safe_relative_path("UD-Q4_K_XL/Laguna-S-2.1-UD-Q4_K_XL-00001-of-00003.gguf"));
-        assert!(is_safe_relative_path("Q8_0/Laguna-S-2.1-Q8_0-00001-of-00004.gguf"));
+        assert!(is_safe_relative_path(
+            "UD-Q4_K_XL/Laguna-S-2.1-UD-Q4_K_XL-00001-of-00003.gguf"
+        ));
+        assert!(is_safe_relative_path(
+            "Q8_0/Laguna-S-2.1-Q8_0-00001-of-00004.gguf"
+        ));
         // Deeply nested (unlikely but valid)
         assert!(is_safe_relative_path("a/b/c/model.gguf"));
     }

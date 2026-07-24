@@ -10,6 +10,7 @@ use crate::config::QuantKind;
 use crate::models::card::ModelCard;
 use crate::models::pull::fetch_community_card;
 use crate::models::pull::infer_quant_from_filename;
+use crate::models::pull::BlobInfo;
 use crate::models::pull::GgufMetadata;
 use crate::models::QuantInfo;
 use crate::proxy::pull_jobs::{PullJob, PullJobStatus};
@@ -26,6 +27,35 @@ pub(super) struct VerificationOutcome {
     pub expected_sha: Option<String>,
     pub ok: Option<bool>,
     pub err: Option<String>,
+    /// Whether this file is the primary shard of a sharded quant.
+    /// Single-file quants are always primary. For sharded quants, the primary
+    /// shard (first by sorted filename) is the one whose filename is stored
+    /// in the model card's `QuantInfo.file`.
+    pub is_primary_shard: bool,
+}
+
+/// Determine whether `filename` is the primary shard of a (possibly sharded)
+/// quant, given the full set of blob rfilenames from the HF API.
+///
+/// - Single-file quants (no `/` in the filename) are always primary.
+/// - For sharded quants (filename contains `/`), the primary shard is the
+///   first file by sorted order within the same directory prefix.
+///
+/// This is a pure function so it can be unit-tested without network calls.
+fn determine_primary_shard(filename: &str, blobs: &HashMap<String, BlobInfo>) -> bool {
+    // Single-file quant (no directory) is always primary
+    if !filename.contains('/') {
+        return true;
+    }
+    // Extract directory prefix (everything before the last '/')
+    let dir_prefix = filename.rsplit_once('/').unwrap().0;
+    // Find all blobs in the same directory, sort, and check if current is first
+    let mut siblings: Vec<&String> = blobs
+        .keys()
+        .filter(|k| k.starts_with(&format!("{}/", dir_prefix)))
+        .collect();
+    siblings.sort();
+    siblings.first().map(|f| *f == filename).unwrap_or(true)
 }
 
 /// Run the post-pull verification phase for a pull job.
@@ -49,16 +79,22 @@ pub(super) async fn run_verification(
     dest_path: PathBuf,
     bytes: u64,
 ) -> VerificationOutcome {
-    // Step 1: fetch upstream LFS hash (best-effort).
-    let expected_sha: Option<String> =
-        match crate::models::pull::fetch_blob_metadata(&repo_id).await {
-            Ok(blobs) => blobs.get(&filename).and_then(|b| b.lfs_sha256.clone()),
-            Err(e) => {
-                tracing::warn!(job_id = %job_id, repo = %repo_id, error = %e,
-                "Failed to fetch HF blob metadata for verification");
-                None
-            }
-        };
+    // Step 1: fetch upstream blob metadata (best-effort). Reused below to
+    // determine whether this file is the primary shard of a sharded quant,
+    // avoiding a redundant API call.
+    let blobs_result = crate::models::pull::fetch_blob_metadata(&repo_id).await;
+    let expected_sha: Option<String> = blobs_result
+        .as_ref()
+        .ok()
+        .and_then(|blobs| blobs.get(&filename).and_then(|b| b.lfs_sha256.clone()));
+    if let Err(e) = &blobs_result {
+        tracing::warn!(job_id = %job_id, repo = %repo_id, error = %e,
+            "Failed to fetch HF blob metadata for verification");
+    }
+    let is_primary_shard = match blobs_result.as_ref() {
+        Ok(blobs) => determine_primary_shard(&filename, blobs),
+        Err(_) => true, // fail-safe: default to primary for single-file quants
+    };
 
     // Step 2: transition to Verifying.
     {
@@ -174,6 +210,7 @@ pub(super) async fn run_verification(
             expected_sha,
             ok,
             err,
+            is_primary_shard,
         }
     } else {
         // Verification failed — delete the corrupt/mismatched file so it
@@ -196,6 +233,7 @@ pub(super) async fn run_verification(
             expected_sha,
             ok,
             err,
+            is_primary_shard,
         }
     }
 }
@@ -539,4 +577,73 @@ pub(crate) async fn setup_model_after_pull(
     saved_id
     // _guard dropped here, releasing the lock
     // config write guard also dropped here, making the new model entry visible immediately
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::pull::BlobInfo;
+
+    fn make_blob(size: i64, sha: Option<&str>) -> BlobInfo {
+        BlobInfo {
+            filename: String::new(),
+            blob_id: None,
+            size: Some(size),
+            lfs_sha256: sha.map(String::from),
+        }
+    }
+
+    #[test]
+    fn test_determine_primary_shard() {
+        let mut blobs = HashMap::new();
+        // Sharded quant: 3 shards in UD-Q4_K_XL/
+        blobs.insert(
+            "UD-Q4_K_XL/Laguna-S-2.1-UD-Q4_K_XL-00001-of-00003.gguf".to_string(),
+            make_blob(100, Some("sha1")),
+        );
+        blobs.insert(
+            "UD-Q4_K_XL/Laguna-S-2.1-UD-Q4_K_XL-00002-of-00003.gguf".to_string(),
+            make_blob(200, Some("sha2")),
+        );
+        blobs.insert(
+            "UD-Q4_K_XL/Laguna-S-2.1-UD-Q4_K_XL-00003-of-00003.gguf".to_string(),
+            make_blob(300, Some("sha3")),
+        );
+        // Single-file quant (no directory)
+        blobs.insert(
+            "Laguna-S-2.1-Q4_K_M.gguf".to_string(),
+            make_blob(500, Some("sha4")),
+        );
+
+        // Single-file quant (no '/') is always primary
+        assert!(
+            determine_primary_shard("Laguna-S-2.1-Q4_K_M.gguf", &blobs),
+            "single-file quant should be primary"
+        );
+
+        // First shard (by sorted filename order) is primary
+        assert!(
+            determine_primary_shard(
+                "UD-Q4_K_XL/Laguna-S-2.1-UD-Q4_K_XL-00001-of-00003.gguf",
+                &blobs,
+            ),
+            "first shard should be primary"
+        );
+
+        // Non-primary shards are NOT primary
+        assert!(
+            !determine_primary_shard(
+                "UD-Q4_K_XL/Laguna-S-2.1-UD-Q4_K_XL-00002-of-00003.gguf",
+                &blobs,
+            ),
+            "second shard should not be primary"
+        );
+        assert!(
+            !determine_primary_shard(
+                "UD-Q4_K_XL/Laguna-S-2.1-UD-Q4_K_XL-00003-of-00003.gguf",
+                &blobs,
+            ),
+            "third shard should not be primary"
+        );
+    }
 }
