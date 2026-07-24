@@ -940,7 +940,7 @@ mod tests {
 
         // Gzip magic bytes: 0x1f 0x8b
         assert!(
-            body_bytes.len() >= 2 && &body_bytes[..2] == &[0x1f, 0x8b],
+            body_bytes.len() >= 2 && body_bytes[..2] == [0x1f, 0x8b],
             "body should start with gzip magic bytes 0x1f 0x8b"
         );
 
