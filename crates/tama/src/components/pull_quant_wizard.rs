@@ -60,8 +60,14 @@ pub fn PullQuantWizard(
 
     // ── Cancel flag: flipped on component unmount ───────────────────────────
     let cancelled = RwSignal::new(false);
+
+    // ── EventSource handle: closed on component unmount ──────────────────────
+    let es_ref = RwSignal::new(None::<web_sys::EventSource>);
     on_cleanup(move || {
         cancelled.set(true);
+        if let Some(es) = es_ref.get() {
+            es.close();
+        }
     });
 
     // ── on_complete Effect (only if on_complete is Some) ─────────────────────
@@ -394,7 +400,7 @@ pub fn PullQuantWizard(
 
                                                 // Subscribe to global pull events SSE stream.
                                                 #[cfg(not(feature = "ssr"))]
-                                                spawn_pull_events_listener(entries, pull_jobs, wizard_step, cancelled);
+                                                spawn_pull_events_listener(entries, pull_jobs, wizard_step, cancelled, es_ref);
                                                 #[cfg(feature = "ssr")]
                                                 let _ = entries;
                                             }
@@ -516,6 +522,7 @@ fn spawn_pull_events_listener(
     dj: RwSignal<Vec<JobProgress>>,
     ws: RwSignal<WizardStep>,
     cancel: RwSignal<bool>,
+    es_ref: RwSignal<Option<web_sys::EventSource>>,
 ) {
     let job_ids: std::collections::HashSet<String> =
         entries.iter().map(|e| e.job_id.clone()).collect();
@@ -630,9 +637,8 @@ fn spawn_pull_events_listener(
         closure.forget(); // Keep the closure alive
     }
 
-    // Store EventSource reference so it doesn't get garbage collected.
-    // It will be closed when the wizard resets (cancel signal flips).
-    let _ = es;
+    // Store EventSource handle so on_cleanup can close it on unmount.
+    es_ref.set(Some(es.clone()));
 }
 
 // ── Pure helper function (extracted for testability) ─────────────────────────
