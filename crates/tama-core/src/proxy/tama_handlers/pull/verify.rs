@@ -591,9 +591,9 @@ mod tests {
     use super::*;
     use crate::models::pull::BlobInfo;
 
-    fn make_blob(size: i64, sha: Option<&str>) -> BlobInfo {
+    fn make_blob(filename: &str, size: i64, sha: Option<&str>) -> BlobInfo {
         BlobInfo {
-            filename: String::new(),
+            filename: filename.to_string(),
             blob_id: None,
             size: Some(size),
             lfs_sha256: sha.map(String::from),
@@ -606,20 +606,32 @@ mod tests {
         // Sharded quant: 3 shards in UD-Q4_K_XL/
         blobs.insert(
             "UD-Q4_K_XL/Laguna-S-2.1-UD-Q4_K_XL-00001-of-00003.gguf".to_string(),
-            make_blob(100, Some("sha1")),
+            make_blob(
+                "UD-Q4_K_XL/Laguna-S-2.1-UD-Q4_K_XL-00001-of-00003.gguf",
+                100,
+                Some("sha1"),
+            ),
         );
         blobs.insert(
             "UD-Q4_K_XL/Laguna-S-2.1-UD-Q4_K_XL-00002-of-00003.gguf".to_string(),
-            make_blob(200, Some("sha2")),
+            make_blob(
+                "UD-Q4_K_XL/Laguna-S-2.1-UD-Q4_K_XL-00002-of-00003.gguf",
+                200,
+                Some("sha2"),
+            ),
         );
         blobs.insert(
             "UD-Q4_K_XL/Laguna-S-2.1-UD-Q4_K_XL-00003-of-00003.gguf".to_string(),
-            make_blob(300, Some("sha3")),
+            make_blob(
+                "UD-Q4_K_XL/Laguna-S-2.1-UD-Q4_K_XL-00003-of-00003.gguf",
+                300,
+                Some("sha3"),
+            ),
         );
         // Single-file quant (no directory)
         blobs.insert(
             "Laguna-S-2.1-Q4_K_M.gguf".to_string(),
-            make_blob(500, Some("sha4")),
+            make_blob("Laguna-S-2.1-Q4_K_M.gguf", 500, Some("sha4")),
         );
 
         // Single-file quant (no '/') is always primary
@@ -660,9 +672,15 @@ mod tests {
     fn test_determine_primary_shard_nested_directories() {
         let mut blobs = HashMap::new();
         // File in a/b/ directory
-        blobs.insert("a/b/file1.gguf".to_string(), make_blob(100, None));
+        blobs.insert(
+            "a/b/file1.gguf".to_string(),
+            make_blob("a/b/file1.gguf", 100, None),
+        );
         // File in nested a/b/c/ directory — should NOT be grouped with a/b/
-        blobs.insert("a/b/c/file2.gguf".to_string(), make_blob(200, None));
+        blobs.insert(
+            "a/b/c/file2.gguf".to_string(),
+            make_blob("a/b/c/file2.gguf", 200, None),
+        );
 
         // file1 should be primary of its group (a/b/ — only file in that dir)
         assert!(

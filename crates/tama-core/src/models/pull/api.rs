@@ -694,6 +694,8 @@ mod tests {
         let entry = &result[0];
         // Primary shard is first by sorted filename
         assert_eq!(entry.filename, "a/b/c/model-00001-of-00002.gguf");
+        // directory_prefix returns the full prefix "a/b/c"
+        assert_eq!(entry.quant.as_deref(), Some("a/b/c"));
         assert_eq!(entry.shards.len(), 2);
         assert_eq!(entry.size_bytes, Some(300)); // 100 + 200
     }

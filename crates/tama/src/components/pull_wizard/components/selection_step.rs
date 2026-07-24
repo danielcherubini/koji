@@ -251,7 +251,7 @@ mod tests {
     fn test_collect_all_filenames_with_shards() {
         let quants = vec![
             make_quant(
-                "UD-Q4_K_XL.gguf",
+                "UD-Q4_K_XL/UD-Q4_K_XL-00001-of-00003.gguf",
                 vec![
                     "UD-Q4_K_XL/UD-Q4_K_XL-00001-of-00003.gguf".to_string(),
                     "UD-Q4_K_XL/UD-Q4_K_XL-00002-of-00003.gguf".to_string(),
@@ -261,15 +261,14 @@ mod tests {
             make_quant("model-Q4_K_M.gguf", vec![]),
         ];
         let result = collect_all_filenames(&quants);
-        // Primary filenames
-        assert!(result.contains("UD-Q4_K_XL.gguf"));
-        assert!(result.contains("model-Q4_K_M.gguf"));
-        // Shard filenames
+        // Primary filename is the first shard's full path (matches real API shape)
         assert!(result.contains("UD-Q4_K_XL/UD-Q4_K_XL-00001-of-00003.gguf"));
+        assert!(result.contains("model-Q4_K_M.gguf"));
+        // Remaining shard filenames (shard 1 == primary above)
         assert!(result.contains("UD-Q4_K_XL/UD-Q4_K_XL-00002-of-00003.gguf"));
         assert!(result.contains("UD-Q4_K_XL/UD-Q4_K_XL-00003-of-00003.gguf"));
-        // 2 primaries + 3 shards = 5 total
-        assert_eq!(result.len(), 5);
+        // 2 primaries + 2 unique shards (shard 1 == primary) = 4 total
+        assert_eq!(result.len(), 4);
     }
 
     #[test]
