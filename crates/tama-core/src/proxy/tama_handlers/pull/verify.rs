@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -59,6 +59,42 @@ fn determine_primary_shard(filename: &str, blobs: &HashMap<String, BlobInfo>) ->
     siblings.first().map(|f| *f == filename).unwrap_or(true)
 }
 
+/// Fallback for determining the primary shard when the HF blob API is
+/// unavailable. Lists `.gguf` siblings in `dest_path`'s parent directory on
+/// disk, sorts them lexicographically, and returns `true` if the current
+/// file's name sorts first.
+///
+/// This reuses already-downloaded sibling shards (pulled in the same batch)
+/// to identify the primary without a redundant API call.
+fn determine_primary_shard_from_disk(dest_path: &Path) -> bool {
+    let parent = match dest_path.parent() {
+        Some(p) => p,
+        None => return true, // no parent dir — treat as primary
+    };
+    let file_name = match dest_path.file_name().and_then(|n| n.to_str()) {
+        Some(name) => name,
+        None => return true, // non-UTF8 filename — treat as primary
+    };
+
+    let mut siblings: Vec<String> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(parent) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            if name.to_string_lossy().ends_with(".gguf") {
+                if let Some(s) = name.to_str() {
+                    siblings.push(s.to_string());
+                }
+            }
+        }
+    }
+
+    siblings.sort();
+    siblings
+        .first()
+        .map(|first| first == file_name)
+        .unwrap_or(true) // no siblings on disk — treat as primary
+}
+
 /// Run the post-pull verification phase for a pull job.
 ///
 /// Hashes the file at `dest_path` directly (file is already pulled there),
@@ -94,7 +130,16 @@ pub(super) async fn run_verification(
     }
     let is_primary_shard = match blobs_result.as_ref() {
         Ok(blobs) => determine_primary_shard(&filename, blobs),
-        Err(_) => !filename.contains('/'), // fail-safe: single-file quants (no '/') default to primary; sharded files default to false
+        Err(_) => {
+            // API unavailable — fall back to disk-based detection.
+            // Single-file quants (no '/') are always primary; sharded files
+            // are primary if they sort first among .gguf siblings on disk.
+            if !filename.contains('/') {
+                true
+            } else {
+                determine_primary_shard_from_disk(&dest_path)
+            }
+        }
     };
 
     // Step 2: transition to Verifying.
@@ -691,6 +736,40 @@ mod tests {
         assert!(
             determine_primary_shard("a/b/c/file2.gguf", &blobs),
             "file2 should be primary of group a/b/c/"
+        );
+    }
+
+    /// When the HF blob API is unavailable, `determine_primary_shard_from_disk`
+    /// falls back to listing `.gguf` siblings on disk, sorting them, and checking
+    /// if the current file sorts first.
+    #[test]
+    fn test_determine_primary_shard_from_disk() {
+        use std::fs;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+
+        // Create sibling .gguf shards out of order
+        fs::write(dir.join("file-00002-of-00003.gguf"), b"data").unwrap();
+        fs::write(dir.join("file-00001-of-00003.gguf"), b"data").unwrap();
+        fs::write(dir.join("file-00003-of-00003.gguf"), b"data").unwrap();
+
+        // First shard (sorted) should be primary
+        let first = dir.join("file-00001-of-00003.gguf");
+        assert!(
+            determine_primary_shard_from_disk(&first),
+            "first shard should be primary"
+        );
+
+        // Non-first shards should NOT be primary
+        let second = dir.join("file-00002-of-00003.gguf");
+        assert!(
+            !determine_primary_shard_from_disk(&second),
+            "second shard should not be primary"
+        );
+        let third = dir.join("file-00003-of-00003.gguf");
+        assert!(
+            !determine_primary_shard_from_disk(&third),
+            "third shard should not be primary"
         );
     }
 }

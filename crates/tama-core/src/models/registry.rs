@@ -127,7 +127,10 @@ impl ModelRegistry {
                     format!("Failed to read directory entry in: {}", dir.display())
                 })?;
                 let path = entry.path();
-                if path.is_dir() {
+                // Use entry.file_type() (does NOT follow symlinks) instead of
+                // path.is_dir() (which follows symlinks) to prevent traversal
+                // into symlinked directories — avoiding symlink cycle loops.
+                if entry.file_type()?.is_dir() {
                     dirs_to_visit.push(path);
                 } else if path.extension().is_some_and(|e| e == "gguf") {
                     let relative = path
@@ -313,6 +316,40 @@ mod tests {
                 .collect::<std::collections::BTreeSet<String>>()
                 .into_iter()
                 .collect::<Vec<String>>()
+        );
+    }
+
+    /// Verifies that `untracked_ggufs` does not traverse into symlinked
+    /// directories. With `path.is_dir()` (follows symlinks), a symlink to a
+    /// directory containing .gguf files would be traversed and those files
+    /// would appear as untracked. With `entry.file_type()?.is_dir()` (does
+    /// not follow symlinks), symlinked directories are skipped.
+    #[cfg(unix)]
+    #[test]
+    fn test_untracked_ggufs_skips_symlinked_dirs() {
+        use std::os::unix::fs::symlink;
+        let (tmp, registry) = setup_test_dir();
+        let card = create_test_model(tmp.path(), "bartowski", "OmniCoder");
+        let model_dir = tmp
+            .path()
+            .join("models")
+            .join("bartowski")
+            .join("OmniCoder");
+
+        // Create a separate directory with a .gguf file, then symlink it
+        // into the model directory. With the fix, the symlinked dir is NOT
+        // traversed, so its .gguf file should NOT appear in untracked.
+        let external = tmp.path().join("external");
+        std::fs::create_dir_all(&external).unwrap();
+        std::fs::write(external.join("external-shard.gguf"), b"fake").unwrap();
+        symlink(&external, model_dir.join("linked")).unwrap();
+
+        let untracked = registry.untracked_ggufs(&model_dir, &card).unwrap();
+        // The external .gguf must NOT appear — the symlinked dir is skipped.
+        assert!(
+            !untracked.iter().any(|p| p.starts_with("linked/")),
+            "symlinked directory should not be traversed; untracked = {:?}",
+            untracked
         );
     }
 }
