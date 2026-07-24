@@ -132,6 +132,21 @@ pub(super) fn is_safe_path_component(s: &str) -> bool {
     !s.is_empty() && !s.contains("..") && !s.contains('/') && !s.contains('\\') && !s.contains('\0')
 }
 
+/// Returns `false` if the relative path contains traversal sequences, backslash
+/// separators, or null bytes. Unlike `is_safe_path_component`, this allows `/`
+/// to support subdirectory paths (e.g. sharded GGUF files like
+/// `UD-Q4_K_XL/Laguna-S-2.1-UD-Q4_K_XL-00001-of-00003.gguf`).
+///
+/// Backslashes are still blocked to prevent Windows path traversal, and `..`
+/// segments are rejected to prevent escaping the models directory.
+pub(super) fn is_safe_relative_path(s: &str) -> bool {
+    if s.is_empty() || s.contains('\\') || s.contains('\0') {
+        return false;
+    }
+    // Reject any `..` segment — split on '/' and check each component
+    s.split('/').all(|component| component != ".." && !component.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,5 +205,46 @@ mod tests {
         assert!(!is_safe_path_component("path/to/file"));
         assert!(!is_safe_path_component("path\\to\\file"));
         assert!(!is_safe_path_component("path\0null"));
+    }
+
+    // ── is_safe_relative_path tests ───────────────────────────────────────
+
+    #[test]
+    fn test_is_safe_relative_path_valid() {
+        // Single filename
+        assert!(is_safe_relative_path("model.gguf"));
+        // Subdirectory path (sharded GGUF)
+        assert!(is_safe_relative_path("UD-Q4_K_XL/Laguna-S-2.1-UD-Q4_K_XL-00001-of-00003.gguf"));
+        assert!(is_safe_relative_path("Q8_0/Laguna-S-2.1-Q8_0-00001-of-00004.gguf"));
+        // Deeply nested (unlikely but valid)
+        assert!(is_safe_relative_path("a/b/c/model.gguf"));
+    }
+
+    #[test]
+    fn test_is_safe_relative_path_rejects_traversal() {
+        assert!(!is_safe_relative_path(".."));
+        assert!(!is_safe_relative_path("../etc"));
+        assert!(!is_safe_relative_path("foo/../bar"));
+        assert!(!is_safe_relative_path("UD-Q4_K_XL/../../etc"));
+    }
+
+    #[test]
+    fn test_is_safe_relative_path_rejects_backslash() {
+        assert!(!is_safe_relative_path("path\\to\\file"));
+        assert!(!is_safe_relative_path("foo\\bar.gguf"));
+    }
+
+    #[test]
+    fn test_is_safe_relative_path_rejects_null() {
+        assert!(!is_safe_relative_path("path\0null"));
+        assert!(!is_safe_relative_path("UD-Q4_K_XL\0/Laguna-S-2.1.gguf"));
+    }
+
+    #[test]
+    fn test_is_safe_relative_path_rejects_empty_and_slashes() {
+        assert!(!is_safe_relative_path(""));
+        assert!(!is_safe_relative_path("/leading-slash"));
+        assert!(!is_safe_relative_path("trailing-slash/"));
+        assert!(!is_safe_relative_path("double//slash"));
     }
 }
