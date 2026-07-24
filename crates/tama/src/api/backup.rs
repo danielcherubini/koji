@@ -136,6 +136,7 @@ pub async fn restore_preview(
         );
     }
 
+    // TODO: Prune stale uploads (older than N hours) on startup or via periodic task
     let upload_id = Uuid::new_v4().simple().to_string();
     let upload_path = temp_dir.join(format!("{}.tar.gz", upload_id));
 
@@ -226,10 +227,9 @@ pub async fn restore_preview(
 
 /// Perform a full additive restore of a backup archive into the config directory.
 ///
-/// Extracts the archive to a temporary directory, validates its SHA-256
-/// integrity, then merges model cards, database records, and config into
-/// the local `config_dir`. Extraction and validation complete entirely in
-/// the temp directory before any mutation is applied, providing atomicity.
+/// Extraction and validation are atomic (all-or-nothing in the temp dir); the merge
+/// phase is additive and best-effort — a failure mid-merge may leave partially-applied
+/// changes.
 ///
 /// `selected_models`, `skip_backends`, and `skip_models` from [`RestoreRequest`]
 /// are accepted at the API level but NOT applied here — restore v1 always
@@ -401,9 +401,14 @@ pub async fn start_restore(
             }
         }
         // Clean up uploaded archive after restore completes.
-        if let Err(e) = std::fs::remove_file(&cleanup_path) {
-            tracing::warn!("Failed to delete upload file: {}", e);
-        }
+        let cleanup_path = cleanup_path.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Err(e) = std::fs::remove_file(&cleanup_path) {
+                tracing::warn!("Failed to delete upload file: {}", e);
+            }
+        })
+        .await
+        .ok();
     });
 
     Json(RestoreResponse { job_id }).into_response()
@@ -740,10 +745,6 @@ mod tests {
         );
 
         // The model card should have been copied to the target configs dir.
-        // (We verify model-card merge here rather than DB row counts because
-        // merge_database's INSERT OR IGNORE for model_pulls omits the model_id
-        // FK column added by migration _0008 — that is a known limitation of
-        // the shared merge_database function and out of scope for this task.)
         assert!(
             target_dir
                 .path()

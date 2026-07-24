@@ -145,10 +145,26 @@ pub fn merge_database(
 
     // Merge model_configs first — new repos from the backup become available
     // for model_pulls / model_files resolution below.
+    //
+    // NOTE: This was changed from a partial two-column merge because the old code
+    // silently failed to preserve model_pulls/model_files after migration _0008
+    // added the `id`/model_id FK column — without a full copy, INSERT OR IGNORE
+    // on model_pulls could not resolve the FK. Copying all columns (except id,
+    // created_at, updated_at) ensures defaults apply and data is preserved.
     local_db
         .execute_batch(
-            "INSERT OR IGNORE INTO model_configs (repo_id, backend) \
-         SELECT repo_id, backend FROM backup_db.model_configs",
+            "INSERT OR IGNORE INTO model_configs \
+             (repo_id, display_name, backend, gpu_variant, enabled, selected_quant, selected_mmproj, \
+              context_length, num_parallel, kv_unified, gpu_layers, cache_type_k, cache_type_v, port, \
+              args, sampling, modalities, profile, api_name, health_check, hf_format, hf_base_model, \
+              hf_pipeline_tag, hf_total_params, hf_active_params, hf_architecture_type, \
+              hf_context_length, hf_num_layers, hf_last_modified, spec_decoding, selected_mtp_model, gpu_device) \
+             SELECT repo_id, display_name, backend, gpu_variant, enabled, selected_quant, selected_mmproj, \
+              context_length, num_parallel, kv_unified, gpu_layers, cache_type_k, cache_type_v, port, \
+              args, sampling, modalities, profile, api_name, health_check, hf_format, hf_base_model, \
+              hf_pipeline_tag, hf_total_params, hf_active_params, hf_architecture_type, \
+              hf_context_length, hf_num_layers, hf_last_modified, spec_decoding, selected_mtp_model, gpu_device \
+             FROM backup_db.model_configs",
         )
         .context("Failed to merge model_configs")?;
 
