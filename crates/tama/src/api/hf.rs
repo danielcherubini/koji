@@ -47,19 +47,17 @@ pub async fn hf_metadata(
         // with no credentials and return 401).
         match tama_core::models::pull::fetch_blob_metadata(&repo_id).await {
             Ok(blobs) => {
-                let mut quants: Vec<QuantEntry> = blobs
-                    .into_values()
-                    .map(|b| {
-                        let quant = tama_core::models::pull::infer_quant_from_filename(&b.filename);
-                        let kind = QuantKind::from_filename(&b.filename);
-                        QuantEntry {
-                            filename: b.filename,
-                            quant,
-                            size_bytes: b.size,
-                            kind,
-                        }
-                    })
-                    .collect();
+                let mut quants: Vec<QuantEntry> =
+                    tama_core::models::pull::group_sharded_quants(blobs)
+                        .into_iter()
+                        .map(|g| QuantEntry {
+                            filename: g.filename,
+                            quant: g.quant,
+                            size_bytes: g.size_bytes,
+                            kind: g.kind,
+                            shards: g.shards,
+                        })
+                        .collect();
                 quants.sort_by(|a, b| a.filename.cmp(&b.filename));
                 (StatusCode::OK, Json(quants)).into_response()
             }
@@ -75,6 +73,7 @@ struct QuantEntry {
     quant: Option<String>,
     size_bytes: Option<i64>,
     kind: QuantKind,
+    shards: Vec<String>,
 }
 
 #[cfg(test)]

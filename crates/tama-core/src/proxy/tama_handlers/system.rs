@@ -62,16 +62,14 @@ pub async fn handle_hf_list_quants(Path(repo_id): Path<String>) -> Response {
 
     match crate::models::pull::fetch_blob_metadata(&repo_id).await {
         Ok(blobs) => {
-            let mut quants: Vec<QuantEntry> = blobs
-                .into_values()
-                .map(|b| {
-                    let kind = crate::config::QuantKind::from_filename(&b.filename);
-                    QuantEntry {
-                        quant: crate::models::pull::infer_quant_from_filename(&b.filename),
-                        filename: b.filename,
-                        size_bytes: b.size,
-                        kind,
-                    }
+            let mut quants: Vec<QuantEntry> = crate::models::pull::group_sharded_quants(blobs)
+                .into_iter()
+                .map(|g| QuantEntry {
+                    filename: g.filename,
+                    quant: g.quant,
+                    size_bytes: g.size_bytes,
+                    kind: g.kind,
+                    shards: g.shards,
                 })
                 .collect();
             quants.sort_by(|a, b| a.filename.cmp(&b.filename));

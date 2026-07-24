@@ -104,21 +104,50 @@ impl ModelRegistry {
         Ok(model.and_then(|m| m.card.quants.get(quant_name).map(|q| m.dir.join(&q.file))))
     }
 
-    /// Scan for GGUF files in a model directory that aren't tracked in the model card.
+    /// Scan for GGUF files in a model directory tree that aren't tracked in the model card.
+    ///
+    /// Recursively walks `model_dir` and all subdirectories, collecting `.gguf`
+    /// files whose relative path (using `/` as separator) is not present in
+    /// `card.quants`. Returns the paths sorted lexicographically.
     pub fn untracked_ggufs(&self, model_dir: &Path, card: &ModelCard) -> Result<Vec<String>> {
         let tracked: std::collections::HashSet<&str> =
             card.quants.values().map(|q| q.file.as_str()).collect();
 
         let mut untracked = Vec::new();
-        if model_dir.exists() {
-            for entry in std::fs::read_dir(model_dir)? {
-                let entry = entry?;
-                let name = entry.file_name().to_string_lossy().to_string();
-                if name.ends_with(".gguf") && !tracked.contains(name.as_str()) {
-                    untracked.push(name);
+        let mut dirs_to_visit = vec![model_dir.to_path_buf()];
+
+        while let Some(dir) = dirs_to_visit.pop() {
+            if !dir.exists() {
+                continue;
+            }
+            for entry in std::fs::read_dir(&dir)
+                .with_context(|| format!("Failed to read directory: {}", dir.display()))?
+            {
+                let entry = entry.with_context(|| {
+                    format!("Failed to read directory entry in: {}", dir.display())
+                })?;
+                let path = entry.path();
+                // Use entry.file_type() (does NOT follow symlinks) instead of
+                // path.is_dir() (which follows symlinks) to prevent traversal
+                // into symlinked directories — avoiding symlink cycle loops.
+                if entry.file_type()?.is_dir() {
+                    dirs_to_visit.push(path);
+                } else if path.extension().is_some_and(|e| e == "gguf") {
+                    let relative = path
+                        .strip_prefix(model_dir)
+                        .with_context(|| {
+                            format!("Failed to compute relative path for: {}", path.display())
+                        })?
+                        .to_string_lossy()
+                        .replace('\\', "/")
+                        .to_string();
+                    if !tracked.contains(relative.as_str()) {
+                        untracked.push(relative);
+                    }
                 }
             }
         }
+
         untracked.sort();
         Ok(untracked)
     }
@@ -244,5 +273,83 @@ mod tests {
 
         let untracked = registry.untracked_ggufs(&model_dir, &card).unwrap();
         assert_eq!(untracked, vec!["OmniCoder-Q8_0.gguf"]);
+    }
+
+    #[test]
+    fn test_untracked_ggufs_recursive() {
+        let (tmp, registry) = setup_test_dir();
+        let card = create_test_model(tmp.path(), "bartowski", "OmniCoder");
+        let model_dir = tmp
+            .path()
+            .join("models")
+            .join("bartowski")
+            .join("OmniCoder");
+
+        // Sharded GGUF lives in a subdirectory, not tracked in the card.
+        let shard_dir = model_dir.join("UD-Q4_K_XL");
+        std::fs::create_dir_all(&shard_dir).unwrap();
+        std::fs::write(
+            shard_dir.join("OmniCoder-2.1-UD-Q4_K_XL-00001-of-00003.gguf"),
+            b"fake",
+        )
+        .unwrap();
+
+        // Top-level untracked GGUF alongside the tracked one.
+        std::fs::write(model_dir.join("OmniCoder-Q8_0.gguf"), b"fake").unwrap();
+
+        let untracked = registry.untracked_ggufs(&model_dir, &card).unwrap();
+
+        // Subdirectory .gguf detected as untracked with a relative path.
+        assert!(untracked
+            .contains(&"UD-Q4_K_XL/OmniCoder-2.1-UD-Q4_K_XL-00001-of-00003.gguf".to_string()));
+        // Top-level untracked still detected.
+        assert!(untracked.contains(&"OmniCoder-Q8_0.gguf".to_string()));
+        // Tracked file excluded.
+        assert!(!untracked.iter().any(|p| p == "OmniCoder-Q4_K_M.gguf"));
+        // Results sorted lexicographically.
+        assert_eq!(untracked.len(), 2);
+        assert_eq!(
+            untracked,
+            untracked
+                .iter()
+                .cloned()
+                .collect::<std::collections::BTreeSet<String>>()
+                .into_iter()
+                .collect::<Vec<String>>()
+        );
+    }
+
+    /// Verifies that `untracked_ggufs` does not traverse into symlinked
+    /// directories. With `path.is_dir()` (follows symlinks), a symlink to a
+    /// directory containing .gguf files would be traversed and those files
+    /// would appear as untracked. With `entry.file_type()?.is_dir()` (does
+    /// not follow symlinks), symlinked directories are skipped.
+    #[cfg(unix)]
+    #[test]
+    fn test_untracked_ggufs_skips_symlinked_dirs() {
+        use std::os::unix::fs::symlink;
+        let (tmp, registry) = setup_test_dir();
+        let card = create_test_model(tmp.path(), "bartowski", "OmniCoder");
+        let model_dir = tmp
+            .path()
+            .join("models")
+            .join("bartowski")
+            .join("OmniCoder");
+
+        // Create a separate directory with a .gguf file, then symlink it
+        // into the model directory. With the fix, the symlinked dir is NOT
+        // traversed, so its .gguf file should NOT appear in untracked.
+        let external = tmp.path().join("external");
+        std::fs::create_dir_all(&external).unwrap();
+        std::fs::write(external.join("external-shard.gguf"), b"fake").unwrap();
+        symlink(&external, model_dir.join("linked")).unwrap();
+
+        let untracked = registry.untracked_ggufs(&model_dir, &card).unwrap();
+        // The external .gguf must NOT appear — the symlinked dir is skipped.
+        assert!(
+            !untracked.iter().any(|p| p.starts_with("linked/")),
+            "symlinked directory should not be traversed; untracked = {:?}",
+            untracked
+        );
     }
 }

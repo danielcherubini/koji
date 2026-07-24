@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use crate::models::repo_path;
 use crate::proxy::pull_jobs::PullJobStatus;
-use crate::proxy::tama_handlers::types::{is_safe_path_component, QuantDownloadSpec};
+use crate::proxy::tama_handlers::types::{
+    is_safe_path_component, is_safe_relative_path, QuantDownloadSpec,
+};
 use crate::proxy::ProxyState;
 
 /// Start a pull from the queue.
@@ -36,7 +38,7 @@ pub async fn start_pull_from_queue(
     );
 
     // Validate filename and repo_id to prevent path traversal.
-    if !is_safe_path_component(&filename_clone) {
+    if !is_safe_relative_path(&filename_clone) {
         let mut jobs = pull_jobs_arc.write().await;
         if let Some(job) = jobs.get_mut(&job_id_clone) {
             job.status = crate::proxy::pull_jobs::PullJobStatus::Failed;
@@ -138,6 +140,30 @@ pub async fn start_pull_from_queue(
     }
 
     let dest_path = dest_dir.join(&filename_clone);
+
+    // Create the parent directory of dest_path (e.g. for sharded files like
+    // "UD-Q4_K_XL/shard.gguf" the subdirectory doesn't exist yet).
+    if let Some(parent) = dest_path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            let mut jobs = pull_jobs_arc.write().await;
+            if let Some(job) = jobs.get_mut(&job_id_clone) {
+                job.status = crate::proxy::pull_jobs::PullJobStatus::Failed;
+                job.error = Some(format!("Failed to create destination subdirectory: {}", e));
+            }
+            drop(jobs);
+            if let Some(ref svc) = state_clone.pull_queue {
+                let _ = svc.update_status(
+                    &job_id_clone,
+                    "failed",
+                    0,
+                    None,
+                    Some(&format!("Failed to create destination subdirectory: {}", e)),
+                    None,
+                );
+            }
+            return;
+        }
+    }
 
     // In-flight dedup guard: reject if another task is already pulling this path.
     // This prevents two concurrent tasks from writing to the same temp part files,
@@ -438,6 +464,7 @@ pub async fn start_pull_from_queue(
             &spec_clone,
             &dest_dir,
             gguf_metadata.clone(),
+            outcome.is_primary_shard,
         )
         .await;
 
@@ -519,10 +546,10 @@ pub async fn start_pull_from_queue(
                 );
             }
             (Some(_), None) => {
-                tracing::error!(
+                tracing::info!(
                     job_id = %job_id_clone,
                     repo = %repo_id_clone,
-                    "setup_model_after_pull returned no model_id — model_files skipped"
+                    "non-primary shard — model_files row skipped (expected for non-primary shards)"
                 );
             }
         }

@@ -10,6 +10,7 @@ use crate::config::QuantKind;
 use crate::models::card::ModelCard;
 use crate::models::pull::fetch_community_card;
 use crate::models::pull::infer_quant_from_filename;
+use crate::models::pull::BlobInfo;
 use crate::models::pull::GgufMetadata;
 use crate::models::QuantInfo;
 use crate::proxy::pull_jobs::{PullJob, PullJobStatus};
@@ -26,6 +27,36 @@ pub(super) struct VerificationOutcome {
     pub expected_sha: Option<String>,
     pub ok: Option<bool>,
     pub err: Option<String>,
+    /// Whether this file is the primary shard of a sharded quant.
+    /// Single-file quants are always primary. For sharded quants, the primary
+    /// shard (first by sorted filename) is the one whose filename is stored
+    /// in the model card's `QuantInfo.file`.
+    pub is_primary_shard: bool,
+}
+
+/// Determine whether `filename` is the primary shard of a (possibly sharded)
+/// quant, given the full set of blob rfilenames from the HF API.
+///
+/// - Single-file quants (no `/` in the filename) are always primary.
+/// - For sharded quants (filename contains `/`), the primary shard is the
+///   first file by sorted order within the same directory prefix.
+///
+/// This is a pure function so it can be unit-tested without network calls.
+fn determine_primary_shard(filename: &str, blobs: &HashMap<String, BlobInfo>) -> bool {
+    // Single-file quant (no directory) is always primary
+    let dir_prefix = match crate::models::pull::directory_prefix(filename) {
+        Some(prefix) => prefix,
+        None => return true,
+    };
+    // Find all blobs in the exact same directory (not nested subdirs),
+    // sort, and check if current is first. Uses the shared directory_prefix
+    // helper for consistent directory-prefix extraction.
+    let mut siblings: Vec<&String> = blobs
+        .keys()
+        .filter(|k| crate::models::pull::directory_prefix(k) == Some(dir_prefix))
+        .collect();
+    siblings.sort();
+    siblings.first().map(|f| *f == filename).unwrap_or(true)
 }
 
 /// Run the post-pull verification phase for a pull job.
@@ -49,16 +80,38 @@ pub(super) async fn run_verification(
     dest_path: PathBuf,
     bytes: u64,
 ) -> VerificationOutcome {
-    // Step 1: fetch upstream LFS hash (best-effort).
-    let expected_sha: Option<String> =
-        match crate::models::pull::fetch_blob_metadata(&repo_id).await {
-            Ok(blobs) => blobs.get(&filename).and_then(|b| b.lfs_sha256.clone()),
-            Err(e) => {
-                tracing::warn!(job_id = %job_id, repo = %repo_id, error = %e,
-                "Failed to fetch HF blob metadata for verification");
-                None
-            }
-        };
+    // Step 1: fetch upstream blob metadata (best-effort). Reused below to
+    // determine whether this file is the primary shard of a sharded quant,
+    // avoiding a redundant API call.
+    let blobs_result = crate::models::pull::fetch_blob_metadata(&repo_id).await;
+    let expected_sha: Option<String> = blobs_result
+        .as_ref()
+        .ok()
+        .and_then(|blobs| blobs.get(&filename).and_then(|b| b.lfs_sha256.clone()));
+    if let Err(e) = &blobs_result {
+        tracing::warn!(job_id = %job_id, repo = %repo_id, error = %e,
+            "Failed to fetch HF blob metadata for verification");
+    }
+    let is_primary_shard = match blobs_result.as_ref() {
+        Ok(blobs) => determine_primary_shard(&filename, blobs),
+        Err(_) => {
+            // API unavailable — fall back to filename pattern detection.
+            // Single-file quants (no '/') are always primary. Sharded files
+            // are primary if the filename contains the standard HF sharding
+            // marker "00001-of" (first shard). This avoids the race condition
+            // where concurrent shard downloads could each see only themselves
+            // on disk and incorrectly claim to be primary.
+            //
+            // Limitation (Finding 1): this pattern check only recognises the
+            // standard HF sharding marker "00001-of". Repos that use a
+            // non-standard shard naming scheme (e.g. "-part1-of3" or no
+            // numeric prefix) will not be detected as primary here, and a
+            // non-first shard may be incorrectly treated as non-primary.
+            // The blob API path above is the authoritative check and should
+            // succeed in normal operation.
+            !filename.contains('/') || filename.contains("00001-of")
+        }
+    };
 
     // Step 2: transition to Verifying.
     {
@@ -174,6 +227,7 @@ pub(super) async fn run_verification(
             expected_sha,
             ok,
             err,
+            is_primary_shard,
         }
     } else {
         // Verification failed — delete the corrupt/mismatched file so it
@@ -196,6 +250,7 @@ pub(super) async fn run_verification(
             expected_sha,
             ok,
             err,
+            is_primary_shard,
         }
     }
 }
@@ -209,6 +264,7 @@ pub(crate) async fn _setup_model_after_pull_with_config(
     spec: &QuantDownloadSpec,
     dest_dir: &std::path::Path,
     gguf_metadata: Option<&GgufMetadata>,
+    is_primary_shard: bool,
 ) -> Option<String> {
     let repo_slug = crate::models::card_slug(repo_id);
     let card_path = configs_dir.join(format!("{}.toml", repo_slug));
@@ -265,18 +321,21 @@ pub(crate) async fn _setup_model_after_pull_with_config(
         .ok()
         .map(|m| m.len());
 
-    // Insert/update quant entry in card. Detect mmproj files by filename so
-    // they get tagged with `kind = Mmproj` and tracked separately from real
-    // model quants.
-    card.quants.insert(
-        quant_key.clone(),
-        QuantInfo {
-            file: spec.filename.clone(),
-            kind: QuantKind::from_filename(&spec.filename),
-            size_bytes,
-            context_length,
-        },
-    );
+    // Insert/update quant entry in card — only for the primary shard of a
+    // sharded quant. Non-primary shards are tracked via model_files (upsert_file)
+    // but do not get their own card entry, since the primary shard's filename is
+    // what the model card records as the canonical file for the quant.
+    if is_primary_shard {
+        card.quants.insert(
+            quant_key.clone(),
+            QuantInfo {
+                file: spec.filename.clone(),
+                kind: QuantKind::from_filename(&spec.filename),
+                size_bytes,
+                context_length,
+            },
+        );
+    }
 
     // Find an existing model entry for this repo (if any), regardless of
     // its key format. This prevents creating duplicate model entries when
@@ -300,92 +359,106 @@ pub(crate) async fn _setup_model_after_pull_with_config(
     let is_mmproj = matches!(file_kind, QuantKind::Mmproj);
     let is_mtp = matches!(file_kind, QuantKind::Mtp);
     if !is_mmproj && !is_mtp {
-        // Fetch pipeline_tag from HF to infer modalities (best-effort).
-        let modalities = match crate::models::pull::fetch_model_pipeline_tag(repo_id).await {
-            Ok(pipeline_tag) => {
-                crate::models::pull::infer_modalities_from_pipeline(pipeline_tag.as_deref())
+        if is_primary_shard {
+            // Primary shard (including single-file quants): create or enable
+            // the ModelConfig entry so the model appears in the UI and can
+            // be launched immediately.
+            // Fetch pipeline_tag from HF to infer modalities (best-effort).
+            let modalities = match crate::models::pull::fetch_model_pipeline_tag(repo_id).await {
+                Ok(pipeline_tag) => {
+                    crate::models::pull::infer_modalities_from_pipeline(pipeline_tag.as_deref())
+                }
+                Err(e) => {
+                    tracing::debug!(repo = %repo_id, error = %e, "Failed to fetch pipeline_tag for modalities inference");
+                    None
+                }
+            };
+
+            // Generate display name from HF repo name (e.g., "Unsloth: Qwen3.5 35B A3B").
+            let display_name = generate_display_name(repo_id);
+
+            // Reuse the existing model key if we found one, otherwise create a
+            // new entry keyed by the bare repo slug (no per-quant suffix).
+            let model_key = existing_key.unwrap_or_else(|| repo_slug.to_lowercase());
+            let entry = model_configs
+                .entry(model_key.clone())
+                .or_insert_with(|| ModelConfig {
+                    backend: "llama_cpp".to_string(),
+                    gpu_variant: None,
+                    gpu_device: None,
+                    model: Some(repo_id.to_string()),
+                    quant: Some(quant_key.clone()),
+                    mmproj: None,
+                    mtp_model: None,
+                    context_length,
+                    num_parallel: default_num_parallel(),
+                    kv_unified: true,
+                    enabled: true,
+                    args: vec![],
+                    sampling: None,
+                    port: None,
+                    health_check: None,
+                    profile: None,
+                    api_name: Some(repo_id.to_string()),
+                    gpu_layers: None,
+                    cache_type_k: None,
+                    cache_type_v: None,
+                    hf_format: None,
+                    hf_base_model: None,
+                    hf_pipeline_tag: None,
+                    hf_total_params: None,
+                    hf_active_params: None,
+                    hf_architecture_type: None,
+                    hf_context_length: None,
+                    hf_num_layers: None,
+                    hf_last_modified: None,
+                    quants: std::collections::BTreeMap::new(),
+                    modalities: modalities.clone(),
+                    display_name: Some(display_name.clone()),
+                    db_id: None, // will be set after reload_model_configs()
+                    spec_decoding: Default::default(),
+                });
+
+            // Promote a stub entry (created by a prior mmproj-first pull) into a
+            // real, enabled model once the main quant arrives. Without this,
+            // the stub's `quant=None, enabled=false` would persist even though
+            // the model file is now on disk.
+            if entry.quant.is_none() {
+                entry.quant = Some(quant_key);
+                entry.enabled = true;
             }
-            Err(e) => {
-                tracing::debug!(repo = %repo_id, error = %e, "Failed to fetch pipeline_tag for modalities inference");
-                None
+            if entry.context_length.is_none() {
+                entry.context_length = context_length;
             }
-        };
+            if entry.modalities.is_none() {
+                entry.modalities = modalities;
+            }
+            if entry.display_name.is_none() {
+                entry.display_name = Some(display_name);
+            }
 
-        // Generate display name from HF repo name (e.g., "Unsloth: Qwen3.5 35B A3B").
-        let display_name = generate_display_name(repo_id);
+            // Populate hf_* informational fields from GGUF metadata
+            if let Some(meta) = gguf_metadata {
+                entry.hf_architecture_type = meta.architecture.clone();
+                entry.hf_context_length = meta.context_length.map(|v| v as u32);
+                entry.hf_num_layers = meta.block_count.map(|v| v as u32);
+            }
 
-        // Reuse the existing model key if we found one, otherwise create a
-        // new entry keyed by the bare repo slug (no per-quant suffix).
-        let model_key = existing_key.unwrap_or_else(|| repo_slug.to_lowercase());
-        let entry = model_configs
-            .entry(model_key.clone())
-            .or_insert_with(|| ModelConfig {
-                backend: "llama_cpp".to_string(),
-                gpu_variant: None,
-                gpu_device: None,
-                model: Some(repo_id.to_string()),
-                quant: Some(quant_key.clone()),
-                mmproj: None,
-                mtp_model: None,
-                context_length,
-                num_parallel: default_num_parallel(),
-                kv_unified: true,
-                enabled: true,
-                args: vec![],
-                sampling: None,
-                port: None,
-                health_check: None,
-                profile: None,
-                api_name: Some(repo_id.to_string()),
-                gpu_layers: None,
-                cache_type_k: None,
-                cache_type_v: None,
-                hf_format: None,
-                hf_base_model: None,
-                hf_pipeline_tag: None,
-                hf_total_params: None,
-                hf_active_params: None,
-                hf_architecture_type: None,
-                hf_context_length: None,
-                hf_num_layers: None,
-                hf_last_modified: None,
-                quants: std::collections::BTreeMap::new(),
-                modalities: modalities.clone(),
-                display_name: Some(display_name.clone()),
-                db_id: None, // will be set after reload_model_configs()
-                spec_decoding: Default::default(),
-            });
+            // Save card (best-effort — pull is already marked Completed)
+            let _ = std::fs::create_dir_all(configs_dir);
+            let _ = card.save(&card_path);
 
-        // Promote a stub entry (created by a prior mmproj-first pull) into a
-        // real, enabled model once the main quant arrives. Without this, the
-        // stub's `quant=None, enabled=false` would persist even though the
-        // model file is now on disk.
-        if entry.quant.is_none() {
-            entry.quant = Some(quant_key);
-            entry.enabled = true;
+            return Some(model_key);
+        } else {
+            // Non-primary shard of a sharded quant: save the card (for
+            // sampling presets / community card data) but do NOT create a
+            // ModelConfig entry. If the primary shard later fails or is
+            // deleted, an enabled entry with no backing quant would persist
+            // in the UI — appearing loadable but actually broken.
+            let _ = std::fs::create_dir_all(configs_dir);
+            let _ = card.save(&card_path);
+            return None;
         }
-        if entry.context_length.is_none() {
-            entry.context_length = context_length;
-        }
-        if entry.modalities.is_none() {
-            entry.modalities = modalities;
-        }
-        if entry.display_name.is_none() {
-            entry.display_name = Some(display_name);
-        }
-
-        // Populate hf_* informational fields from GGUF metadata
-        if let Some(meta) = gguf_metadata {
-            entry.hf_architecture_type = meta.architecture.clone();
-            entry.hf_context_length = meta.context_length.map(|v| v as u32);
-            entry.hf_num_layers = meta.block_count.map(|v| v as u32);
-        }
-
-        // Save card (best-effort — pull is already marked Completed)
-        let _ = std::fs::create_dir_all(configs_dir);
-        let _ = card.save(&card_path);
-
-        return Some(model_key);
     }
 
     // For mmproj / MTP, still save the card.
@@ -495,6 +568,7 @@ pub(crate) async fn setup_model_after_pull(
     spec: &QuantDownloadSpec,
     dest_dir: &std::path::Path,
     gguf_metadata: Option<GgufMetadata>,
+    is_primary_shard: bool,
 ) -> Option<i64> {
     let _permit = state.config_write_semaphore.acquire().await.ok()?;
     // Clone needed data from config before awaiting — don't hold the read guard
@@ -513,6 +587,7 @@ pub(crate) async fn setup_model_after_pull(
         spec,
         dest_dir,
         gguf_metadata.as_ref(),
+        is_primary_shard,
     )
     .await;
 
@@ -539,4 +614,159 @@ pub(crate) async fn setup_model_after_pull(
     saved_id
     // _guard dropped here, releasing the lock
     // config write guard also dropped here, making the new model entry visible immediately
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::pull::BlobInfo;
+
+    fn make_blob(filename: &str, size: i64, sha: Option<&str>) -> BlobInfo {
+        BlobInfo {
+            filename: filename.to_string(),
+            blob_id: None,
+            size: Some(size),
+            lfs_sha256: sha.map(String::from),
+        }
+    }
+
+    #[test]
+    fn test_determine_primary_shard() {
+        let mut blobs = HashMap::new();
+        // Sharded quant: 3 shards in UD-Q4_K_XL/
+        blobs.insert(
+            "UD-Q4_K_XL/Laguna-S-2.1-UD-Q4_K_XL-00001-of-00003.gguf".to_string(),
+            make_blob(
+                "UD-Q4_K_XL/Laguna-S-2.1-UD-Q4_K_XL-00001-of-00003.gguf",
+                100,
+                Some("sha1"),
+            ),
+        );
+        blobs.insert(
+            "UD-Q4_K_XL/Laguna-S-2.1-UD-Q4_K_XL-00002-of-00003.gguf".to_string(),
+            make_blob(
+                "UD-Q4_K_XL/Laguna-S-2.1-UD-Q4_K_XL-00002-of-00003.gguf",
+                200,
+                Some("sha2"),
+            ),
+        );
+        blobs.insert(
+            "UD-Q4_K_XL/Laguna-S-2.1-UD-Q4_K_XL-00003-of-00003.gguf".to_string(),
+            make_blob(
+                "UD-Q4_K_XL/Laguna-S-2.1-UD-Q4_K_XL-00003-of-00003.gguf",
+                300,
+                Some("sha3"),
+            ),
+        );
+        // Single-file quant (no directory)
+        blobs.insert(
+            "Laguna-S-2.1-Q4_K_M.gguf".to_string(),
+            make_blob("Laguna-S-2.1-Q4_K_M.gguf", 500, Some("sha4")),
+        );
+
+        // Single-file quant (no '/') is always primary
+        assert!(
+            determine_primary_shard("Laguna-S-2.1-Q4_K_M.gguf", &blobs),
+            "single-file quant should be primary"
+        );
+
+        // First shard (by sorted filename order) is primary
+        assert!(
+            determine_primary_shard(
+                "UD-Q4_K_XL/Laguna-S-2.1-UD-Q4_K_XL-00001-of-00003.gguf",
+                &blobs,
+            ),
+            "first shard should be primary"
+        );
+
+        // Non-primary shards are NOT primary
+        assert!(
+            !determine_primary_shard(
+                "UD-Q4_K_XL/Laguna-S-2.1-UD-Q4_K_XL-00002-of-00003.gguf",
+                &blobs,
+            ),
+            "second shard should not be primary"
+        );
+        assert!(
+            !determine_primary_shard(
+                "UD-Q4_K_XL/Laguna-S-2.1-UD-Q4_K_XL-00003-of-00003.gguf",
+                &blobs,
+            ),
+            "third shard should not be primary"
+        );
+    }
+
+    /// Verifies that nested subdirectories are handled correctly — files
+    /// in `a/b/` and `a/b/c/` are treated as separate groups, not merged.
+    #[test]
+    fn test_determine_primary_shard_nested_directories() {
+        let mut blobs = HashMap::new();
+        // File in a/b/ directory
+        blobs.insert(
+            "a/b/file1.gguf".to_string(),
+            make_blob("a/b/file1.gguf", 100, None),
+        );
+        // File in nested a/b/c/ directory — should NOT be grouped with a/b/
+        blobs.insert(
+            "a/b/c/file2.gguf".to_string(),
+            make_blob("a/b/c/file2.gguf", 200, None),
+        );
+
+        // file1 should be primary of its group (a/b/ — only file in that dir)
+        assert!(
+            determine_primary_shard("a/b/file1.gguf", &blobs),
+            "file1 should be primary of group a/b/"
+        );
+        // file2 should be primary of its group (a/b/c/ — only file in that dir)
+        assert!(
+            determine_primary_shard("a/b/c/file2.gguf", &blobs),
+            "file2 should be primary of group a/b/c/"
+        );
+    }
+
+    /// When the HF blob API returns `Err`, the fallback uses filename pattern
+    /// inspection instead of disk state to avoid a race condition where concurrent
+    /// shard downloads could each see only themselves on disk and incorrectly
+    /// claim to be primary.
+    ///
+    /// - Single-file quants (no `/`) default to primary (`true`).
+    /// - Sharded files containing `00001-of` are treated as primary (`true`).
+    /// - Other sharded files (e.g. `00002-of`) default to non-primary (`false`).
+    #[test]
+    fn test_is_primary_shard_fallback_on_api_failure() {
+        // Single-file quant — no directory separator, always primary.
+        assert!(
+            !"Laguna-S-2.1-Q4_K_M.gguf".contains('/')
+                || "Laguna-S-2.1-Q4_K_M.gguf".contains("00001-of"),
+            "single-file quant should be primary"
+        );
+        assert!(!"Laguna-S-2.1-Q4_K_M.gguf".contains('/'));
+
+        // First shard of a sharded quant — contains the standard HF marker.
+        let first_shard = "UD-Q4_K_XL/Laguna-S-2.1-UD-Q4_K_XL-00001-of-00003.gguf";
+        assert!(
+            first_shard.contains("00001-of"),
+            "first shard should contain the 00001-of marker"
+        );
+        assert!(
+            first_shard.contains('/') && first_shard.contains("00001-of"),
+            "first shard with marker should be primary"
+        );
+
+        // Non-first shard — has `/` but does NOT contain the 00001-of marker.
+        let second_shard = "UD-Q4_K_XL/Laguna-S-2.1-UD-Q4_K_XL-00002-of-00003.gguf";
+        assert!(!second_shard.contains("00001-of"));
+        assert!(
+            !(second_shard.contains('/') && second_shard.contains("00001-of")),
+            "non-first shard should not be primary"
+        );
+
+        // Third shard — same as above, not primary.
+        let third_shard = "UD-Q4_K_XL/Laguna-S-2.1-UD-Q4_K_XL-00003-of-00003.gguf";
+        assert!(!third_shard.contains("00001-of"));
+        assert!(
+            !(third_shard.contains('/') && third_shard.contains("00001-of")),
+            "third shard should not be primary"
+        );
+    }
 }

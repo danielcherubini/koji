@@ -748,7 +748,7 @@ mod tests {
             Some(123),
         )
         .unwrap();
-        assert!(!repo.get_model_config(id).unwrap().is_none());
+        assert!(repo.get_model_config(id).unwrap().is_some());
         repo.delete_config(id).unwrap();
         assert!(repo.get_model_config(id).unwrap().is_none());
         assert!(repo.get_files(id).unwrap().is_empty());
