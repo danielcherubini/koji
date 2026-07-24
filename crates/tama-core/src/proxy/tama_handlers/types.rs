@@ -22,6 +22,8 @@ pub struct QuantEntry {
     /// What kind of file this is (model quant vs vision projector). Used by
     /// the frontend wizard to group files into the correct step.
     pub kind: crate::config::QuantKind,
+    /// Sharded GGUF file names belonging to this quant entry.
+    pub shards: Vec<String>,
 }
 
 /// A single quantisation variant to pull (used in multi-quant wizard format).

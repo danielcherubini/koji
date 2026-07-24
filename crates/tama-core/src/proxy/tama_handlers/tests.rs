@@ -304,6 +304,7 @@ fn test_quant_entry_serializes() {
         quant: Some("Q4_K_M".to_string()),
         size_bytes: Some(4_200_000_000),
         kind: crate::config::QuantKind::Model,
+        shards: Vec::new(),
     };
 
     let value = serde_json::to_value(&entry).expect("serialization failed");

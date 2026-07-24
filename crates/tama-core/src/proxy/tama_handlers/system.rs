@@ -71,6 +71,7 @@ pub async fn handle_hf_list_quants(Path(repo_id): Path<String>) -> Response {
                         filename: b.filename,
                         size_bytes: b.size,
                         kind,
+                        shards: Vec::new(),
                     }
                 })
                 .collect();

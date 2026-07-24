@@ -57,6 +57,7 @@ pub async fn hf_metadata(
                             quant,
                             size_bytes: b.size,
                             kind,
+                            shards: Vec::new(),
                         }
                     })
                     .collect();
@@ -75,6 +76,7 @@ struct QuantEntry {
     quant: Option<String>,
     size_bytes: Option<i64>,
     kind: QuantKind,
+    shards: Vec<String>,
 }
 
 #[cfg(test)]

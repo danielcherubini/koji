@@ -45,6 +45,8 @@ pub struct QuantEntry {
     pub size_bytes: Option<i64>,
     #[serde(default)]
     pub kind: QuantKind,
+    #[serde(default)]
+    pub shards: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
