@@ -434,24 +434,39 @@ mod tests {
 
     /// Seed a config directory with a minimal `tama.db` for backup tests.
     ///
-    /// Creates `configs/` directory and a `tama.db` with the three-table DDL
-    /// (model_pulls, model_files, backend_installations) and one model_pulls
-    /// row for `test/repo`. Does NOT call `tama_core::db::open` — the raw DDL
-    /// keeps the test independent of migration details.
+    /// Uses `tama_core::db::open` so migrations run and the schema is fully
+    /// compatible with the local DB (required for merge_database to work).
     fn seed_config_dir(dir: &std::path::Path) {
+        use tama_core::db;
+
         std::fs::create_dir_all(dir.join("configs")).expect("create configs dir");
 
-        let db_path = dir.join("tama.db");
-        let conn = rusqlite::Connection::open(&db_path).expect("open db");
-        conn.execute_batch(
-            "CREATE TABLE model_pulls (id INTEGER PRIMARY KEY AUTOINCREMENT, repo_id TEXT NOT NULL, commit_sha TEXT NOT NULL, pulled_at TEXT NOT NULL, UNIQUE(repo_id));
-             CREATE TABLE model_files (id INTEGER PRIMARY KEY AUTOINCREMENT, repo_id TEXT NOT NULL, filename TEXT NOT NULL, quant TEXT, lfs_oid TEXT, size_bytes INTEGER NOT NULL, downloaded_at TEXT NOT NULL, last_verified_at TEXT, verified_ok INTEGER, verify_error TEXT, UNIQUE(repo_id, filename));
-             CREATE TABLE backend_installations (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, backend_type TEXT NOT NULL, version TEXT NOT NULL, path TEXT NOT NULL, installed_at INTEGER NOT NULL, gpu_variant TEXT NOT NULL DEFAULT 'cpu', source TEXT, is_active INTEGER NOT NULL DEFAULT 0, UNIQUE(name, gpu_variant, version));",
-        ).expect("create tables");
-        conn.execute(
-            "INSERT INTO model_pulls (repo_id, commit_sha, pulled_at) VALUES ('test/repo', 'abc123', '2024-01-01T00:00:00Z');",
-            [],
-        ).expect("insert model pull");
+        let open = db::open(dir).expect("open db");
+        // Seed defaults so Config::load_from works.
+        tama_core::db::queries::seed_defaults(&open.conn).expect("seed defaults");
+
+        // Insert a model_config first (model_pulls has FK to model_configs).
+        open.conn
+            .execute(
+                "INSERT INTO model_configs (repo_id, backend) VALUES ('test/repo', 'llama_cpp')",
+                [],
+            )
+            .expect("insert model_config");
+        let model_id: i64 = open
+            .conn
+            .query_row(
+                "SELECT id FROM model_configs WHERE repo_id = 'test/repo'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("get model_id");
+        open.conn
+            .execute(
+                "INSERT INTO model_pulls (model_id, repo_id, commit_sha, pulled_at) \
+                 VALUES (?1, 'test/repo', 'abc123', '2024-01-01T00:00:00Z')",
+                [model_id],
+            )
+            .expect("insert model pull");
     }
 
     /// Build a test app router with the given ProxyState and WebState.
@@ -937,6 +952,488 @@ mod tests {
             manifest.models.iter().any(|m| m.repo_id == "test/repo"),
             "manifest should contain test/repo model, got models: {:?}",
             manifest.models
+        );
+    }
+
+    // ── Route-level restore tests (full router with CSRF middleware) ───────
+
+    /// Seed a source config dir with extra data and create a backup archive.
+    fn seed_source_and_make_archive(source_dir: &std::path::Path, archive_path: &std::path::Path) {
+        use tama_core::db;
+
+        std::fs::create_dir_all(source_dir.join("configs")).unwrap();
+
+        let open = db::open(source_dir).unwrap();
+        tama_core::db::queries::seed_defaults(&open.conn).unwrap();
+
+        // Seed model_config + model_pulls for 'test/repo'.
+        open.conn
+            .execute(
+                "INSERT INTO model_configs (repo_id, backend) VALUES ('test/repo', 'llama_cpp')",
+                [],
+            )
+            .unwrap();
+        let mid: i64 = open
+            .conn
+            .query_row(
+                "SELECT id FROM model_configs WHERE repo_id='test/repo'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        open.conn
+            .execute(
+                "INSERT INTO model_pulls (model_id, repo_id, commit_sha, pulled_at) \
+                 VALUES (?1, 'test/repo', 'abc123', '2024-01-01T00:00:00Z')",
+                [mid],
+            )
+            .unwrap();
+
+        // Insert an EXTRA row that the local dir does NOT have (proves merge works).
+        open.conn
+            .execute(
+                "INSERT INTO model_configs (repo_id, backend) VALUES ('source/only', 'llama_cpp')",
+                [],
+            )
+            .unwrap();
+        let mid2: i64 = open
+            .conn
+            .query_row(
+                "SELECT id FROM model_configs WHERE repo_id='source/only'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        open.conn
+            .execute(
+                "INSERT INTO model_pulls (model_id, repo_id, commit_sha, pulled_at) \
+                 VALUES (?1, 'source/only', 'def456', '2024-01-01T00:00:00Z')",
+                [mid2],
+            )
+            .unwrap();
+
+        // Insert a backend_configs row for 'llama_cpp'/'cpu'.
+        open.conn
+            .execute(
+                "INSERT INTO backend_configs (name, gpu_variant, default_args, default_env, \
+                 health_check_url) VALUES ('llama_cpp', 'cpu', '[]', '[]', NULL)",
+                [],
+            )
+            .unwrap();
+
+        // Insert a backend_installations row.
+        open.conn
+            .execute(
+                "INSERT INTO backend_installations (name, backend_type, version, path, \
+                 installed_at, gpu_variant, source, is_active) VALUES ('llama_cpp', 'llama_cpp', \
+                 'v1.0', '/tmp/llama', 1234567890, 'cpu', 'prebuilt', 1)",
+                [],
+            )
+            .unwrap();
+
+        drop(open); // Close connection before create_backup.
+        tama_core::backup::create_backup(source_dir, archive_path).expect("create fixture archive");
+    }
+
+    /// Poll a job until it reaches a terminal state (Succeeded or Failed).
+    async fn wait_for_job(
+        jobs: &Arc<crate::web_types::JobManager>,
+        job_id: &str,
+    ) -> (crate::web_types::JobStatus, Option<String>) {
+        for _ in 0..100 {
+            if let Some(job) = jobs.get(&job_id.to_string()).await {
+                let state = job.state.read().await;
+                if state.status != crate::web_types::JobStatus::Running {
+                    return (state.status, state.error.clone());
+                }
+                drop(state);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("wait_for_job timed out for job {}", job_id);
+    }
+
+    // ── Test 1: unknown upload → 404 ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_start_restore_unknown_upload_returns_404() {
+        use axum::{body::Body, extract::Extension, routing::post, Router};
+        use serde_json::json;
+        use tower::ServiceExt;
+
+        let config_temp = tempfile::tempdir().unwrap();
+        seed_config_dir(config_temp.path());
+
+        let proxy_state = Arc::new(ProxyState::new(
+            tama_core::config::Config::default(),
+            Some(config_temp.path().to_path_buf()),
+        ));
+
+        let web_state = WebState {
+            jobs: Some(Arc::new(crate::web_types::JobManager::new())),
+            capabilities: None,
+            update_checker: Arc::new(tama_core::updates::UpdateChecker::default()),
+            binary_version: "test".to_string(),
+            update_tx: Arc::new(tokio::sync::Mutex::new(None)),
+            upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            repository: None,
+        };
+
+        let app = Router::new()
+            .route("/tama/v1/restore", post(start_restore))
+            .layer(Extension(web_state))
+            .with_state(proxy_state);
+
+        // POST with unknown upload_id → 404.
+        let csrf_token = "t";
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/tama/v1/restore")
+            .header(
+                axum::http::header::COOKIE,
+                format!("tama_csrf_token={}", csrf_token),
+            )
+            .header("X-CSRF-Token", csrf_token)
+            .header("Content-Type", "application/json")
+            .body(Body::from(json!({"upload_id": "nope"}).to_string()))
+            .unwrap();
+
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["type"], "NotFoundError");
+    }
+
+    // ── Test 2: happy path – merges archive and completes job ─────────────
+
+    #[tokio::test]
+    async fn test_start_restore_merges_archive_and_completes_job() {
+        use axum::{body::Body, routing::post, Router};
+        use serde_json::json;
+        use tama_core::db;
+        use tower::ServiceExt;
+
+        // Local config dir (seeded with seed_config_dir).
+        let local_temp = tempfile::tempdir().unwrap();
+        seed_config_dir(local_temp.path());
+
+        // Source dir: seeded + archive created.
+        let source_temp = tempfile::tempdir().unwrap();
+        let archive_path = source_temp.path().join("backup.tar.gz");
+        seed_source_and_make_archive(source_temp.path(), &archive_path);
+
+        // Create the JobManager first so we can keep a reference for wait_for_job.
+        let jobs = Arc::new(crate::web_types::JobManager::new());
+
+        // Upload lock entry (simulates upload endpoint having stored the file).
+        let upload_id = "up-merge".to_string();
+        let upload_lock = Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::from([
+            (
+                upload_id.clone(),
+                UploadEntry {
+                    path: archive_path.clone(),
+                    created_at: chrono::Utc::now(),
+                },
+            ),
+        ])));
+
+        let proxy_state = Arc::new(ProxyState::new(
+            tama_core::config::Config::default(),
+            Some(local_temp.path().to_path_buf()),
+        ));
+
+        let web_state = WebState {
+            jobs: Some(jobs.clone()),
+            capabilities: None,
+            update_checker: Arc::new(tama_core::updates::UpdateChecker::default()),
+            binary_version: "test".to_string(),
+            update_tx: Arc::new(tokio::sync::Mutex::new(None)),
+            upload_lock: upload_lock.clone(),
+            repository: None,
+        };
+
+        let app = Router::new()
+            .route("/tama/v1/restore", post(start_restore))
+            .layer(Extension(web_state))
+            .with_state(proxy_state.clone());
+
+        // POST → 200 with job_id.
+        let csrf_token = "m";
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/tama/v1/restore")
+            .header(
+                axum::http::header::COOKIE,
+                format!("tama_csrf_token={}", csrf_token),
+            )
+            .header("X-CSRF-Token", csrf_token)
+            .header("Content-Type", "application/json")
+            .body(Body::from(json!({"upload_id": upload_id}).to_string()))
+            .unwrap();
+
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let job_id = json["job_id"]
+            .as_str()
+            .expect("job_id in response")
+            .to_string();
+
+        // Wait for the background job to finish.
+        let (status, error) = wait_for_job(&jobs, &job_id).await;
+        assert_eq!(status, crate::web_types::JobStatus::Succeeded);
+        assert!(error.is_none(), "job should not have error: {:?}", error);
+
+        // Verify: source/only model_pulls row was merged.
+        let open = db::open(local_temp.path()).unwrap();
+        let count: i64 = open
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM model_pulls WHERE repo_id = 'source/only'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "source/only should have been merged");
+
+        // Verify: backends HashMap contains "llama_cpp" key.
+        {
+            let config = proxy_state.config().read().await;
+            assert!(
+                config.backends.contains_key("llama_cpp"),
+                "backends should contain 'llama_cpp'"
+            );
+        }
+
+        // Verify: uploaded archive file no longer exists (cleanup after restore).
+        assert!(
+            !archive_path.exists(),
+            "archive should have been deleted after restore"
+        );
+    }
+
+    // ── Test 3: corrupt archive → job fails, local DB/configs untouched ──
+
+    #[tokio::test]
+    async fn test_start_restore_corrupt_archive_fails_job_and_leaves_config_untouched() {
+        use axum::{body::Body, routing::post, Router};
+        use serde_json::json;
+        use tama_core::db;
+        use tower::ServiceExt;
+
+        let local_temp = tempfile::tempdir().unwrap();
+        seed_config_dir(local_temp.path());
+
+        // Write a non-gzip file as the "archive".
+        let upload_id = "up-corrupt".to_string();
+        let archive_path = local_temp.path().join("corrupt.tar.gz");
+        std::fs::write(&archive_path, b"not a gzip").unwrap();
+
+        // Create the JobManager first so we can keep a reference for wait_for_job.
+        let jobs = Arc::new(crate::web_types::JobManager::new());
+
+        let proxy_state = Arc::new(ProxyState::new(
+            tama_core::config::Config::default(),
+            Some(local_temp.path().to_path_buf()),
+        ));
+
+        let upload_lock = Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::from([
+            (
+                upload_id.clone(),
+                UploadEntry {
+                    path: archive_path.clone(),
+                    created_at: chrono::Utc::now(),
+                },
+            ),
+        ])));
+
+        let web_state = WebState {
+            jobs: Some(jobs.clone()),
+            capabilities: None,
+            update_checker: Arc::new(tama_core::updates::UpdateChecker::default()),
+            binary_version: "test".to_string(),
+            update_tx: Arc::new(tokio::sync::Mutex::new(None)),
+            upload_lock: upload_lock.clone(),
+            repository: None,
+        };
+
+        let app = Router::new()
+            .route("/tama/v1/restore", post(start_restore))
+            .layer(Extension(web_state))
+            .with_state(proxy_state.clone());
+
+        // POST → 200 (job accepted).
+        let csrf_token = "c";
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/tama/v1/restore")
+            .header(
+                axum::http::header::COOKIE,
+                format!("tama_csrf_token={}", csrf_token),
+            )
+            .header("X-CSRF-Token", csrf_token)
+            .header("Content-Type", "application/json")
+            .body(Body::from(json!({"upload_id": upload_id}).to_string()))
+            .unwrap();
+
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let job_id = json["job_id"]
+            .as_str()
+            .expect("job_id in response")
+            .to_string();
+
+        // Wait for the background job to finish.
+        let (status, error) = wait_for_job(&jobs, &job_id).await;
+        assert_eq!(status, crate::web_types::JobStatus::Failed);
+        let err_msg = error.expect("error text on failed job");
+        assert!(
+            err_msg.to_lowercase().contains("extract"),
+            "error should mention extraction failure, got: {}",
+            err_msg
+        );
+
+        // Verify: local DB still has exactly 1 model_pulls row (the seeded 'test/repo').
+        let open = db::open(local_temp.path()).unwrap();
+        let count: i64 = open
+            .conn
+            .query_row("SELECT COUNT(*) FROM model_pulls", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            count, 1,
+            "local DB should still have exactly 1 model_pulls row"
+        );
+
+        // Verify: local/configs/ has no new files.
+        let configs_dir = local_temp.path().join("configs");
+        let entries: Vec<_> = std::fs::read_dir(&configs_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .collect();
+        assert!(
+            entries.is_empty(),
+            "configs dir should have no new files after failed restore, got: {:?}",
+            entries
+        );
+    }
+
+    // ── Test 4: tampered archive (SHA mismatch) → job fails ───────────────
+
+    #[tokio::test]
+    async fn test_start_restore_tampered_sha_fails_job() {
+        use axum::{body::Body, routing::post, Router};
+        use serde_json::json;
+        use tama_core::db;
+        use tower::ServiceExt;
+
+        let local_temp = tempfile::tempdir().unwrap();
+        seed_config_dir(local_temp.path());
+
+        // Source dir: create a valid archive.
+        let source_temp = tempfile::tempdir().unwrap();
+        let archive_path = source_temp.path().join("backup.tar.gz");
+        seed_source_and_make_archive(source_temp.path(), &archive_path);
+
+        // Read the file, tamper with it (XOR a byte in the middle of the
+        // compressed data — avoids the gzip trailer where CRC32 checks may
+        // be skipped by some decompressors), then rewrite.
+        let mut file_bytes = std::fs::read(&archive_path).expect("read archive");
+        if file_bytes.len() > 20 {
+            // Pick a position well past the gzip header (10+ bytes) but before
+            // the final 8-byte trailer. This corrupts actual compressed data.
+            let tamper_idx = file_bytes.len() / 2;
+            file_bytes[tamper_idx] ^= 0xFF;
+        }
+        // Rewrite the tampered archive.
+        std::fs::write(&archive_path, &file_bytes).expect("rewrite tampered archive");
+
+        let upload_id = "up-tampered".to_string();
+
+        // Create the JobManager first so we can keep a reference for wait_for_job.
+        let jobs = Arc::new(crate::web_types::JobManager::new());
+
+        let upload_lock = Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::from([
+            (
+                upload_id.clone(),
+                UploadEntry {
+                    path: archive_path.clone(),
+                    created_at: chrono::Utc::now(),
+                },
+            ),
+        ])));
+
+        let proxy_state = Arc::new(ProxyState::new(
+            tama_core::config::Config::default(),
+            Some(local_temp.path().to_path_buf()),
+        ));
+
+        let web_state = WebState {
+            jobs: Some(jobs.clone()),
+            capabilities: None,
+            update_checker: Arc::new(tama_core::updates::UpdateChecker::default()),
+            binary_version: "test".to_string(),
+            update_tx: Arc::new(tokio::sync::Mutex::new(None)),
+            upload_lock: upload_lock.clone(),
+            repository: None,
+        };
+
+        let app = Router::new()
+            .route("/tama/v1/restore", post(start_restore))
+            .layer(Extension(web_state))
+            .with_state(proxy_state.clone());
+
+        // POST → 200 (job accepted).
+        let csrf_token = "t";
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/tama/v1/restore")
+            .header(
+                axum::http::header::COOKIE,
+                format!("tama_csrf_token={}", csrf_token),
+            )
+            .header("X-CSRF-Token", csrf_token)
+            .header("Content-Type", "application/json")
+            .body(Body::from(json!({"upload_id": upload_id}).to_string()))
+            .unwrap();
+
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let job_id = json["job_id"]
+            .as_str()
+            .expect("job_id in response")
+            .to_string();
+
+        // Wait for the background job to finish.
+        let (status, _error) = wait_for_job(&jobs, &job_id).await;
+        assert_eq!(status, crate::web_types::JobStatus::Failed);
+
+        // Verify: local DB unchanged (still 1 model_pulls row).
+        let open = db::open(local_temp.path()).unwrap();
+        let count: i64 = open
+            .conn
+            .query_row("SELECT COUNT(*) FROM model_pulls", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            count, 1,
+            "local DB should still have exactly 1 model_pulls row"
         );
     }
 }
