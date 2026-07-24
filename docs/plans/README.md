@@ -13,8 +13,8 @@ Plans for features, refactors, and bug fixes in the Tama project.
 ## Quick Stats
 
 - **Total Plans**: 75
-- **Backlog**: 17
-- **Completed**: 57 ✅
+- **Backlog**: 16
+- **Completed**: 58 ✅
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan.
 
@@ -26,7 +26,6 @@ Current plans ready for execution, ordered by dependency-first cascade priority:
 
 | Plan | Description | Findings |
 |------|-------------|----------|
-| [Backup Restore](plan-163-backup-restore.md) | Implement restore for real (extract→validate→merge) | F6 |
 | [OAuth2 Flow Tests](plan-164-oauth2-flow-tests.md) | ~16 tests for login/callback/logout handlers | F8 |
 | [forward_request Tests](plan-165-forward-request-tests.md) | Dead-PID 502 + cleanup, circuit-breaker behavior | F9 |
 | [Pull Handler Tests](plan-166-pull-handler-tests.md) | Validation, enqueue, job GET/SSE via wiremock HF | F10 |
