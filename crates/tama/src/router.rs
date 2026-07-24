@@ -19,7 +19,7 @@ use crate::api::backends::{
     remove_backend, remove_backend_version, system_capabilities, update_backend,
     update_backend_default_args, update_backend_default_env, update_backend_source,
 };
-use crate::api::backup::{restore_preview, start_restore};
+use crate::api::backup::{create_backup, restore_preview, start_restore};
 use crate::api::benchmarks::{
     benchmark_events, delete_benchmark, get_benchmark_result, list_benchmark_history,
     run_benchmark, run_mtp_benchmark, run_spec_benchmark,
@@ -153,6 +153,8 @@ pub fn build_web_routes(
         .route("/tama/v1/backends/jobs/:id", get(get_job))
         .route("/tama/v1/backends/jobs/:id/events", get(job_events_sse))
         .route("/tama/v1/backends/compaction", post(update_compaction))
+        // Backup download (GET passes through CSRF token issuance)
+        .route("/tama/v1/backup", get(create_backup))
         // Restore routes (CSRF-protected)
         .route(
             "/tama/v1/restore/preview",

@@ -143,27 +143,54 @@ pub fn merge_database(
     let backup_db_path_str = backup_db_path.to_string_lossy().to_string();
     guard.attach(&backup_db_path_str)?;
 
-    // Merge model_pulls (explicit column list, no id)
+    // Merge model_configs first — new repos from the backup become available
+    // for model_pulls / model_files resolution below.
+    //
+    // NOTE: This was changed from a partial two-column merge because the old code
+    // silently failed to preserve model_pulls/model_files after migration _0008
+    // added the `id`/model_id FK column — without a full copy, INSERT OR IGNORE
+    // on model_pulls could not resolve the FK. Copying all columns (except id,
+    // created_at, updated_at) ensures defaults apply and data is preserved.
+    local_db
+        .execute_batch(
+            "INSERT OR IGNORE INTO model_configs \
+             (repo_id, display_name, backend, gpu_variant, enabled, selected_quant, selected_mmproj, \
+              context_length, num_parallel, kv_unified, gpu_layers, cache_type_k, cache_type_v, port, \
+              args, sampling, modalities, profile, api_name, health_check, hf_format, hf_base_model, \
+              hf_pipeline_tag, hf_total_params, hf_active_params, hf_architecture_type, \
+              hf_context_length, hf_num_layers, hf_last_modified, spec_decoding, selected_mtp_model, gpu_device) \
+             SELECT repo_id, display_name, backend, gpu_variant, enabled, selected_quant, selected_mmproj, \
+              context_length, num_parallel, kv_unified, gpu_layers, cache_type_k, cache_type_v, port, \
+              args, sampling, modalities, profile, api_name, health_check, hf_format, hf_base_model, \
+              hf_pipeline_tag, hf_total_params, hf_active_params, hf_architecture_type, \
+              hf_context_length, hf_num_layers, hf_last_modified, spec_decoding, selected_mtp_model, gpu_device \
+             FROM backup_db.model_configs",
+        )
+        .context("Failed to merge model_configs")?;
+
+    // Merge model_pulls — resolve local model_id via repo_id LOWER join.
     let before = count_model_pulls(local_db)?;
     local_db
         .execute_batch(
-            "INSERT OR IGNORE INTO model_pulls (repo_id, commit_sha, pulled_at) \
-         SELECT repo_id, commit_sha, pulled_at FROM backup_db.model_pulls",
+            "INSERT OR IGNORE INTO model_pulls (model_id, repo_id, commit_sha, pulled_at) \
+         SELECT mc.id, bp.repo_id, bp.commit_sha, bp.pulled_at \
+         FROM backup_db.model_pulls bp \
+         JOIN model_configs mc ON LOWER(mc.repo_id) = LOWER(bp.repo_id)",
         )
         .context("Failed to merge model_pulls")?;
     let after = count_model_pulls(local_db)?;
     stats.new_model_pulls = after.saturating_sub(before);
 
-    // Merge model_files (explicit column list, no id)
+    // Merge model_files — resolve local model_id via repo_id LOWER join.
     let before = count_model_files(local_db)?;
     local_db
         .execute_batch(
-            "INSERT OR IGNORE INTO model_files \
-         (repo_id, filename, quant, lfs_oid, size_bytes, downloaded_at, \
-          last_verified_at, verified_ok, verify_error) \
-         SELECT repo_id, filename, quant, lfs_oid, size_bytes, downloaded_at, \
-                last_verified_at, verified_ok, verify_error \
-         FROM backup_db.model_files",
+            "INSERT OR IGNORE INTO model_files (model_id, repo_id, filename, quant, \
+             lfs_oid, size_bytes, downloaded_at, last_verified_at, verified_ok, verify_error) \
+         SELECT mc.id, bf.repo_id, bf.filename, bf.quant, bf.lfs_oid, bf.size_bytes, \
+                bf.downloaded_at, bf.last_verified_at, bf.verified_ok, bf.verify_error \
+         FROM backup_db.model_files bf \
+         JOIN model_configs mc ON LOWER(mc.repo_id) = LOWER(bf.repo_id)",
         )
         .context("Failed to merge model_files")?;
     let after = count_model_files(local_db)?;

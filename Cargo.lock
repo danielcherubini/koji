@@ -4198,6 +4198,7 @@ dependencies = [
  "nix",
  "regex",
  "reqwest 0.12.28",
+ "rusqlite",
  "serde",
  "serde_json",
  "tama-core",
