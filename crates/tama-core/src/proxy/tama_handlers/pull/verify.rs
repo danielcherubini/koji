@@ -94,7 +94,7 @@ pub(super) async fn run_verification(
     }
     let is_primary_shard = match blobs_result.as_ref() {
         Ok(blobs) => determine_primary_shard(&filename, blobs),
-        Err(_) => true, // fail-safe: default to primary for single-file quants
+        Err(_) => !filename.contains('/'), // fail-safe: single-file quants (no '/') default to primary; sharded files default to false
     };
 
     // Step 2: transition to Verifying.

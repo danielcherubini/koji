@@ -727,8 +727,7 @@ mod tests {
         let jobs = vec![make_job("job-1", "model-Q4_K_M.gguf", "failed", 0)];
         let quants_listing = vec![make_quant("model-Q4_K_M.gguf")];
 
-        let completed =
-            build_completed_quants(&jobs, &quants_listing, &vec![], &vec![], "owner/repo");
+        let completed = build_completed_quants(&jobs, &quants_listing, &[], &[], "owner/repo");
         assert!(
             completed.is_empty(),
             "failed jobs should produce no CompletedQuant"
@@ -763,7 +762,7 @@ mod tests {
         let mmprojs = vec![make_quant("mmproj.gguf")];
         let mtps = vec![make_quant("mtp.gguf")];
 
-        let completed = build_completed_quants(&jobs, &vec![], &mmprojs, &mtps, "owner/repo");
+        let completed = build_completed_quants(&jobs, &[], &mmprojs, &mtps, "owner/repo");
         assert_eq!(completed.len(), 2);
         assert!(completed.iter().any(|c| c.filename == "mmproj.gguf"));
         assert!(completed.iter().any(|c| c.filename == "mtp.gguf"));
