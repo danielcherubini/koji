@@ -37,9 +37,15 @@ async fn test_setup_model_creates_card() {
     // Call the inner helper directly (avoids relying on system Config::load())
     let mut models = std::collections::HashMap::new();
     _setup_model_after_pull_with_config(
-        &configs_dir, &mut models, repo_id, &spec, &dest_dir, None, true,
+        &configs_dir,
+        &mut models,
+        repo_id,
+        &spec,
+        &dest_dir,
+        None,
+        true,
     )
-        .await;
+    .await;
 
     // Assert the card file exists
     let card_path = configs_dir.join(format!("{}.toml", repo_slug));

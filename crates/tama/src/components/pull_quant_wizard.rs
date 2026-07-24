@@ -80,24 +80,14 @@ pub fn PullQuantWizard(
 
             let jobs = pull_jobs.get_untracked();
             let quants_listing = available_quants.get_untracked();
+            let mmprojs = available_mmprojs.get_untracked();
+            let mtps = available_mtps.get_untracked();
             let repo = repo_id.get_untracked();
 
-            let completed: Vec<CompletedQuant> = jobs
-                .into_iter()
-                .filter(|j| j.status == "completed")
-                .map(|j| {
-                    let entry = quants_listing.iter().find(|q| q.filename == j.filename);
-                    let quant = entry
-                        .and_then(|e| e.quant.clone())
-                        .or_else(|| infer_quant_from_filename(&j.filename));
-                    CompletedQuant {
-                        repo_id: repo.clone(),
-                        filename: j.filename.clone(),
-                        quant,
-                        size_bytes: Some(j.bytes_pulled),
-                    }
-                })
-                .collect();
+            // Filter to only primary shard filenames — non-primary shards
+            // (whose filenames only appear in `shards` vectors) would overwrite
+            // the primary file reference in the model editor.
+            let completed = build_completed_quants(&jobs, &quants_listing, &mmprojs, &mtps, &repo);
 
             cb.run(completed);
         });
@@ -643,4 +633,139 @@ fn spawn_pull_events_listener(
     // Store EventSource reference so it doesn't get garbage collected.
     // It will be closed when the wizard resets (cancel signal flips).
     let _ = es;
+}
+
+// ── Pure helper function (extracted for testability) ─────────────────────────
+
+/// Build the list of `CompletedQuant` from pull jobs, filtering to only
+/// primary shard filenames (those that appear as `filename` in any of the
+/// three quant listings). Non-primary shard filenames (which only appear in
+/// `shards` vectors) are excluded to prevent them from overwriting the primary
+/// file reference in the model editor.
+fn build_completed_quants(
+    jobs: &[JobProgress],
+    quants_listing: &[QuantEntry],
+    mmprojs: &[QuantEntry],
+    mtps: &[QuantEntry],
+    repo: &str,
+) -> Vec<CompletedQuant> {
+    jobs.iter()
+        .filter(|j| j.status == "completed")
+        .filter(|j| {
+            quants_listing.iter().any(|q| q.filename == j.filename)
+                || mmprojs.iter().any(|q| q.filename == j.filename)
+                || mtps.iter().any(|q| q.filename == j.filename)
+        })
+        .map(|j| {
+            let entry = quants_listing.iter().find(|q| q.filename == j.filename);
+            let quant = entry
+                .and_then(|e| e.quant.clone())
+                .or_else(|| infer_quant_from_filename(&j.filename));
+            CompletedQuant {
+                repo_id: repo.to_string(),
+                filename: j.filename.clone(),
+                quant,
+                size_bytes: Some(j.bytes_pulled),
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::components::pull_wizard::QuantKind;
+
+    fn make_job(job_id: &str, filename: &str, status: &str, bytes: u64) -> JobProgress {
+        JobProgress {
+            job_id: job_id.to_string(),
+            filename: filename.to_string(),
+            status: status.to_string(),
+            bytes_pulled: bytes,
+            total_bytes: None,
+            error: None,
+        }
+    }
+
+    fn make_quant(filename: &str) -> QuantEntry {
+        QuantEntry {
+            filename: filename.to_string(),
+            quant: None,
+            size_bytes: None,
+            kind: QuantKind::Model,
+            shards: vec![],
+        }
+    }
+
+    /// When a sharded quant is pulled, non-primary shard jobs (whose filenames
+    /// only appear in `shards`, not as a primary `filename`) should be filtered
+    /// out. Only the primary shard's CompletedQuant should be emitted.
+    #[test]
+    fn test_filter_completed_only_primary_shards() {
+        let jobs = vec![
+            make_job("job-1", "model-Q4_K_M.gguf", "completed", 100),
+            make_job("job-2", "model-Q4_K_M-00001-of-00003.gguf", "completed", 50),
+            make_job("job-3", "model-Q4_K_M-00002-of-00003.gguf", "completed", 50),
+        ];
+        // Only the primary filename is in the listing; shard filenames are NOT.
+        let quants_listing = vec![make_quant("model-Q4_K_M.gguf")];
+        let mmprojs: Vec<QuantEntry> = vec![];
+        let mtps: Vec<QuantEntry> = vec![];
+
+        let completed =
+            build_completed_quants(&jobs, &quants_listing, &mmprojs, &mtps, "owner/repo");
+
+        assert_eq!(completed.len(), 1, "only primary shard should be emitted");
+        assert_eq!(completed[0].filename, "model-Q4_K_M.gguf");
+        assert_eq!(completed[0].repo_id, "owner/repo");
+        assert_eq!(completed[0].size_bytes, Some(100));
+    }
+
+    /// Failed jobs should be filtered out entirely.
+    #[test]
+    fn test_filter_skips_failed_jobs() {
+        let jobs = vec![make_job("job-1", "model-Q4_K_M.gguf", "failed", 0)];
+        let quants_listing = vec![make_quant("model-Q4_K_M.gguf")];
+
+        let completed =
+            build_completed_quants(&jobs, &quants_listing, &vec![], &vec![], "owner/repo");
+        assert!(
+            completed.is_empty(),
+            "failed jobs should produce no CompletedQuant"
+        );
+    }
+
+    /// Completed jobs whose filename doesn't match any listing (neither primary
+    /// nor mmproj nor mtp) should be filtered out.
+    #[test]
+    fn test_filter_unmatched_filename_excluded() {
+        let jobs = vec![make_job("job-1", "unknown-file.gguf", "completed", 42)];
+        let quants_listing: Vec<QuantEntry> = vec![];
+        let mmprojs: Vec<QuantEntry> = vec![];
+        let mtps: Vec<QuantEntry> = vec![];
+
+        let completed =
+            build_completed_quants(&jobs, &quants_listing, &mmprojs, &mtps, "owner/repo");
+        assert!(
+            completed.is_empty(),
+            "unmatched filename should be filtered out"
+        );
+    }
+
+    /// mmproj and mtp completed jobs should be included when their filename
+    /// matches an entry in the respective listing.
+    #[test]
+    fn test_filter_includes_mmproj_and_mtp() {
+        let jobs = vec![
+            make_job("j1", "mmproj.gguf", "completed", 30),
+            make_job("j2", "mtp.gguf", "completed", 20),
+        ];
+        let mmprojs = vec![make_quant("mmproj.gguf")];
+        let mtps = vec![make_quant("mtp.gguf")];
+
+        let completed = build_completed_quants(&jobs, &vec![], &mmprojs, &mtps, "owner/repo");
+        assert_eq!(completed.len(), 2);
+        assert!(completed.iter().any(|c| c.filename == "mmproj.gguf"));
+        assert!(completed.iter().any(|c| c.filename == "mtp.gguf"));
+    }
 }
