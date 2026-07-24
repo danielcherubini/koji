@@ -101,6 +101,14 @@ pub(super) async fn run_verification(
             // marker "00001-of" (first shard). This avoids the race condition
             // where concurrent shard downloads could each see only themselves
             // on disk and incorrectly claim to be primary.
+            //
+            // Limitation (Finding 1): this pattern check only recognises the
+            // standard HF sharding marker "00001-of". Repos that use a
+            // non-standard shard naming scheme (e.g. "-part1-of3" or no
+            // numeric prefix) will not be detected as primary here, and a
+            // non-first shard may be incorrectly treated as non-primary.
+            // The blob API path above is the authoritative check and should
+            // succeed in normal operation.
             !filename.contains('/') || filename.contains("00001-of")
         }
     };
@@ -351,92 +359,106 @@ pub(crate) async fn _setup_model_after_pull_with_config(
     let is_mmproj = matches!(file_kind, QuantKind::Mmproj);
     let is_mtp = matches!(file_kind, QuantKind::Mtp);
     if !is_mmproj && !is_mtp {
-        // Fetch pipeline_tag from HF to infer modalities (best-effort).
-        let modalities = match crate::models::pull::fetch_model_pipeline_tag(repo_id).await {
-            Ok(pipeline_tag) => {
-                crate::models::pull::infer_modalities_from_pipeline(pipeline_tag.as_deref())
+        if is_primary_shard {
+            // Primary shard (including single-file quants): create or enable
+            // the ModelConfig entry so the model appears in the UI and can
+            // be launched immediately.
+            // Fetch pipeline_tag from HF to infer modalities (best-effort).
+            let modalities = match crate::models::pull::fetch_model_pipeline_tag(repo_id).await {
+                Ok(pipeline_tag) => {
+                    crate::models::pull::infer_modalities_from_pipeline(pipeline_tag.as_deref())
+                }
+                Err(e) => {
+                    tracing::debug!(repo = %repo_id, error = %e, "Failed to fetch pipeline_tag for modalities inference");
+                    None
+                }
+            };
+
+            // Generate display name from HF repo name (e.g., "Unsloth: Qwen3.5 35B A3B").
+            let display_name = generate_display_name(repo_id);
+
+            // Reuse the existing model key if we found one, otherwise create a
+            // new entry keyed by the bare repo slug (no per-quant suffix).
+            let model_key = existing_key.unwrap_or_else(|| repo_slug.to_lowercase());
+            let entry = model_configs
+                .entry(model_key.clone())
+                .or_insert_with(|| ModelConfig {
+                    backend: "llama_cpp".to_string(),
+                    gpu_variant: None,
+                    gpu_device: None,
+                    model: Some(repo_id.to_string()),
+                    quant: Some(quant_key.clone()),
+                    mmproj: None,
+                    mtp_model: None,
+                    context_length,
+                    num_parallel: default_num_parallel(),
+                    kv_unified: true,
+                    enabled: true,
+                    args: vec![],
+                    sampling: None,
+                    port: None,
+                    health_check: None,
+                    profile: None,
+                    api_name: Some(repo_id.to_string()),
+                    gpu_layers: None,
+                    cache_type_k: None,
+                    cache_type_v: None,
+                    hf_format: None,
+                    hf_base_model: None,
+                    hf_pipeline_tag: None,
+                    hf_total_params: None,
+                    hf_active_params: None,
+                    hf_architecture_type: None,
+                    hf_context_length: None,
+                    hf_num_layers: None,
+                    hf_last_modified: None,
+                    quants: std::collections::BTreeMap::new(),
+                    modalities: modalities.clone(),
+                    display_name: Some(display_name.clone()),
+                    db_id: None, // will be set after reload_model_configs()
+                    spec_decoding: Default::default(),
+                });
+
+            // Promote a stub entry (created by a prior mmproj-first pull) into a
+            // real, enabled model once the main quant arrives. Without this,
+            // the stub's `quant=None, enabled=false` would persist even though
+            // the model file is now on disk.
+            if entry.quant.is_none() {
+                entry.quant = Some(quant_key);
+                entry.enabled = true;
             }
-            Err(e) => {
-                tracing::debug!(repo = %repo_id, error = %e, "Failed to fetch pipeline_tag for modalities inference");
-                None
+            if entry.context_length.is_none() {
+                entry.context_length = context_length;
             }
-        };
+            if entry.modalities.is_none() {
+                entry.modalities = modalities;
+            }
+            if entry.display_name.is_none() {
+                entry.display_name = Some(display_name);
+            }
 
-        // Generate display name from HF repo name (e.g., "Unsloth: Qwen3.5 35B A3B").
-        let display_name = generate_display_name(repo_id);
+            // Populate hf_* informational fields from GGUF metadata
+            if let Some(meta) = gguf_metadata {
+                entry.hf_architecture_type = meta.architecture.clone();
+                entry.hf_context_length = meta.context_length.map(|v| v as u32);
+                entry.hf_num_layers = meta.block_count.map(|v| v as u32);
+            }
 
-        // Reuse the existing model key if we found one, otherwise create a
-        // new entry keyed by the bare repo slug (no per-quant suffix).
-        let model_key = existing_key.unwrap_or_else(|| repo_slug.to_lowercase());
-        let entry = model_configs
-            .entry(model_key.clone())
-            .or_insert_with(|| ModelConfig {
-                backend: "llama_cpp".to_string(),
-                gpu_variant: None,
-                gpu_device: None,
-                model: Some(repo_id.to_string()),
-                quant: Some(quant_key.clone()),
-                mmproj: None,
-                mtp_model: None,
-                context_length,
-                num_parallel: default_num_parallel(),
-                kv_unified: true,
-                enabled: true,
-                args: vec![],
-                sampling: None,
-                port: None,
-                health_check: None,
-                profile: None,
-                api_name: Some(repo_id.to_string()),
-                gpu_layers: None,
-                cache_type_k: None,
-                cache_type_v: None,
-                hf_format: None,
-                hf_base_model: None,
-                hf_pipeline_tag: None,
-                hf_total_params: None,
-                hf_active_params: None,
-                hf_architecture_type: None,
-                hf_context_length: None,
-                hf_num_layers: None,
-                hf_last_modified: None,
-                quants: std::collections::BTreeMap::new(),
-                modalities: modalities.clone(),
-                display_name: Some(display_name.clone()),
-                db_id: None, // will be set after reload_model_configs()
-                spec_decoding: Default::default(),
-            });
+            // Save card (best-effort — pull is already marked Completed)
+            let _ = std::fs::create_dir_all(configs_dir);
+            let _ = card.save(&card_path);
 
-        // Promote a stub entry (created by a prior mmproj-first pull) into a
-        // real, enabled model once the main quant arrives. Without this, the
-        // stub's `quant=None, enabled=false` would persist even though the
-        // model file is now on disk.
-        if entry.quant.is_none() {
-            entry.quant = Some(quant_key);
-            entry.enabled = true;
+            return Some(model_key);
+        } else {
+            // Non-primary shard of a sharded quant: save the card (for
+            // sampling presets / community card data) but do NOT create a
+            // ModelConfig entry. If the primary shard later fails or is
+            // deleted, an enabled entry with no backing quant would persist
+            // in the UI — appearing loadable but actually broken.
+            let _ = std::fs::create_dir_all(configs_dir);
+            let _ = card.save(&card_path);
+            return None;
         }
-        if entry.context_length.is_none() {
-            entry.context_length = context_length;
-        }
-        if entry.modalities.is_none() {
-            entry.modalities = modalities;
-        }
-        if entry.display_name.is_none() {
-            entry.display_name = Some(display_name);
-        }
-
-        // Populate hf_* informational fields from GGUF metadata
-        if let Some(meta) = gguf_metadata {
-            entry.hf_architecture_type = meta.architecture.clone();
-            entry.hf_context_length = meta.context_length.map(|v| v as u32);
-            entry.hf_num_layers = meta.block_count.map(|v| v as u32);
-        }
-
-        // Save card (best-effort — pull is already marked Completed)
-        let _ = std::fs::create_dir_all(configs_dir);
-        let _ = card.save(&card_path);
-
-        return Some(model_key);
     }
 
     // For mmproj / MTP, still save the card.

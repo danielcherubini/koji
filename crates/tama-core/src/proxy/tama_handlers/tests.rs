@@ -243,6 +243,75 @@ async fn test_mmproj_pull_before_parent_creates_stub_then_promotes() {
     );
 }
 
+/// A non-primary shard of a sharded quant must NOT create a `ModelConfig` entry.
+/// The card is still saved (for sampling presets / community card data), but
+/// no enabled model entry is created that could persist in the UI if the
+/// primary shard later fails. This guards against the P1 finding where
+/// non-primary shards created enabled entries with no backing card quant.
+#[tokio::test]
+async fn test_non_primary_shard_does_not_create_model_config() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config_dir = tmp.path().to_path_buf();
+    let configs_dir = config_dir.join("configs");
+    let models_dir = config_dir.join("models");
+    std::fs::create_dir_all(&configs_dir).unwrap();
+
+    let repo_id = "bartowski/Qwen3-8B-GGUF";
+    let repo_slug = crate::models::card_slug(repo_id);
+    let dest_dir = models_dir.join(repo_id);
+    std::fs::create_dir_all(&dest_dir).unwrap();
+
+    // Non-primary shard filename (second of three).
+    let filename = "Qwen3-8B-UD-Q4_K_XL-00002-of-00003.gguf";
+    std::fs::write(dest_dir.join(filename), b"dummy shard content").unwrap();
+
+    let spec = super::types::QuantDownloadSpec {
+        filename: filename.to_string(),
+        quant: Some("Q4_K_XL".to_string()),
+        context_length: Some(8192),
+    };
+
+    let mut models = std::collections::HashMap::new();
+    // Non-primary shard: is_primary_shard = false
+    let returned_key = _setup_model_after_pull_with_config(
+        &configs_dir,
+        &mut models,
+        repo_id,
+        &spec,
+        &dest_dir,
+        None,
+        false,
+    )
+    .await;
+
+    // Must return None so setup_model_after_pull skips DB save + model_files persistence.
+    assert_eq!(
+        returned_key, None,
+        "non-primary shard must return None so no ModelConfig is persisted"
+    );
+
+    // No model config entry should have been created.
+    let model_key = repo_slug.to_lowercase();
+    assert!(
+        !models.contains_key(&model_key),
+        "non-primary shard must not create a ModelConfig entry, but found key '{}'",
+        model_key
+    );
+    assert!(
+        models.is_empty(),
+        "expected empty models map for non-primary shard, got: {:?}",
+        models.keys().collect::<Vec<_>>()
+    );
+
+    // The card file should still be saved (for sampling presets / community data).
+    let card_path = configs_dir.join(format!("{}.toml", repo_slug));
+    assert!(
+        card_path.exists(),
+        "non-primary shard should still save the card file at {}",
+        card_path.display()
+    );
+}
+
 /// Verifies that `PullJob` serializes to JSON with the fields expected for SSE data.
 #[test]
 fn test_pull_job_serializes_for_sse() {
