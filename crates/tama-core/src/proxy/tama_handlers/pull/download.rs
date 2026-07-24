@@ -546,10 +546,10 @@ pub async fn start_pull_from_queue(
                 );
             }
             (Some(_), None) => {
-                tracing::error!(
+                tracing::info!(
                     job_id = %job_id_clone,
                     repo = %repo_id_clone,
-                    "setup_model_after_pull returned no model_id — model_files skipped"
+                    "non-primary shard — model_files row skipped (expected for non-primary shards)"
                 );
             }
         }
