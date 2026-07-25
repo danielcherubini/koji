@@ -125,9 +125,11 @@ async fn test_pull_model_too_many_quants_returns_400() {
 /// Unknown filename in request returns 400 with ValidationError.
 #[tokio::test]
 async fn test_pull_model_unknown_filename_returns_400() {
-    let _guard = ENV_GUARD.lock().unwrap();
     let server = wiremock::MockServer::start().await;
-    std::env::set_var("HF_ENDPOINT", server.uri());
+    {
+        let _guard = ENV_GUARD.lock().unwrap();
+        std::env::set_var("HF_ENDPOINT", server.uri());
+    }
 
     mount_listing(&server, "test/repo", &["repo-Q4_K_M.gguf"]).await;
 
@@ -169,9 +171,11 @@ async fn test_pull_model_unknown_filename_returns_400() {
 /// Duplicate filenames in request returns 400 with ValidationError.
 #[tokio::test]
 async fn test_pull_model_duplicate_filename_returns_400() {
-    let _guard = ENV_GUARD.lock().unwrap();
     let server = wiremock::MockServer::start().await;
-    std::env::set_var("HF_ENDPOINT", server.uri());
+    {
+        let _guard = ENV_GUARD.lock().unwrap();
+        std::env::set_var("HF_ENDPOINT", server.uri());
+    }
 
     mount_listing(&server, "test/repo", &["repo-Q4_K_M.gguf"]).await;
 
@@ -213,9 +217,11 @@ async fn test_pull_model_duplicate_filename_returns_400() {
 /// Missing quant with no filenames returns 422 with available_quants.
 #[tokio::test]
 async fn test_pull_model_missing_quant_returns_422_with_available() {
-    let _guard = ENV_GUARD.lock().unwrap();
     let server = wiremock::MockServer::start().await;
-    std::env::set_var("HF_ENDPOINT", server.uri());
+    {
+        let _guard = ENV_GUARD.lock().unwrap();
+        std::env::set_var("HF_ENDPOINT", server.uri());
+    }
 
     mount_listing(&server, "test/repo", &["repo-Q4_K_M.gguf"]).await;
 
@@ -259,9 +265,11 @@ async fn test_pull_model_missing_quant_returns_422_with_available() {
 /// Unknown quant returns 422 with available_quants.
 #[tokio::test]
 async fn test_pull_model_unknown_quant_returns_422() {
-    let _guard = ENV_GUARD.lock().unwrap();
     let server = wiremock::MockServer::start().await;
-    std::env::set_var("HF_ENDPOINT", server.uri());
+    {
+        let _guard = ENV_GUARD.lock().unwrap();
+        std::env::set_var("HF_ENDPOINT", server.uri());
+    }
 
     mount_listing(&server, "test/repo", &["repo-Q4_K_M.gguf"]).await;
 
@@ -303,9 +311,11 @@ async fn test_pull_model_unknown_quant_returns_422() {
 /// Listing fetch failure returns 502 with UpstreamError.
 #[tokio::test]
 async fn test_pull_model_listing_failure_returns_502() {
-    let _guard = ENV_GUARD.lock().unwrap();
     let server = wiremock::MockServer::start().await;
-    std::env::set_var("HF_ENDPOINT", server.uri());
+    {
+        let _guard = ENV_GUARD.lock().unwrap();
+        std::env::set_var("HF_ENDPOINT", server.uri());
+    }
 
     // Mount a raw 500 response instead of a listing.
     // hf-hub calls /api/models/{repo_id}/revision/{revision}
@@ -347,9 +357,11 @@ async fn test_pull_model_listing_failure_returns_502() {
 /// Happy path: listing validation passes, job is created and enqueued.
 #[tokio::test]
 async fn test_pull_model_enqueues_job_and_returns_pending() {
-    let _guard = ENV_GUARD.lock().unwrap();
     let server = wiremock::MockServer::start().await;
-    std::env::set_var("HF_ENDPOINT", server.uri());
+    {
+        let _guard = ENV_GUARD.lock().unwrap();
+        std::env::set_var("HF_ENDPOINT", server.uri());
+    }
 
     mount_listing(&server, "test/repo", &["repo-Q4_K_M.gguf"]).await;
 
