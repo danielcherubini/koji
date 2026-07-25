@@ -32,7 +32,6 @@ async fn test_get_pull_job_unknown_returns_404() {
     let app = pull_router(state);
 
     let resp = app
-        .clone()
         .oneshot(
             Request::builder()
                 .uri("/tama/v1/pulls/nope")
@@ -61,7 +60,6 @@ async fn test_get_pull_job_returns_snapshot() {
     let app = pull_router(state);
 
     let resp = app
-        .clone()
         .oneshot(
             Request::builder()
                 .uri("/tama/v1/pulls/pull-1")
@@ -93,11 +91,14 @@ async fn test_pull_job_stream_emits_progress_then_done() {
     let (state, _tmp) = create_test_state();
     seed_job(&state, "pull-sse", PullJobStatus::Pending);
 
-    // Schedule status flip: Pending → Completed after 650ms.
+    // Schedule status flip: Pending → Completed after 800ms.
+    // The SSE handler polls every 500ms, so the first poll at ~500ms sees
+    // Pending (→ progress event), and the second poll at ~1000ms sees
+    // Completed (→ done event). 800ms gives a comfortable 300ms margin.
     let state_clone = Arc::clone(&state);
     let job_id_for_flip = "pull-sse".to_string();
     tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(650)).await;
+        tokio::time::sleep(Duration::from_millis(800)).await;
         let mut jobs = state_clone.pull_jobs.write().await;
         if let Some(job) = jobs.get_mut(&job_id_for_flip) {
             job.status = PullJobStatus::Completed;
@@ -107,7 +108,6 @@ async fn test_pull_job_stream_emits_progress_then_done() {
     // GET the SSE stream.
     let app = pull_router(state);
     let resp = app
-        .clone()
         .oneshot(
             Request::builder()
                 .uri("/tama/v1/pulls/pull-sse/stream")
@@ -166,7 +166,6 @@ async fn test_pull_job_stream_unknown_job_closes_without_events() {
 
     let app = pull_router(state);
     let resp = app
-        .clone()
         .oneshot(
             Request::builder()
                 .uri("/tama/v1/pulls/ghost/stream")

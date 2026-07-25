@@ -5,6 +5,7 @@ use axum::{
 use tower::ServiceExt;
 
 use super::helpers::{create_test_state, mount_listing, pull_router, ENV_GUARD};
+use crate::proxy::tama_handlers::types::max_concurrent_pulls;
 
 const PULLS_ROUTE: &str = "/tama/v1/pulls";
 const CT_JSON: &str = "application/json";
@@ -15,14 +16,11 @@ async fn test_pull_model_malformed_json_returns_400() {
     let (state, _tmp) = create_test_state();
     let app = pull_router(state);
 
-    // Use raw string to avoid Rust 2021 raw identifier prefix confusion
-    // in the `pull` module path.
-    let body_str = r#"{""#;
     let req = Request::builder()
         .method(Method::POST)
         .uri(PULLS_ROUTE)
-        .header(r#"content-type"#, CT_JSON)
-        .body(Body::from(body_str))
+        .header("content-type", CT_JSON)
+        .body(Body::from(r#"{"#))
         .unwrap();
 
     let resp = app.oneshot(req).await.unwrap();
@@ -38,7 +36,7 @@ async fn test_pull_model_missing_repo_id_returns_422() {
     let req = Request::builder()
         .method(Method::POST)
         .uri(PULLS_ROUTE)
-        .header(r#"content-type"#, CT_JSON)
+        .header("content-type", CT_JSON)
         .body(Body::from("{}"))
         .unwrap();
 
@@ -46,24 +44,31 @@ async fn test_pull_model_missing_repo_id_returns_422() {
     assert_eq!(resp.status(), 422);
 }
 
-/// Too many filenames (9 > max of 8) returns 400
+/// Too many filenames (> max_concurrent_pulls) returns 400
 #[tokio::test]
 async fn test_pull_model_too_many_files_returns_400() {
+    // Isolate TAMA_MAX_CONCURRENT_PULLS so the test uses the default limit.
+    {
+        let _guard = ENV_GUARD.lock().unwrap();
+        std::env::remove_var("TAMA_MAX_CONCURRENT_PULLS");
+    }
+
     let (state, _tmp) = create_test_state();
     let app = pull_router(state);
 
-    // Build the JSON body manually to avoid raw-identifier-parser issues
-    // with "gguf" patterns when inside the `pull` module.
-    let filenames: Vec<String> = (1..=9).map(|i| format!("f{}.gguf", i)).collect();
+    let max = max_concurrent_pulls();
+    let filenames: Vec<String> = (1..=max as u32 + 1)
+        .map(|i| format!("f{}.gguf", i))
+        .collect();
     let body = serde_json::json!({
-        r#"repo_id"#: "test/repo",
-        r#"filenames"#: filenames
+        "repo_id": "test/repo",
+        "filenames": filenames
     });
 
     let req = Request::builder()
         .method(Method::POST)
         .uri(PULLS_ROUTE)
-        .header(r#"content-type"#, CT_JSON)
+        .header("content-type", CT_JSON)
         .body(Body::from(serde_json::to_string(&body).unwrap()))
         .unwrap();
 
@@ -74,36 +79,42 @@ async fn test_pull_model_too_many_files_returns_400() {
         .unwrap();
     let text = String::from_utf8_lossy(&bytes);
     assert!(
-        text.contains("Too many files requested. Maximum is 8."),
+        text.contains(&format!("Too many files requested. Maximum is {}.", max)),
         "Response: {}",
         text
     );
 }
 
-/// Too many quants (9 > max of 8) returns 400
+/// Too many quants (> max_concurrent_pulls) returns 400
 #[tokio::test]
 async fn test_pull_model_too_many_quants_returns_400() {
+    // Isolate TAMA_MAX_CONCURRENT_PULLS so the test uses the default limit.
+    {
+        let _guard = ENV_GUARD.lock().unwrap();
+        std::env::remove_var("TAMA_MAX_CONCURRENT_PULLS");
+    }
+
     let (state, _tmp) = create_test_state();
     let app = pull_router(state);
 
-    // Build the JSON body manually to avoid raw-identifier-parser issues.
-    let quants: Vec<serde_json::Value> = (1..=9)
+    let max = max_concurrent_pulls();
+    let quants: Vec<serde_json::Value> = (1..=max as u32 + 1)
         .map(|i| {
             serde_json::json!({
-                r#"filename"#: format!("f{}.gguf", i),
-                r#"quant"#: "Q4_K_M"
+                "filename": format!("f{}.gguf", i),
+                "quant": "Q4_K_M"
             })
         })
         .collect();
     let body = serde_json::json!({
-        r#"repo_id"#: "test/repo",
-        r#"quants"#: quants
+        "repo_id": "test/repo",
+        "quants": quants
     });
 
     let req = Request::builder()
         .method(Method::POST)
         .uri(PULLS_ROUTE)
-        .header(r#"content-type"#, CT_JSON)
+        .header("content-type", CT_JSON)
         .body(Body::from(serde_json::to_string(&body).unwrap()))
         .unwrap();
 
@@ -144,7 +155,7 @@ async fn test_pull_model_unknown_filename_returns_400() {
     let req = Request::builder()
         .method(Method::POST)
         .uri(PULLS_ROUTE)
-        .header(r#"content-type"#, CT_JSON)
+        .header("content-type", CT_JSON)
         .body(Body::from(serde_json::to_string(&body).unwrap()))
         .unwrap();
 
@@ -190,7 +201,7 @@ async fn test_pull_model_duplicate_filename_returns_400() {
     let req = Request::builder()
         .method(Method::POST)
         .uri(PULLS_ROUTE)
-        .header(r#"content-type"#, CT_JSON)
+        .header("content-type", CT_JSON)
         .body(Body::from(serde_json::to_string(&body).unwrap()))
         .unwrap();
 
@@ -237,7 +248,7 @@ async fn test_pull_model_missing_quant_returns_422_with_available() {
     let req = Request::builder()
         .method(Method::POST)
         .uri(PULLS_ROUTE)
-        .header(r#"content-type"#, CT_JSON)
+        .header("content-type", CT_JSON)
         .body(Body::from(serde_json::to_string(&body).unwrap()))
         .unwrap();
 
@@ -284,7 +295,7 @@ async fn test_pull_model_unknown_quant_returns_422() {
     let req = Request::builder()
         .method(Method::POST)
         .uri(PULLS_ROUTE)
-        .header(r#"content-type"#, CT_JSON)
+        .header("content-type", CT_JSON)
         .body(Body::from(serde_json::to_string(&body).unwrap()))
         .unwrap();
 
@@ -338,7 +349,7 @@ async fn test_pull_model_listing_failure_returns_502() {
     let req = Request::builder()
         .method(Method::POST)
         .uri(PULLS_ROUTE)
-        .header(r#"content-type"#, CT_JSON)
+        .header("content-type", CT_JSON)
         .body(Body::from(serde_json::to_string(&body).unwrap()))
         .unwrap();
 
@@ -376,7 +387,7 @@ async fn test_pull_model_enqueues_job_and_returns_pending() {
     let req = Request::builder()
         .method(Method::POST)
         .uri(PULLS_ROUTE)
-        .header(r#"content-type"#, CT_JSON)
+        .header("content-type", CT_JSON)
         .body(Body::from(serde_json::to_string(&body).unwrap()))
         .unwrap();
 

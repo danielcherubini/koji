@@ -13,15 +13,24 @@ const FILE: &str = "repo-Q4_K_M.gguf";
 
 /// Create a ProxyState wired to a wiremock server, with an in-memory PullJob seeded.
 ///
-/// Each test acquires ENV_GUARD itself before calling this helper.
+/// Each test acquires ENV_GUARD itself and sets `HF_ENDPOINT` before calling this
+/// helper. This helper sets `XDG_CONFIG_HOME` and `HOME` so model cards never
+/// land in a real home directory (Linux uses XDG, macOS uses `$HOME`).
+///
+/// Returns `(state, models_tmp, xdg_tmp, job_id)`.
 async fn create_pull_state(
-    server: &wiremock::MockServer,
-) -> (Arc<ProxyState>, tempfile::TempDir, tempfile::TempDir) {
+    _server: &wiremock::MockServer,
+) -> (
+    Arc<ProxyState>,
+    tempfile::TempDir,
+    tempfile::TempDir,
+    String,
+) {
     let models_tmp = tempfile::tempdir().unwrap();
     let xdg_tmp = tempfile::tempdir().unwrap();
 
-    std::env::set_var("HF_ENDPOINT", server.uri());
     std::env::set_var("XDG_CONFIG_HOME", xdg_tmp.path().to_str().unwrap());
+    std::env::set_var("HOME", xdg_tmp.path().to_str().unwrap());
 
     let mut config = crate::config::Config::default();
     config.general.models_dir = Some(models_tmp.path().to_string_lossy().to_string());
@@ -48,7 +57,7 @@ async fn create_pull_state(
         },
     );
 
-    (Arc::new(state), models_tmp, xdg_tmp)
+    (Arc::new(state), models_tmp, xdg_tmp, job_id)
 }
 
 /// Compute SHA-256 hex digest of raw bytes.
@@ -116,23 +125,23 @@ async fn test_pull_hash_mismatch_fails_job_and_deletes_file() {
         .await;
 
     // --- Execute pull ---
-    let (state, models_tmp, _xdg_tmp) = create_pull_state(&server).await;
-
-    let job_id = state
-        .pull_jobs
-        .read()
-        .await
-        .keys()
-        .cloned()
-        .collect::<Vec<_>>()[0]
-        .clone();
+    let orig_home = std::env::var("HOME").ok();
+    let (state, models_tmp, _xdg_tmp, job_id) = create_pull_state(&server).await;
 
     // Enqueue a DB queue row — start_pull_from_queue calls svc.update_status()
-    // which requires the row to already exist (it's called by the queue processor
-    // after enqueueing, but we call start_pull_from_queue directly here).
+    // which requires the row to already exist.
     let svc = state.pull_queue.as_ref().expect("pull_queue should be set");
     svc.enqueue(&job_id, REPO, FILE, None, "model", Some("Q4_K_M"), None)
         .unwrap();
+
+    // Verify the queue row was created (pre-condition for start_pull_from_queue).
+    assert!(
+        svc.test_model_mgr()
+            .queue_get_by_job_id(&job_id)
+            .unwrap()
+            .is_some(),
+        "queue row should exist after enqueue"
+    );
 
     start_pull_from_queue(
         state.clone(),
@@ -147,9 +156,13 @@ async fn test_pull_hash_mismatch_fails_job_and_deletes_file() {
     )
     .await;
 
-    // Restore env vars (restore HOME to original value captured at test start)
+    // Restore env vars before assertions (so panics don't leak redirected paths)
     std::env::remove_var("HF_ENDPOINT");
     std::env::remove_var("XDG_CONFIG_HOME");
+    match orig_home {
+        Some(h) => std::env::set_var("HOME", h),
+        None => std::env::remove_var("HOME"),
+    }
 
     // --- Assertions ---
     let jobs = state.pull_jobs.read().await;
@@ -246,23 +259,23 @@ async fn test_pull_success_completes_and_records_model_files() {
         .await;
 
     // --- Execute pull ---
-    let (state, models_tmp, xdg_tmp) = create_pull_state(&server).await;
-
-    let job_id = state
-        .pull_jobs
-        .read()
-        .await
-        .keys()
-        .cloned()
-        .collect::<Vec<_>>()[0]
-        .clone();
+    let orig_home = std::env::var("HOME").ok();
+    let (state, models_tmp, xdg_tmp, job_id) = create_pull_state(&server).await;
 
     // Enqueue a DB queue row — start_pull_from_queue calls svc.update_status()
-    // which requires the row to already exist (it's called by the queue processor
-    // after enqueueing, but we call start_pull_from_queue directly here).
+    // which requires the row to already exist.
     let svc = state.pull_queue.as_ref().expect("pull_queue should be set");
     svc.enqueue(&job_id, REPO, FILE, None, "model", Some("Q4_K_M"), None)
         .unwrap();
+
+    // Verify the queue row was created (pre-condition for start_pull_from_queue).
+    assert!(
+        svc.test_model_mgr()
+            .queue_get_by_job_id(&job_id)
+            .unwrap()
+            .is_some(),
+        "queue row should exist after enqueue"
+    );
 
     start_pull_from_queue(
         state.clone(),
@@ -277,9 +290,13 @@ async fn test_pull_success_completes_and_records_model_files() {
     )
     .await;
 
-    // Restore env vars BEFORE asserting
+    // Restore env vars before assertions (so panics don't leak redirected paths)
     std::env::remove_var("HF_ENDPOINT");
     std::env::remove_var("XDG_CONFIG_HOME");
+    match orig_home {
+        Some(h) => std::env::set_var("HOME", h),
+        None => std::env::remove_var("HOME"),
+    }
 
     // --- Assertions ---
 
