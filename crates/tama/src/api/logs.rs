@@ -88,11 +88,3 @@ pub async fn get_backend_logs(
         }
     }
 }
-
-/// GET /tama/v1/logs — return grouped logs from all configured sources.
-///
-/// This is a local fallback that returns empty sources. The actual implementation
-/// is in tama-core and proxied through the catch-all handler.
-pub async fn get_all_logs() -> impl IntoResponse {
-    Json(serde_json::json!({ "sources": Vec::<serde_json::Value>::new() }))
-}

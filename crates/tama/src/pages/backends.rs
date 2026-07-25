@@ -13,7 +13,7 @@ use crate::utils::{delete_request, extract_and_store_csrf_token, get_request, po
 /// Compaction backend card DTO (mirrors the SSR-side type).
 /// Defined here because `crate::api` is gated behind `ssr` feature.
 #[derive(Debug, Clone, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 struct CompactionCardDto {
     enabled: bool,
     device: String,
@@ -22,8 +22,9 @@ struct CompactionCardDto {
     running: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     server_url: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    request_timeout_ms: Option<u64>,
+    #[allow(dead_code)] // Deserialized from API but not displayed in UI
+    #[serde(default)]
+    request_timeout_ms: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -33,6 +34,7 @@ struct BackendListResponse {
     #[serde(default)]
     custom: Vec<BackendCardDto>,
     #[serde(default)]
+    #[allow(dead_code)] // Deserialized from API but not used by page
     available: Vec<String>,
     #[serde(default)]
     compaction: CompactionCardDto,

@@ -21,23 +21,23 @@ pub async fn run_initial_backfill(conn: &Connection, config: &Config) -> Result<
     let models = registry.scan()?;
 
     if models.is_empty() {
-        println!("  No installed models found.");
+        tracing::info!("  No installed models found.");
         return Ok(());
     }
 
     let total = models.len();
-    println!("  Backfilling database for {} installed model(s)...", total);
+    tracing::info!("  Backfilling database for {} installed model(s)...", total);
 
     for (i, model) in models.iter().enumerate() {
         let repo_id = &model.card.model.source;
-        println!("  [{}/{}] {}...", i + 1, total, repo_id);
+        tracing::info!("  [{}/{}] {}...", i + 1, total, repo_id);
 
         // Fetch commit SHA from HuggingFace
         let listing = match crate::models::pull::list_gguf_files(repo_id).await {
             Ok(l) => l,
             Err(e) => {
                 tracing::warn!("Failed to fetch listing for {}: {}", repo_id, e);
-                println!("    Failed to fetch metadata — skipping.");
+                tracing::warn!("    Failed to fetch metadata — skipping.");
                 continue;
             }
         };
@@ -74,7 +74,9 @@ pub async fn run_initial_backfill(conn: &Connection, config: &Config) -> Result<
             Ok(b) => b,
             Err(e) => {
                 tracing::warn!("Failed to fetch blob metadata for {}: {}", repo_id, e);
-                println!("    Failed to fetch blob metadata — continuing without LFS hashes.");
+                tracing::warn!(
+                    "    Failed to fetch blob metadata — continuing without LFS hashes."
+                );
                 std::collections::HashMap::new()
             }
         };
@@ -95,7 +97,7 @@ pub async fn run_initial_backfill(conn: &Connection, config: &Config) -> Result<
         }
     }
 
-    println!("  Database backfill complete.");
+    tracing::info!("  Database backfill complete.");
     Ok(())
 }
 

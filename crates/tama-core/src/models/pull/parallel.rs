@@ -186,12 +186,13 @@ async fn pull_chunk_with_retry(
         let resp = match request.send().await {
             Ok(r) => r,
             Err(e) if attempt <= MAX_RETRIES => {
-                pb.suspend(|| {
-                    println!(
-                        "  Chunk {} failed (attempt {}/{}), retrying... ({})",
-                        chunk_index, attempt, MAX_RETRIES, e
-                    );
-                });
+                tracing::warn!(
+                    "  Chunk {} failed (attempt {}/{}), retrying... ({})",
+                    chunk_index,
+                    attempt,
+                    MAX_RETRIES,
+                    e
+                );
                 tokio::time::sleep(exponential_backoff(attempt)).await;
                 continue;
             }
@@ -205,12 +206,13 @@ async fn pull_chunk_with_retry(
         let status = resp.status().as_u16();
         if status != 206 {
             if attempt <= MAX_RETRIES {
-                pb.suspend(|| {
-                    println!(
-                        "  Chunk {} got status {} (expected 206), retrying ({}/{})...",
-                        chunk_index, status, attempt, MAX_RETRIES
-                    );
-                });
+                tracing::warn!(
+                    "  Chunk {} got status {} (expected 206), retrying ({}/{})...",
+                    chunk_index,
+                    status,
+                    attempt,
+                    MAX_RETRIES
+                );
                 tokio::time::sleep(exponential_backoff(attempt)).await;
                 continue;
             }
@@ -263,12 +265,14 @@ async fn pull_chunk_with_retry(
         // Verify chunk size
         if chunk_pulled != expected_size {
             if attempt <= MAX_RETRIES {
-                pb.suspend(|| {
-                    println!(
-                        "  Chunk {} short read ({}/{} bytes), retrying ({}/{})...",
-                        chunk_index, chunk_pulled, expected_size, attempt, MAX_RETRIES
-                    );
-                });
+                tracing::warn!(
+                    "  Chunk {} short read ({}/{} bytes), retrying ({}/{})...",
+                    chunk_index,
+                    chunk_pulled,
+                    expected_size,
+                    attempt,
+                    MAX_RETRIES
+                );
                 pb.dec(chunk_pulled);
                 tokio::time::sleep(exponential_backoff(attempt)).await;
                 continue;

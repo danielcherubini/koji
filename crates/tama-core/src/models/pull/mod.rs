@@ -74,19 +74,6 @@ pub fn chunk_size_for(total_size: u64, num_chunks: usize) -> u64 {
     total_size / num_chunks as u64
 }
 
-/// Pull a file using parallel HTTP Range requests.
-/// Falls back to single-stream if Range is not supported.
-/// Skips pull if the destination already exists with matching size.
-pub async fn pull_chunked(
-    client: &Client,
-    url: &str,
-    dest: &Path,
-    connections: usize,
-    headers: Option<&HeaderMap>,
-) -> Result<u64> {
-    pull_chunked_with_progress(client, url, dest, connections, None, headers).await
-}
-
 /// Pull a file using parallel HTTP Range requests with progress callback.
 /// Falls back to single-stream if Range is not supported.
 /// Skips pull if the destination already exists with matching size.

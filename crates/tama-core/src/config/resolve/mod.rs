@@ -1,4 +1,4 @@
-use super::types::{BackendConfig, Config, HealthCheck, ModelConfig};
+use super::types::{BackendConfig, Config, ModelConfig};
 use crate::models::repo_path;
 use anyhow::Result;
 
@@ -178,28 +178,6 @@ impl Config {
 
         // Neither health_check_url nor server.port present
         None
-    }
-
-    /// Resolve the effective health check config for a server.
-    /// Merges: server.health_check -> pre-resolved health_check_url -> supervisor defaults.
-    pub fn resolve_health_check(
-        &self,
-        server: &ModelConfig,
-        health_check_url: Option<&str>,
-    ) -> HealthCheck {
-        let server_hc = server.health_check.as_ref();
-
-        HealthCheck {
-            url: server_hc
-                .and_then(|h| h.url.clone())
-                .or_else(|| self.resolve_health_url(server, health_check_url)),
-            interval_ms: Some(
-                server_hc
-                    .and_then(|h| h.interval_ms)
-                    .unwrap_or(self.supervisor.health_check_interval_ms),
-            ),
-            timeout_ms: Some(server_hc.and_then(|h| h.timeout_ms).unwrap_or(3000)),
-        }
     }
 
     /// Build the merged arg list for a server, returning **flat tokens**
@@ -561,31 +539,6 @@ impl Config {
                     .conn
             }
         }
-    }
-
-    /// Open the application database from an explicit directory, with fallback.
-    ///
-    /// Tries `crate::db::open(explicit_dir)` if `explicit_dir` is `Some`, then
-    /// falls back to `Config::base_dir()`, and finally to an in-memory connection.
-    /// Emits a `tracing::warn!` only when all on-disk attempts fail.
-    pub fn open_db_from(explicit_dir: Option<&std::path::Path>) -> rusqlite::Connection {
-        // 1. Explicit dir
-        if let Some(dir) = explicit_dir {
-            if let Ok(crate::db::OpenResult { conn, .. }) = crate::db::open(dir) {
-                return conn;
-            }
-        }
-        // 2. Default base dir
-        if let Ok(base_dir) = Config::base_dir() {
-            if let Ok(crate::db::OpenResult { conn, .. }) = crate::db::open(&base_dir) {
-                return conn;
-            }
-        }
-        // 3. In-memory fallback
-        tracing::warn!("Failed to open DB, falling back to in-memory connection");
-        crate::db::open_in_memory()
-            .expect("in-memory DB must always open")
-            .conn
     }
 
     /// Build the proxy base URL from config, e.g. `http://0.0.0.0:11411`.

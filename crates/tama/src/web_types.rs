@@ -423,9 +423,7 @@ pub struct WebState {
 
 // Compile-time check: WebState must be Clone + Send + Sync + 'static for the
 // axum Extension extractor to work.
-const _: () = {
+const _: fn() = || {
     fn assert_clone_send_sync<T: Clone + Send + Sync + 'static>() {}
-    fn check() {
-        assert_clone_send_sync::<WebState>();
-    }
+    assert_clone_send_sync::<WebState>();
 };

@@ -112,7 +112,7 @@ fn rule_body<'a>(css: &'a str, selector: &str) -> Option<&'a str> {
 /// breathing room so it doesn't visually collide with the system metric
 /// cards directly above it.
 #[test]
-fn style_css_defines_dashboard_models_section_spacing() {
+fn test_style_css_defines_dashboard_models_section_spacing() {
     let css = strip_css_comments(&combined_css());
     let body = rule_body(&css, ".dashboard-models")
         .expect("style.css must define a `.dashboard-models` rule");
@@ -126,7 +126,7 @@ fn style_css_defines_dashboard_models_section_spacing() {
 /// section title and the summary count. It needs its own bottom margin so the
 /// header doesn't sit flush against the model cards grid.
 #[test]
-fn style_css_defines_dashboard_models_page_header_spacing() {
+fn test_style_css_defines_dashboard_models_page_header_spacing() {
     let css = strip_css_comments(&combined_css());
     let body = rule_body(&css, ".dashboard-models .page-header")
         .expect("style.css must define a `.dashboard-models .page-header` rule");
@@ -140,7 +140,7 @@ fn style_css_defines_dashboard_models_page_header_spacing() {
 /// commented-out copies. This guards against false positives in the two
 /// dashboard-section assertions above.
 #[test]
-fn rule_body_finds_top_level_rules_and_ignores_comments() {
+fn test_rule_body_finds_top_level_rules_and_ignores_comments() {
     let css = strip_css_comments(
         "/* .foo { margin-top: 1rem; } */\n.foo { margin-top: 2rem; }\n.bar .baz { margin-bottom: 0.5rem; }",
     );
@@ -157,7 +157,7 @@ fn rule_body_finds_top_level_rules_and_ignores_comments() {
 /// The `.model-section` container wraps each section of model cards.
 /// It needs vertical spacing (`margin-bottom`) to separate sections visually.
 #[test]
-fn style_css_defines_model_section_spacing() {
+fn test_style_css_defines_model_section_spacing() {
     let css = strip_css_comments(&combined_css());
     let body =
         rule_body(&css, ".model-section").expect("style.css must define a `.model-section` rule");
@@ -169,7 +169,7 @@ fn style_css_defines_model_section_spacing() {
 
 /// The last `.model-section` should not have extra bottom margin.
 #[test]
-fn style_css_defines_model_section_last_child_spacing() {
+fn test_style_css_defines_model_section_last_child_spacing() {
     let css = strip_css_comments(&combined_css());
     let body = rule_body(&css, ".model-section:last-child")
         .expect("style.css must define a `.model-section:last-child` rule");
@@ -182,7 +182,7 @@ fn style_css_defines_model_section_last_child_spacing() {
 /// The `.model-section__title` element styles the section header.
 /// It needs appropriate typography and a bottom border for visual separation.
 #[test]
-fn style_css_defines_model_section_title_styling() {
+fn test_style_css_defines_model_section_title_styling() {
     let css = strip_css_comments(&combined_css());
     let body = rule_body(&css, ".model-section__title")
         .expect("style.css must define a `.model-section__title` rule");
@@ -199,7 +199,7 @@ fn style_css_defines_model_section_title_styling() {
 /// boolean toggles (e.g. `api_keys_enabled`, `oauth2.enabled`). It must
 /// render the label and checkbox inline so they sit on a single row.
 #[test]
-fn style_css_defines_checkbox_label() {
+fn test_style_css_defines_checkbox_label() {
     let css = strip_css_comments(&combined_css());
     let body =
         rule_body(&css, ".checkbox-label").expect("style.css must define a `.checkbox-label` rule");
@@ -213,7 +213,7 @@ fn style_css_defines_checkbox_label() {
 /// OAuth2 provider config inside the proxy form). It must give the subsection
 /// a visible boundary so it reads as a distinct sub-section.
 #[test]
-fn style_css_defines_form_subsection() {
+fn test_style_css_defines_form_subsection() {
     let css = strip_css_comments(&combined_css());
     let body = rule_body(&css, ".form-subsection")
         .expect("style.css must define a `.form-subsection` rule");

@@ -1,6 +1,5 @@
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 
 // ── Local types ──────────────────────────────────────────────────────────────
 
@@ -51,6 +50,7 @@ pub struct QuantEntry {
 
 #[derive(Clone, Debug)]
 pub struct JobProgress {
+    #[allow(dead_code)] // Populated for API fidelity but never read by UI
     pub job_id: String,
     pub filename: String,
     pub status: String,
@@ -65,19 +65,6 @@ pub struct PullJobEntry {
     pub job_id: String,
     pub filename: String,
     pub status: String,
-}
-
-/// SSE event data payload
-#[derive(Deserialize, Clone)]
-pub struct SsePayload {
-    pub job_id: String,
-    pub status: String,
-    pub bytes_pulled: u64,
-    pub total_bytes: Option<u64>,
-    pub error: Option<String>,
-    /// GGUF-parsed context length from the backend (set during pull completion).
-    #[serde(default)]
-    pub gguf_context_length: Option<u64>,
 }
 
 // ── Wizard step enum ─────────────────────────────────────────────────────────
@@ -121,11 +108,6 @@ pub fn step_class(current: &WizardStep, target: &WizardStep, target_idx: usize) 
     } else {
         "wizard-step"
     }
-}
-
-#[allow(dead_code)]
-pub fn is_selection_empty(quants: &HashSet<String>, mmprojs: &HashSet<String>) -> bool {
-    quants.is_empty() && mmprojs.is_empty()
 }
 
 /// Try to infer the quantisation type from a GGUF filename.

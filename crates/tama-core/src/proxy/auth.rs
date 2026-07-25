@@ -739,7 +739,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_auth_url_passes_through() {
+    async fn test_no_auth_url_passes_through() {
         let app = make_app(None, vec![]);
         let resp = app
             .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
@@ -749,7 +749,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn skip_path_passes_through() {
+    async fn test_skip_path_passes_through() {
         let app = make_app(
             Some("https://auth.wizards.town".to_string()),
             vec!["/health".to_string()],
@@ -767,7 +767,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_auth_returns_401() {
+    async fn test_no_auth_returns_401() {
         let app = make_app(Some("https://auth.wizards.town".to_string()), vec![]);
         let resp = app
             .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
@@ -777,7 +777,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn caddy_forward_auth_header_passes() {
+    async fn test_caddy_forward_auth_header_passes() {
         let app = make_app(Some("https://auth.wizards.town".to_string()), vec![]);
         let resp = app
             .oneshot(
@@ -793,7 +793,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn valid_bearer_token_passes() {
+    async fn test_valid_bearer_token_passes() {
         // Start mock Authentik server that returns a valid user response
         let mock = Router::new().route(
             "/api/v3/core/users/me/",
@@ -824,7 +824,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn invalid_bearer_token_returns_401() {
+    async fn test_invalid_bearer_token_returns_401() {
         // Mock server that returns 401 for any token
         let mock = Router::new().route(
             "/api/v3/core/users/me/",
@@ -853,7 +853,7 @@ mod tests {
     /// Test fail-open behavior: when Authentik is unreachable, the request
     /// passes through with a warning log. This is a critical security trade-off.
     #[tokio::test]
-    async fn authentik_unreachable_fails_open() {
+    async fn test_authentik_unreachable_fails_open() {
         // Bind a UDP socket to get a free port. Nothing TCP will be listening
         // on this port, so the connection is refused immediately (no timeout).
         let udp_socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();

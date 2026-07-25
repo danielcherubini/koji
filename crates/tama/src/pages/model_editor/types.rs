@@ -214,12 +214,15 @@ pub struct FileRecordJson {
 /// GPU device information returned by the backend discovery API.
 #[derive(Debug, Clone, Deserialize)]
 pub struct GpuDeviceInfo {
+    #[allow(dead_code)] // Deserialized from API but not displayed
     pub device_id: String,
     pub name: String,
     #[serde(default)]
+    #[allow(dead_code)] // Deserialized from API but not displayed
     pub vendor: String,
     #[serde(default)]
     pub vram_total_mib: Option<u64>,
     #[serde(default)]
+    #[allow(dead_code)] // Deserialized from API but not displayed
     pub vram_free_mib: Option<u64>,
 }

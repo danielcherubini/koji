@@ -47,12 +47,12 @@ pub async fn pull_single(
         let resp = match request.send().await {
             Ok(r) => r,
             Err(e) if attempt <= MAX_RETRIES => {
-                pb.suspend(|| {
-                    println!(
-                        "  Download failed (attempt {}/{}), retrying... ({})",
-                        attempt, MAX_RETRIES, e
-                    );
-                });
+                tracing::warn!(
+                    "  Download failed (attempt {}/{}), retrying... ({})",
+                    attempt,
+                    MAX_RETRIES,
+                    e
+                );
                 tokio::time::sleep(exponential_backoff(attempt)).await;
                 continue;
             }
@@ -71,12 +71,12 @@ pub async fn pull_single(
             }
             // Retry transient errors (429/5xx)
             if attempt <= MAX_RETRIES {
-                pb.suspend(|| {
-                    println!(
-                        "  Server returned {}, retrying ({}/{})...",
-                        status, attempt, MAX_RETRIES
-                    );
-                });
+                tracing::warn!(
+                    "  Server returned {}, retrying ({}/{})...",
+                    status,
+                    attempt,
+                    MAX_RETRIES
+                );
                 tokio::time::sleep(exponential_backoff(attempt)).await;
                 continue;
             }
@@ -84,12 +84,12 @@ pub async fn pull_single(
         }
         if pulled == 0 && !resp.status().is_success() {
             if attempt <= MAX_RETRIES {
-                pb.suspend(|| {
-                    println!(
-                        "  Server returned {}, retrying ({}/{})...",
-                        status, attempt, MAX_RETRIES
-                    );
-                });
+                tracing::warn!(
+                    "  Server returned {}, retrying ({}/{})...",
+                    status,
+                    attempt,
+                    MAX_RETRIES
+                );
                 tokio::time::sleep(exponential_backoff(attempt)).await;
                 continue;
             }
@@ -126,15 +126,13 @@ pub async fn pull_single(
                 Ok(None) => break,
                 Err(_e) => {
                     if attempt <= MAX_RETRIES {
-                        pb.suspend(|| {
-                            println!(
-                                "  Stream interrupted at {:.1} MiB (attempt {}/{}), retrying... ({})",
-                                pulled as f64 / 1_048_576.0,
-                                attempt,
-                                MAX_RETRIES,
-                                _e
-                            );
-                        });
+                        tracing::warn!(
+                            "  Stream interrupted at {:.1} MiB (attempt {}/{}), retrying... ({})",
+                            pulled as f64 / 1_048_576.0,
+                            attempt,
+                            MAX_RETRIES,
+                            _e
+                        );
                         // Keep progress bar at current position for retry
                         pb.set_position(pulled);
                         stream_failed = true;

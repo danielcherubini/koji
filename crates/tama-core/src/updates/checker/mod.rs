@@ -9,6 +9,7 @@ use crate::db::queries::{get_all_model_configs, get_oldest_check_time};
 
 mod backend;
 mod cache;
+#[cfg(test)]
 mod helpers;
 mod model;
 
@@ -16,6 +17,7 @@ mod model;
 mod tests;
 
 pub use cache::*;
+#[cfg(test)]
 pub use helpers::*;
 
 #[cfg(feature = "web-ui")]

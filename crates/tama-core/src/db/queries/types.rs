@@ -131,16 +131,3 @@ pub struct UpdateCheckRecord {
     pub details_json: Option<String>, // JSON blob for model file changes
     pub checked_at: i64,              // unix timestamp
 }
-
-/// A model alias record — maps a friendly name to a model config.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)]
-pub(crate) struct ModelAliasRecord {
-    pub id: i64,
-    pub name: String,
-    pub model_id: i64,
-    pub description: Option<String>,
-    pub enabled: bool,
-    pub created_at: String,
-    pub updated_at: String,
-}

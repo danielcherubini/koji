@@ -282,17 +282,4 @@ impl ProxyState {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
-
-    /// Check if a TTS backend is loaded and ready.
-    ///
-    /// Returns the backend name if found in Ready state, None otherwise.
-    pub async fn get_tts_server(&self, backend_name: &str) -> Option<String> {
-        let models = self.models.read().await;
-        if let Some(state) = models.get(backend_name) {
-            if state.is_ready() {
-                return Some(backend_name.to_string());
-            }
-        }
-        None
-    }
 }

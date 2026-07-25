@@ -97,16 +97,6 @@ impl ModelCard {
             .or(self.model.default_context_length)
     }
 
-    /// Populate sampling entries from a templates map.
-    /// Only fills keys that are missing — existing entries are preserved.
-    pub fn populate_sampling_from(&mut self, templates: &HashMap<String, SamplingParams>) {
-        for (name, params) in templates {
-            self.sampling
-                .entry(name.clone())
-                .or_insert_with(|| params.clone());
-        }
-    }
-
     /// Get model-specific sampling overrides for a given profile name.
     pub fn sampling_for(&self, profile_name: &str) -> Option<&SamplingParams> {
         self.sampling.get(profile_name)

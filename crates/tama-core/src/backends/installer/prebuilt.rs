@@ -10,26 +10,7 @@ use super::extract::extract_archive;
 use super::urls::get_prebuilt_url;
 use super::InstallOptions;
 use super::ProgressSink;
-
-/// Emit a log line to both the progress sink and the tracing subsystem.
-fn emit(sink: Option<&Arc<dyn ProgressSink>>, line: impl Into<String>) {
-    let line = line.into();
-    tracing::info!(target: "tama_core::backends::installer", "{}", line);
-    match sink {
-        Some(s) => s.log(&line),
-        None => println!("{line}"),
-    }
-}
-
-/// Emit an error to both the progress sink and the tracing subsystem.
-fn emit_error(sink: Option<&Arc<dyn ProgressSink>>, line: impl Into<String>) {
-    let line = line.into();
-    tracing::error!(target: "tama_core::backends::installer", "{}", line);
-    match sink {
-        Some(s) => s.log(&line),
-        None => eprintln!("{line}"),
-    }
-}
+use super::{emit, emit_error};
 
 /// Prepare the target directory for installation.
 ///

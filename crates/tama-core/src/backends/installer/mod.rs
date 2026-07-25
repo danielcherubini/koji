@@ -32,12 +32,23 @@ pub struct InstallOptions {
 }
 
 /// Emit a log line through the progress sink, or println if no sink is provided.
-#[allow(dead_code)]
-fn emit(sink: Option<&Arc<dyn ProgressSink>>, line: impl Into<String>) {
+pub(crate) fn emit(sink: Option<&Arc<dyn ProgressSink>>, line: impl Into<String>) {
     let line = line.into();
     match sink {
         Some(s) => s.log(&line),
-        None => println!("{line}"),
+        None => tracing::info!("{line}"),
+    }
+}
+
+/// Emit an error through the progress sink AND tracing.
+///
+/// Always writes to `tracing::error!` for server-side observability, then
+/// additionally sends the line to the progress sink when one is available.
+pub(crate) fn emit_error(sink: Option<&Arc<dyn ProgressSink>>, line: impl Into<String>) {
+    let line = line.into();
+    tracing::error!("{line}");
+    if let Some(s) = sink {
+        s.log(&line);
     }
 }
 
@@ -138,9 +149,25 @@ mod tests {
 
     /// Test that InstallOptions still derives Debug (smoke test guard).
     #[test]
-    fn _assert_install_options_debug() {
+    fn test_install_options_debug_assertion() {
         fn _assert<T: std::fmt::Debug>() {}
         _assert::<InstallOptions>();
+    }
+
+    /// Test that emit_error always writes to tracing AND sends to sink when present.
+    #[test]
+    fn test_emit_error_dual_write() {
+        let sink = Arc::new(MockSink::new());
+        let progress: Option<Arc<dyn ProgressSink>> = Some(sink.clone());
+
+        super::emit_error(progress.as_ref(), "test error line");
+
+        // Sink should have received the line (dual-write)
+        let lines = sink.get_lines();
+        assert!(
+            lines.contains(&"test error line".to_string()),
+            "Sink should have received the error line"
+        );
     }
 
     /// Test that emit routes to sink when Some, println when None.

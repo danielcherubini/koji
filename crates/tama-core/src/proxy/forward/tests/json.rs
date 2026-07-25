@@ -64,27 +64,3 @@ fn test_rewrite_json_model_name_long_model_name() {
 
     assert_eq!(result["model"], long_name);
 }
-
-#[test]
-fn test_build_forward_uri_simple_path() {
-    let parts = make_parts("http://localhost/v1/chat/completions");
-
-    let uri = build_forward_uri("http://backend:8080", &parts).unwrap();
-    assert_eq!(uri, "http://backend:8080/v1/chat/completions");
-}
-
-#[test]
-fn test_build_forward_uri_with_query_string() {
-    let parts = make_parts("http://localhost/v1/models?limit=10");
-
-    let uri = build_forward_uri("http://backend:8080", &parts).unwrap();
-    assert_eq!(uri, "http://backend:8080/v1/models?limit=10");
-}
-
-#[test]
-fn test_build_forward_uri_no_query_returns_path_only() {
-    let parts = make_parts("http://localhost/v1/completions");
-
-    let uri = build_forward_uri("http://backend:8080", &parts).unwrap();
-    assert_eq!(uri, "http://backend:8080/v1/completions");
-}

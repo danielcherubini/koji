@@ -166,6 +166,7 @@ pub fn format_number(n: u64) -> String {
 /// Used by the dashboard to render the Active Models list and by the
 /// "X loaded" summary heading. Extracted as a free function so it can
 /// be unit-tested independently of the Leptos reactive view.
+#[allow(dead_code)] // Used only by unit tests in dashboard/tests.rs
 pub fn active_models(models: &[ModelStatus]) -> Vec<ModelStatus> {
     models
         .iter()
@@ -184,6 +185,7 @@ pub fn active_models(models: &[ModelStatus]) -> Vec<ModelStatus> {
 /// Note: Models with an empty state string are treated as inactive.
 /// This matches the behavior of `active_models()` which only considers
 /// "ready", "loading", and "unloading" as active states.
+#[allow(dead_code)] // Used only by unit tests in dashboard/tests.rs
 pub fn inactive_models(models: &[ModelStatus]) -> Vec<ModelStatus> {
     models
         .iter()
@@ -208,6 +210,7 @@ pub fn model_display_name(m: &ModelStatus) -> String {
 }
 
 /// Sort models by base model, then by display name as a tiebreaker.
+#[allow(dead_code)] // Used only by unit tests in dashboard/tests.rs
 pub fn model_sort_key(m: &ModelStatus) -> (String, String) {
     let primary = m
         .hf_base_model

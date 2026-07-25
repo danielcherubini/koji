@@ -1,17 +1,6 @@
 use std::path::Path;
-use std::sync::Arc;
 
 use crate::backends::InstallOptions;
-use crate::backends::ProgressSink;
-
-/// Emit a log line through the progress sink, or println if no sink is provided.
-pub(crate) fn emit(sink: Option<&Arc<dyn ProgressSink>>, line: impl Into<String>) {
-    let line = line.into();
-    match sink {
-        Some(s) => s.log(&line),
-        None => println!("{line}"),
-    }
-}
 
 /// Build the CMake argument list for the configure step.
 ///

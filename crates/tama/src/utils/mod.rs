@@ -219,14 +219,14 @@ mod tests {
     }
 
     #[test]
-    fn rw_signal_to_signal_returns_read_half() {
+    fn test_rw_signal_to_signal_returns_read_half() {
         let rw = RwSignal::new(42i32);
         let sig: Signal<i32> = rw_signal_to_signal(rw);
         assert_eq!(sig.get_untracked(), 42);
     }
 
     #[test]
-    fn rw_signal_to_signal_returns_signal_that_tracks_writes() {
+    fn test_rw_signal_to_signal_returns_signal_that_tracks_writes() {
         let rw = RwSignal::new(0i32);
         let sig: Signal<i32> = rw_signal_to_signal(rw);
         rw.set(100);

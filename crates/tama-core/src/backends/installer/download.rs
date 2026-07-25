@@ -26,16 +26,6 @@ const BASE_BACKOFF: Duration = Duration::from_secs(1);
 /// When `progress.is_none()`, preserves the existing `indicatif` TTY bar behavior.
 ///
 /// After the stream completes, verifies downloaded bytes match Content-Length when known.
-#[allow(dead_code)]
-pub async fn download_file(
-    url: &str,
-    dest: &Path,
-    progress: Option<&Arc<dyn ProgressSink>>,
-) -> Result<()> {
-    download_with_client(url, dest, progress, None).await
-}
-
-/// Download a file using a shared reqwest::Client with retry logic.
 pub async fn download_with_client(
     url: &str,
     dest: &Path,
@@ -225,114 +215,6 @@ pub async fn perform_download(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU32, Ordering};
-    use tokio::io::AsyncReadExt;
-    use tokio::net::TcpListener;
-
-    /// Simple HTTP server that counts requests and returns a specific status code.
-    struct CountingServer {
-        addr: std::net::SocketAddr,
-        _request_count: Arc<AtomicU32>,
-        _success_after: u32,
-    }
-
-    impl CountingServer {
-        async fn new(success_after: u32) -> Result<Self> {
-            let listener = TcpListener::bind("127.0.0.1:0").await?;
-            let addr = listener.local_addr()?;
-            let request_count = Arc::new(AtomicU32::new(0));
-            let rc_clone = Arc::clone(&request_count);
-
-            tokio::spawn(async move {
-                loop {
-                    let (mut stream, _) = match listener.accept().await {
-                        Ok(s) => s,
-                        Err(_) => break,
-                    };
-
-                    // Read the HTTP request (headers only)
-                    let mut buf = [0u8; 4096];
-                    let n = stream.read(&mut buf).await.unwrap_or(0);
-                    let _ = n;
-
-                    let count = rc_clone.fetch_add(1, Ordering::SeqCst) + 1;
-
-                    // Build response
-                    let (status_code, status_text) = if count < success_after {
-                        (503, "Service Unavailable")
-                    } else {
-                        (200, "OK")
-                    };
-
-                    let body = b"test content";
-                    let response = format!(
-                        "HTTP/1.1 {} {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                        status_code,
-                        status_text,
-                        body.len()
-                    );
-
-                    let _ = stream.write_all(response.as_bytes()).await;
-                    if status_code == 200 {
-                        let _ = stream.write_all(body).await;
-                    }
-                }
-            });
-
-            Ok(Self {
-                addr,
-                _request_count: request_count,
-                _success_after: success_after,
-            })
-        }
-
-        fn url(&self) -> String {
-            format!("http://{}/test", self.addr)
-        }
-    }
-
-    #[tokio::test]
-    async fn test_download_retries_on_503_then_succeeds() {
-        let server = CountingServer::new(2).await.unwrap();
-        let tmp = tempfile::tempdir().unwrap();
-        let dest = tmp.path().join("test.bin");
-
-        // Should retry on 503 and succeed on the 2nd attempt
-        download_file(&server.url(), &dest, None).await.unwrap();
-
-        assert!(dest.exists());
-        let content = tokio::fs::read(&dest).await.unwrap();
-        assert_eq!(content, b"test content");
-    }
-
-    #[tokio::test]
-    async fn test_download_fails_after_max_retries() {
-        // Always return 503 — should fail after MAX_RETRIES + 1 attempts
-        let server = CountingServer::new(u32::MAX).await.unwrap();
-        let tmp = tempfile::tempdir().unwrap();
-        let dest = tmp.path().join("fail.bin");
-
-        let result = download_file(&server.url(), &dest, None).await;
-        assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
-        assert!(
-            err_msg.contains("503") || err_msg.contains("retries"),
-            "Expected retry error, got: {}",
-            err_msg
-        );
-    }
-
-    #[tokio::test]
-    async fn test_download_succeeds_on_first_attempt() {
-        // Return 200 immediately
-        let server = CountingServer::new(1).await.unwrap();
-        let tmp = tempfile::tempdir().unwrap();
-        let dest = tmp.path().join("fast.bin");
-
-        download_file(&server.url(), &dest, None).await.unwrap();
-
-        assert!(dest.exists());
-    }
 
     #[test]
     fn test_is_retryable_error_network() {

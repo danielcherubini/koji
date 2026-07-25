@@ -12,6 +12,7 @@ use leptos::prelude::*;
 /// - Header bar with title, status badge, and optional close button
 /// - Scrollable body showing: connection error (if any), empty state, or children
 #[component]
+#[allow(dead_code)] // Leptos #[component] macro generates struct fields not directly read
 pub fn ActivityPanel(
     /// Panel title displayed in the header bar.
     title: String,

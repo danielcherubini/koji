@@ -23,40 +23,6 @@ pub mod updates;
 // Re-export for backward compatibility
 pub use models::*;
 
-/// Query parameters for GET /api/logs
-#[derive(serde::Deserialize)]
-pub struct LogsQuery {
-    /// Number of lines to return (default: 200)
-    #[serde(default = "default_lines")]
-    pub lines: usize,
-}
-fn default_lines() -> usize {
-    200
-}
-
-pub async fn get_logs(
-    State(state): State<Arc<ProxyState>>,
-    axum::extract::Query(query): axum::extract::Query<LogsQuery>,
-) -> impl IntoResponse {
-    let dir = match state.config().read().await.logs_dir() {
-        Ok(d) => d,
-        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
-    };
-    let log_path = dir.join("tama.log");
-    // Use spawn_blocking for synchronous file I/O to avoid blocking the Tokio runtime.
-    let log_path_clone = log_path.clone();
-    let n = query.lines;
-    let lines: Vec<String> = tokio::task::spawn_blocking(move || {
-        tama_core::logging::tail_lines(&log_path_clone, n).unwrap_or_default()
-    })
-    .await
-    .unwrap_or_default()
-    .into_iter()
-    .map(|line| tama_core::logging::format_log_line(&line))
-    .collect();
-    Json(serde_json::json!({ "lines": lines })).into_response()
-}
-
 pub async fn get_config(State(_state): State<Arc<ProxyState>>) -> impl IntoResponse {
     error_response_simple(
         StatusCode::GONE,
@@ -79,23 +45,6 @@ async fn sync_proxy_config(state: &Arc<ProxyState>, new_config: tama_core::confi
     // the latest config; if langfuse is disabled or credentials are missing,
     // from_config returns None and the client is set to None (disabling tracing).
     state.refresh_langfuse_client().await;
-}
-
-/// Trigger the proxy to reload its model registry from the database.
-async fn trigger_proxy_reload(
-    state: &Arc<ProxyState>,
-) -> Result<(), (StatusCode, serde_json::Value)> {
-    state.reload_model_configs().await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            error_body(format!("Failed to reload model configs: {}", e), None),
-        )
-    })?;
-    // Aliases are nice-to-have; log a warning but don't fail the whole operation.
-    if let Err(e) = state.reload_aliases().await {
-        tracing::warn!(error = %e, "Failed to reload aliases");
-    }
-    Ok(())
 }
 
 /// Body for structured config save.

@@ -81,7 +81,7 @@ fn existing_with_size(name: &str, file: &str, size: Option<u64>) -> ModelConfig 
 /// When an existing entry has a stored `size_bytes`, a PUT that tries to
 /// change it must be silently ignored — the server-side value wins.
 #[test]
-fn apply_model_body_preserves_existing_size_bytes() {
+fn test_apply_model_body_preserves_existing_size_bytes() {
     let existing = existing_with_size("Q4_K_M", "Model-Q4_K_M.gguf", Some(1_234_567));
 
     let mut attacker_quants = BTreeMap::new();
@@ -108,7 +108,7 @@ fn apply_model_body_preserves_existing_size_bytes() {
 /// When an existing entry has no stored size, we still accept the client
 /// value to avoid regressing fresh creates that haven't been verified yet.
 #[test]
-fn apply_model_body_accepts_client_size_when_none_stored() {
+fn test_apply_model_body_accepts_client_size_when_none_stored() {
     let existing = existing_with_size("Q4_K_M", "Model-Q4_K_M.gguf", None);
 
     let mut incoming = BTreeMap::new();
@@ -129,7 +129,7 @@ fn apply_model_body_accepts_client_size_when_none_stored() {
 /// A brand-new model (no existing config) still honours whatever size the
 /// client supplies, so create flows aren't broken.
 #[test]
-fn apply_model_body_accepts_client_size_for_new_model() {
+fn test_apply_model_body_accepts_client_size_for_new_model() {
     let mut incoming = BTreeMap::new();
     incoming.insert(
         "Q4_K_M".to_string(),
@@ -148,7 +148,7 @@ fn apply_model_body_accepts_client_size_for_new_model() {
 /// A new quant key (not in the existing config) on an existing model still
 /// accepts the client value — preservation is per-key.
 #[test]
-fn apply_model_body_accepts_client_size_for_new_quant_key() {
+fn test_apply_model_body_accepts_client_size_for_new_quant_key() {
     let existing = existing_with_size("Q4_K_M", "Model-Q4_K_M.gguf", Some(1_000));
 
     let mut incoming = BTreeMap::new();

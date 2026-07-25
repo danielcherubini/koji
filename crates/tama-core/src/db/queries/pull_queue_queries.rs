@@ -256,36 +256,6 @@ pub fn cancel_queue_item(conn: &Connection, job_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Get the currently running item (if any).
-pub fn get_running_item(conn: &Connection) -> Result<Option<PullQueueItem>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, job_id, repo_id, filename, display_name, status, \
-                bytes_pulled, total_bytes, error_message, started_at, \
-                completed_at, queued_at, kind, quant, context_length \
-         FROM pull_queue \
-         WHERE status IN ('running', 'verifying') \
-         LIMIT 1",
-    )?;
-    let mut rows = stmt.query_map([], map_queue_item)?;
-    match rows.next() {
-        Some(row) => Ok(Some(row?)),
-        None => Ok(None),
-    }
-}
-
-/// Get all currently running/verifying items.
-pub fn get_all_running_items(conn: &Connection) -> Result<Vec<PullQueueItem>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, job_id, repo_id, filename, display_name, status, \
-                bytes_pulled, total_bytes, error_message, started_at, \
-                completed_at, queued_at, kind, quant, context_length \
-         FROM pull_queue \
-         WHERE status IN ('running', 'verifying')",
-    )?;
-    let rows = stmt.query_map([], map_queue_item)?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
-}
-
 /// Mark stale running items as failed (process died without completing).
 pub fn mark_stale_running_as_failed(conn: &Connection) -> Result<()> {
     conn.execute(
@@ -293,19 +263,6 @@ pub fn mark_stale_running_as_failed(conn: &Connection) -> Result<()> {
          status = 'failed', \
          error_message = 'Download was interrupted (process restart)', \
          completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
-         WHERE status IN ('running', 'verifying') AND completed_at IS NULL",
-        [],
-    )?;
-    Ok(())
-}
-
-/// Mark stale running items as queued so they get retried on next poll.
-/// Clears started_at so the pull restarts fresh (hf-hub resumes if file exists).
-pub fn mark_stale_running_as_queued(conn: &Connection) -> Result<()> {
-    conn.execute(
-        "UPDATE pull_queue SET \
-         status = 'queued', \
-         started_at = NULL \
          WHERE status IN ('running', 'verifying') AND completed_at IS NULL",
         [],
     )?;

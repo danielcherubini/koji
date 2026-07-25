@@ -17,6 +17,7 @@ pub struct UpdateStatusDto {
     pub update_available: Option<bool>,
 }
 
+#[allow(dead_code)] // Used only by tests
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum GpuTypeDto {
@@ -29,6 +30,7 @@ pub enum GpuTypeDto {
 }
 
 impl GpuTypeDto {
+    #[allow(dead_code)] // Used only by tests
     pub fn label(&self) -> String {
         match self {
             GpuTypeDto::Cuda { version } => format!("CUDA {version}"),

@@ -66,29 +66,6 @@ pub fn get_tts_config(conn: &Connection, engine: &str) -> Result<Option<TtsConfi
     }
 }
 
-/// Get all stored TTS engine configurations.
-pub fn get_all_tts_configs(conn: &Connection) -> Result<Vec<TtsConfigRecord>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, engine, default_voice, speed, format, enabled,
-                created_at, updated_at
-         FROM tts_configs ORDER BY engine ASC",
-    )?;
-    let rows = stmt.query_map([], |row| {
-        Ok(TtsConfigRecord {
-            id: row.get(0)?,
-            engine: row.get(1)?,
-            default_voice: row.get(2)?,
-            speed: row.get(3)?,
-            format: row.get(4)?,
-            enabled: row.get::<_, i32>(5)? != 0,
-            created_at: row.get(6)?,
-            updated_at: row.get(7)?,
-        })
-    })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(Into::into)
-}
-
 /// Delete the TTS configuration by engine name.
 pub fn delete_tts_config(conn: &Connection, engine: &str) -> Result<()> {
     conn.execute("DELETE FROM tts_configs WHERE engine = ?1", [engine])?;

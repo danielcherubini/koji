@@ -15,11 +15,6 @@ impl VramInfo {
         self.total_mib.saturating_sub(self.used_mib)
     }
 
-    /// Available VRAM in bytes
-    pub fn available_bytes(&self) -> u64 {
-        self.available_mib() * 1024 * 1024
-    }
-
     /// Total VRAM in bytes
     pub fn total_bytes(&self) -> u64 {
         self.total_mib * 1024 * 1024

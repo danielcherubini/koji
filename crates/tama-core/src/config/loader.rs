@@ -18,15 +18,6 @@ impl Config {
         // config_dir() on Linux = ~/.config/tama which is already the base
         let base = proj.config_dir().to_path_buf();
 
-        // One-time auto-migration from the legacy kronk directory. This is
-        // a no-op if the new directory already exists or if no legacy
-        // directory is present.
-        // TODO(v1.60): Remove kronk→tama migration. By v1.60 all users will have
-        // migrated or started fresh. Remove this call and the rename_legacy module.
-        if let Err(e) = super::rename_legacy::migrate_legacy_data_dir(&base) {
-            tracing::warn!("Legacy data directory migration failed: {}", e);
-        }
-
         Ok(base)
     }
 
@@ -85,17 +76,6 @@ impl Config {
             Ok(PathBuf::from(dir))
         } else {
             Ok(Self::base_dir()?.join("logs"))
-        }
-    }
-
-    pub fn with_models_dir(&self, dir: impl Into<PathBuf>) -> Self {
-        let dir = dir.into();
-        Self {
-            general: General {
-                models_dir: Some(dir.to_string_lossy().to_string()),
-                ..self.general.clone()
-            },
-            ..self.clone()
         }
     }
 }

@@ -180,16 +180,6 @@ pub fn get_all_model_files(conn: &Connection) -> Result<Vec<ModelFileRecord>> {
         .map_err(Into::into)
 }
 
-/// Delete all records for a model (model_pulls, model_files cascade automatically).
-/// Does NOT delete pull_log entries (they're historical).
-pub fn delete_model_records(conn: &Connection, model_id: i64) -> Result<()> {
-    let tx = conn.unchecked_transaction()?;
-    tx.execute("DELETE FROM model_configs WHERE id = ?1", [model_id])?;
-    // model_pulls and model_files are deleted by ON DELETE CASCADE
-    tx.commit()?;
-    Ok(())
-}
-
 /// Delete a single model file record by (model_id, filename).
 /// Does NOT touch model_pulls — the pull record stays.
 pub fn delete_model_file(conn: &Connection, model_id: i64, filename: &str) -> Result<()> {

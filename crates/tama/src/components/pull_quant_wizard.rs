@@ -497,6 +497,7 @@ pub fn PullQuantWizard(
 
 /// Helper: advance to Done step when all jobs are terminal AND we're past the Downloading step.
 /// The Downloading → SetContext transition is handled by the dedicated Effect, not this function.
+#[cfg(not(feature = "ssr"))]
 fn advance_if_all_terminal(dj: &RwSignal<Vec<JobProgress>>, ws: &RwSignal<WizardStep>) {
     let jobs = dj.get_untracked();
     let current_step = ws.get_untracked();

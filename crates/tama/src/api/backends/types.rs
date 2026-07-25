@@ -11,7 +11,7 @@ use tama_core::backends::ProgressSink;
 
 /// DTO for the compaction backend card (embedded, always installed).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 pub struct CompactionCardDto {
     /// Whether compaction is enabled in config.
     pub enabled: bool,
@@ -298,7 +298,6 @@ pub struct CheckUpdatesResponse {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
-#[allow(dead_code)]
 pub struct JobSnapshotDto {
     pub id: String,
     pub kind: String,

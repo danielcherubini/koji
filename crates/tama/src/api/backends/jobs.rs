@@ -18,7 +18,6 @@ use crate::web_types::WebState;
 use tama_core::proxy::ProxyState;
 
 /// GET /tama/v1/backends/jobs/:id
-#[allow(dead_code)]
 pub async fn get_job(
     State(_state): State<Arc<ProxyState>>,
     Extension(web_state): Extension<WebState>,
@@ -81,7 +80,6 @@ pub async fn get_job(
 }
 
 /// GET /tama/v1/backends/jobs/:id/events
-#[allow(dead_code)]
 pub async fn job_events_sse(
     State(_state): State<Arc<ProxyState>>,
     Extension(web_state): Extension<WebState>,

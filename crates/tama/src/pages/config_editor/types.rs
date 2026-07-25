@@ -291,7 +291,7 @@ mod tests {
     /// ignores unknown fields on deserialize, so the in-memory form ended up
     /// with `api_keys_enabled = false` (default) and POSTed that to the server.
     #[test]
-    fn api_keys_enabled_round_trips_through_form_config() {
+    fn test_api_keys_enabled_round_trips_through_form_config() {
         let server_json = server_response_with_all_fields();
         let form_cfg: Config = serde_json::from_value(server_json.clone())
             .expect("form should accept the server's full structured config");
@@ -310,7 +310,7 @@ mod tests {
     /// not just `api_keys_enabled`. Catches future drift if a new field is
     /// added to the core config and forgotten in the form.
     #[test]
-    fn full_config_round_trip_preserves_every_field() {
+    fn test_full_config_round_trip_preserves_every_field() {
         let original = server_response_with_all_fields();
         let form_cfg: Config = serde_json::from_value(original.clone())
             .expect("form should deserialize server's structured config");

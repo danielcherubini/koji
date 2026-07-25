@@ -138,7 +138,6 @@ make dev          # Leptos frontend dev server with hot reload
 - `PascalCase` for types, structs, enums
 - `UPPER_SNAKE_CASE` for constants
 - Prefix test functions with `test_`
-- Prefix private functions with `_` (e.g., `_hf_api()`)
 
 ### Error Handling
 

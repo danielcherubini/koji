@@ -22,15 +22,6 @@ impl GpuVendor {
             Self::Amd => "amd",
         }
     }
-
-    /// Parse a vendor from its string representation.
-    pub fn try_from_str(s: &str) -> Option<Self> {
-        match s {
-            "nvidia" => Some(Self::Nvidia),
-            "amd" => Some(Self::Amd),
-            _ => None,
-        }
-    }
 }
 
 /// Lifecycle state of a model's backend, used in [`ModelStatus`].
@@ -59,20 +50,6 @@ impl ModelState {
             Self::Ready => "ready",
             Self::Unloading => "unloading",
             Self::Failed => "failed",
-        }
-    }
-
-    /// Parse a state from its string representation.
-    ///
-    /// Returns `Idle` for empty or unknown strings (backwards compatible).
-    pub fn from_str_fallback(s: &str) -> Self {
-        match s {
-            "idle" => Self::Idle,
-            "loading" => Self::Loading,
-            "ready" => Self::Ready,
-            "unloading" => Self::Unloading,
-            "failed" => Self::Failed,
-            _ => Self::Idle,
         }
     }
 }

@@ -5,6 +5,7 @@ use leptos::prelude::*;
 pub enum AlertVariant {
     Success, // green
     Error,   // red
+    #[allow(dead_code)] // Matched in css_class() but never constructed; reserved for future use
     Warning, // amber/yellow
     #[default]
     Info, // blue

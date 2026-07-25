@@ -120,13 +120,6 @@ pub struct ListModelsResponse {
     pub models: Vec<ListedModelResponse>,
 }
 
-/// Response for system restart.
-#[derive(Debug, Serialize)]
-#[allow(dead_code)]
-pub struct RestartResponse {
-    pub message: String,
-}
-
 /// Returns `false` if the path component contains traversal sequences or invalid characters.
 pub(super) fn is_safe_path_component(s: &str) -> bool {
     !s.is_empty() && !s.contains("..") && !s.contains('/') && !s.contains('\\') && !s.contains('\0')

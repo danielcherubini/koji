@@ -7,10 +7,10 @@ use reqwest::Client;
 use zip::ZipArchive;
 
 use super::build::build_cmake_args;
-use super::build::emit;
 use super::detect::detect_hip_env;
 use super::detect::detect_rocm_lib_dir;
 use super::detect::register_ldconfig_path;
+use crate::backends::installer::emit;
 use crate::backends::installer::extract::find_backend_binary;
 use crate::backends::installer::prebuilt::prepare_target_dir;
 use crate::backends::types::BackendType;

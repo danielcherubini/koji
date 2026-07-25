@@ -153,15 +153,6 @@ impl ProxyConfig {
             self.oauth2.client_secret = resolve_env_var_ref(&self.oauth2.client_secret);
         }
     }
-
-    /// Returns true if any authentication method is configured.
-    pub fn is_auth_configured(&self) -> bool {
-        let has_auth_url = self
-            .authenticator_url
-            .as_deref()
-            .is_some_and(|u| !u.is_empty());
-        has_auth_url || self.oauth2.enabled || self.api_keys_enabled
-    }
 }
 
 fn default_proxy_host() -> String {

@@ -11,7 +11,7 @@ use crate::gpu_types::{GpuVendor, ModelState};
 /// work — without it, deserialization would fail with a `missing field`
 /// error and break the dashboard during a partial rollout.
 #[test]
-fn metric_current_deserializes_without_models_field() {
+fn test_metric_current_deserializes_without_models_field() {
     let json = r#"{
         "models_loaded": 0
     }"#;
@@ -31,7 +31,7 @@ fn metric_current_deserializes_without_models_field() {
 /// `None`. The `#[serde(default, skip_serializing_if = "Option::is_none")]`
 /// attributes on the field make this work.
 #[test]
-fn metric_bucket_deserializes_without_network_field() {
+fn test_metric_bucket_deserializes_without_network_field() {
     let json = r#"{
         "ts_unix_ms": 1700000000000,
         "cpu_usage_pct": 12.5,
@@ -54,7 +54,7 @@ fn metric_bucket_deserializes_without_network_field() {
 
 /// The `format_number` helper must produce comma-separated thousands.
 #[test]
-fn format_number_adds_commas() {
+fn test_format_number_adds_commas() {
     assert_eq!(format_number(0), "0");
     assert_eq!(format_number(999), "999");
     assert_eq!(format_number(1000), "1,000");
@@ -68,7 +68,7 @@ fn format_number_adds_commas() {
 /// `active_models` returns entries whose state is "ready", "loading", or
 /// "unloading", preserving order and including all fields.
 #[test]
-fn active_models_returns_ready_loading_unloading_entries() {
+fn test_active_models_returns_ready_loading_unloading_entries() {
     let models = vec![
         ModelStatus {
             id: "a".into(),
@@ -129,7 +129,7 @@ fn active_models_returns_ready_loading_unloading_entries() {
 
 /// `active_models` includes ready, loading, and unloading models.
 #[test]
-fn active_models_filters_to_active_states() {
+fn test_active_models_filters_to_active_states() {
     let models = vec![
         ModelStatus {
             id: "a".into(),
@@ -162,7 +162,7 @@ fn active_models_filters_to_active_states() {
 
 /// `active_models` returns an empty vec when all models are idle or failed.
 #[test]
-fn active_models_returns_empty_when_none_active() {
+fn test_active_models_returns_empty_when_none_active() {
     let models = vec![
         ModelStatus {
             id: "a".into(),
@@ -182,7 +182,7 @@ fn active_models_returns_empty_when_none_active() {
 
 /// `active_models` returns a clone of all models when all are active.
 #[test]
-fn active_models_returns_all_when_all_active() {
+fn test_active_models_returns_all_when_all_active() {
     let models = vec![
         ModelStatus {
             id: "x".into(),
@@ -204,7 +204,7 @@ fn active_models_returns_all_when_all_active() {
 
 /// `active_models` returns an empty vec for an empty input slice.
 #[test]
-fn active_models_returns_empty_for_empty_input() {
+fn test_active_models_returns_empty_for_empty_input() {
     let models: Vec<ModelStatus> = vec![];
     let active = active_models(&models);
     assert!(active.is_empty());
@@ -213,7 +213,7 @@ fn active_models_returns_empty_for_empty_input() {
 /// `inactive_models` returns entries whose state is NOT "ready", "loading",
 /// or "unloading" — i.e. idle, failed, and any unknown states.
 #[test]
-fn inactive_models_returns_idle_failed_and_unknown_entries() {
+fn test_inactive_models_returns_idle_failed_and_unknown_entries() {
     let models = vec![
         ModelStatus {
             id: "a".into(),
@@ -253,7 +253,7 @@ fn inactive_models_returns_idle_failed_and_unknown_entries() {
 /// `inactive_models` returns an empty vec when all models are active
 /// (ready, loading, or unloading).
 #[test]
-fn inactive_models_returns_empty_when_all_active() {
+fn test_inactive_models_returns_empty_when_all_active() {
     let models = vec![
         ModelStatus {
             id: "a".into(),
@@ -273,7 +273,7 @@ fn inactive_models_returns_empty_when_all_active() {
 
 /// `inactive_models` returns all models when none are active.
 #[test]
-fn inactive_models_returns_all_when_none_active() {
+fn test_inactive_models_returns_all_when_none_active() {
     let models = vec![
         ModelStatus {
             id: "a".into(),
@@ -295,7 +295,7 @@ fn inactive_models_returns_all_when_none_active() {
 
 /// `inactive_models` returns an empty vec for an empty input slice.
 #[test]
-fn inactive_models_returns_empty_for_empty_input() {
+fn test_inactive_models_returns_empty_for_empty_input() {
     let models: Vec<ModelStatus> = vec![];
     let inactive = inactive_models(&models);
     assert!(inactive.is_empty());
@@ -305,7 +305,7 @@ fn inactive_models_returns_empty_for_empty_input() {
 /// context_length, db_id, backend) so the Inactive Models section can
 /// render them without any data loss.
 #[test]
-fn inactive_models_preserves_all_fields() {
+fn test_inactive_models_preserves_all_fields() {
     let models = vec![
         ModelStatus {
             id: "llama3-8b".into(),
@@ -373,7 +373,7 @@ fn inactive_models_preserves_all_fields() {
 /// `active_models` and `inactive_models` are symmetric complements:
 /// together they must contain exactly all input models, with no overlap.
 #[test]
-fn active_and_inactive_models_are_symmetric_complements() {
+fn test_active_and_inactive_models_are_symmetric_complements() {
     let models = vec![
         ModelStatus {
             id: "a".into(),
@@ -416,7 +416,7 @@ fn active_and_inactive_models_are_symmetric_complements() {
 /// When the backend includes a populated `models` array, every `ModelStatus`
 /// must round-trip with its `id`, `backend`, and `state` fields preserved.
 #[test]
-fn metric_current_deserializes_models_field() {
+fn test_metric_current_deserializes_models_field() {
     let json = r#"{
         "models_loaded": 1,
         "models": [

@@ -27,11 +27,10 @@ futures-util.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 url = "2.5"
-utoipa = { version = "5", features = ["axum_extras"], optional = true }
-utoipa-gen = { version = "5", optional = true }
+
 # Backend-only deps (not needed for WASM, gated behind the `ssr` feature)
 axum = { workspace = true, optional = true }
-axum-server = { workspace = true, optional = true }
+
 tower-http = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 anyhow = { workspace = true, optional = true }
@@ -56,10 +55,10 @@ tempfile.workspace = true
 default = ["ssr"]
 csr = []
 ssr = [
-  "dep:axum", "dep:axum-server", "dep:tokio", "dep:async-stream", "dep:anyhow", "dep:include_dir",
+  "dep:axum", "dep:tokio", "dep:async-stream", "dep:anyhow", "dep:include_dir",
   "dep:reqwest", "dep:mime_guess", "dep:tracing", "dep:tracing-subscriber", "dep:tracing-appender",
   "dep:tama-core", "dep:toml", "dep:tower-http", "dep:thiserror",
-  "dep:nix", "dep:utoipa", "dep:utoipa-gen",
+  "dep:nix",
   "dep:regex",
   "tama-core/web-ui",
 ]

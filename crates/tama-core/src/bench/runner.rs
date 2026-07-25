@@ -259,7 +259,7 @@ pub async fn run_benchmark(
     backend_name: &str,
     bench_config: &BenchConfig,
 ) -> Result<BenchReport> {
-    println!("Starting benchmark for '{}'...", backend_name);
+    tracing::info!("Starting benchmark for '{}'", backend_name);
 
     // Build ModelInfo from config data
     let db_dir = crate::config::Config::config_dir()?;
@@ -283,7 +283,7 @@ pub async fn run_benchmark(
     // Start backend
     let backend = _start_backend(config, backend_name, bench_config.ctx_override).await?;
 
-    println!("Backend loaded in {:.0} ms", backend.load_time_ms);
+    tracing::info!("Backend loaded in {:.0} ms", backend.load_time_ms);
 
     // Run inner benchmark logic — always attempt to stop the backend regardless
     // of outcome, then surface errors from either phase.
@@ -315,9 +315,11 @@ async fn _run_benchmark_inner(
     for &pp_size in &bench_config.pp_sizes {
         for &tg_size in &bench_config.tg_sizes {
             let test_name = format!("pp{}/tg{}", pp_size, tg_size);
-            println!(
+            tracing::info!(
                 "Running {} (warmup: {}, runs: {})...",
-                test_name, bench_config.warmup, bench_config.runs
+                test_name,
+                bench_config.warmup,
+                bench_config.runs
             );
 
             // Warmup phase - discard results
