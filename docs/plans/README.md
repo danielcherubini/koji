@@ -13,8 +13,8 @@ Plans for features, refactors, and bug fixes in the Tama project.
 ## Quick Stats
 
 - **Total Plans**: 75
-- **Backlog**: 13
-- **Completed**: 61 ✅
+- **Backlog**: 12
+- **Completed**: 62 ✅
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan.
 
@@ -26,7 +26,6 @@ Current plans ready for execution, ordered by dependency-first cascade priority:
 
 | Plan | Description | Findings |
 |------|-------------|----------|
-| [Cleanup](plan-167-cleanup.md) | Delete ~1900 lines dead code, unused deps, style batch | F26, F34, F38, F39 |
 | [API Handler Boilerplate](plan-168-api-handler-boilerplate.md) | Wire submit_benchmark_job, resolve_model_record, etc. | F13–F15, F20, F37 |
 | [Router Consolidation](plan-169-router-consolidation.md) | Single-source route table (31 routes), fix shadowed /system/health | F33 |
 | [Newtypes](plan-170-newtypes.md) | GpuType FromStr/serde, CompactionDevice 422, HfEndpoints | F16–F18 |
