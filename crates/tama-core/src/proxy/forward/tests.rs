@@ -22,4 +22,5 @@ mod extract_stats;
 mod headers;
 mod integration;
 mod json;
+mod request;
 mod sse;
