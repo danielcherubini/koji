@@ -15,7 +15,7 @@ use tracing::info;
 use crate::bench::{compute_summary, BenchConfig, BenchReport, BenchSummary, ModelInfo};
 use crate::config::Config;
 use crate::db::OpenResult;
-use crate::proxy::process::{check_health, force_kill_process, is_process_alive, kill_process};
+use crate::process::{check_health, force_kill_process, is_process_alive, kill_process};
 
 /// Information about a running backend
 #[derive(Debug)]

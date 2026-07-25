@@ -110,7 +110,7 @@ impl ProxyServer {
 
         for entry in &active {
             let pid = entry.pid as u32;
-            if !super::process::is_process_alive(pid) {
+            if !crate::process::is_process_alive(pid) {
                 tracing::info!(
                     "Cleaning up stale process entry: {} (pid {})",
                     entry.server_name,
@@ -122,7 +122,7 @@ impl ProxyServer {
 
             // Process is alive — try to reconnect by health-checking it
             let health_url = format!("http://127.0.0.1:{}/health", entry.port);
-            let healthy = match super::process::check_health(&health_url, Some(5)).await {
+            let healthy = match crate::process::check_health(&health_url, Some(5)).await {
                 Ok(resp) => resp.status().is_success(),
                 Err(_) => false,
             };

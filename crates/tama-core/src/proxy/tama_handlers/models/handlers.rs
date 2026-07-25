@@ -10,7 +10,7 @@ use axum::{
 
 use super::utils::resolve_config_key;
 use crate::gpu::ModelState;
-use crate::proxy::process::{force_kill_process_group, is_process_group_alive, kill_process_group};
+use crate::process::{force_kill_process_group, is_process_group_alive, kill_process_group};
 use crate::proxy::tama_handlers::{ListModelsResponse, ListedModelResponse, ModelResponse};
 use crate::proxy::{BackendState, ProxyState};
 use tracing::{info, warn};

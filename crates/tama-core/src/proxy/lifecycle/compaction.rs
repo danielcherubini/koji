@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
-use crate::proxy::process::{
+use crate::process::{
     check_health, configure_process_group, force_kill_process_group, is_process_group_alive,
     kill_process_group,
 };

@@ -12,7 +12,7 @@
 //! - `PortAllocator` — abstracts ephemeral TCP port allocation
 //! - `ProcessChecker` — abstracts process existence checks (PID and process group)
 //!
-//! Default implementations delegate to `crate::proxy::process` module functions,
+//! Default implementations delegate to `crate::process` module functions,
 //! so production code is unchanged when using `()` as the type parameter.
 //!
 //! Mock implementations are provided for testing (e.g., `MockHealthChecker`).
@@ -27,7 +27,7 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use super::super::process;
+use crate::process;
 
 /// Represents a spawned process.
 #[derive(Debug, Clone)]

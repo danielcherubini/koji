@@ -208,7 +208,7 @@ async fn test_forward_request_circuit_breaker_cooldown_returns_503_without_unloa
     assert!(state.models.read().await.get("test-model").is_some());
 
     // Process still alive — proves no SIGTERM was sent.
-    assert!(crate::proxy::process::is_process_alive(pid));
+    assert!(crate::process::is_process_alive(pid));
 
     // failed_requests NOT incremented (short-circuit bypasses failure counters).
     assert_eq!(state.metrics.failed_requests.load(Ordering::Relaxed), 0);
