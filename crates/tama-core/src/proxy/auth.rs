@@ -2132,4 +2132,132 @@ mod tests {
         let claims = decode_session_cookie(set_cookie, &state);
         assert_eq!(claims.username, "fallback-user");
     }
+
+    // ── Logout handler tests ────────────────────────────────────────────────
+
+    /// Test that GET /logout clears the session cookie (Max-Age=0) and
+    /// redirects to `/tama` when no logout_url is configured.
+    #[tokio::test]
+    async fn test_logout_clears_session_cookie_and_redirects_to_tama() {
+        let state = make_login_flow_state(
+            "https://auth.example.com/authorize".into(),
+            "https://auth.example.com/token".into(),
+            None,
+        );
+        let app = login_flow_app(state);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/logout")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        let location = resp
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(location, "/tama");
+        let set_cookie = resp
+            .headers()
+            .get(header::SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(set_cookie.starts_with(&format!("{}=", SESSION_COOKIE_NAME)));
+        assert!(set_cookie.contains("Max-Age=0"));
+    }
+
+    /// Test that GET /logout redirects to the configured logout_url when set.
+    #[tokio::test]
+    async fn test_logout_redirects_to_configured_logout_url() {
+        let config = crate::config::Config {
+            proxy: crate::config::ProxyConfig {
+                oauth2: crate::config::types::OAuth2Config {
+                    enabled: true,
+                    client_id: "test-client".to_string(),
+                    client_secret: "test-secret".to_string(),
+                    authorize_url: "https://auth.example.com/authorize".to_string(),
+                    token_url: "https://auth.example.com/token".to_string(),
+                    userinfo_url: None,
+                    redirect_uri: "http://localhost:11434/login/callback".to_string(),
+                    scopes: vec!["openid".to_string(), "profile".to_string()],
+                    session_ttl_secs: 3600,
+                    logout_url: Some("https://auth.example.com/logout".to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let state = Arc::new(crate::proxy::ProxyState::new(config, None));
+        let app = login_flow_app(state);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/logout")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        let location = resp
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(location, "https://auth.example.com/logout");
+        let set_cookie = resp
+            .headers()
+            .get(header::SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(set_cookie.starts_with(&format!("{}=", SESSION_COOKIE_NAME)));
+        assert!(set_cookie.contains("Max-Age=0"));
+    }
+
+    // ── OAuth2 helper function tests ────────────────────────────────────────
+
+    /// Test that `build_oauth2_client_from_config` rejects invalid URL strings.
+    #[test]
+    fn test_build_oauth2_client_rejects_invalid_urls() {
+        let config = crate::config::types::OAuth2Config {
+            authorize_url: "not a url".to_string(),
+            token_url: "http://127.0.0.1/token".to_string(),
+            redirect_uri: "http://127.0.0.1/cb".to_string(),
+            ..Default::default()
+        };
+        let result = build_oauth2_client_from_config(&config);
+        assert!(result.is_err());
+    }
+
+    /// Test that `fetch_userinfo` returns `("unknown", None)` when the
+    /// userinfo endpoint is unreachable (connection refused).
+    #[tokio::test]
+    async fn test_fetch_userinfo_unreachable_returns_unknown() {
+        // Bind a UDP socket to get a free port. Nothing TCP will be listening
+        // on this port, so the connection is refused immediately (no timeout).
+        let udp_socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let port = udp_socket.local_addr().unwrap().port();
+        drop(udp_socket);
+
+        let result = fetch_userinfo(
+            &reqwest::Client::new(),
+            &format!("http://127.0.0.1:{}/userinfo", port),
+            "token",
+        )
+        .await;
+        assert_eq!(result, ("unknown".to_string(), None));
+    }
 }
