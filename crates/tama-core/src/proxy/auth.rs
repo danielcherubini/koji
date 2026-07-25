@@ -1889,4 +1889,247 @@ mod tests {
             .unwrap();
         assert_login_error_redirect(&resp, "state", "CSRF%20state%20mismatch");
     }
+
+    // ── Login callback token exchange and userinfo tests (wiremock) ───────
+
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// Decode and verify a tama_session Set-Cookie value against the state's signing key.
+    fn decode_session_cookie(set_cookie: &str, state: &crate::proxy::ProxyState) -> SessionClaims {
+        let pair = set_cookie.split(';').next().unwrap().trim().to_string();
+        assert!(pair.starts_with(&format!("{}=", SESSION_COOKIE_NAME)));
+        let mut jar = cookie::CookieJar::new();
+        jar.add_original(cookie::Cookie::parse_encoded(pair).unwrap());
+        let verified = jar
+            .signed(&state.cookie_key)
+            .get(SESSION_COOKIE_NAME)
+            .expect("session cookie must verify against state.cookie_key");
+        serde_json::from_str(verified.value()).expect("session claims must be valid JSON")
+    }
+
+    /// Run the full login+callback flow against a wiremock provider; returns the callback response.
+    async fn run_callback(app: &Router) -> Response {
+        let (state, pair, _set_cookie) = start_login(app).await;
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/login/callback?code=test-code&state={}", state))
+                    .header(header::COOKIE, pair)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    /// Test that a successful code exchange + userinfo call issues a signed session cookie
+    /// with the correct username and email claims.
+    #[tokio::test]
+    async fn test_callback_success_issues_signed_session_cookie() {
+        let server = MockServer::start().await;
+
+        // Token endpoint — return a valid access token
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "at-123",
+                "token_type": "Bearer",
+                "expires_in": 3600
+            })))
+            .mount(&server)
+            .await;
+
+        // Userinfo endpoint — return user claims
+        Mock::given(method("GET"))
+            .and(path("/userinfo"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "preferred_username": "daniel",
+                "email": "d@example.com"
+            })))
+            .mount(&server)
+            .await;
+
+        let state = make_login_flow_state(
+            "https://auth.example.com/authorize".into(),
+            format!("{}/token", server.uri()),
+            Some(format!("{}/userinfo", server.uri())),
+        );
+        let app = login_flow_app(state.clone());
+
+        let resp = run_callback(&app).await;
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        let location = resp
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(location, "/tama");
+
+        // Verify session cookie attributes
+        let set_cookie = resp
+            .headers()
+            .get(header::SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(set_cookie.starts_with(&format!("{}=", SESSION_COOKIE_NAME)));
+        assert!(set_cookie.contains("HttpOnly"));
+
+        // Decode and verify session claims
+        let claims = decode_session_cookie(set_cookie, &state);
+        assert_eq!(claims.username, "daniel");
+        assert_eq!(claims.email, Some("d@example.com".to_string()));
+        assert!(claims.is_valid());
+    }
+
+    /// Test that a 500 error from the token endpoint redirects to /login/error?reason=token
+    /// and no session cookie is issued.
+    #[tokio::test]
+    async fn test_callback_token_endpoint_500_errors() {
+        let server = MockServer::start().await;
+
+        // Token endpoint — return 500 Internal Server Error
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let state = make_login_flow_state(
+            "https://auth.example.com/authorize".into(),
+            format!("{}/token", server.uri()),
+            Some(format!("{}/userinfo", server.uri())),
+        );
+        let app = login_flow_app(state.clone());
+
+        let resp = run_callback(&app).await;
+        assert_login_error_redirect(&resp, "token", "");
+
+        // No session cookie should be issued
+        let set_cookie_headers: Vec<_> = resp
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .into_iter()
+            .collect();
+        assert!(
+            !set_cookie_headers.iter().any(|h| h
+                .to_str()
+                .is_ok_and(|s| s.starts_with(&format!("{}=", SESSION_COOKIE_NAME)))),
+            "no tama_session cookie should be issued on token error"
+        );
+    }
+
+    /// Test that malformed userinfo JSON degrades gracefully to username "unknown".
+    ///
+    /// This pins the deliberate fail-soft design of `fetch_userinfo`: when the userinfo
+    /// endpoint returns unparseable JSON, the callback still issues a session for
+    /// `username = "unknown"` rather than rejecting the login. This ensures that
+    /// transient provider issues don't block all users from signing in.
+    #[tokio::test]
+    async fn test_callback_userinfo_malformed_json_degrades_to_unknown() {
+        let server = MockServer::start().await;
+
+        // Token endpoint — OK
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "at-123",
+                "token_type": "Bearer",
+                "expires_in": 3600
+            })))
+            .mount(&server)
+            .await;
+
+        // Userinfo endpoint — return malformed JSON
+        Mock::given(method("GET"))
+            .and(path("/userinfo"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("not json{"))
+            .mount(&server)
+            .await;
+
+        let state = make_login_flow_state(
+            "https://auth.example.com/authorize".into(),
+            format!("{}/token", server.uri()),
+            Some(format!("{}/userinfo", server.uri())),
+        );
+        let app = login_flow_app(state.clone());
+
+        let resp = run_callback(&app).await;
+
+        // Fail-soft: callback still redirects to /tama (deliberate design)
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        let location = resp
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(location, "/tama");
+
+        // Session issued with username "unknown"
+        let set_cookie = resp
+            .headers()
+            .get(header::SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        let claims = decode_session_cookie(set_cookie, &state);
+        assert_eq!(claims.username, "unknown");
+    }
+
+    /// Test that the userinfo claim-alias chain tries `preferred_username` → `nickname`
+    /// → `name`, falling back to `name` when neither preferred_username nor nickname
+    /// is present.
+    #[tokio::test]
+    async fn test_callback_userinfo_name_claim_fallback() {
+        let server = MockServer::start().await;
+
+        // Token endpoint — OK
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "at-123",
+                "token_type": "Bearer",
+                "expires_in": 3600
+            })))
+            .mount(&server)
+            .await;
+
+        // Userinfo — only `name` (no preferred_username or nickname)
+        Mock::given(method("GET"))
+            .and(path("/userinfo"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "name": "fallback-user"
+            })))
+            .mount(&server)
+            .await;
+
+        let state = make_login_flow_state(
+            "https://auth.example.com/authorize".into(),
+            format!("{}/token", server.uri()),
+            Some(format!("{}/userinfo", server.uri())),
+        );
+        let app = login_flow_app(state.clone());
+
+        let resp = run_callback(&app).await;
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        let location = resp
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(location, "/tama");
+
+        let set_cookie = resp
+            .headers()
+            .get(header::SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        let claims = decode_session_cookie(set_cookie, &state);
+        assert_eq!(claims.username, "fallback-user");
+    }
 }
