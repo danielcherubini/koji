@@ -1911,10 +1911,15 @@ mod tests {
     /// Run the full login+callback flow against a wiremock provider; returns the callback response.
     async fn run_callback(app: &Router) -> Response {
         let (state, pair, _set_cookie) = start_login(app).await;
+        let encoded_state =
+            percent_encoding::utf8_percent_encode(&state, percent_encoding::NON_ALPHANUMERIC);
         app.clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/login/callback?code=test-code&state={}", state))
+                    .uri(format!(
+                        "/login/callback?code=test-code&state={}",
+                        encoded_state
+                    ))
                     .header(header::COOKIE, pair)
                     .body(Body::empty())
                     .unwrap(),
@@ -2005,7 +2010,7 @@ mod tests {
         let app = login_flow_app(state.clone());
 
         let resp = run_callback(&app).await;
-        assert_login_error_redirect(&resp, "token", "");
+        assert_login_error_redirect(&resp, "token", "returned%20empty");
 
         // No session cookie should be issued
         let set_cookie_headers: Vec<_> = resp
@@ -2246,11 +2251,11 @@ mod tests {
     /// userinfo endpoint is unreachable (connection refused).
     #[tokio::test]
     async fn test_fetch_userinfo_unreachable_returns_unknown() {
-        // Bind a UDP socket to get a free port. Nothing TCP will be listening
-        // on this port, so the connection is refused immediately (no timeout).
-        let udp_socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let port = udp_socket.local_addr().unwrap().port();
-        drop(udp_socket);
+        // Bind a TCP listener to get a free port, then drop it so the
+        // subsequent connection is refused immediately (no timeout).
+        let tcp_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = tcp_listener.local_addr().unwrap().port();
+        drop(tcp_listener);
 
         let result = fetch_userinfo(
             &reqwest::Client::new(),
