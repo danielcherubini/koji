@@ -40,6 +40,21 @@ cargo clippy --workspace -- -D warnings
 cargo nextest run --workspace
 ```
 
+### Validation Gate
+
+**Run these commands before merging any branch or creating a PR.** This is the complete gate that CI also runs:
+
+```bash
+make check
+```
+
+Equivalent individual commands (if Makefile unavailable):
+```bash
+cargo fmt --all
+cargo clippy --workspace -- -D warnings
+cargo nextest run --workspace
+```
+
 ### Targeted Testing (during development)
 
 **Never run the full workspace unless you're about to commit.** Use targeted commands that only compile + test the affected crate:
