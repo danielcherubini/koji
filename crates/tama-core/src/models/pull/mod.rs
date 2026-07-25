@@ -444,16 +444,17 @@ pub(crate) fn get_hf_token() -> Option<String> {
 /// Get or create the shared HuggingFace API client.
 /// Configured with max_files=8 for parallel file downloads.
 ///
-/// **Note:** This uses `ApiBuilder::new()` which respects the `HF_HOME` environment
-/// variable for cache location. No explicit cache path is set, so `hf-hub` will use
-/// its default behavior:
+/// **Note:** `HF_ENDPOINT` is honored via `from_env` so tests and mirrors can
+/// redirect the API; the `Api` is still cached process-wide in `HF_API`, so the
+/// first initialisation wins. No explicit cache path is set, so `hf-hub` will use
+/// its default behaviour:
 /// - If `HF_HOME` is set: `$HF_HOME/hub`
 /// - Otherwise: `~/.cache/huggingface/hub`
 pub(crate) async fn hf_api() -> Result<&'static Api> {
     HF_API
         .get_or_try_init(|| async {
             let token = get_hf_token();
-            ApiBuilder::new()
+            ApiBuilder::from_env()
                 .with_token(token)
                 .with_max_files(8) // Allow 8 concurrent file pulls
                 .build()
@@ -639,6 +640,40 @@ mod tests {
 
         let token = get_hf_token();
         assert!(token.is_none());
+    }
+
+    /// hf_api() must respect HF_ENDPOINT (regression: ApiBuilder::new ignored it)
+    /// Uses wiremock to verify the API client routes to a mock server.
+    #[tokio::test]
+    async fn test_list_gguf_files_respects_hf_endpoint() {
+        // Set up the wiremock server and mount the mock (no env var needed).
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path_regex(r"^/api/models/test/repo/.*"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "sha": "abc123",
+                    "siblings": [{"rfilename": "repo-Q4_K_M.gguf"}]
+                })),
+            )
+            .mount(&server)
+            .await;
+
+        // Set HF_ENDPOINT under the guard so env-var tests stay serialised,
+        // but drop it before any .await to avoid clippy::await_holding_lock.
+        {
+            let _guard = ENV_GUARD.lock().unwrap();
+            std::env::set_var("HF_ENDPOINT", server.uri());
+        }
+
+        let listing = list_gguf_files("test/repo")
+            .await
+            .expect("listing from mock");
+
+        std::env::remove_var("HF_ENDPOINT");
+        assert_eq!(listing.files.len(), 1);
+        assert_eq!(listing.files[0].filename, "repo-Q4_K_M.gguf");
+        assert_eq!(listing.files[0].quant.as_deref(), Some("Q4_K_M"));
     }
 
     /// HF_TOKEN env var takes priority over $HF_HOME/token
