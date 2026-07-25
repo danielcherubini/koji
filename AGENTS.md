@@ -40,6 +40,26 @@ cargo clippy --workspace -- -D warnings
 cargo nextest run --workspace
 ```
 
+### Validation Gate
+
+**Run these commands before merging any branch or creating a PR.** These match the CI workflow exactly (`.github/workflows/ci.yml`):
+
+```bash
+# 1. Format check
+cargo fmt --all --check
+
+# 2. Clippy — ALL targets (includes tests, benchmarks, examples)
+cargo clippy --workspace --all-targets -- -D warnings
+
+# 3. Clippy — tama SSR build (separate target)
+cargo clippy --package tama --features ssr --all-targets -- -D warnings
+
+# 4. Tests
+cargo nextest run --workspace
+```
+
+> **Critical:** Always use `--all-targets` with clippy — without it, test-code lint errors are silently skipped locally but will fail CI.
+
 ### Targeted Testing (during development)
 
 **Never run the full workspace unless you're about to commit.** Use targeted commands that only compile + test the affected crate:
