@@ -24,93 +24,150 @@ use crate::proxy::handlers::tts::{
     handle_audio_models, handle_audio_speech, handle_audio_stream, handle_audio_voices,
 };
 use crate::proxy::tama_handlers::{
-    backend_logs::handle_all_logs, handle_backend_log_sse, handle_hf_list_quants,
     handle_opencode_list_models, handle_pull_job_stream, handle_system_metrics_stream,
     handle_tama_api_keys_create, handle_tama_api_keys_list, handle_tama_api_keys_revoke,
-    handle_tama_api_keys_update, handle_tama_cancel_load,
-    handle_tama_get_model as handle_tama_get_model_fn, handle_tama_get_pull_job,
-    handle_tama_list_models, handle_tama_load_model, handle_tama_pull_model,
-    handle_tama_system_gpu_devices, handle_tama_system_gpu_devices_refresh,
-    handle_tama_system_health, handle_tama_system_restart, handle_tama_unload_model,
+    handle_tama_api_keys_update, handle_tama_cancel_load, handle_tama_get_pull_job,
+    handle_tama_load_model, handle_tama_pull_model, handle_tama_system_gpu_devices,
+    handle_tama_system_gpu_devices_refresh, handle_tama_system_restart, handle_tama_unload_model,
 };
 use crate::proxy::ProxyState;
 
-/// Build the axum router with all proxy routes and shared state.
-pub async fn build_router(state: Arc<ProxyState>) -> Router {
-    Router::new()
-        // OpenAI-compatible routes
-        // Some clients (e.g. those with base_url = http://host/v1) POST directly to /v1
-        .route("/v1", post(handle_chat_completions))
-        .route("/v1/chat/completions", post(handle_chat_completions))
-        .route(
+/// A single proxy route: (method-label, path, method handler).
+type ProxyRoute = (
+    &'static str,
+    &'static str,
+    axum::routing::MethodRouter<Arc<ProxyState>>,
+);
+
+/// The single source of truth for proxy-owned routes: OpenAI-compatible
+/// inference, model lifecycle, auth, and proxy ops. Management CRUD routes
+/// live in the `tama` crate's router (`crates/tama/src/router.rs`) — do NOT
+/// add them here. The ownership test in `crates/tama/tests/router_ownership_test.rs`
+/// enforces the boundary.
+fn proxy_routes() -> Vec<ProxyRoute> {
+    vec![
+        // OpenAI-compatible inference
+        ("POST", "/v1", post(handle_chat_completions)),
+        (
+            "POST",
+            "/v1/chat/completions",
+            post(handle_chat_completions),
+        ),
+        (
+            "POST",
             "/v1/chat/completions/stream",
             post(handle_stream_chat_completions),
-        )
-        .route("/v1/models", get(handle_list_models))
-        .route("/v1/models/:model_id", get(handle_get_model))
-        .route("/status", get(handle_status))
-        .route("/health", get(handle_health))
-        .route("/metrics", get(handle_metrics))
-        // OAuth2 login flow
-        .route("/login", get(handle_login))
-        .route("/login/callback", get(handle_login_callback))
-        .route("/login/error", get(handle_login_error))
-        // Tama management API — model lifecycle
-        .route("/tama/v1/models", get(handle_tama_list_models))
-        .route("/tama/v1/models/:id", get(handle_tama_get_model_fn))
-        .route("/tama/v1/models/:id/load", post(handle_tama_load_model))
-        .route("/tama/v1/models/:id/unload", post(handle_tama_unload_model))
-        .route("/tama/v1/models/:id/cancel", post(handle_tama_cancel_load))
-        // OpenCode plugin discovery API — returns rich model metadata
-        .route("/v1/opencode/models", get(handle_opencode_list_models))
-        // Pull jobs live under /tama/v1/pulls/ to avoid path conflict with /models/:id
-        .route("/tama/v1/pulls", post(handle_tama_pull_model))
-        .route("/tama/v1/pulls/:job_id", get(handle_tama_get_pull_job))
-        .route("/tama/v1/pulls/:job_id/stream", get(handle_pull_job_stream))
-        // HuggingFace quant listing — wildcard captures `owner/repo` with embedded slash
-        .route("/tama/v1/hf/*repo_id", get(handle_hf_list_quants))
+        ),
+        // Model lifecycle (load/unload/cancel only; GET is managed by tama router)
+        (
+            "POST",
+            "/tama/v1/models/:id/load",
+            post(handle_tama_load_model),
+        ),
+        (
+            "POST",
+            "/tama/v1/models/:id/unload",
+            post(handle_tama_unload_model),
+        ),
+        (
+            "POST",
+            "/tama/v1/models/:id/cancel",
+            post(handle_tama_cancel_load),
+        ),
+        // Model listing (GET /v1/models is proxy-owned; GET /tama/v1/models is tama router)
+        ("GET", "/v1/models", get(handle_list_models)),
+        ("GET", "/v1/models/:model_id", get(handle_get_model)),
+        // OpenCode plugin discovery
+        (
+            "GET",
+            "/v1/opencode/models",
+            get(handle_opencode_list_models),
+        ),
+        // Pull jobs
+        ("POST", "/tama/v1/pulls", post(handle_tama_pull_model)),
+        (
+            "GET",
+            "/tama/v1/pulls/:job_id",
+            get(handle_tama_get_pull_job),
+        ),
+        (
+            "GET",
+            "/tama/v1/pulls/:job_id/stream",
+            get(handle_pull_job_stream),
+        ),
         // API keys management
-        .route(
+        (
+            "GET+POST",
             "/tama/v1/keys",
             get(handle_tama_api_keys_list).post(handle_tama_api_keys_create),
-        )
-        .route(
+        ),
+        (
+            "PATCH+DELETE",
             "/tama/v1/keys/:id",
             patch(handle_tama_api_keys_update).delete(handle_tama_api_keys_revoke),
-        )
-        // System
-        .route("/tama/v1/system/health", get(handle_tama_system_health))
-        .route(
+        ),
+        // System management
+        (
+            "POST",
             "/tama/v1/system/reload-configs",
             post(handle_reload_configs),
-        )
-        .route(
+        ),
+        (
+            "GET",
             "/tama/v1/system/metrics/stream",
             get(handle_system_metrics_stream),
-        )
-        .route(
+        ),
+        (
+            "GET",
             "/tama/v1/system/gpu-devices",
             get(handle_tama_system_gpu_devices),
-        )
-        .route(
+        ),
+        (
+            "POST",
             "/tama/v1/system/gpu-devices/refresh",
             post(handle_tama_system_gpu_devices_refresh),
-        )
-        .route("/tama/v1/system/restart", post(handle_tama_system_restart))
-        // Backend log endpoints
-        .route("/tama/v1/logs", get(handle_all_logs))
-        .route("/tama/v1/logs/:backend/events", get(handle_backend_log_sse))
-        // TTS (Text-to-Speech) endpoints - OpenAI-compatible
-        .route("/v1/audio/models", get(handle_audio_models))
-        .route("/v1/audio/speech", post(handle_audio_speech))
-        .route("/v1/audio/speech/stream", post(handle_audio_stream))
-        .route("/v1/audio/voices", get(handle_audio_voices))
-        // Compaction endpoint
-        .route("/v1/compaction", post(handle_compaction))
-        // Wildcard forwarding for all other endpoints (llama.cpp API)
-        .route("/*path", post(handle_forward_post))
-        .route("/*path", get(handle_forward_get))
-        .fallback(handle_fallback)
+        ),
+        (
+            "POST",
+            "/tama/v1/system/restart",
+            post(handle_tama_system_restart),
+        ),
+        // Health, status, metrics
+        ("GET", "/status", get(handle_status)),
+        ("GET", "/health", get(handle_health)),
+        ("GET", "/metrics", get(handle_metrics)),
+        // OAuth2 login flow
+        ("GET", "/login", get(handle_login)),
+        ("GET", "/login/callback", get(handle_login_callback)),
+        ("GET", "/login/error", get(handle_login_error)),
+        // TTS (OpenAI-compatible)
+        ("GET", "/v1/audio/models", get(handle_audio_models)),
+        ("POST", "/v1/audio/speech", post(handle_audio_speech)),
+        ("POST", "/v1/audio/speech/stream", post(handle_audio_stream)),
+        ("GET", "/v1/audio/voices", get(handle_audio_voices)),
+        // Compaction
+        ("POST", "/v1/compaction", post(handle_compaction)),
+        // Wildcard forwarding
+        ("POST", "/*path", post(handle_forward_post)),
+    ]
+}
+
+/// (method-label, path) pairs from `proxy_routes()` — for the cross-crate
+/// ownership test. Labels for multi-method routes are "GET+POST" style.
+pub fn proxy_route_paths() -> Vec<(&'static str, &'static str)> {
+    proxy_routes().into_iter().map(|(m, p, _)| (m, p)).collect()
+}
+
+fn fold_proxy_routes() -> Router<Arc<ProxyState>> {
+    let mut router = Router::new();
+    for (_, path, method_router) in proxy_routes() {
+        router = router.route(path, method_router);
+    }
+    router
+}
+
+fn apply_shared_layers(router: Router<Arc<ProxyState>>, state: Arc<ProxyState>) -> Router {
+    router
         .layer(middleware::from_fn(scope_middleware))
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -120,17 +177,22 @@ pub async fn build_router(state: Arc<ProxyState>) -> Router {
         .layer(CorsLayer::permissive())
 }
 
+/// Build the axum router with all proxy routes and shared state.
+pub async fn build_router(state: Arc<ProxyState>) -> Router {
+    apply_shared_layers(
+        fold_proxy_routes()
+            .route("/*path", get(handle_forward_get))
+            .fallback(handle_fallback),
+        state,
+    )
+}
+
 /// Build a unified axum Router that merges proxy routes with an extra router
 /// (e.g., web UI routes from `tama-web`).
 ///
 /// Route priority is critical: proxy-specific routes (e.g., `/tama/v1/models/:id/load`)
 /// must be defined before extra catch-alls (e.g., `/tama/v1/models/:id`) so that
 /// axum matches the more specific handler first.
-///
-/// Routes that overlap with the web UI (`/tama/v1/models`, `/tama/v1/models/:id`,
-/// `/tama/v1/system/health`, `/tama/v1/logs/:backend`) are **not** defined in the
-/// proxy sub-router — the web UI handles those. Only proxy-exclusive routes and
-/// specific sub-paths (e.g., `:id/load`, `:id/unload`) are included here.
 ///
 /// The `extra_routes` parameter is a `Router<Arc<ProxyState>>` without `.with_state()` called.
 /// This function merges proxy routes first (higher priority), then extra routes,
@@ -140,97 +202,11 @@ pub async fn build_unified_router(
     state: Arc<ProxyState>,
     extra_routes: Router<Arc<ProxyState>>,
 ) -> Router {
-    // Build proxy routes — these take priority over extra (web UI) routes.
-    // NOTE: Routes that overlap with web UI are intentionally excluded:
-    // - /tama/v1/models (GET) — web UI handles CRUD
-    // - /tama/v1/models/:id (GET) — web UI handles CRUD
-    // - /tama/v1/system/health (GET) — web UI re-exports proxy handler
-    // - /tama/v1/logs/:backend (GET) — web UI has its own handler
-    // - /tama/v1/hf/*repo_id (GET) — web UI handles HF metadata
-    let proxy_routes = Router::new()
-        // OpenAI-compatible routes
-        // Some clients (e.g. those with base_url = http://host/v1) POST directly to /v1
-        .route("/v1", post(handle_chat_completions))
-        .route("/v1/chat/completions", post(handle_chat_completions))
-        .route(
-            "/v1/chat/completions/stream",
-            post(handle_stream_chat_completions),
-        )
-        .route("/v1/models", get(handle_list_models))
-        .route("/v1/models/:model_id", get(handle_get_model))
-        .route("/status", get(handle_status))
-        .route("/health", get(handle_health))
-        .route("/metrics", get(handle_metrics))
-        // OAuth2 login flow
-        .route("/login", get(handle_login))
-        .route("/login/callback", get(handle_login_callback))
-        .route("/login/error", get(handle_login_error))
-        // Tama management API — model lifecycle (specific routes before web catch-alls)
-        .route("/tama/v1/models/:id/load", post(handle_tama_load_model))
-        .route("/tama/v1/models/:id/unload", post(handle_tama_unload_model))
-        .route("/tama/v1/models/:id/cancel", post(handle_tama_cancel_load))
-        // OpenCode plugin discovery API — returns rich model metadata
-        .route("/v1/opencode/models", get(handle_opencode_list_models))
-        // Pull jobs live under /tama/v1/pulls/ to avoid path conflict with /models/:id
-        .route("/tama/v1/pulls", post(handle_tama_pull_model))
-        .route("/tama/v1/pulls/:job_id", get(handle_tama_get_pull_job))
-        .route("/tama/v1/pulls/:job_id/stream", get(handle_pull_job_stream))
-        // NOTE: /tama/v1/hf/*repo_id excluded — web UI handles HF metadata
-        // API keys management
-        .route(
-            "/tama/v1/keys",
-            get(handle_tama_api_keys_list).post(handle_tama_api_keys_create),
-        )
-        .route(
-            "/tama/v1/keys/:id",
-            patch(handle_tama_api_keys_update).delete(handle_tama_api_keys_revoke),
-        )
-        // System
-        .route(
-            "/tama/v1/system/reload-configs",
-            post(handle_reload_configs),
-        )
-        .route(
-            "/tama/v1/system/metrics/stream",
-            get(handle_system_metrics_stream),
-        )
-        .route(
-            "/tama/v1/system/gpu-devices",
-            get(handle_tama_system_gpu_devices),
-        )
-        .route(
-            "/tama/v1/system/gpu-devices/refresh",
-            post(handle_tama_system_gpu_devices_refresh),
-        )
-        .route("/tama/v1/system/restart", post(handle_tama_system_restart))
-        // Backend log endpoints
-        .route("/tama/v1/logs", get(handle_all_logs))
-        .route("/tama/v1/logs/:backend/events", get(handle_backend_log_sse))
-        // TTS (Text-to-Speech) endpoints - OpenAI-compatible
-        .route("/v1/audio/models", get(handle_audio_models))
-        .route("/v1/audio/speech", post(handle_audio_speech))
-        .route("/v1/audio/speech/stream", post(handle_audio_stream))
-        .route("/v1/audio/voices", get(handle_audio_voices))
-        // Compaction endpoint
-        .route("/v1/compaction", post(handle_compaction))
-        // Wildcard POST forwarding for backend endpoints (completions, tokenize, slots, etc.)
-        .route("/*path", post(handle_forward_post));
-
-    // Proxy routes first (higher priority), then extra routes.
-    // NOTE: Wildcard forwarding routes (*path) and fallback are NOT included
-    // here because the web UI (extra_routes) provides its own static file
-    // serving and SPA fallback. Including them would conflict.
-    Router::new()
-        .merge(proxy_routes)
-        .merge(extra_routes)
-        .layer(middleware::from_fn(scope_middleware))
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            auth_middleware,
-        ))
-        .with_state(state)
-        .layer(CorsLayer::permissive())
-        .layer(CatchPanicLayer::new())
+    apply_shared_layers(
+        Router::new().merge(fold_proxy_routes()).merge(extra_routes),
+        state,
+    )
+    .layer(CatchPanicLayer::new())
 }
 
 #[cfg(test)]
@@ -271,9 +247,9 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), 200);
 
-        // Tama system health
+        // Status endpoint
         let resp = client
-            .get(format!("http://{}/tama/v1/system/health", bound_addr))
+            .get(format!("http://{}/status", bound_addr))
             .send()
             .await
             .unwrap();
