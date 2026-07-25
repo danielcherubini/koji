@@ -1728,4 +1728,165 @@ mod tests {
         // falls through to Authentik which returns 401
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
+
+    // ── Login callback CSRF/state validation tests ────────────────────────
+
+    /// Assertion helper: verify a response is a redirect to /login/error
+    /// with the expected reason and description fragment.
+    fn assert_login_error_redirect(resp: &Response, reason: &str, description_fragment: &str) {
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        let location = resp
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(
+            location.starts_with(&format!("/login/error?reason={}", reason)),
+            "expected /login/error?reason={} redirect, got {}",
+            reason,
+            location
+        );
+        assert!(
+            location.contains(description_fragment),
+            "expected description containing {:?}, got {}",
+            description_fragment,
+            location
+        );
+    }
+
+    /// Test that GET /login/callback without a tama_oauth2_state cookie
+    /// returns a redirect to /login/error with "CSRF state missing".
+    #[tokio::test]
+    async fn test_callback_without_state_cookie_errors() {
+        let state = make_login_flow_state(
+            "https://auth.example.com/authorize".into(),
+            "https://auth.example.com/token".into(),
+            None,
+        );
+        let app = login_flow_app(state);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/login/callback?code=abc&state=xyz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_login_error_redirect(&resp, "state", "CSRF%20state%20missing");
+    }
+
+    /// Test that GET /login/callback with a forged (unsigned) tama_oauth2_state cookie
+    /// returns a redirect to /login/error — unsigned cookies are indistinguishable
+    /// from absent ones.
+    #[tokio::test]
+    async fn test_callback_with_forged_state_cookie_errors() {
+        let state = make_login_flow_state(
+            "https://auth.example.com/authorize".into(),
+            "https://auth.example.com/token".into(),
+            None,
+        );
+        let app = login_flow_app(state);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/login/callback?code=abc&state=xyz")
+                    .header("Cookie", "tama_oauth2_state=attacker-controlled")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_login_error_redirect(&resp, "state", "CSRF%20state%20missing");
+    }
+
+    /// Test that GET /login/callback without a code query param returns
+    /// "Authorization code missing".
+    #[tokio::test]
+    async fn test_callback_missing_code_errors() {
+        let state = make_login_flow_state(
+            "https://auth.example.com/authorize".into(),
+            "https://auth.example.com/token".into(),
+            None,
+        );
+        let app = login_flow_app(state.clone());
+        let (_state_query, pair, _set_cookie) = start_login(&app).await;
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/login/callback?state=whatever")
+                    .header("Cookie", pair)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_login_error_redirect(&resp, "code", "Authorization%20code%20missing");
+    }
+
+    /// Test that GET /login/callback without a state query param returns
+    /// "State parameter missing".
+    #[tokio::test]
+    async fn test_callback_missing_state_param_errors() {
+        let state = make_login_flow_state(
+            "https://auth.example.com/authorize".into(),
+            "https://auth.example.com/token".into(),
+            None,
+        );
+        let app = login_flow_app(state.clone());
+        let (_state_query, pair, _set_cookie) = start_login(&app).await;
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/login/callback?code=abc")
+                    .header("Cookie", pair)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_login_error_redirect(&resp, "state", "State%20parameter%20missing");
+    }
+
+    /// Test that GET /login/callback with a state mismatch returns
+    /// "CSRF state mismatch". Also asserts the real state differs from
+    /// the wrong value so the test can't pass vacuously.
+    #[tokio::test]
+    async fn test_callback_state_mismatch_errors() {
+        let state = make_login_flow_state(
+            "https://auth.example.com/authorize".into(),
+            "https://auth.example.com/token".into(),
+            None,
+        );
+        let app = login_flow_app(state.clone());
+        let (real_state, pair, _set_cookie) = start_login(&app).await;
+
+        // Sanity: the real state must not equal our wrong value
+        assert_ne!(
+            real_state, "wrong-state-value",
+            "real_state must differ from wrong-state-value to avoid vacuous pass"
+        );
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/login/callback?code=abc&state=wrong-state-value")
+                    .header("Cookie", pair)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_login_error_redirect(&resp, "state", "CSRF%20state%20mismatch");
+    }
 }
