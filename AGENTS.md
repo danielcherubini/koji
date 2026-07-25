@@ -42,18 +42,23 @@ cargo nextest run --workspace
 
 ### Validation Gate
 
-**Run these commands before merging any branch or creating a PR.** This is the complete gate that CI also runs:
+**Run these commands before merging any branch or creating a PR.** These match the CI workflow exactly (`.github/workflows/ci.yml`):
 
 ```bash
-make check
-```
+# 1. Format check
+cargo fmt --all --check
 
-Equivalent individual commands (if Makefile unavailable):
-```bash
-cargo fmt --all
-cargo clippy --workspace -- -D warnings
+# 2. Clippy — ALL targets (includes tests, benchmarks, examples)
+cargo clippy --workspace --all-targets -- -D warnings
+
+# 3. Clippy — tama SSR build (separate target)
+cargo clippy --package tama --features ssr --all-targets -- -D warnings
+
+# 4. Tests
 cargo nextest run --workspace
 ```
+
+> **Critical:** Always use `--all-targets` with clippy — without it, test-code lint errors are silently skipped locally but will fail CI.
 
 ### Targeted Testing (during development)
 

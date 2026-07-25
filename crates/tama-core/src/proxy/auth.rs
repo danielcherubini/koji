@@ -2195,7 +2195,6 @@ mod tests {
                     scopes: vec!["openid".to_string(), "profile".to_string()],
                     session_ttl_secs: 3600,
                     logout_url: Some("https://auth.example.com/logout".to_string()),
-                    ..Default::default()
                 },
                 ..Default::default()
             },
