@@ -13,8 +13,8 @@ Plans for features, refactors, and bug fixes in the Tama project.
 ## Quick Stats
 
 - **Total Plans**: 75
-- **Backlog**: 15
-- **Completed**: 59 ✅
+- **Backlog**: 14
+- **Completed**: 60 ✅
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan.
 
@@ -26,7 +26,6 @@ Current plans ready for execution, ordered by dependency-first cascade priority:
 
 | Plan | Description | Findings |
 |------|-------------|----------|
-| [forward_request Tests](plan-165-forward-request-tests.md) | Dead-PID 502 + cleanup, circuit-breaker behavior | F9 |
 | [Pull Handler Tests](plan-166-pull-handler-tests.md) | Validation, enqueue, job GET/SSE via wiremock HF | F10 |
 | [Cleanup](plan-167-cleanup.md) | Delete ~1900 lines dead code, unused deps, style batch | F26, F34, F38, F39 |
 | [API Handler Boilerplate](plan-168-api-handler-boilerplate.md) | Wire submit_benchmark_job, resolve_model_record, etc. | F13–F15, F20, F37 |
