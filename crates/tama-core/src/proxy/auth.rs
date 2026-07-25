@@ -1147,6 +1147,205 @@ mod tests {
         (app, proxy_state)
     }
 
+    /// Helper: ProxyState with OAuth2 enabled and caller-provided endpoint URLs.
+    fn make_login_flow_state(
+        authorize_url: String,
+        token_url: String,
+        userinfo_url: Option<String>,
+    ) -> Arc<crate::proxy::ProxyState> {
+        let config = crate::config::Config {
+            proxy: crate::config::ProxyConfig {
+                oauth2: crate::config::types::OAuth2Config {
+                    enabled: true,
+                    client_id: "test-client".to_string(),
+                    client_secret: "test-secret".to_string(),
+                    authorize_url,
+                    token_url,
+                    userinfo_url,
+                    redirect_uri: "http://localhost:11434/login/callback".to_string(),
+                    scopes: vec!["openid".to_string(), "profile".to_string()],
+                    session_ttl_secs: 3600,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        Arc::new(crate::proxy::ProxyState::new(config, None))
+    }
+
+    /// Helper: minimal router mounting the login-flow handlers directly
+    /// (no auth_middleware — these handlers are its skip-path targets).
+    fn login_flow_app(state: Arc<crate::proxy::ProxyState>) -> Router {
+        Router::new()
+            .route("/login", get(handle_login))
+            .route("/login/callback", get(handle_login_callback))
+            .route("/logout", get(handle_logout))
+            .with_state(state)
+    }
+
+    /// Helper: GET /login and return (state query param, "tama_oauth2_state=<v>" cookie pair,
+    /// full Set-Cookie header).
+    async fn start_login(app: &Router) -> (String, String, String) {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/login")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FOUND);
+        let location = resp
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let url = url::Url::parse(&location).expect("authorize URL must parse");
+        let state = url
+            .query_pairs()
+            .find(|(k, _)| k == "state")
+            .map(|(_, v)| v.into_owned())
+            .expect("authorize URL must contain state param");
+        let set_cookie = resp
+            .headers()
+            .get(header::SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let pair = set_cookie.split(';').next().unwrap().trim().to_string();
+        assert!(pair.starts_with(&format!("{}=", CSRF_STATE_COOKIE_NAME)));
+        (state, pair, set_cookie)
+    }
+
+    /// Test that GET /login redirects to the OAuth2 provider's authorize URL
+    /// with all required query parameters.
+    #[tokio::test]
+    async fn test_handle_login_redirects_to_authorize_url_with_params() {
+        let state = make_login_flow_state(
+            "https://auth.example.com/authorize".into(),
+            "https://auth.example.com/token".into(),
+            None,
+        );
+        let app = login_flow_app(state);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/login")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FOUND);
+
+        let location = resp
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        let url = url::Url::parse(location).expect("authorize URL must parse");
+        assert!(url
+            .as_str()
+            .starts_with("https://auth.example.com/authorize?"));
+
+        let params: HashMap<_, _> = url.query_pairs().collect();
+        assert_eq!(
+            params.get("response_type").map(|s| s.as_ref()),
+            Some("code")
+        );
+        assert_eq!(
+            params.get("client_id").map(|s| s.as_ref()),
+            Some("test-client")
+        );
+        assert_eq!(
+            params.get("redirect_uri").map(|s| s.as_ref()),
+            Some("http://localhost:11434/login/callback")
+        );
+        assert_eq!(
+            params.get("scope").map(|s| s.as_ref()),
+            Some("openid profile")
+        );
+        assert!(
+            params.get("state").is_some_and(|s| !s.is_empty()),
+            "state param must be non-empty"
+        );
+    }
+
+    /// Test that GET /login sets a signed HMAC state cookie with correct attributes.
+    #[tokio::test]
+    async fn test_handle_login_sets_signed_state_cookie() {
+        let state = make_login_flow_state(
+            "https://auth.example.com/authorize".into(),
+            "https://auth.example.com/token".into(),
+            None,
+        );
+        let app = login_flow_app(state.clone());
+
+        let (state_param, pair, set_cookie) = start_login(&app).await;
+        assert!(!state_param.is_empty());
+
+        // Verify Set-Cookie header attributes
+        assert!(set_cookie.starts_with(&format!("{}=", CSRF_STATE_COOKIE_NAME)));
+        assert!(set_cookie.contains("HttpOnly"));
+        assert!(set_cookie.contains("Path=/login/callback"));
+        assert!(set_cookie.contains("Max-Age=300"));
+
+        // Verify the cookie is HMAC-signed by reconstructing a jar and checking signature
+        let mut jar = cookie::CookieJar::new();
+        jar.add_original(cookie::Cookie::parse_encoded(pair).expect("cookie pair must parse"));
+        assert!(
+            jar.signed(&state.cookie_key)
+                .get(CSRF_STATE_COOKIE_NAME)
+                .is_some(),
+            "cookie must be HMAC-signed with state.cookie_key"
+        );
+    }
+
+    /// Test that GET /login returns 503 when OAuth2 is disabled.
+    #[tokio::test]
+    async fn test_handle_login_disabled_returns_503() {
+        let config = crate::config::Config {
+            proxy: crate::config::ProxyConfig {
+                oauth2: crate::config::types::OAuth2Config {
+                    enabled: false,
+                    client_id: "test-client".to_string(),
+                    client_secret: "test-secret".to_string(),
+                    authorize_url: "https://auth.example.com/authorize".to_string(),
+                    token_url: "https://auth.example.com/token".to_string(),
+                    redirect_uri: "http://localhost:11434/login/callback".to_string(),
+                    scopes: vec!["openid".to_string(), "profile".to_string()],
+                    session_ttl_secs: 3600,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let state = Arc::new(crate::proxy::ProxyState::new(config, None));
+        let app = login_flow_app(state);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/login")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
     // ── API key authentication tests ────────────────────────────────────
 
     /// Helper: create a temporary directory with a DB containing an API key.
