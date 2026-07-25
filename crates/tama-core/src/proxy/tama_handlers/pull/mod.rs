@@ -8,6 +8,9 @@ pub mod download;
 pub mod handlers;
 mod verify;
 
+#[cfg(test)]
+mod tests;
+
 pub use download::start_pull_from_queue;
 pub use handlers::{handle_pull_job_stream, handle_tama_get_pull_job, handle_tama_pull_model};
 #[cfg(test)]
