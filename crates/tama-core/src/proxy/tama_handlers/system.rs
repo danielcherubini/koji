@@ -46,6 +46,7 @@ pub async fn handle_tama_system_health(
     })
 }
 
+// TODO(plan-172): unrouted after plan-169 — delete
 /// Handle listing available GGUF quants for a HuggingFace repo (Tama management API).
 ///
 /// `repo_id` is captured as a wildcard path segment (e.g. `bartowski/Qwen3-8B-GGUF`)

@@ -24,7 +24,13 @@ use crate::api::benchmarks::{
     benchmark_events, delete_benchmark, get_benchmark_result, list_benchmark_history,
     run_benchmark, run_mtp_benchmark, run_spec_benchmark,
 };
-use tama_core::proxy::{forward_to_backend, ProxyState};
+use tama_core::proxy::{
+    forward_to_backend,
+    tama_handlers::{
+        backend_logs::handle_all_logs, handle_backend_log_sse, handle_tama_system_health,
+    },
+    ProxyState,
+};
 
 /// Embedded dist/ directory for serving the web UI.
 static DIST: Dir = include_dir!("$CARGO_MANIFEST_DIR/dist");
@@ -95,6 +101,10 @@ async fn handle_root_forward(State(state): State<Arc<ProxyState>>, req: Request<
 }
 
 /// Build the web UI routes without attaching state.
+///
+/// This table owns ALL `/tama/v1` management routes. Core's router
+/// (`tama_core::proxy::server::router`) owns only inference/lifecycle/auth —
+/// `crates/tama/tests/router_ownership_test.rs` asserts the two tables stay disjoint.
 ///
 /// The caller (e.g., the proxy server) merges this router with proxy routes
 /// and calls `.with_state(state)` on the merged result.
@@ -323,6 +333,11 @@ pub fn build_web_routes(
         )
         // API documentation (OpenAPI 3.1.0 spec)
         .route("/tama/v1/docs", get(api::openapi::serve_spec))
+        // System health + backend logs: core proxy handlers mounted explicitly
+        // (they are part of the management API surface but implemented in tama-core).
+        .route("/tama/v1/system/health", get(handle_tama_system_health))
+        .route("/tama/v1/logs", get(handle_all_logs))
+        .route("/tama/v1/logs/:backend/events", get(handle_backend_log_sse))
         // Logs: backend-specific log retrieval
         .route("/tama/v1/logs/:backend", get(api::logs::get_backend_logs))
         .merge(csrf_routes)

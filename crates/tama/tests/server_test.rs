@@ -486,4 +486,76 @@ mod tests {
 
         drop(temp_dir);
     }
+
+    /// GET /tama/v1/system/health returns JSON (not HTML from SPA wildcard).
+    #[tokio::test]
+    async fn test_system_health_returns_json() {
+        let (client, addr) = start_test_server().await;
+        let resp = client
+            .get(format!("http://{}/tama/v1/system/health", addr))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            content_type.contains("application/json"),
+            "Expected JSON content type, got: {}",
+            content_type
+        );
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["status"].as_str(), Some("ok"));
+        assert_eq!(body["service"].as_str(), Some("tama"));
+    }
+
+    /// GET /tama/v1/logs returns JSON (not HTML from SPA wildcard).
+    #[tokio::test]
+    async fn test_all_logs_returns_json() {
+        let (client, addr) = start_test_server().await;
+        let resp = client
+            .get(format!("http://{}/tama/v1/logs", addr))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            content_type.contains("application/json"),
+            "Expected JSON content type, got: {}",
+            content_type
+        );
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert!(body["sources"].is_array());
+    }
+
+    /// GET /tama/v1/logs/:backend/events returns SSE (not HTML from SPA wildcard).
+    #[tokio::test]
+    async fn test_backend_log_sse_returns_events() {
+        let (client, addr) = start_test_server().await;
+        // Use a timeout so the SSE handler doesn't hang the test.
+        let resp = client
+            .get(format!("http://{}/tama/v1/logs/test_backend/events", addr))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            content_type.contains("text/event-stream"),
+            "Expected SSE content type, got: {}",
+            content_type
+        );
+    }
 }

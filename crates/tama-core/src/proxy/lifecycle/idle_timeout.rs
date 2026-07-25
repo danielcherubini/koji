@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
 use super::traits::HealthChecker;
-use crate::proxy::process::{
+use crate::process::{
     force_kill_process_group, is_process_alive, is_process_group_alive, kill_process_group,
 };
 use crate::proxy::types::{BackendState, ProxyState};

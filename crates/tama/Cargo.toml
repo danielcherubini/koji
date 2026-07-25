@@ -78,6 +78,11 @@ name = "downloads_api"
 path = "tests/downloads_api.rs"
 required-features = ["ssr"]
 
+[[test]]
+name = "router_ownership_test"
+path = "tests/router_ownership_test.rs"
+required-features = ["ssr"]
+
 [dev-dependencies]
 tokio = { workspace = true }
 reqwest = { workspace = true }

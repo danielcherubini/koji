@@ -7,12 +7,12 @@ use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
 use super::lifecycle::traits::HealthChecker;
-use super::process::{
+use super::types::{BackendState, ProxyState};
+use crate::logging;
+use crate::process::{
     configure_process_group, force_kill_process, force_kill_process_group, is_process_alive,
     is_process_group_alive, kill_process, kill_process_group, override_arg,
 };
-use super::types::{BackendState, ProxyState};
-use crate::logging;
 
 /// Ensure a model is loaded and return its backend name.
 ///

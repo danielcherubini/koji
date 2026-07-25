@@ -36,7 +36,7 @@ pub async fn forward_request(
         // crashed processes.
         let process_dead = ms
             .backend_pid()
-            .map(|pid| !crate::proxy::process::is_process_alive(pid))
+            .map(|pid| !crate::process::is_process_alive(pid))
             .unwrap_or(false);
         if process_dead {
             info!(
@@ -582,7 +582,7 @@ pub async fn forward_request(
             let process_dead = model_state
                 .as_ref()
                 .and_then(|ms| ms.backend_pid())
-                .map(|pid| !crate::proxy::process::is_process_alive(pid))
+                .map(|pid| !crate::process::is_process_alive(pid))
                 .unwrap_or(false);
 
             if process_dead {

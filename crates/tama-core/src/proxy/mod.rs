@@ -3,7 +3,7 @@ pub mod auth;
 pub mod forward;
 mod handlers;
 mod lifecycle;
-pub mod process;
+
 pub mod pull_jobs;
 pub mod pull_queue;
 mod rename;
@@ -14,6 +14,9 @@ mod status;
 pub mod tama_handlers;
 mod types;
 
+pub use crate::process::{
+    check_health, force_kill_process, is_process_alive, kill_process, override_arg,
+};
 pub use api_keys::{ApiKeyRecord, AuthSubject, Scope};
 pub use forward::forward_request;
 pub use handlers::chat::{handle_chat_completions, handle_stream_chat_completions};
@@ -28,7 +31,6 @@ pub use handlers::tts::{
     handle_audio_models, handle_audio_speech, handle_audio_stream, handle_audio_voices,
 };
 pub use handlers::{json_error, json_error_response};
-pub use process::{check_health, force_kill_process, is_process_alive, kill_process, override_arg};
 pub use server::ProxyServer;
 pub use types::{BackendState, ProxyMetrics, ProxyState};
 

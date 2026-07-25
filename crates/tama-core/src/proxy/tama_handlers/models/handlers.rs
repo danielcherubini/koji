@@ -10,11 +10,12 @@ use axum::{
 
 use super::utils::resolve_config_key;
 use crate::gpu::ModelState;
-use crate::proxy::process::{force_kill_process_group, is_process_group_alive, kill_process_group};
+use crate::process::{force_kill_process_group, is_process_group_alive, kill_process_group};
 use crate::proxy::tama_handlers::{ListModelsResponse, ListedModelResponse, ModelResponse};
 use crate::proxy::{BackendState, ProxyState};
 use tracing::{info, warn};
 
+// TODO(plan-172): unrouted after plan-169 — delete
 /// Handle listing all configured models (Tama management API).
 pub async fn handle_tama_list_models(state: State<Arc<ProxyState>>) -> Json<ListModelsResponse> {
     use std::sync::atomic::Ordering::Relaxed;
@@ -116,6 +117,7 @@ pub async fn handle_tama_list_models(state: State<Arc<ProxyState>>) -> Json<List
     Json(ListModelsResponse { models: result })
 }
 
+// TODO(plan-172): unrouted after plan-169 — delete
 /// Handle getting a single model's state (Tama management API).
 pub async fn handle_tama_get_model(
     state: State<Arc<ProxyState>>,
