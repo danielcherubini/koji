@@ -4,7 +4,7 @@ use axum::{
 };
 use tower::ServiceExt;
 
-use super::helpers::{create_test_state, pull_router};
+use super::helpers::{create_test_state, mount_listing, pull_router, ENV_GUARD};
 
 const PULLS_ROUTE: &str = "/tama/v1/pulls";
 const CT_JSON: &str = "application/json";
@@ -117,5 +117,293 @@ async fn test_pull_model_too_many_quants_returns_400() {
         text.contains("Too many quants requested"),
         "Response: {}",
         text
+    );
+}
+
+// ── Listing-backed validation tests (wiremock) ──────────────────────────
+
+/// Unknown filename in request returns 400 with ValidationError.
+#[tokio::test]
+async fn test_pull_model_unknown_filename_returns_400() {
+    let _guard = ENV_GUARD.lock().unwrap();
+    let server = wiremock::MockServer::start().await;
+    std::env::set_var("HF_ENDPOINT", server.uri());
+
+    mount_listing(&server, "test/repo", &["repo-Q4_K_M.gguf"]).await;
+
+    let (state, _tmp) = create_test_state();
+    let app = pull_router(state);
+
+    let body = serde_json::json!({
+        "repo_id": "test/repo",
+        "filenames": ["nope.gguf"]
+    });
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(PULLS_ROUTE)
+        .header(r#"content-type"#, CT_JSON)
+        .body(Body::from(serde_json::to_string(&body).unwrap()))
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 400);
+
+    std::env::remove_var("HF_ENDPOINT");
+
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["error"]["type"], "ValidationError");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("is not a valid GGUF file for repo 'test/repo'"),
+        "Response: {}",
+        json
+    );
+}
+
+/// Duplicate filenames in request returns 400 with ValidationError.
+#[tokio::test]
+async fn test_pull_model_duplicate_filename_returns_400() {
+    let _guard = ENV_GUARD.lock().unwrap();
+    let server = wiremock::MockServer::start().await;
+    std::env::set_var("HF_ENDPOINT", server.uri());
+
+    mount_listing(&server, "test/repo", &["repo-Q4_K_M.gguf"]).await;
+
+    let (state, _tmp) = create_test_state();
+    let app = pull_router(state);
+
+    let body = serde_json::json!({
+        "repo_id": "test/repo",
+        "filenames": ["repo-Q4_K_M.gguf", "repo-Q4_K_M.gguf"]
+    });
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(PULLS_ROUTE)
+        .header(r#"content-type"#, CT_JSON)
+        .body(Body::from(serde_json::to_string(&body).unwrap()))
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 400);
+
+    std::env::remove_var("HF_ENDPOINT");
+
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["error"]["type"], "ValidationError");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Duplicate filename"),
+        "Response: {}",
+        json
+    );
+}
+
+/// Missing quant with no filenames returns 422 with available_quants.
+#[tokio::test]
+async fn test_pull_model_missing_quant_returns_422_with_available() {
+    let _guard = ENV_GUARD.lock().unwrap();
+    let server = wiremock::MockServer::start().await;
+    std::env::set_var("HF_ENDPOINT", server.uri());
+
+    mount_listing(&server, "test/repo", &["repo-Q4_K_M.gguf"]).await;
+
+    let (state, _tmp) = create_test_state();
+    let app = pull_router(state);
+
+    // Send repo_id but no filenames/quant — triggers listing fetch
+    // which returns available quants in the error response.
+    let body = serde_json::json!({
+        "repo_id": "test/repo"
+    });
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(PULLS_ROUTE)
+        .header(r#"content-type"#, CT_JSON)
+        .body(Body::from(serde_json::to_string(&body).unwrap()))
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 422);
+
+    std::env::remove_var("HF_ENDPOINT");
+
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["error"]["type"], "ValidationError");
+    // available_quants is at top level (sibling of "error")
+    assert!(json["available_quants"].is_array());
+    let available: Vec<&serde_json::Value> = json["available_quants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .collect();
+    assert_eq!(available.len(), 1);
+    assert_eq!(available[0]["filename"], "repo-Q4_K_M.gguf");
+}
+
+/// Unknown quant returns 422 with available_quants.
+#[tokio::test]
+async fn test_pull_model_unknown_quant_returns_422() {
+    let _guard = ENV_GUARD.lock().unwrap();
+    let server = wiremock::MockServer::start().await;
+    std::env::set_var("HF_ENDPOINT", server.uri());
+
+    mount_listing(&server, "test/repo", &["repo-Q4_K_M.gguf"]).await;
+
+    let (state, _tmp) = create_test_state();
+    let app = pull_router(state);
+
+    let body = serde_json::json!({
+        "repo_id": "test/repo",
+        "quant": "Q9_XX"
+    });
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(PULLS_ROUTE)
+        .header(r#"content-type"#, CT_JSON)
+        .body(Body::from(serde_json::to_string(&body).unwrap()))
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 422);
+
+    std::env::remove_var("HF_ENDPOINT");
+
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["error"]["type"], "ValidationError");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Quant 'Q9_XX' not found in repo 'test/repo'"),
+        "Response: {}",
+        json
+    );
+}
+
+/// Listing fetch failure returns 502 with UpstreamError.
+#[tokio::test]
+async fn test_pull_model_listing_failure_returns_502() {
+    let _guard = ENV_GUARD.lock().unwrap();
+    let server = wiremock::MockServer::start().await;
+    std::env::set_var("HF_ENDPOINT", server.uri());
+
+    // Mount a raw 500 response instead of a listing.
+    // hf-hub calls /api/models/{repo_id}/revision/{revision}
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path(
+            "/api/models/test/repo/revision/main",
+        ))
+        .respond_with(wiremock::ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+
+    let (state, _tmp) = create_test_state();
+    let app = pull_router(state);
+
+    let body = serde_json::json!({
+        "repo_id": "test/repo",
+        "filenames": ["x.gguf"]
+    });
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(PULLS_ROUTE)
+        .header(r#"content-type"#, CT_JSON)
+        .body(Body::from(serde_json::to_string(&body).unwrap()))
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 502);
+
+    std::env::remove_var("HF_ENDPOINT");
+
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["error"]["type"], "UpstreamError");
+}
+
+/// Happy path: listing validation passes, job is created and enqueued.
+#[tokio::test]
+async fn test_pull_model_enqueues_job_and_returns_pending() {
+    let _guard = ENV_GUARD.lock().unwrap();
+    let server = wiremock::MockServer::start().await;
+    std::env::set_var("HF_ENDPOINT", server.uri());
+
+    mount_listing(&server, "test/repo", &["repo-Q4_K_M.gguf"]).await;
+
+    let (state, _tmp) = create_test_state();
+    let app = pull_router(state.clone());
+
+    let body = serde_json::json!({
+        "repo_id": "test/repo",
+        "filenames": ["repo-Q4_K_M.gguf"]
+    });
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(PULLS_ROUTE)
+        .header(r#"content-type"#, CT_JSON)
+        .body(Body::from(serde_json::to_string(&body).unwrap()))
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 200);
+
+    std::env::remove_var("HF_ENDPOINT");
+
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let entries: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(entries.len(), 1);
+    let entry = &entries[0];
+    assert_eq!(entry["filename"], "repo-Q4_K_M.gguf");
+    assert_eq!(entry["status"], "pending");
+
+    // Extract job_id from the response for further assertions.
+    let job_id = entry["job_id"].as_str().unwrap().to_string();
+
+    // Verify the pull job exists in memory with Pending status.
+    assert!(
+        state.pull_jobs().read().await.contains_key(&job_id),
+        "pull_jobs should contain {}",
+        job_id
+    );
+    let jobs = state.pull_jobs().read().await;
+    let job = jobs.get(&job_id).unwrap();
+    use crate::proxy::pull_jobs::PullJobStatus;
+    assert_eq!(job.status, PullJobStatus::Pending);
+    assert_eq!(job.repo_id, "test/repo");
+    assert_eq!(job.filename, "repo-Q4_K_M.gguf");
+
+    // Verify the DB queue row exists.
+    let svc = state.pull_queue.as_ref().unwrap();
+    let db_row = svc.test_model_mgr().queue_get_by_job_id(&job_id).unwrap();
+    assert!(
+        db_row.is_some(),
+        "pull_queue DB row should exist for job {}",
+        job_id
     );
 }
