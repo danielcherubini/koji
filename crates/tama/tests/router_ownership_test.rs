@@ -68,11 +68,25 @@ const TAMA_MANAGED_PATHS: &[&str] = &[
 /// a path in both is a shadow-route bug (audit F33).
 #[test]
 fn test_proxy_and_management_tables_are_disjoint() {
+    const EXPECTED_TAMA_PATH_COUNT: usize = 54;
+    assert_eq!(
+        TAMA_MANAGED_PATHS.len(),
+        EXPECTED_TAMA_PATH_COUNT,
+        "tama-managed route count changed — update test if intentional"
+    );
+
     let proxy_paths: std::collections::HashSet<&str> =
         tama_core::proxy::server::router::proxy_route_paths()
             .into_iter()
             .map(|(_, p)| p)
             .collect();
+
+    const EXPECTED_PROXY_PATH_COUNT: usize = 31;
+    assert_eq!(
+        proxy_paths.len(),
+        EXPECTED_PROXY_PATH_COUNT,
+        "proxy route count changed unexpectedly — update test if intentional"
+    );
     for path in TAMA_MANAGED_PATHS {
         assert!(
             !proxy_paths.contains(path),
