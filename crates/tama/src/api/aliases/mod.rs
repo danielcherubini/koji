@@ -9,7 +9,7 @@ use axum::{
 use regex::Regex;
 use std::sync::{Arc, OnceLock};
 
-use crate::api::error::{error_response, error_response_simple};
+use crate::api::error::{error_body, error_response, error_response_simple};
 use crate::api::helpers::shared_repository;
 use crate::web_types::WebState;
 use tama_core::proxy::ProxyState;
@@ -109,39 +109,57 @@ pub async fn create_alias(
         );
     }
 
-    // DB operations within lock scope — must not hold guard across .await
-    let (_new_id, alias) = {
-        let repo = repo.lock().unwrap();
+    // Capture payload fields for the spawn_blocking closure.
+    let model_id = payload.model_id;
+    let name = payload.name.clone();
+    let desc = payload.description.clone();
 
-        // Validate model_id exists
-        let model_exists = match repo.model_exists(payload.model_id) {
-            Ok(v) => v,
-            Err(e) => {
-                return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None)
+    let result =
+        tokio::task::spawn_blocking(move || -> Result<_, (StatusCode, serde_json::Value)> {
+            let repo = repo.lock().unwrap();
+
+            // Validate model_id exists
+            if !repo.model_exists(model_id).map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    error_body(format!("Failed to check model existence: {}", e), None),
+                )
+            })? {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    error_body("Model not found", Some("ValidationError")),
+                ));
             }
-        };
 
-        if !model_exists {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                "Model not found",
-                Some("ValidationError"),
-            );
+            let new_id = repo
+                .insert_alias(&name, model_id, desc.as_deref())
+                .map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        error_body(format!("Database not configured: {}", e), None),
+                    )
+                })?;
+
+            let alias = repo.get_alias_by_id(new_id).ok().flatten().ok_or_else(|| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    error_body("Failed to retrieve created alias", None),
+                )
+            })?;
+
+            Ok(alias)
+        })
+        .await;
+
+    let alias = match result {
+        Ok(Ok(a)) => a,
+        Ok(Err((s, b))) => return (s, Json(b)).into_response(),
+        Err(e) => {
+            return error_response_simple(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("spawn error: {}", e),
+            )
         }
-
-        let new_id = match repo.insert_alias(
-            &payload.name,
-            payload.model_id,
-            payload.description.as_deref(),
-        ) {
-            Ok(id) => id,
-            Err(e) => {
-                return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None)
-            }
-        };
-
-        let alias = repo.get_alias_by_id(new_id).ok().flatten();
-        (new_id, alias)
     };
 
     // Reload alias cache in ProxyState — outside the lock to avoid holding
@@ -151,13 +169,7 @@ pub async fn create_alias(
     }
 
     // Return the created alias
-    match alias {
-        Some(a) => (StatusCode::CREATED, Json(a)).into_response(),
-        None => error_response_simple(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Failed to retrieve created alias",
-        ),
-    }
+    (StatusCode::CREATED, Json(alias)).into_response()
 }
 
 /// PUT /tama/v1/aliases/{id}
@@ -183,42 +195,62 @@ pub async fn update_alias(
         }
     }
 
-    // DB operations within lock scope — must not hold guard across .await
-    let alias = {
-        let repo = repo.lock().unwrap();
+    // Capture payload fields for the spawn_blocking closure.
+    let name_for_closure = payload.name.clone();
+    let model_id_for_closure = payload.model_id;
+    let desc_for_closure = payload.description.clone();
 
-        // Validate model_id if provided
-        if let Some(ref model_id) = payload.model_id {
-            let model_exists = match repo.model_exists(*model_id) {
-                Ok(v) => v,
-                Err(e) => {
-                    return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None)
+    let result =
+        tokio::task::spawn_blocking(move || -> Result<_, (StatusCode, serde_json::Value)> {
+            let repo = repo.lock().unwrap();
+
+            // Validate model_id if provided
+            if let Some(ref model_id) = model_id_for_closure {
+                if !repo.model_exists(*model_id).map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        error_body(format!("Failed to check model existence: {}", e), None),
+                    )
+                })? {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        error_body("Model not found", Some("ValidationError")),
+                    ));
                 }
-            };
-
-            if !model_exists {
-                return error_response(
-                    StatusCode::BAD_REQUEST,
-                    "Model not found",
-                    Some("ValidationError"),
-                );
             }
-        }
 
-        match repo.update_alias(
-            id,
-            payload.name.as_deref(),
-            payload.model_id,
-            payload.description.as_ref().map(|d| d.as_deref()),
-            payload.enabled,
-        ) {
-            Ok(()) => {}
-            Err(e) => {
-                return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None)
-            }
-        }
+            repo.update_alias(
+                id,
+                name_for_closure.as_deref(),
+                model_id_for_closure,
+                desc_for_closure.as_ref().map(|d| d.as_deref()),
+                payload.enabled,
+            )
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    error_body(format!("Database not configured: {}", e), None),
+                )
+            })?;
 
-        repo.get_alias_by_id(id).ok().flatten()
+            repo.get_alias_by_id(id).ok().flatten().ok_or_else(|| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    error_body("Failed to retrieve updated alias", None),
+                )
+            })
+        })
+        .await;
+
+    let alias = match result {
+        Ok(Ok(a)) => a,
+        Ok(Err((s, b))) => return (s, Json(b)).into_response(),
+        Err(e) => {
+            return error_response_simple(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("spawn error: {}", e),
+            )
+        }
     };
 
     // Reload alias cache in ProxyState — outside the lock to avoid holding
@@ -227,13 +259,7 @@ pub async fn update_alias(
         tracing::warn!("Failed to reload aliases after update: {}", e);
     }
 
-    match alias {
-        Some(a) => Json(a).into_response(),
-        None => error_response_simple(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Failed to retrieve updated alias",
-        ),
-    }
+    Json(alias).into_response()
 }
 
 /// DELETE /tama/v1/aliases/{id}
@@ -247,14 +273,27 @@ pub async fn delete_alias(
         Err(resp) => return resp,
     };
 
-    // DB operation within lock scope — must not hold guard across .await
-    {
-        let repo = repo.lock().unwrap();
-        match repo.delete_alias(id) {
-            Ok(()) => {}
-            Err(e) => {
-                return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None)
-            }
+    let result =
+        tokio::task::spawn_blocking(move || -> Result<_, (StatusCode, serde_json::Value)> {
+            let repo = repo.lock().unwrap();
+            repo.delete_alias(id).map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    error_body(format!("Database not configured: {}", e), None),
+                )
+            })?;
+            Ok(())
+        })
+        .await;
+
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err((s, b))) => return (s, Json(b)).into_response(),
+        Err(e) => {
+            return error_response_simple(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("spawn error: {}", e),
+            )
         }
     }
 

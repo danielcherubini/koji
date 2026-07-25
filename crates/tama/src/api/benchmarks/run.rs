@@ -1,6 +1,6 @@
 use super::*;
 use crate::api::benchmarks::BenchmarkProgressSink;
-use crate::api::helpers::shared_repository;
+use anyhow::Context;
 
 // ── Handler: Submit benchmark job ─────────────────────────────────────
 
@@ -9,63 +9,19 @@ pub async fn run_benchmark(
     State(state): State<Arc<ProxyState>>,
     Json(req): Json<BenchmarkRunRequest>,
 ) -> impl IntoResponse {
-    let jobs = match web_state.jobs.as_ref() {
-        Some(j) => j.clone(),
-        None => return job_manager_unavailable_response(),
-    };
-
-    let job = match jobs.submit(JobKind::Benchmark, None).await {
-        Ok(j) => j,
-        Err(_) => return job_conflict_response(),
-    };
-
-    let job_id = job.id.clone();
-
-    let db_path = state
-        .db_dir()
-        .clone()
-        .unwrap_or_else(|| {
-            tama_core::config::Config::config_dir()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."))
-        })
-        .join("tama.db");
-    let proxy_base_url = state.config().read().await.proxy_url();
-    let client = state.client().clone();
-
-    let repo_handle = match shared_repository(&web_state) {
-        Ok(h) => h,
-        Err(resp) => return resp,
-    };
-
-    // Spawn the benchmark in the background
-    tokio::spawn(async move {
-        if let Err(e) = run_benchmark_inner(
-            jobs.clone(),
-            &job,
-            req,
-            Some(db_path),
-            proxy_base_url,
-            client,
-            repo_handle,
-        )
-        .await
-        {
-            tracing::error!(job_id = %job.id, error = %e, "Benchmark job failed");
-            jobs.finish(&job, JobStatus::Failed, Some(e.to_string()))
-                .await;
-        } else {
-            jobs.finish(&job, JobStatus::Succeeded, None).await;
-        }
-    });
-
+    let (job_id, _jobs) =
+        match submit_benchmark_job(&state, &web_state, req, run_benchmark_inner).await {
+            Ok(v) => v,
+            Err(resp) => return resp,
+        };
     (StatusCode::ACCEPTED, Json(BenchmarkRunResponse { job_id })).into_response()
 }
 
 pub async fn run_benchmark_inner(
     jobs: Arc<JobManager>,
-    job: &Arc<crate::web_types::Job>,
+    job: Arc<crate::web_types::Job>,
     req: BenchmarkRunRequest,
-    db_path: Option<std::path::PathBuf>,
+    db_path: std::path::PathBuf,
     proxy_base_url: String,
     client: reqwest::Client,
     repo_handle: std::sync::Arc<std::sync::Mutex<tama_core::db::repository::Repository>>,
@@ -90,7 +46,6 @@ pub async fn run_benchmark_inner(
     let threads_for_trace = req.threads.clone();
 
     // Load config - clone db_path for the blocking task
-    let db_path: std::path::PathBuf = db_path.context("Cannot determine db path")?;
     let db_path_for_load = db_path.clone();
 
     let config = tokio::task::spawn_blocking(move || {
@@ -142,13 +97,19 @@ pub async fn run_benchmark_inner(
     )
     .await?;
 
-    // Store results in database
-    let repo = repo_handle.lock().unwrap();
+    // Store results in database — pool the blocking SQLite calls.
+    // Segment 1: load model configs for display-name lookup.
+    let repo_handle_for_load = repo_handle.clone();
+    let model_configs: std::collections::HashMap<String, tama_core::config::ModelConfig> =
+        tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+            let repo = repo_handle_for_load.lock().unwrap();
+            repo.load_model_configs_for_benchmarks()
+        })
+        .await??;
 
     // Get model display name from config. The request carries the db_id as a
     // string (e.g. "4") because that's what the model dropdown submits, so we
     // resolve it to the config key first — otherwise `.get("4")` never hits.
-    let model_configs = repo.load_model_configs_for_benchmarks()?;
     let resolved_key = if let Ok(db_id) = model_id.parse::<i64>() {
         model_configs
             .iter()
@@ -183,32 +144,42 @@ pub async fn run_benchmark_inner(
     // Get VRAM info
     let vram = query_vram();
 
-    // Insert into database
-    let _id = repo.insert_benchmark(&tama_core::db::repository::BenchmarkParams {
-        model_id: req.model_id.clone(),
-        display_name: display_name.clone(),
-        quant: report.model_info.quant.clone(),
-        backend: report.model_info.backend.clone(),
-        engine: "llama_bench".to_string(),
-        pp_sizes_json,
-        tg_sizes_json,
-        threads_json,
-        ngl_range: ngl_range_for_insert,
-        runs: req.runs,
-        warmup: req.warmup,
-        results_json,
-        load_time_ms: Some(report.load_time_ms),
-        vram_used_mib: vram.as_ref().map(|v| v.used_mib as i64),
-        vram_total_mib: vram.as_ref().map(|v| v.total_mib as i64),
-        duration_seconds: 0.0, // duration tracked by job system
-        status: "success".to_string(),
-        benchmark_type: benchmark_type.clone(),
-    })?;
+    // Clone values before moving into the spawn_blocking closure.
+    let display_name_for_trace = display_name.clone();
+    let backend_for_trace = report.model_info.backend.clone();
+
+    // Segment 2: insert benchmark record on the blocking pool.
+    let repo_for_insert = repo_handle.clone();
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let repo = repo_for_insert.lock().unwrap();
+        repo.insert_benchmark(&tama_core::db::repository::BenchmarkParams {
+            model_id: req.model_id.clone(),
+            display_name: display_name.clone(),
+            quant: report.model_info.quant.clone(),
+            backend: report.model_info.backend.clone(),
+            engine: "llama_bench".to_string(),
+            pp_sizes_json,
+            tg_sizes_json,
+            threads_json,
+            ngl_range: ngl_range_for_insert,
+            runs: req.runs,
+            warmup: req.warmup,
+            results_json,
+            load_time_ms: Some(report.load_time_ms),
+            vram_used_mib: vram.as_ref().map(|v| v.used_mib as i64),
+            vram_total_mib: vram.as_ref().map(|v| v.total_mib as i64),
+            duration_seconds: 0.0, // duration tracked by job system
+            status: "success".to_string(),
+            benchmark_type: benchmark_type.clone(),
+        })?;
+        Ok(())
+    })
+    .await??;
 
     tracing::info!(
         job_id = %job.id,
-        display_name = ?display_name,
-        backend = %report.model_info.backend,
+        display_name = ?display_name_for_trace,
+        backend = %backend_for_trace,
         entries = report.summaries.len(),
         "llama-bench benchmark completed",
     );

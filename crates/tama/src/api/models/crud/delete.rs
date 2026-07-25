@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tama_core::proxy::ProxyState;
 
 use crate::api::load_config_from_state;
-use crate::api::models::resolve_db_id;
+use crate::api::models::resolve_model_record;
 use crate::web_types::WebState;
 
 /// DELETE /tama/v1/models/:id/quants/:quant_key — delete a single quant's file
@@ -122,7 +122,7 @@ pub async fn delete_quant(
 /// DELETE /tama/v1/models/:id — delete a model.
 pub async fn delete_model(
     State(state): State<Arc<ProxyState>>,
-    Extension(web_state): Extension<WebState>,
+    Extension(_web_state): Extension<WebState>,
     Path(id_str): Path<String>,
 ) -> impl IntoResponse {
     let state_clone = state.clone();
@@ -133,43 +133,9 @@ pub async fn delete_model(
         Err((status, body)) => return (status, Json(body)).into_response(),
     };
 
-    let repo_handle = match shared_repository(&web_state) {
-        Ok(h) => h,
-        Err(resp) => return resp,
-    };
-
     spawn_model_crud(state_clone, DEFAULT_CRUD_STATUS, move || {
-        // Open repository for reading
-        let repo = repo_handle.lock().unwrap();
-
-        // Resolve model_id using Repository
-        let model_id = resolve_db_id(&id_str, &repo)
-            .map_err(|e| {
-                (
-                    StatusCode::BAD_REQUEST,
-                    error_body(e.to_string(), Some("ValidationError")),
-                )
-            })?
-            .ok_or_else(|| {
-                (
-                    StatusCode::NOT_FOUND,
-                    error_body("Model not found", Some("NotFoundError")),
-                )
-            })?;
-        let model_record = repo
-            .get_model_config(model_id)
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    error_body(e.to_string(), None),
-                )
-            })?
-            .ok_or_else(|| {
-                (
-                    StatusCode::NOT_FOUND,
-                    error_body("Model not found", Some("NotFoundError")),
-                )
-            })?;
+        // Resolve model_id and load record
+        let (repo, model_id, model_record) = resolve_model_record(&_config_dir, &id_str)?;
         let _model_config = tama_core::config::ModelConfig::from_db_record(&model_record);
 
         // Step 1: Delete model config — all-or-nothing. CASCADE handles

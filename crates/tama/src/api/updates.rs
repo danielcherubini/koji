@@ -81,20 +81,41 @@ pub async fn get_updates(
     State(state): State<Arc<ProxyState>>,
     Extension(web_state): Extension<WebState>,
 ) -> impl IntoResponse {
-    let config_dir = match state.db_dir().clone() {
-        Some(d) => d,
-        None => {
-            return error_response(
-                StatusCode::NOT_FOUND,
-                "config directory not configured",
-                Some("NotFoundError"),
-            )
-        }
+    let config_dir = match crate::api::helpers::resolve_config_dir(&state) {
+        Ok(d) => d,
+        Err(resp) => return resp,
     };
 
     let checker = &web_state.update_checker;
     match checker.get_results(&config_dir).await {
         Ok(records) => {
+            // Pooled pre-pass: collect all model IDs and resolve display names
+            // in a single spawn_blocking call instead of opening the repo per-record.
+            let model_ids: Vec<i64> = records
+                .iter()
+                .filter(|r| r.item_type == "model")
+                .filter_map(|r| r.item_id.parse::<i64>().ok())
+                .collect();
+            let display_names: std::collections::HashMap<i64, String> =
+                match tokio::task::spawn_blocking(move || {
+                    let repo = shared_repository(&web_state).ok()?;
+                    let repo = repo.lock().unwrap();
+                    let mut map = std::collections::HashMap::new();
+                    for id in model_ids {
+                        if let Ok(Some(m)) = repo.get_model_config(id) {
+                            if let Some(name) = m.display_name {
+                                map.insert(id, name);
+                            }
+                        }
+                    }
+                    Some(map)
+                })
+                .await
+                {
+                    Ok(Some(m)) => m,
+                    _ => std::collections::HashMap::new(),
+                };
+
             let mut backends = Vec::new();
             let mut models = Vec::new();
             for r in records {
@@ -122,18 +143,12 @@ pub async fn get_updates(
                             .collect()
                     })
                     .unwrap_or_default();
-                // For models, look up display_name from the model config table.
-                // item_id for models is the integer model ID as a string.
+                // For models, look up display_name from the pooled pre-pass.
                 let display_name = if r.item_type == "model" {
-                    r.item_id.parse::<i64>().ok().and_then(|model_id| {
-                        shared_repository(&web_state).ok().and_then(|repo_handle| {
-                            let repo = repo_handle.lock().unwrap();
-                            repo.get_model_config(model_id)
-                                .ok()
-                                .flatten()
-                                .and_then(|m| m.display_name)
-                        })
-                    })
+                    r.item_id
+                        .parse::<i64>()
+                        .ok()
+                        .and_then(|id| display_names.get(&id).cloned())
                 } else {
                     None
                 };
@@ -182,15 +197,9 @@ pub async fn trigger_check(
     State(state): State<Arc<ProxyState>>,
     Extension(web_state): Extension<WebState>,
 ) -> impl IntoResponse {
-    let config_dir = match state.db_dir().clone() {
-        Some(d) => d,
-        None => {
-            return error_response(
-                StatusCode::NOT_FOUND,
-                "config directory not configured",
-                Some("NotFoundError"),
-            )
-        }
+    let config_dir = match crate::api::helpers::resolve_config_dir(&state) {
+        Ok(d) => d,
+        Err(resp) => return resp,
     };
 
     let checker = web_state.update_checker.clone();
@@ -226,15 +235,9 @@ pub async fn check_single(
     Path((item_type, item_id)): Path<(String, String)>,
     axum::extract::Query(query): axum::extract::Query<CheckSingleQuery>,
 ) -> impl IntoResponse {
-    let config_dir = match state.db_dir().clone() {
-        Some(d) => d,
-        None => {
-            return error_response(
-                StatusCode::NOT_FOUND,
-                "config directory not configured",
-                Some("NotFoundError"),
-            )
-        }
+    let config_dir = match crate::api::helpers::resolve_config_dir(&state) {
+        Ok(d) => d,
+        Err(resp) => return resp,
     };
 
     let checker = &web_state.update_checker;
@@ -423,15 +426,9 @@ pub async fn apply_backend_update(
     Path(name): Path<String>,
     axum::extract::Query(query): axum::extract::Query<CheckSingleQuery>,
 ) -> impl IntoResponse {
-    let config_dir = match state.db_dir().clone() {
-        Some(d) => d,
-        None => {
-            return error_response(
-                StatusCode::NOT_FOUND,
-                "config directory not configured",
-                Some("NotFoundError"),
-            )
-        }
+    let config_dir = match crate::api::helpers::resolve_config_dir(&state) {
+        Ok(d) => d,
+        Err(resp) => return resp,
     };
 
     // Load backend info from DB — discover gpu_variant dynamically
@@ -538,34 +535,38 @@ pub async fn apply_backend_update(
     let jobs_clone = jobs.clone();
     let job_clone = job.clone();
     let name_clone = name.clone();
+    let config_dir_clone = config_dir.clone();
     tokio::spawn(async move {
-        let config_dir = match tama_core::config::Config::base_dir() {
-            Ok(d) => d,
-            Err(e) => {
-                tracing::error!("Failed to get config base dir: {}", e);
-                return;
-            }
-        };
-        let mgr_res = BackendManager::open(&config_dir);
-        let mgr = match mgr_res {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::error!("Failed to open backend manager: {}", e);
-                return;
-            }
-        };
-        let all_versions = match mgr.list_versions(&name_clone, None) {
-            Ok(Some(versions)) => versions,
-            Ok(None) => {
+        let config_dir = config_dir_clone;
+        let name_for_prep = name_clone.clone();
+        let prep = tokio::task::spawn_blocking(
+            move || -> Result<(BackendManager, Option<Vec<_>>), String> {
+                let mgr = match BackendManager::open(&config_dir) {
+                    Ok(m) => m,
+                    Err(e) => return Err(format!("Failed to open backend manager: {}", e)),
+                };
+                match mgr.list_versions(&name_for_prep, None) {
+                    Ok(v) => Ok((mgr, v)),
+                    Err(e) => Err(format!(
+                        "Failed to list versions for backend '{}': {}",
+                        name_for_prep, e
+                    )),
+                }
+            },
+        )
+        .await;
+        let (mgr, all_versions) = match prep {
+            Ok(Ok((m, Some(v)))) => (m, v),
+            Ok(Ok((_, None))) => {
                 tracing::error!("Backend '{}' not found during update", name_clone);
                 return;
             }
+            Ok(Err(msg)) => {
+                tracing::error!("{}", msg);
+                return;
+            }
             Err(e) => {
-                tracing::error!(
-                    "Failed to list versions for backend '{}': {}",
-                    name_clone,
-                    e
-                );
+                tracing::error!("spawn error: {}", e);
                 return;
             }
         };
@@ -720,9 +721,9 @@ pub async fn apply_model_update(
         .filter(|(_, fn_)| seen_filenames.insert(fn_.clone()))
         .collect();
 
-    // 4. Pre-check for duplicate enqueues and enqueue each quant
+    // 4. Pre-check for duplicate enqueues and enqueue each quant — all in one spawn_blocking.
     let svc = match state.pull_queue().as_ref() {
-        Some(s) => s,
+        Some(s) => s.clone(),
         None => {
             return error_response(
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -732,57 +733,81 @@ pub async fn apply_model_update(
         }
     };
 
-    // Phase 1: Preflight — check all items for duplicates before creating any jobs.
-    // This is read-only and returns early on the first conflict or error.
-    let repo = match shared_repository(&web_state) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
-    let repo = repo.lock().unwrap();
-
-    for (quant_key, filename) in &unique_files {
-        match repo.get_active_pull_by_filename(&repo_id, filename) {
-            Ok(Some(existing)) => {
-                let mut body = error_body(
-                    format!(
-                        "Download already in progress for quant '{}' ({})",
-                        quant_key, filename
-                    ),
-                    Some("ConflictError"),
-                );
-                body["existing_job_id"] = serde_json::json!(existing.job_id);
-                return (StatusCode::CONFLICT, Json(body)).into_response();
-            }
-            Ok(None) => {}
-            Err(e) => {
-                return error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Queue check failed for '{}': {}", filename, e),
-                    None,
+    let enqueue_result = tokio::task::spawn_blocking(
+        move || -> Result<Vec<String>, (StatusCode, serde_json::Value)> {
+            let repo = shared_repository(&web_state).map_err(|resp| {
+                (
+                    resp.status(),
+                    serde_json::json!({ "error": "Database not configured" }),
                 )
+            })?;
+            let repo = repo.lock().unwrap();
+
+            // Phase 1: Preflight — check all items for duplicates before creating any jobs.
+            for (quant_key, filename) in &unique_files {
+                match repo.get_active_pull_by_filename(&repo_id, filename) {
+                    Ok(Some(existing)) => {
+                        let mut body = error_body(
+                            format!(
+                                "Download already in progress for quant '{}' ({})",
+                                quant_key, filename
+                            ),
+                            Some("ConflictError"),
+                        );
+                        body["existing_job_id"] = serde_json::json!(existing.job_id);
+                        return Err((StatusCode::CONFLICT, body));
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        return Err((
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            serde_json::json!({
+                                "error": format!("Queue check failed for '{}': {}", filename, e)
+                            }),
+                        ));
+                    }
+                }
             }
+
+            // Phase 2: All preflight checks passed — generate job IDs and enqueue.
+            let mut job_ids = Vec::new();
+            for (quant_key, filename) in &unique_files {
+                let job_id = uuid::Uuid::new_v4().to_string();
+
+                if let Err(e) = svc.enqueue(
+                    &job_id,
+                    &repo_id,
+                    filename,
+                    Some(quant_key.as_str()),
+                    "model",
+                    Some(quant_key.as_str()),
+                    None,
+                ) {
+                    return Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        serde_json::json!({ "error": e.to_string() }),
+                    ));
+                }
+
+                job_ids.push(job_id);
+            }
+
+            Ok(job_ids)
+        },
+    )
+    .await;
+
+    let job_ids = match enqueue_result {
+        Ok(Ok(ids)) => ids,
+        Ok(Err((s, b))) => return (s, Json(b)).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("spawn error: {}", e) })),
+            )
+                .into_response()
         }
-    }
-
-    // Phase 2: All preflight checks passed — generate job IDs and enqueue.
-    let mut job_ids = Vec::new();
-    for (quant_key, filename) in &unique_files {
-        let job_id = uuid::Uuid::new_v4().to_string();
-
-        if let Err(e) = svc.enqueue(
-            &job_id,
-            &repo_id,
-            filename,
-            Some(quant_key.as_str()),
-            "model",
-            Some(quant_key.as_str()),
-            None,
-        ) {
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None);
-        }
-
-        job_ids.push(job_id);
-    }
+    };
 
     let total = job_ids.len();
     Json(ModelUpdateResponse { job_ids, total }).into_response()

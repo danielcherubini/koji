@@ -21,12 +21,8 @@ pub async fn update_backend(
     axum::extract::Query(query): axum::extract::Query<UpdateQuery>,
 ) -> impl IntoResponse {
     // Validate path param to prevent path traversal attacks
-    if name.contains('/') || name.contains('\\') || name.contains("..") {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "Invalid backend name: path separators or traversal sequences not allowed",
-            Some("ValidationError"),
-        );
+    if let Err(resp) = crate::api::backends::reject_traversal(&name, "backend name") {
+        return resp;
     }
 
     let jobs = match web_state.jobs.as_ref() {
@@ -40,9 +36,10 @@ pub async fn update_backend(
         }
     };
 
-    let config_dir = state.db_dir().clone().unwrap_or_else(|| {
-        tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-    });
+    let config_dir = match crate::api::helpers::resolve_config_dir(&state) {
+        Ok(d) => d,
+        Err(resp) => return resp,
+    };
     let config_dir_clone = config_dir.clone();
 
     let mgr = match open_backend_manager(&state).await {

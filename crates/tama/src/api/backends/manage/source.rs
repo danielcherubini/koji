@@ -22,17 +22,14 @@ pub async fn update_backend_source(
     Json(req): Json<UpdateSourceRequest>,
 ) -> impl IntoResponse {
     // Validate path param to prevent path traversal attacks
-    if name.contains('/') || name.contains('\\') || name.contains("..") {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "Invalid backend name",
-            Some("ValidationError"),
-        );
+    if let Err(resp) = crate::api::backends::reject_traversal(&name, "backend name") {
+        return resp;
     }
 
-    let config_dir = state.db_dir().clone().unwrap_or_else(|| {
-        tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-    });
+    let config_dir = match crate::api::helpers::resolve_config_dir(&state) {
+        Ok(d) => d,
+        Err(resp) => return resp,
+    };
 
     // Open manager and determine gpu_variant
     let config_dir_clone = config_dir.clone();
@@ -74,9 +71,10 @@ pub async fn update_backend_source(
             };
 
             // Validate resolved gpu_variant for path traversal
-            if gpu_variant.contains('/') || gpu_variant.contains('\\') || gpu_variant.contains("..")
-            {
-                return Err(anyhow::anyhow!("Invalid gpu_variant: path separators or traversal sequences not allowed"));
+            if crate::api::backends::is_path_traversal(&gpu_variant) {
+                return Err(anyhow::anyhow!(
+                    "Invalid gpu_variant: path separators or traversal sequences not allowed"
+                ));
             }
 
             Ok((mgr, gpu_variant))

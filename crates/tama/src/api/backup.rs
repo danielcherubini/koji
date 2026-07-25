@@ -67,11 +67,9 @@ pub struct BackendEntry {
 
 /// GET /tama/v1/backup - Create backup and return as file download
 pub async fn create_backup(State(state): State<Arc<ProxyState>>) -> impl IntoResponse {
-    let config_dir: std::path::PathBuf = {
-        state.db_dir().clone().unwrap_or_else(|| {
-            tama_core::config::Config::config_dir()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."))
-        })
+    let config_dir: std::path::PathBuf = match crate::api::helpers::resolve_config_dir(&state) {
+        Ok(d) => d,
+        Err(resp) => return resp,
     };
 
     // Spawn blocking task for backup

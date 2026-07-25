@@ -57,20 +57,25 @@ pub async fn list_backends(
     let update_checks: std::collections::HashMap<
         String,
         tama_core::db::queries::UpdateCheckRecord,
-    > = crate::api::helpers::shared_repository(&web_state)
-        .ok()
-        .and_then(|repo_handle| {
-            let repo = repo_handle.lock().unwrap();
-            repo.get_all_update_checks().ok()
-        })
-        .map(|records| {
-            records
-                .into_iter()
-                .filter(|r| r.item_type == "backend")
-                .map(|r| (r.item_id.clone(), r))
-                .collect()
-        })
-        .unwrap_or_default();
+    > = match crate::api::helpers::shared_repository(&web_state) {
+        Ok(repo_handle) => {
+            let repo_handle = repo_handle.clone();
+            match tokio::task::spawn_blocking(move || {
+                let repo = repo_handle.lock().unwrap();
+                repo.get_all_update_checks()
+            })
+            .await
+            {
+                Ok(Ok(records)) => records
+                    .into_iter()
+                    .filter(|r| r.item_type == "backend")
+                    .map(|r| (r.item_id.clone(), r))
+                    .collect(),
+                _ => std::collections::HashMap::new(),
+            }
+        }
+        Err(_) => std::collections::HashMap::new(),
+    };
 
     // Build the response including available backend types
     let mut backends: Vec<BackendCardDto> = Vec::new();
@@ -542,12 +547,8 @@ pub async fn list_backend_versions(
     Path(name): Path<String>,
 ) -> impl IntoResponse {
     // Validate name (prevent path traversal)
-    if name.contains('/') || name.contains('\\') || name.contains("..") {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "Invalid backend name",
-            Some("ValidationError"),
-        );
+    if let Err(resp) = crate::api::backends::reject_traversal(&name, "backend name") {
+        return resp;
     }
 
     let mgr_result = open_backend_manager(&state).await;

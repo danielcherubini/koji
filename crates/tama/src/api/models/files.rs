@@ -9,7 +9,7 @@ use axum::{
 use std::sync::Arc;
 use tama_core::proxy::ProxyState;
 
-use super::resolve_db_id;
+use super::resolve_model_record;
 use crate::api::load_config_from_state;
 use crate::web_types::WebState;
 use tama_core::db::queries::ModelFileRecord;
@@ -56,36 +56,9 @@ pub async fn refresh_model_metadata(
     };
     let repo_handle_for_write = repo_handle.clone();
 
-    // Step 1: resolve model_id (from id_str) and repo_id (DB operations on blocking pool).
+    // Step 1: resolve model_id and repo_id
     let resolved = tokio::task::spawn_blocking(move || {
-        let repo = repo_handle.lock().unwrap();
-        let model_id = resolve_db_id(&id_str, &repo)
-            .map_err(|e| {
-                (
-                    StatusCode::BAD_REQUEST,
-                    error_body(e.to_string(), Some("ValidationError")),
-                )
-            })?
-            .ok_or_else(|| {
-                (
-                    StatusCode::NOT_FOUND,
-                    error_body("Model not found", Some("NotFoundError")),
-                )
-            })?;
-        let record = repo
-            .get_model_config(model_id)
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    error_body(e.to_string(), None),
-                )
-            })?
-            .ok_or_else(|| {
-                (
-                    StatusCode::NOT_FOUND,
-                    error_body("Model not found", Some("NotFoundError")),
-                )
-            })?;
+        let (_repo, model_id, record) = resolve_model_record(&_config_dir, &id_str)?;
         let models_dir = cfg.models_dir().map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -204,34 +177,7 @@ pub async fn verify_model_files(
     let repo_handle_for_write = repo_handle.clone();
 
     let resolved = tokio::task::spawn_blocking(move || {
-        let repo = repo_handle.lock().unwrap();
-        let model_id = resolve_db_id(&id_str, &repo)
-            .map_err(|e| {
-                (
-                    StatusCode::BAD_REQUEST,
-                    error_body(e.to_string(), Some("ValidationError")),
-                )
-            })?
-            .ok_or_else(|| {
-                (
-                    StatusCode::NOT_FOUND,
-                    error_body("Model not found", Some("NotFoundError")),
-                )
-            })?;
-        let record = repo
-            .get_model_config(model_id)
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    error_body(e.to_string(), None),
-                )
-            })?
-            .ok_or_else(|| {
-                (
-                    StatusCode::NOT_FOUND,
-                    error_body("Model not found", Some("NotFoundError")),
-                )
-            })?;
+        let (_repo, model_id, record) = resolve_model_record(&_config_dir, &id_str)?;
         let models_dir = cfg.models_dir().map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,

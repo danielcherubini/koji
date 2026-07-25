@@ -1,5 +1,5 @@
 use crate::api::error::{error_body, error_response};
-use crate::api::helpers::{shared_repository, spawn_model_crud, DEFAULT_CRUD_STATUS};
+use crate::api::helpers::{spawn_model_crud, DEFAULT_CRUD_STATUS};
 use axum::{
     extract::{Extension, Path, State},
     http::StatusCode,
@@ -13,13 +13,14 @@ use super::{
     apply_model_body, apply_model_patch, validate_model_body, validate_model_patch, ModelBody,
     ModelPatchBody,
 };
-use crate::api::models::resolve_db_id;
+use crate::api::load_config_from_state;
+use crate::api::models::resolve_model_record;
 use crate::web_types::WebState;
 
 /// PUT /tama/v1/models/:id — update an existing model.
 pub async fn update_model(
     State(state): State<Arc<ProxyState>>,
-    Extension(web_state): Extension<WebState>,
+    Extension(_web_state): Extension<WebState>,
     Path(id_str): Path<String>,
     Json(body): Json<ModelBody>,
 ) -> impl IntoResponse {
@@ -30,43 +31,14 @@ pub async fn update_model(
         return error_response(StatusCode::UNPROCESSABLE_ENTITY, e, Some("ValidationError"));
     }
 
-    let repo_handle = match shared_repository(&web_state) {
-        Ok(h) => h,
-        Err(resp) => return resp,
+    let (_, config_dir) = match load_config_from_state(&state).await {
+        Ok(x) => x,
+        Err((status, body)) => return (status, Json(body)).into_response(),
     };
 
     spawn_model_crud(state_clone, DEFAULT_CRUD_STATUS, move || {
-        // Open repository for reading
-        let repo = repo_handle.lock().unwrap();
-
-        // Load existing from DB
-        let model_id = resolve_db_id(&id_str, &repo)
-            .map_err(|e| {
-                (
-                    StatusCode::BAD_REQUEST,
-                    error_body(e.to_string(), Some("ValidationError")),
-                )
-            })?
-            .ok_or_else(|| {
-                (
-                    StatusCode::NOT_FOUND,
-                    error_body("Model not found", Some("NotFoundError")),
-                )
-            })?;
-        let existing_record = repo
-            .get_model_config(model_id)
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    error_body(e.to_string(), None),
-                )
-            })?
-            .ok_or_else(|| {
-                (
-                    StatusCode::NOT_FOUND,
-                    error_body("Model not found", Some("NotFoundError")),
-                )
-            })?;
+        let (repo, model_id, existing_record) = resolve_model_record(&config_dir, &id_str)?;
+        let _ = model_id;
         let existing = tama_core::config::ModelConfig::from_db_record(&existing_record);
 
         let updated_config = apply_model_body(body, Some(existing));
@@ -89,7 +61,7 @@ pub async fn update_model(
 /// PATCH /tama/v1/models/:id — surgical partial update.
 pub async fn patch_model(
     State(state): State<Arc<ProxyState>>,
-    Extension(web_state): Extension<WebState>,
+    Extension(_web_state): Extension<WebState>,
     Path(id_str): Path<String>,
     Json(body): Json<ModelPatchBody>,
 ) -> impl IntoResponse {
@@ -100,43 +72,14 @@ pub async fn patch_model(
         return error_response(StatusCode::UNPROCESSABLE_ENTITY, e, Some("ValidationError"));
     }
 
-    let repo_handle = match shared_repository(&web_state) {
-        Ok(h) => h,
-        Err(resp) => return resp,
+    let (_, config_dir) = match load_config_from_state(&state).await {
+        Ok(x) => x,
+        Err((status, body)) => return (status, Json(body)).into_response(),
     };
 
     spawn_model_crud(state_clone, DEFAULT_CRUD_STATUS, move || {
-        // Open repository for reading
-        let repo = repo_handle.lock().unwrap();
-
-        // Load existing from DB
-        let model_id = resolve_db_id(&id_str, &repo)
-            .map_err(|e| {
-                (
-                    StatusCode::BAD_REQUEST,
-                    error_body(e.to_string(), Some("ValidationError")),
-                )
-            })?
-            .ok_or_else(|| {
-                (
-                    StatusCode::NOT_FOUND,
-                    error_body("Model not found", Some("NotFoundError")),
-                )
-            })?;
-        let existing_record = repo
-            .get_model_config(model_id)
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    error_body(e.to_string(), None),
-                )
-            })?
-            .ok_or_else(|| {
-                (
-                    StatusCode::NOT_FOUND,
-                    error_body("Model not found", Some("NotFoundError")),
-                )
-            })?;
+        let (repo, model_id, existing_record) = resolve_model_record(&config_dir, &id_str)?;
+        let _ = model_id;
         let existing = tama_core::config::ModelConfig::from_db_record(&existing_record);
 
         let updated_config = apply_model_patch(body, &existing);

@@ -1,4 +1,4 @@
-use crate::api::error::error_response;
+use crate::api::error::{error_body, error_response};
 use crate::api::helpers::shared_repository;
 use axum::{
     extract::{Extension, Path, State},
@@ -16,15 +16,19 @@ use tama_core::db::queries::{ModelConfigRecord, ModelFileRecord};
 use tama_core::db::repository::Repository;
 
 /// Build the list of available backend options by querying installed variants from the DB.
-fn build_backend_options(
+async fn build_backend_options(
     _cfg: &tama_core::config::Config,
     config_dir: &std::path::Path,
 ) -> Vec<BackendOption> {
-    let mgr = match tama_core::backends::BackendManager::open(config_dir) {
-        Ok(m) => m,
-        Err(_) => return Vec::new(),
-    };
-    mgr.available_backends().unwrap_or_default()
+    let config_dir = config_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let mgr = tama_core::backends::BackendManager::open(&config_dir).ok()?;
+        mgr.available_backends().ok()
+    })
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or_default()
 }
 
 /// Resolve a model identifier string (integer DB id or config_key) to the integer DB id.
@@ -37,6 +41,53 @@ pub(crate) fn resolve_db_id(id_str: &str, repo: &Repository) -> anyhow::Result<O
     let repo_id = tama_core::models::config_key_to_repo_id(id_str);
     let record = repo.get_model_config_by_repo_id(&repo_id)?;
     Ok(record.map(|r| r.id))
+}
+
+/// Open the Repository at `config_dir`, resolve `id_str` (integer id or
+/// config_key) to a model id, and load its config record.
+///
+/// The Repository is returned so callers with follow-up queries reuse the
+/// same connection. Error mapping matches the historical per-handler chains:
+/// open failure → 500, unresolvable id → 400 ValidationError,
+/// unknown id → 404 NotFoundError.
+pub(crate) fn resolve_model_record(
+    config_dir: &std::path::Path,
+    id_str: &str,
+) -> Result<(Repository, i64, ModelConfigRecord), (StatusCode, serde_json::Value)> {
+    let repo = Repository::open(config_dir).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            error_body(e.to_string(), None),
+        )
+    })?;
+    let model_id = resolve_db_id(id_str, &repo)
+        .map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                error_body(e.to_string(), Some("ValidationError")),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                error_body("Model not found", Some("NotFoundError")),
+            )
+        })?;
+    let record = repo
+        .get_model_config(model_id)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error_body(e.to_string(), None),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                error_body("Model not found", Some("NotFoundError")),
+            )
+        })?;
+    Ok((repo, model_id, record))
 }
 
 /// Per-file DB metadata enrichment loaded from the `model_files` / `model_pulls`
@@ -147,7 +198,7 @@ pub async fn list_models(
     match load_config_from_state(&state).await {
         Ok((cfg, config_dir)) => {
             let configs_dir = config_dir.join("configs");
-            let backend_options = build_backend_options(&cfg, &config_dir);
+            let backend_options = build_backend_options(&cfg, &config_dir).await;
 
             // Load models from DB using shared Repository
             let repo = match shared_repository(&web_state) {
@@ -212,68 +263,94 @@ pub async fn get_model(
     match load_config_from_state(&state).await {
         Ok((cfg, config_dir)) => {
             let configs_dir = config_dir.join("configs");
-            let backend_options = build_backend_options(&cfg, &config_dir);
+            let backend_options = build_backend_options(&cfg, &config_dir).await;
 
-            // Open repository
-            let repo = match shared_repository(&web_state) {
-                Ok(r) => r,
-                Err(resp) => return resp,
-            };
-            let repo = repo.clone();
+            // Resolve model: open repo, resolve id, load config record — all pooled.
             let configs_dir_clone = configs_dir.clone();
             let backend_options_clone = backend_options.clone();
-            let id_str_clone = id_str.clone();
-            let result = tokio::task::spawn_blocking(move || {
-                let repo = repo.lock().unwrap();
-                // Resolve id (integer or config_key) to model_id
-                let model_id = match resolve_db_id(&id_str_clone, &repo) {
-                    Ok(Some(id)) => id,
-                    Ok(None) => return Err(StatusCode::NOT_FOUND),
-                    Err(_) => return Err(StatusCode::BAD_REQUEST),
-                };
-                // Load model from DB
-                let record = match repo.get_model_config(model_id).ok().flatten() {
-                    Some(r) => r,
-                    None => return Err(StatusCode::NOT_FOUND),
-                };
-                let m = tama_core::config::ModelConfig::from_db_record(&record);
-                let mut config = m.clone();
-                let meta = load_repo_db_meta_from_repo(&repo, record.id);
-                for f in meta.files.values() {
-                    let quant_key = f.quant.clone().unwrap_or_else(|| f.filename.clone());
-                    config.quants.insert(
-                        quant_key,
-                        tama_core::config::QuantEntry {
-                            file: f.filename.clone(),
-                            kind: tama_core::config::QuantKind::from_filename(&f.filename),
-                            size_bytes: f.size_bytes.map(|s| s as u64),
-                            context_length: None,
-                        },
-                    );
-                }
-                let mut val =
-                    model_entry_json(record.id, &record, &config, &configs_dir_clone, Some(&meta));
-                val["backends"] = serde_json::json!(backend_options_clone);
-                Ok::<_, StatusCode>(val)
-            })
+            let resolved = tokio::task::spawn_blocking(
+                move || -> Result<_, (StatusCode, serde_json::Value)> {
+                    let repo = match shared_repository(&web_state) {
+                        Ok(r) => r,
+                        Err(resp) => {
+                            return Err((
+                                resp.status(),
+                                serde_json::json!({ "error": "Database not configured" }),
+                            ))
+                        }
+                    };
+                    let repo = repo.lock().unwrap();
+
+                    // Resolve id (integer or config_key) to model_id
+                    let model_id = match resolve_db_id(&id_str, &repo) {
+                        Ok(Some(id)) => id,
+                        Ok(None) => {
+                            return Err((
+                                StatusCode::NOT_FOUND,
+                                error_body("Model not found", Some("NotFoundError")),
+                            ))
+                        }
+                        Err(e) => {
+                            return Err((
+                                StatusCode::BAD_REQUEST,
+                                error_body(e.to_string(), Some("ValidationError")),
+                            ))
+                        }
+                    };
+
+                    // Load model from DB — use resolve_model_record pattern to avoid
+                    // mislabeling DB errors as "not found" (the old .ok().flatten()
+                    // swallowed real errors).
+                    let record = repo
+                        .get_model_config(model_id)
+                        .map_err(|e| {
+                            (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                error_body(e.to_string(), None),
+                            )
+                        })?
+                        .ok_or_else(|| {
+                            (
+                                StatusCode::NOT_FOUND,
+                                error_body("Model not found", Some("NotFoundError")),
+                            )
+                        })?;
+                    let m = tama_core::config::ModelConfig::from_db_record(&record);
+                    let meta = load_repo_db_meta_from_repo(&repo, record.id);
+                    Ok((record, m, meta))
+                },
+            )
             .await;
-            match result {
-                Ok(Ok(val)) => Json(val).into_response(),
-                Ok(Err(StatusCode::NOT_FOUND)) => error_response(
-                    StatusCode::NOT_FOUND,
-                    "Model not found",
-                    Some("NotFoundError"),
-                ),
-                Ok(Err(StatusCode::BAD_REQUEST)) => error_response(
-                    StatusCode::BAD_REQUEST,
-                    "Invalid model id",
-                    Some("ValidationError"),
-                ),
-                Ok(Err(_)) => {
-                    error_response(StatusCode::INTERNAL_SERVER_ERROR, "Unexpected error", None)
+            let (record, m, meta) = match resolved {
+                Ok(Ok(v)) => v,
+                Ok(Err((s, b))) => return (s, Json(b)).into_response(),
+                Err(e) => {
+                    return error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("spawn error: {}", e),
+                        None,
+                    )
                 }
-                Err(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "Task panicked", None),
+            };
+
+            // Populate quants from DB metadata (pure computation, stays async context).
+            let mut config = m.clone();
+            for f in meta.files.values() {
+                let quant_key = f.quant.clone().unwrap_or_else(|| f.filename.clone());
+                config.quants.insert(
+                    quant_key,
+                    tama_core::config::QuantEntry {
+                        file: f.filename.clone(),
+                        kind: tama_core::config::QuantKind::from_filename(&f.filename),
+                        size_bytes: f.size_bytes.map(|s| s as u64),
+                        context_length: None,
+                    },
+                );
             }
+            let mut val =
+                model_entry_json(record.id, &record, &config, &configs_dir_clone, Some(&meta));
+            val["backends"] = serde_json::json!(backend_options_clone);
+            Json(val).into_response()
         }
         Err((status, body)) => (status, Json(body)).into_response(),
     }
@@ -390,5 +467,73 @@ mod tests {
             result_none["mtp_model"].is_null(),
             "mtp_model should be null in API JSON when not set"
         );
+    }
+
+    // ── resolve_model_record integration tests ────────────────────────────────
+
+    /// Helper: insert a test model into a tempdir and return the manager + id.
+    fn insert_test_model(tmp: &std::path::Path) -> (tama_core::models::ModelManager, i64) {
+        let mgr = tama_core::models::ModelManager::open(tmp).unwrap();
+        let id = mgr
+            .save_model_config(
+                "org--test-model",
+                &tama_core::config::ModelConfig {
+                    backend: "llama-cpp".into(),
+                    model: Some("org/test-model".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        (mgr, id)
+    }
+
+    #[test]
+    fn test_resolve_model_record_by_config_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_mgr, expected_id) = insert_test_model(tmp.path());
+
+        let result = resolve_model_record(tmp.path(), "org--test-model");
+        assert!(
+            result.is_ok(),
+            "resolve_model_record should succeed for valid config_key"
+        );
+        let (_, id, record) = result.unwrap();
+        assert_eq!(id, expected_id);
+        assert_eq!(record.repo_id, "org/test-model");
+    }
+
+    #[test]
+    fn test_resolve_model_record_by_integer_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_mgr, expected_id) = insert_test_model(tmp.path());
+
+        let result = resolve_model_record(tmp.path(), &expected_id.to_string());
+        assert!(
+            result.is_ok(),
+            "resolve_model_record should succeed for valid integer id"
+        );
+        let (_, id, record) = result.unwrap();
+        assert_eq!(id, expected_id);
+        assert_eq!(record.repo_id, "org/test-model");
+    }
+
+    #[test]
+    fn test_resolve_model_record_unknown_config_key_404() {
+        let tmp = tempfile::tempdir().unwrap();
+        // No models inserted — any lookup should 404.
+        let result = resolve_model_record(tmp.path(), "no--such-model");
+        assert!(result.is_err(), "should return Err for unknown config_key");
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn test_resolve_model_record_unknown_integer_404() {
+        let tmp = tempfile::tempdir().unwrap();
+        // No models inserted — integer parse succeeds but record is missing.
+        let result = resolve_model_record(tmp.path(), "999");
+        assert!(result.is_err(), "should return Err for unknown integer id");
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 }

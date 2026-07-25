@@ -10,7 +10,7 @@ mod spec;
 
 // ── Shared imports (re-exported for sub-modules) ─────────────────────
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use axum::response::sse::Event;
 use axum::{
     extract::{Path, State},
@@ -24,6 +24,7 @@ use serde_json::json;
 use std::sync::Arc;
 
 use crate::api::error::error_response;
+use crate::api::helpers::shared_repository;
 use crate::gpu::query_vram;
 use crate::web_types::{JobEvent, JobKind, JobManager, JobStatus, WebState};
 use axum::extract::Extension;
@@ -210,7 +211,7 @@ pub async fn submit_benchmark_job<F, Fut, R>(
     web_state: &WebState,
     req: R,
     run_inner: F,
-) -> Result<(String, Arc<JobManager>)>
+) -> std::result::Result<(String, Arc<JobManager>), axum::response::Response>
 where
     R: Send + 'static,
     F: FnOnce(
@@ -220,6 +221,7 @@ where
             std::path::PathBuf,
             String,
             reqwest::Client,
+            std::sync::Arc<std::sync::Mutex<tama_core::db::repository::Repository>>,
         ) -> Fut
         + Send
         + 'static,
@@ -227,21 +229,25 @@ where
 {
     let jobs = match &web_state.jobs {
         Some(j) => j.clone(),
-        None => return Err(anyhow::anyhow!("Job manager not available")),
+        None => return Err(job_manager_unavailable_response()),
     };
 
-    let job = jobs.submit(JobKind::Benchmark, None).await?;
+    let job = jobs
+        .submit(JobKind::Benchmark, None)
+        .await
+        .map_err(|_| job_conflict_response())?;
     let job_id = job.id.clone();
-    let db_path = state
-        .db_dir()
-        .clone()
-        .unwrap_or_else(|| {
-            tama_core::config::Config::config_dir()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."))
-        })
-        .join("tama.db");
+    let db_path = match crate::api::helpers::resolve_config_dir(state) {
+        Ok(d) => d.join("tama.db"),
+        Err(resp) => return Err(resp),
+    };
     let proxy_base_url = state.config().read().await.proxy_url();
     let client = state.client().clone();
+
+    let repo_handle = match shared_repository(web_state) {
+        Ok(h) => h,
+        Err(resp) => return Err(resp),
+    };
 
     let jobs_for_spawn = jobs.clone();
     let job_for_spawn = job.clone();
@@ -253,6 +259,7 @@ where
             db_path,
             proxy_base_url,
             client,
+            repo_handle,
         )
         .await
         {

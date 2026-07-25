@@ -8,7 +8,7 @@ use serde::Deserialize;
 use std::sync::Arc;
 
 use super::types::*;
-use crate::api::error::{error_body, error_response};
+use crate::api::error::{error_body, error_response, error_response_simple};
 use crate::api::helpers::open_backend_manager;
 use crate::web_types::WebState;
 use tama_core::proxy::ProxyState;
@@ -52,12 +52,8 @@ pub async fn install_backend(
             );
         }
         // Reject path traversal and multi-segment paths
-        if version.contains('/') || version.contains('\\') || version.contains("..") {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                "version must be a single path segment (no slashes or '..')",
-                Some("ValidationError"),
-            );
+        if let Err(resp) = crate::api::backends::reject_traversal(version, "version") {
+            return resp;
         }
     }
 
@@ -518,12 +514,8 @@ pub async fn remove_backend(
     };
 
     // Open manager and get backend
-    if name.contains('/') || name.contains('\\') || name.contains("..") {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "Invalid backend name: path separators or traversal sequences not allowed",
-            Some("ValidationError"),
-        );
+    if let Err(resp) = crate::api::backends::reject_traversal(&name, "backend name") {
+        return resp;
     }
 
     let gpu_variant = query.gpu_variant;
@@ -534,45 +526,56 @@ pub async fn remove_backend(
     };
 
     // If gpu_variant is provided, only remove that variant (all its versions);
-    // otherwise remove all variants.
-    let backends_to_remove: Vec<tama_core::backends::BackendInfo> =
-        if let Some(variant) = &gpu_variant {
-            // Specific variant requested — get ALL versions of that variant
-            match mgr.list_versions(&name, Some(variant.as_str())) {
-                Ok(Some(versions)) if !versions.is_empty() => versions,
-                Ok(Some(_)) | Ok(None) => {
-                    return error_response(
+    // otherwise remove all variants. Block 1: pooled list_versions + return mgr.
+    let name_for_block = name.clone();
+    let gpu_variant_for_block = gpu_variant.clone();
+    let (mgr, backends_to_remove): (_, Vec<tama_core::backends::BackendInfo>) =
+        match tokio::task::spawn_blocking(move || {
+            let mgr = mgr;
+            let name = name_for_block;
+            if let Some(variant) = &gpu_variant_for_block {
+                // Specific variant requested — get ALL versions of that variant
+                match mgr.list_versions(&name, Some(variant.as_str())) {
+                    Ok(Some(versions)) if !versions.is_empty() => Ok((mgr, versions)),
+                    Ok(Some(_)) | Ok(None) => Err((
                         StatusCode::NOT_FOUND,
-                        format!("Backend '{}' not found", name),
-                        Some("NotFoundError"),
-                    )
-                }
-                Err(e) => {
-                    return error_response(
+                        error_body(
+                            format!("Backend '{}' not found", name),
+                            Some("NotFoundError"),
+                        ),
+                    )),
+                    Err(e) => Err((
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("Failed to get backend: {}", e),
-                        None,
-                    )
+                        error_body(format!("Failed to get backend: {}", e), None),
+                    )),
+                }
+            } else {
+                // No variant specified — iterate ALL variants
+                match mgr.list_versions(&name, None) {
+                    Ok(Some(versions)) => Ok((mgr, versions)),
+                    Ok(None) => Err((
+                        StatusCode::NOT_FOUND,
+                        error_body(
+                            format!("Backend '{}' not found", name),
+                            Some("NotFoundError"),
+                        ),
+                    )),
+                    Err(e) => Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        error_body(format!("Failed to get backend: {}", e), None),
+                    )),
                 }
             }
-        } else {
-            // No variant specified — iterate ALL variants
-            match mgr.list_versions(&name, None) {
-                Ok(Some(versions)) => versions,
-                Ok(None) => {
-                    return error_response(
-                        StatusCode::NOT_FOUND,
-                        format!("Backend '{}' not found", name),
-                        Some("NotFoundError"),
-                    )
-                }
-                Err(e) => {
-                    return error_response(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("Failed to get backend: {}", e),
-                        None,
-                    )
-                }
+        })
+        .await
+        {
+            Ok(Ok(v)) => v,
+            Ok(Err((s, b))) => return (s, Json(b)).into_response(),
+            Err(e) => {
+                return error_response_simple(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("spawn error: {}", e),
+                )
             }
         };
 
@@ -592,47 +595,68 @@ pub async fn remove_backend(
         }
     }
 
-    // Remove files for each variant
-    for info in &backends_to_remove {
-        if let Err(e) = tama_core::backends::safe_remove_installation(info) {
-            let err_msg = e.to_string();
-            if err_msg.contains("outside the managed backends directory") {
-                return error_response(
-                    StatusCode::CONFLICT,
-                    "path is outside the managed backends directory; remove manually",
-                    Some("ConflictError"),
-                );
+    // Block 2: pooled remove — safe_remove_installation loop + delete_all_versions
+    // + update-check cleanup, all on the blocking pool.
+    let name_for_block2 = name.clone();
+    let gpu_variant_for_block2 = gpu_variant.clone();
+    let backends_for_block2 = backends_to_remove.clone();
+    #[allow(clippy::result_large_err)]
+    match tokio::task::spawn_blocking(move || -> Result<(), axum::response::Response> {
+        // Remove files for each variant
+        for info in &backends_for_block2 {
+            if let Err(e) = tama_core::backends::safe_remove_installation(info) {
+                let err_msg = e.to_string();
+                if err_msg.contains("outside the managed backends directory") {
+                    return Err(error_response(
+                        StatusCode::CONFLICT,
+                        "path is outside the managed backends directory; remove manually",
+                        Some("ConflictError"),
+                    ));
+                }
+                return Err(error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Failed to remove files: {}", e),
+                    None,
+                ));
             }
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to remove files: {}", e),
-                None,
-            );
         }
-    }
 
-    // Remove from DB (Some = remove specific variant, None = remove all variants)
-    let variant_to_remove = gpu_variant.as_deref();
-    if let Err(e) = mgr.delete_all_versions(&name, variant_to_remove) {
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to remove: {}", e),
-            None,
-        );
-    }
+        // Remove from DB (Some = remove specific variant, None = remove all variants)
+        let variant_to_remove = gpu_variant_for_block2.as_deref();
+        if let Err(e) = mgr.delete_all_versions(&name_for_block2, variant_to_remove) {
+            return Err(error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to remove: {}", e),
+                None,
+            ));
+        }
 
-    // Clean up update_check records — use LIKE pattern to match all variants
-    // (e.g., "llama_cpp:cpu", "llama_cpp:cuda") plus legacy format.
-    if let Ok(repo_handle) = crate::api::helpers::shared_repository(&web_state) {
-        let repo = repo_handle.lock().unwrap();
-        let escaped_name = name
-            .replace('\\', "\\\\")
-            .replace('_', "\\_")
-            .replace('%', "\\%");
-        let pattern = format!("{}:%", escaped_name);
-        let _ = repo.delete_update_checks_by_pattern("backend", &pattern);
-        // Also delete legacy format (no variant separator)
-        let _ = repo.delete_update_check("backend", &name);
+        // Clean up update_check records — use LIKE pattern to match all variants
+        // (e.g., "llama_cpp:cpu", "llama_cpp:cuda") plus legacy format.
+        if let Ok(repo_handle) = crate::api::helpers::shared_repository(&web_state) {
+            let repo = repo_handle.lock().unwrap();
+            let escaped_name = name_for_block2
+                .replace('\\', "\\\\")
+                .replace('_', "\\_")
+                .replace('%', "\\%");
+            let pattern = format!("{}:%", escaped_name);
+            let _ = repo.delete_update_checks_by_pattern("backend", &pattern);
+            // Also delete legacy format (no variant separator)
+            let _ = repo.delete_update_check("backend", &name_for_block2);
+        }
+
+        Ok(())
+    })
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(resp)) => return resp,
+        Err(e) => {
+            return error_response_simple(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("spawn error: {}", e),
+            )
+        }
     }
 
     Json(DeleteResponse { removed: true }).into_response()

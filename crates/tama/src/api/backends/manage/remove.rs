@@ -20,24 +20,17 @@ pub async fn remove_backend_version(
     axum::extract::Query(query): axum::extract::Query<RemoveVersionQuery>,
 ) -> impl IntoResponse {
     // Validate path params (prevent path traversal)
-    if name.contains('/') || name.contains('\\') || name.contains("..") {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "Invalid backend name: path separators or traversal sequences not allowed",
-            Some("ValidationError"),
-        );
+    if let Err(resp) = crate::api::backends::reject_traversal(&name, "backend name") {
+        return resp;
     }
-    if version.contains('/') || version.contains('\\') || version.contains("..") {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "Invalid version: path separators or traversal sequences not allowed",
-            Some("ValidationError"),
-        );
+    if let Err(resp) = crate::api::backends::reject_traversal(&version, "version") {
+        return resp;
     }
 
-    let config_dir = state.db_dir().clone().unwrap_or_else(|| {
-        tama_core::config::Config::config_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-    });
+    let config_dir = match crate::api::helpers::resolve_config_dir(&state) {
+        Ok(d) => d,
+        Err(resp) => return resp,
+    };
 
     // Open manager and get the specific version
     let config_dir_clone = config_dir.clone();

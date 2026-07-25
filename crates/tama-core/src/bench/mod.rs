@@ -168,6 +168,23 @@ pub struct BenchReport {
     pub vram: Option<crate::gpu::VramInfo>,
 }
 
+/// Compute mean and population stddev from a slice of f64 values.
+/// Returns (0.0, 0.0) for an empty slice; stddev is 0.0 for a single value.
+pub(crate) fn mean_stddev(values: &[f64]) -> (f64, f64) {
+    let count = values.len();
+    if count == 0 {
+        return (0.0, 0.0);
+    }
+    let mean = values.iter().sum::<f64>() / count as f64;
+    let stddev = if count == 1 {
+        0.0
+    } else {
+        let variance: f64 = values.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / count as f64;
+        variance.sqrt()
+    };
+    (mean, stddev)
+}
+
 /// Compute summary statistics (mean and population stddev) from a set of measurements.
 ///
 /// # Parameters
@@ -218,44 +235,11 @@ pub fn compute_summary(
     let ttft_values: Vec<f64> = measurements.iter().map(|m| m.ttft_ms).collect();
     let total_values: Vec<f64> = measurements.iter().map(|m| m.total_ms).collect();
 
-    // Compute means
-    let pp_mean = pp_values.iter().sum::<f64>() / count as f64;
-    let tg_mean = tg_values.iter().sum::<f64>() / count as f64;
-    let ttft_mean = ttft_values.iter().sum::<f64>() / count as f64;
-    let total_mean = total_values.iter().sum::<f64>() / count as f64;
-
-    // Compute stddev (population)
-    let pp_var = if count == 1 {
-        0.0
-    } else {
-        let diff_sum: f64 = pp_values.iter().map(|x| (x - pp_mean).powi(2)).sum();
-        diff_sum / count as f64
-    };
-    let pp_stddev = pp_var.sqrt();
-
-    let tg_var = if count == 1 {
-        0.0
-    } else {
-        let diff_sum: f64 = tg_values.iter().map(|x| (x - tg_mean).powi(2)).sum();
-        diff_sum / count as f64
-    };
-    let tg_stddev = tg_var.sqrt();
-
-    let ttft_var = if count == 1 {
-        0.0
-    } else {
-        let diff_sum: f64 = ttft_values.iter().map(|x| (x - ttft_mean).powi(2)).sum();
-        diff_sum / count as f64
-    };
-    let ttft_stddev = ttft_var.sqrt();
-
-    let total_var = if count == 1 {
-        0.0
-    } else {
-        let diff_sum: f64 = total_values.iter().map(|x| (x - total_mean).powi(2)).sum();
-        diff_sum / count as f64
-    };
-    let total_stddev = total_var.sqrt();
+    // Compute means and stddev using the shared helper
+    let (pp_mean, pp_stddev) = mean_stddev(&pp_values);
+    let (tg_mean, tg_stddev) = mean_stddev(&tg_values);
+    let (ttft_mean, ttft_stddev) = mean_stddev(&ttft_values);
+    let (total_mean, total_stddev) = mean_stddev(&total_values);
 
     BenchSummary {
         test_name: test_name.to_string(),
@@ -441,5 +425,33 @@ mod tests {
     fn test_format_stat_zero_stddev() {
         let result = format_stat(4821.3, 0.0);
         assert_eq!(result, "4821.3");
+    }
+
+    /// Verifies that `mean_stddev` returns correct values for a known set.
+    #[test]
+    fn test_mean_stddev_basic() {
+        let values = vec![100.0, 102.0, 98.0];
+        let (mean, stddev) = mean_stddev(&values);
+        assert!((mean - 100.0).abs() < 0.01);
+        // population stddev of [100, 102, 98] = sqrt(((0)^2 + (2)^2 + (-2)^2) / 3) = sqrt(8/3) ≈ 1.633
+        assert!((stddev - 1.633).abs() < 0.01);
+    }
+
+    /// Verifies that `mean_stddev` returns (0.0, 0.0) for an empty slice.
+    #[test]
+    fn test_mean_stddev_empty() {
+        let values: Vec<f64> = vec![];
+        let (mean, stddev) = mean_stddev(&values);
+        assert_eq!(mean, 0.0);
+        assert_eq!(stddev, 0.0);
+    }
+
+    /// Verifies that `mean_stddev` returns stddev of 0.0 for a single value.
+    #[test]
+    fn test_mean_stddev_single() {
+        let values = vec![42.5];
+        let (mean, stddev) = mean_stddev(&values);
+        assert!((mean - 42.5).abs() < 0.01);
+        assert_eq!(stddev, 0.0);
     }
 }

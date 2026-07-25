@@ -282,25 +282,6 @@ fn build_sweep_matrix(config: &SpecBenchConfig) -> Result<Vec<SweepConfig>> {
     Ok(matrix)
 }
 
-/// Compute mean and population stddev from a slice of f64 values.
-fn compute_mean_stddev(values: &[f64]) -> (f64, f64) {
-    let count = values.len();
-    if count == 0 {
-        return (0.0, 0.0);
-    }
-
-    let mean = values.iter().sum::<f64>() / count as f64;
-
-    let stddev = if count == 1 {
-        0.0
-    } else {
-        let variance: f64 = values.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / count as f64;
-        variance.sqrt()
-    };
-
-    (mean, stddev)
-}
-
 /// Format a SweepConfig as CLI-style label for log output.
 /// e.g. `--spec-type ngram-mod --spec-draft-n-max 8 --spec-ngram-mod-n-match 16 --spec-ngram-mod-n-min 3 --spec-ngram-mod-n-max 48`
 fn format_config_label(cfg: &SweepConfig) -> String {
@@ -406,7 +387,7 @@ async fn execute_server_runs(
         }
     }
 
-    let (mean, stddev) = compute_mean_stddev(&timings);
+    let (mean, stddev) = super::mean_stddev(&timings);
     let acceptance_rate = handle.parse_acceptance_rate().await;
     progress.log(&format!(
         "[{}] completed: {:.2} ± {:.2} tokens/s (acceptance: {:?})",
@@ -631,7 +612,7 @@ pub async fn run_spec_bench(
         }
     }
 
-    let (baseline_mean, baseline_stddev) = compute_mean_stddev(&baseline_timings);
+    let (baseline_mean, baseline_stddev) = super::mean_stddev(&baseline_timings);
     progress.log(&format!(
         "Baseline TG t/s: {:.2} ± {:.2}",
         baseline_mean, baseline_stddev
@@ -853,34 +834,6 @@ mod tests {
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("ngram_m_values is required"));
-    }
-
-    /// Verifies that compute_mean_stddev returns correct values for a known set.
-    #[test]
-    fn test_compute_mean_stddev_basic() {
-        let values = vec![100.0, 102.0, 98.0];
-        let (mean, stddev) = compute_mean_stddev(&values);
-        assert!((mean - 100.0).abs() < 0.01);
-        // population stddev of [100, 102, 98] = sqrt(((0)^2 + (2)^2 + (-2)^2) / 3) = sqrt(8/3) ≈ 1.633
-        assert!((stddev - 1.633).abs() < 0.01);
-    }
-
-    /// Verifies that compute_mean_stddev returns (0.0, 0.0) for an empty slice.
-    #[test]
-    fn test_compute_mean_stddev_empty() {
-        let values: Vec<f64> = vec![];
-        let (mean, stddev) = compute_mean_stddev(&values);
-        assert_eq!(mean, 0.0);
-        assert_eq!(stddev, 0.0);
-    }
-
-    /// Verifies that compute_mean_stddev returns stddev of 0.0 for a single value.
-    #[test]
-    fn test_compute_mean_stddev_single() {
-        let values = vec![42.5];
-        let (mean, stddev) = compute_mean_stddev(&values);
-        assert!((mean - 42.5).abs() < 0.01);
-        assert_eq!(stddev, 0.0);
     }
 
     /// Verifies that SpecType::as_str() returns correct string values.

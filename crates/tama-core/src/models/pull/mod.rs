@@ -13,6 +13,7 @@ pub mod download;
 pub mod metadata;
 pub mod quant;
 
+use rand::Rng;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -34,6 +35,18 @@ pub fn parse_content_length(headers: &HeaderMap) -> Option<u64> {
         .get("content-length")
         .and_then(|value| value.to_str().ok())
         .and_then(|s| s.parse::<u64>().ok())
+}
+
+/// Random jitter in milliseconds (0..=500), adapted from hf_transfer.
+fn jitter() -> u64 {
+    rand::rng().random_range(0..=500)
+}
+
+/// Exponential backoff with jitter, adapted from hf_transfer.
+/// Base: 300ms, max: 10000ms.
+pub(super) fn exponential_backoff(attempt: u32) -> std::time::Duration {
+    let base = 300 + (attempt as u64).pow(2) + jitter();
+    std::time::Duration::from_millis(base.min(10_000))
 }
 
 /// Calculate the number of connections to use for parallel pull,
@@ -661,6 +674,29 @@ mod tests {
         assert_eq!(listing.files.len(), 1);
         assert_eq!(listing.files[0].filename, "repo-Q4_K_M.gguf");
         assert_eq!(listing.files[0].quant.as_deref(), Some("Q4_K_M"));
+    }
+
+    /// Verifies that `exponential_backoff` returns durations within expected bounds.
+    /// Attempt 0 → between 300ms and 800ms inclusive (base 300 + 0² + jitter 0..=500).
+    /// Attempt 100 → exactly 10_000ms (capped).
+    #[test]
+    fn test_exponential_backoff_bounds() {
+        // Attempt 0: base = 300 + 0² + jitter(0..=500) = 300..=800
+        for _ in 0..20 {
+            let dur = exponential_backoff(0);
+            let ms = dur.as_millis();
+            assert!(
+                (300..=800).contains(&ms),
+                "attempt 0: {}ms not in [300, 800]",
+                ms
+            );
+        }
+
+        // Attempt 100: base = 300 + 100² + jitter = 100300 + jitter → capped at 10_000
+        for _ in 0..5 {
+            let dur = exponential_backoff(100);
+            assert_eq!(dur.as_millis(), 10_000);
+        }
     }
 
     /// HF_TOKEN env var takes priority over $HF_HOME/token
