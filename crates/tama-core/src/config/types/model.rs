@@ -1,7 +1,9 @@
 use crate::db::queries::ModelConfigRecord;
+use crate::gpu::GpuType;
 use crate::profiles::SamplingParams;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::str::FromStr;
 
 /// What kind of file a quant entry represents.
 ///
@@ -69,7 +71,7 @@ pub struct HealthCheck {
 pub struct ModelConfig {
     pub backend: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gpu_variant: Option<String>,
+    pub gpu_variant: Option<GpuType>,
     /// GPU device name for this model (e.g. "ROCm0", "CUDA1").
     /// Passed as `--device` to llama.cpp backends.
     /// When None, the backend uses its default device selection.
@@ -192,7 +194,10 @@ impl ModelConfig {
             repo_id: repo_id.to_string(),
             display_name: self.display_name.clone(),
             backend: self.backend.clone(),
-            gpu_variant: self.gpu_variant.clone(),
+            gpu_variant: self
+                .gpu_variant
+                .as_ref()
+                .map(|v| v.variant_folder().to_string()),
             gpu_device: self.gpu_device.clone(),
             enabled: self.enabled,
             selected_quant: self.quant.clone(),
@@ -240,7 +245,15 @@ impl ModelConfig {
     pub fn from_db_record(record: &ModelConfigRecord) -> Self {
         Self {
             backend: record.backend.clone(),
-            gpu_variant: record.gpu_variant.clone(),
+            gpu_variant: record.gpu_variant.as_deref().map(|s| {
+                GpuType::from_str(s).unwrap_or_else(|_| {
+                    tracing::warn!(
+                        "unknown gpu_variant '{}' in model_configs row; treating as custom",
+                        s
+                    );
+                    GpuType::Custom
+                })
+            }),
             gpu_device: record.gpu_device.clone(),
             enabled: record.enabled,
             display_name: record.display_name.clone(),

@@ -138,7 +138,8 @@ fn migrate_backends_section(
     for (name, backend_config) in backends {
         let gpu_variant = backend_config
             .gpu_variant
-            .clone()
+            .as_ref()
+            .map(|v| v.variant_folder().to_string())
             .unwrap_or_else(|| "cpu".to_string());
 
         queries::upsert_backend_config(conn, name, &gpu_variant, &[], &[], None)

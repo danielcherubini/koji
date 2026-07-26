@@ -29,6 +29,7 @@ use crate::profiles::SamplingParams;
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
+use std::str::FromStr;
 
 /// Top-level application configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -208,7 +209,15 @@ impl Config {
                 BackendConfig {
                     path: None,
                     version: None,
-                    gpu_variant: Some(record.gpu_variant.clone()),
+                    gpu_variant: Some(
+                        crate::gpu::GpuType::from_str(&record.gpu_variant).unwrap_or_else(|_| {
+                            tracing::warn!(
+                                "unknown gpu_variant '{}' in backend_configs row; treating as custom",
+                                record.gpu_variant
+                            );
+                            crate::gpu::GpuType::Custom
+                        }),
+                    ),
                 },
             );
         }

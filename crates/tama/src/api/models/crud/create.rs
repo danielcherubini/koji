@@ -9,7 +9,9 @@ use axum::{
 use std::sync::Arc;
 use tama_core::proxy::ProxyState;
 
-use super::{apply_model_body, is_valid_repo_id, validate_model_body, ModelBody};
+use tama_core::models::is_valid_repo_id;
+
+use super::{apply_model_body, validate_model_body, ModelBody};
 use crate::web_types::WebState;
 
 /// POST /tama/v1/models — create a new model.

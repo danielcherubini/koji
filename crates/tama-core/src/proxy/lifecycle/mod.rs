@@ -125,7 +125,7 @@ impl ProxyState {
         // Resolve the backend binary path: DB takes priority, config.path is fallback.
         let backend_path = config.resolve_backend_path(
             &server_config.backend,
-            server_config.gpu_variant.as_deref(),
+            server_config.gpu_variant.as_ref(),
             &manager,
         )?;
 
@@ -155,8 +155,12 @@ impl ProxyState {
         };
 
         // Build full args (including -m, -c, -ngl from model card) and override host/port
-        let gpu_variant = server_config.gpu_variant.as_deref().unwrap_or("cpu");
-        let default_args = manager.get_default_args(&server_config.backend, gpu_variant);
+        let gpu_variant = server_config
+            .gpu_variant
+            .clone()
+            .unwrap_or(crate::gpu::GpuType::CpuOnly);
+        let default_args =
+            manager.get_default_args(&server_config.backend, gpu_variant.variant_folder());
         let mut args =
             config.build_full_args(&server_config, backend_config, None, &default_args)?;
 
@@ -185,13 +189,16 @@ impl ProxyState {
         crate::process::configure_backend_command(&mut child, &backend_path);
         // Inject GPU isolation env var (ROCR/CUDA/GGML_VK_VISIBLE_DEVICES)
         // keyed off the backend's gpu_variant. Uses positional indexes.
-        if !matches!(gpu_variant, "cpu") {
+        if !matches!(gpu_variant, crate::gpu::GpuType::CpuOnly) {
             if let Some(ref device) = server_config.gpu_device {
-                match crate::gpu::env::resolve_gpu_env(device, gpu_variant) {
+                match crate::gpu::env::resolve_gpu_env(device, &gpu_variant) {
                     Some((name, value)) => {
                         info!(
                             "GPU isolation: setting {}={} for device {} (variant {})",
-                            name, value, device, gpu_variant
+                            name,
+                            value,
+                            device,
+                            gpu_variant.variant_folder()
                         );
                         child.env(&name, &value);
                     }
@@ -199,7 +206,8 @@ impl ProxyState {
                         warn!(
                             "GPU isolation: could not resolve device '{}' \
                              (variant {}); no env var set",
-                            device, gpu_variant
+                            device,
+                            gpu_variant.variant_folder()
                         );
                     }
                 }
@@ -208,7 +216,8 @@ impl ProxyState {
         configure_process_group(&mut child);
 
         // Apply default env vars from backend config (e.g. RADV_PERFTEST=nogttspill)
-        let default_env = manager.get_default_env(&server_config.backend, gpu_variant);
+        let default_env =
+            manager.get_default_env(&server_config.backend, gpu_variant.variant_folder());
         for env_var in &default_env {
             if let Some((key, value)) = env_var.split_once('=') {
                 info!("Applying env var: {}={}", key, value);

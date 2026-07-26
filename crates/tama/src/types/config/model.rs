@@ -108,7 +108,7 @@ impl From<tama_core::config::ModelConfig> for ModelConfig {
     fn from(m: tama_core::config::ModelConfig) -> Self {
         Self {
             backend: m.backend,
-            gpu_variant: m.gpu_variant,
+            gpu_variant: m.gpu_variant.map(|v| v.variant_folder().to_string()),
             gpu_device: m.gpu_device,
             args: m.args,
             sampling: m.sampling.map(Into::into),
@@ -149,9 +149,18 @@ impl From<tama_core::config::ModelConfig> for ModelConfig {
 /// The model CRUD endpoints use `ModelBody` → `apply_model_body()` instead.
 impl From<ModelConfig> for tama_core::config::ModelConfig {
     fn from(m: ModelConfig) -> Self {
+        use std::str::FromStr;
         Self {
             backend: m.backend,
-            gpu_variant: m.gpu_variant,
+            gpu_variant: m.gpu_variant.map(|s| {
+                tama_core::gpu::GpuType::from_str(&s).unwrap_or_else(|_| {
+                    tracing::warn!(
+                        "unknown gpu_variant '{}' in model config; treating as custom",
+                        s
+                    );
+                    tama_core::gpu::GpuType::Custom
+                })
+            }),
             gpu_device: m.gpu_device,
             args: m.args,
             sampling: m.sampling.map(Into::into),

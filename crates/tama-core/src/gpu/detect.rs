@@ -1,8 +1,12 @@
-use serde::{Deserialize, Serialize};
-
 use super::vram::VramInfo;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// GPU type / backend variant.
+///
+/// The canonical string representation (used by `Display`, `FromStr`, and
+/// serde) is the `gpu_variant` folder name — e.g. `"cuda"`, `"rocm"`,
+/// `"vulkan"`. Variant payloads (`version` on `Cuda`/`RocM`) do **not**
+/// survive a string round-trip.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GpuType {
     Cuda { version: String },
     Vulkan,
@@ -46,6 +50,57 @@ impl GpuType {
             GpuType::RocM { .. } => "rocm",
             GpuType::Custom => "custom",
         }
+    }
+}
+
+impl std::fmt::Display for GpuType {
+    /// Format as the canonical `gpu_variant` string (e.g. `"cuda"`, `"rocm"`).
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.variant_folder())
+    }
+}
+
+impl std::str::FromStr for GpuType {
+    type Err = anyhow::Error;
+
+    /// Parse a gpu_variant string, case-insensitively
+    /// (`"cpu"`, `"cuda"`, `"vulkan"`, `"rocm"`, `"metal"`, `"custom"`).
+    ///
+    /// **Note:** variant payloads (`version` on `Cuda`/`RocM`) are always
+    /// set to an empty string after parsing — they do not survive a
+    /// string round-trip.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "cpu" => Ok(GpuType::CpuOnly),
+            "cuda" => Ok(GpuType::Cuda {
+                version: String::new(),
+            }),
+            "vulkan" => Ok(GpuType::Vulkan),
+            "metal" => Ok(GpuType::Metal),
+            "rocm" => Ok(GpuType::RocM {
+                version: String::new(),
+            }),
+            "custom" => Ok(GpuType::Custom),
+            other => Err(anyhow::anyhow!(
+                "unknown gpu_variant '{}'; expected one of: cpu, cuda, vulkan, rocm, metal, custom",
+                other
+            )),
+        }
+    }
+}
+
+impl serde::Serialize for GpuType {
+    /// Serialize as the canonical `gpu_variant` string.
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.variant_folder())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for GpuType {
+    /// Deserialize from a `gpu_variant` string.
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        <GpuType as std::str::FromStr>::from_str(&s).map_err(serde::de::Error::custom)
     }
 }
 
@@ -571,5 +626,117 @@ mod tests {
         let suggestions = suggest_context_sizes(1_000_000_000, None);
         // Without GPU info, all should be marked as fits
         assert!(suggestions.iter().all(|s| s.fits));
+    }
+
+    // -----------------------------------------------------------------------
+    // FromStr / Display / string serde tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_from_str_all_variants() {
+        assert_eq!("cpu".parse::<GpuType>().unwrap(), GpuType::CpuOnly);
+        assert_eq!(
+            "cuda".parse::<GpuType>().unwrap(),
+            GpuType::Cuda {
+                version: String::new()
+            }
+        );
+        assert_eq!("vulkan".parse::<GpuType>().unwrap(), GpuType::Vulkan);
+        assert_eq!("metal".parse::<GpuType>().unwrap(), GpuType::Metal);
+        assert_eq!(
+            "rocm".parse::<GpuType>().unwrap(),
+            GpuType::RocM {
+                version: String::new()
+            }
+        );
+        assert_eq!("custom".parse::<GpuType>().unwrap(), GpuType::Custom);
+    }
+
+    #[test]
+    fn test_from_str_case_insensitive() {
+        assert_eq!(
+            "CUDA".parse::<GpuType>().unwrap(),
+            GpuType::Cuda {
+                version: String::new()
+            }
+        );
+        assert_eq!(
+            "Rocm".parse::<GpuType>().unwrap(),
+            GpuType::RocM {
+                version: String::new()
+            }
+        );
+        assert_eq!(
+            "ROCM".parse::<GpuType>().unwrap(),
+            GpuType::RocM {
+                version: String::new()
+            }
+        );
+        assert_eq!("Cpu".parse::<GpuType>().unwrap(), GpuType::CpuOnly);
+    }
+
+    #[test]
+    fn test_from_str_unknown_rejected() {
+        assert!("tpu".parse::<GpuType>().is_err());
+        assert!("".parse::<GpuType>().is_err());
+        assert!("gpu".parse::<GpuType>().is_err());
+    }
+
+    #[test]
+    fn test_display_matches_variant_folder() {
+        let variants = [
+            GpuType::CpuOnly,
+            GpuType::Vulkan,
+            GpuType::Metal,
+            GpuType::Cuda {
+                version: "12.4".into(),
+            },
+            GpuType::RocM {
+                version: "6.0".into(),
+            },
+            GpuType::Custom,
+        ];
+        for v in &variants {
+            assert_eq!(format!("{}", v), v.variant_folder());
+        }
+    }
+
+    #[test]
+    fn test_string_roundtrip_canonical() {
+        let variants = [
+            GpuType::CpuOnly,
+            GpuType::Cuda {
+                version: String::new(),
+            },
+            GpuType::Vulkan,
+            GpuType::Metal,
+            GpuType::RocM {
+                version: String::new(),
+            },
+            GpuType::Custom,
+        ];
+        for v in &variants {
+            let s = v.to_string();
+            assert_eq!(s.parse::<GpuType>().unwrap(), *v);
+        }
+    }
+
+    #[test]
+    fn test_serde_string_form() {
+        // Serialize — version payloads do not survive
+        assert_eq!(
+            serde_json::to_string(&GpuType::Cuda {
+                version: "12.4".into()
+            })
+            .unwrap(),
+            r#""cuda""#
+        );
+        // Deserialize
+        assert_eq!(
+            serde_json::from_str::<GpuType>(r#""vulkan""#).unwrap(),
+            GpuType::Vulkan
+        );
+        // Rejection
+        assert!(serde_json::from_str::<GpuType>(r#""tpu""#).is_err());
     }
 }

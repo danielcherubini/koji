@@ -120,11 +120,6 @@ pub struct ListModelsResponse {
     pub models: Vec<ListedModelResponse>,
 }
 
-/// Returns `false` if the path component contains traversal sequences or invalid characters.
-pub(super) fn is_safe_path_component(s: &str) -> bool {
-    !s.is_empty() && !s.contains("..") && !s.contains('/') && !s.contains('\\') && !s.contains('\0')
-}
-
 /// Returns `false` if the relative path contains traversal sequences, backslash
 /// separators, or null bytes. Unlike `is_safe_path_component`, this allows `/`
 /// to support subdirectory paths (e.g. sharded GGUF files like
@@ -182,23 +177,6 @@ mod tests {
         unsafe {
             std::env::remove_var("TAMA_MAX_CONCURRENT_PULLS");
         }
-    }
-
-    #[test]
-    fn test_is_safe_path_component_valid() {
-        assert!(is_safe_path_component("model.gguf"));
-        assert!(is_safe_path_component("Q4_K_M"));
-        assert!(is_safe_path_component("unsloth"));
-    }
-
-    #[test]
-    fn test_is_safe_path_component_invalid() {
-        assert!(!is_safe_path_component(""));
-        assert!(!is_safe_path_component(".."));
-        assert!(!is_safe_path_component("../etc"));
-        assert!(!is_safe_path_component("path/to/file"));
-        assert!(!is_safe_path_component("path\\to\\file"));
-        assert!(!is_safe_path_component("path\0null"));
     }
 
     // ── is_safe_relative_path tests ───────────────────────────────────────

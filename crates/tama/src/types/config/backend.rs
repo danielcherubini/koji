@@ -21,7 +21,7 @@ impl From<tama_core::config::BackendConfig> for BackendConfig {
         Self {
             path: b.path,
             version: b.version,
-            gpu_variant: b.gpu_variant,
+            gpu_variant: b.gpu_variant.map(|v| v.variant_folder().to_string()),
         }
     }
 }
@@ -29,10 +29,19 @@ impl From<tama_core::config::BackendConfig> for BackendConfig {
 /// Convert from mirror BackendConfig to CoreBackendConfig.
 impl From<BackendConfig> for tama_core::config::BackendConfig {
     fn from(b: BackendConfig) -> Self {
+        use std::str::FromStr;
         Self {
             path: b.path,
             version: b.version,
-            gpu_variant: b.gpu_variant,
+            gpu_variant: b.gpu_variant.map(|s| {
+                tama_core::gpu::GpuType::from_str(&s).unwrap_or_else(|_| {
+                    tracing::warn!(
+                        "unknown gpu_variant '{}' in backend config; treating as custom",
+                        s
+                    );
+                    tama_core::gpu::GpuType::Custom
+                })
+            }),
         }
     }
 }

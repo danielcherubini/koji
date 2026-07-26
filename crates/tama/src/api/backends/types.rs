@@ -211,7 +211,7 @@ pub struct InstallRequest {
     pub backend_type: String,
     pub version: Option<String>,
     /// GPU variant for the installation (e.g. "cpu", "cuda", "vulkan", "rocm", "metal").
-    pub gpu_variant: String,
+    pub gpu_variant: tama_core::gpu::GpuType,
     pub build_from_source: bool,
     pub force: bool,
 }
@@ -523,5 +523,39 @@ mod tests {
 
         assert_eq!(deserialized.os, "macos");
         assert!(!deserialized.git_available);
+    }
+
+    // ── InstallRequest gpu_variant tests ──────────────────────────────────
+
+    #[test]
+    fn test_install_request_accepts_known_variant() {
+        let req: InstallRequest = serde_json::from_str(
+            r#"{"backend_type":"llama_cpp","version":null,"gpu_variant":"cuda","build_from_source":false,"force":false}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            req.gpu_variant,
+            tama_core::gpu::GpuType::Cuda { .. }
+        ));
+    }
+
+    #[test]
+    fn test_install_request_rejects_unknown_variant() {
+        let result: Result<InstallRequest, _> = serde_json::from_str(
+            r#"{"backend_type":"llama_cpp","version":null,"gpu_variant":"tpu","build_from_source":false,"force":false}"#,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_install_request_variant_case_insensitive() {
+        let req: InstallRequest = serde_json::from_str(
+            r#"{"backend_type":"llama_cpp","version":null,"gpu_variant":"CUDA","build_from_source":false,"force":false}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            req.gpu_variant,
+            tama_core::gpu::GpuType::Cuda { .. }
+        ));
     }
 }

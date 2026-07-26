@@ -24,10 +24,7 @@ pub async fn hf_metadata(
     };
 
     // Reject path traversal sequences (SSRF mitigation)
-    if !repo_id
-        .split('/')
-        .all(|s| !s.is_empty() && s != ".." && !s.contains('\0'))
-    {
+    if !tama_core::models::is_valid_repo_id(&repo_id) {
         return error_response(
             StatusCode::BAD_REQUEST,
             "Invalid repo_id",

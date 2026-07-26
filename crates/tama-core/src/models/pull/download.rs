@@ -24,9 +24,7 @@ pub async fn pull_gguf_with_progress(
     dest_dir: &Path,
     progress_callback: Option<ProgressCallback>,
 ) -> Result<PullResult> {
-    let endpoint =
-        std::env::var("HF_ENDPOINT").unwrap_or_else(|_| "https://huggingface.co".to_string());
-    let url = format!("{}/{}/resolve/main/{}", endpoint, repo_id, filename);
+    let url = super::hf_resolve_url(repo_id, filename);
 
     let dest_path = dest_dir.join(filename);
     if let Some(parent) = dest_path.parent() {
@@ -35,15 +33,7 @@ pub async fn pull_gguf_with_progress(
     }
 
     // Build auth headers
-    let mut headers = reqwest::header::HeaderMap::new();
-    if let Some(token) = super::get_hf_token() {
-        headers.insert(
-            reqwest::header::AUTHORIZATION,
-            format!("Bearer {}", token)
-                .parse()
-                .context("Failed to parse Authorization header")?,
-        );
-    }
+    let headers = super::hf_auth_headers();
 
     // Build client with HTTP/2 keep-alive
     let client = Client::builder()
@@ -78,45 +68,6 @@ mod tests {
     // Guard to serialize env var tests
     static ENV_GUARD: Mutex<()> = Mutex::new(());
 
-    /// Verifies that the HF resolve URL is constructed correctly
-    #[test]
-    fn test_pull_gguf_url_construction_default_endpoint() {
-        let _guard = ENV_GUARD.lock().unwrap();
-        std::env::remove_var("HF_ENDPOINT");
-
-        // We can't call the full async function against a real URL,
-        // but we can verify the URL format by checking the logic directly
-        let repo_id = "org/model";
-        let filename = "model.gguf";
-        let expected_url = format!(
-            "https://huggingface.co/{}/resolve/main/{}",
-            repo_id, filename
-        );
-        assert_eq!(
-            expected_url,
-            "https://huggingface.co/org/model/resolve/main/model.gguf"
-        );
-    }
-
-    /// Verifies that HF_ENDPOINT env var is respected in URL construction
-    #[test]
-    fn test_pull_gguf_url_construction_custom_endpoint() {
-        let _guard = ENV_GUARD.lock().unwrap();
-        std::env::set_var("HF_ENDPOINT", "https://hf.mirror.example.com");
-
-        let repo_id = "org/model";
-        let filename = "model.gguf";
-        let endpoint =
-            std::env::var("HF_ENDPOINT").unwrap_or_else(|_| "https://huggingface.co".to_string());
-        let url = format!("{}/{}/resolve/main/{}", endpoint, repo_id, filename);
-        assert_eq!(
-            url,
-            "https://hf.mirror.example.com/org/model/resolve/main/model.gguf"
-        );
-
-        std::env::remove_var("HF_ENDPOINT");
-    }
-
     /// Verifies that empty token does NOT add Authorization header
     #[test]
     fn test_empty_token_no_auth_header() {
@@ -145,21 +96,19 @@ mod tests {
     }
 
     /// Verifies that a valid token produces the correct Bearer header value
+    /// via the shared `hf_auth_headers` helper.
     #[test]
     fn test_valid_token_produces_bearer_header() {
         let _guard = ENV_GUARD.lock().unwrap();
         std::env::set_var("HF_TOKEN", "hf_test_token_123");
 
-        let token = super::super::get_hf_token();
-        assert_eq!(token, Some("hf_test_token_123".to_string()));
-
-        // Verify the header value format
-        let header_value = format!("Bearer {}", token.unwrap());
-        assert_eq!(header_value, "Bearer hf_test_token_123");
-
-        // Verify it parses as a valid header
-        let parsed: reqwest::header::HeaderValue = header_value.parse().unwrap();
-        assert_eq!(parsed.to_str().unwrap(), "Bearer hf_test_token_123");
+        let headers = super::super::hf_auth_headers();
+        assert_eq!(
+            headers
+                .get(reqwest::header::AUTHORIZATION)
+                .map(|v| v.to_str().unwrap()),
+            Some("Bearer hf_test_token_123")
+        );
 
         std::env::remove_var("HF_TOKEN");
     }

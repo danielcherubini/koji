@@ -1,8 +1,6 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-const HF_API_BASE: &str = "https://huggingface.co/api/models";
-
 /// A model search result from HuggingFace.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SearchResult {
@@ -54,7 +52,7 @@ pub async fn search_models(query: &str, sort: SortBy, limit: usize) -> Result<Ve
     // Always filter to GGUF library
     let url = format!(
         "{}?search={}&library=gguf&sort={}&direction=-1&limit={}",
-        HF_API_BASE,
+        crate::models::pull::hf_api_models_url(),
         urlencoding(query),
         sort.as_str(),
         limit,

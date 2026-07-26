@@ -2,9 +2,7 @@ use std::sync::Arc;
 
 use crate::models::repo_path;
 use crate::proxy::pull_jobs::PullJobStatus;
-use crate::proxy::tama_handlers::types::{
-    is_safe_path_component, is_safe_relative_path, QuantDownloadSpec,
-};
+use crate::proxy::tama_handlers::types::{is_safe_relative_path, QuantDownloadSpec};
 use crate::proxy::ProxyState;
 
 /// Start a pull from the queue.
@@ -57,7 +55,7 @@ pub async fn start_pull_from_queue(
         }
         return;
     }
-    if !repo_id_clone.split('/').all(is_safe_path_component) {
+    if !crate::models::is_valid_repo_id(&repo_id_clone) {
         let mut jobs = pull_jobs_arc.write().await;
         if let Some(job) = jobs.get_mut(&job_id_clone) {
             job.status = crate::proxy::pull_jobs::PullJobStatus::Failed;
@@ -197,20 +195,9 @@ pub async fn start_pull_from_queue(
         }
     }
 
-    // Resolve HF_ENDPOINT and build auth headers (shared by HEAD + pull)
-    let endpoint =
-        std::env::var("HF_ENDPOINT").unwrap_or_else(|_| "https://huggingface.co".to_string());
-    let resolve_url = format!(
-        "{}/{}/resolve/main/{}",
-        endpoint, repo_id_clone, filename_clone
-    );
-
-    let mut headers = reqwest::header::HeaderMap::new();
-    if let Some(token) = crate::models::pull::get_hf_token() {
-        if let Ok(auth) = format!("Bearer {}", token).parse::<reqwest::header::HeaderValue>() {
-            headers.insert(reqwest::header::AUTHORIZATION, auth);
-        }
-    }
+    // Resolve URL and auth headers (shared by HEAD + pull)
+    let resolve_url = crate::models::pull::hf_resolve_url(&repo_id_clone, &filename_clone);
+    let headers = crate::models::pull::hf_auth_headers();
 
     // HEAD request to get total_bytes upfront
     let client = reqwest::Client::new();

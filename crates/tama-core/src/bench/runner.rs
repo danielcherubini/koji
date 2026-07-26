@@ -103,8 +103,12 @@ async fn _start_backend(
 
     // Open BackendManager for resolution
     let manager = crate::backends::BackendManager::open(&db_dir)?;
-    let gpu_variant = server_config.gpu_variant.as_deref().unwrap_or("cpu");
-    let default_args = manager.get_default_args(&server_config.backend, gpu_variant);
+    let gpu_variant = server_config
+        .gpu_variant
+        .clone()
+        .unwrap_or(crate::gpu::GpuType::CpuOnly);
+    let default_args =
+        manager.get_default_args(&server_config.backend, gpu_variant.variant_folder());
 
     // Allocate a free port
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -120,7 +124,7 @@ async fn _start_backend(
     // Resolve the backend binary path: DB takes priority, config.path is fallback.
     let backend_path = config.resolve_backend_path(
         &server_config.backend,
-        server_config.gpu_variant.as_deref(),
+        server_config.gpu_variant.as_ref(),
         &manager,
     )?;
 

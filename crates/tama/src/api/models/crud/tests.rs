@@ -1258,7 +1258,9 @@ fn existing_config_rich() -> ModelConfig {
     );
     ModelConfig {
         backend: "llama-cpp".into(),
-        gpu_variant: Some("cuda".into()),
+        gpu_variant: Some(tama_core::gpu::GpuType::Cuda {
+            version: String::new(),
+        }),
         gpu_device: Some("0".into()),
         model: Some("org/repo".into()),
         quant: Some("Q4_K_M".into()),
@@ -1306,7 +1308,12 @@ fn test_apply_model_patch_all_none_preserves_all_fields() {
     let result = apply_model_patch(patch_body_all_none(), &existing);
 
     assert_eq!(result.backend, "llama-cpp");
-    assert_eq!(result.gpu_variant, Some("cuda".into()));
+    assert_eq!(
+        result.gpu_variant,
+        Some(tama_core::gpu::GpuType::Cuda {
+            version: String::new()
+        })
+    );
     assert_eq!(result.gpu_device, Some("0".into()));
     assert_eq!(result.model, Some("org/repo".into()));
     assert_eq!(result.quant, Some("Q4_K_M".into()));
@@ -1851,15 +1858,22 @@ fn test_apply_model_patch_gpu_device_clear_sentinel() {
     assert_eq!(result.gpu_device, None);
 }
 
-/// `gpu_variant: Some("rocm")` must override existing.
+/// `gpu_variant: Some(RocM)` must override existing.
 #[test]
 fn test_apply_model_patch_gpu_variant_override() {
     let existing = existing_config_rich();
     let mut body = patch_body_all_none();
-    body.gpu_variant = Some("rocm".to_string());
+    body.gpu_variant = Some(tama_core::gpu::GpuType::RocM {
+        version: String::new(),
+    });
 
     let result = apply_model_patch(body, &existing);
-    assert_eq!(result.gpu_variant, Some("rocm".into()));
+    assert_eq!(
+        result.gpu_variant,
+        Some(tama_core::gpu::GpuType::RocM {
+            version: String::new()
+        })
+    );
 }
 
 /// `gpu_device: Some("1")` must override existing.

@@ -10,7 +10,7 @@ use futures_util::Stream;
 
 use serde::{Deserialize, Serialize};
 
-use super::types::{is_safe_path_component, QuantEntry};
+use super::types::QuantEntry;
 use crate::gpu::{GpuDeviceInfo, VramInfo};
 use crate::proxy::ProxyState;
 
@@ -53,7 +53,7 @@ pub async fn handle_tama_system_health(
 /// because HF repo IDs contain a `/`. Registered as `GET /tama/v1/hf/*repo_id`.
 pub async fn handle_hf_list_quants(Path(repo_id): Path<String>) -> Response {
     // Reject repo_id segments containing traversal sequences or null bytes (SSRF mitigation).
-    if !repo_id.split('/').all(is_safe_path_component) {
+    if !crate::models::is_valid_repo_id(&repo_id) {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "error": "Invalid repo_id" })),
@@ -164,11 +164,18 @@ pub async fn handle_tama_system_gpu_devices(
     Query(query): Query<GpuDevicesQuery>,
 ) -> Response {
     let backend_name = query.backend;
-    let gpu_variant = &query.gpu_variant;
+    let gpu_variant: crate::gpu::GpuType = std::str::FromStr::from_str(&query.gpu_variant)
+        .unwrap_or_else(|_| {
+            tracing::warn!(
+                "unknown gpu_variant '{}' in query param; treating as custom",
+                query.gpu_variant
+            );
+            crate::gpu::GpuType::Custom
+        });
 
     // Resolve binary path for this backend
     let binary_path = match state
-        .resolve_backend_binary_path(&backend_name, gpu_variant)
+        .resolve_backend_binary_path(&backend_name, Some(&gpu_variant))
         .await
     {
         Ok(path) => path,
@@ -176,7 +183,7 @@ pub async fn handle_tama_system_gpu_devices(
             return (
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({
-                    "error": format!("Backend '{}' (variant: '{}') not found: {}", backend_name, gpu_variant, e),
+                    "error": format!("Backend '{}' (variant: '{}') not found: {}", backend_name, gpu_variant.variant_folder(), e),
                     "devices": Vec::<GpuDeviceInfo>::new()
                 })),
             )
@@ -186,7 +193,7 @@ pub async fn handle_tama_system_gpu_devices(
 
     // Get or discover devices
     match state
-        .get_or_discover_gpu_devices(&backend_name, gpu_variant, &binary_path)
+        .get_or_discover_gpu_devices(&backend_name, gpu_variant.variant_folder(), &binary_path)
         .await
     {
         Ok(devices) => (StatusCode::OK, Json(devices)).into_response(),
@@ -194,7 +201,7 @@ pub async fn handle_tama_system_gpu_devices(
             tracing::warn!(
                 "Failed to discover GPU devices for backend '{}' (variant: '{}'): {}",
                 backend_name,
-                gpu_variant,
+                gpu_variant.variant_folder(),
                 e
             );
             (StatusCode::OK, Json(Vec::<GpuDeviceInfo>::new())).into_response()
@@ -212,11 +219,18 @@ pub async fn handle_tama_system_gpu_devices_refresh(
     Query(query): Query<GpuDevicesQuery>,
 ) -> Response {
     let backend_name = query.backend;
-    let gpu_variant = &query.gpu_variant;
+    let gpu_variant: crate::gpu::GpuType = std::str::FromStr::from_str(&query.gpu_variant)
+        .unwrap_or_else(|_| {
+            tracing::warn!(
+                "unknown gpu_variant '{}' in query param; treating as custom",
+                query.gpu_variant
+            );
+            crate::gpu::GpuType::Custom
+        });
 
     // Resolve binary path for this backend
     let binary_path = match state
-        .resolve_backend_binary_path(&backend_name, gpu_variant)
+        .resolve_backend_binary_path(&backend_name, Some(&gpu_variant))
         .await
     {
         Ok(path) => path,
@@ -224,7 +238,7 @@ pub async fn handle_tama_system_gpu_devices_refresh(
             return (
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({
-                    "error": format!("Backend '{}' (variant: '{}') not found: {}", backend_name, gpu_variant, e),
+                    "error": format!("Backend '{}' (variant: '{}') not found: {}", backend_name, gpu_variant.variant_folder(), e),
                     "devices": Vec::<GpuDeviceInfo>::new()
                 })),
             )
@@ -234,7 +248,7 @@ pub async fn handle_tama_system_gpu_devices_refresh(
 
     // Force refresh
     match state
-        .refresh_gpu_devices(&backend_name, gpu_variant, &binary_path)
+        .refresh_gpu_devices(&backend_name, gpu_variant.variant_folder(), &binary_path)
         .await
     {
         Ok(devices) => (StatusCode::OK, Json(devices)).into_response(),

@@ -28,7 +28,7 @@ struct LegacyBackendInfo {
     installed_at: i64,
     #[serde(default)]
     #[allow(dead_code)]
-    gpu_type: Option<crate::gpu::GpuType>,
+    gpu_type: Option<toml::Value>,
     #[serde(default)]
     source: Option<crate::backends::BackendSource>,
 }

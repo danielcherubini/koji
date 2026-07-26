@@ -10,7 +10,7 @@ use tama_core::proxy::ProxyState;
 #[derive(Debug, Deserialize)]
 pub struct CompactionToggleRequest {
     pub enabled: bool,
-    pub device: Option<String>,
+    pub device: Option<CompactionDevice>,
     pub port: Option<Option<u16>>,
     pub request_timeout_ms: Option<u64>,
 }
@@ -31,8 +31,7 @@ pub async fn update_compaction(
     {
         let mut config = state.config().write().await;
         if let Some(device) = &req.device {
-            config.compaction.device =
-                CompactionDevice::from_str(device).unwrap_or(config.compaction.device.clone());
+            config.compaction.device = device.clone();
         }
         if let Some(port) = &req.port {
             config.compaction.port = *port;
@@ -76,4 +75,45 @@ pub async fn update_compaction(
         }),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_compaction_request_deserializes_device() {
+        let req = serde_json::from_str::<CompactionToggleRequest>(
+            r#"{"enabled":true,"device":"cuda:1","port":null,"request_timeout_ms":null}"#,
+        );
+        assert!(req.is_ok(), "Expected Ok, got: {:?}", req.err());
+        let req = req.unwrap();
+        assert!(
+            matches!(req.device, Some(CompactionDevice::CudaDevice(1))),
+            "Expected CudaDevice(1), got {:?}",
+            req.device
+        );
+    }
+
+    #[test]
+    fn test_compaction_request_rejects_invalid_device() {
+        let req = serde_json::from_str::<CompactionToggleRequest>(
+            r#"{"enabled":true,"device":"tpu","port":null,"request_timeout_ms":null}"#,
+        );
+        assert!(
+            req.is_err(),
+            "Expected Err for invalid device 'tpu', got: {:?}",
+            req.ok()
+        );
+    }
+
+    #[test]
+    fn test_compaction_request_device_optional() {
+        let req = serde_json::from_str::<CompactionToggleRequest>(
+            r#"{"enabled":true,"port":null,"request_timeout_ms":null}"#,
+        );
+        assert!(req.is_ok(), "Expected Ok, got: {:?}", req.err());
+        let req = req.unwrap();
+        assert!(req.device.is_none(), "Expected device to be None");
+    }
 }

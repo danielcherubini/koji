@@ -105,7 +105,7 @@ pub async fn run_llama_bench(
     let manager = crate::backends::BackendManager::open(&db_dir)?;
     let backend_path = config.resolve_backend_path(
         target_backend,
-        server_config.gpu_variant.as_deref(),
+        server_config.gpu_variant.as_ref(),
         &manager,
     )?;
 

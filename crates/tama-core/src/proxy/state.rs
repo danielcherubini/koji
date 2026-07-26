@@ -86,8 +86,12 @@ impl ProxyState {
                 crate::backends::BackendManager::open_in_memory()
                     .expect("in-memory BackendManager must always open")
             });
-        let gpu_variant = backend_config.gpu_variant.as_deref().unwrap_or("cpu");
-        let health_url = manager.get_health_check_url(&backend_config.backend, gpu_variant);
+        let gpu_variant = backend_config
+            .gpu_variant
+            .clone()
+            .unwrap_or(crate::gpu::GpuType::CpuOnly);
+        let health_url =
+            manager.get_health_check_url(&backend_config.backend, gpu_variant.variant_folder());
         let backend_url = config
             .resolve_backend_url(backend_config, health_url.as_deref())
             .with_context(|| format!("No backend URL resolved for backend '{}'", backend_name))?;
@@ -302,7 +306,7 @@ impl ProxyState {
     pub async fn resolve_backend_binary_path(
         &self,
         backend_name: &str,
-        gpu_variant: &str,
+        gpu_variant: Option<&crate::gpu::GpuType>,
     ) -> Result<std::path::PathBuf> {
         let config = self.config.read().await;
         let manager = self
@@ -314,7 +318,7 @@ impl ProxyState {
                     .expect("in-memory BackendManager must always open")
             });
 
-        config.resolve_backend_path(backend_name, Some(gpu_variant), &manager)
+        config.resolve_backend_path(backend_name, gpu_variant, &manager)
     }
 }
 

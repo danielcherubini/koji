@@ -18,7 +18,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use indicatif::{ProgressBar, ProgressStyle};
-use reqwest::header::HeaderMap;
+use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::Client;
 
 const MIN_CHUNK_SIZE: u64 = 5 * 1024 * 1024; // 5 MiB
@@ -405,6 +405,48 @@ mod chunk_tests {
 // This is tracked in the Code Quality Backlog in docs/plans/README.md.
 static HF_API: OnceCell<Api> = OnceCell::const_new();
 
+/// Base URL for HuggingFace, honoring the `HF_ENDPOINT` env var (mirror support).
+pub(crate) fn hf_endpoint() -> String {
+    std::env::var("HF_ENDPOINT").unwrap_or_else(|_| "https://huggingface.co".to_string())
+}
+
+/// `{endpoint}/api/models` — model-list/search API base.
+pub(crate) fn hf_api_models_url() -> String {
+    format!("{}/api/models", hf_endpoint())
+}
+
+/// `{endpoint}/api/models/{repo_id}`
+pub(crate) fn hf_api_model_url(repo_id: &str) -> String {
+    format!("{}/api/models/{}", hf_endpoint(), repo_id)
+}
+
+/// `{endpoint}/api/models/{repo_id}?blobs=true`
+pub(crate) fn hf_api_model_blobs_url(repo_id: &str) -> String {
+    format!("{}?blobs=true", hf_api_model_url(repo_id))
+}
+
+/// `{endpoint}/{repo_id}/resolve/main/{filename}`
+pub(crate) fn hf_resolve_url(repo_id: &str, filename: &str) -> String {
+    format!("{}/{}/resolve/main/{}", hf_endpoint(), repo_id, filename)
+}
+
+/// `{endpoint}/{repo_id}/raw/{branch}/{path}`
+pub(crate) fn hf_raw_url(repo_id: &str, branch: &str, path: &str) -> String {
+    format!("{}/{}/raw/{}/{}", hf_endpoint(), repo_id, branch, path)
+}
+
+/// Authorization headers for HF requests; empty when no token is configured.
+/// An unparseable token is skipped (never aborts the request).
+pub(crate) fn hf_auth_headers() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    if let Some(token) = get_hf_token() {
+        if let Ok(value) = format!("Bearer {}", token).parse::<HeaderValue>() {
+            headers.insert(reqwest::header::AUTHORIZATION, value);
+        }
+    }
+    headers
+}
+
 /// Resolve HF token from environment or token file.
 /// Priority: `HF_TOKEN` env → `$HF_HOME/token` → `~/.cache/huggingface/token`
 pub(crate) fn get_hf_token() -> Option<String> {
@@ -716,5 +758,81 @@ mod tests {
 
         std::env::remove_var("HF_TOKEN");
         std::env::remove_var("HF_HOME");
+    }
+
+    // ── hf_resolve_url tests ────────────────────────────────────────────────
+
+    /// `hf_resolve_url` uses the default endpoint when `HF_ENDPOINT` is not set.
+    #[test]
+    fn test_hf_resolve_url_default_endpoint() {
+        let _guard = ENV_GUARD.lock().unwrap();
+        std::env::remove_var("HF_ENDPOINT");
+
+        let url = hf_resolve_url("org/model", "model.gguf");
+        assert_eq!(
+            url,
+            "https://huggingface.co/org/model/resolve/main/model.gguf"
+        );
+    }
+
+    /// `hf_resolve_url` honours `HF_ENDPOINT` for mirror support.
+    #[test]
+    fn test_hf_resolve_url_custom_endpoint() {
+        let _guard = ENV_GUARD.lock().unwrap();
+        std::env::set_var("HF_ENDPOINT", "https://hf.mirror.example.com");
+
+        let url = hf_resolve_url("org/model", "model.gguf");
+        assert_eq!(
+            url,
+            "https://hf.mirror.example.com/org/model/resolve/main/model.gguf"
+        );
+
+        std::env::remove_var("HF_ENDPOINT");
+    }
+
+    // ── hf_api_model_blobs_url tests ────────────────────────────────────────
+
+    /// `hf_api_model_blobs_url` uses the default endpoint and appends `?blobs=true`.
+    #[test]
+    fn test_hf_api_model_blobs_url() {
+        let _guard = ENV_GUARD.lock().unwrap();
+        std::env::remove_var("HF_ENDPOINT");
+
+        let url = hf_api_model_blobs_url("org/repo");
+        assert_eq!(url, "https://huggingface.co/api/models/org/repo?blobs=true");
+    }
+
+    // ── hf_auth_headers tests ───────────────────────────────────────────────
+
+    /// An empty `HF_TOKEN` should omit the Authorization header.
+    #[test]
+    fn test_hf_auth_headers_empty_token_omits_header() {
+        let _guard = ENV_GUARD.lock().unwrap();
+        std::env::set_var("HF_TOKEN", "");
+
+        let headers = hf_auth_headers();
+        assert!(
+            headers.get(reqwest::header::AUTHORIZATION).is_none(),
+            "empty HF_TOKEN should not produce an Authorization header"
+        );
+
+        std::env::remove_var("HF_TOKEN");
+    }
+
+    /// A valid `HF_TOKEN` should produce a `Bearer <token>` header value.
+    #[test]
+    fn test_hf_auth_headers_valid_token() {
+        let _guard = ENV_GUARD.lock().unwrap();
+        std::env::set_var("HF_TOKEN", "hf_test_token_123");
+
+        let headers = hf_auth_headers();
+        assert_eq!(
+            headers
+                .get(reqwest::header::AUTHORIZATION)
+                .map(|v| v.to_str().unwrap()),
+            Some("Bearer hf_test_token_123")
+        );
+
+        std::env::remove_var("HF_TOKEN");
     }
 }

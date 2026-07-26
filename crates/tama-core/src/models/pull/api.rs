@@ -109,9 +109,7 @@ pub fn directory_prefix(filename: &str) -> Option<&str> {
 /// Returns a map of filename → BlobInfo for GGUF files only.
 pub async fn fetch_blob_metadata(repo_id: &str) -> Result<HashMap<String, BlobInfo>> {
     let api = hf_api().await?;
-    let endpoint =
-        std::env::var("HF_ENDPOINT").unwrap_or_else(|_| "https://huggingface.co".to_string());
-    let url = format!("{}/api/models/{}?blobs=true", endpoint, repo_id);
+    let url = super::hf_api_model_blobs_url(repo_id);
 
     let response = api
         .client()
@@ -142,11 +140,9 @@ pub async fn fetch_blob_metadata(repo_id: &str) -> Result<HashMap<String, BlobIn
 /// the README fetch fails, the API-level metadata is still returned.
 pub async fn fetch_hf_metadata(repo_id: &str) -> Result<HfModelMetadata> {
     let api = hf_api().await?;
-    let endpoint =
-        std::env::var("HF_ENDPOINT").unwrap_or_else(|_| "https://huggingface.co".to_string());
 
     // ── Fetch model info from HF API ────────────────────────────────────────
-    let url = format!("{}/api/models/{}", endpoint, repo_id);
+    let url = super::hf_api_model_url(repo_id);
     let response = api
         .client()
         .get(&url)
@@ -196,8 +192,8 @@ pub async fn fetch_hf_metadata(repo_id: &str) -> Result<HfModelMetadata> {
 
     // ── Fetch and parse README ──────────────────────────────────────────────
     // Try `main` first, fall back to `master` (some older repos use master)
-    let readme_url = format!("{}/{}/raw/main/README.md", endpoint, repo_id);
-    let readme_fallback = format!("{}/{}/raw/master/README.md", endpoint, repo_id);
+    let readme_url = super::hf_raw_url(repo_id, "main", "README.md");
+    let readme_fallback = super::hf_raw_url(repo_id, "master", "README.md");
     let readme_text = match api.client().get(&readme_url).send().await {
         Ok(resp) if resp.status().is_success() => resp.text().await.ok(),
         _ => {
@@ -237,9 +233,7 @@ pub async fn fetch_hf_metadata(repo_id: &str) -> Result<HfModelMetadata> {
 /// the model's task type (e.g., "text-generation", "image-text-to-text").
 pub async fn fetch_model_pipeline_tag(repo_id: &str) -> Result<Option<String>> {
     let api = hf_api().await?;
-    let endpoint =
-        std::env::var("HF_ENDPOINT").unwrap_or_else(|_| "https://huggingface.co".to_string());
-    let url = format!("{}/api/models/{}", endpoint, repo_id);
+    let url = super::hf_api_model_url(repo_id);
 
     let response = api
         .client()

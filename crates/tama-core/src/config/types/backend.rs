@@ -1,3 +1,4 @@
+use crate::gpu::GpuType;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -11,5 +12,5 @@ pub struct BackendConfig {
     /// Optional GPU variant pin (e.g. "cpu", "vulkan", "cuda"). When set,
     /// resolve_backend_path uses this variant to look up the correct backend.
     #[serde(default)]
-    pub gpu_variant: Option<String>,
+    pub gpu_variant: Option<GpuType>,
 }

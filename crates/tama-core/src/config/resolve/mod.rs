@@ -564,24 +564,24 @@ impl Config {
     pub fn resolve_backend_path(
         &self,
         name: &str,
-        model_variant: Option<&str>,
+        model_variant: Option<&crate::gpu::GpuType>,
         manager: &crate::backends::BackendManager,
     ) -> Result<std::path::PathBuf> {
         // Determine the gpu_variant to use (model > config > "cpu")
-        let gpu_variant: String = model_variant
-            .map(String::from)
+        let gpu_variant: &str = model_variant
+            .map(|v| v.variant_folder())
             .or_else(|| {
                 self.backends
                     .get(name)
-                    .and_then(|b| b.gpu_variant.as_deref())
-                    .map(String::from)
+                    .and_then(|b| b.gpu_variant.as_ref())
+                    .map(|v| v.variant_folder())
             })
-            .unwrap_or_else(|| "cpu".to_string());
+            .unwrap_or("cpu");
 
         // Check if a specific version is pinned in config
         if let Some(pinned_version) = self.backends.get(name).and_then(|b| b.version.as_deref()) {
             // Try the specified variant first
-            if let Some(info) = manager.get_by_version(name, &gpu_variant, pinned_version)? {
+            if let Some(info) = manager.get_by_version(name, gpu_variant, pinned_version)? {
                 return Ok(info.path);
             }
             // If not found, try all variants of this backend for the pinned version
@@ -602,7 +602,7 @@ impl Config {
 
         // No version pin — try to find the active installation.
         // First, try the specific variant (model > config > "cpu").
-        if let Some(info) = manager.get_active(name, &gpu_variant)? {
+        if let Some(info) = manager.get_active(name, gpu_variant)? {
             return Ok(info.path);
         }
 

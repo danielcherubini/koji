@@ -28,7 +28,7 @@ fn resolve_gpu_device(body_value: Option<String>, existing: Option<String>) -> O
 pub struct ModelBody {
     pub backend: String,
     #[serde(default)]
-    pub gpu_variant: Option<String>,
+    pub gpu_variant: Option<tama_core::gpu::GpuType>,
     #[serde(default)]
     pub gpu_device: Option<String>,
     #[serde(default)]
@@ -75,7 +75,7 @@ pub struct ModelBody {
 #[serde(default)]
 pub struct ModelPatchBody {
     pub backend: Option<String>,
-    pub gpu_variant: Option<String>,
+    pub gpu_variant: Option<tama_core::gpu::GpuType>,
     pub gpu_device: Option<String>,
     pub model: Option<String>,
     pub quant: Option<String>,
@@ -297,20 +297,6 @@ fn apply_model_body(
 }
 
 // ── Validation helpers ──────────────────────────────────────────────────────
-
-/// Validate that a string is a valid repo_id: non-empty, only alphanumeric, dots, underscores, hyphens, slashes.
-fn is_valid_repo_id(input: &str) -> bool {
-    if input.is_empty() {
-        return false;
-    }
-    for ch in input.chars() {
-        match ch {
-            'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '_' | '-' | '/' => continue,
-            _ => return false,
-        }
-    }
-    true
-}
 
 /// Validate ModelBody field lengths. Returns an error message string if invalid.
 fn validate_model_body(body: &ModelBody) -> Result<(), String> {

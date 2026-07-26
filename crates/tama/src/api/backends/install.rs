@@ -57,16 +57,6 @@ pub async fn install_backend(
         }
     }
 
-    // Validate gpu_variant: must be a known variant string
-    let valid_variants = ["cpu", "cuda", "vulkan", "rocm", "metal", "custom"];
-    if !valid_variants.contains(&req.gpu_variant.to_lowercase().as_str()) {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            format!("gpu_variant must be one of: {}", valid_variants.join(", ")),
-            Some("ValidationError"),
-        );
-    }
-
     let jobs = match web_state.jobs.as_ref() {
         Some(j) => j.clone(),
         None => {
@@ -246,7 +236,7 @@ pub async fn install_backend(
 
     // Compute effective build_from_source
     let is_linux = std::env::consts::OS == "linux";
-    let is_cuda = req.gpu_variant.to_lowercase() == "cuda";
+    let is_cuda = matches!(req.gpu_variant, tama_core::gpu::GpuType::Cuda { .. });
     let is_ik_llama = matches!(backend_type, tama_core::backends::BackendType::IkLlama);
 
     let mut notices: Vec<String> = Vec::new();
@@ -368,7 +358,7 @@ pub async fn install_backend(
     };
 
     // Compute the versioned target directory
-    let gpu_variant = req.gpu_variant.clone();
+    let gpu_variant = req.gpu_variant.to_string();
 
     let target_dir = match tama_core::backends::backends_dir() {
         Ok(d) => {

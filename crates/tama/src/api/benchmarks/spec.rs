@@ -76,12 +76,17 @@ pub async fn run_spec_benchmark_inner(
     // Unload any active server for this model before running the benchmark.
     unload_model_before_benchmark(&client, &proxy_base_url, &req.model_id, &job.id).await;
 
+    // Parse gpu_variant from wire string to GpuType enum.
+    let gpu_variant: Option<tama_core::gpu::GpuType> = match req.gpu_variant {
+        Some(ref s) => Some(<tama_core::gpu::GpuType as std::str::FromStr>::from_str(s)?),
+        None => None,
+    };
+
     // Clone fields we need after consuming `req`
     let model_id = req.model_id.clone();
     let backend_name = req.backend_name.clone();
     let quant = req.quant.clone();
     let benchmark_type = req.benchmark_type.clone();
-    let gpu_variant = req.gpu_variant.clone();
     let spec_types_for_trace = req.spec_types.clone();
     let draft_max_for_trace = req.draft_max_values.clone();
     let ngram_n_for_trace = req.ngram_n_values.clone();
@@ -185,7 +190,7 @@ pub async fn run_spec_benchmark_inner(
         let manager = tama_core::backends::BackendManager::open(&db_dir_for_pm)?;
         config.resolve_backend_path(
             &target_backend_for_pm,
-            gpu_variant_for_pm.as_deref(),
+            gpu_variant_for_pm.as_ref(),
             &manager,
         )
     })

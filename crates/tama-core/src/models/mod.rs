@@ -18,6 +18,26 @@ pub use search::{search_models, SearchResult, SortBy};
 #[cfg(test)]
 mod manager_tests;
 
+/// Validate a HuggingFace-style repo_id (e.g. `"unsloth/gemma-4-26b-it-GGUF"`).
+///
+/// Rules: split on `/`; every component must be non-empty (rejects `a//b`,
+/// leading/trailing slashes), must not contain `..` (rejects `..`, `../x`,
+/// `foo..bar`), and may contain only ASCII alphanumerics, `.`, `_`, `-`
+/// (dots inside names are legitimate: `model.v2`). The charset whitelist
+/// inherently rejects backslashes, NUL bytes, and whitespace.
+pub fn is_valid_repo_id(repo_id: &str) -> bool {
+    if repo_id.is_empty() {
+        return false;
+    }
+    repo_id.split('/').all(|component| {
+        !component.is_empty()
+            && !component.contains("..")
+            && component
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    })
+}
+
 /// Convert a config key (double-dash format, e.g. `unsloth--gemma-4-26b-a4b-it-gguf`)
 /// back to the original repo_id stored in the DB (e.g. `unsloth/gemma-4-26b-a4b-it-gguf`).
 ///
@@ -44,4 +64,42 @@ pub fn repo_path(base: impl Into<std::path::PathBuf>, repo_id: &str) -> std::pat
     repo_id
         .split('/')
         .fold(base.into(), |p, component| p.join(component))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_valid_repo_id_accepts_legitimate() {
+        assert!(is_valid_repo_id("unsloth/gemma-4-26b-it-GGUF"));
+        assert!(is_valid_repo_id("model.v2"));
+        assert!(is_valid_repo_id("a"));
+        assert!(is_valid_repo_id("Org_Name/Repo-Name.1"));
+        assert!(is_valid_repo_id("a/b/c"));
+    }
+
+    #[test]
+    fn test_is_valid_repo_id_rejects_traversal() {
+        assert!(!is_valid_repo_id(".."));
+        assert!(!is_valid_repo_id("../x"));
+        assert!(!is_valid_repo_id("a/../b"));
+        assert!(!is_valid_repo_id("foo..bar"));
+    }
+
+    #[test]
+    fn test_is_valid_repo_id_rejects_empty_components() {
+        assert!(!is_valid_repo_id(""));
+        assert!(!is_valid_repo_id("a//b"));
+        assert!(!is_valid_repo_id("/a"));
+        assert!(!is_valid_repo_id("a/"));
+    }
+
+    #[test]
+    fn test_is_valid_repo_id_rejects_backslash_nul_whitespace() {
+        assert!(!is_valid_repo_id("a\\b"));
+        assert!(!is_valid_repo_id("a\0b"));
+        assert!(!is_valid_repo_id("a b"));
+        assert!(!is_valid_repo_id("owner/repo name"));
+    }
 }
