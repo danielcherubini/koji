@@ -10,54 +10,48 @@ use super::types::ModelConfigRecord;
 /// Returns the model id.
 pub fn upsert_model_config(conn: &Connection, record: &ModelConfigRecord) -> Result<i64> {
     conn.execute(
-        "INSERT INTO model_configs (
-            repo_id, display_name, backend, gpu_variant, gpu_device, enabled, selected_quant,
-            selected_mmproj, selected_mtp_model, context_length, num_parallel, kv_unified, gpu_layers,
-            cache_type_k, cache_type_v, port, args,
-            sampling, modalities, profile, api_name, health_check,
-            hf_format, hf_base_model, hf_pipeline_tag, hf_total_params,
-            hf_active_params, hf_architecture_type, hf_context_length,
-            hf_num_layers, hf_last_modified, spec_decoding,
-            created_at, updated_at
-        ) VALUES (
-            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19,
-            ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34
-        )
-         ON CONFLICT(repo_id) DO UPDATE SET
-             display_name = excluded.display_name,
-             backend = excluded.backend,
-             gpu_variant = excluded.gpu_variant,
-             gpu_device = excluded.gpu_device,
-             enabled = excluded.enabled,
-             selected_quant = excluded.selected_quant,
-             selected_mmproj = excluded.selected_mmproj,
-             selected_mtp_model = excluded.selected_mtp_model,
-             context_length = excluded.context_length,
-             num_parallel = excluded.num_parallel,
-             kv_unified = excluded.kv_unified,
-             gpu_layers = excluded.gpu_layers,
-             cache_type_k = excluded.cache_type_k,
-             cache_type_v = excluded.cache_type_v,
-             port = excluded.port,
-             args = excluded.args,
-             sampling = excluded.sampling,
-             modalities = excluded.modalities,
-             profile = excluded.profile,
-             api_name = excluded.api_name,
-             health_check = excluded.health_check,
-             /* HF metadata: use COALESCE to preserve existing values when the
-                upsert record has NULL (e.g. during scan/pull which doesn't fetch HF data) */
-             hf_format = COALESCE(excluded.hf_format, hf_format),
-             hf_base_model = COALESCE(excluded.hf_base_model, hf_base_model),
-             hf_pipeline_tag = COALESCE(excluded.hf_pipeline_tag, hf_pipeline_tag),
-             hf_total_params = COALESCE(excluded.hf_total_params, hf_total_params),
-             hf_active_params = COALESCE(excluded.hf_active_params, hf_active_params),
-             hf_architecture_type = COALESCE(excluded.hf_architecture_type, hf_architecture_type),
-             hf_context_length = COALESCE(excluded.hf_context_length, hf_context_length),
-             hf_num_layers = COALESCE(excluded.hf_num_layers, hf_num_layers),
-             hf_last_modified = COALESCE(excluded.hf_last_modified, hf_last_modified),
-             spec_decoding = excluded.spec_decoding,
-             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
+        &format!(
+            "INSERT INTO model_configs ({}) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19,
+                ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34
+            )
+             ON CONFLICT(repo_id) DO UPDATE SET
+                 display_name = excluded.display_name,
+                 backend = excluded.backend,
+                 gpu_variant = excluded.gpu_variant,
+                 gpu_device = excluded.gpu_device,
+                 enabled = excluded.enabled,
+                 selected_quant = excluded.selected_quant,
+                 selected_mmproj = excluded.selected_mmproj,
+                 selected_mtp_model = excluded.selected_mtp_model,
+                 context_length = excluded.context_length,
+                 num_parallel = excluded.num_parallel,
+                 kv_unified = excluded.kv_unified,
+                 gpu_layers = excluded.gpu_layers,
+                 cache_type_k = excluded.cache_type_k,
+                 cache_type_v = excluded.cache_type_v,
+                 port = excluded.port,
+                 args = excluded.args,
+                 sampling = excluded.sampling,
+                 modalities = excluded.modalities,
+                 profile = excluded.profile,
+                 api_name = excluded.api_name,
+                 health_check = excluded.health_check,
+                 /* HF metadata: use COALESCE to preserve existing values when the
+                    upsert record has NULL (e.g. during scan/pull which doesn't fetch HF data) */
+                 hf_format = COALESCE(excluded.hf_format, hf_format),
+                 hf_base_model = COALESCE(excluded.hf_base_model, hf_base_model),
+                 hf_pipeline_tag = COALESCE(excluded.hf_pipeline_tag, hf_pipeline_tag),
+                 hf_total_params = COALESCE(excluded.hf_total_params, hf_total_params),
+                 hf_active_params = COALESCE(excluded.hf_active_params, hf_active_params),
+                 hf_architecture_type = COALESCE(excluded.hf_architecture_type, hf_architecture_type),
+                 hf_context_length = COALESCE(excluded.hf_context_length, hf_context_length),
+                 hf_num_layers = COALESCE(excluded.hf_num_layers, hf_num_layers),
+                 hf_last_modified = COALESCE(excluded.hf_last_modified, hf_last_modified),
+                 spec_decoding = excluded.spec_decoding,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
+            ModelConfigRecord::INSERT_COLUMNS,
+        ),
         params![
             record.repo_id,
             record.display_name,
@@ -106,56 +100,12 @@ pub fn upsert_model_config(conn: &Connection, record: &ModelConfigRecord) -> Res
 
 /// Get the model configuration by id. Returns None if not found.
 pub fn get_model_config(conn: &Connection, id: i64) -> Result<Option<ModelConfigRecord>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, repo_id, display_name, backend, gpu_variant, gpu_device, enabled, selected_quant,
-                selected_mmproj, selected_mtp_model, context_length, num_parallel, kv_unified, gpu_layers,
-                cache_type_k, cache_type_v, port, args,
-                sampling, modalities, profile, api_name, health_check,
-                hf_format, hf_base_model, hf_pipeline_tag, hf_total_params,
-                hf_active_params, hf_architecture_type, hf_context_length,
-                hf_num_layers, hf_last_modified, spec_decoding,
-                created_at, updated_at
-         FROM model_configs WHERE id = ?1",
-    )?;
-    let mut rows = stmt.query_map([id], |row| {
-        Ok(ModelConfigRecord {
-            id: row.get(0)?,
-            repo_id: row.get(1)?,
-            display_name: row.get(2)?,
-            backend: row.get(3)?,
-            gpu_variant: row.get(4)?,
-            gpu_device: row.get(5)?,
-            enabled: row.get::<_, i32>(6)? != 0,
-            selected_quant: row.get(7)?,
-            selected_mmproj: row.get(8)?,
-            selected_mtp_model: row.get(9)?,
-            context_length: row.get(10)?,
-            num_parallel: row.get(11)?,
-            kv_unified: row.get::<_, i32>(12)? != 0,
-            gpu_layers: row.get(13)?,
-            cache_type_k: row.get(14)?,
-            cache_type_v: row.get(15)?,
-            port: row.get(16)?,
-            args: row.get(17)?,
-            sampling: row.get(18)?,
-            modalities: row.get(19)?,
-            profile: row.get(20)?,
-            api_name: row.get(21)?,
-            health_check: row.get(22)?,
-            hf_format: row.get(23)?,
-            hf_base_model: row.get(24)?,
-            hf_pipeline_tag: row.get(25)?,
-            hf_total_params: row.get(26)?,
-            hf_active_params: row.get(27)?,
-            hf_architecture_type: row.get(28)?,
-            hf_context_length: row.get(29)?,
-            hf_num_layers: row.get(30)?,
-            hf_last_modified: row.get(31)?,
-            spec_decoding: row.get(32)?,
-            created_at: row.get(33)?,
-            updated_at: row.get(34)?,
-        })
-    })?;
+    let sql = format!(
+        "SELECT {} FROM model_configs WHERE id = ?1",
+        ModelConfigRecord::COLUMNS
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query_map([id], ModelConfigRecord::from_row)?;
     match rows.next() {
         Some(row) => Ok(Some(row?)),
         None => Ok(None),
@@ -167,56 +117,12 @@ pub fn get_model_config_by_repo_id(
     conn: &Connection,
     repo_id: &str,
 ) -> Result<Option<ModelConfigRecord>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, repo_id, display_name, backend, gpu_variant, gpu_device, enabled, selected_quant,
-                selected_mmproj, selected_mtp_model, context_length, num_parallel, kv_unified, gpu_layers,
-                cache_type_k, cache_type_v, port, args,
-                sampling, modalities, profile, api_name, health_check,
-                hf_format, hf_base_model, hf_pipeline_tag, hf_total_params,
-                hf_active_params, hf_architecture_type, hf_context_length,
-                hf_num_layers, hf_last_modified, spec_decoding,
-                created_at, updated_at
-         FROM model_configs WHERE repo_id = ?1",
-    )?;
-    let mut rows = stmt.query_map([repo_id], |row| {
-        Ok(ModelConfigRecord {
-            id: row.get(0)?,
-            repo_id: row.get(1)?,
-            display_name: row.get(2)?,
-            backend: row.get(3)?,
-            gpu_variant: row.get(4)?,
-            gpu_device: row.get(5)?,
-            enabled: row.get::<_, i32>(6)? != 0,
-            selected_quant: row.get(7)?,
-            selected_mmproj: row.get(8)?,
-            selected_mtp_model: row.get(9)?,
-            context_length: row.get(10)?,
-            num_parallel: row.get(11)?,
-            kv_unified: row.get::<_, i32>(12)? != 0,
-            gpu_layers: row.get(13)?,
-            cache_type_k: row.get(14)?,
-            cache_type_v: row.get(15)?,
-            port: row.get(16)?,
-            args: row.get(17)?,
-            sampling: row.get(18)?,
-            modalities: row.get(19)?,
-            profile: row.get(20)?,
-            api_name: row.get(21)?,
-            health_check: row.get(22)?,
-            hf_format: row.get(23)?,
-            hf_base_model: row.get(24)?,
-            hf_pipeline_tag: row.get(25)?,
-            hf_total_params: row.get(26)?,
-            hf_active_params: row.get(27)?,
-            hf_architecture_type: row.get(28)?,
-            hf_context_length: row.get(29)?,
-            hf_num_layers: row.get(30)?,
-            hf_last_modified: row.get(31)?,
-            spec_decoding: row.get(32)?,
-            created_at: row.get(33)?,
-            updated_at: row.get(34)?,
-        })
-    })?;
+    let sql = format!(
+        "SELECT {} FROM model_configs WHERE repo_id = ?1",
+        ModelConfigRecord::COLUMNS
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query_map([repo_id], ModelConfigRecord::from_row)?;
     match rows.next() {
         Some(row) => Ok(Some(row?)),
         None => Ok(None),
@@ -225,56 +131,9 @@ pub fn get_model_config_by_repo_id(
 
 /// Get all stored model configurations.
 pub fn get_all_model_configs(conn: &Connection) -> Result<Vec<ModelConfigRecord>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, repo_id, display_name, backend, gpu_variant, gpu_device, enabled, selected_quant,
-                selected_mmproj, selected_mtp_model, context_length, num_parallel, kv_unified, gpu_layers,
-                cache_type_k, cache_type_v, port, args,
-                sampling, modalities, profile, api_name, health_check,
-                hf_format, hf_base_model, hf_pipeline_tag, hf_total_params,
-                hf_active_params, hf_architecture_type, hf_context_length,
-                hf_num_layers, hf_last_modified, spec_decoding,
-                created_at, updated_at
-         FROM model_configs",
-    )?;
-    let rows = stmt.query_map([], |row| {
-        Ok(ModelConfigRecord {
-            id: row.get(0)?,
-            repo_id: row.get(1)?,
-            display_name: row.get(2)?,
-            backend: row.get(3)?,
-            gpu_variant: row.get(4)?,
-            gpu_device: row.get(5)?,
-            enabled: row.get::<_, i32>(6)? != 0,
-            selected_quant: row.get(7)?,
-            selected_mmproj: row.get(8)?,
-            selected_mtp_model: row.get(9)?,
-            context_length: row.get(10)?,
-            num_parallel: row.get(11)?,
-            kv_unified: row.get::<_, i32>(12)? != 0,
-            gpu_layers: row.get(13)?,
-            cache_type_k: row.get(14)?,
-            cache_type_v: row.get(15)?,
-            port: row.get(16)?,
-            args: row.get(17)?,
-            sampling: row.get(18)?,
-            modalities: row.get(19)?,
-            profile: row.get(20)?,
-            api_name: row.get(21)?,
-            health_check: row.get(22)?,
-            hf_format: row.get(23)?,
-            hf_base_model: row.get(24)?,
-            hf_pipeline_tag: row.get(25)?,
-            hf_total_params: row.get(26)?,
-            hf_active_params: row.get(27)?,
-            hf_architecture_type: row.get(28)?,
-            hf_context_length: row.get(29)?,
-            hf_num_layers: row.get(30)?,
-            hf_last_modified: row.get(31)?,
-            spec_decoding: row.get(32)?,
-            created_at: row.get(33)?,
-            updated_at: row.get(34)?,
-        })
-    })?;
+    let sql = format!("SELECT {} FROM model_configs", ModelConfigRecord::COLUMNS);
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], ModelConfigRecord::from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Into::into)
 }
@@ -283,4 +142,25 @@ pub fn get_all_model_configs(conn: &Connection) -> Result<Vec<ModelConfigRecord>
 pub fn delete_model_config(conn: &Connection, id: i64) -> Result<()> {
     conn.execute("DELETE FROM model_configs WHERE id = ?1", [id])?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::db::queries::types::ModelConfigRecord;
+
+    #[test]
+    fn test_model_config_columns_match_insert_columns() {
+        let select: Vec<&str> = ModelConfigRecord::COLUMNS
+            .split(',')
+            .map(str::trim)
+            .collect();
+        let insert: Vec<&str> = ModelConfigRecord::INSERT_COLUMNS
+            .split(',')
+            .map(str::trim)
+            .collect();
+        assert_eq!(select.len(), 35);
+        assert_eq!(insert.len(), 34);
+        assert_eq!(select[0], "id");
+        assert_eq!(&select[1..], insert.as_slice());
+    }
 }

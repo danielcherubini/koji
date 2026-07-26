@@ -128,54 +128,22 @@ pub fn update_verification(
 
 /// Get all stored file records for a model.
 pub fn get_model_files(conn: &Connection, model_id: i64) -> Result<Vec<ModelFileRecord>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, model_id, repo_id, filename, quant, lfs_oid, size_bytes, downloaded_at,
-                last_verified_at, verified_ok, verify_error
-         FROM model_files WHERE model_id = ?1",
-    )?;
-    let rows = stmt.query_map([model_id], |row| {
-        let verified_ok: Option<i64> = row.get(9)?;
-        Ok(ModelFileRecord {
-            id: row.get(0)?,
-            model_id: row.get(1)?,
-            repo_id: row.get(2)?,
-            filename: row.get(3)?,
-            quant: row.get(4)?,
-            lfs_oid: row.get(5)?,
-            size_bytes: row.get(6)?,
-            downloaded_at: row.get(7)?,
-            last_verified_at: row.get(8)?,
-            verified_ok: verified_ok.map(|v| v != 0),
-            verify_error: row.get(10)?,
-        })
-    })?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {} FROM model_files WHERE model_id = ?1",
+        ModelFileRecord::COLUMNS
+    ))?;
+    let rows = stmt.query_map([model_id], ModelFileRecord::from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Into::into)
 }
 
 /// Get all stored file records across all models.
 pub fn get_all_model_files(conn: &Connection) -> Result<Vec<ModelFileRecord>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, model_id, repo_id, filename, quant, lfs_oid, size_bytes, downloaded_at,
-                last_verified_at, verified_ok, verify_error
-         FROM model_files",
-    )?;
-    let rows = stmt.query_map([], |row| {
-        let verified_ok: Option<i64> = row.get(9)?;
-        Ok(ModelFileRecord {
-            id: row.get(0)?,
-            model_id: row.get(1)?,
-            repo_id: row.get(2)?,
-            filename: row.get(3)?,
-            quant: row.get(4)?,
-            lfs_oid: row.get(5)?,
-            size_bytes: row.get(6)?,
-            downloaded_at: row.get(7)?,
-            last_verified_at: row.get(8)?,
-            verified_ok: verified_ok.map(|v| v != 0),
-            verify_error: row.get(10)?,
-        })
-    })?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {} FROM model_files",
+        ModelFileRecord::COLUMNS
+    ))?;
+    let rows = stmt.query_map([], ModelFileRecord::from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Into::into)
 }

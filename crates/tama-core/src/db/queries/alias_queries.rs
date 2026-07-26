@@ -17,6 +17,30 @@ pub struct AliasResponse {
     pub updated_at: String,
 }
 
+impl AliasResponse {
+    /// Select list including the computed `model_name` column. Requires the `FROM_JOIN` clause.
+    pub(crate) const COLUMNS: &str = "a.id, a.name, a.model_id, COALESCE(m.api_name, m.repo_id), \
+         a.description, a.enabled, a.created_at, a.updated_at";
+
+    /// Shared FROM/JOIN clause every `AliasResponse` query uses.
+    pub(crate) const FROM_JOIN: &str =
+        "FROM model_aliases a JOIN model_configs m ON m.id = a.model_id";
+
+    /// Map a row selected with `COLUMNS` order into a response.
+    pub(crate) fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Self> {
+        Ok(AliasResponse {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            model_id: row.get(2)?,
+            model_name: row.get(3)?,
+            description: row.get(4)?,
+            enabled: row.get::<_, i32>(5)? != 0,
+            created_at: row.get(6)?,
+            updated_at: row.get(7)?,
+        })
+    }
+}
+
 /// Load all aliases joined with model_configs to get the resolved model name.
 /// Used by ProxyState to populate the in-memory cache.
 /// Returns (alias_name, resolved_model_name) pairs.
@@ -39,54 +63,26 @@ pub fn load_aliases_for_cache(conn: &Connection) -> Result<Vec<(String, String)>
 
 /// Load all aliases with model names for the web API.
 pub fn get_all_aliases(conn: &Connection) -> Result<Vec<AliasResponse>> {
-    let mut stmt = conn.prepare(
-        "SELECT a.id, a.name, a.model_id,
-                COALESCE(m.api_name, m.repo_id),
-                a.description, a.enabled, a.created_at, a.updated_at
-         FROM model_aliases a
-         JOIN model_configs m ON m.id = a.model_id
-         ORDER BY a.name ASC",
-    )?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {} {} ORDER BY a.name ASC",
+        AliasResponse::COLUMNS,
+        AliasResponse::FROM_JOIN
+    ))?;
 
-    let rows = stmt.query_map([], |row| {
-        Ok(AliasResponse {
-            id: row.get(0)?,
-            name: row.get(1)?,
-            model_id: row.get(2)?,
-            model_name: row.get(3)?,
-            description: row.get(4)?,
-            enabled: row.get::<_, i32>(5)? != 0,
-            created_at: row.get(6)?,
-            updated_at: row.get(7)?,
-        })
-    })?;
+    let rows = stmt.query_map([], AliasResponse::from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Into::into)
 }
 
 /// Get a single alias by integer id.
 pub fn get_alias_by_id(conn: &Connection, id: i64) -> Result<Option<AliasResponse>> {
-    let mut stmt = conn.prepare(
-        "SELECT a.id, a.name, a.model_id,
-                COALESCE(m.api_name, m.repo_id),
-                a.description, a.enabled, a.created_at, a.updated_at
-         FROM model_aliases a
-         JOIN model_configs m ON m.id = a.model_id
-         WHERE a.id = ?1",
-    )?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {} {} WHERE a.id = ?1",
+        AliasResponse::COLUMNS,
+        AliasResponse::FROM_JOIN
+    ))?;
 
-    let mut rows = stmt.query_map([id], |row| {
-        Ok(AliasResponse {
-            id: row.get(0)?,
-            name: row.get(1)?,
-            model_id: row.get(2)?,
-            model_name: row.get(3)?,
-            description: row.get(4)?,
-            enabled: row.get::<_, i32>(5)? != 0,
-            created_at: row.get(6)?,
-            updated_at: row.get(7)?,
-        })
-    })?;
+    let mut rows = stmt.query_map([id], AliasResponse::from_row)?;
     match rows.next() {
         Some(row) => Ok(Some(row?)),
         None => Ok(None),

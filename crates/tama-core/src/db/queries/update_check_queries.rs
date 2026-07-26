@@ -45,23 +45,11 @@ pub fn upsert_update_check(conn: &Connection, params: UpdateCheckParams) -> Resu
 }
 
 pub fn get_all_update_checks(conn: &Connection) -> Result<Vec<UpdateCheckRecord>> {
-    let mut stmt = conn.prepare(
-        "SELECT item_type, item_id, current_version, latest_version, update_available, status, error_message, details_json, checked_at
-         FROM update_checks ORDER BY item_type, item_id",
-    )?;
-    let rows = stmt.query_map([], |row| {
-        Ok(UpdateCheckRecord {
-            item_type: row.get(0)?,
-            item_id: row.get(1)?,
-            current_version: row.get(2)?,
-            latest_version: row.get(3)?,
-            update_available: row.get::<_, i32>(4)? != 0,
-            status: row.get(5)?,
-            error_message: row.get(6)?,
-            details_json: row.get(7)?,
-            checked_at: row.get(8)?,
-        })
-    })?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {} FROM update_checks ORDER BY item_type, item_id",
+        UpdateCheckRecord::COLUMNS
+    ))?;
+    let rows = stmt.query_map([], UpdateCheckRecord::from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Into::into)
 }
@@ -71,23 +59,11 @@ pub fn get_update_check(
     item_type: &str,
     item_id: &str,
 ) -> Result<Option<UpdateCheckRecord>> {
-    let mut stmt = conn.prepare(
-        "SELECT item_type, item_id, current_version, latest_version, update_available, status, error_message, details_json, checked_at
-         FROM update_checks WHERE item_type = ?1 AND item_id = ?2",
-    )?;
-    let mut rows = stmt.query_map((item_type, item_id), |row| {
-        Ok(UpdateCheckRecord {
-            item_type: row.get(0)?,
-            item_id: row.get(1)?,
-            current_version: row.get(2)?,
-            latest_version: row.get(3)?,
-            update_available: row.get::<_, i32>(4)? != 0,
-            status: row.get(5)?,
-            error_message: row.get(6)?,
-            details_json: row.get(7)?,
-            checked_at: row.get(8)?,
-        })
-    })?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {} FROM update_checks WHERE item_type = ?1 AND item_id = ?2",
+        UpdateCheckRecord::COLUMNS
+    ))?;
+    let mut rows = stmt.query_map((item_type, item_id), UpdateCheckRecord::from_row)?;
     match rows.next() {
         Some(row) => Ok(Some(row?)),
         None => Ok(None),

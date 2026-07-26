@@ -43,23 +43,11 @@ pub fn upsert_tts_config(conn: &Connection, record: &TtsConfigRecord) -> Result<
 
 /// Get the TTS configuration by engine name. Returns None if not found.
 pub fn get_tts_config(conn: &Connection, engine: &str) -> Result<Option<TtsConfigRecord>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, engine, default_voice, speed, format, enabled,
-                created_at, updated_at
-         FROM tts_configs WHERE engine = ?1",
-    )?;
-    let mut rows = stmt.query_map([engine], |row| {
-        Ok(TtsConfigRecord {
-            id: row.get(0)?,
-            engine: row.get(1)?,
-            default_voice: row.get(2)?,
-            speed: row.get(3)?,
-            format: row.get(4)?,
-            enabled: row.get::<_, i32>(5)? != 0,
-            created_at: row.get(6)?,
-            updated_at: row.get(7)?,
-        })
-    })?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {} FROM tts_configs WHERE engine = ?1",
+        TtsConfigRecord::COLUMNS
+    ))?;
+    let mut rows = stmt.query_map([engine], TtsConfigRecord::from_row)?;
     match rows.next() {
         Some(row) => Ok(Some(row?)),
         None => Ok(None),
