@@ -13,8 +13,8 @@ Plans for features, refactors, and bug fixes in the Tama project.
 ## Quick Stats
 
 - **Total Plans**: 75
-- **Backlog**: 9
-- **Completed**: 65 ✅
+- **Backlog**: 8
+- **Completed**: 66 ✅
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan.
 
@@ -26,7 +26,6 @@ Current plans ready for execution, ordered by dependency-first cascade priority:
 
 | Plan | Description | Findings |
 |------|-------------|----------|
-| [DB Query from_row](plan-171-db-query-from-row.md) | Per-record from_row + COLUMNS const for 6 record types | F30 |
 | [File Splits Wave 2](plan-172-file-splits-wave2.md) | Split pull_queue.rs, api/updates.rs, auth.rs into module dirs | F11 |
 | [Naming Domain Terms](plan-173-naming-domain-terms.md) | GpuType→GpuVariant, server→backend, download→pull, etc. | F27, F28, F40 |
 | [Typed API Responses](plan-174-typed-api-responses.md) | StatusResponse/ModelEntry/OkResponse structs with golden shape tests | F19 |
