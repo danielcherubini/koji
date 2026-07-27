@@ -42,7 +42,7 @@ fn log_warn(msg: &str) {
 }
 
 mod components;
-mod gpu_types;
+mod core_mirrors;
 mod pages;
 pub mod utils;
 
@@ -82,7 +82,7 @@ pub fn App() -> impl IntoView {
 
     // Open SSE connection on app mount to receive pull events.
     // Handle creation failure gracefully — show offline indicator and retry periodically.
-    let es_result = web_sys::EventSource::new("/tama/v1/downloads/events");
+    let es_result = web_sys::EventSource::new("/tama/v1/pulls/events");
     let es: Option<web_sys::EventSource> = match es_result {
         Ok(es) => Some(es),
         Err(err) => {
@@ -94,7 +94,7 @@ pub fn App() -> impl IntoView {
                 "Failed to create EventSource for pull events: {err_msg}. Showing offline indicator."
             ));
             // Retry periodically in the background every 5 seconds.
-            let retry_url = "/tama/v1/downloads/events".to_string();
+            let retry_url = "/tama/v1/pulls/events".to_string();
             let toast_store_for_retry = toast_store.clone();
             wasm_bindgen_futures::spawn_local(async move {
                 let mut attempt = 0u32;
@@ -227,7 +227,7 @@ pub fn App() -> impl IntoView {
                             let job_id = event_json.job_id.clone();
                             wasm_bindgen_futures::spawn_local(async move {
                                 if let Ok(resp) =
-                                    utils::get_request("/tama/v1/downloads/active").send().await
+                                    utils::get_request("/tama/v1/pulls/active").send().await
                                 {
                                     if let Ok(data) =
                                         resp.json::<pages::downloads::PullsActiveResponse>().await
@@ -256,7 +256,7 @@ pub fn App() -> impl IntoView {
                                 * pages::downloads::HISTORY_LIMIT.get_untracked();
                             wasm_bindgen_futures::spawn_local(async move {
                                 if let Ok(resp) = utils::get_request(&format!(
-                                    "/tama/v1/downloads/history?limit={}&offset={}",
+                                    "/tama/v1/pulls/history?limit={}&offset={}",
                                     limit, offset
                                 ))
                                 .send()

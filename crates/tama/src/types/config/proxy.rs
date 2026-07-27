@@ -47,8 +47,11 @@ pub struct ProxyConfig {
     #[serde(default = "default_metrics_retention")]
     pub metrics_retention_secs: u64,
     /// How often the pull queue processor checks for new items (in seconds).
-    #[serde(default = "default_download_queue_poll_interval")]
-    pub download_queue_poll_interval_secs: u64,
+    #[serde(
+        default = "default_pull_queue_poll_interval",
+        alias = "download_queue_poll_interval_secs"
+    )]
+    pub pull_queue_poll_interval_secs: u64,
     /// Maximum number of models that can be loaded simultaneously **per GPU
     /// device**. When a new model is requested and the limit is reached for
     /// that GPU, the least-recently-used (LRU) model on that GPU is
@@ -107,7 +110,7 @@ fn default_metrics_retention() -> u64 {
     86_400
 }
 
-fn default_download_queue_poll_interval() -> u64 {
+fn default_pull_queue_poll_interval() -> u64 {
     2
 }
 
@@ -130,7 +133,7 @@ mod tests {
             circuit_breaker_threshold: 5,
             circuit_breaker_cooldown_seconds: 300,
             metrics_retention_secs: 86400,
-            download_queue_poll_interval_secs: 2,
+            pull_queue_poll_interval_secs: 2,
             max_loaded_models: 1,
             authenticator_url: None,
             authenticator_skip_paths: Vec::new(),

@@ -25,8 +25,8 @@ struct BenchBackend {
     load_time_ms: f64,
 }
 
-/// Detect GPU type from backend path and NVIDIA availability
-fn _detect_gpu_type(backend_path: &str, has_nvidia: bool) -> String {
+/// Detect GPU variant label from backend path and NVIDIA availability
+pub fn detect_gpu_variant_label(backend_path: &str, has_nvidia: bool) -> String {
     let path_lower = backend_path.to_lowercase();
     if path_lower.contains("vulkan") {
         "Vulkan".to_string()
@@ -89,26 +89,26 @@ async fn _start_backend(
     backend_name: &str,
     ctx_override: Option<u32>,
 ) -> Result<BenchBackend> {
-    info!("Starting backend for server: {}", backend_name);
+    info!("Starting backend for model: {}", backend_name);
 
     let db_dir = crate::config::Config::config_dir()?;
     let OpenResult { conn, .. } = crate::db::open(&db_dir)?;
     let model_configs = crate::db::load_model_configs(&conn)?;
 
-    let (server_config, backend_config) = config
+    let (model_config, backend_config) = config
         .resolve_backend(&model_configs, backend_name)
-        .with_context(|| "Failed to resolve server config for bench")?;
+        .with_context(|| "Failed to resolve model config for bench")?;
 
     let spawn_start = Instant::now();
 
     // Open BackendManager for resolution
     let manager = crate::backends::BackendManager::open(&db_dir)?;
-    let gpu_variant = server_config
+    let gpu_variant = model_config
         .gpu_variant
         .clone()
-        .unwrap_or(crate::gpu::GpuType::CpuOnly);
+        .unwrap_or(crate::gpu::GpuVariant::CpuOnly);
     let default_args =
-        manager.get_default_args(&server_config.backend, gpu_variant.variant_folder());
+        manager.get_default_args(&model_config.backend, gpu_variant.variant_folder());
 
     // Allocate a free port
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -117,14 +117,14 @@ async fn _start_backend(
 
     // Build full args, then overwrite host/port removing any duplicates
     let mut args =
-        config.build_full_args(server_config, backend_config, ctx_override, &default_args)?;
+        config.build_full_args(model_config, backend_config, ctx_override, &default_args)?;
     _override_arg(&mut args, "--host", "127.0.0.1");
     _override_arg(&mut args, "--port", &port.to_string());
 
     // Resolve the backend binary path: DB takes priority, config.path is fallback.
     let backend_path = config.resolve_backend_path(
-        &server_config.backend,
-        server_config.gpu_variant.as_ref(),
+        &model_config.backend,
+        model_config.gpu_variant.as_ref(),
         &manager,
     )?;
 
@@ -235,16 +235,16 @@ async fn _stop_backend(backend: &BenchBackend) -> Result<()> {
     Ok(())
 }
 
-/// Run a benchmark against a named server config and return a complete report.
+/// Run a benchmark against a named model config and return a complete report.
 ///
-/// Resolves the server configuration, spawns the backend process, runs warmup
+/// Resolves the model configuration, spawns the backend process, runs warmup
 /// and measurement iterations for every `(pp_size, tg_size)` combination in
 /// `bench_config`, collects statistics, and tears the backend down before
 /// returning.
 ///
 /// # Parameters
-/// - `config` — workspace [`Config`] used to resolve the server and backend settings.
-/// - `backend_name` — name of the server entry in `config.models` to benchmark.
+/// - `config` — workspace [`Config`] used to resolve the model and backend settings.
+/// - `backend_name` — name of the model entry in `config.models` to benchmark.
 /// - `bench_config` — benchmark parameters: PP/TG sizes, run counts, warmup
 ///   iterations, and optional context-size override.
 ///
@@ -270,18 +270,18 @@ pub async fn run_benchmark(
     let OpenResult { conn, .. } = crate::db::open(&db_dir)?;
     let model_configs = crate::db::load_model_configs(&conn)?;
 
-    let (server_config, backend_config) = config.resolve_backend(&model_configs, backend_name)?;
+    let (model_config, backend_config) = config.resolve_backend(&model_configs, backend_name)?;
     let model_info = ModelInfo {
         name: backend_name.to_string(),
-        model_id: server_config.model.clone(),
-        quant: server_config.quant.clone(),
-        backend: server_config.backend.clone(),
-        gpu_type: _detect_gpu_type(
+        model_id: model_config.model.clone(),
+        quant: model_config.quant.clone(),
+        backend: model_config.backend.clone(),
+        gpu_variant: detect_gpu_variant_label(
             backend_config.path.as_deref().unwrap_or(""),
             crate::gpu::query_vram().is_some(),
         ),
-        context_length: bench_config.ctx_override.or(server_config.context_length),
-        gpu_layers: _extract_gpu_layers(&server_config.args),
+        context_length: bench_config.ctx_override.or(model_config.context_length),
+        gpu_layers: _extract_gpu_layers(&model_config.args),
     };
 
     // Start backend
@@ -365,22 +365,22 @@ mod tests {
 
     /// Verifies that a backend binary path containing "cuda" is detected as CUDA.
     #[test]
-    fn test_gpu_type_from_path_cuda() {
-        let result = _detect_gpu_type("llama-server-cuda", false);
+    fn test_detect_gpu_variant_label_cuda() {
+        let result = detect_gpu_variant_label("llama-server-cuda", false);
         assert_eq!(result, "CUDA");
     }
 
     /// Verifies that a backend binary path containing "vulkan" is detected as Vulkan.
     #[test]
-    fn test_gpu_type_from_path_vulkan() {
-        let result = _detect_gpu_type("llama-server-vulkan", false);
+    fn test_detect_gpu_variant_label_vulkan() {
+        let result = detect_gpu_variant_label("llama-server-vulkan", false);
         assert_eq!(result, "Vulkan");
     }
 
     /// Verifies that an unrecognised backend path without NVIDIA presence defaults to CPU.
     #[test]
-    fn test_gpu_type_from_path_default() {
-        let result = _detect_gpu_type("llama-server", false);
+    fn test_detect_gpu_variant_label_default() {
+        let result = detect_gpu_variant_label("llama-server", false);
         assert_eq!(result, "CPU");
     }
 

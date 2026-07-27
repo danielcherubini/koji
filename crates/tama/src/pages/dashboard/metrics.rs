@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::gpu_types::{GpuVendor, ModelState};
+use crate::core_mirrors::{GpuVendor, ModelState};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkStats {
@@ -55,7 +55,7 @@ pub struct MetricCurrent {
     #[serde(default)]
     pub gpus: Vec<GpuDeviceStats>,
     #[serde(default)]
-    pub models: Vec<ModelStatus>,
+    pub models: Vec<ModelStateSnapshot>,
     pub models_loaded: u64,
     #[serde(default)]
     pub tps: Option<f32>,
@@ -104,13 +104,13 @@ pub struct VramInfo {
     pub total_mib: u64,
 }
 
-/// Frontend mirror of `tama_core::gpu::ModelStatus`.
+/// Frontend mirror of `tama_core::models::ModelStateSnapshot`.
 ///
 /// Kept private to this module so the dashboard owns its wire shape; the only
 /// contract with the backend is the JSON field names, which must match the
 /// server-side struct exactly.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ModelStatus {
+pub struct ModelStateSnapshot {
     pub id: String,
     #[serde(default)]
     pub db_id: Option<i64>,
@@ -167,13 +167,13 @@ pub fn format_number(n: u64) -> String {
 /// "X loaded" summary heading. Extracted as a free function so it can
 /// be unit-tested independently of the Leptos reactive view.
 #[allow(dead_code)] // Used only by unit tests in dashboard/tests.rs
-pub fn active_models(models: &[ModelStatus]) -> Vec<ModelStatus> {
+pub fn active_models(models: &[ModelStateSnapshot]) -> Vec<ModelStateSnapshot> {
     models
         .iter()
         .filter(|m| {
             matches!(
                 m.state,
-                ModelState::Ready | ModelState::Loading | ModelState::Unloading
+                ModelState::Ready | ModelState::Starting | ModelState::Unloading
             )
         })
         .cloned()
@@ -186,13 +186,13 @@ pub fn active_models(models: &[ModelStatus]) -> Vec<ModelStatus> {
 /// This matches the behavior of `active_models()` which only considers
 /// "ready", "loading", and "unloading" as active states.
 #[allow(dead_code)] // Used only by unit tests in dashboard/tests.rs
-pub fn inactive_models(models: &[ModelStatus]) -> Vec<ModelStatus> {
+pub fn inactive_models(models: &[ModelStateSnapshot]) -> Vec<ModelStateSnapshot> {
     models
         .iter()
         .filter(|m| {
             !matches!(
                 m.state,
-                ModelState::Ready | ModelState::Loading | ModelState::Unloading
+                ModelState::Ready | ModelState::Starting | ModelState::Unloading
             )
         })
         .cloned()
@@ -201,7 +201,7 @@ pub fn inactive_models(models: &[ModelStatus]) -> Vec<ModelStatus> {
 
 /// Returns the preferred display name for a model, preferring `display_name`,
 /// then `api_name`, falling back to the model `id` otherwise.
-pub fn model_display_name(m: &ModelStatus) -> String {
+pub fn model_display_name(m: &ModelStateSnapshot) -> String {
     m.display_name
         .as_deref()
         .or(m.api_name.as_deref())
@@ -211,7 +211,7 @@ pub fn model_display_name(m: &ModelStatus) -> String {
 
 /// Sort models by base model, then by display name as a tiebreaker.
 #[allow(dead_code)] // Used only by unit tests in dashboard/tests.rs
-pub fn model_sort_key(m: &ModelStatus) -> (String, String) {
+pub fn model_sort_key(m: &ModelStateSnapshot) -> (String, String) {
     let primary = m
         .hf_base_model
         .clone()

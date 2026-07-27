@@ -53,7 +53,7 @@ pub struct LlamaBenchConfig {
     /// only expose a single matched-pair value (e.g. "f16", "q8_0", "q4_0").
     pub kv_cache_type: Option<String>,
     /// Depth sweep (maps to -d). Tokens pre-filled into KV cache before timing.
-    /// Critical for evaluating KV-cache quantisation at non-trivial context.
+    /// Critical for evaluating KV-cache quantization at non-trivial context.
     pub depth: Vec<u32>,
     /// Flash attention toggle (maps to -fa 0|1). None = llama-bench default.
     pub flash_attn: Option<bool>,
@@ -94,20 +94,17 @@ pub async fn run_llama_bench(
         model_id
     };
 
-    let (server_config, _backend_config) = config
+    let (model_config, _backend_config) = config
         .resolve_backend(&model_configs, resolved_id)
         .context("Failed to resolve server config for benchmark")?;
 
     let model_path =
         resolve_model_path(config, &db_dir, &conn, &model_configs, resolved_id, quant)?;
 
-    let target_backend = backend_name.unwrap_or(&server_config.backend);
+    let target_backend = backend_name.unwrap_or(&model_config.backend);
     let manager = crate::backends::BackendManager::open(&db_dir)?;
-    let backend_path = config.resolve_backend_path(
-        target_backend,
-        server_config.gpu_variant.as_ref(),
-        &manager,
-    )?;
+    let backend_path =
+        config.resolve_backend_path(target_backend, model_config.gpu_variant.as_ref(), &manager)?;
 
     let bench_binary = discovery::find_llama_bench(&backend_path).context(format!(
         "llama-bench not found for backend '{}'. Install llama.cpp from source or set LLAMA_BENCH_PATH",
@@ -184,11 +181,11 @@ pub async fn run_llama_bench(
 
     let model_info = ModelInfo {
         name: display_name,
-        model_id: server_config.model.clone(),
-        quant: quant.map(String::from).or(server_config.quant.clone()),
-        backend: server_config.backend.clone(),
-        gpu_type: discovery::detect_gpu_type(&backend_path),
-        context_length: bench_config.ctx_override.or(server_config.context_length),
+        model_id: model_config.model.clone(),
+        quant: quant.map(String::from).or(model_config.quant.clone()),
+        backend: model_config.backend.clone(),
+        gpu_variant: discovery::detect_gpu_variant_label(&backend_path),
+        context_length: bench_config.ctx_override.or(model_config.context_length),
         gpu_layers: None,
     };
 

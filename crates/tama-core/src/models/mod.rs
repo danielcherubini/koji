@@ -5,15 +5,17 @@ pub mod manager;
 pub mod pull;
 pub mod registry;
 pub mod search;
+pub mod types;
 pub mod update;
 pub mod verify;
 
-pub use card::{card_slug, ModelCard, ModelMeta, QuantInfo};
+pub use card::{card_slug, ModelMeta, ModelToml, QuantInfo};
 pub use config_key::ConfigKey;
 pub use manager::ModelManager;
 pub use pull::infer_quant_from_filename;
 pub use registry::{InstalledModel, ModelRegistry};
 pub use search::{search_models, SearchResult, SortBy};
+pub use types::ModelStateSnapshot;
 
 #[cfg(test)]
 mod manager_tests;

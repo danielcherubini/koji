@@ -34,12 +34,12 @@ impl From<BackendConfig> for tama_core::config::BackendConfig {
             path: b.path,
             version: b.version,
             gpu_variant: b.gpu_variant.map(|s| {
-                tama_core::gpu::GpuType::from_str(&s).unwrap_or_else(|_| {
+                tama_core::gpu::GpuVariant::from_str(&s).unwrap_or_else(|_| {
                     tracing::warn!(
                         "unknown gpu_variant '{}' in backend config; treating as custom",
                         s
                     );
-                    tama_core::gpu::GpuType::Custom
+                    tama_core::gpu::GpuVariant::Custom
                 })
             }),
         }

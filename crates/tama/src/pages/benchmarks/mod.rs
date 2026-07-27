@@ -804,7 +804,7 @@ pub fn Benchmarks() -> impl IntoView {
             let mi_name = model_info.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let mi_quant = model_info.get("quant").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let mi_backend = model_info.get("backend").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let mi_gpu = model_info.get("gpu_type").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let mi_gpu = model_info.get("gpu_variant").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let mi_ctx = model_info.get("context_length").and_then(|v| v.as_u64());
             let vram_used = vram.get("used_mib").and_then(|v| v.as_u64());
             let vram_total = vram.get("total_mib").and_then(|v| v.as_u64());

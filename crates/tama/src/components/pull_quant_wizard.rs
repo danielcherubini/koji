@@ -528,7 +528,7 @@ fn spawn_pull_events_listener(
     let job_ids: std::collections::HashSet<String> =
         entries.iter().map(|e| e.job_id.clone()).collect();
 
-    let es = match web_sys::EventSource::new("/tama/v1/downloads/events") {
+    let es = match web_sys::EventSource::new("/tama/v1/pulls/events") {
         Ok(es) => es,
         Err(e) => {
             web_sys::console::warn_1(&format!("[events] failed to connect: {:?}", e).into());

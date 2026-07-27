@@ -1,8 +1,8 @@
 //! Update check and apply handlers for backends and models.
 //!
-//! Exposes `get_updates`, `trigger_check`, `check_single`, `apply_backend_update`,
-//! and `apply_model_update` via Axum route handlers, plus an SSE endpoint
-//! for live update-check progress events.
+//! Exposes `get_updates`, `trigger_check`, `check_item_for_update`,
+//! `apply_backend_update`, and `apply_model_update` via Axum route handlers,
+//! plus an SSE endpoint for live update-check progress events.
 
 mod apply;
 mod check;
@@ -15,7 +15,7 @@ pub use apply::{
     apply_backend_update, apply_model_update, ModelUpdateRequest, ModelUpdateResponse,
 };
 pub use check::{
-    check_single, get_updates, trigger_check, CheckResponse, CheckSingleQuery, QuantDetailJson,
-    UpdateCheckDto, UpdatesListResponse,
+    check_item_for_update, get_updates, trigger_check, CheckResponse, CheckSingleQuery,
+    QuantDetailJson, UpdateCheckDto, UpdatesListResponse,
 };
 pub use events::update_events_sse;

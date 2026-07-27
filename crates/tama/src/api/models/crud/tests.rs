@@ -1258,7 +1258,7 @@ fn existing_config_rich() -> ModelConfig {
     );
     ModelConfig {
         backend: "llama-cpp".into(),
-        gpu_variant: Some(tama_core::gpu::GpuType::Cuda {
+        gpu_variant: Some(tama_core::gpu::GpuVariant::Cuda {
             version: String::new(),
         }),
         gpu_device: Some("0".into()),
@@ -1310,7 +1310,7 @@ fn test_apply_model_patch_all_none_preserves_all_fields() {
     assert_eq!(result.backend, "llama-cpp");
     assert_eq!(
         result.gpu_variant,
-        Some(tama_core::gpu::GpuType::Cuda {
+        Some(tama_core::gpu::GpuVariant::Cuda {
             version: String::new()
         })
     );
@@ -1863,14 +1863,14 @@ fn test_apply_model_patch_gpu_device_clear_sentinel() {
 fn test_apply_model_patch_gpu_variant_override() {
     let existing = existing_config_rich();
     let mut body = patch_body_all_none();
-    body.gpu_variant = Some(tama_core::gpu::GpuType::RocM {
+    body.gpu_variant = Some(tama_core::gpu::GpuVariant::RocM {
         version: String::new(),
     });
 
     let result = apply_model_patch(body, &existing);
     assert_eq!(
         result.gpu_variant,
-        Some(tama_core::gpu::GpuType::RocM {
+        Some(tama_core::gpu::GpuVariant::RocM {
             version: String::new()
         })
     );

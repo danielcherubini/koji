@@ -4,15 +4,15 @@ use anyhow::Result;
 
 use crate::proxy::ProxyState;
 
-pub mod download;
 pub mod handlers;
+pub mod start;
 mod verify;
 
 #[cfg(test)]
 mod tests;
 
-pub use download::start_pull_from_queue;
 pub use handlers::{handle_pull_job_stream, handle_tama_get_pull_job, handle_tama_pull_model};
+pub use start::start_pull_from_queue;
 #[cfg(test)]
 pub(crate) use verify::_setup_model_after_pull_with_config;
 

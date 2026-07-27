@@ -170,7 +170,7 @@ impl BackendState {
         }
     }
 
-    /// Check if the server has failed and the cooldown has elapsed.
+    /// Check if the backend has failed and the cooldown has elapsed.
     pub fn can_reload(&self, cooldown_seconds: u64) -> bool {
         match self {
             BackendState::Failed { .. } => false,
@@ -595,10 +595,10 @@ mod tests {
             tokio::sync::watch::channel::<HashMap<String, LatestInferenceStats>>(HashMap::new());
         // Initial value is empty
         assert!(rx.borrow_and_update().is_empty());
-        // Send stats for a server
+        // Send stats for a backend
         let mut map = HashMap::new();
         map.insert(
-            "server-a".to_string(),
+            "backend-a".to_string(),
             LatestInferenceStats {
                 tps: Some(42.0),
                 prompt_tps: Some(100.0),
@@ -612,7 +612,7 @@ mod tests {
         // Verify
         let received = rx.borrow_and_update();
         assert_eq!(received.len(), 1);
-        let stats = received.get("server-a").unwrap();
+        let stats = received.get("backend-a").unwrap();
         assert_eq!(stats.tps, Some(42.0));
         assert_eq!(stats.cache_hit_pct, Some(75.0));
         assert!(stats.spec_decoding_active);
@@ -620,14 +620,14 @@ mod tests {
     }
 
     #[test]
-    fn test_inference_stats_per_server_isolation() {
+    fn test_inference_stats_per_backend_isolation() {
         let (tx, mut rx) =
             tokio::sync::watch::channel::<HashMap<String, LatestInferenceStats>>(HashMap::new());
 
-        // Insert stats for server-a
+        // Insert stats for backend-a
         let mut map = HashMap::new();
         map.insert(
-            "server-a".to_string(),
+            "backend-a".to_string(),
             LatestInferenceStats {
                 tps: Some(50.0),
                 prompt_tps: Some(200.0),
@@ -639,10 +639,10 @@ mod tests {
         );
         tx.send_replace(map);
 
-        // Insert stats for server-b
+        // Insert stats for backend-b
         let mut map2 = rx.borrow_and_update().clone();
         map2.insert(
-            "server-b".to_string(),
+            "backend-b".to_string(),
             LatestInferenceStats {
                 tps: Some(30.0),
                 prompt_tps: Some(100.0),
@@ -654,15 +654,15 @@ mod tests {
         );
         tx.send_replace(map2);
 
-        // Verify both servers have independent stats
+        // Verify both backends have independent stats
         let received = rx.borrow_and_update();
         assert_eq!(received.len(), 2);
 
-        let a = received.get("server-a").unwrap();
+        let a = received.get("backend-a").unwrap();
         assert_eq!(a.tps, Some(50.0));
         assert!(a.spec_decoding_active);
 
-        let b = received.get("server-b").unwrap();
+        let b = received.get("backend-b").unwrap();
         assert_eq!(b.tps, Some(30.0));
         assert!(!b.spec_decoding_active);
         assert!(b.spec_accept_pct.is_none());

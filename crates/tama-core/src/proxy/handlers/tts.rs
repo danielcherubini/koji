@@ -56,7 +56,7 @@ fn resolve_model_name(model: &str) -> &str {
     }
 }
 
-/// Ensure a TTS backend is loaded and return its server URL.
+/// Ensure a TTS backend is loaded and return its backend URL.
 async fn ensure_tts_server(state: &ProxyState, model_name: &str) -> anyhow::Result<String> {
     // Resolve backend name from model name
     let backend_name = match model_name.to_lowercase().as_str() {
@@ -77,7 +77,7 @@ async fn ensure_tts_server(state: &ProxyState, model_name: &str) -> anyhow::Resu
     // Not loaded — try to load it
     state.load_tts_backend(backend_name).await?;
 
-    // After loading, get the server URL from models map
+    // After loading, get the backend URL from models map
     get_backend_url(state, backend_name)
         .await?
         .ok_or_else(|| anyhow::anyhow!("TTS backend '{}' loaded but URL not set", backend_name))

@@ -176,15 +176,8 @@ impl Repository {
     }
 
     /// Update an existing alias.
-    pub fn update_alias(
-        &self,
-        id: i64,
-        name: Option<&str>,
-        model_id: Option<i64>,
-        description: Option<Option<&str>>,
-        enabled: Option<bool>,
-    ) -> anyhow::Result<()> {
-        queries::update_alias(&self.conn, id, name, model_id, description, enabled)?;
+    pub fn update_alias(&self, id: i64, update: queries::AliasUpdate) -> anyhow::Result<()> {
+        queries::update_alias(&self.conn, id, update)?;
         Ok(())
     }
 
@@ -255,6 +248,13 @@ impl Repository {
         item_id_pattern: &str,
     ) -> anyhow::Result<()> {
         queries::delete_update_checks_by_pattern(&self.conn, item_type, item_id_pattern)?;
+        Ok(())
+    }
+
+    /// Delete all update check records for a backend name, covering every
+    /// gpu_variant (`name:%`) plus the legacy variant-less row (`name`).
+    pub fn delete_update_checks_for_backend(&self, name: &str) -> anyhow::Result<()> {
+        queries::delete_update_checks_for_backend(&self.conn, name)?;
         Ok(())
     }
 
@@ -434,8 +434,15 @@ mod tests {
         assert_eq!(alias.description, Some("A test alias".to_string()));
 
         // Act: update alias (use same model_id since model_id+1 doesn't exist)
-        repo.update_alias(alias_id, Some("renamed"), Some(model_id), None, None)
-            .unwrap();
+        repo.update_alias(
+            alias_id,
+            queries::AliasUpdate {
+                name: Some("renamed"),
+                model_id: Some(model_id),
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         // Assert: updated values
         let alias = repo.get_alias_by_id(alias_id).unwrap().unwrap();

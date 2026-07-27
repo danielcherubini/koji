@@ -1017,7 +1017,7 @@ fn test_migration_v31_creates_app_config_tables() {
     let tables = [
         "app_general",
         "app_proxy",
-        "app_supervisor",
+        "app_lifecycle",
         "app_compaction",
         "sampling_templates",
     ];
@@ -1078,7 +1078,7 @@ fn test_migration_v31_app_proxy_columns() {
         "circuit_breaker_threshold",
         "circuit_breaker_cooldown_seconds",
         "metrics_retention_secs",
-        "download_queue_poll_interval_secs",
+        "pull_queue_poll_interval_secs",
         "max_loaded_models",
         "authenticator_url",
         "authenticator_skip_paths",
@@ -1095,7 +1095,8 @@ fn test_migration_v31_app_proxy_columns() {
     }
 }
 
-/// Migration v31 must create all expected columns in app_supervisor.
+/// Migration v31 must create all expected columns in app_lifecycle
+/// (formerly app_supervisor; renamed by v40).
 #[test]
 fn test_migration_v31_app_supervisor_columns() {
     let conn = Connection::open_in_memory().unwrap();
@@ -1113,12 +1114,12 @@ fn test_migration_v31_app_supervisor_columns() {
     for col in &columns {
         let exists: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM pragma_table_info('app_supervisor') WHERE name=?",
+                "SELECT COUNT(*) FROM pragma_table_info('app_lifecycle') WHERE name=?",
                 [col],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(exists, 1, "column '{}' must exist in app_supervisor", col);
+        assert_eq!(exists, 1, "column '{}' must exist in app_lifecycle", col);
     }
 }
 
@@ -1227,25 +1228,26 @@ fn test_migration_v31_app_proxy_check_constraint() {
     );
 }
 
-/// CHECK (id = 1) constraint on app_supervisor must reject id != 1.
+/// CHECK (id = 1) constraint on app_lifecycle must reject id != 1
+/// (formerly app_supervisor; renamed by v40).
 #[test]
 fn test_migration_v31_app_supervisor_check_constraint() {
     let conn = Connection::open_in_memory().unwrap();
     run(&conn).unwrap();
 
     conn.execute(
-        "INSERT INTO app_supervisor (id, restart_policy) VALUES (1, 'always')",
+        "INSERT INTO app_lifecycle (id, restart_policy) VALUES (1, 'always')",
         [],
     )
     .unwrap();
 
     let err = conn.execute(
-        "INSERT INTO app_supervisor (id, restart_policy) VALUES (2, 'never')",
+        "INSERT INTO app_lifecycle (id, restart_policy) VALUES (2, 'never')",
         [],
     );
     assert!(
         err.is_err(),
-        "id != 1 must fail CHECK constraint on app_supervisor"
+        "id != 1 must fail CHECK constraint on app_lifecycle"
     );
 }
 
@@ -1584,12 +1586,12 @@ fn test_migration_v31_singleton_defaults() {
         .unwrap();
     assert_eq!(port, 11434);
 
-    // app_supervisor defaults
-    conn.execute("INSERT INTO app_supervisor (id) VALUES (1)", [])
+    // app_lifecycle defaults (formerly app_supervisor; renamed by v40)
+    conn.execute("INSERT INTO app_lifecycle (id) VALUES (1)", [])
         .unwrap();
     let policy: String = conn
         .query_row(
-            "SELECT restart_policy FROM app_supervisor WHERE id = 1",
+            "SELECT restart_policy FROM app_lifecycle WHERE id = 1",
             [],
             |row| row.get(0),
         )
@@ -1607,4 +1609,255 @@ fn test_migration_v31_singleton_defaults() {
         )
         .unwrap();
     assert_eq!(device, "cpu");
+}
+
+/// Migration v38 renames app_proxy.download_queue_poll_interval_secs → pull_queue_poll_interval_secs
+#[test]
+fn test_migration_v38_rename_app_proxy_poll_interval() {
+    let conn = Connection::open_in_memory().unwrap();
+
+    // Bring DB up to v37 (pre-v38 schema)
+    run_up_to(&conn, 37).unwrap();
+
+    // Verify old column exists and new one does not
+    let old_col: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('app_proxy') WHERE name='download_queue_poll_interval_secs'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        old_col, 1,
+        "old column download_queue_poll_interval_secs must exist before v38"
+    );
+
+    let new_col: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('app_proxy') WHERE name='pull_queue_poll_interval_secs'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        new_col, 0,
+        "new column pull_queue_poll_interval_secs must not exist before v38"
+    );
+
+    // Insert a row with the old column name
+    conn.execute(
+        "INSERT INTO app_proxy (id, download_queue_poll_interval_secs) VALUES (1, 5)",
+        [],
+    )
+    .unwrap();
+
+    // Apply v38
+    run_up_to(&conn, 38).unwrap();
+
+    // Verify new column exists and old one does not
+    let old_col: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('app_proxy') WHERE name='download_queue_poll_interval_secs'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(old_col, 0, "old column must not exist after v38");
+
+    let new_col: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('app_proxy') WHERE name='pull_queue_poll_interval_secs'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(new_col, 1, "new column must exist after v38");
+
+    // Verify data was preserved
+    let value: i32 = conn
+        .query_row(
+            "SELECT pull_queue_poll_interval_secs FROM app_proxy WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(value, 5, "data must be preserved after column rename");
+}
+
+/// Migration v39 renames model_files.downloaded_at → pulled_at
+#[test]
+fn test_migration_v39_rename_model_files_pulled_at() {
+    let conn = Connection::open_in_memory().unwrap();
+
+    // Bring DB up to v38 (pre-v39 schema)
+    run_up_to(&conn, 38).unwrap();
+
+    // Verify old column exists and new one does not
+    let old_col: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('model_files') WHERE name='downloaded_at'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(old_col, 1, "old column downloaded_at must exist before v39");
+
+    let new_col: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('model_files') WHERE name='pulled_at'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(new_col, 0, "new column pulled_at must not exist before v39");
+
+    // Disable FK so we can insert model_files without a real model_configs row
+    conn.execute_batch("PRAGMA foreign_keys=OFF;").unwrap();
+
+    // Insert a row with the old column name
+    conn.execute(
+        "INSERT INTO model_files (id, model_id, repo_id, filename, downloaded_at) VALUES (1, 1, 'test/repo', 'model.gguf', '2025-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+
+    // Re-enable FK
+    conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+
+    // Apply v39
+    run_up_to(&conn, 39).unwrap();
+
+    // Verify new column exists and old one does not
+    let old_col: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('model_files') WHERE name='downloaded_at'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(old_col, 0, "old column must not exist after v39");
+
+    let new_col: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('model_files') WHERE name='pulled_at'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(new_col, 1, "new column must exist after v39");
+
+    // Verify data was preserved
+    let value: String = conn
+        .query_row(
+            "SELECT pulled_at FROM model_files WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        value, "2025-01-01T00:00:00Z",
+        "data must be preserved after column rename"
+    );
+}
+
+/// Migration v40 renames app_supervisor → app_lifecycle
+#[test]
+fn test_migration_v40_rename_app_supervisor_to_app_lifecycle() {
+    let conn = Connection::open_in_memory().unwrap();
+
+    // Bring DB up to v39 (pre-v40 schema)
+    run_up_to(&conn, 39).unwrap();
+
+    // Verify old table exists and new one does not
+    let old_table: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='app_supervisor'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(old_table, 1, "app_supervisor must exist before v40");
+
+    let new_table: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='app_lifecycle'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(new_table, 0, "app_lifecycle must not exist before v40");
+
+    // Seed a row with custom values (not defaults)
+    conn.execute(
+        "INSERT INTO app_supervisor (id, restart_policy, max_restarts, restart_delay_ms,
+            health_check_interval_ms, health_check_timeout_ms, health_check_retries)
+         VALUES (1, 'on-failure', 7, 4000, 6000, 15000, 4)",
+        [],
+    )
+    .unwrap();
+
+    // Verify the seeded row
+    let max_restarts_before: i64 = conn
+        .query_row(
+            "SELECT max_restarts FROM app_supervisor WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(max_restarts_before, 7);
+
+    // Apply v40
+    run_up_to(&conn, 40).unwrap();
+
+    // Verify old table no longer exists
+    let old_table: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='app_supervisor'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(old_table, 0, "app_supervisor must not exist after v40");
+
+    // Verify new table exists
+    let new_table: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='app_lifecycle'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(new_table, 1, "app_lifecycle must exist after v40");
+
+    // Verify data was preserved
+    let max_restarts_after: i64 = conn
+        .query_row(
+            "SELECT max_restarts FROM app_lifecycle WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        max_restarts_after, 7,
+        "data must be preserved after table rename"
+    );
+
+    // Verify all columns are intact
+    let policy: String = conn
+        .query_row(
+            "SELECT restart_policy FROM app_lifecycle WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(policy, "on-failure");
+
+    let delay: i64 = conn
+        .query_row(
+            "SELECT restart_delay_ms FROM app_lifecycle WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(delay, 4000);
 }

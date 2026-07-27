@@ -9,22 +9,22 @@ mod compaction;
 mod general;
 mod health;
 mod langfuse;
+mod lifecycle;
 mod model;
 mod proxy;
 mod quant;
 mod sampling;
-mod supervisor;
 
 pub use backend::*;
 pub use compaction::*;
 pub use general::*;
 pub use health::*;
 pub use langfuse::*;
+pub use lifecycle::*;
 pub use model::*;
 pub use proxy::*;
 pub use quant::*;
 pub use sampling::*;
-pub use supervisor::*;
 
 // ── PATCH types for /tama/v1/config/structured (PATCH) ──────────────────────
 
@@ -34,9 +34,9 @@ pub use patch::CompactionConfigPatch;
 pub use patch::ConfigPatchBody;
 pub use patch::GeneralPatch;
 pub use patch::LangfuseConfigPatch;
+pub use patch::LifecyclePatch;
 pub use patch::OAuth2ConfigPatch;
 pub use patch::ProxyConfigPatch;
-pub use patch::SupervisorPatch;
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -50,8 +50,8 @@ pub struct StructuredConfigBody {
     pub general: General,
     #[serde(default)]
     pub backends: std::collections::BTreeMap<String, BackendConfig>,
-    #[serde(default)]
-    pub supervisor: Supervisor,
+    #[serde(default, alias = "supervisor")]
+    pub lifecycle: Lifecycle,
     #[serde(default)]
     pub sampling_templates: std::collections::BTreeMap<String, SamplingParams>,
     #[serde(default)]
@@ -68,8 +68,8 @@ pub struct Config {
     pub general: General,
     #[serde(default)]
     pub backends: BTreeMap<String, BackendConfig>,
-    #[serde(default)]
-    pub supervisor: Supervisor,
+    #[serde(default, alias = "supervisor")]
+    pub lifecycle: Lifecycle,
     #[serde(default)]
     pub sampling_templates: BTreeMap<String, SamplingParams>,
     #[serde(default)]
@@ -86,7 +86,7 @@ impl From<tama_core::config::Config> for Config {
         Self {
             general: c.general.into(),
             backends: c.backends.into_iter().map(|(k, v)| (k, v.into())).collect(),
-            supervisor: c.supervisor.into(),
+            lifecycle: c.lifecycle.into(),
             sampling_templates: c
                 .sampling_templates
                 .into_iter()
@@ -105,7 +105,7 @@ impl From<StructuredConfigBody> for tama_core::config::Config {
         Self {
             general: b.general.into(),
             backends: b.backends.into_iter().map(|(k, v)| (k, v.into())).collect(),
-            supervisor: b.supervisor.into(),
+            lifecycle: b.lifecycle.into(),
             sampling_templates: b
                 .sampling_templates
                 .into_iter()
@@ -124,7 +124,7 @@ impl From<Config> for tama_core::config::Config {
         Self {
             general: c.general.into(),
             backends: c.backends.into_iter().map(|(k, v)| (k, v.into())).collect(),
-            supervisor: c.supervisor.into(),
+            lifecycle: c.lifecycle.into(),
             sampling_templates: c
                 .sampling_templates
                 .into_iter()
@@ -163,9 +163,9 @@ impl From<General> for tama_core::config::General {
     }
 }
 
-/// Convert from CoreSupervisor to mirror type.
-impl From<tama_core::config::Supervisor> for Supervisor {
-    fn from(s: tama_core::config::Supervisor) -> Self {
+/// Convert from CoreLifecycle to mirror type.
+impl From<tama_core::config::Lifecycle> for Lifecycle {
+    fn from(s: tama_core::config::Lifecycle) -> Self {
         Self {
             restart_policy: s.restart_policy,
             max_restarts: s.max_restarts,
@@ -177,9 +177,9 @@ impl From<tama_core::config::Supervisor> for Supervisor {
     }
 }
 
-/// Convert from mirror Supervisor to CoreSupervisor.
-impl From<Supervisor> for tama_core::config::Supervisor {
-    fn from(s: Supervisor) -> Self {
+/// Convert from mirror Lifecycle to CoreLifecycle.
+impl From<Lifecycle> for tama_core::config::Lifecycle {
+    fn from(s: Lifecycle) -> Self {
         Self {
             restart_policy: s.restart_policy,
             max_restarts: s.max_restarts,
@@ -203,7 +203,7 @@ impl From<tama_core::config::ProxyConfig> for ProxyConfig {
             circuit_breaker_threshold: p.circuit_breaker_threshold,
             circuit_breaker_cooldown_seconds: p.circuit_breaker_cooldown_seconds,
             metrics_retention_secs: p.metrics_retention_secs,
-            download_queue_poll_interval_secs: p.download_queue_poll_interval_secs,
+            pull_queue_poll_interval_secs: p.pull_queue_poll_interval_secs,
             max_loaded_models: p.max_loaded_models,
             authenticator_url: p.authenticator_url,
             authenticator_skip_paths: p.authenticator_skip_paths,
@@ -236,7 +236,7 @@ impl From<ProxyConfig> for tama_core::config::ProxyConfig {
             circuit_breaker_threshold: p.circuit_breaker_threshold,
             circuit_breaker_cooldown_seconds: p.circuit_breaker_cooldown_seconds,
             metrics_retention_secs: p.metrics_retention_secs,
-            download_queue_poll_interval_secs: p.download_queue_poll_interval_secs,
+            pull_queue_poll_interval_secs: p.pull_queue_poll_interval_secs,
             max_loaded_models: p.max_loaded_models,
             authenticator_url: p.authenticator_url,
             authenticator_skip_paths: p.authenticator_skip_paths,

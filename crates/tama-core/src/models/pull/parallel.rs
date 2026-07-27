@@ -12,7 +12,7 @@ use tokio::io::AsyncWriteExt;
 
 use super::{exponential_backoff, ProgressCallback, MAX_RETRIES};
 
-/// Download a file using parallel HTTP Range requests.
+/// Pull a file using parallel HTTP Range requests.
 #[allow(clippy::too_many_arguments)]
 pub async fn pull_parallel(
     client: &Client,
@@ -66,7 +66,7 @@ pub async fn pull_parallel(
         None
     };
 
-    // Download each chunk to a temp file
+    // Pull each chunk to a temp file
     let mut handles = Vec::new();
 
     for (i, tmp_path) in tmp_paths.iter().enumerate().take(num_connections) {
@@ -146,7 +146,7 @@ pub async fn pull_parallel(
     Ok(())
 }
 
-/// Download a single chunk with retry and exponential backoff.
+/// Pull a single chunk with retry and exponential backoff.
 #[allow(clippy::too_many_arguments)]
 async fn pull_chunk_with_retry(
     client: &Client,

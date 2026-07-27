@@ -140,7 +140,7 @@ fn test_config_db_roundtrip() {
             update_check_interval: 24,
         },
         backends: HashMap::new(),
-        supervisor: Supervisor {
+        lifecycle: Lifecycle {
             restart_policy: RestartPolicy::OnFailure,
             max_restarts: 5,
             restart_delay_ms: 5000,
@@ -157,7 +157,7 @@ fn test_config_db_roundtrip() {
             circuit_breaker_threshold: 5,
             circuit_breaker_cooldown_seconds: 120,
             metrics_retention_secs: 43200,
-            download_queue_poll_interval_secs: 5,
+            pull_queue_poll_interval_secs: 5,
             max_loaded_models: 2,
             authenticator_url: Some("http://auth:8080".to_string()),
             authenticator_skip_paths: vec![
@@ -192,13 +192,13 @@ fn test_config_db_roundtrip() {
     assert_eq!(loaded.general.hf_token, Some("hf_test123".to_string()));
     assert_eq!(loaded.general.update_check_interval, 24);
 
-    // Verify supervisor
-    assert_eq!(loaded.supervisor.restart_policy, RestartPolicy::OnFailure);
-    assert_eq!(loaded.supervisor.max_restarts, 5);
-    assert_eq!(loaded.supervisor.restart_delay_ms, 5000);
-    assert_eq!(loaded.supervisor.health_check_interval_ms, 3000);
-    assert_eq!(loaded.supervisor.health_check_timeout_ms, 10000);
-    assert_eq!(loaded.supervisor.health_check_retries, 2);
+    // Verify lifecycle
+    assert_eq!(loaded.lifecycle.restart_policy, RestartPolicy::OnFailure);
+    assert_eq!(loaded.lifecycle.max_restarts, 5);
+    assert_eq!(loaded.lifecycle.restart_delay_ms, 5000);
+    assert_eq!(loaded.lifecycle.health_check_interval_ms, 3000);
+    assert_eq!(loaded.lifecycle.health_check_timeout_ms, 10000);
+    assert_eq!(loaded.lifecycle.health_check_retries, 2);
 
     // Verify proxy
     assert_eq!(loaded.proxy.host, "127.0.0.1");
@@ -209,7 +209,7 @@ fn test_config_db_roundtrip() {
     assert_eq!(loaded.proxy.circuit_breaker_threshold, 5);
     assert_eq!(loaded.proxy.circuit_breaker_cooldown_seconds, 120);
     assert_eq!(loaded.proxy.metrics_retention_secs, 43200);
-    assert_eq!(loaded.proxy.download_queue_poll_interval_secs, 5);
+    assert_eq!(loaded.proxy.pull_queue_poll_interval_secs, 5);
     assert_eq!(loaded.proxy.max_loaded_models, 2);
     assert_eq!(
         loaded.proxy.authenticator_url,
@@ -264,13 +264,13 @@ fn test_config_from_empty_db_seeds_defaults() {
     assert_eq!(config.general.hf_token, None);
     assert_eq!(config.general.update_check_interval, 12);
 
-    // Verify supervisor defaults
-    assert_eq!(config.supervisor.restart_policy, RestartPolicy::Always);
-    assert_eq!(config.supervisor.max_restarts, 10);
-    assert_eq!(config.supervisor.restart_delay_ms, 3000);
-    assert_eq!(config.supervisor.health_check_interval_ms, 5000);
-    assert_eq!(config.supervisor.health_check_timeout_ms, 30000);
-    assert_eq!(config.supervisor.health_check_retries, 3);
+    // Verify lifecycle defaults
+    assert_eq!(config.lifecycle.restart_policy, RestartPolicy::Always);
+    assert_eq!(config.lifecycle.max_restarts, 10);
+    assert_eq!(config.lifecycle.restart_delay_ms, 3000);
+    assert_eq!(config.lifecycle.health_check_interval_ms, 5000);
+    assert_eq!(config.lifecycle.health_check_timeout_ms, 30000);
+    assert_eq!(config.lifecycle.health_check_retries, 3);
 
     // Verify proxy defaults
     assert_eq!(config.proxy.host, "0.0.0.0");
@@ -281,7 +281,7 @@ fn test_config_from_empty_db_seeds_defaults() {
     assert_eq!(config.proxy.circuit_breaker_threshold, 3);
     assert_eq!(config.proxy.circuit_breaker_cooldown_seconds, 60);
     assert_eq!(config.proxy.metrics_retention_secs, 86400);
-    assert_eq!(config.proxy.download_queue_poll_interval_secs, 2);
+    assert_eq!(config.proxy.pull_queue_poll_interval_secs, 2);
     assert_eq!(config.proxy.max_loaded_models, 1);
     assert_eq!(config.proxy.authenticator_url, None);
     assert_eq!(
@@ -411,4 +411,38 @@ fn test_from_db_derives_api_keys_enabled_from_active_keys() {
         "from_db must re-derive api_keys_enabled from the api_keys table; \
          a stale `false` in the DB must not be trusted"
     );
+}
+
+/// Regression: old config payloads using the `"supervisor"` JSON key must
+/// still deserialize successfully thanks to the `#[serde(alias = "supervisor")]`
+/// attribute on the `lifecycle` field.
+#[test]
+fn test_config_deserializes_legacy_supervisor_key() {
+    let legacy_json = serde_json::json!({
+        "general": {
+            "log_level": "info",
+            "update_check_interval": 12
+        },
+        "supervisor": {
+            "restart_policy": "on-failure",
+            "max_restarts": 5,
+            "restart_delay_ms": 4000,
+            "health_check_interval_ms": 6000,
+            "health_check_timeout_ms": 20000,
+            "health_check_retries": 3
+        },
+        "proxy": {
+            "host": "0.0.0.0",
+            "port": 18910
+        }
+    });
+
+    let config: Config = serde_json::from_value(legacy_json)
+        .expect("Config should deserialize with legacy 'supervisor' key thanks to serde alias");
+
+    // Verify the data landed in the `lifecycle` field correctly.
+    assert_eq!(config.lifecycle.restart_policy, RestartPolicy::OnFailure);
+    assert_eq!(config.lifecycle.max_restarts, 5);
+    assert_eq!(config.lifecycle.restart_delay_ms, 4000);
+    assert_eq!(config.lifecycle.health_check_interval_ms, 6000);
 }

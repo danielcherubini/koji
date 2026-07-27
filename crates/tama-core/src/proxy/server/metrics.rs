@@ -224,7 +224,7 @@ pub fn start_metrics_collector(
             let inference_last_updated_ms = latest_server.map(|s| s.last_updated_ms);
 
             // 3. Collect model statuses
-            let model_statuses = metrics_state.collect_model_statuses().await;
+            let model_statuses = metrics_state.collect_model_state_snapshots().await;
             let models_loaded = model_statuses
                 .iter()
                 .filter(|m| matches!(m.state, crate::gpu::ModelState::Ready))

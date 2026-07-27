@@ -3,10 +3,10 @@ use std::time::Duration;
 use reqwest;
 use toml;
 
-use crate::models::card::ModelCard;
+use crate::models::card::ModelToml;
 use crate::models::pull::HfModelMetadata;
 
-const MODELCARDS_BASE_URL: &str =
+const MODEL_TOML_URL: &str =
     "https://raw.githubusercontent.com/danielcherubini/tama/main/modelcards";
 
 /// Parse a HuggingFace README markdown to extract model metadata.
@@ -325,7 +325,7 @@ fn parse_u32(s: &str) -> Option<u32> {
     cleaned.trim().parse::<u32>().ok()
 }
 
-/// Try to fetch a community model card from the tama repository.
+/// Try to fetch a community model TOML from the tama repository.
 ///
 /// Attempts several name variants derived from the repo_id:
 /// 1. Exact: `{company}/{model}.toml` (e.g. `Tesslate/OmniCoder-9B-GGUF.toml`)
@@ -333,7 +333,7 @@ fn parse_u32(s: &str) -> Option<u32> {
 /// 3. Strip `-gguf` suffix (lowercase)
 ///
 /// Returns `None` silently on network errors or 404s.
-pub async fn fetch_community_card(repo_id: &str) -> Option<ModelCard> {
+pub async fn lookup_community_toml(repo_id: &str) -> Option<ModelToml> {
     let parts: Vec<&str> = repo_id.splitn(2, '/').collect();
     if parts.len() != 2 {
         return None;
@@ -354,12 +354,12 @@ pub async fn fetch_community_card(repo_id: &str) -> Option<ModelCard> {
         .ok()?;
 
     for name in &candidates {
-        let url = format!("{}/{}/{}.toml", MODELCARDS_BASE_URL, company, name);
+        let url = format!("{}/{}/{}.toml", MODEL_TOML_URL, company, name);
         if let Ok(resp) = client.get(&url).send().await {
             if resp.status().is_success() {
                 if let Ok(body) = resp.text().await {
-                    if let Ok(card) = toml::from_str::<ModelCard>(&body) {
-                        return Some(card);
+                    if let Ok(toml) = toml::from_str::<ModelToml>(&body) {
+                        return Some(toml);
                     }
                 }
             }

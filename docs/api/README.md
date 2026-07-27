@@ -11,7 +11,7 @@ All endpoints are prefixed with `/tama/v1/`. The API uses JSON request/response 
 | [Models](models.md) | `models.md` | CRUD operations for model configurations |
 | [Backends](backends.md) | `backends.md` | Install, manage, and update inference backends |
 | [Aliases](aliases.md) | `aliases.md` | Short names that resolve to model configs |
-| [Downloads](downloads.md) | `downloads.md` | Monitor file download progress |
+| [Pulls](pulls.md) | `pulls.md` | Monitor file pull progress |
 | [HuggingFace](huggingface.md) | `huggingface.md` | Fetch model metadata and quant listings |
 | [Config](config.md) | `config.md` | Read and update global TAMA settings |
 | [Benchmarks](benchmarks.md) | `benchmarks.md` | Run and manage llama-bench benchmarks |
@@ -25,7 +25,7 @@ All endpoints are prefixed with `/tama/v1/`. The API uses JSON request/response 
 
 | Section | File | Description |
 |---------|------|-------------|
-| [SSE Streams](sse.md) | `sse.md` | Real-time event subscriptions (downloads, updates, jobs) |
+| [SSE Streams](sse.md) | `sse.md` | Real-time event subscriptions (pulls, updates, jobs) |
 | [Jobs](jobs.md) | `jobs.md` | Track async job progress and results |
 | [Errors](errors.md) | `errors.md` | Error response format and common status codes |
 

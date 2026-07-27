@@ -1,6 +1,6 @@
-//! Downloads Center API endpoints.
+//! Pulls Center API endpoints.
 //!
-//! Provides REST endpoints to query the download queue (active + history),
+//! Provides REST endpoints to query the pull queue (active + history),
 //! cancel items, and stream real-time events via SSE.
 use crate::api::error::error_body;
 use tama_core::proxy::ProxyState;
@@ -36,18 +36,18 @@ pub struct PullQueueItemDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DownloadsActiveResponse {
+pub struct PullsActiveResponse {
     pub items: Vec<PullQueueItemDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DownloadsHistoryResponse {
+pub struct PullsHistoryResponse {
     pub items: Vec<PullQueueItemDto>,
     pub total: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DownloadCancelResponse {
+pub struct PullCancelResponse {
     pub ok: bool,
     pub message: Option<String>,
 }
@@ -92,15 +92,15 @@ fn default_offset() -> i64 {
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
 
-/// GET /tama/v1/downloads/active
+/// GET /tama/v1/pulls/active
 pub async fn get_active_pulls(
     State(state): State<Arc<ProxyState>>,
-) -> Result<Json<DownloadsActiveResponse>, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<Json<PullsActiveResponse>, (StatusCode, Json<serde_json::Value>)> {
     let svc = state.pull_queue().as_ref().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(error_body(
-                "Download queue not configured",
+                "Pull queue not configured",
                 Some("ServiceUnavailableError"),
             )),
         )
@@ -115,19 +115,19 @@ pub async fn get_active_pulls(
 
     let dto_items: Vec<PullQueueItemDto> = items.iter().map(item_to_dto).collect();
 
-    Ok(Json(DownloadsActiveResponse { items: dto_items }))
+    Ok(Json(PullsActiveResponse { items: dto_items }))
 }
 
-/// GET /tama/v1/downloads/history?limit=50&offset=0
+/// GET /tama/v1/pulls/history?limit=50&offset=0
 pub async fn get_pull_history(
     State(state): State<Arc<ProxyState>>,
     axum::extract::Query(query): axum::extract::Query<HistoryQuery>,
-) -> Result<Json<DownloadsHistoryResponse>, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<Json<PullsHistoryResponse>, (StatusCode, Json<serde_json::Value>)> {
     let svc = state.pull_queue().as_ref().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(error_body(
-                "Download queue not configured",
+                "Pull queue not configured",
                 Some("ServiceUnavailableError"),
             )),
         )
@@ -151,40 +151,40 @@ pub async fn get_pull_history(
 
     let dto_items: Vec<PullQueueItemDto> = items.iter().map(item_to_dto).collect();
 
-    Ok(Json(DownloadsHistoryResponse {
+    Ok(Json(PullsHistoryResponse {
         items: dto_items,
         total,
     }))
 }
 
-/// POST /tama/v1/downloads/:job_id/cancel
+/// POST /tama/v1/pulls/:job_id/cancel
 pub async fn cancel_pull(
     State(state): State<Arc<ProxyState>>,
     Path(job_id): axum::extract::Path<String>,
-) -> Json<DownloadCancelResponse> {
+) -> Json<PullCancelResponse> {
     let svc = match &state.pull_queue() {
         Some(svc) => svc,
         None => {
-            return Json(DownloadCancelResponse {
+            return Json(PullCancelResponse {
                 ok: false,
-                message: Some("Download queue not configured".to_string()),
+                message: Some("Pull queue not configured".to_string()),
             })
         }
     };
 
     match svc.cancel(&job_id) {
-        Ok(()) => Json(DownloadCancelResponse {
+        Ok(()) => Json(PullCancelResponse {
             ok: true,
             message: None,
         }),
-        Err(e) => Json(DownloadCancelResponse {
+        Err(e) => Json(PullCancelResponse {
             ok: false,
             message: Some(e.to_string()),
         }),
     }
 }
 
-/// GET /tama/v1/downloads/events — SSE stream of download lifecycle events.
+/// GET /tama/v1/pulls/events — SSE stream of pull lifecycle events.
 pub async fn pull_events_sse(
     State(state): State<Arc<ProxyState>>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, axum::Error>>>, StatusCode> {

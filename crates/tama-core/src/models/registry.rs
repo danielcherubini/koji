@@ -1,15 +1,15 @@
-use crate::models::card::ModelCard;
+use crate::models::card::ModelToml;
 use crate::models::repo_path;
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-/// An installed model: its location and parsed card.
+/// An installed model: its location and parsed TOML.
 #[derive(Debug, Clone)]
 pub struct InstalledModel {
     /// Directory containing the GGUF model files
     pub dir: PathBuf,
-    /// Parsed model card
-    pub card: ModelCard,
+    /// Parsed model TOML
+    pub card: ModelToml,
     /// Identifier in "company/modelname" format, derived from config filename
     pub id: String,
     /// Path to the model card TOML file in configs/
@@ -68,7 +68,7 @@ impl ModelRegistry {
             };
             let model_dir = repo_path(&self.models_dir, &id);
 
-            match ModelCard::load(&path) {
+            match ModelToml::load(&path) {
                 Ok(card) => {
                     models.push(InstalledModel {
                         dir: model_dir,
@@ -109,7 +109,7 @@ impl ModelRegistry {
     /// Recursively walks `model_dir` and all subdirectories, collecting `.gguf`
     /// files whose relative path (using `/` as separator) is not present in
     /// `card.quants`. Returns the paths sorted lexicographically.
-    pub fn untracked_ggufs(&self, model_dir: &Path, card: &ModelCard) -> Result<Vec<String>> {
+    pub fn untracked_ggufs(&self, model_dir: &Path, card: &ModelToml) -> Result<Vec<String>> {
         let tracked: std::collections::HashSet<&str> =
             card.quants.values().map(|q| q.file.as_str()).collect();
 
@@ -156,7 +156,7 @@ impl ModelRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::card::{ModelCard, ModelMeta, QuantInfo};
+    use crate::models::card::{ModelMeta, ModelToml, QuantInfo};
     use std::collections::HashMap;
 
     fn setup_test_dir() -> (tempfile::TempDir, ModelRegistry) {
@@ -169,13 +169,13 @@ mod tests {
         (tmp, registry)
     }
 
-    fn create_test_model(base: &Path, company: &str, model: &str) -> ModelCard {
+    fn create_test_model(base: &Path, company: &str, model: &str) -> ModelToml {
         let model_dir = base.join("models").join(company).join(model);
         let configs_dir = base.join("configs");
         std::fs::create_dir_all(&model_dir).unwrap();
         std::fs::create_dir_all(&configs_dir).unwrap();
 
-        let card = ModelCard {
+        let card = ModelToml {
             model: ModelMeta {
                 name: model.to_string(),
                 source: format!("{}/{}", company, model),
@@ -285,7 +285,7 @@ mod tests {
             .join("bartowski")
             .join("OmniCoder");
 
-        // Sharded GGUF lives in a subdirectory, not tracked in the card.
+        // Sharded GGUF lives in a subdirectory, not tracked in the TOML.
         let shard_dir = model_dir.join("UD-Q4_K_XL");
         std::fs::create_dir_all(&shard_dir).unwrap();
         std::fs::write(

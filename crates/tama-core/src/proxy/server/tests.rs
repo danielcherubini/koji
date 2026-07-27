@@ -457,10 +457,10 @@ async fn test_system_metrics_stream_emits_samples() {
 /// error.
 ///
 /// We configure the proxy with exactly one known model so the assertions
-/// over the deserialized `Vec<ModelStatus>` are deterministic, then
+/// over the deserialized `Vec<ModelStateSnapshot>` are deterministic, then
 /// connect to the SSE endpoint, wait for an `event: sample`, parse the
 /// `data:` payload as a `MetricSample`, and assert that
-/// `sample.models` is a `Vec<crate::gpu::ModelStatus>` carrying the
+/// `sample.models` is a `Vec<crate::models::ModelStateSnapshot>` carrying the
 /// configured model.
 #[tokio::test]
 async fn test_system_metrics_stream_sample_models_round_trip() {
@@ -591,10 +591,10 @@ async fn test_system_metrics_stream_sample_models_round_trip() {
         .expect("Expected to receive a snapshot event within 4s, but none was found");
     let sample = &snapshot.current;
 
-    // Statically prove `sample.models` is a `Vec<crate::gpu::ModelStatus>`.
+    // Statically prove `sample.models` is a `Vec<crate::models::ModelStateSnapshot>`.
     // If the field's type ever changes, this binding will fail to
     // type-check, which is exactly the regression we want to catch.
-    let models: &Vec<crate::gpu::ModelStatus> = &sample.models;
+    let models: &Vec<crate::models::ModelStateSnapshot> = &sample.models;
 
     // The configured model must round-trip through JSON serialization
     // unchanged. We picked a deterministic single-model config above so

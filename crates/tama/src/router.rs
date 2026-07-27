@@ -179,7 +179,7 @@ pub fn build_web_routes(
         .route("/tama/v1/updates/check", post(api::updates::trigger_check))
         .route(
             "/tama/v1/updates/check/:item_type/:item_id",
-            post(api::updates::check_single),
+            post(api::updates::check_item_for_update),
         )
         .route(
             "/tama/v1/updates/events",
@@ -270,8 +270,8 @@ pub fn build_web_routes(
             post(run_mtp_benchmark).layer(json_body_limit),
         )
         .route(
-            "/tama/v1/downloads/:job_id/cancel",
-            post(api::downloads::cancel_pull).layer(json_body_limit),
+            "/tama/v1/pulls/:job_id/cancel",
+            post(api::pulls::cancel_pull).layer(json_body_limit),
         )
         // Alias CRUD routes
         .route(
@@ -318,19 +318,10 @@ pub fn build_web_routes(
         .route("/tama/v1/benchmarks/jobs/:id/events", get(benchmark_events))
         .route("/tama/v1/benchmarks/history", get(list_benchmark_history))
         .route("/tama/v1/benchmarks/history/:id", delete(delete_benchmark))
-        // Downloads Center routes
-        .route(
-            "/tama/v1/downloads/active",
-            get(api::downloads::get_active_pulls),
-        )
-        .route(
-            "/tama/v1/downloads/history",
-            get(api::downloads::get_pull_history),
-        )
-        .route(
-            "/tama/v1/downloads/events",
-            get(api::downloads::pull_events_sse),
-        )
+        // Pulls Center routes
+        .route("/tama/v1/pulls/active", get(api::pulls::get_active_pulls))
+        .route("/tama/v1/pulls/history", get(api::pulls::get_pull_history))
+        .route("/tama/v1/pulls/events", get(api::pulls::pull_events_sse))
         // API documentation (OpenAPI 3.1.0 spec)
         .route("/tama/v1/docs", get(api::openapi::serve_spec))
         // System health + backend logs: core proxy handlers mounted explicitly

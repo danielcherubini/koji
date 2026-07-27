@@ -140,7 +140,7 @@ pub async fn check_for_updates(conn: &Connection, repo_id: &str) -> Result<Updat
     // Step 5: ASYNC — fetch per-file blob metadata
     // Use the resolved repo_id from remote_listing (may have -GGUF appended)
     let resolved_repo_id = &remote_listing.repo_id;
-    let remote_blobs = match pull::fetch_blob_metadata(resolved_repo_id).await {
+    let remote_blobs = match pull::lookup_blob_metadata(resolved_repo_id).await {
         Ok(blobs) => blobs,
         Err(e) => {
             return Ok(UpdateCheckResult {
@@ -256,7 +256,7 @@ pub async fn refresh_metadata(conn: &Connection, models_dir: &Path, repo_id: &st
     // ASYNC — fetch remote data
     let listing = pull::list_gguf_files(repo_id).await?;
     // Use the resolved repo_id from listing (may have -GGUF appended)
-    let blobs = pull::fetch_blob_metadata(&listing.repo_id).await?;
+    let blobs = pull::lookup_blob_metadata(&listing.repo_id).await?;
 
     // SYNC — write to DB
     // Look up or create model_id
@@ -305,7 +305,7 @@ pub async fn refresh_metadata(conn: &Connection, models_dir: &Path, repo_id: &st
     }
 
     // Fetch HF metadata (API + README) and persist to DB
-    match pull::fetch_hf_metadata(&listing.repo_id).await {
+    match pull::lookup_hf_metadata(&listing.repo_id).await {
         Ok(meta) => {
             update_model_config_hf_metadata(conn, model_record.id, &meta)?;
         }
@@ -378,7 +378,7 @@ mod tests {
             quant: None,
             lfs_oid: lfs_oid.map(|s| s.to_string()),
             size_bytes: size,
-            downloaded_at: "2024-01-01T00:00:00.000Z".to_string(),
+            pulled_at: "2024-01-01T00:00:00.000Z".to_string(),
             last_verified_at: None,
             verified_ok: None,
             verify_error: None,

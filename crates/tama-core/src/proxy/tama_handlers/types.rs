@@ -13,7 +13,7 @@ pub fn max_concurrent_pulls() -> usize {
         .unwrap_or(8)
 }
 
-/// A single quantisation variant available for a HuggingFace GGUF repo.
+/// A single quantization variant available for a HuggingFace GGUF repo.
 #[derive(Debug, Serialize)]
 pub struct QuantEntry {
     pub filename: String,
@@ -26,9 +26,9 @@ pub struct QuantEntry {
     pub shards: Vec<String>,
 }
 
-/// A single quantisation variant to pull (used in multi-quant wizard format).
+/// A single quantization variant to pull (used in multi-quant wizard format).
 #[derive(Debug, Deserialize, Clone)]
-pub struct QuantDownloadSpec {
+pub struct QuantPullSpec {
     pub filename: String,
     pub quant: Option<String>,
     /// Kept for backward compat with DB queue. Always None from new wizard requests.
@@ -50,7 +50,7 @@ pub struct PullRequest {
     pub quant: Option<String>,
     /// Legacy multi-quant wizard format: list of quants to pull.
     #[serde(default)]
-    pub quants: Vec<QuantDownloadSpec>,
+    pub quants: Vec<QuantPullSpec>,
     /// New simplified format: just filenames (model quants)
     #[serde(default)]
     pub filenames: Vec<String>,

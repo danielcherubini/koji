@@ -145,8 +145,8 @@ pub struct ModelInfo {
     pub quant: Option<String>,
     /// Backend config name
     pub backend: String,
-    /// GPU type (e.g., "CUDA", "Vulkan", "CPU")
-    pub gpu_type: String,
+    /// GPU variant label (e.g., "CUDA", "Vulkan", "CPU")
+    pub gpu_variant: String,
     /// Context length
     pub context_length: Option<u32>,
     /// GPU layers info

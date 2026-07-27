@@ -73,13 +73,13 @@ pub(super) async fn build_model_entry(
     let context_length = if let Some(ctx) = cfg.context_length {
         Some(ctx)
     } else {
-        let card = state.get_model_card(id).await;
-        card.and_then(|c| {
+        let model_toml = state.get_model_toml(id).await;
+        model_toml.and_then(|m| {
             let quant_key = cfg.quant.as_deref().unwrap_or_default();
-            c.quants
+            m.quants
                 .get(quant_key)
                 .and_then(|q| q.context_length)
-                .or(c.model.default_context_length)
+                .or(m.model.default_context_length)
         })
     };
     let modalities = cfg.modalities.as_ref().map(|m| {

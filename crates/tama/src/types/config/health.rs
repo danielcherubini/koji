@@ -10,7 +10,7 @@ pub struct HealthCheck {
     /// Health check endpoint URL. Overrides backend's health_check_url.
     #[serde(default)]
     pub url: Option<String>,
-    /// Polling interval in milliseconds. Overrides supervisor.health_check_interval_ms.
+    /// Polling interval in milliseconds. Overrides lifecycle.health_check_interval_ms.
     #[serde(default)]
     pub interval_ms: Option<u64>,
     /// HTTP timeout in milliseconds per health check request (default: 3000).

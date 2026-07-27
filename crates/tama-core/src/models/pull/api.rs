@@ -102,12 +102,12 @@ pub fn directory_prefix(filename: &str) -> Option<&str> {
     filename.rfind('/').map(|pos| &filename[..pos])
 }
 
-/// Fetch per-file blob metadata from HuggingFace using the blobs API.
+/// Look up per-file blob metadata from HuggingFace using the blobs API.
 ///
 /// Uses `hf_hub`'s authenticated client to call the HF API with `?blobs=true`,
 /// which returns `blobId`, `size`, and `lfs.sha256` per sibling.
 /// Returns a map of filename → BlobInfo for GGUF files only.
-pub async fn fetch_blob_metadata(repo_id: &str) -> Result<HashMap<String, BlobInfo>> {
+pub async fn lookup_blob_metadata(repo_id: &str) -> Result<HashMap<String, BlobInfo>> {
     let api = hf_api().await?;
     let url = super::hf_api_model_blobs_url(repo_id);
 
@@ -138,7 +138,7 @@ pub async fn fetch_blob_metadata(repo_id: &str) -> Result<HashMap<String, BlobIn
 ///
 /// The API call and README fetch are independent — if the API call succeeds but
 /// the README fetch fails, the API-level metadata is still returned.
-pub async fn fetch_hf_metadata(repo_id: &str) -> Result<HfModelMetadata> {
+pub async fn lookup_hf_metadata(repo_id: &str) -> Result<HfModelMetadata> {
     let api = hf_api().await?;
 
     // ── Fetch model info from HF API ────────────────────────────────────────
@@ -231,7 +231,7 @@ pub async fn fetch_hf_metadata(repo_id: &str) -> Result<HfModelMetadata> {
 ///
 /// Returns the `pipeline_tag` field from the model metadata, which indicates
 /// the model's task type (e.g., "text-generation", "image-text-to-text").
-pub async fn fetch_model_pipeline_tag(repo_id: &str) -> Result<Option<String>> {
+pub async fn lookup_model_pipeline_tag(repo_id: &str) -> Result<Option<String>> {
     let api = hf_api().await?;
     let url = super::hf_api_model_url(repo_id);
 
@@ -311,7 +311,7 @@ pub fn infer_modalities_from_pipeline(pipeline_tag: Option<&str>) -> Option<Mode
 
 /// Parse the `siblings` array from a HuggingFace blobs API response.
 ///
-/// This is a pure function for testability — extract from `fetch_blob_metadata`
+/// This is a pure function for testability — extract from `lookup_blob_metadata`
 /// so it can be unit-tested with fixture data.
 pub fn parse_blob_siblings(value: &serde_json::Value) -> HashMap<String, BlobInfo> {
     let mut result = HashMap::new();

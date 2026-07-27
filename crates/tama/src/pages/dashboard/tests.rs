@@ -3,7 +3,7 @@ use crate::components::gpu_device_card::{
     derive_device_state, device_display_label, find_device_index, format_vram_short,
     loaded_model_display, model_gpu_label, GpuDeviceState,
 };
-use crate::gpu_types::{GpuVendor, ModelState};
+use crate::core_mirrors::{GpuVendor, ModelState};
 
 /// `MetricCurrent` must deserialize a payload that has no `models` field at
 /// all (older backend builds, cached responses) by defaulting to an empty
@@ -65,12 +65,12 @@ fn test_format_number_adds_commas() {
     assert_eq!(format_number(65183), "65,183");
 }
 
-/// `active_models` returns entries whose state is "ready", "loading", or
+/// `active_models` returns entries whose state is "ready", "starting", or
 /// "unloading", preserving order and including all fields.
 #[test]
 fn test_active_models_returns_ready_loading_unloading_entries() {
     let models = vec![
-        ModelStatus {
+        ModelStateSnapshot {
             id: "a".into(),
             db_id: None,
             api_name: None,
@@ -79,7 +79,7 @@ fn test_active_models_returns_ready_loading_unloading_entries() {
             state: ModelState::Ready,
             ..Default::default()
         },
-        ModelStatus {
+        ModelStateSnapshot {
             id: "b".into(),
             db_id: None,
             api_name: None,
@@ -88,16 +88,16 @@ fn test_active_models_returns_ready_loading_unloading_entries() {
             state: ModelState::Idle,
             ..Default::default()
         },
-        ModelStatus {
+        ModelStateSnapshot {
             id: "c".into(),
             db_id: None,
             api_name: None,
             display_name: None,
             backend: "ik_llama".into(),
-            state: ModelState::Loading,
+            state: ModelState::Starting,
             ..Default::default()
         },
-        ModelStatus {
+        ModelStateSnapshot {
             id: "d".into(),
             db_id: None,
             api_name: None,
@@ -106,7 +106,7 @@ fn test_active_models_returns_ready_loading_unloading_entries() {
             state: ModelState::Failed,
             ..Default::default()
         },
-        ModelStatus {
+        ModelStateSnapshot {
             id: "e".into(),
             db_id: None,
             api_name: None,
@@ -122,7 +122,7 @@ fn test_active_models_returns_ready_loading_unloading_entries() {
     assert_eq!(active[0].id, "a");
     assert_eq!(active[0].state, ModelState::Ready);
     assert_eq!(active[1].id, "c");
-    assert_eq!(active[1].state, ModelState::Loading);
+    assert_eq!(active[1].state, ModelState::Starting);
     assert_eq!(active[2].id, "e");
     assert_eq!(active[2].state, ModelState::Unloading);
 }
@@ -131,22 +131,22 @@ fn test_active_models_returns_ready_loading_unloading_entries() {
 #[test]
 fn test_active_models_filters_to_active_states() {
     let models = vec![
-        ModelStatus {
+        ModelStateSnapshot {
             id: "a".into(),
             state: ModelState::Ready,
             ..Default::default()
         },
-        ModelStatus {
+        ModelStateSnapshot {
             id: "b".into(),
             state: ModelState::Idle,
             ..Default::default()
         },
-        ModelStatus {
+        ModelStateSnapshot {
             id: "c".into(),
-            state: ModelState::Loading,
+            state: ModelState::Starting,
             ..Default::default()
         },
-        ModelStatus {
+        ModelStateSnapshot {
             id: "d".into(),
             state: ModelState::Unloading,
             ..Default::default()
@@ -164,12 +164,12 @@ fn test_active_models_filters_to_active_states() {
 #[test]
 fn test_active_models_returns_empty_when_none_active() {
     let models = vec![
-        ModelStatus {
+        ModelStateSnapshot {
             id: "a".into(),
             state: ModelState::Idle,
             ..Default::default()
         },
-        ModelStatus {
+        ModelStateSnapshot {
             id: "b".into(),
             state: ModelState::Failed,
             ..Default::default()
@@ -184,14 +184,14 @@ fn test_active_models_returns_empty_when_none_active() {
 #[test]
 fn test_active_models_returns_all_when_all_active() {
     let models = vec![
-        ModelStatus {
+        ModelStateSnapshot {
             id: "x".into(),
             state: ModelState::Ready,
             ..Default::default()
         },
-        ModelStatus {
+        ModelStateSnapshot {
             id: "y".into(),
-            state: ModelState::Loading,
+            state: ModelState::Starting,
             ..Default::default()
         },
     ];
@@ -205,37 +205,37 @@ fn test_active_models_returns_all_when_all_active() {
 /// `active_models` returns an empty vec for an empty input slice.
 #[test]
 fn test_active_models_returns_empty_for_empty_input() {
-    let models: Vec<ModelStatus> = vec![];
+    let models: Vec<ModelStateSnapshot> = vec![];
     let active = active_models(&models);
     assert!(active.is_empty());
 }
 
-/// `inactive_models` returns entries whose state is NOT "ready", "loading",
+/// `inactive_models` returns entries whose state is NOT "ready", "starting",
 /// or "unloading" — i.e. idle, failed, and any unknown states.
 #[test]
 fn test_inactive_models_returns_idle_failed_and_unknown_entries() {
     let models = vec![
-        ModelStatus {
+        ModelStateSnapshot {
             id: "a".into(),
             state: ModelState::Ready,
             ..Default::default()
         },
-        ModelStatus {
+        ModelStateSnapshot {
             id: "b".into(),
             state: ModelState::Idle,
             ..Default::default()
         },
-        ModelStatus {
+        ModelStateSnapshot {
             id: "c".into(),
-            state: ModelState::Loading,
+            state: ModelState::Starting,
             ..Default::default()
         },
-        ModelStatus {
+        ModelStateSnapshot {
             id: "d".into(),
             state: ModelState::Failed,
             ..Default::default()
         },
-        ModelStatus {
+        ModelStateSnapshot {
             id: "e".into(),
             state: ModelState::Unloading,
             ..Default::default()
@@ -255,14 +255,14 @@ fn test_inactive_models_returns_idle_failed_and_unknown_entries() {
 #[test]
 fn test_inactive_models_returns_empty_when_all_active() {
     let models = vec![
-        ModelStatus {
+        ModelStateSnapshot {
             id: "a".into(),
             state: ModelState::Ready,
             ..Default::default()
         },
-        ModelStatus {
+        ModelStateSnapshot {
             id: "b".into(),
-            state: ModelState::Loading,
+            state: ModelState::Starting,
             ..Default::default()
         },
     ];
@@ -275,12 +275,12 @@ fn test_inactive_models_returns_empty_when_all_active() {
 #[test]
 fn test_inactive_models_returns_all_when_none_active() {
     let models = vec![
-        ModelStatus {
+        ModelStateSnapshot {
             id: "a".into(),
             state: ModelState::Idle,
             ..Default::default()
         },
-        ModelStatus {
+        ModelStateSnapshot {
             id: "b".into(),
             state: ModelState::Failed,
             ..Default::default()
@@ -296,7 +296,7 @@ fn test_inactive_models_returns_all_when_none_active() {
 /// `inactive_models` returns an empty vec for an empty input slice.
 #[test]
 fn test_inactive_models_returns_empty_for_empty_input() {
-    let models: Vec<ModelStatus> = vec![];
+    let models: Vec<ModelStateSnapshot> = vec![];
     let inactive = inactive_models(&models);
     assert!(inactive.is_empty());
 }
@@ -307,7 +307,7 @@ fn test_inactive_models_returns_empty_for_empty_input() {
 #[test]
 fn test_inactive_models_preserves_all_fields() {
     let models = vec![
-        ModelStatus {
+        ModelStateSnapshot {
             id: "llama3-8b".into(),
             db_id: Some(1),
             api_name: Some("meta-llama/Llama-3-8B".into()),
@@ -318,7 +318,7 @@ fn test_inactive_models_preserves_all_fields() {
             context_length: Some(8192),
             ..Default::default()
         },
-        ModelStatus {
+        ModelStateSnapshot {
             id: "mistral-7b".into(),
             db_id: Some(2),
             api_name: Some("mistralai/Mistral-7B".into()),
@@ -329,7 +329,7 @@ fn test_inactive_models_preserves_all_fields() {
             context_length: Some(32768),
             ..Default::default()
         },
-        ModelStatus {
+        ModelStateSnapshot {
             id: "gemma-2b".into(),
             db_id: Some(3),
             api_name: Some("google/gemma-2b".into()),
@@ -375,22 +375,22 @@ fn test_inactive_models_preserves_all_fields() {
 #[test]
 fn test_active_and_inactive_models_are_symmetric_complements() {
     let models = vec![
-        ModelStatus {
+        ModelStateSnapshot {
             id: "a".into(),
             state: ModelState::Ready,
             ..Default::default()
         },
-        ModelStatus {
+        ModelStateSnapshot {
             id: "b".into(),
             state: ModelState::Idle,
             ..Default::default()
         },
-        ModelStatus {
+        ModelStateSnapshot {
             id: "c".into(),
-            state: ModelState::Loading,
+            state: ModelState::Starting,
             ..Default::default()
         },
-        ModelStatus {
+        ModelStateSnapshot {
             id: "d".into(),
             state: ModelState::Failed,
             ..Default::default()
@@ -413,7 +413,7 @@ fn test_active_and_inactive_models_are_symmetric_complements() {
     }
 }
 
-/// When the backend includes a populated `models` array, every `ModelStatus`
+/// When the backend includes a populated `models` array, every `ModelStateSnapshot`
 /// must round-trip with its `id`, `backend`, and `state` fields preserved.
 #[test]
 fn test_metric_current_deserializes_models_field() {
@@ -443,16 +443,16 @@ fn test_metric_current_deserializes_models_field() {
 
 // ── GpuDeviceCard helper tests ────────────────────────────────────────────
 
-fn make_test_model(id: &str, state: &str, gpu_device: Option<&str>) -> ModelStatus {
+fn make_test_model(id: &str, state: &str, gpu_device: Option<&str>) -> ModelStateSnapshot {
     let model_state = match state {
         "idle" => ModelState::Idle,
-        "loading" => ModelState::Loading,
+        "loading" | "starting" => ModelState::Starting,
         "ready" => ModelState::Ready,
         "unloading" => ModelState::Unloading,
         "failed" => ModelState::Failed,
         _ => ModelState::Idle,
     };
-    ModelStatus {
+    ModelStateSnapshot {
         id: id.to_string(),
         db_id: None,
         api_name: None,
@@ -514,7 +514,7 @@ fn test_derive_state_failed_when_only_failed() {
 
 #[test]
 fn test_derive_state_idle_when_no_models() {
-    let models: Vec<ModelStatus> = vec![];
+    let models: Vec<ModelStateSnapshot> = vec![];
     assert_eq!(derive_device_state(&models, "GPU0"), GpuDeviceState::Idle);
 }
 
@@ -584,7 +584,7 @@ fn test_loaded_model_display_active() {
 
 #[test]
 fn test_loaded_model_display_none_when_idle() {
-    let models: Vec<ModelStatus> = vec![];
+    let models: Vec<ModelStateSnapshot> = vec![];
     assert_eq!(loaded_model_display(&models, "GPU0"), None);
 }
 
@@ -605,16 +605,16 @@ fn make_sort_model(
     hf_base_model: Option<&str>,
     gpu_device: Option<&str>,
     state: &str,
-) -> ModelStatus {
+) -> ModelStateSnapshot {
     let model_state = match state {
         "idle" => ModelState::Idle,
-        "loading" => ModelState::Loading,
+        "loading" | "starting" => ModelState::Starting,
         "ready" => ModelState::Ready,
         "unloading" => ModelState::Unloading,
         "failed" => ModelState::Failed,
         _ => ModelState::Idle,
     };
-    ModelStatus {
+    ModelStateSnapshot {
         id: "test".to_string(),
         db_id: None,
         api_name: api_name.map(|s| s.to_string()),

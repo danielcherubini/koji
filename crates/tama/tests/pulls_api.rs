@@ -1,13 +1,11 @@
-//! Integration tests for the Downloads Center API endpoints.
+//! Integration tests for the Pulls Center API endpoints.
 
 use axum::{body::Body, http::Request, Router};
 use std::sync::Arc;
 use tower::ServiceExt;
 
 use tama_core::proxy::ProxyState;
-use tama_web::api::downloads::{
-    DownloadCancelResponse, DownloadsActiveResponse, DownloadsHistoryResponse,
-};
+use tama_web::api::pulls::{PullCancelResponse, PullsActiveResponse, PullsHistoryResponse};
 
 /// Create a test ProxyState with an in-memory pull queue service.
 fn create_test_state() -> Arc<ProxyState> {
@@ -26,22 +24,22 @@ fn create_test_state() -> Arc<ProxyState> {
     Arc::new(state)
 }
 
-/// Build the router with the given state, including only downloads routes.
+/// Build the router with the given state, including only pulls routes.
 fn build_pull_router(state: Arc<ProxyState>) -> Router {
     use axum::routing::{get, post};
 
     Router::new()
         .route(
-            "/tama/v1/downloads/active",
-            get(tama_web::api::downloads::get_active_pulls),
+            "/tama/v1/pulls/active",
+            get(tama_web::api::pulls::get_active_pulls),
         )
         .route(
-            "/tama/v1/downloads/history",
-            get(tama_web::api::downloads::get_pull_history),
+            "/tama/v1/pulls/history",
+            get(tama_web::api::pulls::get_pull_history),
         )
         .route(
-            "/tama/v1/downloads/:job_id/cancel",
-            post(tama_web::api::downloads::cancel_pull),
+            "/tama/v1/pulls/:job_id/cancel",
+            post(tama_web::api::pulls::cancel_pull),
         )
         .with_state(state)
 }
@@ -144,7 +142,7 @@ async fn test_get_active_pulls_returns_correct_dtos() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/tama/v1/downloads/active")
+                .uri("/tama/v1/pulls/active")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -158,8 +156,8 @@ async fn test_get_active_pulls_returns_correct_dtos() {
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    let response_obj: DownloadsActiveResponse =
-        serde_json::from_value(json).expect("valid DownloadsActiveResponse");
+    let response_obj: PullsActiveResponse =
+        serde_json::from_value(json).expect("valid PullsActiveResponse");
 
     // Should have 2 active items (queued + running)
     assert_eq!(response_obj.items.len(), 2);
@@ -197,7 +195,7 @@ async fn test_get_pull_history_with_pagination() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/tama/v1/downloads/history")
+                .uri("/tama/v1/pulls/history")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -210,8 +208,8 @@ async fn test_get_pull_history_with_pagination() {
         .await
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let response_obj: DownloadsHistoryResponse =
-        serde_json::from_value(json).expect("valid DownloadsHistoryResponse");
+    let response_obj: PullsHistoryResponse =
+        serde_json::from_value(json).expect("valid PullsHistoryResponse");
 
     assert_eq!(response_obj.total, 3);
     assert_eq!(response_obj.items.len(), 3);
@@ -221,7 +219,7 @@ async fn test_get_pull_history_with_pagination() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/tama/v1/downloads/history?limit=1&offset=0")
+                .uri("/tama/v1/pulls/history?limit=1&offset=0")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -234,8 +232,8 @@ async fn test_get_pull_history_with_pagination() {
         .await
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let response_obj: DownloadsHistoryResponse =
-        serde_json::from_value(json).expect("valid DownloadsHistoryResponse");
+    let response_obj: PullsHistoryResponse =
+        serde_json::from_value(json).expect("valid PullsHistoryResponse");
 
     assert_eq!(response_obj.total, 3);
     assert_eq!(response_obj.items.len(), 1);
@@ -245,7 +243,7 @@ async fn test_get_pull_history_with_pagination() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/tama/v1/downloads/history?limit=1&offset=1")
+                .uri("/tama/v1/pulls/history?limit=1&offset=1")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -258,8 +256,8 @@ async fn test_get_pull_history_with_pagination() {
         .await
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let response_obj: DownloadsHistoryResponse =
-        serde_json::from_value(json).expect("valid DownloadsHistoryResponse");
+    let response_obj: PullsHistoryResponse =
+        serde_json::from_value(json).expect("valid PullsHistoryResponse");
 
     assert_eq!(response_obj.total, 3);
     assert_eq!(response_obj.items.len(), 1);
@@ -278,7 +276,7 @@ async fn test_cancel_pull_succeeds_for_queued_item() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/tama/v1/downloads/job-active-1/cancel")
+                .uri("/tama/v1/pulls/job-active-1/cancel")
                 .method("POST")
                 .body(Body::empty())
                 .unwrap(),
@@ -292,8 +290,8 @@ async fn test_cancel_pull_succeeds_for_queued_item() {
         .await
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let response_obj: DownloadCancelResponse =
-        serde_json::from_value(json).expect("valid DownloadCancelResponse");
+    let response_obj: PullCancelResponse =
+        serde_json::from_value(json).expect("valid PullCancelResponse");
 
     assert!(response_obj.ok);
     assert!(response_obj.message.is_none());
@@ -310,7 +308,7 @@ async fn test_cancel_pull_returns_error_for_completed_item() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/tama/v1/downloads/job-history-1/cancel")
+                .uri("/tama/v1/pulls/job-history-1/cancel")
                 .method("POST")
                 .body(Body::empty())
                 .unwrap(),
@@ -324,8 +322,8 @@ async fn test_cancel_pull_returns_error_for_completed_item() {
         .await
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let response_obj: DownloadCancelResponse =
-        serde_json::from_value(json).expect("valid DownloadCancelResponse");
+    let response_obj: PullCancelResponse =
+        serde_json::from_value(json).expect("valid PullCancelResponse");
 
     assert!(!response_obj.ok);
     assert!(response_obj.message.is_some());
@@ -344,7 +342,7 @@ async fn test_cancel_nonexistent_item_returns_error() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/tama/v1/downloads/nonexistent-job/cancel")
+                .uri("/tama/v1/pulls/nonexistent-job/cancel")
                 .method("POST")
                 .body(Body::empty())
                 .unwrap(),
@@ -358,8 +356,8 @@ async fn test_cancel_nonexistent_item_returns_error() {
         .await
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let response_obj: DownloadCancelResponse =
-        serde_json::from_value(json).expect("valid DownloadCancelResponse");
+    let response_obj: PullCancelResponse =
+        serde_json::from_value(json).expect("valid PullCancelResponse");
 
     assert!(!response_obj.ok);
     assert!(response_obj.message.is_some());

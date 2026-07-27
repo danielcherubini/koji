@@ -211,7 +211,7 @@ pub struct InstallRequest {
     pub backend_type: String,
     pub version: Option<String>,
     /// GPU variant for the installation (e.g. "cpu", "cuda", "vulkan", "rocm", "metal").
-    pub gpu_variant: tama_core::gpu::GpuType,
+    pub gpu_variant: tama_core::gpu::GpuVariant,
     pub build_from_source: bool,
     pub force: bool,
 }
@@ -535,7 +535,7 @@ mod tests {
         .unwrap();
         assert!(matches!(
             req.gpu_variant,
-            tama_core::gpu::GpuType::Cuda { .. }
+            tama_core::gpu::GpuVariant::Cuda { .. }
         ));
     }
 
@@ -555,7 +555,7 @@ mod tests {
         .unwrap();
         assert!(matches!(
             req.gpu_variant,
-            tama_core::gpu::GpuType::Cuda { .. }
+            tama_core::gpu::GpuVariant::Cuda { .. }
         ));
     }
 }

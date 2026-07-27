@@ -8,7 +8,7 @@ use crate::process::{
 use crate::proxy::types::{BackendState, ProxyState};
 
 impl ProxyState {
-    /// Check if any server has been idle for longer than the timeout.
+    /// Check if any backend has been idle for longer than the timeout.
     ///
     /// Also performs process health monitoring:
     /// - Detects dead PIDs in Ready models and confirms via health endpoint
@@ -22,7 +22,7 @@ impl ProxyState {
         // (backend_name, model_name, backend, restart_count, pid, backend_url)
         let mut dead_pid_candidates: Vec<(String, String, String, u32, u32, String)> = Vec::new();
         // (backend_name, model_name, backend, start_time, pid)
-        let mut stuck_starting_servers: Vec<(String, String, String, Instant, u32)> = Vec::new();
+        let mut stuck_starting_backends: Vec<(String, String, String, Instant, u32)> = Vec::new();
 
         let (auto_unload, idle_timeout_secs, startup_timeout_secs, max_restarts, restart_delay_ms) = {
             let cfg = self.config.read().await;
@@ -30,8 +30,8 @@ impl ProxyState {
                 cfg.proxy.auto_unload,
                 cfg.proxy.idle_timeout_secs,
                 cfg.proxy.startup_timeout_secs,
-                cfg.supervisor.max_restarts,
-                cfg.supervisor.restart_delay_ms,
+                cfg.lifecycle.max_restarts,
+                cfg.lifecycle.restart_delay_ms,
             )
         };
 
@@ -45,12 +45,12 @@ impl ProxyState {
             if let BackendState::Starting { start_time, .. } = state {
                 if now.saturating_duration_since(*start_time) > startup_timeout {
                     warn!(
-                        "Server '{}' stuck in Starting for {}s (timeout: {}s)",
+                        "Backend '{}' stuck in Starting for {}s (timeout: {}s)",
                         backend_name,
                         now.saturating_duration_since(*start_time).as_secs(),
                         startup_timeout_secs,
                     );
-                    stuck_starting_servers.push((
+                    stuck_starting_backends.push((
                         backend_name.clone(),
                         state.model_name().to_string(),
                         state.backend().to_string(),
@@ -100,7 +100,7 @@ impl ProxyState {
                     let idle_duration = now.saturating_duration_since(last);
                     if auto_unload && idle_duration > idle_timeout {
                         warn!(
-                            "Server '{}' idle for {}s (timeout: {}s)",
+                            "Backend '{}' idle for {}s (timeout: {}s)",
                             backend_name,
                             idle_duration.as_secs(),
                             idle_timeout_secs
@@ -113,7 +113,7 @@ impl ProxyState {
             // Failed models — mark for cleanup
             if matches!(state, BackendState::Failed { .. }) {
                 warn!(
-                    "Server '{}' in Failed state, marking for cleanup",
+                    "Backend '{}' in Failed state, marking for cleanup",
                     backend_name
                 );
                 failed_to_remove.push(backend_name.clone());
@@ -132,13 +132,13 @@ impl ProxyState {
 
             if still_dead {
                 info!(
-                    "Server '{}' confirmed dead (pid {}, restart_count: {}/{})",
+                    "Backend '{}' confirmed dead (pid {}, restart_count: {}/{})",
                     backend_name, pid, restart_count, max_restarts
                 );
                 confirmed_dead.push((backend_name, model_name, backend, restart_count, pid));
             } else {
                 debug!(
-                    "Server '{}' PID {} reused, health endpoint responds",
+                    "Backend '{}' PID {} reused, health endpoint responds",
                     backend_name, pid
                 );
             }
@@ -154,17 +154,17 @@ impl ProxyState {
                 self.inference_stats.send_modify(|map| {
                     map.remove(backend_name);
                 });
-                info!("Removed failed server '{}' from model map", backend_name);
+                info!("Removed failed backend '{}' from model map", backend_name);
             }
         }
 
         // Handle stuck Starting — transition to Failed and kill orphaned process groups
-        if !stuck_starting_servers.is_empty() {
+        if !stuck_starting_backends.is_empty() {
             let mut pids_to_clean: Vec<(String, u32)> = Vec::new();
             {
                 let mut models = self.models.write().await;
                 for (backend_name, model_name, backend, observed_start, observed_pid) in
-                    &stuck_starting_servers
+                    &stuck_starting_backends
                 {
                     // Revalidate: only transition if still in Starting state with matching start_time
                     // (could have become Ready between Phase 1 and Phase 3)
@@ -172,7 +172,7 @@ impl ProxyState {
                         let still_starting = matches!(existing, BackendState::Starting { start_time, .. } if start_time == observed_start);
                         if !still_starting {
                             debug!(
-                                "Server '{}' state or start_time changed, skipping stuck transition",
+                                "Backend '{}' state or start_time changed, skipping stuck transition",
                                 backend_name
                             );
                             continue;
@@ -200,7 +200,7 @@ impl ProxyState {
             for (backend_name, pid) in pids_to_clean {
                 if pid > 0 {
                     warn!(
-                        "Killing orphaned process group {} for stuck server '{}'",
+                        "Killing orphaned process group {} for stuck backend '{}'",
                         pid, backend_name
                     );
                     let _ = kill_process_group(pid).await;
@@ -213,12 +213,12 @@ impl ProxyState {
             }
         }
 
-        // Handle dead Ready servers — clean up + insert Failed or spawn restart
+        // Handle dead Ready backends — clean up + insert Failed or spawn restart
         if !confirmed_dead.is_empty() {
             // Remove + insert Failed under SAME lock — no race
             // Revalidate state under lock to avoid TOCTOU with forward_request()
             let mut to_restart: Vec<(String, String, u32)> = Vec::new();
-            let mut removed_servers: Vec<String> = Vec::new();
+            let mut removed_backends: Vec<String> = Vec::new();
             {
                 let mut models = self.models.write().await;
                 for (backend_name, model_name, backend, restart_count, observed_pid) in
@@ -247,7 +247,7 @@ impl ProxyState {
                         self.inference_stats.send_modify(|map| {
                             map.remove(backend_name);
                         });
-                        removed_servers.push(backend_name.clone());
+                        removed_backends.push(backend_name.clone());
                         if *restart_count >= max_restarts {
                             models.insert(
                                 backend_name.clone(),
@@ -261,7 +261,7 @@ impl ProxyState {
                                 },
                             );
                             warn!(
-                                "Server '{}' exceeded max restarts ({}/{})",
+                                "Backend '{}' exceeded max restarts ({}/{})",
                                 backend_name, restart_count, max_restarts
                             );
                         } else {
@@ -273,7 +273,7 @@ impl ProxyState {
                         }
                     } else {
                         debug!(
-                            "Server '{}' state changed during health check, skipping cleanup",
+                            "Backend '{}' state changed during health check, skipping cleanup",
                             backend_name
                         );
                     }
@@ -282,7 +282,7 @@ impl ProxyState {
             // Clean DB — remove ALL dead entries so cleanup_stale_processes()
             // doesn't rediscover them, regardless of whether they'll be restarted
             if let Some(mgr) = self.model_mgr() {
-                for backend_name in &removed_servers {
+                for backend_name in &removed_backends {
                     let _ = mgr.remove_active(backend_name);
                 }
             }
@@ -344,7 +344,7 @@ impl ProxyState {
         let mut cleaned = Vec::new();
         cleaned.extend(failed_to_remove);
         cleaned.extend(
-            stuck_starting_servers
+            stuck_starting_backends
                 .iter()
                 .map(|(n, _, _, _, _)| n.clone()),
         );

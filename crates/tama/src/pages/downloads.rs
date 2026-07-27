@@ -80,7 +80,7 @@ pub fn Downloads() -> impl IntoView {
     // Initial fetch of active downloads
     let active_downloads_init = active_downloads.clone();
     wasm_bindgen_futures::spawn_local(async move {
-        if let Ok(resp) = get_request("/tama/v1/downloads/active").send().await {
+        if let Ok(resp) = get_request("/tama/v1/pulls/active").send().await {
             extract_and_store_csrf_token(&resp);
             if let Ok(data) = resp.json::<PullsActiveResponse>().await {
                 active_downloads_init.set(data.items);
@@ -101,7 +101,7 @@ pub fn Downloads() -> impl IntoView {
             let total_c = total.clone();
             wasm_bindgen_futures::spawn_local(async move {
                 if let Ok(resp) = get_request(&format!(
-                    "/tama/v1/downloads/history?limit={}&offset={}",
+                    "/tama/v1/pulls/history?limit={}&offset={}",
                     limit_val,
                     page_val * limit_val
                 ))
@@ -321,11 +321,11 @@ fn render_history_item(item: PullQueueItemDto) -> impl IntoView {
 }
 
 pub async fn cancel_download(job_id: &str) {
-    let url = format!("/tama/v1/downloads/{}/cancel", job_id);
+    let url = format!("/tama/v1/pulls/{}/cancel", job_id);
     if let Ok(resp) = post_request(&url).send().await {
         if resp.status() >= 200 && resp.status() < 300 {
             // Refresh active list
-            if let Ok(resp2) = get_request("/tama/v1/downloads/active").send().await {
+            if let Ok(resp2) = get_request("/tama/v1/pulls/active").send().await {
                 extract_and_store_csrf_token(&resp2);
                 if let Ok(data) = resp2.json::<PullsActiveResponse>().await {
                     ACTIVE_DOWNLOADS.set(data.items);

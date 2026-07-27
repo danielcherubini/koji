@@ -1,4 +1,4 @@
-use super::types::{CompactionConfig, Config, General, LangfuseConfig, ProxyConfig, Supervisor};
+use super::types::{CompactionConfig, Config, General, LangfuseConfig, Lifecycle, ProxyConfig};
 use crate::profiles::Profile;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -131,7 +131,7 @@ impl Default for Config {
         Config {
             general: General::default(),
             backends,
-            supervisor: Supervisor::default(),
+            lifecycle: Lifecycle::default(),
             proxy: ProxyConfig::default(),
             compaction: CompactionConfig::default(),
             langfuse: LangfuseConfig::default(),

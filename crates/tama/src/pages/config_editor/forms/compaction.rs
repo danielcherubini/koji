@@ -2,7 +2,7 @@ use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
 use crate::components::section_card::SectionCard;
-use crate::gpu_types::CompactionDevice as CoreCompactionDevice;
+use crate::core_mirrors::CompactionDevice as CoreCompactionDevice;
 use crate::utils::target_value;
 
 #[component]

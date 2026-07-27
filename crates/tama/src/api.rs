@@ -9,14 +9,15 @@ pub mod aliases;
 pub mod backends;
 pub mod backup;
 pub mod benchmarks;
-pub mod downloads;
 pub mod error;
+pub mod field_update;
 pub mod helpers;
 pub mod hf;
 pub mod logs;
 pub mod middleware;
 pub mod models;
 pub mod openapi;
+pub mod pulls;
 pub mod self_update;
 pub mod updates;
 
@@ -176,9 +177,9 @@ pub fn merge_config_patch(
         Some(p) => merge_general(existing.general, p),
         None => existing.general,
     };
-    let supervisor = match patch.supervisor {
-        Some(p) => merge_supervisor(existing.supervisor, p),
-        None => existing.supervisor,
+    let lifecycle = match patch.lifecycle {
+        Some(p) => merge_lifecycle(existing.lifecycle, p),
+        None => existing.lifecycle,
     };
     let sampling_templates =
         merge_sampling_templates(existing.sampling_templates, patch.sampling_templates);
@@ -198,7 +199,7 @@ pub fn merge_config_patch(
     crate::types::config::Config {
         general,
         backends: existing.backends,
-        supervisor,
+        lifecycle,
         sampling_templates,
         proxy,
         compaction,
@@ -221,11 +222,11 @@ fn merge_general(
     }
 }
 
-fn merge_supervisor(
-    existing: crate::types::config::Supervisor,
-    patch: crate::types::config::SupervisorPatch,
-) -> crate::types::config::Supervisor {
-    crate::types::config::Supervisor {
+fn merge_lifecycle(
+    existing: crate::types::config::Lifecycle,
+    patch: crate::types::config::LifecyclePatch,
+) -> crate::types::config::Lifecycle {
+    crate::types::config::Lifecycle {
         restart_policy: patch.restart_policy.unwrap_or(existing.restart_policy),
         max_restarts: patch.max_restarts.unwrap_or(existing.max_restarts),
         restart_delay_ms: patch.restart_delay_ms.unwrap_or(existing.restart_delay_ms),
@@ -268,9 +269,9 @@ fn merge_proxy(
         metrics_retention_secs: patch
             .metrics_retention_secs
             .unwrap_or(existing.metrics_retention_secs),
-        download_queue_poll_interval_secs: patch
-            .download_queue_poll_interval_secs
-            .unwrap_or(existing.download_queue_poll_interval_secs),
+        pull_queue_poll_interval_secs: patch
+            .pull_queue_poll_interval_secs
+            .unwrap_or(existing.pull_queue_poll_interval_secs),
         max_loaded_models: patch
             .max_loaded_models
             .unwrap_or(existing.max_loaded_models),
@@ -408,8 +409,8 @@ pub async fn patch_structured_config(
 mod tests {
     use super::*;
     use crate::types::config::{
-        CompactionConfig, Config, General, LangfuseConfig, OAuth2Config, ProxyConfig,
-        SamplingParams, Supervisor,
+        CompactionConfig, Config, General, LangfuseConfig, Lifecycle, OAuth2Config, ProxyConfig,
+        SamplingParams,
     };
     use tama_core::config::{
         CompactionDevice as CoreCompactionDevice, LogLevel as CoreLogLevel,
@@ -426,7 +427,7 @@ mod tests {
                 update_check_interval: 12,
             },
             backends: std::collections::BTreeMap::new(),
-            supervisor: Supervisor {
+            lifecycle: Lifecycle {
                 restart_policy: CoreRestartPolicy::Always,
                 max_restarts: 10,
                 restart_delay_ms: 3000,
@@ -444,7 +445,7 @@ mod tests {
                 circuit_breaker_threshold: 3,
                 circuit_breaker_cooldown_seconds: 60,
                 metrics_retention_secs: 86400,
-                download_queue_poll_interval_secs: 2,
+                pull_queue_poll_interval_secs: 2,
                 max_loaded_models: 1,
                 authenticator_url: None,
                 authenticator_skip_paths: Vec::new(),
@@ -468,7 +469,7 @@ mod tests {
         let existing = sample_config();
         let patch = crate::types::config::ConfigPatchBody {
             general: None,
-            supervisor: None,
+            lifecycle: None,
             sampling_templates: None,
             proxy: None,
             compaction: None,
@@ -485,12 +486,12 @@ mod tests {
             existing.general.update_check_interval
         );
         assert_eq!(
-            merged.supervisor.restart_policy,
-            existing.supervisor.restart_policy
+            merged.lifecycle.restart_policy,
+            existing.lifecycle.restart_policy
         );
         assert_eq!(
-            merged.supervisor.max_restarts,
-            existing.supervisor.max_restarts
+            merged.lifecycle.max_restarts,
+            existing.lifecycle.max_restarts
         );
         assert_eq!(merged.proxy.host, existing.proxy.host);
         assert_eq!(merged.proxy.port, existing.proxy.port);
@@ -513,7 +514,7 @@ mod tests {
 
         let patch = crate::types::config::ConfigPatchBody {
             general: None,
-            supervisor: None,
+            lifecycle: None,
             sampling_templates: None,
             proxy: Some(crate::types::config::ProxyConfigPatch {
                 port: Some(8080),
@@ -538,7 +539,7 @@ mod tests {
 
         let patch = crate::types::config::ConfigPatchBody {
             general: None,
-            supervisor: None,
+            lifecycle: None,
             sampling_templates: None,
             proxy: Some(crate::types::config::ProxyConfigPatch {
                 oauth2: Some(crate::types::config::OAuth2ConfigPatch {
@@ -580,7 +581,7 @@ mod tests {
 
         let patch = crate::types::config::ConfigPatchBody {
             general: None,
-            supervisor: None,
+            lifecycle: None,
             sampling_templates: Some({
                 let mut map = std::collections::BTreeMap::new();
                 // Upsert existing key — merge fields

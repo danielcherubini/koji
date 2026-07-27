@@ -1,7 +1,7 @@
 use leptos::prelude::*;
 
 use crate::components::section_card::SectionCard;
-use crate::gpu_types::LogLevel as CoreLogLevel;
+use crate::core_mirrors::LogLevel as CoreLogLevel;
 use crate::utils::target_value;
 
 #[component]

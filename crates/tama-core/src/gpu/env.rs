@@ -1,4 +1,4 @@
-use super::detect::GpuType;
+use super::detect::GpuVariant;
 use super::system::detect_gpu_devices;
 use super::types::GpuDeviceStats;
 
@@ -24,9 +24,9 @@ use super::types::GpuDeviceStats;
 ///
 /// Blocks on subprocesses (nvidia-smi, sysfs reads); call via
 /// `tokio::task::spawn_blocking`.
-pub fn resolve_gpu_env(gpu_device: &str, gpu_variant: &GpuType) -> Option<(String, String)> {
+pub fn resolve_gpu_env(gpu_device: &str, gpu_variant: &GpuVariant) -> Option<(String, String)> {
     let device = gpu_device.trim();
-    if device.is_empty() || matches!(gpu_variant, GpuType::CpuOnly) {
+    if device.is_empty() || matches!(gpu_variant, GpuVariant::CpuOnly) {
         return None;
     }
 
@@ -44,9 +44,9 @@ pub fn resolve_gpu_env(gpu_device: &str, gpu_variant: &GpuType) -> Option<(Strin
         .count();
 
     let env_name = match gpu_variant {
-        GpuType::RocM { .. } => "ROCR_VISIBLE_DEVICES",
-        GpuType::Cuda { .. } => "CUDA_VISIBLE_DEVICES",
-        GpuType::Vulkan => "GGML_VK_VISIBLE_DEVICES",
+        GpuVariant::RocM { .. } => "ROCR_VISIBLE_DEVICES",
+        GpuVariant::Cuda { .. } => "CUDA_VISIBLE_DEVICES",
+        GpuVariant::Vulkan => "GGML_VK_VISIBLE_DEVICES",
         _ => return None,
     };
 
@@ -57,11 +57,11 @@ pub fn resolve_gpu_env(gpu_device: &str, gpu_variant: &GpuType) -> Option<(Strin
 /// so it can be unit-tested without spawning subprocesses.
 pub fn resolve_gpu_env_from(
     gpu_device: &str,
-    gpu_variant: &GpuType,
+    gpu_variant: &GpuVariant,
     gpus: &[GpuDeviceStats],
 ) -> Option<(String, String)> {
     let device = gpu_device.trim();
-    if device.is_empty() || matches!(gpu_variant, GpuType::CpuOnly) {
+    if device.is_empty() || matches!(gpu_variant, GpuVariant::CpuOnly) {
         return None;
     }
 
@@ -75,9 +75,9 @@ pub fn resolve_gpu_env_from(
         .count();
 
     let env_name = match gpu_variant {
-        GpuType::RocM { .. } => "ROCR_VISIBLE_DEVICES",
-        GpuType::Cuda { .. } => "CUDA_VISIBLE_DEVICES",
-        GpuType::Vulkan => "GGML_VK_VISIBLE_DEVICES",
+        GpuVariant::RocM { .. } => "ROCR_VISIBLE_DEVICES",
+        GpuVariant::Cuda { .. } => "CUDA_VISIBLE_DEVICES",
+        GpuVariant::Vulkan => "GGML_VK_VISIBLE_DEVICES",
         _ => return None,
     };
 
@@ -87,7 +87,7 @@ pub fn resolve_gpu_env_from(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gpu::{detect::GpuType, GpuVendor};
+    use crate::gpu::{detect::GpuVariant, GpuVendor};
 
     fn build_test_gpu(device_id: &str, vendor: &str) -> GpuDeviceStats {
         let gpu_vendor = match vendor {
@@ -115,7 +115,7 @@ mod tests {
         let gpus = vec![build_test_gpu("GPU0", "amd")];
         let result = resolve_gpu_env_from(
             "GPU0",
-            &GpuType::RocM {
+            &GpuVariant::RocM {
                 version: String::new(),
             },
             &gpus,
@@ -132,7 +132,7 @@ mod tests {
         let gpus = vec![build_test_gpu("GPU0", "amd"), build_test_gpu("GPU1", "amd")];
         let result = resolve_gpu_env_from(
             "GPU1",
-            &GpuType::RocM {
+            &GpuVariant::RocM {
                 version: String::new(),
             },
             &gpus,
@@ -159,7 +159,7 @@ mod tests {
         // Selecting GPU0 (amd) with rocm → ROCR_VISIBLE_DEVICES=0
         let result = resolve_gpu_env_from(
             "GPU0",
-            &GpuType::RocM {
+            &GpuVariant::RocM {
                 version: String::new(),
             },
             &gpus,
@@ -177,7 +177,7 @@ mod tests {
         let gpus = vec![build_test_gpu("GPU0", "nvidia")];
         let result = resolve_gpu_env_from(
             "GPU0",
-            &GpuType::Cuda {
+            &GpuVariant::Cuda {
                 version: String::new(),
             },
             &gpus,
@@ -200,7 +200,7 @@ mod tests {
         // GPU3 = second nvidia → CUDA_VISIBLE_DEVICES=1
         let result = resolve_gpu_env_from(
             "GPU3",
-            &GpuType::Cuda {
+            &GpuVariant::Cuda {
                 version: String::new(),
             },
             &gpus,
@@ -219,7 +219,7 @@ mod tests {
             build_test_gpu("GPU0", "amd"),
             build_test_gpu("GPU1", "nvidia"),
         ];
-        let result = resolve_gpu_env_from("GPU0", &GpuType::Vulkan, &gpus);
+        let result = resolve_gpu_env_from("GPU0", &GpuVariant::Vulkan, &gpus);
         assert_eq!(
             result,
             Some(("GGML_VK_VISIBLE_DEVICES".to_string(), "0".to_string()))
@@ -231,7 +231,7 @@ mod tests {
     #[test]
     fn test_resolve_cpu_variant_returns_none() {
         let gpus = vec![build_test_gpu("GPU0", "amd")];
-        let result = resolve_gpu_env_from("GPU0", &GpuType::CpuOnly, &gpus);
+        let result = resolve_gpu_env_from("GPU0", &GpuVariant::CpuOnly, &gpus);
         assert_eq!(result, None);
     }
 
@@ -240,7 +240,7 @@ mod tests {
         let gpus = vec![build_test_gpu("GPU0", "amd")];
         let result = resolve_gpu_env_from(
             "",
-            &GpuType::RocM {
+            &GpuVariant::RocM {
                 version: String::new(),
             },
             &gpus,
@@ -253,7 +253,7 @@ mod tests {
         let gpus = vec![build_test_gpu("GPU0", "amd")];
         let result = resolve_gpu_env_from(
             "  ",
-            &GpuType::RocM {
+            &GpuVariant::RocM {
                 version: String::new(),
             },
             &gpus,
@@ -266,7 +266,7 @@ mod tests {
         let gpus = vec![build_test_gpu("GPU0", "amd")];
         let result = resolve_gpu_env_from(
             "GPU99",
-            &GpuType::RocM {
+            &GpuVariant::RocM {
                 version: String::new(),
             },
             &gpus,
@@ -277,7 +277,7 @@ mod tests {
     #[test]
     fn test_resolve_variant_without_env_mechanism_returns_none() {
         let gpus = vec![build_test_gpu("GPU0", "amd")];
-        let result = resolve_gpu_env_from("GPU0", &GpuType::Metal, &gpus);
+        let result = resolve_gpu_env_from("GPU0", &GpuVariant::Metal, &gpus);
         assert_eq!(result, None);
     }
 
@@ -287,7 +287,7 @@ mod tests {
         // Legacy ROCm0 format — no longer supported, returns None
         let result = resolve_gpu_env_from(
             "ROCm0",
-            &GpuType::RocM {
+            &GpuVariant::RocM {
                 version: String::new(),
             },
             &gpus,

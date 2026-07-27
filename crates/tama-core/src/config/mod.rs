@@ -8,7 +8,7 @@ pub use args_helpers::{
 };
 pub use types::{
     default_num_parallel, BackendConfig, CompactionConfig, CompactionDevice, Config, General,
-    HealthCheck, LangfuseConfig, LogLevel, ModelConfig, ModelModalities, OAuth2Config, ProxyConfig,
-    QuantEntry, QuantKind, RestartPolicy, SpecDecodingConfig, Supervisor, DEFAULT_PROXY_PORT,
+    HealthCheck, LangfuseConfig, Lifecycle, LogLevel, ModelConfig, ModelModalities, OAuth2Config,
+    ProxyConfig, QuantEntry, QuantKind, RestartPolicy, SpecDecodingConfig, DEFAULT_PROXY_PORT,
     MAX_REQUEST_BODY_SIZE,
 };

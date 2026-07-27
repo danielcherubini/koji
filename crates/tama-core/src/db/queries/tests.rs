@@ -561,6 +561,147 @@ fn test_delete_model_config() {
     assert!(get_model_config(&conn, model_id).unwrap().is_none());
 }
 
+/// `delete_update_checks_for_backend` removes all variant rows (LIKE `name:%`)
+/// and the legacy bare-name row, while leaving other backends untouched.
+#[test]
+fn test_delete_update_checks_for_backend() {
+    let OpenResult { conn, .. } = open_in_memory().unwrap();
+
+    // Insert four records: two variants + one legacy + one unrelated
+    upsert_update_check(
+        &conn,
+        super::update_check_queries::UpdateCheckParams {
+            item_type: "backend",
+            item_id: "llama_cpp:cpu",
+            current_version: None,
+            latest_version: None,
+            update_available: false,
+            status: "unknown",
+            error_message: None,
+            details_json: None,
+            checked_at: 1000,
+        },
+    )
+    .unwrap();
+
+    upsert_update_check(
+        &conn,
+        super::update_check_queries::UpdateCheckParams {
+            item_type: "backend",
+            item_id: "llama_cpp:vulkan",
+            current_version: None,
+            latest_version: None,
+            update_available: false,
+            status: "unknown",
+            error_message: None,
+            details_json: None,
+            checked_at: 1001,
+        },
+    )
+    .unwrap();
+
+    upsert_update_check(
+        &conn,
+        super::update_check_queries::UpdateCheckParams {
+            item_type: "backend",
+            item_id: "llama_cpp",
+            current_version: None,
+            latest_version: None,
+            update_available: false,
+            status: "unknown",
+            error_message: None,
+            details_json: None,
+            checked_at: 1002,
+        },
+    )
+    .unwrap();
+
+    upsert_update_check(
+        &conn,
+        super::update_check_queries::UpdateCheckParams {
+            item_type: "backend",
+            item_id: "other:cpu",
+            current_version: None,
+            latest_version: None,
+            update_available: false,
+            status: "unknown",
+            error_message: None,
+            details_json: None,
+            checked_at: 1003,
+        },
+    )
+    .unwrap();
+
+    // Act: delete all update checks for "llama_cpp"
+    delete_update_checks_for_backend(&conn, "llama_cpp").unwrap();
+
+    // Assert: llama_cpp variants and legacy row are gone
+    assert!(get_update_check(&conn, "backend", "llama_cpp:cpu")
+        .unwrap()
+        .is_none());
+    assert!(get_update_check(&conn, "backend", "llama_cpp:vulkan")
+        .unwrap()
+        .is_none());
+    assert!(get_update_check(&conn, "backend", "llama_cpp")
+        .unwrap()
+        .is_none());
+
+    // Assert: other backend is untouched
+    assert!(get_update_check(&conn, "backend", "other:cpu")
+        .unwrap()
+        .is_some());
+}
+
+/// `delete_update_checks_for_backend` correctly escapes SQL LIKE metacharacters.
+#[test]
+fn test_delete_update_checks_for_backend_escapes() {
+    let OpenResult { conn, .. } = open_in_memory().unwrap();
+
+    // Insert records with underscore in name — one should match, one should not
+    upsert_update_check(
+        &conn,
+        super::update_check_queries::UpdateCheckParams {
+            item_type: "backend",
+            item_id: "my_backend:cpu",
+            current_version: None,
+            latest_version: None,
+            update_available: false,
+            status: "unknown",
+            error_message: None,
+            details_json: None,
+            checked_at: 1000,
+        },
+    )
+    .unwrap();
+
+    upsert_update_check(
+        &conn,
+        super::update_check_queries::UpdateCheckParams {
+            item_type: "backend",
+            item_id: "myXbackend:cpu",
+            current_version: None,
+            latest_version: None,
+            update_available: false,
+            status: "unknown",
+            error_message: None,
+            details_json: None,
+            checked_at: 1001,
+        },
+    )
+    .unwrap();
+
+    // Act: delete for "my_backend" — the underscore should be escaped
+    delete_update_checks_for_backend(&conn, "my_backend").unwrap();
+
+    // Assert: my_backend:cpu is gone, myXbackend:cpu survives
+    assert!(get_update_check(&conn, "backend", "my_backend:cpu")
+        .unwrap()
+        .is_none());
+    assert!(get_update_check(&conn, "backend", "myXbackend:cpu")
+        .unwrap()
+        .is_some());
+}
+
 #[test]
 fn test_count_active_keys() {
     let OpenResult { conn, .. } = open_in_memory().unwrap();

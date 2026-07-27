@@ -13,7 +13,7 @@
 //! let cancelled = RwSignal::new(false);
 //! let config = SseReconnectConfig::default();
 //! let mut conn = SseConnection::create(
-//!     "/tama/v1/downloads/events".to_string(),
+//!     "/tama/v1/pulls/events".to_string(),
 //!     cancelled,
 //!     Some(config),
 //! );
@@ -288,7 +288,7 @@ impl Drop for SseConnection {
 ///
 /// # Arguments
 ///
-/// * `url` — The SSE endpoint URL (e.g., `/tama/v1/downloads/events`).
+/// * `url` — The SSE endpoint URL (e.g., `/tama/v1/pulls/events`).
 /// * `cancelled` — A signal that, when `true`, causes `connect_once` to return
 ///   `Err(SseError::Closed)`.
 /// * `config` — Optional reconnection configuration. Uses defaults if `None`.

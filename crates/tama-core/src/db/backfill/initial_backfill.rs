@@ -70,7 +70,7 @@ pub async fn run_initial_backfill(conn: &Connection, config: &Config) -> Result<
         }
 
         // Fetch blob metadata for LFS hashes (best-effort; proceed even on failure)
-        let blobs = match crate::models::pull::fetch_blob_metadata(repo_id).await {
+        let blobs = match crate::models::pull::lookup_blob_metadata(repo_id).await {
             Ok(b) => b,
             Err(e) => {
                 tracing::warn!("Failed to fetch blob metadata for {}: {}", repo_id, e);

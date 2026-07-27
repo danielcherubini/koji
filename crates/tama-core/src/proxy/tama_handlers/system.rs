@@ -61,7 +61,7 @@ pub async fn handle_hf_list_quants(Path(repo_id): Path<String>) -> Response {
             .into_response();
     }
 
-    match crate::models::pull::fetch_blob_metadata(&repo_id).await {
+    match crate::models::pull::lookup_blob_metadata(&repo_id).await {
         Ok(blobs) => {
             let mut quants: Vec<QuantEntry> = crate::models::pull::group_sharded_quants(blobs)
                 .into_iter()
@@ -164,13 +164,13 @@ pub async fn handle_tama_system_gpu_devices(
     Query(query): Query<GpuDevicesQuery>,
 ) -> Response {
     let backend_name = query.backend;
-    let gpu_variant: crate::gpu::GpuType = std::str::FromStr::from_str(&query.gpu_variant)
+    let gpu_variant: crate::gpu::GpuVariant = std::str::FromStr::from_str(&query.gpu_variant)
         .unwrap_or_else(|_| {
             tracing::warn!(
                 "unknown gpu_variant '{}' in query param; treating as custom",
                 query.gpu_variant
             );
-            crate::gpu::GpuType::Custom
+            crate::gpu::GpuVariant::Custom
         });
 
     // Resolve binary path for this backend
@@ -219,13 +219,13 @@ pub async fn handle_tama_system_gpu_devices_refresh(
     Query(query): Query<GpuDevicesQuery>,
 ) -> Response {
     let backend_name = query.backend;
-    let gpu_variant: crate::gpu::GpuType = std::str::FromStr::from_str(&query.gpu_variant)
+    let gpu_variant: crate::gpu::GpuVariant = std::str::FromStr::from_str(&query.gpu_variant)
         .unwrap_or_else(|_| {
             tracing::warn!(
                 "unknown gpu_variant '{}' in query param; treating as custom",
                 query.gpu_variant
             );
-            crate::gpu::GpuType::Custom
+            crate::gpu::GpuVariant::Custom
         });
 
     // Resolve binary path for this backend

@@ -8,7 +8,7 @@ use leptos::prelude::*;
 use leptos_router::components::A;
 
 use crate::components::list_card::ListCard;
-use crate::gpu_types::ModelState;
+use crate::core_mirrors::ModelState;
 
 // ── Inline SVG helpers ───────────────────────────────────────────────────────
 
@@ -69,7 +69,7 @@ pub(crate) struct ModelPips {
 pub(crate) fn model_status_badge_class(state: &ModelState) -> &'static str {
     match state {
         ModelState::Ready => "badge badge-success",
-        ModelState::Loading => "badge badge-info",
+        ModelState::Starting => "badge badge-info",
         ModelState::Unloading => "badge badge-warning",
         ModelState::Failed => "badge badge-error",
         ModelState::Idle => "badge badge-muted",
@@ -80,7 +80,7 @@ pub(crate) fn model_status_badge_class(state: &ModelState) -> &'static str {
 pub(crate) fn model_status_badge_label(state: &ModelState) -> &'static str {
     match state {
         ModelState::Ready => "Loaded",
-        ModelState::Loading => "Loading",
+        ModelState::Starting => "Starting",
         ModelState::Unloading => "Unloading",
         ModelState::Failed => "Failed",
         ModelState::Idle => "Idle",
@@ -94,7 +94,7 @@ pub(crate) fn model_status_badge_label(state: &ModelState) -> &'static str {
 pub(crate) fn model_action_button_class(state: &ModelState) -> &'static str {
     match state {
         ModelState::Ready => "btn btn-danger btn-sm",
-        ModelState::Loading => "btn btn-secondary btn-sm",
+        ModelState::Starting => "btn btn-secondary btn-sm",
         ModelState::Unloading => "btn btn-secondary btn-sm",
         ModelState::Failed => "btn btn-warning btn-sm",
         ModelState::Idle => "btn btn-success btn-sm",
@@ -105,7 +105,7 @@ pub(crate) fn model_action_button_class(state: &ModelState) -> &'static str {
 pub(crate) fn model_action_button_label(state: &ModelState) -> &'static str {
     match state {
         ModelState::Ready => "Unload",
-        ModelState::Loading => "Loading…",
+        ModelState::Starting => "Starting…",
         ModelState::Unloading => "Unloading…",
         ModelState::Failed => "Retry",
         ModelState::Idle => "Load",
@@ -202,7 +202,7 @@ pub fn ModelCard(
     // Map state to ListCard state
     let card_state: Option<ReadSignal<Option<String>>> = match state {
         ModelState::Ready => Some(RwSignal::new(Some("ready".to_string())).read_only()),
-        ModelState::Loading => Some(RwSignal::new(Some("loading".to_string())).read_only()),
+        ModelState::Starting => Some(RwSignal::new(Some("loading".to_string())).read_only()), // CSS class hook, not domain vocabulary
         ModelState::Unloading => Some(RwSignal::new(Some("unloading".to_string())).read_only()),
         ModelState::Failed => Some(RwSignal::new(Some("failed".to_string())).read_only()),
         ModelState::Idle => None, // idle → no state class (default gray strip)
@@ -210,8 +210,8 @@ pub fn ModelCard(
 
     // Determine action button to show
     let is_ready = matches!(state, ModelState::Ready);
-    let is_loading_or_unloading = matches!(state, ModelState::Loading | ModelState::Unloading);
-    let is_loading = matches!(state, ModelState::Loading);
+    let is_starting_or_unloading = matches!(state, ModelState::Starting | ModelState::Unloading);
+    let is_starting = matches!(state, ModelState::Starting);
     let is_failed = matches!(state, ModelState::Failed);
 
     // Build edit URL — use db_id when Some, fall back to id string
@@ -376,8 +376,8 @@ pub fn ModelCard(
                 } else {
                     view! { <span/> }.into_any()
                 }
-            } else if is_loading_or_unloading {
-                if is_loading {
+            } else if is_starting_or_unloading {
+                if is_starting {
                     // Show Cancel button if available, otherwise show disabled Loading…
                     if let Some(cb) = on_cancel {
                         let id_cancel = id.clone();
@@ -494,7 +494,7 @@ mod tests {
     #[test]
     fn test_model_action_button_class_uses_secondary_when_loading() {
         assert_eq!(
-            model_action_button_class(&ModelState::Loading),
+            model_action_button_class(&ModelState::Starting),
             "btn btn-secondary btn-sm"
         );
     }

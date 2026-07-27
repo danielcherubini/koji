@@ -202,11 +202,12 @@ pub struct CheckSingleQuery {
     pub gpu_variant: Option<String>,
 }
 
-/// POST /tama/v1/updates/check/:item_type/:item_id - Check single item
+/// POST /tama/v1/updates/check/:item_type/:item_id — trigger an update check
+/// for one backend variant or model.
 ///
 /// For backends, use `?gpu_variant=xxx` to check a specific variant.
 /// If not provided, checks the active variant (legacy behavior).
-pub async fn check_single(
+pub async fn check_item_for_update(
     Extension(web_state): Extension<WebState>,
     State(state): State<Arc<ProxyState>>,
     Path((item_type, item_id)): Path<(String, String)>,

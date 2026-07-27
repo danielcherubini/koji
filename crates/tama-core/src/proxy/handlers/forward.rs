@@ -77,7 +77,7 @@ pub async fn handle_forward_post(
             }
         }
     } else {
-        // No model field — forward to first available server or return error
+        // No model field — forward to first available backend or return error
         let models = state.models.read().await;
         if let Some(name) = models.keys().next().cloned() {
             drop(models);
@@ -87,7 +87,7 @@ pub async fn handle_forward_post(
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(serde_json::json!({
                     "error": {
-                        "message": "No backend server available",
+                        "message": "No backend available",
                         "type": "ServiceUnavailableError"
                     }
                 })),
@@ -117,11 +117,11 @@ pub async fn handle_forward_get(
     forward_to_backend(&state, parts, body).await
 }
 
-/// Forward a request to the first available backend server.
+/// Forward a request to the first available backend.
 ///
 /// Used by both the proxy's `handle_forward_get` and the web UI's root-level
 /// fallback (`/*path`). GET requests don't carry a `model` field, so we
-/// simply pick the first available server.
+/// simply pick the first available backend.
 pub async fn forward_to_backend(
     state: &Arc<ProxyState>,
     parts: http::request::Parts,
@@ -140,7 +140,7 @@ pub async fn forward_to_backend(
             StatusCode::SERVICE_UNAVAILABLE,
             Json(serde_json::json!({
                 "error": {
-                    "message": "No backend server available",
+                    "message": "No backend available",
                     "type": "ServiceUnavailableError"
                 }
             })),

@@ -83,10 +83,10 @@ pub fn ProxyAdvancedFields(
                 class="form-input"
                 type="number"
                 min="1"
-                prop:value=move || get_proxy().download_queue_poll_interval_secs.to_string()
+                prop:value=move || get_proxy().pull_queue_poll_interval_secs.to_string()
                 on:input=move |ev| {
                     if let Ok(v) = target_value(&ev).parse::<u64>() {
-                        config.update(|c| if let Some(c) = c { c.proxy.download_queue_poll_interval_secs = v; });
+                        config.update(|c| if let Some(c) = c { c.proxy.pull_queue_poll_interval_secs = v; });
                     }
                 }
             />

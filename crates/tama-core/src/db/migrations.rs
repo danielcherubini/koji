@@ -40,6 +40,9 @@ mod _0034_rename_download_queue_to_pull_queue;
 mod _0035_add_oauth2_config;
 mod _0036_create_api_keys;
 mod _0037_add_langfuse;
+mod _0038_rename_app_config_pull_poll_interval;
+mod _0039_rename_model_files_pulled_at;
+mod _0040_rename_app_supervisor_to_app_lifecycle;
 
 #[cfg(test)]
 mod migrations_tests;
@@ -75,7 +78,7 @@ impl Drop for FkGuard<'_> {
 type Migration = (i32, bool, &'static str);
 
 /// Version number for the latest migration
-pub const LATEST_VERSION: i32 = 37;
+pub const LATEST_VERSION: i32 = 40;
 
 /// All migrations collected from individual files, sorted by version.
 const MIGRATIONS: &[Migration] = &[
@@ -116,6 +119,9 @@ const MIGRATIONS: &[Migration] = &[
     _0035_add_oauth2_config::MIGRATION,
     _0036_create_api_keys::MIGRATION,
     _0037_add_langfuse::MIGRATION,
+    _0038_rename_app_config_pull_poll_interval::MIGRATION,
+    _0039_rename_model_files_pulled_at::MIGRATION,
+    _0040_rename_app_supervisor_to_app_lifecycle::MIGRATION,
 ];
 
 /// Run all applicable migrations on the database

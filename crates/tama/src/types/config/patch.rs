@@ -20,10 +20,10 @@ pub struct GeneralPatch {
     pub update_check_interval: Option<u32>,
 }
 
-/// PATCH body for Supervisor section.
+/// PATCH body for Lifecycle section.
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
-pub struct SupervisorPatch {
+pub struct LifecyclePatch {
     pub restart_policy: Option<CoreRestartPolicy>,
     pub max_restarts: Option<u32>,
     pub restart_delay_ms: Option<u64>,
@@ -44,7 +44,8 @@ pub struct ProxyConfigPatch {
     pub circuit_breaker_threshold: Option<u32>,
     pub circuit_breaker_cooldown_seconds: Option<u64>,
     pub metrics_retention_secs: Option<u64>,
-    pub download_queue_poll_interval_secs: Option<u64>,
+    #[serde(alias = "download_queue_poll_interval_secs")]
+    pub pull_queue_poll_interval_secs: Option<u64>,
     pub max_loaded_models: Option<u32>,
     pub authenticator_url: Option<String>,
     pub authenticator_skip_paths: Option<Vec<String>>,
@@ -107,8 +108,8 @@ pub struct ConfigPatchBody {
     #[serde(default)]
     pub general: Option<GeneralPatch>,
     // backends intentionally omitted — Config.backends is read-only (not persisted by to_db)
-    #[serde(default)]
-    pub supervisor: Option<SupervisorPatch>,
+    #[serde(default, alias = "supervisor")]
+    pub lifecycle: Option<LifecyclePatch>,
     #[serde(default)]
     pub sampling_templates:
         Option<std::collections::BTreeMap<String, crate::types::config::SamplingParams>>,

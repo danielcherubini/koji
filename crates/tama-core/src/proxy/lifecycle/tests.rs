@@ -758,7 +758,7 @@ async fn test_three_phase_idle_timeout_with_mock_health_checker() {
     config.proxy.idle_timeout_secs = 0;
     config.proxy.auto_unload = true;
     config.proxy.startup_timeout_secs = 1;
-    config.supervisor.max_restarts = 0;
+    config.lifecycle.max_restarts = 0;
 
     let state = ProxyState::new(config, None);
     let mock_checker = MockHealthChecker::new();
@@ -815,7 +815,7 @@ async fn test_health_checker_confirms_alive_server_not_dead() {
     config.proxy.idle_timeout_secs = 0;
     config.proxy.auto_unload = true;
     config.proxy.startup_timeout_secs = 1;
-    config.supervisor.max_restarts = 0;
+    config.lifecycle.max_restarts = 0;
 
     let state = ProxyState::new(config, None);
     let mock_checker = MockHealthChecker::new();

@@ -269,7 +269,7 @@ After bumping, run `cargo fmt --all` before committing — CI will fail on forma
 
 ## TAMA Management API
 
-The TAMA proxy exposes a management REST API for querying and modifying models, backends, downloads, benchmarks, and more.
+The TAMA proxy exposes a management REST API for querying and modifying models, backends, pulls, benchmarks, and more.
 
 ### Environment Variables
 
@@ -287,7 +287,7 @@ Full API reference lives in `docs/api/`. Read the relevant file before making AP
 - `docs/api/models.md` — Model CRUD, refresh, verify
 - `docs/api/backends.md` — Backend install, update, activate, remove
 - `docs/api/aliases.md` — Alias management
-- `docs/api/downloads.md` — Download progress monitoring
+- `docs/api/pulls.md` — Pull progress monitoring
 - `docs/api/huggingface.md` — HF metadata and quant listing
 - `docs/api/config.md` — Global config read/save
 - `docs/api/benchmarks.md` — Run and manage benchmarks

@@ -210,7 +210,7 @@ impl UpdateChecker {
 
         // Tier 2 — per-file LFS hash comparison
         let resolved_repo_id = &remote_listing.repo_id;
-        let remote_blobs = match pull::fetch_blob_metadata(resolved_repo_id).await {
+        let remote_blobs = match pull::lookup_blob_metadata(resolved_repo_id).await {
             Ok(blobs) => blobs,
             Err(e) => {
                 let save_result = self

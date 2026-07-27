@@ -1,12 +1,12 @@
 //! Tama Core Library
 //!
-//! Core functionality for Tama including model card management, process supervision,
+//! Core functionality for Tama including model TOML management, backend lifecycle,
 //! and platform abstractions.
 //!
-//! ## Model Card Configuration
+//! ## Model TOML Configuration
 //!
-//! Tama uses model cards to store quantization info, context settings, and sampling presets
-//! for each model. Model cards are stored in `~/.config/tama/configs/<company>--<model>.toml`
+//! Tama uses model TOML documents to store quantization info, context settings, and sampling presets
+//! for each model. Model TOML files are stored in `~/.config/tama/configs/<company>--<model>.toml`
 //! and are automatically discovered when models are installed.
 #![allow(deprecated)]
 

@@ -236,7 +236,7 @@ pub async fn install_backend(
 
     // Compute effective build_from_source
     let is_linux = std::env::consts::OS == "linux";
-    let is_cuda = matches!(req.gpu_variant, tama_core::gpu::GpuType::Cuda { .. });
+    let is_cuda = matches!(req.gpu_variant, tama_core::gpu::GpuVariant::Cuda { .. });
     let is_ik_llama = matches!(backend_type, tama_core::backends::BackendType::IkLlama);
 
     let mut notices: Vec<String> = Vec::new();
@@ -625,14 +625,7 @@ pub async fn remove_backend(
         // (e.g., "llama_cpp:cpu", "llama_cpp:cuda") plus legacy format.
         if let Ok(repo_handle) = crate::api::helpers::shared_repository(&web_state) {
             let repo = repo_handle.lock().unwrap();
-            let escaped_name = name_for_block2
-                .replace('\\', "\\\\")
-                .replace('_', "\\_")
-                .replace('%', "\\%");
-            let pattern = format!("{}:%", escaped_name);
-            let _ = repo.delete_update_checks_by_pattern("backend", &pattern);
-            // Also delete legacy format (no variant separator)
-            let _ = repo.delete_update_check("backend", &name_for_block2);
+            let _ = repo.delete_update_checks_for_backend(&name_for_block2);
         }
 
         Ok(())

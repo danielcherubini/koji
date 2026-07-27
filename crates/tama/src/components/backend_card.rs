@@ -20,7 +20,7 @@ pub struct UpdateStatusDto {
 #[allow(dead_code)] // Used only by tests
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
-pub enum GpuTypeDto {
+pub enum GpuVariantDto {
     Cuda { version: String },
     Vulkan,
     Metal,
@@ -29,16 +29,16 @@ pub enum GpuTypeDto {
     Custom,
 }
 
-impl GpuTypeDto {
+impl GpuVariantDto {
     #[allow(dead_code)] // Used only by tests
     pub fn label(&self) -> String {
         match self {
-            GpuTypeDto::Cuda { version } => format!("CUDA {version}"),
-            GpuTypeDto::Vulkan => "Vulkan".to_string(),
-            GpuTypeDto::Metal => "Metal".to_string(),
-            GpuTypeDto::Rocm { version } => format!("ROCm {version}"),
-            GpuTypeDto::CpuOnly => "CPU".to_string(),
-            GpuTypeDto::Custom => "Custom".to_string(),
+            GpuVariantDto::Cuda { version } => format!("CUDA {version}"),
+            GpuVariantDto::Vulkan => "Vulkan".to_string(),
+            GpuVariantDto::Metal => "Metal".to_string(),
+            GpuVariantDto::Rocm { version } => format!("ROCm {version}"),
+            GpuVariantDto::CpuOnly => "CPU".to_string(),
+            GpuVariantDto::Custom => "Custom".to_string(),
         }
     }
 }
@@ -555,16 +555,16 @@ mod tests {
     }
 
     #[test]
-    fn test_gpu_type_label() {
+    fn test_gpu_variant_label() {
         assert_eq!(
-            GpuTypeDto::Cuda {
+            GpuVariantDto::Cuda {
                 version: "12.4".to_string()
             }
             .label(),
             "CUDA 12.4"
         );
-        assert_eq!(GpuTypeDto::Vulkan.label(), "Vulkan");
-        assert_eq!(GpuTypeDto::CpuOnly.label(), "CPU");
+        assert_eq!(GpuVariantDto::Vulkan.label(), "Vulkan");
+        assert_eq!(GpuVariantDto::CpuOnly.label(), "CPU");
     }
 
     #[test]

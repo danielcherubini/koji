@@ -15,7 +15,7 @@ impl ProxyState {
                 .map(Arc::new);
 
         // Initialize pull queue service if db_dir is configured.
-        let poll_interval = config.proxy.download_queue_poll_interval_secs;
+        let poll_interval = config.proxy.pull_queue_poll_interval_secs;
         let pull_queue = db_dir.as_ref().and_then(|dir| {
             crate::models::ModelManager::open(dir)
                 .ok()
@@ -89,7 +89,7 @@ impl ProxyState {
         let gpu_variant = backend_config
             .gpu_variant
             .clone()
-            .unwrap_or(crate::gpu::GpuType::CpuOnly);
+            .unwrap_or(crate::gpu::GpuVariant::CpuOnly);
         let health_url =
             manager.get_health_check_url(&backend_config.backend, gpu_variant.variant_folder());
         let backend_url = config
@@ -159,8 +159,8 @@ impl ProxyState {
         }
     }
 
-    /// Get the model card for a model name.
-    pub async fn get_model_card(&self, model_name: &str) -> Option<crate::models::card::ModelCard> {
+    /// Get the model TOML for a model name.
+    pub async fn get_model_toml(&self, model_name: &str) -> Option<crate::models::ModelToml> {
         let configs_dir = self.config.read().await.configs_dir().ok()?;
 
         // Try to find the model card file.
@@ -176,8 +176,8 @@ impl ProxyState {
         let card_path = configs_dir.join(card_filename);
 
         let content = tokio::fs::read_to_string(&card_path).await.ok()?;
-        let card: crate::models::card::ModelCard = toml::from_str(&content).ok()?;
-        Some(card)
+        let model_toml: crate::models::ModelToml = toml::from_str(&content).ok()?;
+        Some(model_toml)
     }
 
     /// Reload model configurations from the database.
@@ -306,7 +306,7 @@ impl ProxyState {
     pub async fn resolve_backend_binary_path(
         &self,
         backend_name: &str,
-        gpu_variant: Option<&crate::gpu::GpuType>,
+        gpu_variant: Option<&crate::gpu::GpuVariant>,
     ) -> Result<std::path::PathBuf> {
         let config = self.config.read().await;
         let manager = self

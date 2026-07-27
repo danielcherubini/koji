@@ -1,10 +1,10 @@
-# Downloads API
+# Pulls API
 
-Monitor file download progress for model GGUF files.
+Monitor file pull progress for model GGUF files.
 
-## GET /tama/v1/downloads/active
+## GET /tama/v1/pulls/active
 
-List currently active download items.
+List currently active pull items.
 
 **Response:**
 
@@ -29,9 +29,9 @@ List currently active download items.
 }
 ```
 
-## GET /tama/v1/downloads/history
+## GET /tama/v1/pulls/history
 
-List completed download history.
+List completed pull history.
 
 **Query params:**
 - `limit` — Max items (default `50`)
@@ -46,9 +46,9 @@ List completed download history.
 }
 ```
 
-## POST /tama/v1/downloads/:job_id/cancel
+## POST /tama/v1/pulls/:job_id/cancel
 
-Cancel an active download.
+Cancel an active pull.
 
 **Response (200 OK):**
 

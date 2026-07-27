@@ -1,4 +1,4 @@
-/// Try to infer the quantisation type from a GGUF filename.
+/// Try to infer the quantization type from a GGUF filename.
 /// Common patterns: "Model-Q4_K_M.gguf", "model.Q8_0.gguf", "model-q4_k_m.gguf"
 pub fn infer_quant_from_filename(filename: &str) -> Option<String> {
     let stem = filename.strip_suffix(".gguf")?;

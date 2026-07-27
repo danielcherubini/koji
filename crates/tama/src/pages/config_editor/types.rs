@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-use crate::gpu_types::{
+use crate::core_mirrors::{
     CompactionDevice as CoreCompactionDevice, LogLevel as CoreLogLevel,
     RestartPolicy as CoreRestartPolicy,
 };
@@ -10,7 +10,7 @@ use crate::gpu_types::{
 // These match the shape served by /api/config/structured and accepted by POST.
 //
 // NOTE: These types duplicate `crate::types::config::*` but use WASM-compatible
-// enums from `gpu_types` (LogLevel, RestartPolicy, CompactionDevice) instead of
+// enums from `core_mirrors` (LogLevel, RestartPolicy, CompactionDevice) instead of
 // `tama_core::config::*`. If you add/remove fields here, mirror the change in
 // `types/config/` to keep them in sync. The two Config structs must remain
 // structurally identical for the structured config API to work correctly.
@@ -22,7 +22,8 @@ pub struct Config {
     #[serde(default)]
     pub backends: BTreeMap<String, BackendConfig>,
     #[serde(default)]
-    pub supervisor: Supervisor,
+    #[serde(alias = "supervisor")]
+    pub lifecycle: Lifecycle,
     #[serde(default)]
     pub sampling_templates: BTreeMap<String, SamplingParams>,
     #[serde(default)]
@@ -68,7 +69,7 @@ pub struct BackendConfig {
 // not through the structured config endpoint.
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct Supervisor {
+pub struct Lifecycle {
     #[serde(default)]
     pub restart_policy: CoreRestartPolicy,
     #[serde(default)]
@@ -128,7 +129,7 @@ pub struct ProxyConfig {
     #[serde(default)]
     pub max_loaded_models: u32,
     #[serde(default)]
-    pub download_queue_poll_interval_secs: u64,
+    pub pull_queue_poll_interval_secs: u64,
     #[serde(default)]
     pub authenticator_url: Option<String>,
     #[serde(default)]
@@ -228,7 +229,7 @@ mod tests {
                 "update_check_interval": 6,
             },
             "backends": {},
-            "supervisor": {
+            "lifecycle": {
                 "restart_policy": "on-failure",
                 "max_restarts": 5,
                 "restart_delay_ms": 1000,
@@ -247,7 +248,7 @@ mod tests {
                 "circuit_breaker_cooldown_seconds": 120,
                 "metrics_retention_secs": 172_800,
                 "max_loaded_models": 2,
-                "download_queue_poll_interval_secs": 3,
+                "pull_queue_poll_interval_secs": 3,
                 "authenticator_url": "https://auth.example.com",
                 "authenticator_skip_paths": ["/health", "/metrics"],
                 "oauth2": {

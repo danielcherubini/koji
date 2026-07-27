@@ -1,13 +1,13 @@
 use super::vram::VramInfo;
 
-/// GPU type / backend variant.
+/// GPU variant / backend compilation target.
 ///
 /// The canonical string representation (used by `Display`, `FromStr`, and
 /// serde) is the `gpu_variant` folder name — e.g. `"cuda"`, `"rocm"`,
 /// `"vulkan"`. Variant payloads (`version` on `Cuda`/`RocM`) do **not**
 /// survive a string round-trip.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GpuType {
+pub enum GpuVariant {
     Cuda { version: String },
     Vulkan,
     Metal,
@@ -38,29 +38,29 @@ pub struct ContextSuggestion {
     pub kv_cache_mib: u64,
 }
 
-impl GpuType {
+impl GpuVariant {
     /// Returns the folder name used for this GPU variant.
     /// e.g. "cpu", "vulkan", "metal", "cuda", "rocm", "custom"
     pub fn variant_folder(&self) -> &str {
         match self {
-            GpuType::CpuOnly => "cpu",
-            GpuType::Vulkan => "vulkan",
-            GpuType::Metal => "metal",
-            GpuType::Cuda { .. } => "cuda",
-            GpuType::RocM { .. } => "rocm",
-            GpuType::Custom => "custom",
+            GpuVariant::CpuOnly => "cpu",
+            GpuVariant::Vulkan => "vulkan",
+            GpuVariant::Metal => "metal",
+            GpuVariant::Cuda { .. } => "cuda",
+            GpuVariant::RocM { .. } => "rocm",
+            GpuVariant::Custom => "custom",
         }
     }
 }
 
-impl std::fmt::Display for GpuType {
+impl std::fmt::Display for GpuVariant {
     /// Format as the canonical `gpu_variant` string (e.g. `"cuda"`, `"rocm"`).
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.variant_folder())
     }
 }
 
-impl std::str::FromStr for GpuType {
+impl std::str::FromStr for GpuVariant {
     type Err = anyhow::Error;
 
     /// Parse a gpu_variant string, case-insensitively
@@ -71,16 +71,16 @@ impl std::str::FromStr for GpuType {
     /// string round-trip.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_ascii_lowercase().as_str() {
-            "cpu" => Ok(GpuType::CpuOnly),
-            "cuda" => Ok(GpuType::Cuda {
+            "cpu" => Ok(GpuVariant::CpuOnly),
+            "cuda" => Ok(GpuVariant::Cuda {
                 version: String::new(),
             }),
-            "vulkan" => Ok(GpuType::Vulkan),
-            "metal" => Ok(GpuType::Metal),
-            "rocm" => Ok(GpuType::RocM {
+            "vulkan" => Ok(GpuVariant::Vulkan),
+            "metal" => Ok(GpuVariant::Metal),
+            "rocm" => Ok(GpuVariant::RocM {
                 version: String::new(),
             }),
-            "custom" => Ok(GpuType::Custom),
+            "custom" => Ok(GpuVariant::Custom),
             other => Err(anyhow::anyhow!(
                 "unknown gpu_variant '{}'; expected one of: cpu, cuda, vulkan, rocm, metal, custom",
                 other
@@ -89,18 +89,18 @@ impl std::str::FromStr for GpuType {
     }
 }
 
-impl serde::Serialize for GpuType {
+impl serde::Serialize for GpuVariant {
     /// Serialize as the canonical `gpu_variant` string.
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(self.variant_folder())
     }
 }
 
-impl<'de> serde::Deserialize<'de> for GpuType {
+impl<'de> serde::Deserialize<'de> for GpuVariant {
     /// Deserialize from a `gpu_variant` string.
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let s = String::deserialize(deserializer)?;
-        <GpuType as std::str::FromStr>::from_str(&s).map_err(serde::de::Error::custom)
+        <GpuVariant as std::str::FromStr>::from_str(&s).map_err(serde::de::Error::custom)
     }
 }
 
@@ -513,24 +513,24 @@ mod tests {
 
     #[test]
     fn test_variant_folder_all_variants() {
-        assert_eq!(GpuType::CpuOnly.variant_folder(), "cpu");
-        assert_eq!(GpuType::Vulkan.variant_folder(), "vulkan");
-        assert_eq!(GpuType::Metal.variant_folder(), "metal");
+        assert_eq!(GpuVariant::CpuOnly.variant_folder(), "cpu");
+        assert_eq!(GpuVariant::Vulkan.variant_folder(), "vulkan");
+        assert_eq!(GpuVariant::Metal.variant_folder(), "metal");
         assert_eq!(
-            GpuType::Cuda {
+            GpuVariant::Cuda {
                 version: "12.4".to_string()
             }
             .variant_folder(),
             "cuda"
         );
         assert_eq!(
-            GpuType::RocM {
+            GpuVariant::RocM {
                 version: "6.0".to_string()
             }
             .variant_folder(),
             "rocm"
         );
-        assert_eq!(GpuType::Custom.variant_folder(), "custom");
+        assert_eq!(GpuVariant::Custom.variant_folder(), "custom");
     }
 
     #[test]
@@ -634,67 +634,67 @@ mod tests {
 
     #[test]
     fn test_from_str_all_variants() {
-        assert_eq!("cpu".parse::<GpuType>().unwrap(), GpuType::CpuOnly);
+        assert_eq!("cpu".parse::<GpuVariant>().unwrap(), GpuVariant::CpuOnly);
         assert_eq!(
-            "cuda".parse::<GpuType>().unwrap(),
-            GpuType::Cuda {
+            "cuda".parse::<GpuVariant>().unwrap(),
+            GpuVariant::Cuda {
                 version: String::new()
             }
         );
-        assert_eq!("vulkan".parse::<GpuType>().unwrap(), GpuType::Vulkan);
-        assert_eq!("metal".parse::<GpuType>().unwrap(), GpuType::Metal);
+        assert_eq!("vulkan".parse::<GpuVariant>().unwrap(), GpuVariant::Vulkan);
+        assert_eq!("metal".parse::<GpuVariant>().unwrap(), GpuVariant::Metal);
         assert_eq!(
-            "rocm".parse::<GpuType>().unwrap(),
-            GpuType::RocM {
+            "rocm".parse::<GpuVariant>().unwrap(),
+            GpuVariant::RocM {
                 version: String::new()
             }
         );
-        assert_eq!("custom".parse::<GpuType>().unwrap(), GpuType::Custom);
+        assert_eq!("custom".parse::<GpuVariant>().unwrap(), GpuVariant::Custom);
     }
 
     #[test]
     fn test_from_str_case_insensitive() {
         assert_eq!(
-            "CUDA".parse::<GpuType>().unwrap(),
-            GpuType::Cuda {
+            "CUDA".parse::<GpuVariant>().unwrap(),
+            GpuVariant::Cuda {
                 version: String::new()
             }
         );
         assert_eq!(
-            "Rocm".parse::<GpuType>().unwrap(),
-            GpuType::RocM {
+            "Rocm".parse::<GpuVariant>().unwrap(),
+            GpuVariant::RocM {
                 version: String::new()
             }
         );
         assert_eq!(
-            "ROCM".parse::<GpuType>().unwrap(),
-            GpuType::RocM {
+            "ROCM".parse::<GpuVariant>().unwrap(),
+            GpuVariant::RocM {
                 version: String::new()
             }
         );
-        assert_eq!("Cpu".parse::<GpuType>().unwrap(), GpuType::CpuOnly);
+        assert_eq!("Cpu".parse::<GpuVariant>().unwrap(), GpuVariant::CpuOnly);
     }
 
     #[test]
     fn test_from_str_unknown_rejected() {
-        assert!("tpu".parse::<GpuType>().is_err());
-        assert!("".parse::<GpuType>().is_err());
-        assert!("gpu".parse::<GpuType>().is_err());
+        assert!("tpu".parse::<GpuVariant>().is_err());
+        assert!("".parse::<GpuVariant>().is_err());
+        assert!("gpu".parse::<GpuVariant>().is_err());
     }
 
     #[test]
     fn test_display_matches_variant_folder() {
         let variants = [
-            GpuType::CpuOnly,
-            GpuType::Vulkan,
-            GpuType::Metal,
-            GpuType::Cuda {
+            GpuVariant::CpuOnly,
+            GpuVariant::Vulkan,
+            GpuVariant::Metal,
+            GpuVariant::Cuda {
                 version: "12.4".into(),
             },
-            GpuType::RocM {
+            GpuVariant::RocM {
                 version: "6.0".into(),
             },
-            GpuType::Custom,
+            GpuVariant::Custom,
         ];
         for v in &variants {
             assert_eq!(format!("{}", v), v.variant_folder());
@@ -704,20 +704,20 @@ mod tests {
     #[test]
     fn test_string_roundtrip_canonical() {
         let variants = [
-            GpuType::CpuOnly,
-            GpuType::Cuda {
+            GpuVariant::CpuOnly,
+            GpuVariant::Cuda {
                 version: String::new(),
             },
-            GpuType::Vulkan,
-            GpuType::Metal,
-            GpuType::RocM {
+            GpuVariant::Vulkan,
+            GpuVariant::Metal,
+            GpuVariant::RocM {
                 version: String::new(),
             },
-            GpuType::Custom,
+            GpuVariant::Custom,
         ];
         for v in &variants {
             let s = v.to_string();
-            assert_eq!(s.parse::<GpuType>().unwrap(), *v);
+            assert_eq!(s.parse::<GpuVariant>().unwrap(), *v);
         }
     }
 
@@ -725,7 +725,7 @@ mod tests {
     fn test_serde_string_form() {
         // Serialize — version payloads do not survive
         assert_eq!(
-            serde_json::to_string(&GpuType::Cuda {
+            serde_json::to_string(&GpuVariant::Cuda {
                 version: "12.4".into()
             })
             .unwrap(),
@@ -733,10 +733,10 @@ mod tests {
         );
         // Deserialize
         assert_eq!(
-            serde_json::from_str::<GpuType>(r#""vulkan""#).unwrap(),
-            GpuType::Vulkan
+            serde_json::from_str::<GpuVariant>(r#""vulkan""#).unwrap(),
+            GpuVariant::Vulkan
         );
         // Rejection
-        assert!(serde_json::from_str::<GpuType>(r#""tpu""#).is_err());
+        assert!(serde_json::from_str::<GpuVariant>(r#""tpu""#).is_err());
     }
 }

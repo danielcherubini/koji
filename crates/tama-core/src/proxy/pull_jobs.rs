@@ -7,7 +7,7 @@ use std::time::Instant;
 pub enum PullJobStatus {
     Pending,
     Running,
-    /// Download finished, now hashing the file and comparing to the HF LFS SHA-256.
+    /// Pull finished, now hashing the file and comparing to the HF LFS SHA-256.
     Verifying,
     Completed,
     Failed,
@@ -41,7 +41,7 @@ pub struct PullJob {
     /// Set when status transitions to Completed or Failed; used for eviction.
     #[serde(skip)]
     pub completed_at: Option<Instant>,
-    /// Download duration in milliseconds. Set on completion, calculated via
+    /// Pull duration in milliseconds. Set on completion, calculated via
     /// `Instant::now().elapsed()`. Not serialized to SSE events.
     #[serde(skip)]
     pub duration_ms: Option<u64>,

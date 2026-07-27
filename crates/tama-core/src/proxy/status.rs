@@ -9,7 +9,7 @@ impl ProxyState {
     /// the lifecycle state (`idle`, `loading`, `ready`, `unloading`, `failed`).
     /// The returned vector is sorted by `id` so dashboard rows do not shuffle
     /// between SSE samples.
-    pub async fn collect_model_statuses(&self) -> Vec<crate::gpu::ModelStatus> {
+    pub async fn collect_model_state_snapshots(&self) -> Vec<crate::models::ModelStateSnapshot> {
         let config = self.config.read().await;
         let model_configs = self.model_configs.read().await;
 
@@ -21,7 +21,8 @@ impl ProxyState {
         > = self.inference_stats.borrow().clone();
 
         let runtime = self.models.read().await;
-        let mut out: Vec<crate::gpu::ModelStatus> = Vec::with_capacity(model_configs.len());
+        let mut out: Vec<crate::models::ModelStateSnapshot> =
+            Vec::with_capacity(model_configs.len());
         for (model_id, model_cfg) in model_configs.iter() {
             // Determine the model's lifecycle state from its backend entries.
             let servers = config.resolve_backends_for_model(&model_configs, model_id);
@@ -46,7 +47,7 @@ impl ProxyState {
 
             let (model_state, error_message) = match best_state {
                 Some(BackendState::Ready { .. }) => (crate::gpu::ModelState::Ready, None),
-                Some(BackendState::Starting { .. }) => (crate::gpu::ModelState::Loading, None),
+                Some(BackendState::Starting { .. }) => (crate::gpu::ModelState::Starting, None),
                 Some(BackendState::Unloading { .. }) => (crate::gpu::ModelState::Unloading, None),
                 Some(BackendState::Failed { error, .. }) => {
                     (crate::gpu::ModelState::Failed, Some(error.clone()))
@@ -59,7 +60,7 @@ impl ProxyState {
             let server_stats = servers
                 .iter()
                 .find_map(|(sn, _, _)| inference_stats.get(sn));
-            let status = crate::gpu::ModelStatus {
+            let status = crate::models::ModelStateSnapshot {
                 id: model_id.clone(),
                 db_id: model_cfg.db_id,
                 api_name: model_cfg.api_name.clone(),
@@ -173,7 +174,7 @@ impl ProxyState {
                         "context_length": model_config.context_length,
                         "enabled": model_config.enabled,
                         "api_name": model_config.api_name,
-                        "state": "loading",
+                        "state": "starting",
                         "backend_pid": null,
                         "load_time_secs": null,
                         "last_accessed_secs_ago": null,
@@ -310,7 +311,7 @@ mod tests {
     /// sorted by id ascending and the `backend` field matching the
     /// corresponding `ModelConfig.backend` value.
     #[tokio::test]
-    async fn test_collect_model_statuses_reports_idle_when_no_runtime_entry() {
+    async fn test_collect_model_state_snapshots_reports_idle_when_no_runtime_entry() {
         let config = Config::default();
         let state = ProxyState::new(config, None);
 
@@ -324,7 +325,7 @@ mod tests {
         // Sanity check: no runtime entries.
         assert!(state.models.read().await.is_empty());
 
-        let statuses = state.collect_model_statuses().await;
+        let statuses = state.collect_model_state_snapshots().await;
 
         // Length matches the number of configured models.
         assert_eq!(statuses.len(), 2);
@@ -356,7 +357,7 @@ mod tests {
     /// must still be sorted by id ascending and carry the configured
     /// `backend` value.
     #[tokio::test]
-    async fn test_collect_model_statuses_reports_loaded_when_server_is_ready() {
+    async fn test_collect_model_state_snapshots_reports_loaded_when_server_is_ready() {
         use std::sync::atomic::AtomicU32;
         use std::sync::Arc;
         use std::time::{Instant, SystemTime};
@@ -409,7 +410,7 @@ mod tests {
             );
         }
 
-        let statuses = state.collect_model_statuses().await;
+        let statuses = state.collect_model_state_snapshots().await;
 
         // Length matches the number of configured models.
         assert_eq!(statuses.len(), 2);
@@ -448,13 +449,13 @@ mod tests {
         assert_eq!(statuses[1].backend, "llama_cpp");
     }
 
-    /// `collect_model_statuses` should only treat `BackendState::Ready` as
+    /// `collect_model_state_snapshots` should only treat `BackendState::Ready` as
     /// "loaded". Other variants like `Starting` and `Failed` must be
     /// reported as `loaded == false` so the dashboard does not falsely
     /// claim a model is serving traffic while it is still booting or has
     /// crashed.
     #[tokio::test]
-    async fn test_collect_model_statuses_ignores_non_ready_states() {
+    async fn test_collect_model_state_snapshots_ignores_non_ready_states() {
         use std::sync::atomic::AtomicU32;
         use std::sync::Arc;
         use std::time::Instant;
@@ -491,7 +492,7 @@ mod tests {
             );
         }
 
-        let statuses = state.collect_model_statuses().await;
+        let statuses = state.collect_model_state_snapshots().await;
         assert_eq!(
             statuses.len(),
             1,
@@ -501,10 +502,10 @@ mod tests {
         let alpha = statuses
             .iter()
             .find(|s| s.id == "alpha")
-            .expect("alpha entry missing from collect_model_statuses output");
+            .expect("alpha entry missing from collect_model_state_snapshots output");
         assert_eq!(
             alpha.state,
-            crate::gpu::ModelState::Loading,
+            crate::gpu::ModelState::Starting,
             "BackendState::Starting must not be reported as ready, got: {:?}",
             alpha
         );
@@ -522,7 +523,7 @@ mod tests {
             );
         }
 
-        let statuses = state.collect_model_statuses().await;
+        let statuses = state.collect_model_state_snapshots().await;
         assert_eq!(
             statuses.len(),
             1,
@@ -532,7 +533,7 @@ mod tests {
         let alpha = statuses
             .iter()
             .find(|s| s.id == "alpha")
-            .expect("alpha entry missing from collect_model_statuses output");
+            .expect("alpha entry missing from collect_model_state_snapshots output");
         assert_eq!(
             alpha.state,
             crate::gpu::ModelState::Failed,

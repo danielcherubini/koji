@@ -2,20 +2,20 @@ use std::sync::Arc;
 
 use crate::models::repo_path;
 use crate::proxy::pull_jobs::PullJobStatus;
-use crate::proxy::tama_handlers::types::{is_safe_relative_path, QuantDownloadSpec};
+use crate::proxy::tama_handlers::types::{is_safe_relative_path, QuantPullSpec};
 use crate::proxy::ProxyState;
 
 /// Start a pull from the queue.
 ///
 /// This is the ONLY code path that starts a pull from the queue processor.
-/// Takes a `job_id`, `state`, and `QuantDownloadSpec`, performs the actual pull,
+/// Takes a `job_id`, `state`, and `QuantPullSpec`, performs the actual pull,
 /// and updates both the DB queue item and in-memory PullJob on completion/failure.
 pub async fn start_pull_from_queue(
     state: Arc<ProxyState>,
     job_id: String,
     repo_id: String,
     filename: String,
-    spec: QuantDownloadSpec,
+    spec: QuantPullSpec,
 ) {
     let pull_jobs_arc = Arc::clone(&state.pull_jobs);
     let in_flight_clone = Arc::clone(&state.in_flight_pulls);
@@ -325,7 +325,7 @@ pub async fn start_pull_from_queue(
         }
     };
 
-    // Download directly to dest_path (no cache intermediary)
+    // Pull directly to dest_path (no cache intermediary)
     let total_size = match crate::models::pull::pull_chunked_with_progress(
         &pull_client,
         &pull_url,
@@ -341,7 +341,7 @@ pub async fn start_pull_from_queue(
             let mut jobs = pull_jobs_arc.write().await;
             if let Some(job) = jobs.get_mut(&job_id_clone) {
                 job.status = crate::proxy::pull_jobs::PullJobStatus::Failed;
-                job.error = Some(format!("Download failed: {}", e));
+                job.error = Some(format!("Pull failed: {}", e));
             }
             drop(jobs);
             poll_handle.abort();
@@ -352,7 +352,7 @@ pub async fn start_pull_from_queue(
                     "failed",
                     0,
                     None,
-                    Some(&format!("Download failed: {}", e)),
+                    Some(&format!("Pull failed: {}", e)),
                     None,
                 );
             }
@@ -365,7 +365,7 @@ pub async fn start_pull_from_queue(
         job_id = %job_id_clone,
         bytes = total_size,
         duration = ?pull_duration,
-        "Download phase complete, entering verify phase"
+        "Pull phase complete, entering verify phase"
     );
 
     // Stop the file size polling task.

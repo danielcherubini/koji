@@ -9,7 +9,7 @@ mod forms;
 enum Section {
     General,
     Proxy,
-    Supervisor,
+    Lifecycle,
     Sampling,
     Compaction,
     Langfuse,
@@ -21,7 +21,7 @@ impl Section {
         match self {
             Section::General => "General",
             Section::Proxy => "Proxy",
-            Section::Supervisor => "Supervisor",
+            Section::Lifecycle => "Lifecycle",
             Section::Sampling => "Sampling Templates",
             Section::Compaction => "Compaction",
             Section::Langfuse => "Langfuse",
@@ -32,7 +32,7 @@ impl Section {
         match self {
             Section::General => "⚙️",
             Section::Proxy => "🌐",
-            Section::Supervisor => "👀",
+            Section::Lifecycle => "👀",
             Section::Sampling => "🎲",
             Section::Compaction => "📦",
             Section::Langfuse => "📊",
@@ -52,8 +52,8 @@ use crate::utils::post_request;
 
 use crate::components::section_card::SectionCard;
 use crate::pages::config_editor::forms::{
-    CompactionForm, GeneralForm, LangfuseForm, ProxyAdvancedFields, ProxyBasicFields, SamplingForm,
-    SupervisorForm,
+    CompactionForm, GeneralForm, LangfuseForm, LifecycleForm, ProxyAdvancedFields,
+    ProxyBasicFields, SamplingForm,
 };
 
 #[component]
@@ -151,12 +151,12 @@ pub fn ConfigEditor() -> impl IntoView {
                         // Side nav
                         <nav class="card" style="width:220px;flex-shrink:0;padding:0.75rem;position:sticky;top:0;">
                             <ul style="list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:0.25rem;">
-                                {[Section::General, Section::Proxy, Section::Supervisor, Section::Sampling, Section::Compaction, Section::Langfuse]
+                                {[Section::General, Section::Proxy, Section::Lifecycle, Section::Sampling, Section::Compaction, Section::Langfuse]
                                     .into_iter().map(|s| {
                                         let scroll_id = match s {
                                             Section::General => "cfg-general",
                                             Section::Proxy => "cfg-proxy",
-                                            Section::Supervisor => "cfg-supervisor",
+                                            Section::Lifecycle => "cfg-lifecycle",
                                             Section::Sampling => "cfg-sampling",
                                             Section::Compaction => "cfg-compaction",
                                             Section::Langfuse => "cfg-langfuse",
@@ -203,7 +203,7 @@ pub fn ConfigEditor() -> impl IntoView {
                                     </div>
                                 </SectionCard>
                             </div>
-                            <div id="cfg-supervisor"><SupervisorForm config=config /></div>
+                            <div id="cfg-lifecycle"><LifecycleForm config=config /></div>
                             <div id="cfg-sampling"><SamplingForm config=config /></div>
                             <div id="cfg-compaction"><CompactionForm config=config /></div>
                             <div id="cfg-langfuse"><LangfuseForm config=config /></div>

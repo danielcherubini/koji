@@ -4,6 +4,7 @@ use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+use crate::api::field_update::FieldUpdate;
 use tama_core::config::CompactionDevice;
 use tama_core::proxy::ProxyState;
 
@@ -11,7 +12,8 @@ use tama_core::proxy::ProxyState;
 pub struct CompactionToggleRequest {
     pub enabled: bool,
     pub device: Option<CompactionDevice>,
-    pub port: Option<Option<u16>>,
+    #[serde(default)]
+    pub port: FieldUpdate<u16>,
     pub request_timeout_ms: Option<u64>,
 }
 
@@ -33,8 +35,10 @@ pub async fn update_compaction(
         if let Some(device) = &req.device {
             config.compaction.device = device.clone();
         }
-        if let Some(port) = &req.port {
-            config.compaction.port = *port;
+        match &req.port {
+            FieldUpdate::Set(v) => config.compaction.port = Some(*v),
+            FieldUpdate::Clear => config.compaction.port = None,
+            FieldUpdate::Unchanged => {}
         }
         if let Some(timeout) = &req.request_timeout_ms {
             config.compaction.request_timeout_ms = *timeout;

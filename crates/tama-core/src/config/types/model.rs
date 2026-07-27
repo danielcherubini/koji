@@ -1,5 +1,5 @@
 use crate::db::queries::ModelConfigRecord;
-use crate::gpu::GpuType;
+use crate::gpu::GpuVariant;
 use crate::profiles::SamplingParams;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -57,7 +57,7 @@ pub struct HealthCheck {
     /// Health check endpoint URL. Overrides backend's health_check_url.
     #[serde(default)]
     pub url: Option<String>,
-    /// Polling interval in milliseconds. Overrides supervisor.health_check_interval_ms.
+    /// Polling interval in milliseconds. Overrides lifecycle.health_check_interval_ms.
     #[serde(default)]
     pub interval_ms: Option<u64>,
     /// HTTP timeout in milliseconds per health check request (default: 3000).
@@ -71,7 +71,7 @@ pub struct HealthCheck {
 pub struct ModelConfig {
     pub backend: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gpu_variant: Option<GpuType>,
+    pub gpu_variant: Option<GpuVariant>,
     /// GPU device name for this model (e.g. "ROCm0", "CUDA1").
     /// Passed as `--device` to llama.cpp backends.
     /// When None, the backend uses its default device selection.
@@ -246,12 +246,12 @@ impl ModelConfig {
         Self {
             backend: record.backend.clone(),
             gpu_variant: record.gpu_variant.as_deref().map(|s| {
-                GpuType::from_str(s).unwrap_or_else(|_| {
+                GpuVariant::from_str(s).unwrap_or_else(|_| {
                     tracing::warn!(
                         "unknown gpu_variant '{}' in model_configs row; treating as custom",
                         s
                     );
-                    GpuType::Custom
+                    GpuVariant::Custom
                 })
             }),
             gpu_device: record.gpu_device.clone(),

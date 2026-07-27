@@ -72,20 +72,20 @@ impl Config {
     ) -> Vec<(String, &'a ModelConfig, &'a BackendConfig)> {
         let mut results = Vec::new();
 
-        for (config_name, server) in models {
-            if !server.enabled {
+        for (config_name, model_config) in models {
+            if !model_config.enabled {
                 continue;
             }
             // Use TOML backend config if present, otherwise empty default.
             // After migration to backend_configs table, the [backends] TOML
             // section may be empty — backend data (default_args, health URL)
             // now lives in the DB, not TOML.
-            let backend = match self.backends.get(&server.backend) {
+            let backend = match self.backends.get(&model_config.backend) {
                 Some(b) => b,
                 None => {
                     tracing::debug!(
                         "Backend '{}' not in TOML [backends] section; using DB-backed defaults",
-                        server.backend
+                        model_config.backend
                     );
                     &EMPTY_BACKEND_CONFIG
                 }
@@ -94,23 +94,23 @@ impl Config {
             // Match on api_name (highest priority), then config key, then model field.
             // Comparisons are case-insensitive for api_name and model (OpenAI API
             // model IDs are case-insensitive), but config_name is case-sensitive.
-            let api_name_match = server
+            let api_name_match = model_config
                 .api_name
                 .as_deref()
                 .is_some_and(|n| n.eq_ignore_ascii_case(model_name));
-            let model_match = server
+            let model_match = model_config
                 .model
                 .as_deref()
                 .is_some_and(|n| n.eq_ignore_ascii_case(model_name));
             if api_name_match || config_name == model_name || model_match {
-                results.push((config_name.clone(), server, backend));
+                results.push((config_name.clone(), model_config, backend));
             }
         }
 
         results
     }
 
-    /// Resolve the health check URL for a server, taking into account:
+    /// Resolve the health check URL for a model_config, taking into account:
     /// 1. Pre-resolved health_check_url if available (from DB via BackendManager)
     /// 2. Server's custom port if set
     /// 3. Fallback to http://localhost:{port}/health
@@ -118,7 +118,7 @@ impl Config {
     /// Does not require the backend to exist in TOML [backends] section.
     /// After migration to backend_configs DB table, the [backends] section
     /// may be empty — this function resolves purely from the provided URL
-    /// parameter and server port.
+    /// parameter and model_config port.
     pub fn resolve_health_url(
         &self,
         server: &ModelConfig,
@@ -564,7 +564,7 @@ impl Config {
     pub fn resolve_backend_path(
         &self,
         name: &str,
-        model_variant: Option<&crate::gpu::GpuType>,
+        model_variant: Option<&crate::gpu::GpuVariant>,
         manager: &crate::backends::BackendManager,
     ) -> Result<std::path::PathBuf> {
         // Determine the gpu_variant to use (model > config > "cpu")

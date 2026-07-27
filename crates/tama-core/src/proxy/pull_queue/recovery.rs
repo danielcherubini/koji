@@ -39,7 +39,7 @@ impl PullQueueService {
 /// Start a pull from the queue.
 ///
 /// This is the ONLY code path that transitions items from `queued` → `running`.
-/// Reads the queued item from DB, constructs a QuantDownloadSpec, and calls
+/// Reads the queued item from DB, constructs a QuantPullSpec, and calls
 /// the real pull implementation from pull.rs.
 async fn start_pull_from_queue(
     state: Arc<crate::proxy::ProxyState>,
@@ -52,8 +52,8 @@ async fn start_pull_from_queue(
         _ => return,
     };
 
-    // Construct QuantDownloadSpec from DB data
-    let spec = crate::proxy::tama_handlers::QuantDownloadSpec {
+    // Construct QuantPullSpec from DB data
+    let spec = crate::proxy::tama_handlers::QuantPullSpec {
         filename: item.filename.clone(),
         quant: item.quant.clone(),
         context_length: item.context_length,
@@ -159,7 +159,7 @@ pub(crate) async fn queue_processor_loop(state: Arc<crate::proxy::ProxyState>) {
                 // Re-queue it so the loop can pick it up on the next iteration.
                 tracing::warn!(
                     job_id = %item.job_id,
-                    "Download task died before registering in pull_jobs — re-queuing"
+                    "Pull task died before registering in pull_jobs — re-queuing"
                 );
                 if let Err(e) = svc.model_mgr.lock().unwrap().conn().execute(
                     "UPDATE pull_queue SET status = 'queued', started_at = NULL WHERE job_id = ?1",

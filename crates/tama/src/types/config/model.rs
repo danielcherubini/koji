@@ -153,12 +153,12 @@ impl From<ModelConfig> for tama_core::config::ModelConfig {
         Self {
             backend: m.backend,
             gpu_variant: m.gpu_variant.map(|s| {
-                tama_core::gpu::GpuType::from_str(&s).unwrap_or_else(|_| {
+                tama_core::gpu::GpuVariant::from_str(&s).unwrap_or_else(|_| {
                     tracing::warn!(
                         "unknown gpu_variant '{}' in model config; treating as custom",
                         s
                     );
-                    tama_core::gpu::GpuType::Custom
+                    tama_core::gpu::GpuVariant::Custom
                 })
             }),
             gpu_device: m.gpu_device,

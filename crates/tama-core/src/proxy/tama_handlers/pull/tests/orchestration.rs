@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 use super::helpers::ENV_GUARD;
 use crate::proxy::pull_jobs::{PullJob, PullJobStatus};
 use crate::proxy::pull_queue::PullQueueService;
-use crate::proxy::tama_handlers::{start_pull_from_queue, QuantDownloadSpec};
+use crate::proxy::tama_handlers::{start_pull_from_queue, QuantPullSpec};
 use crate::proxy::ProxyState;
 
 const REPO: &str = "test/repo";
@@ -148,7 +148,7 @@ async fn test_pull_hash_mismatch_fails_job_and_deletes_file() {
         job_id.clone(),
         REPO.into(),
         FILE.into(),
-        QuantDownloadSpec {
+        QuantPullSpec {
             filename: FILE.into(),
             quant: Some("Q4_K_M".into()),
             context_length: None,
@@ -282,7 +282,7 @@ async fn test_pull_success_completes_and_records_model_files() {
         job_id.clone(),
         REPO.into(),
         FILE.into(),
-        QuantDownloadSpec {
+        QuantPullSpec {
             filename: FILE.into(),
             quant: Some("Q4_K_M".into()),
             context_length: None,

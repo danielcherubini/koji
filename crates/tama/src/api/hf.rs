@@ -34,15 +34,15 @@ pub async fn hf_metadata(
 
     // Metadata requests fetch HF repo info; all others fetch quant lists.
     if path.ends_with("/metadata") {
-        match tama_core::models::pull::fetch_hf_metadata(&repo_id).await {
+        match tama_core::models::pull::lookup_hf_metadata(&repo_id).await {
             Ok(meta) => (StatusCode::OK, Json(meta)).into_response(),
             Err(e) => error_response(StatusCode::BAD_GATEWAY, e.to_string(), None),
         }
     } else {
-        // Quant list — call fetch_blob_metadata directly instead of looping
+        // Quant list — call lookup_blob_metadata directly instead of looping
         // through an HTTP request to the proxy (which would hit auth middleware
         // with no credentials and return 401).
-        match tama_core::models::pull::fetch_blob_metadata(&repo_id).await {
+        match tama_core::models::pull::lookup_blob_metadata(&repo_id).await {
             Ok(blobs) => {
                 let mut quants: Vec<QuantEntry> =
                     tama_core::models::pull::group_sharded_quants(blobs)

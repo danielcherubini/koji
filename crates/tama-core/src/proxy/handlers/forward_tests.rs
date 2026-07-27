@@ -94,7 +94,7 @@ async fn test_handle_forward_post_missing_model_no_servers_returns_503() {
 
     assert_eq!(
         json["error"]["message"].as_str(),
-        Some("No backend server available")
+        Some("No backend available")
     );
 }
 
@@ -148,7 +148,7 @@ async fn test_handle_forward_get_no_servers_returns_503() {
 
     assert_eq!(
         json["error"]["message"].as_str(),
-        Some("No backend server available")
+        Some("No backend available")
     );
 }
 

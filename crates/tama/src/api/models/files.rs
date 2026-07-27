@@ -22,7 +22,7 @@ fn file_record_json(rec: &ModelFileRecord) -> serde_json::Value {
         "quant": rec.quant,
         "lfs_oid": rec.lfs_oid,
         "size_bytes": rec.size_bytes,
-        "downloaded_at": rec.downloaded_at,
+        "pulled_at": rec.pulled_at,
         "last_verified_at": rec.last_verified_at,
         "verified_ok": rec.verified_ok,
         "verify_error": rec.verify_error,
@@ -85,10 +85,10 @@ pub async fn refresh_model_metadata(
             )
         }
     };
-    let blobs = match tama_core::models::pull::fetch_blob_metadata(&listing.repo_id).await {
+    let blobs = match tama_core::models::pull::lookup_blob_metadata(&listing.repo_id).await {
         Ok(b) => b,
         Err(e) => {
-            tracing::warn!("fetch_blob_metadata failed for {}: {}", listing.repo_id, e);
+            tracing::warn!("lookup_blob_metadata failed for {}: {}", listing.repo_id, e);
             std::collections::HashMap::new()
         }
     };

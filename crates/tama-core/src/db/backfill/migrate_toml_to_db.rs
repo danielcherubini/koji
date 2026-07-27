@@ -228,7 +228,7 @@ fn migrate_global_config(conn: &Connection, config: &Config) -> Result<()> {
         config.proxy.circuit_breaker_threshold,
         config.proxy.circuit_breaker_cooldown_seconds,
         config.proxy.metrics_retention_secs,
-        config.proxy.download_queue_poll_interval_secs,
+        config.proxy.pull_queue_poll_interval_secs,
         config.proxy.max_loaded_models,
         config.proxy.authenticator_url.as_deref(),
         &config.proxy.authenticator_skip_paths,
@@ -245,15 +245,15 @@ fn migrate_global_config(conn: &Connection, config: &Config) -> Result<()> {
         config.proxy.api_keys_enabled,
     )?;
 
-    // Supervisor
-    queries::upsert_supervisor(
+    // Lifecycle
+    queries::upsert_lifecycle(
         conn,
-        &config.supervisor.restart_policy,
-        config.supervisor.max_restarts,
-        config.supervisor.restart_delay_ms,
-        config.supervisor.health_check_interval_ms,
-        config.supervisor.health_check_timeout_ms,
-        config.supervisor.health_check_retries,
+        &config.lifecycle.restart_policy,
+        config.lifecycle.max_restarts,
+        config.lifecycle.restart_delay_ms,
+        config.lifecycle.health_check_interval_ms,
+        config.lifecycle.health_check_timeout_ms,
+        config.lifecycle.health_check_retries,
     )?;
 
     // Compaction
@@ -284,7 +284,7 @@ fn migrate_global_config(conn: &Connection, config: &Config) -> Result<()> {
     }
 
     tracing::info!(
-        "Migrated global config (general, proxy, supervisor, compaction, sampling_templates)"
+        "Migrated global config (general, proxy, lifecycle, compaction, sampling_templates)"
     );
     Ok(())
 }
@@ -467,10 +467,10 @@ device = "cuda"
         assert!(proxy.auto_unload);
         assert_eq!(proxy.idle_timeout_secs, 600);
 
-        // Verify supervisor was migrated
-        let supervisor = queries::get_supervisor(&conn).unwrap().unwrap();
-        assert_eq!(supervisor.restart_policy, "on-failure");
-        assert_eq!(supervisor.max_restarts, 5);
+        // Verify lifecycle was migrated
+        let lifecycle = queries::get_lifecycle(&conn).unwrap().unwrap();
+        assert_eq!(lifecycle.restart_policy, "on-failure");
+        assert_eq!(lifecycle.max_restarts, 5);
 
         // Verify compaction was migrated
         let compaction = queries::get_compaction(&conn).unwrap().unwrap();

@@ -65,14 +65,14 @@ pub fn upsert_model_file(
 ) -> Result<()> {
     conn.execute(
         "INSERT INTO model_files
-             (model_id, repo_id, filename, quant, lfs_oid, size_bytes, downloaded_at)
+             (model_id, repo_id, filename, quant, lfs_oid, size_bytes, pulled_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
          ON CONFLICT(model_id, filename) DO UPDATE SET
              repo_id       = excluded.repo_id,
              quant         = excluded.quant,
              lfs_oid       = excluded.lfs_oid,
              size_bytes    = excluded.size_bytes,
-             downloaded_at = excluded.downloaded_at,
+             pulled_at = excluded.pulled_at,
              -- Only clear verification when the hash actually changed.
              last_verified_at = CASE
                  WHEN model_files.lfs_oid IS NOT excluded.lfs_oid THEN NULL

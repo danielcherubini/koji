@@ -3,7 +3,8 @@ use serde::{Deserialize, Serialize};
 use crate::config::types::RestartPolicy;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Supervisor {
+/// Backend lifecycle configuration.
+pub struct Lifecycle {
     #[serde(default = "default_restart_policy")]
     pub restart_policy: RestartPolicy,
     #[serde(default = "default_max_restarts")]
@@ -18,7 +19,7 @@ pub struct Supervisor {
     pub health_check_retries: u32,
 }
 
-impl Default for Supervisor {
+impl Default for Lifecycle {
     fn default() -> Self {
         Self {
             restart_policy: default_restart_policy(),

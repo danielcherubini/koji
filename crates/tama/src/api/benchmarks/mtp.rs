@@ -82,9 +82,11 @@ pub async fn run_mtp_benchmark_inner(
     // Unload any active server for this model before running the benchmark.
     unload_model_before_benchmark(&client, &proxy_base_url, &req.model_id, &job.id).await;
 
-    // Parse gpu_variant from wire string to GpuType enum.
-    let gpu_variant: Option<tama_core::gpu::GpuType> = match req.gpu_variant {
-        Some(ref s) => Some(<tama_core::gpu::GpuType as std::str::FromStr>::from_str(s)?),
+    // Parse gpu_variant from wire string to GpuVariant enum.
+    let gpu_variant: Option<tama_core::gpu::GpuVariant> = match req.gpu_variant {
+        Some(ref s) => Some(<tama_core::gpu::GpuVariant as std::str::FromStr>::from_str(
+            s,
+        )?),
         None => None,
     };
 
@@ -130,7 +132,7 @@ pub async fn run_mtp_benchmark_inner(
                     model_id_for_pool.clone()
                 };
 
-                let (server_config, _) = config_for_pool
+                let (model_config, _) = config_for_pool
                     .resolve_backend(&model_configs, &resolved_id)
                     .context("Failed to resolve server config for benchmark")?;
 
@@ -151,7 +153,7 @@ pub async fn run_mtp_benchmark_inner(
                 });
                 let target_backend = backend_name
                     .as_deref()
-                    .unwrap_or(&server_config.backend)
+                    .unwrap_or(&model_config.backend)
                     .to_string();
                 Ok((model_path, target_backend, display_name, resolved_id))
             },

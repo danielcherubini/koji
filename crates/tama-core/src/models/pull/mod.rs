@@ -9,9 +9,9 @@ mod parallel;
 mod single;
 
 pub mod api;
-pub mod download;
 pub mod metadata;
 pub mod quant;
+pub mod transfer;
 
 use rand::Rng;
 use std::path::Path;
@@ -553,13 +553,13 @@ pub struct HfModelMetadata {
 
 pub use super::gguf::GgufMetadata;
 pub use api::{
-    directory_prefix, fetch_blob_metadata, fetch_hf_metadata, fetch_model_pipeline_tag,
-    group_sharded_quants, infer_modalities_from_pipeline, list_gguf_files, parse_blob_siblings,
+    directory_prefix, group_sharded_quants, infer_modalities_from_pipeline, list_gguf_files,
+    lookup_blob_metadata, lookup_hf_metadata, lookup_model_pipeline_tag, parse_blob_siblings,
     GroupedQuant,
 };
-pub use download::{pull_gguf_with_progress, PullResult};
-pub use metadata::{fetch_community_card, parse_readme_metadata};
+pub use metadata::{lookup_community_toml, parse_readme_metadata};
 pub use quant::infer_quant_from_filename;
+pub use transfer::{pull_gguf_with_progress, PullResult};
 
 #[cfg(test)]
 mod tests {

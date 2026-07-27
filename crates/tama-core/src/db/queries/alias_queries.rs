@@ -106,31 +106,34 @@ pub fn insert_alias(
     Ok(id)
 }
 
+/// Fields to update on an alias. `None` leaves the column unchanged;
+/// `description: Some(None)` clears it.
+#[derive(Debug, Default)]
+pub struct AliasUpdate<'a> {
+    pub name: Option<&'a str>,
+    pub model_id: Option<i64>,
+    pub description: Option<Option<&'a str>>,
+    pub enabled: Option<bool>,
+}
+
 /// Update an existing alias. Only updates fields that are Some.
-pub fn update_alias(
-    conn: &Connection,
-    id: i64,
-    name: Option<&str>,
-    model_id: Option<i64>,
-    description: Option<Option<&str>>,
-    enabled: Option<bool>,
-) -> Result<()> {
+pub fn update_alias(conn: &Connection, id: i64, update: AliasUpdate) -> Result<()> {
     let mut sets = Vec::new();
     let mut bind_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
 
-    if let Some(n) = name {
+    if let Some(n) = update.name {
         sets.push("name = ?".to_string());
         bind_params.push(Box::new(n));
     }
-    if let Some(m) = model_id {
+    if let Some(m) = update.model_id {
         sets.push("model_id = ?".to_string());
         bind_params.push(Box::new(m));
     }
-    if let Some(desc) = description {
+    if let Some(desc) = update.description {
         sets.push("description = ?".to_string());
         bind_params.push(Box::new(desc));
     }
-    if let Some(e) = enabled {
+    if let Some(e) = update.enabled {
         sets.push("enabled = ?".to_string());
         bind_params.push(Box::new(if e { 1i32 } else { 0i32 }));
     }
@@ -228,7 +231,15 @@ mod tests {
         // Disabled alias
         let disabled_id = insert_model(&conn, "org/model3", Some("disabled-api"));
         insert_alias(&conn, "off", disabled_id, None).unwrap();
-        update_alias(&conn, 3, None, None, None, Some(false)).unwrap();
+        update_alias(
+            &conn,
+            3,
+            AliasUpdate {
+                enabled: Some(false),
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         let result = load_aliases_for_cache(&conn).unwrap();
         assert_eq!(result.len(), 2);
@@ -262,14 +273,30 @@ mod tests {
         let alias_id = insert_alias(&conn, "original", model_id, Some("Old desc")).unwrap();
 
         // Update only the name
-        update_alias(&conn, alias_id, Some("renamed"), None, None, None).unwrap();
+        update_alias(
+            &conn,
+            alias_id,
+            AliasUpdate {
+                name: Some("renamed"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         let alias = get_alias_by_id(&conn, alias_id).unwrap().unwrap();
         assert_eq!(alias.name, "renamed");
         assert_eq!(alias.description, Some("Old desc".to_string())); // unchanged
 
-        // Update description to None
-        update_alias(&conn, alias_id, None, None, Some(None), None).unwrap();
+        // Update description to None (clear)
+        update_alias(
+            &conn,
+            alias_id,
+            AliasUpdate {
+                description: Some(None),
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         let alias = get_alias_by_id(&conn, alias_id).unwrap().unwrap();
         assert_eq!(alias.description, None);

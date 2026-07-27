@@ -215,7 +215,7 @@ fn test_check_response_serialization_false() {
 /// POST /tama/v1/updates/check/bogus/123 — invalid item_type should return
 /// 400 with canonical error shape and type=ValidationError.
 #[tokio::test]
-async fn test_check_single_invalid_item_type_error_shape() {
+async fn test_check_item_for_update_invalid_item_type_error_shape() {
     let config = Config::default();
     let tmp_dir = tempfile::tempdir().expect("tempdir");
     let state = Arc::new(ProxyState::new(config, Some(tmp_dir.path().to_path_buf())));
@@ -250,7 +250,7 @@ async fn test_check_single_invalid_item_type_error_shape() {
     assert_eq!(
         resp.status(),
         axum::http::StatusCode::BAD_REQUEST,
-        "check_single should return 400 for invalid item_type"
+        "check_item_for_update should return 400 for invalid item_type"
     );
 
     let detail = assert_error_shape(resp).await;

@@ -10,6 +10,7 @@ use regex::Regex;
 use std::sync::{Arc, OnceLock};
 
 use crate::api::error::{error_body, error_response, error_response_simple};
+use crate::api::field_update::FieldUpdate;
 use crate::api::helpers::shared_repository;
 use crate::web_types::WebState;
 use tama_core::proxy::ProxyState;
@@ -198,7 +199,11 @@ pub async fn update_alias(
     // Capture payload fields for the spawn_blocking closure.
     let name_for_closure = payload.name.clone();
     let model_id_for_closure = payload.model_id;
-    let desc_for_closure = payload.description.clone();
+    let desc_for_closure = match &payload.description {
+        FieldUpdate::Set(v) => Some(Some(v.clone())),
+        FieldUpdate::Clear => Some(None),
+        FieldUpdate::Unchanged => None,
+    };
 
     let result =
         tokio::task::spawn_blocking(move || -> Result<_, (StatusCode, serde_json::Value)> {
@@ -219,14 +224,13 @@ pub async fn update_alias(
                 }
             }
 
-            repo.update_alias(
-                id,
-                name_for_closure.as_deref(),
-                model_id_for_closure,
-                desc_for_closure.as_ref().map(|d| d.as_deref()),
-                payload.enabled,
-            )
-            .map_err(|e| {
+            let update = tama_core::db::queries::AliasUpdate {
+                name: name_for_closure.as_deref(),
+                model_id: model_id_for_closure,
+                description: desc_for_closure.as_ref().map(|d| d.as_deref()),
+                enabled: payload.enabled,
+            };
+            repo.update_alias(id, update).map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     error_body(format!("Database not configured: {}", e), None),
@@ -321,7 +325,7 @@ pub struct UpdateAliasRequest {
     #[serde(default)]
     pub model_id: Option<i64>,
     #[serde(default)]
-    pub description: Option<Option<String>>,
+    pub description: FieldUpdate<String>,
     #[serde(default)]
     pub enabled: Option<bool>,
 }

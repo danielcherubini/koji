@@ -56,12 +56,12 @@ pub fn find_llama_bench(backend_path: &std::path::Path) -> Result<PathBuf> {
     )
 }
 
-/// Detect GPU type from backend binary path.
+/// Detect GPU variant label from backend binary path.
 ///
 /// Matches substrings first (cheap, no GPU probing). Anything unknown reports
 /// as "CPU" — we avoid live VRAM probing because it can misidentify the backend
 /// (e.g. a ROCm build running on a system that also has a CUDA card).
-pub(super) fn detect_gpu_type(backend_path: &std::path::Path) -> String {
+pub(super) fn detect_gpu_variant_label(backend_path: &std::path::Path) -> String {
     let path_lower = backend_path.to_string_lossy().to_lowercase();
     if path_lower.contains("vulkan") {
         "Vulkan".to_string()
@@ -88,40 +88,40 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// Verifies that `detect_gpu_type` identifies CUDA from path.
+    /// Verifies that `detect_gpu_variant_label` identifies CUDA from path.
     #[test]
-    fn test_detect_gpu_type_cuda() {
+    fn test_detect_gpu_variant_label_cuda() {
         let path = std::path::PathBuf::from("/path/to/llama-server-cuda");
-        assert_eq!(detect_gpu_type(&path), "CUDA");
+        assert_eq!(detect_gpu_variant_label(&path), "CUDA");
     }
 
-    /// Verifies that `detect_gpu_type` identifies Vulkan from path.
+    /// Verifies that `detect_gpu_variant_label` identifies Vulkan from path.
     #[test]
-    fn test_detect_gpu_type_vulkan() {
+    fn test_detect_gpu_variant_label_vulkan() {
         let path = std::path::PathBuf::from("/path/to/llama-server-vulkan");
-        assert_eq!(detect_gpu_type(&path), "Vulkan");
+        assert_eq!(detect_gpu_variant_label(&path), "Vulkan");
     }
 
-    /// Verifies that `detect_gpu_type` identifies ROCm from path.
+    /// Verifies that `detect_gpu_variant_label` identifies ROCm from path.
     #[test]
-    fn test_detect_gpu_type_rocm() {
+    fn test_detect_gpu_variant_label_rocm() {
         let path = std::path::PathBuf::from("/path/to/llama-server-rocm");
-        assert_eq!(detect_gpu_type(&path), "ROCm");
+        assert_eq!(detect_gpu_variant_label(&path), "ROCm");
     }
 
-    /// Verifies that `detect_gpu_type` identifies Metal from path.
+    /// Verifies that `detect_gpu_variant_label` identifies Metal from path.
     #[test]
-    fn test_detect_gpu_type_metal() {
+    fn test_detect_gpu_variant_label_metal() {
         let path = std::path::PathBuf::from("/path/to/llama-server-metal");
-        assert_eq!(detect_gpu_type(&path), "Metal");
+        assert_eq!(detect_gpu_variant_label(&path), "Metal");
     }
 
-    /// Verifies that `detect_gpu_type` returns a valid GPU type string for unknown paths.
+    /// Verifies that `detect_gpu_variant_label` returns a valid GPU variant label for unknown paths.
     /// On systems with CUDA, it returns "CUDA"; otherwise "CPU".
     #[test]
-    fn test_detect_gpu_type_unknown_path() {
+    fn test_detect_gpu_variant_label_unknown_path() {
         let path = std::path::PathBuf::from("/path/to/llama-server");
-        let result = detect_gpu_type(&path);
+        let result = detect_gpu_variant_label(&path);
         assert!(matches!(result.as_str(), "CUDA" | "CPU"));
     }
 }

@@ -182,16 +182,31 @@ pub fn merge_database(
     stats.new_model_pulls = after.saturating_sub(before);
 
     // Merge model_files — resolve local model_id via repo_id LOWER join.
+    // The live table uses `pulled_at` (migration v39). Old backups (pre-v39)
+    // use `downloaded_at`. Detect which column the backup DB uses.
+    let backup_pulled_col = if local_db
+        .query_row(
+            "SELECT name FROM backup_db.pragma_table_info('model_files') WHERE name = 'pulled_at'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .is_ok()
+    {
+        "bf.pulled_at"
+    } else {
+        "bf.downloaded_at"
+    };
+
     let before = count_model_files(local_db)?;
     local_db
-        .execute_batch(
+        .execute_batch(&format!(
             "INSERT OR IGNORE INTO model_files (model_id, repo_id, filename, quant, \
-             lfs_oid, size_bytes, downloaded_at, last_verified_at, verified_ok, verify_error) \
+             lfs_oid, size_bytes, pulled_at, last_verified_at, verified_ok, verify_error) \
          SELECT mc.id, bf.repo_id, bf.filename, bf.quant, bf.lfs_oid, bf.size_bytes, \
-                bf.downloaded_at, bf.last_verified_at, bf.verified_ok, bf.verify_error \
+                {backup_pulled_col}, bf.last_verified_at, bf.verified_ok, bf.verify_error \
          FROM backup_db.model_files bf \
          JOIN model_configs mc ON LOWER(mc.repo_id) = LOWER(bf.repo_id)",
-        )
+        ))
         .context("Failed to merge model_files")?;
     let after = count_model_files(local_db)?;
     stats.new_model_files = after.saturating_sub(before);

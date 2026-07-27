@@ -8,7 +8,7 @@ use tokio::io::AsyncWriteExt;
 
 use super::{exponential_backoff, ProgressCallback, MAX_RETRIES};
 
-/// Download a file using a single HTTP stream with retry support.
+/// Pull a file using a single HTTP stream with retry support.
 pub async fn pull_single(
     client: &Client,
     url: &str,
@@ -34,7 +34,7 @@ pub async fn pull_single(
             Ok(r) => r,
             Err(e) if attempt <= MAX_RETRIES => {
                 tracing::warn!(
-                    "  Download failed (attempt {}/{}), retrying... ({})",
+                    "  Pull failed (attempt {}/{}), retrying... ({})",
                     attempt,
                     MAX_RETRIES,
                     e
@@ -66,7 +66,7 @@ pub async fn pull_single(
                 tokio::time::sleep(exponential_backoff(attempt)).await;
                 continue;
             }
-            anyhow::bail!("Download failed with status {}", status);
+            anyhow::bail!("Pull failed with status {}", status);
         }
         if pulled == 0 && !resp.status().is_success() {
             if attempt <= MAX_RETRIES {
@@ -79,7 +79,7 @@ pub async fn pull_single(
                 tokio::time::sleep(exponential_backoff(attempt)).await;
                 continue;
             }
-            anyhow::bail!("Download failed with status {}", status);
+            anyhow::bail!("Pull failed with status {}", status);
         }
 
         let mut file = if pulled > 0 {
@@ -136,7 +136,7 @@ pub async fn pull_single(
             continue;
         }
 
-        // Download complete
+        // Pull complete
         break;
     }
 

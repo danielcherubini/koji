@@ -108,7 +108,7 @@ async fn test_get_structured_config_returns_valid_json() {
     assert!(parsed.get("general").is_some());
     assert!(parsed.get("backends").is_some());
     // models are stored in SQLite and not included in the structured config response
-    assert!(parsed.get("supervisor").is_some());
+    assert!(parsed.get("lifecycle").is_some());
     assert!(parsed.get("sampling_templates").is_some());
     assert!(parsed.get("proxy").is_some());
 }

@@ -236,7 +236,7 @@ impl ModelManager {
         crate::db::queries::rename_active_model(&self.conn, old_name, new_name)
     }
 
-    // ── Download queue ─────────────────────────────────────────
+    // ── Pull queue ────────────────────────────────────────────────
 
     /// Insert a new item into the pull queue. Returns the new row id.
     #[allow(clippy::too_many_arguments)]

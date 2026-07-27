@@ -3,9 +3,9 @@ mod compaction;
 mod enums;
 mod general;
 mod langfuse;
+mod lifecycle;
 mod model;
 mod proxy;
-mod supervisor;
 
 #[cfg(test)]
 mod compaction_tests;
@@ -21,9 +21,9 @@ pub use compaction::*;
 pub use enums::*;
 pub use general::*;
 pub use langfuse::*;
+pub use lifecycle::*;
 pub use model::*;
 pub use proxy::*;
-pub use supervisor::*;
 
 use crate::profiles::SamplingParams;
 use anyhow::Context;
@@ -38,7 +38,8 @@ pub struct Config {
     #[serde(default)]
     pub backends: HashMap<String, BackendConfig>,
     #[serde(default)]
-    pub supervisor: Supervisor,
+    #[serde(alias = "supervisor")]
+    pub lifecycle: Lifecycle,
     #[serde(default)]
     pub sampling_templates: HashMap<String, SamplingParams>,
     #[serde(default)]
@@ -118,7 +119,7 @@ impl Config {
             circuit_breaker_threshold: proxy_row.circuit_breaker_threshold,
             circuit_breaker_cooldown_seconds: proxy_row.circuit_breaker_cooldown_seconds,
             metrics_retention_secs: proxy_row.metrics_retention_secs,
-            download_queue_poll_interval_secs: proxy_row.download_queue_poll_interval_secs,
+            pull_queue_poll_interval_secs: proxy_row.pull_queue_poll_interval_secs,
             max_loaded_models: proxy_row.max_loaded_models,
             authenticator_url: proxy_row.authenticator_url,
             authenticator_skip_paths: proxy_row.authenticator_skip_paths,
@@ -140,25 +141,25 @@ impl Config {
         // Resolve env var references in OAuth2 config
         proxy.resolve_env_vars();
 
-        // Read supervisor
-        let supervisor_row = crate::db::queries::get_supervisor(&conn)?
-            .ok_or_else(|| anyhow::anyhow!("app_supervisor row not found after seeding"))?;
-        let supervisor = Supervisor {
+        // Read lifecycle
+        let lifecycle_row = crate::db::queries::get_lifecycle(&conn)?
+            .ok_or_else(|| anyhow::anyhow!("app_lifecycle row not found after seeding"))?;
+        let lifecycle = Lifecycle {
             restart_policy: crate::config::types::RestartPolicy::from_str(
-                &supervisor_row.restart_policy,
+                &lifecycle_row.restart_policy,
             )
             .unwrap_or_else(|| {
                 tracing::warn!(
-                    restart_policy = %supervisor_row.restart_policy,
+                    restart_policy = %lifecycle_row.restart_policy,
                     "Invalid restart_policy in DB, falling back to default (always)"
                 );
                 crate::config::types::RestartPolicy::default()
             }),
-            max_restarts: supervisor_row.max_restarts,
-            restart_delay_ms: supervisor_row.restart_delay_ms,
-            health_check_interval_ms: supervisor_row.health_check_interval_ms,
-            health_check_timeout_ms: supervisor_row.health_check_timeout_ms,
-            health_check_retries: supervisor_row.health_check_retries,
+            max_restarts: lifecycle_row.max_restarts,
+            restart_delay_ms: lifecycle_row.restart_delay_ms,
+            health_check_interval_ms: lifecycle_row.health_check_interval_ms,
+            health_check_timeout_ms: lifecycle_row.health_check_timeout_ms,
+            health_check_retries: lifecycle_row.health_check_retries,
         };
 
         // Read compaction
@@ -210,12 +211,12 @@ impl Config {
                     path: None,
                     version: None,
                     gpu_variant: Some(
-                        crate::gpu::GpuType::from_str(&record.gpu_variant).unwrap_or_else(|_| {
+                        crate::gpu::GpuVariant::from_str(&record.gpu_variant).unwrap_or_else(|_| {
                             tracing::warn!(
                                 "unknown gpu_variant '{}' in backend_configs row; treating as custom",
                                 record.gpu_variant
                             );
-                            crate::gpu::GpuType::Custom
+                            crate::gpu::GpuVariant::Custom
                         }),
                     ),
                 },
@@ -241,7 +242,7 @@ impl Config {
         Ok(Config {
             general,
             backends,
-            supervisor,
+            lifecycle,
             proxy,
             compaction,
             langfuse,
@@ -292,7 +293,7 @@ impl Config {
             self.proxy.circuit_breaker_threshold,
             self.proxy.circuit_breaker_cooldown_seconds,
             self.proxy.metrics_retention_secs,
-            self.proxy.download_queue_poll_interval_secs,
+            self.proxy.pull_queue_poll_interval_secs,
             self.proxy.max_loaded_models,
             self.proxy.authenticator_url.as_deref(),
             &self.proxy.authenticator_skip_paths,
@@ -309,15 +310,15 @@ impl Config {
             api_keys_enabled,
         )?;
 
-        // Upsert supervisor
-        crate::db::queries::upsert_supervisor(
+        // Upsert lifecycle
+        crate::db::queries::upsert_lifecycle(
             &conn,
-            &self.supervisor.restart_policy,
-            self.supervisor.max_restarts,
-            self.supervisor.restart_delay_ms,
-            self.supervisor.health_check_interval_ms,
-            self.supervisor.health_check_timeout_ms,
-            self.supervisor.health_check_retries,
+            &self.lifecycle.restart_policy,
+            self.lifecycle.max_restarts,
+            self.lifecycle.restart_delay_ms,
+            self.lifecycle.health_check_interval_ms,
+            self.lifecycle.health_check_timeout_ms,
+            self.lifecycle.health_check_retries,
         )?;
 
         // Upsert compaction

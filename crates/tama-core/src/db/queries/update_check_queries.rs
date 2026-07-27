@@ -93,6 +93,20 @@ pub fn delete_update_checks_by_pattern(
     Ok(())
 }
 
+/// Delete all update check records for a backend name, covering every
+/// gpu_variant (`name:%`) plus the legacy variant-less row (`name`).
+/// Handles the SQL LIKE escaping of `name` internally so callers never
+/// hand-write patterns.
+pub fn delete_update_checks_for_backend(conn: &Connection, name: &str) -> Result<()> {
+    let escaped = name
+        .replace('\\', "\\\\")
+        .replace('_', "\\_")
+        .replace('%', "\\%");
+    delete_update_checks_by_pattern(conn, "backend", &format!("{}:%", escaped))?;
+    delete_update_check(conn, "backend", name)?;
+    Ok(())
+}
+
 pub fn get_oldest_check_time(conn: &Connection) -> Result<Option<i64>> {
     let mut stmt = conn.prepare("SELECT MIN(checked_at) FROM update_checks")?;
     let mut rows = stmt.query_map([], |row| row.get::<_, Option<i64>>(0))?;

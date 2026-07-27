@@ -22,7 +22,9 @@ pub enum GpuVendor {
 pub enum ModelState {
     #[default]
     Idle,
-    Loading,
+    /// The backend is currently starting up. Accepts `"loading"` on read for backwards compat.
+    #[serde(alias = "loading")]
+    Starting,
     Ready,
     Unloading,
     Failed,
@@ -33,7 +35,7 @@ impl ModelState {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Idle => "idle",
-            Self::Loading => "loading",
+            Self::Starting => "starting",
             Self::Ready => "ready",
             Self::Unloading => "unloading",
             Self::Failed => "failed",

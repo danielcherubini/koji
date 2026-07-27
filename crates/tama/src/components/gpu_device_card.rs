@@ -2,11 +2,11 @@
 
 use leptos::prelude::*;
 
-use crate::gpu_types::ModelState;
+use crate::core_mirrors::ModelState;
 
 #[cfg(test)]
-use crate::gpu_types::GpuVendor;
-use crate::pages::dashboard::{GpuDeviceStats, ModelStatus, VramInfo};
+use crate::core_mirrors::GpuVendor;
+use crate::pages::dashboard::{GpuDeviceStats, ModelStateSnapshot, VramInfo};
 
 /// Lifecycle state of a GPU device, derived from loaded model states.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,7 +33,10 @@ pub struct LoadedModelDisplay {
 /// Derive the device state from a list of models targeting this device.
 /// Matches `model.gpu_device` (e.g. "GPU0") against `device_id` (e.g. "GPU0").
 /// Priority: Loading > Active > Failed > Idle.
-pub fn derive_device_state(loaded_models: &[ModelStatus], device_id: &str) -> GpuDeviceState {
+pub fn derive_device_state(
+    loaded_models: &[ModelStateSnapshot],
+    device_id: &str,
+) -> GpuDeviceState {
     let mut has_loading = false;
     let mut has_active = false;
     let mut has_failed = false;
@@ -52,7 +55,7 @@ pub fn derive_device_state(loaded_models: &[ModelStatus], device_id: &str) -> Gp
 
         // Model matches this device — track its state.
         match model.state {
-            ModelState::Loading => has_loading = true,
+            ModelState::Starting => has_loading = true,
             ModelState::Ready | ModelState::Unloading => has_active = true,
             ModelState::Failed => has_failed = true,
             ModelState::Idle => {}
@@ -85,7 +88,7 @@ pub fn find_device_index(gpus: &[GpuDeviceStats], gpu_device: &str) -> Option<us
 /// Returns the display label of the GPU a model is loaded on, e.g.
 /// Some("GPU 0"). Returns None if the model has no `gpu_device` or no
 /// matching device is found.
-pub fn model_gpu_label(gpus: &[GpuDeviceStats], model: &ModelStatus) -> Option<String> {
+pub fn model_gpu_label(gpus: &[GpuDeviceStats], model: &ModelStateSnapshot) -> Option<String> {
     if let Some(gpu_device) = model.gpu_device.as_deref() {
         let index = find_device_index(gpus, gpu_device)?;
         Some(device_display_label(index))
@@ -99,9 +102,9 @@ pub fn model_gpu_label(gpus: &[GpuDeviceStats], model: &ModelStatus) -> Option<S
 /// Only considers models in `ready`, `loading`, or `unloading` state.
 /// Models without `gpu_device` set fall back to the first GPU ("GPU0").
 pub fn model_for_device<'a>(
-    loaded_models: &'a [ModelStatus],
+    loaded_models: &'a [ModelStateSnapshot],
     device_id: &str,
-) -> Option<&'a ModelStatus> {
+) -> Option<&'a ModelStateSnapshot> {
     loaded_models.iter().find(|m| {
         let targets_device = match &m.gpu_device {
             Some(g) if g == device_id => true,
@@ -111,7 +114,7 @@ pub fn model_for_device<'a>(
         targets_device
             && matches!(
                 m.state,
-                ModelState::Ready | ModelState::Loading | ModelState::Unloading
+                ModelState::Ready | ModelState::Starting | ModelState::Unloading
             )
     })
 }
@@ -121,7 +124,7 @@ pub fn model_for_device<'a>(
 /// prefix when state is `loading`. Returns None if no such model exists.
 /// Models without `gpu_device` set fall back to the first GPU ("GPU0").
 pub fn loaded_model_display(
-    loaded_models: &[ModelStatus],
+    loaded_models: &[ModelStateSnapshot],
     device_id: &str,
 ) -> Option<LoadedModelDisplay> {
     for model in loaded_models {
@@ -137,13 +140,13 @@ pub fn loaded_model_display(
         }
 
         match model.state {
-            ModelState::Ready | ModelState::Loading | ModelState::Unloading => {
+            ModelState::Ready | ModelState::Starting | ModelState::Unloading => {
                 let name = model
                     .display_name
                     .clone()
                     .or_else(|| model.api_name.clone())
                     .unwrap_or_else(|| model.id.clone());
-                let transferring = matches!(model.state, ModelState::Loading);
+                let transferring = matches!(model.state, ModelState::Starting);
                 return Some(LoadedModelDisplay { name, transferring });
             }
             ModelState::Failed | ModelState::Idle => {}
@@ -178,7 +181,7 @@ pub fn GpuDeviceCard(
     /// Display label, e.g. "GPU 0".
     display_label: String,
     /// All loaded models (used to derive state and loaded model).
-    loaded_models: Vec<ModelStatus>,
+    loaded_models: Vec<ModelStateSnapshot>,
     /// Prompt throughput (tokens per second during prompt processing).
     #[prop(default = None)]
     prompt_tps: Option<f32>,
@@ -362,16 +365,16 @@ pub fn GpuDeviceCard(
 mod tests {
     use super::*;
 
-    fn make_model(id: &str, state: &str, gpu_device: Option<&str>) -> ModelStatus {
+    fn make_model(id: &str, state: &str, gpu_device: Option<&str>) -> ModelStateSnapshot {
         let model_state = match state {
             "idle" => ModelState::Idle,
-            "loading" => ModelState::Loading,
+            "loading" | "starting" => ModelState::Starting,
             "ready" => ModelState::Ready,
             "unloading" => ModelState::Unloading,
             "failed" => ModelState::Failed,
             _ => ModelState::Idle,
         };
-        ModelStatus {
+        ModelStateSnapshot {
             id: id.to_string(),
             db_id: None,
             api_name: None,
@@ -433,7 +436,7 @@ mod tests {
 
     #[test]
     fn test_derive_state_idle_when_no_models() {
-        let models: Vec<ModelStatus> = vec![];
+        let models: Vec<ModelStateSnapshot> = vec![];
         assert_eq!(derive_device_state(&models, "GPU0"), GpuDeviceState::Idle);
     }
 
@@ -517,7 +520,7 @@ mod tests {
 
     #[test]
     fn test_loaded_model_display_none_when_idle() {
-        let models: Vec<ModelStatus> = vec![];
+        let models: Vec<ModelStateSnapshot> = vec![];
         assert_eq!(loaded_model_display(&models, "GPU0"), None);
     }
 
@@ -559,7 +562,7 @@ mod tests {
 
     #[test]
     fn test_model_for_device_empty_models() {
-        let models: Vec<ModelStatus> = vec![];
+        let models: Vec<ModelStateSnapshot> = vec![];
         assert!(model_for_device(&models, "GPU0").is_none());
     }
 

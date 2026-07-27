@@ -92,8 +92,11 @@ pub struct ProxyConfig {
     pub metrics_retention_secs: u64,
     /// How often the pull queue processor checks for new items (in seconds).
     /// Default is 2, minimum is 1.
-    #[serde(default = "default_download_queue_poll_interval")]
-    pub download_queue_poll_interval_secs: u64,
+    #[serde(
+        default = "default_pull_queue_poll_interval",
+        alias = "download_queue_poll_interval_secs"
+    )]
+    pub pull_queue_poll_interval_secs: u64,
     /// Maximum number of models that can be loaded simultaneously **per GPU
     /// device**. When a new model is requested and the limit is reached for
     /// that GPU, the least-recently-used (LRU) model on that GPU is
@@ -133,7 +136,7 @@ impl Default for ProxyConfig {
             circuit_breaker_threshold: default_circuit_breaker_threshold(),
             circuit_breaker_cooldown_seconds: default_circuit_breaker_cooldown(),
             metrics_retention_secs: default_metrics_retention(),
-            download_queue_poll_interval_secs: default_download_queue_poll_interval(),
+            pull_queue_poll_interval_secs: default_pull_queue_poll_interval(),
             max_loaded_models: default_max_loaded_models(),
             authenticator_url: None,
             authenticator_skip_paths: vec!["/health".to_string(), "/metrics".to_string()],
@@ -185,7 +188,7 @@ fn default_metrics_retention() -> u64 {
     86_400
 }
 
-fn default_download_queue_poll_interval() -> u64 {
+fn default_pull_queue_poll_interval() -> u64 {
     2
 }
 

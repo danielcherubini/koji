@@ -49,7 +49,7 @@ pub async fn backfill_hf_metadata(db_dir: &std::path::Path) -> Result<()> {
             repo_id
         );
 
-        let meta = match crate::models::pull::fetch_hf_metadata(repo_id).await {
+        let meta = match crate::models::pull::lookup_hf_metadata(repo_id).await {
             Ok(m) => m,
             Err(e) => {
                 tracing::warn!("Failed to fetch HF metadata for '{}': {}", repo_id, e);

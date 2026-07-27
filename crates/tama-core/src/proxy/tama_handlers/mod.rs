@@ -28,5 +28,5 @@ pub use system::{
 };
 pub use types::{
     max_concurrent_pulls, ListModelsResponse, ListedModelResponse, ModelResponse, PullRequest,
-    PullResponse, QuantDownloadSpec, QuantEntry,
+    PullResponse, QuantEntry, QuantPullSpec,
 };

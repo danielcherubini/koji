@@ -24,15 +24,16 @@ impl GpuVendor {
     }
 }
 
-/// Lifecycle state of a model's backend, used in [`ModelStatus`].
+/// Lifecycle state of a model's backend.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ModelState {
     /// No model is loaded on this backend.
     #[default]
     Idle,
-    /// The backend is currently loading.
-    Loading,
+    /// The backend is currently starting up.
+    #[serde(alias = "loading")]
+    Starting,
     /// The backend is ready and accepting requests.
     Ready,
     /// The backend is unloading.
@@ -46,7 +47,7 @@ impl ModelState {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Idle => "idle",
-            Self::Loading => "loading",
+            Self::Starting => "starting",
             Self::Ready => "ready",
             Self::Unloading => "unloading",
             Self::Failed => "failed",
@@ -132,7 +133,7 @@ pub struct MetricSample {
     pub models_loaded: u64,
     /// Per-model loaded/idle status, embedded in `MetricSample.models`.
     #[serde(default)]
-    pub models: Vec<ModelStatus>,
+    pub models: Vec<crate::models::ModelStateSnapshot>,
     /// Token generation speed (tokens per second), None if not yet observed.
     #[serde(default)]
     pub tps: Option<f32>,
@@ -154,62 +155,6 @@ pub struct MetricSample {
     /// Network throughput statistics for this sample.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network: Option<crate::network::NetworkStats>,
-}
-
-/// Per-model loaded/idle status, embedded in `MetricSample.models`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ModelStatus {
-    pub id: String,
-    /// Integer database id of the model_configs row, if known. Emitted so the
-    /// dashboard can link to the editor by id rather than by config_key.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub db_id: Option<i64>,
-    pub api_name: Option<String>,
-    pub display_name: Option<String>,
-    pub backend: String,
-    /// Current lifecycle state of the model's backend.
-    /// One of: `idle`, `loading`, `ready`, `unloading`, `failed`.
-    #[serde(default)]
-    pub state: ModelState,
-    /// Quantization name (e.g. "Q4_K_M", "Q8_0"). Display-only on dashboard.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub quant: Option<String>,
-    /// Model's configured context length in tokens. Display-only on dashboard.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context_length: Option<u32>,
-    /// Architecture type from HF metadata (e.g. "MoE", "Dense"). Display-only on dashboard.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hf_architecture_type: Option<String>,
-    /// Base model from HF metadata (e.g. "Qwen/Qwen3.6-27B"). Display-only on dashboard.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hf_base_model: Option<String>,
-    /// GPU variant for the backend (e.g. "cpu", "cuda", "vulkan"). Display-only.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gpu_variant: Option<String>,
-    /// KV cache quant for K head (e.g. "q4_0", "f16"). Display-only.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cache_type_k: Option<String>,
-    /// KV cache quant for V head (e.g. "q8_0", "f16"). Display-only.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cache_type_v: Option<String>,
-    /// Speculative decoding types (e.g. ["draft-mtp", "ngram-simple"]). Display-only.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub spec_types: Vec<String>,
-    /// GPU device name this model is bound to (e.g. "CUDA0", "ROCm0"),
-    /// taken from `ModelConfig.gpu_device`. None if the model is idle,
-    /// unconfigured, or the backend is not llama.cpp. Display-only.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gpu_device: Option<String>,
-    /// Error message when `state == "failed"`, surfaced on the dashboard.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error_message: Option<String>,
-    /// Token generation speed for this model's backend (tokens per second).
-    /// None if the model is not actively generating or no stats observed yet.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tps: Option<f32>,
-    /// Prompt processing speed for this model's backend (tokens per second).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub prompt_tps: Option<f32>,
 }
 
 /// One 30-second aggregated bucket for bar charts.
@@ -268,7 +213,7 @@ pub struct MetricCurrent {
     pub gpus: Vec<GpuDeviceStats>,
     /// Per-model loaded/idle status (with per-model tps/prompt_tps).
     #[serde(default)]
-    pub models: Vec<ModelStatus>,
+    pub models: Vec<crate::models::ModelStateSnapshot>,
     pub models_loaded: u64,
     /// Aggregate inference stats (most-recently-updated server) for
     /// sparkline-free display. None if no inference observed yet.
@@ -328,4 +273,28 @@ pub struct MetricsSnapshot {
     /// Point-in-time state + instantaneous values for big-number displays.
     #[serde(default)]
     pub current: MetricCurrent,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_model_state_serializes_starting() {
+        let json = serde_json::to_string(&ModelState::Starting).unwrap();
+        assert_eq!(json, "\"starting\"");
+    }
+
+    #[test]
+    fn test_model_state_deserializes_loading_as_starting() {
+        let state: ModelState = serde_json::from_str("\"loading\"").unwrap();
+        assert_eq!(state, ModelState::Starting);
+    }
+
+    #[test]
+    fn test_model_state_serializes_and_deserializes_starting() {
+        let json = serde_json::to_string(&ModelState::Starting).unwrap();
+        let state: ModelState = serde_json::from_str(&json).unwrap();
+        assert_eq!(state, ModelState::Starting);
+    }
 }

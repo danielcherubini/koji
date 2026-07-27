@@ -1,7 +1,7 @@
 //! App config database query functions.
 //!
 //! CRUD operations for the singleton config tables (`app_general`, `app_proxy`,
-//! `app_supervisor`, `app_compaction`) and the multi-row `sampling_templates` table.
+//! `app_lifecycle`, `app_compaction`) and the multi-row `sampling_templates` table.
 //! Singleton tables store exactly one row with `id = 1`.
 
 use anyhow::{anyhow, Context, Result};
@@ -33,7 +33,7 @@ pub struct ProxyRecord {
     pub circuit_breaker_threshold: u32,
     pub circuit_breaker_cooldown_seconds: u64,
     pub metrics_retention_secs: u64,
-    pub download_queue_poll_interval_secs: u64,
+    pub pull_queue_poll_interval_secs: u64,
     pub max_loaded_models: u32,
     pub authenticator_url: Option<String>,
     pub authenticator_skip_paths: Vec<String>,
@@ -51,9 +51,9 @@ pub struct ProxyRecord {
     pub api_keys_enabled: bool,
 }
 
-/// A row from the `app_supervisor` table.
+/// A row from the `app_lifecycle` table.
 #[derive(Debug, Clone, PartialEq)]
-pub struct SupervisorRecord {
+pub struct LifecycleRecord {
     pub restart_policy: String,
     pub max_restarts: u32,
     pub restart_delay_ms: u64,
@@ -154,7 +154,7 @@ pub fn upsert_proxy(
     circuit_breaker_threshold: u32,
     circuit_breaker_cooldown_seconds: u64,
     metrics_retention_secs: u64,
-    download_queue_poll_interval_secs: u64,
+    pull_queue_poll_interval_secs: u64,
     max_loaded_models: u32,
     authenticator_url: Option<&str>,
     authenticator_skip_paths: &[String],
@@ -178,7 +178,7 @@ pub fn upsert_proxy(
     conn.execute(
         "INSERT OR REPLACE INTO app_proxy (id, host, port, auto_unload, idle_timeout_secs, startup_timeout_secs,
             circuit_breaker_threshold, circuit_breaker_cooldown_seconds, metrics_retention_secs,
-            download_queue_poll_interval_secs, max_loaded_models, authenticator_url, authenticator_skip_paths,
+            pull_queue_poll_interval_secs, max_loaded_models, authenticator_url, authenticator_skip_paths,
             oauth2_enabled, oauth2_client_id, oauth2_client_secret, oauth2_authorize_url, oauth2_token_url,
             oauth2_userinfo_url, oauth2_logout_url, oauth2_redirect_uri, oauth2_scopes, oauth2_session_ttl_secs,
             api_keys_enabled)
@@ -192,7 +192,7 @@ pub fn upsert_proxy(
             circuit_breaker_threshold as i64,
             circuit_breaker_cooldown_seconds,
             metrics_retention_secs,
-            download_queue_poll_interval_secs,
+            pull_queue_poll_interval_secs,
             max_loaded_models as i64,
             authenticator_url,
             skip_paths_json,
@@ -219,7 +219,7 @@ pub fn get_proxy(conn: &Connection) -> Result<Option<ProxyRecord>> {
     let mut stmt = conn.prepare(
         "SELECT host, port, auto_unload, idle_timeout_secs, startup_timeout_secs,
                 circuit_breaker_threshold, circuit_breaker_cooldown_seconds,
-                metrics_retention_secs, download_queue_poll_interval_secs,
+                metrics_retention_secs, pull_queue_poll_interval_secs,
                 max_loaded_models, authenticator_url, authenticator_skip_paths,
                 oauth2_enabled, oauth2_client_id, oauth2_client_secret,
                 oauth2_authorize_url, oauth2_token_url, oauth2_userinfo_url,
@@ -265,7 +265,7 @@ pub fn get_proxy(conn: &Connection) -> Result<Option<ProxyRecord>> {
                 circuit_breaker_threshold,
                 circuit_breaker_cooldown_seconds,
                 metrics_retention_secs,
-                download_queue_poll_interval_secs,
+                pull_queue_poll_interval_secs,
                 max_loaded_models,
                 authenticator_url,
                 skip_paths_str,
@@ -294,7 +294,7 @@ pub fn get_proxy(conn: &Connection) -> Result<Option<ProxyRecord>> {
                 circuit_breaker_threshold,
                 circuit_breaker_cooldown_seconds,
                 metrics_retention_secs,
-                download_queue_poll_interval_secs,
+                pull_queue_poll_interval_secs,
                 max_loaded_models,
                 authenticator_url,
                 authenticator_skip_paths,
@@ -316,8 +316,8 @@ pub fn get_proxy(conn: &Connection) -> Result<Option<ProxyRecord>> {
     }
 }
 
-/// Insert or replace the supervisor config row (id=1).
-pub fn upsert_supervisor(
+/// Insert or replace the lifecycle config row (id=1).
+pub fn upsert_lifecycle(
     conn: &Connection,
     restart_policy: &RestartPolicy,
     max_restarts: u32,
@@ -327,7 +327,7 @@ pub fn upsert_supervisor(
     health_check_retries: u32,
 ) -> Result<()> {
     conn.execute(
-        "INSERT OR REPLACE INTO app_supervisor (id, restart_policy, max_restarts, restart_delay_ms,
+        "INSERT OR REPLACE INTO app_lifecycle (id, restart_policy, max_restarts, restart_delay_ms,
             health_check_interval_ms, health_check_timeout_ms, health_check_retries)
          VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)",
         params![
@@ -339,19 +339,19 @@ pub fn upsert_supervisor(
             health_check_retries as i64,
         ],
     )
-    .context("Failed to upsert app_supervisor")?;
+    .context("Failed to upsert app_lifecycle")?;
     Ok(())
 }
 
-/// Get the supervisor config row. Returns None if no row exists.
-pub fn get_supervisor(conn: &Connection) -> Result<Option<SupervisorRecord>> {
+/// Get the lifecycle config row. Returns None if no row exists.
+pub fn get_lifecycle(conn: &Connection) -> Result<Option<LifecycleRecord>> {
     let mut stmt = conn.prepare(
         "SELECT restart_policy, max_restarts, restart_delay_ms, health_check_interval_ms,
                 health_check_timeout_ms, health_check_retries
-         FROM app_supervisor WHERE id = 1",
+         FROM app_lifecycle WHERE id = 1",
     )?;
     let mut rows = stmt.query_map([], |row| {
-        Ok(SupervisorRecord {
+        Ok(LifecycleRecord {
             restart_policy: row.get::<_, String>(0)?,
             max_restarts: row.get::<_, i64>(1)? as u32,
             restart_delay_ms: row.get::<_, i64>(2)? as u64,
@@ -550,7 +550,7 @@ pub fn seed_defaults(conn: &Connection) -> Result<()> {
     conn.execute(
         "INSERT OR IGNORE INTO app_proxy (id, host, port, auto_unload, idle_timeout_secs, startup_timeout_secs,
             circuit_breaker_threshold, circuit_breaker_cooldown_seconds, metrics_retention_secs,
-            download_queue_poll_interval_secs, max_loaded_models, authenticator_url, authenticator_skip_paths,
+            pull_queue_poll_interval_secs, max_loaded_models, authenticator_url, authenticator_skip_paths,
             oauth2_enabled, oauth2_client_id, oauth2_client_secret, oauth2_authorize_url, oauth2_token_url,
             oauth2_userinfo_url, oauth2_logout_url, oauth2_redirect_uri, oauth2_scopes, oauth2_session_ttl_secs,
             api_keys_enabled)
@@ -561,15 +561,15 @@ pub fn seed_defaults(conn: &Connection) -> Result<()> {
     )
     .context("Failed to seed app_proxy defaults")?;
 
-    // Supervisor defaults
+    // Lifecycle defaults
     conn.execute(
-        "INSERT OR IGNORE INTO app_supervisor (id, restart_policy, max_restarts, restart_delay_ms,
+        "INSERT OR IGNORE INTO app_lifecycle (id, restart_policy, max_restarts, restart_delay_ms,
             health_check_interval_ms, health_check_timeout_ms, health_check_retries)
          SELECT 1, 'always', 10, 3000, 5000, 30000, 3
-         WHERE NOT EXISTS (SELECT 1 FROM app_supervisor WHERE id = 1)",
+         WHERE NOT EXISTS (SELECT 1 FROM app_lifecycle WHERE id = 1)",
         [],
     )
-    .context("Failed to seed app_supervisor defaults")?;
+    .context("Failed to seed app_lifecycle defaults")?;
 
     // Compaction defaults
     conn.execute(
@@ -679,7 +679,7 @@ mod tests {
         // No rows before seeding
         assert!(get_general(&conn).unwrap().is_none());
         assert!(get_proxy(&conn).unwrap().is_none());
-        assert!(get_supervisor(&conn).unwrap().is_none());
+        assert!(get_lifecycle(&conn).unwrap().is_none());
         assert!(get_compaction(&conn).unwrap().is_none());
         assert!(get_all_sampling_templates(&conn).unwrap().is_empty());
 
@@ -694,9 +694,9 @@ mod tests {
         assert_eq!(proxy.host, "0.0.0.0");
         assert_eq!(proxy.port, 11434);
 
-        let supervisor = get_supervisor(&conn).unwrap().unwrap();
-        assert_eq!(supervisor.restart_policy, "always");
-        assert_eq!(supervisor.max_restarts, 10);
+        let lifecycle = get_lifecycle(&conn).unwrap().unwrap();
+        assert_eq!(lifecycle.restart_policy, "always");
+        assert_eq!(lifecycle.max_restarts, 10);
 
         let compaction = get_compaction(&conn).unwrap().unwrap();
         assert!(!compaction.enabled);
@@ -818,7 +818,7 @@ mod tests {
         assert_eq!(proxy.circuit_breaker_threshold, 5);
         assert_eq!(proxy.circuit_breaker_cooldown_seconds, 120);
         assert_eq!(proxy.metrics_retention_secs, 43200);
-        assert_eq!(proxy.download_queue_poll_interval_secs, 5);
+        assert_eq!(proxy.pull_queue_poll_interval_secs, 5);
         assert_eq!(proxy.max_loaded_models, 2);
         assert_eq!(
             proxy.authenticator_url,
@@ -860,31 +860,31 @@ mod tests {
         assert_eq!(proxy.authenticator_url, None);
     }
 
-    // ── supervisor ─────────────────────────────────────────────────────
+    // ── lifecycle ────────────────────────────────────────────────────────
 
     #[test]
-    fn test_supervisor_roundtrip() {
+    fn test_lifecycle_roundtrip() {
         let conn = test_conn();
 
-        assert!(get_supervisor(&conn).unwrap().is_none());
+        assert!(get_lifecycle(&conn).unwrap().is_none());
 
-        upsert_supervisor(&conn, &RestartPolicy::OnFailure, 5, 5000, 3000, 10000, 2).unwrap();
+        upsert_lifecycle(&conn, &RestartPolicy::OnFailure, 5, 5000, 3000, 10000, 2).unwrap();
 
-        let supervisor = get_supervisor(&conn).unwrap().unwrap();
-        assert_eq!(supervisor.restart_policy, "on-failure");
-        assert_eq!(supervisor.max_restarts, 5);
-        assert_eq!(supervisor.restart_delay_ms, 5000);
-        assert_eq!(supervisor.health_check_interval_ms, 3000);
-        assert_eq!(supervisor.health_check_timeout_ms, 10000);
-        assert_eq!(supervisor.health_check_retries, 2);
+        let lifecycle = get_lifecycle(&conn).unwrap().unwrap();
+        assert_eq!(lifecycle.restart_policy, "on-failure");
+        assert_eq!(lifecycle.max_restarts, 5);
+        assert_eq!(lifecycle.restart_delay_ms, 5000);
+        assert_eq!(lifecycle.health_check_interval_ms, 3000);
+        assert_eq!(lifecycle.health_check_timeout_ms, 10000);
+        assert_eq!(lifecycle.health_check_retries, 2);
 
         // Update
-        upsert_supervisor(&conn, &RestartPolicy::Always, 20, 1000, 10000, 60000, 5).unwrap();
+        upsert_lifecycle(&conn, &RestartPolicy::Always, 20, 1000, 10000, 60000, 5).unwrap();
 
-        let supervisor = get_supervisor(&conn).unwrap().unwrap();
-        assert_eq!(supervisor.restart_policy, "always");
-        assert_eq!(supervisor.max_restarts, 20);
-        assert_eq!(supervisor.restart_delay_ms, 1000);
+        let lifecycle = get_lifecycle(&conn).unwrap().unwrap();
+        assert_eq!(lifecycle.restart_policy, "always");
+        assert_eq!(lifecycle.max_restarts, 20);
+        assert_eq!(lifecycle.restart_delay_ms, 1000);
     }
 
     // ── compaction ─────────────────────────────────────────────────────

@@ -800,7 +800,7 @@ fn test_cancel_nonexistent_job() {
 async fn test_queue_processor_loop_stale_recovery() {
     let temp_dir = tempfile::tempdir().unwrap();
     let config = Config::default();
-    let poll_interval = config.proxy.download_queue_poll_interval_secs;
+    let poll_interval = config.proxy.pull_queue_poll_interval_secs;
 
     // Open ModelManager directly (same as ProxyState::new does)
     let mgr = crate::models::ModelManager::open(temp_dir.path()).unwrap();
@@ -864,7 +864,7 @@ async fn test_queue_processor_loop_stale_recovery() {
 async fn test_queue_processor_loop_dequeues_items() {
     let temp_dir = tempfile::tempdir().unwrap();
     let config = Config::default();
-    let poll_interval = config.proxy.download_queue_poll_interval_secs;
+    let poll_interval = config.proxy.pull_queue_poll_interval_secs;
 
     let mgr = crate::models::ModelManager::open(temp_dir.path()).unwrap();
     let svc = PullQueueService::new(mgr, poll_interval);

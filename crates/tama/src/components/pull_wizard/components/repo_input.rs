@@ -11,7 +11,7 @@ pub fn RepoInput(
         <div class="form-card__header">
             <h2 class="form-card__title">"Enter Repository"</h2>
             <p class="form-card__desc text-muted">
-                "Enter a HuggingFace repo ID to search for available quantisations."
+                "Enter a HuggingFace repo ID to search for available quants."
             </p>
         </div>
 

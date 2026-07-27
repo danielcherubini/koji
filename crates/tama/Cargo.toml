@@ -74,8 +74,8 @@ path = "tests/config_structured_test.rs"
 required-features = ["ssr"]
 
 [[test]]
-name = "downloads_api"
-path = "tests/downloads_api.rs"
+name = "pulls_api"
+path = "tests/pulls_api.rs"
 required-features = ["ssr"]
 
 [[test]]

@@ -43,7 +43,7 @@ enum GroupBy {
 const SORT_KEY: &str = "tama-models-sort-by";
 const GROUP_KEY: &str = "tama-models-group-by";
 
-// ── Sort/Group helpers (adapted for ModelStatus) ─────────────────────────────
+// ── Sort/Group helpers (adapted for ModelStateSnapshot) ─────────────────────────────
 
 /// Extract trailing numeric index from a GPU device string (e.g. "CUDA10" → 10).
 fn extract_gpu_index(device: &str) -> Option<u32> {
@@ -63,8 +63,8 @@ fn extract_gpu_index(device: &str) -> Option<u32> {
     }
 }
 
-/// Extract vendor from a ModelStatus using a chain of fallbacks.
-fn extract_vendor_model_status(m: &ModelStatus) -> String {
+/// Extract vendor from a ModelStateSnapshot using a chain of fallbacks.
+fn extract_vendor_model_status(m: &ModelStateSnapshot) -> String {
     for (field, separator) in &[
         (&m.display_name, ':'),
         (&m.api_name, ':'),
@@ -117,7 +117,7 @@ fn capitalize_first(s: &str) -> String {
 }
 
 /// Returns a comparable string for sorting (all non-GPU sorts).
-fn extract_sort_key_model_status(m: &ModelStatus, sort_by: SortBy) -> String {
+fn extract_sort_key_model_status(m: &ModelStateSnapshot, sort_by: SortBy) -> String {
     match sort_by {
         SortBy::Name => metrics::model_display_name(m),
         SortBy::Family => m.hf_architecture_type.clone().unwrap_or_default(),
@@ -128,7 +128,7 @@ fn extract_sort_key_model_status(m: &ModelStatus, sort_by: SortBy) -> String {
 }
 
 /// Returns the grouping key for a model.
-fn extract_group_key_model_status(m: &ModelStatus, group_by: GroupBy) -> String {
+fn extract_group_key_model_status(m: &ModelStateSnapshot, group_by: GroupBy) -> String {
     match group_by {
         GroupBy::Gpu => gpu_group_label_model_status(&m.gpu_device),
         GroupBy::Family => m
@@ -138,7 +138,7 @@ fn extract_group_key_model_status(m: &ModelStatus, group_by: GroupBy) -> String 
         GroupBy::Vendor => extract_vendor_model_status(m),
         GroupBy::Status => match m.state.as_str() {
             "ready" => "Loaded",
-            "loading" => "Loading",
+            "starting" => "Starting",
             "unloading" => "Unloading",
             "failed" => "Failed",
             _ => "Idle",
@@ -161,7 +161,7 @@ fn group_display_order(group_by: GroupBy, key: &str) -> u32 {
 }
 
 /// Sort models in place by the given sort criterion.
-fn sort_models_status(models: &mut [ModelStatus], sort_by: SortBy) {
+fn sort_models_status(models: &mut [ModelStateSnapshot], sort_by: SortBy) {
     match sort_by {
         SortBy::Gpu => {
             models.sort_by(|a, b| {
@@ -425,7 +425,7 @@ pub fn Dashboard() -> impl IntoView {
                 })
                 .collect();
 
-            let all_models: Vec<ModelStatus> = cur.models.clone();
+            let all_models: Vec<ModelStateSnapshot> = cur.models.clone();
             let gpus_for_labels = gpus.clone();
             let has_data = !buf.is_empty();
 
@@ -620,10 +620,10 @@ pub fn Dashboard() -> impl IntoView {
                             sort_models_status(&mut sorted_models, sort_by.get());
 
                             // Build grouped output
-                            let groups: Vec<(Option<String>, Vec<ModelStatus>)> = {
+                            let groups: Vec<(Option<String>, Vec<ModelStateSnapshot>)> = {
                                 let group_by_val = group_by.get();
                                 if let Some(group_by_type) = group_by_val {
-                                    let mut groups_map: BTreeMap<String, Vec<ModelStatus>> = BTreeMap::new();
+                                    let mut groups_map: BTreeMap<String, Vec<ModelStateSnapshot>> = BTreeMap::new();
                                     let mut group_order: Vec<String> = Vec::new();
                                     for m in &sorted_models {
                                         let key = extract_group_key_model_status(m, group_by_type);

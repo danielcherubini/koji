@@ -137,7 +137,7 @@ pub struct ModelFileRecord {
     pub quant: Option<String>,
     pub lfs_oid: Option<String>,
     pub size_bytes: Option<i64>,
-    pub downloaded_at: String,
+    pub pulled_at: String,
     /// ISO 8601 timestamp of the most recent verification attempt. None if never verified.
     pub last_verified_at: Option<String>,
     /// Some(true) = hash matched. Some(false) = mismatch. None = never verified
@@ -151,7 +151,7 @@ pub struct ModelFileRecord {
 impl ModelFileRecord {
     /// All 11 columns in SELECT order (id first). Must match `from_row` index order.
     pub(crate) const COLUMNS: &str =
-        "id, model_id, repo_id, filename, quant, lfs_oid, size_bytes, downloaded_at, \
+        "id, model_id, repo_id, filename, quant, lfs_oid, size_bytes, pulled_at, \
          last_verified_at, verified_ok, verify_error";
 
     /// Map a row selected with `COLUMNS` order into a record.
@@ -165,7 +165,7 @@ impl ModelFileRecord {
             quant: row.get(4)?,
             lfs_oid: row.get(5)?,
             size_bytes: row.get(6)?,
-            downloaded_at: row.get(7)?,
+            pulled_at: row.get(7)?,
             last_verified_at: row.get(8)?,
             verified_ok: verified_ok.map(|v| v != 0),
             verify_error: row.get(10)?,

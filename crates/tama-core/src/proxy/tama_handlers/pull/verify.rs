@@ -7,16 +7,16 @@ use std::time::Instant;
 use crate::config::default_num_parallel;
 use crate::config::ModelConfig;
 use crate::config::QuantKind;
-use crate::models::card::ModelCard;
-use crate::models::pull::fetch_community_card;
+use crate::models::card::ModelToml;
 use crate::models::pull::infer_quant_from_filename;
+use crate::models::pull::metadata::lookup_community_toml;
 use crate::models::pull::BlobInfo;
 use crate::models::pull::GgufMetadata;
 use crate::models::QuantInfo;
 use crate::proxy::pull_jobs::{PullJob, PullJobStatus};
 use crate::proxy::pull_queue::PullQueueService;
 use crate::proxy::tama_handlers::generate_display_name;
-use crate::proxy::tama_handlers::QuantDownloadSpec;
+use crate::proxy::tama_handlers::QuantPullSpec;
 use crate::proxy::ProxyState;
 
 /// Outcome of a verification pass. Carries the hash info so the caller can
@@ -83,7 +83,7 @@ pub(super) async fn run_verification(
     // Step 1: fetch upstream blob metadata (best-effort). Reused below to
     // determine whether this file is the primary shard of a sharded quant,
     // avoiding a redundant API call.
-    let blobs_result = crate::models::pull::fetch_blob_metadata(&repo_id).await;
+    let blobs_result = crate::models::pull::lookup_blob_metadata(&repo_id).await;
     let expected_sha: Option<String> = blobs_result
         .as_ref()
         .ok()
@@ -261,7 +261,7 @@ pub(crate) async fn _setup_model_after_pull_with_config(
     configs_dir: &std::path::Path,
     model_configs: &mut std::collections::HashMap<String, ModelConfig>,
     repo_id: &str,
-    spec: &QuantDownloadSpec,
+    spec: &QuantPullSpec,
     dest_dir: &std::path::Path,
     gguf_metadata: Option<&GgufMetadata>,
     is_primary_shard: bool,
@@ -270,7 +270,7 @@ pub(crate) async fn _setup_model_after_pull_with_config(
     let card_path = configs_dir.join(format!("{}.toml", repo_slug));
 
     // Load existing or build a new card
-    let mut card = ModelCard::load(&card_path).unwrap_or_else(|_| ModelCard {
+    let mut model_toml = ModelToml::load(&card_path).unwrap_or_else(|_| ModelToml {
         model: crate::models::card::ModelMeta {
             name: repo_id.to_string(),
             source: repo_id.to_string(),
@@ -282,19 +282,19 @@ pub(crate) async fn _setup_model_after_pull_with_config(
         quants: std::collections::HashMap::new(),
     });
 
-    // Try community card for sampling presets and context defaults (best-effort, no network in tests).
-    // We intentionally do NOT overwrite card.model.name from the community card — community cards
+    // Try community TOML for sampling presets and context defaults (best-effort, no network in tests).
+    // We intentionally do NOT overwrite model_toml.model.name from the community TOML — community TOMLs
     // often have the GGUF suffix stripped (e.g. "OmniCoder-9B" instead of "OmniCoder-9B-GGUF"),
     // which loses information. The name is derived from the repo_id above and kept as-is.
-    if let Some(community) = fetch_community_card(repo_id).await {
+    if let Some(community) = lookup_community_toml(repo_id).await {
         for (k, v) in community.sampling {
-            card.sampling.entry(k).or_insert(v);
+            model_toml.sampling.entry(k).or_insert(v);
         }
-        if card.model.default_context_length.is_none() {
-            card.model.default_context_length = community.model.default_context_length;
+        if model_toml.model.default_context_length.is_none() {
+            model_toml.model.default_context_length = community.model.default_context_length;
         }
-        if card.model.default_gpu_layers.is_none() {
-            card.model.default_gpu_layers = community.model.default_gpu_layers;
+        if model_toml.model.default_gpu_layers.is_none() {
+            model_toml.model.default_gpu_layers = community.model.default_gpu_layers;
         }
     }
 
@@ -321,12 +321,12 @@ pub(crate) async fn _setup_model_after_pull_with_config(
         .ok()
         .map(|m| m.len());
 
-    // Insert/update quant entry in card — only for the primary shard of a
+    // Insert/update quant entry in model_toml — only for the primary shard of a
     // sharded quant. Non-primary shards are tracked via model_files (upsert_file)
-    // but do not get their own card entry, since the primary shard's filename is
-    // what the model card records as the canonical file for the quant.
+    // but do not get their own model_toml entry, since the primary shard's filename is
+    // what the model TOML records as the canonical file for the quant.
     if is_primary_shard {
-        card.quants.insert(
+        model_toml.quants.insert(
             quant_key.clone(),
             QuantInfo {
                 file: spec.filename.clone(),
@@ -364,7 +364,7 @@ pub(crate) async fn _setup_model_after_pull_with_config(
             // the ModelConfig entry so the model appears in the UI and can
             // be launched immediately.
             // Fetch pipeline_tag from HF to infer modalities (best-effort).
-            let modalities = match crate::models::pull::fetch_model_pipeline_tag(repo_id).await {
+            let modalities = match crate::models::pull::lookup_model_pipeline_tag(repo_id).await {
                 Ok(pipeline_tag) => {
                     crate::models::pull::infer_modalities_from_pipeline(pipeline_tag.as_deref())
                 }
@@ -444,26 +444,26 @@ pub(crate) async fn _setup_model_after_pull_with_config(
                 entry.hf_num_layers = meta.block_count.map(|v| v as u32);
             }
 
-            // Save card (best-effort — pull is already marked Completed)
+            // Save model TOML (best-effort — pull is already marked Completed)
             let _ = std::fs::create_dir_all(configs_dir);
-            let _ = card.save(&card_path);
+            let _ = model_toml.save(&card_path);
 
             return Some(model_key);
         } else {
-            // Non-primary shard of a sharded quant: save the card (for
-            // sampling presets / community card data) but do NOT create a
+            // Non-primary shard of a sharded quant: save the model TOML (for
+            // sampling presets / community TOML data) but do NOT create a
             // ModelConfig entry. If the primary shard later fails or is
             // deleted, an enabled entry with no backing quant would persist
             // in the UI — appearing loadable but actually broken.
             let _ = std::fs::create_dir_all(configs_dir);
-            let _ = card.save(&card_path);
+            let _ = model_toml.save(&card_path);
             return None;
         }
     }
 
-    // For mmproj / MTP, still save the card.
+    // For mmproj / MTP, still save the model TOML.
     let _ = std::fs::create_dir_all(configs_dir);
-    let _ = card.save(&card_path);
+    let _ = model_toml.save(&card_path);
 
     let key = match existing_key {
         Some(k) => k,
@@ -553,9 +553,9 @@ pub(crate) async fn _setup_model_after_pull_with_config(
     Some(key)
 }
 
-/// Post-pull: auto-create model card and config entries.
+/// Post-pull: auto-create model TOML and config entries.
 ///
-/// Called after a quant pull completes. Updates the model card, saves config to
+/// Called after a quant pull completes. Updates the model TOML, saves config to
 /// disk, and — critically — also inserts the new model entry into the live
 /// `ProxyState.config` so it appears immediately in the models list without a restart.
 ///
@@ -565,7 +565,7 @@ pub(crate) async fn _setup_model_after_pull_with_config(
 pub(crate) async fn setup_model_after_pull(
     state: Arc<ProxyState>,
     repo_id: &str,
-    spec: &QuantDownloadSpec,
+    spec: &QuantPullSpec,
     dest_dir: &std::path::Path,
     gguf_metadata: Option<GgufMetadata>,
     is_primary_shard: bool,

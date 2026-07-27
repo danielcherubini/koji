@@ -28,7 +28,7 @@ async fn test_setup_model_creates_card() {
     // Save it so Config::load_from can find it
     config.to_db(&config_dir.join("tama.db")).unwrap();
 
-    let spec = super::types::QuantDownloadSpec {
+    let spec = super::types::QuantPullSpec {
         filename: filename.to_string(),
         quant: Some("Q4_K_M".to_string()),
         context_length: Some(8192),
@@ -55,15 +55,16 @@ async fn test_setup_model_creates_card() {
         card_path.display()
     );
 
-    // Load and inspect the card
-    let card = crate::models::card::ModelCard::load(&card_path).expect("Card should be loadable");
+    // Load and inspect the model TOML
+    let model_toml =
+        crate::models::card::ModelToml::load(&card_path).expect("TOML should be loadable");
     assert!(
-        card.quants.contains_key("Q4_K_M"),
-        "Expected Q4_K_M quant in card, got: {:?}",
-        card.quants.keys().collect::<Vec<_>>()
+        model_toml.quants.contains_key("Q4_K_M"),
+        "Expected Q4_K_M quant in model TOML, got: {:?}",
+        model_toml.quants.keys().collect::<Vec<_>>()
     );
-    assert_eq!(card.quants["Q4_K_M"].file, filename);
-    assert_eq!(card.quants["Q4_K_M"].context_length, Some(8192));
+    assert_eq!(model_toml.quants["Q4_K_M"].file, filename);
+    assert_eq!(model_toml.quants["Q4_K_M"].context_length, Some(8192));
 
     // Assert model config entry was added. Key is now derived from the
     // bare repo slug (no per-quant suffix), so all quants of the same
@@ -100,7 +101,7 @@ async fn test_mmproj_pull_auto_enables_vision_on_parent() {
     config.to_db(&config_dir.join("tama.db")).unwrap();
 
     // Pull 1: parent quant.
-    let parent_spec = super::types::QuantDownloadSpec {
+    let parent_spec = super::types::QuantPullSpec {
         filename: "TestVision-Q4_K_M.gguf".to_string(),
         quant: Some("Q4_K_M".to_string()),
         context_length: None,
@@ -122,7 +123,7 @@ async fn test_mmproj_pull_auto_enables_vision_on_parent() {
     assert!(models[&key].mmproj.is_none(), "mmproj should start unset");
 
     // Pull 2: mmproj sibling.
-    let mmproj_spec = super::types::QuantDownloadSpec {
+    let mmproj_spec = super::types::QuantPullSpec {
         filename: "mmproj-TestVision-f16.gguf".to_string(),
         quant: None,
         context_length: None,
@@ -176,7 +177,7 @@ async fn test_mmproj_pull_before_parent_creates_stub_then_promotes() {
     config.to_db(&config_dir.join("tama.db")).unwrap();
 
     // Pull 1: mmproj first, no parent exists yet.
-    let mmproj_spec = super::types::QuantDownloadSpec {
+    let mmproj_spec = super::types::QuantPullSpec {
         filename: "mmproj-TestVisionEarly-f16.gguf".to_string(),
         quant: None,
         context_length: None,
@@ -204,7 +205,7 @@ async fn test_mmproj_pull_before_parent_creates_stub_then_promotes() {
     );
 
     // Pull 2: main quant arrives later, must promote the stub.
-    let parent_spec = super::types::QuantDownloadSpec {
+    let parent_spec = super::types::QuantPullSpec {
         filename: "TestVisionEarly-Q4_K_M.gguf".to_string(),
         quant: Some("Q4_K_M".to_string()),
         context_length: Some(4096),
@@ -265,7 +266,7 @@ async fn test_non_primary_shard_does_not_create_model_config() {
     let filename = "Qwen3-8B-UD-Q4_K_XL-00002-of-00003.gguf";
     std::fs::write(dest_dir.join(filename), b"dummy shard content").unwrap();
 
-    let spec = super::types::QuantDownloadSpec {
+    let spec = super::types::QuantPullSpec {
         filename: filename.to_string(),
         quant: Some("Q4_K_XL".to_string()),
         context_length: Some(8192),

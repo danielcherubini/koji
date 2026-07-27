@@ -21,7 +21,7 @@ use crate::process::{
 /// → load model → update last_accessed.
 ///
 /// Callers provide an `on_load_error` closure to handle the case where loading
-/// fails (e.g., returning an error response or falling back to another server).
+/// fails (e.g., returning an error response or falling back to another backend).
 /// The closure receives the resolved model name and the error, and returns the
 /// fallback backend name (or an error if no fallback is possible).
 pub async fn ensure_model_loaded(
@@ -35,13 +35,13 @@ pub async fn ensure_model_loaded(
     let backend_name = match state.get_available_backend_for_model(&resolved_model).await {
         Some(name) => name,
         None => {
-            let model_card = state.get_model_card(&resolved_model).await;
+            let model_toml = state.get_model_toml(&resolved_model).await;
             let target_gpu = state
-                .resolve_model_gpu_device(&resolved_model, model_card.as_ref())
+                .resolve_model_gpu_device(&resolved_model, model_toml.as_ref())
                 .await;
             let _ = state.evict_lru_if_needed(target_gpu).await;
             match state
-                .load_model(&resolved_model, model_card.as_ref(), &())
+                .load_model(&resolved_model, model_toml.as_ref(), &())
                 .await
             {
                 Ok(s) => s,
@@ -64,7 +64,7 @@ impl ProxyState {
     pub async fn load_model<H: HealthChecker>(
         &self,
         model_name: &str,
-        model_card: Option<&crate::models::card::ModelCard>,
+        model_toml: Option<&crate::models::ModelToml>,
         _health_checker: &H,
     ) -> Result<String> {
         debug!("Loading model: {}", model_name);
@@ -73,14 +73,14 @@ impl ProxyState {
 
         // Resolve the backend name for this model
         let model_configs = self.model_configs.read().await;
-        let servers = config.resolve_backends_for_model(&model_configs, model_name);
-        let backend_name = servers
+        let backends = config.resolve_backends_for_model(&model_configs, model_name);
+        let backend_name = backends
             .first()
             .map(|(name, _, _)| name.clone())
             .ok_or_else(|| anyhow::anyhow!("Failed to resolve backend for model {}", model_name))?;
 
         // Get backend and backend config from config
-        let (server_config, backend_config) =
+        let (model_config, backend_config) =
             config.resolve_backend(&model_configs, &backend_name)?;
 
         // Atomically check if already loaded and reserve if not (single write lock)
@@ -89,7 +89,7 @@ impl ProxyState {
             if let Some(state) = models.get(&backend_name) {
                 if state.is_ready() || matches!(state, BackendState::Starting { .. }) {
                     debug!(
-                        "Server '{}' already loaded/starting for model '{}'",
+                        "Backend '{}' already loaded/starting for model '{}'",
                         backend_name, model_name
                     );
                     return Ok(backend_name);
@@ -101,7 +101,7 @@ impl ProxyState {
                 backend_name.clone(),
                 BackendState::Starting {
                     model_name: model_name.to_string(),
-                    backend: server_config.backend.clone(),
+                    backend: model_config.backend.clone(),
                     backend_url: String::new(),
                     backend_pid: 0,
                     last_accessed: Instant::now(),
@@ -124,8 +124,8 @@ impl ProxyState {
 
         // Resolve the backend binary path: DB takes priority, config.path is fallback.
         let backend_path = config.resolve_backend_path(
-            &server_config.backend,
-            server_config.gpu_variant.as_ref(),
+            &model_config.backend,
+            model_config.gpu_variant.as_ref(),
             &manager,
         )?;
 
@@ -137,38 +137,37 @@ impl ProxyState {
         let port = listener.local_addr()?.port();
         drop(listener); // Free the port for the backend to use
 
-        // Resolve effective gpu_device: model config > model card default
+        // Resolve effective gpu_device: model config > model TOML default
         let effective_gpu_device = resolve_gpu_device(
-            server_config.gpu_device.clone(),
-            model_card.and_then(|card| card.model.default_gpu_device.clone()),
+            model_config.gpu_device.clone(),
+            model_toml.and_then(|toml| toml.model.default_gpu_device.clone()),
         );
 
         // Build a modified backend config with the resolved gpu_device.
         // This ensures build_full_args() sees the effective value.
-        let server_config = if effective_gpu_device.is_some() && server_config.gpu_device.is_none()
-        {
-            let mut modified = server_config.clone();
+        let model_config = if effective_gpu_device.is_some() && model_config.gpu_device.is_none() {
+            let mut modified = model_config.clone();
             modified.gpu_device = effective_gpu_device;
             modified
         } else {
-            server_config.clone()
+            model_config.clone()
         };
 
         // Build full args (including -m, -c, -ngl from model card) and override host/port
-        let gpu_variant = server_config
+        let gpu_variant = model_config
             .gpu_variant
             .clone()
-            .unwrap_or(crate::gpu::GpuType::CpuOnly);
+            .unwrap_or(crate::gpu::GpuVariant::CpuOnly);
         let default_args =
-            manager.get_default_args(&server_config.backend, gpu_variant.variant_folder());
+            manager.get_default_args(&model_config.backend, gpu_variant.variant_folder());
         let mut args =
-            config.build_full_args(&server_config, backend_config, None, &default_args)?;
+            config.build_full_args(&model_config, backend_config, None, &default_args)?;
 
         tracing::debug!(
-            gpu = %server_config.gpu_device.as_deref().unwrap_or("default"),
+            gpu = %model_config.gpu_device.as_deref().unwrap_or("default"),
             "Loading model '{}' with backend '{}'",
             model_name,
-            server_config.backend
+            model_config.backend
         );
 
         override_arg(&mut args, "--host", "127.0.0.1");
@@ -179,7 +178,7 @@ impl ProxyState {
 
         info!(
             "Starting backend '{}' for backend '{}' (model '{}')",
-            server_config.backend, backend_name, model_name
+            model_config.backend, backend_name, model_name
         );
 
         // Resolve logs directory for backend log file
@@ -189,8 +188,8 @@ impl ProxyState {
         crate::process::configure_backend_command(&mut child, &backend_path);
         // Inject GPU isolation env var (ROCR/CUDA/GGML_VK_VISIBLE_DEVICES)
         // keyed off the backend's gpu_variant. Uses positional indexes.
-        if !matches!(gpu_variant, crate::gpu::GpuType::CpuOnly) {
-            if let Some(ref device) = server_config.gpu_device {
+        if !matches!(gpu_variant, crate::gpu::GpuVariant::CpuOnly) {
+            if let Some(ref device) = model_config.gpu_device {
                 match crate::gpu::env::resolve_gpu_env(device, &gpu_variant) {
                     Some((name, value)) => {
                         info!(
@@ -217,7 +216,7 @@ impl ProxyState {
 
         // Apply default env vars from backend config (e.g. RADV_PERFTEST=nogttspill)
         let default_env =
-            manager.get_default_env(&server_config.backend, gpu_variant.variant_folder());
+            manager.get_default_env(&model_config.backend, gpu_variant.variant_folder());
         for env_var in &default_env {
             if let Some((key, value)) = env_var.split_once('=') {
                 info!("Applying env var: {}={}", key, value);
@@ -242,16 +241,16 @@ impl ProxyState {
         let mut child = child.spawn().with_context(|| {
             format!(
                 "Failed to execute backend process '{}'",
-                server_config.backend
+                model_config.backend
             )
         })?;
 
         let pid = child.id().ok_or_else(|| {
-            anyhow::anyhow!("Failed to get PID for backend '{}'", server_config.backend)
+            anyhow::anyhow!("Failed to get PID for backend '{}'", model_config.backend)
         })?;
         info!(
             "Backend '{}' started for backend '{}' (pid: {:?})",
-            server_config.backend, backend_name, pid
+            model_config.backend, backend_name, pid
         );
 
         // Update the PID in the Starting state so cleanup paths can find it
@@ -265,12 +264,12 @@ impl ProxyState {
 
         // Get the backend log stream for SSE broadcasting — use same key as
         // the dashboard constructs: {backend}_{backend_name}.
-        let log_key = format!("{}_{}", server_config.backend, backend_name);
+        let log_key = format!("{}_{}", model_config.backend, backend_name);
         let log_stream = self.backend_logs.get_or_create(&log_key).await;
 
         // Open log file for this backend instance — include backend name so
         // multiple models on the same backend get separate log files.
-        let log_name = format!("{}_{}", server_config.backend, backend_name);
+        let log_name = format!("{}_{}", model_config.backend, backend_name);
         let log_file = logs_dir
             .as_ref()
             .and_then(|dir| logging::open_log(dir, &log_name).ok());
@@ -328,13 +327,13 @@ impl ProxyState {
             match child.wait().await {
                 Ok(status) => {
                     debug!(
-                        "Backend process {} for server '{}' exited with {}",
+                        "Backend process {} for backend '{}' exited with {}",
                         pid, reaper_backend, status
                     );
                 }
                 Err(e) => {
                     warn!(
-                        "Failed to wait on backend process {} for server '{}': {}",
+                        "Failed to wait on backend process {} for backend '{}': {}",
                         pid, reaper_backend, e
                     );
                 }
@@ -391,7 +390,7 @@ impl ProxyState {
             });
             return Err(anyhow::anyhow!(
                 "Backend '{}' failed to start for backend '{}' (timeout after {}s)",
-                server_config.backend,
+                model_config.backend,
                 backend_name,
                 timeout.as_secs()
             ));
@@ -414,7 +413,7 @@ impl ProxyState {
                     let ft = *failure_timestamp;
                     *state = BackendState::Ready {
                         model_name: model_name.to_string(),
-                        backend: server_config.backend.clone(),
+                        backend: model_config.backend.clone(),
                         backend_pid: pid,
                         backend_url: backend_url.clone(),
                         load_time: std::time::SystemTime::now(),
@@ -432,14 +431,14 @@ impl ProxyState {
             let _ = mgr.insert_active(
                 &backend_name,
                 model_name,
-                &server_config.backend,
+                &model_config.backend,
                 pid as i64,
                 port as i64,
                 &backend_url,
             );
         }
 
-        info!("Server '{}' loaded successfully", backend_name);
+        info!("Backend '{}' loaded successfully", backend_name);
         self.metrics
             .models_loaded
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -454,16 +453,16 @@ impl ProxyState {
     pub async fn resolve_model_gpu_device(
         &self,
         model_name: &str,
-        model_card: Option<&crate::models::card::ModelCard>,
+        model_toml: Option<&crate::models::ModelToml>,
     ) -> Option<String> {
         let config = self.config.read().await.clone();
         let model_configs = self.model_configs.read().await;
-        let servers = config.resolve_backends_for_model(&model_configs, model_name);
-        let backend_name = servers.first().map(|(name, _, _)| name.clone())?;
-        let (server_config, _) = config.resolve_backend(&model_configs, &backend_name).ok()?;
+        let backends = config.resolve_backends_for_model(&model_configs, model_name);
+        let backend_name = backends.first().map(|(name, _, _)| name.clone())?;
+        let (model_config, _) = config.resolve_backend(&model_configs, &backend_name).ok()?;
         resolve_gpu_device(
-            server_config.gpu_device.clone(),
-            model_card.and_then(|card| card.model.default_gpu_device.clone()),
+            model_config.gpu_device.clone(),
+            model_toml.and_then(|toml| toml.model.default_gpu_device.clone()),
         )
     }
 
@@ -490,11 +489,11 @@ impl ProxyState {
             return Ok(None);
         }
 
-        // Collect all Ready server names AND non-inference server names while
+        // Collect all Ready backend names AND non-inference backend names while
         // holding the write lock. Non-inference backends (TTS, compaction) are
         // NOT in model_configs (DB), so we must check the runtime `models` map.
         let models = self.models.write().await;
-        let ready_servers: Vec<String> = models
+        let ready_backends: Vec<String> = models
             .iter()
             .filter(|(_, s)| matches!(s, BackendState::Ready { .. }))
             .map(|(name, _)| name.clone())
@@ -515,7 +514,7 @@ impl ProxyState {
         // Only count LLM (non-TTS, non-compaction) models on the same GPU
         // against the limit.
         let model_configs = self.model_configs.read().await;
-        let llm_count = ready_servers
+        let llm_count = ready_backends
             .iter()
             .filter(|backend_name| {
                 // Skip non-inference backends (TTS, compaction)
@@ -541,7 +540,7 @@ impl ProxyState {
         // Find LRU Ready model among LLM (non-TTS, non-compaction) models
         // on the same GPU only.
         let mut models = self.models.write().await;
-        let lru_name = ready_servers
+        let lru_name = ready_backends
             .iter()
             .filter(|backend_name| {
                 // Skip non-inference backends (TTS, compaction)
@@ -609,14 +608,14 @@ impl ProxyState {
         let state = self
             .get_model_state(backend_name)
             .await
-            .with_context(|| format!("Server '{}' not loaded", backend_name))?;
+            .with_context(|| format!("Backend '{}' not loaded", backend_name))?;
 
         if !matches!(
             state,
             BackendState::Ready { .. } | BackendState::Unloading { .. }
         ) {
             return Err(anyhow::anyhow!(
-                "Server '{}' is not ready (state: {:?})",
+                "Backend '{}' is not ready (state: {:?})",
                 backend_name,
                 state
             ));
