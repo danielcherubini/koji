@@ -1,5 +1,5 @@
 use super::*;
-use crate::api::error::{error_body, error_response};
+use crate::api::error::error_response;
 use crate::api::helpers::shared_repository;
 use crate::web_types::WebState;
 use tama_core::proxy::tama_handlers::OkResponse;
@@ -93,96 +93,7 @@ pub async fn benchmark_events(
         }
     };
 
-    let mut rx = job.log_tx.subscribe();
-
-    // Snapshot + subscribe: take everything under overlapping locks to avoid races.
-    let (head, tail, dropped, status, _finished_at, error, stored_result) = {
-        let (state, log_head, log_tail, bench_results) = tokio::join!(
-            job.state.read(),
-            job.log_head.read(),
-            job.log_tail.read(),
-            job.benchmark_results.read()
-        );
-        (
-            log_head.iter().cloned().collect::<Vec<_>>(),
-            log_tail.iter().cloned().collect::<Vec<_>>(),
-            job.log_dropped.load(std::sync::atomic::Ordering::Relaxed),
-            state.status,
-            state.finished_at,
-            state.error.clone(),
-            bench_results.clone(),
-        )
-    };
-
-    let stream = async_stream::stream! {
-        // Replay head
-        for line in head {
-            yield Ok(Event::default().event("log").json_data(json!({ "line": line}))?);
-        }
-
-        // Emit skipped marker if dropped > 0
-        if dropped > 0 && !tail.is_empty() {
-            yield Ok(Event::default().event("log")
-                .json_data(json!({ "line": format!("[... {} lines skipped ...]", dropped)}))?);
-        }
-
-        // Replay tail
-        for line in tail {
-            yield Ok(Event::default().event("log").json_data(json!({ "line": line}))?);
-        }
-
-        // Replay stored benchmark results (for late subscribers)
-        if let Some(ref results_json) = stored_result {
-            yield Ok(Event::default().event("result")
-                .json_data(json!({ "results": results_json}))?);
-        }
-
-        // Emit final status if terminal
-        if status != JobStatus::Running {
-            yield Ok(Event::default().event("status")
-                .json_data(json!({ "status": status}))?);
-            if let Some(err) = error {
-                yield Ok(Event::default().event("error")
-                    .json_data(error_body(err, None))?);
-            }
-            return; // Close after terminal job
-        }
-
-        // Live stream
-        loop {
-            tokio::select! {
-                event = rx.recv() => {
-                    match event {
-                        Ok(JobEvent::Log(line)) => {
-                            yield Ok(Event::default().event("log")
-                                .json_data(json!({ "line": line}))?);
-                        }
-                        Ok(JobEvent::Status(s)) => {
-                            yield Ok(Event::default().event("status")
-                                .json_data(json!({ "status": s}))?);
-                            if s != JobStatus::Running {
-                                return; // Close on terminal status
-                            }
-                        }
-                        Ok(JobEvent::Result(results_json)) => {
-                            yield Ok(Event::default().event("result")
-                                .json_data(json!({ "results": results_json}))?);
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                            yield Ok(Event::default().event("log")
-                                .json_data(json!({ "line": format!("[{} lines dropped]", n)}))?);
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                            return;
-                        }
-                    }
-                }
-            }
-        }
-    };
-
-    // No keep-alive: the stream ends naturally when the job completes,
-    // and we close the EventSource on the client side to prevent reconnection loops.
+    let stream = crate::api::sse::job_event_stream(job);
     Ok(Sse::new(stream))
 }
 

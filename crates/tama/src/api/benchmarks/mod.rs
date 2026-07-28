@@ -11,23 +11,21 @@ mod spec;
 // ── Shared imports (re-exported for sub-modules) ─────────────────────
 
 use anyhow::Result;
+use axum::extract::{Extension, Path, State};
 use axum::response::sse::Event;
 use axum::{
-    extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Sse},
     Json,
 };
 use futures_util::Stream;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use std::sync::Arc;
 
 use crate::api::error::error_response;
 use crate::api::helpers::shared_repository;
 use crate::gpu::query_vram;
 use crate::web_types::{JobEvent, JobKind, JobManager, JobStatus, WebState};
-use axum::extract::Extension;
 use tama_core::backends::ProgressSink;
 use tama_core::bench::llama_cli_spec::{SpecBenchConfig, SpecType};
 use tama_core::proxy::ProxyState;
