@@ -87,10 +87,8 @@ pub fn job_event_stream(job: Arc<Job>) -> impl Stream<Item = Result<Event, axum:
 
         // Replay any stored job result (for benchmark jobs — late subscribers).
         if let Some(results_str) = &stored_result {
-            if let Ok(results_value) = serde_json::from_str::<serde_json::Value>(results_str) {
-                yield Ok(Event::default().event("result")
-                    .json_data(json!({ "results": results_value}))?);
-            }
+            yield Ok(Event::default().event("result")
+                .json_data(json!({ "results": results_str}))?);
         }
 
         // Emit final status if terminal
@@ -121,10 +119,8 @@ pub fn job_event_stream(job: Arc<Job>) -> impl Stream<Item = Result<Event, axum:
                             }
                         }
                         Ok(JobEvent::Result(results_str)) => {
-                            if let Ok(results_value) = serde_json::from_str::<serde_json::Value>(&results_str) {
-                                yield Ok(Event::default().event("result")
-                                    .json_data(json!({ "results": results_value}))?);
-                            }
+                            yield Ok(Event::default().event("result")
+                                .json_data(json!({ "results": &results_str}))?);
                         }
                         Err(broadcast::error::RecvError::Lagged(n)) => {
                             yield Ok(Event::default().event("log")
