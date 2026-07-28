@@ -351,7 +351,7 @@ pub fn spec() -> serde_json::Value {
                 "Adds a new `[models.<id>]` entry to the database.",
                 &["models"],
                 Some(("ModelBody", "application/json")),
-                Some("OkResponse"),
+                Some("ModelMutationResponse"),
             ),
         ),
         (
@@ -375,7 +375,7 @@ pub fn spec() -> serde_json::Value {
                 &["models"],
                 &[("id", "path")],
                 Some(("ModelBody", "application/json")),
-                Some("OkResponse"),
+                Some("ModelMutationResponse"),
             ),
         ),
         (
@@ -410,7 +410,7 @@ pub fn spec() -> serde_json::Value {
                 &["models"],
                 &[("id", "path")],
                 Some(("RenameRequest", "application/json")),
-                Some("OkResponse"),
+                Some("ModelMutationResponse"),
             ),
         ),
         (
@@ -638,7 +638,11 @@ fn schemas() -> serde_json::Value {
     // Core responses
     map.insert(
         "OkResponse".into(),
-        serde_json::json!({"type": "object", "required": ["ok"], "properties": {"ok": {"type": "boolean", "example": true}, "id": {"type": "string"}}}),
+        serde_json::json!({"type": "object", "required": ["ok"], "properties": {"ok": {"type": "boolean", "example": true}}}),
+    );
+    map.insert(
+        "ModelMutationResponse".into(),
+        serde_json::json!({"type": "object", "required": ["ok", "id"], "properties": {"ok": {"type": "boolean", "example": true}, "id": {"type": "integer", "format": "int64"}}}),
     );
     map.insert(
         "ErrorResponse".into(),
@@ -1139,6 +1143,52 @@ pub async fn serve_spec() -> impl IntoResponse {
 mod tests {
     use super::*;
     use crate::api::error::error_response;
+
+    /// OkResponse schema must match the struct shape used by handlers:
+    /// `required == ["ok"]` (id absent on plain-site responses).
+    /// ModelMutationResponse has both ok and id.
+    #[tokio::test]
+    async fn test_openapi_ok_response_schema_matches_struct() {
+        let schemas = schemas();
+
+        // OkResponse must require only "ok" — id is absent on plain-site responses.
+        let required: Vec<&str> = schemas["OkResponse"]["required"]
+            .as_array()
+            .expect("OkResponse.required should be an array")
+            .iter()
+            .map(|v| v.as_str().expect("required items should be strings"))
+            .collect();
+        assert_eq!(
+            required,
+            vec!["ok"],
+            "OkResponse.required should be [\"ok\"] — id is absent on plain-site responses"
+        );
+
+        // OkResponse must NOT have an id property — only ModelMutationResponse does.
+        assert!(
+            schemas["OkResponse"]["properties"]["id"].is_null(),
+            "OkResponse should not have an id property — only ModelMutationResponse does"
+        );
+
+        // ModelMutationResponse must require both ok and id.
+        let mutation_required: Vec<&str> = schemas["ModelMutationResponse"]["required"]
+            .as_array()
+            .expect("ModelMutationResponse.required should be an array")
+            .iter()
+            .map(|v| v.as_str().expect("required items should be strings"))
+            .collect();
+        assert_eq!(
+            mutation_required,
+            vec!["ok", "id"],
+            "ModelMutationResponse.required should be [\"ok\", \"id\"]"
+        );
+
+        // ModelMutationResponse id must also be integer/int64.
+        assert_eq!(
+            schemas["ModelMutationResponse"]["properties"]["id"]["type"], "integer",
+            "ModelMutationResponse.id.type should be \"integer\", not \"string\""
+        );
+    }
 
     /// The `ErrorResponse` schema must describe the nested error shape
     /// `{"error":{"message":"...","type":"..."}}` — not the flat

@@ -7,6 +7,7 @@ use axum::{
     Json,
 };
 use std::sync::Arc;
+use tama_core::proxy::tama_handlers::ModelMutationResponse;
 use tama_core::proxy::ProxyState;
 
 use super::{
@@ -53,7 +54,10 @@ pub async fn update_model(
                     error_body(e.to_string(), None),
                 )
             })?;
-        Ok(serde_json::json!({ "ok": true, "id": new_model_id }))
+        Ok(ModelMutationResponse {
+            ok: true,
+            id: new_model_id,
+        })
     })
     .await
 }
@@ -94,7 +98,10 @@ pub async fn patch_model(
                     error_body(e.to_string(), None),
                 )
             })?;
-        Ok(serde_json::json!({ "ok": true, "id": new_model_id }))
+        Ok(ModelMutationResponse {
+            ok: true,
+            id: new_model_id,
+        })
     })
     .await
 }

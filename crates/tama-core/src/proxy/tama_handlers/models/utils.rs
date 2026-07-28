@@ -1,3 +1,6 @@
+use serde::{Deserialize, Serialize};
+
+use crate::config::ModelModalities;
 use crate::models::ConfigKey;
 use crate::proxy::ProxyState;
 
@@ -60,13 +63,45 @@ pub(super) async fn resolve_config_key(state: &ProxyState, raw: &str) -> String 
     raw.to_string()
 }
 
-/// Build a model JSON entry from a config entry.
+/// Context/output limits sub-object of an opencode model entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelLimit {
+    pub context: Option<u32>,
+    pub output: Option<u32>,
+}
+
+/// One model entry in the `/v1/opencode/models` discovery response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelEntry {
+    pub id: Option<String>,
+    pub name: String,
+    pub model: Option<String>,
+    pub backend: String,
+    pub context_length: Option<u32>,
+    pub limit: ModelLimit,
+    pub quant: Option<String>,
+    pub gpu_layers: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modalities: Option<ModelModalities>,
+    pub tool_call: bool,
+    pub reasoning: bool,
+    pub attachment: bool,
+    pub temperature: bool,
+}
+
+/// Response wrapper for `/v1/opencode/models`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpencodeModelsResponse {
+    pub models: Vec<ModelEntry>,
+}
+
+/// Build a model entry from a config entry.
 pub(super) async fn build_model_entry(
     state: &ProxyState,
     id: &str,
     cfg: &crate::config::ModelConfig,
     capabilities: Option<&ModelCapabilities>,
-) -> Option<serde_json::Value> {
+) -> Option<ModelEntry> {
     // Use model field first, fall back to api_name.
     let hf_repo = cfg.model.as_deref().or(cfg.api_name.as_deref())?;
 
@@ -82,12 +117,7 @@ pub(super) async fn build_model_entry(
                 .or(m.model.default_context_length)
         })
     };
-    let modalities = cfg.modalities.as_ref().map(|m| {
-        serde_json::json!({
-            "input": m.input,
-            "output": m.output
-        })
-    });
+    let modalities = cfg.modalities.clone();
 
     // Output limit: 1/8 of context window, floored at 16K and capped at 32K.
     let output_limit = context_length.map(|ctx| (ctx / 8).clamp(16384, 32768));
@@ -117,24 +147,6 @@ pub(super) async fn build_model_entry(
 
     let pretty_name = format!("{}: {}", capitalize_first(org), model_name_processed);
 
-    let mut model_json = serde_json::json!({
-        "id": api_id,
-        "name": pretty_name,
-        "model": cfg.model,
-        "backend": cfg.backend,
-        "context_length": context_length,
-        "limit": {
-            "context": context_length,
-            "output": output_limit,
-        },
-        "quant": cfg.quant,
-        "gpu_layers": cfg.gpu_layers,
-    });
-
-    if let Some(m) = modalities {
-        model_json["modalities"] = m;
-    }
-
     // Derive attachment from modalities
     let attachment = cfg
         .modalities
@@ -146,10 +158,22 @@ pub(super) async fn build_model_entry(
         .map(|c| (c.tool_call, c.reasoning))
         .unwrap_or((true, false));
 
-    model_json["tool_call"] = serde_json::json!(tool_call);
-    model_json["reasoning"] = serde_json::json!(reasoning);
-    model_json["attachment"] = serde_json::json!(attachment);
-    model_json["temperature"] = serde_json::json!(true);
-
-    Some(model_json)
+    Some(ModelEntry {
+        id: api_id,
+        name: pretty_name,
+        model: cfg.model.clone(),
+        backend: cfg.backend.clone(),
+        context_length,
+        limit: ModelLimit {
+            context: context_length,
+            output: output_limit,
+        },
+        quant: cfg.quant.clone(),
+        gpu_layers: cfg.gpu_layers.map(|n| n.to_string()),
+        modalities,
+        tool_call,
+        reasoning,
+        attachment,
+        temperature: true,
+    })
 }

@@ -7,6 +7,7 @@ use axum::{
     Json,
 };
 use std::sync::Arc;
+use tama_core::proxy::tama_handlers::ModelMutationResponse;
 use tama_core::proxy::ProxyState;
 
 use tama_core::models::is_valid_repo_id;
@@ -129,7 +130,10 @@ pub async fn create_model(
                 )
             })?;
 
-        Ok(serde_json::json!({ "ok": true, "id": model_id }))
+        Ok(ModelMutationResponse {
+            ok: true,
+            id: model_id,
+        })
     })
     .await
 }

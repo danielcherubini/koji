@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use crate::api::error::{error_body, error_response, error_response_simple};
 use crate::types::config::StructuredConfigBody;
+use tama_core::proxy::tama_handlers::OkResponse;
 use tama_core::proxy::ProxyState;
 
 pub mod aliases;
@@ -109,7 +110,7 @@ pub async fn save_structured_config(
         Ok(Ok(_)) => {
             // Sync proxy config for hot-reload
             sync_proxy_config(&state, new_config).await;
-            Json(serde_json::json!({ "ok": true })).into_response()
+            Json(OkResponse::OK).into_response()
         }
         Ok(Err(e)) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
         Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
@@ -396,7 +397,7 @@ pub async fn patch_structured_config(
         Ok(Ok(_)) => {
             // Sync proxy config for hot-reload
             sync_proxy_config(&state, merged_core).await;
-            Json(serde_json::json!({ "ok": true })).into_response()
+            Json(OkResponse::OK).into_response()
         }
         Ok(Err(e)) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
         Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
@@ -412,10 +413,13 @@ mod tests {
         CompactionConfig, Config, General, LangfuseConfig, Lifecycle, OAuth2Config, ProxyConfig,
         SamplingParams,
     };
+    use axum::body::Body;
+    use axum::extract::Request;
     use tama_core::config::{
         CompactionDevice as CoreCompactionDevice, LogLevel as CoreLogLevel,
         RestartPolicy as CoreRestartPolicy,
     };
+    use tower::ServiceExt;
 
     fn sample_config() -> Config {
         Config {
@@ -630,5 +634,126 @@ mod tests {
         let new_entry = merged.sampling_templates.get("new_key").unwrap();
         assert_eq!(new_entry.temperature, Some(1.0));
         assert_eq!(new_entry.top_k, Some(50));
+    }
+
+    // ── Drift-guard: config save response round-trip ──────────────────────────
+
+    /// POST /tama/v1/config/structured must return a body that deserializes into
+    /// OkResponse with ok:true. The round-trip is lossless — no fields are
+    /// silently dropped or invented.
+    #[tokio::test]
+    async fn test_save_structured_config_response_deserializes_into_ok_response() {
+        let tmp_dir = tempfile::tempdir().expect("tempdir");
+        let db_path = tmp_dir.path().join("tama.db");
+
+        // Initialize the database so save_structured_config can write.
+        {
+            let config = tama_core::config::Config::default();
+            config.to_db(&db_path).unwrap();
+        }
+
+        let config = tama_core::config::Config::default();
+        let state = Arc::new(tama_core::proxy::ProxyState::new(
+            config,
+            Some(tmp_dir.path().to_path_buf()),
+        ));
+
+        let web_state = Arc::new(crate::web_types::WebState {
+            jobs: Some(Arc::new(crate::web_types::JobManager::new())),
+            capabilities: None,
+            update_checker: Arc::new(tama_core::updates::UpdateChecker::default()),
+            binary_version: "test".to_string(),
+            update_tx: Arc::new(tokio::sync::Mutex::new(None)),
+            upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            repository: None,
+        });
+
+        let router = crate::router::build_web_routes(web_state.clone())
+            .with_state(state)
+            .layer(axum::extract::Extension(web_state.as_ref().clone()));
+
+        // Build a minimal valid StructuredConfigBody from the sample.
+        let body = serde_json::json!({
+            "general": {
+                "log_level": "info",
+                "models_dir": "/models",
+                "logs_dir": "/logs",
+                "update_check_interval": 12
+            },
+            "backends": {},
+            "lifecycle": {
+                "restart_policy": "always",
+                "max_restarts": 10,
+                "restart_delay_ms": 3000,
+                "health_check_interval_ms": 5000,
+                "health_check_timeout_ms": 30000,
+                "health_check_retries": 3
+            },
+            "sampling_templates": {},
+            "proxy": {
+                "host": "0.0.0.0",
+                "port": 18910,
+                "auto_unload": false,
+                "idle_timeout_secs": 300,
+                "startup_timeout_secs": 120,
+                "circuit_breaker_threshold": 3,
+                "circuit_breaker_cooldown_seconds": 60,
+                "metrics_retention_secs": 86400,
+                "pull_queue_poll_interval_secs": 2,
+                "max_loaded_models": 1
+            },
+            "compaction": {
+                "enabled": false
+            },
+            "langfuse": {
+                "enabled": false,
+                "public_key": "",
+                "secret_key": "",
+                "host": "",
+                "environment": "",
+                "capture_input": false,
+                "capture_output": false,
+                "capture_streaming": false,
+                "telemetry_max_bytes": 0,
+                "electricity_price_per_kwh": 0.0
+            }
+        });
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/tama/v1/config/structured")
+            .header("Content-Type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+
+        let resp = router
+            .clone()
+            .oneshot(req)
+            .await
+            .expect("request should complete");
+        let status = resp.status();
+        let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("body must be readable");
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "response body: {}",
+            String::from_utf8_lossy(&body_bytes)
+        );
+
+        // Deserialize into OkResponse.
+        let parsed: OkResponse = serde_json::from_slice(&body_bytes)
+            .expect("config save response must deserialize into OkResponse");
+        assert!(parsed.ok, "ok must be true");
+
+        // Lossless round-trip.
+        let raw_value: serde_json::Value =
+            serde_json::from_slice(&body_bytes).expect("body must be valid JSON");
+        assert_eq!(
+            serde_json::to_value(parsed).expect("parsed must serialize"),
+            raw_value,
+            "OkResponse round-trip must be lossless — config save struct fields must match wire shape"
+        );
     }
 }

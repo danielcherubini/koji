@@ -1,6 +1,78 @@
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
+use serde::{Deserialize, Serialize};
+
 use super::types::{BackendState, ProxyState};
+
+/// Lifecycle state of a model as reported by the `/status` endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StatusModelState {
+    Ready,
+    #[serde(rename = "starting")]
+    Loading,
+    Unloading,
+    Failed,
+    Idle,
+}
+
+/// Per-model entry in the `/status` response `models` map.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatusModelEntry {
+    pub id: Option<i64>,
+    pub display_name: Option<String>,
+    pub backend: String,
+    pub backend_path: Option<String>,
+    pub model: Option<String>,
+    pub quant: Option<String>,
+    pub context_length: Option<u32>,
+    pub enabled: bool,
+    pub api_name: Option<String>,
+    pub state: StatusModelState,
+    pub backend_pid: Option<u32>,
+    pub load_time_secs: Option<u64>,
+    pub last_accessed_secs_ago: Option<u64>,
+    pub idle_timeout_remaining_secs: Option<u64>,
+    pub consecutive_failures: Option<u32>,
+}
+
+/// VRAM usage snapshot for the `/status` endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VramStatus {
+    pub used_mib: u64,
+    pub total_mib: u64,
+}
+
+/// Atomic counter snapshot for the `/status` endpoint (distinct from the
+/// live `proxy::types::ProxyMetrics` counters).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProxyMetricsSnapshot {
+    pub total_requests: u64,
+    pub successful_requests: u64,
+    pub failed_requests: u64,
+    pub models_loaded: u64,
+    pub models_unloaded: u64,
+}
+
+/// Typed response for the `/status` endpoint.
+///
+/// `vram` and `gpu_utilization_pct` use `skip_serializing_if` so that `None`
+/// values are omitted from the wire JSON — matching the behaviour clients
+/// received before the endpoint was fully typed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatusResponse {
+    pub cpu_usage_pct: f32,
+    pub ram_used_mib: u64,
+    pub ram_total_mib: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_utilization_pct: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vram: Option<VramStatus>,
+    pub auto_unload: bool,
+    pub idle_timeout_secs: u64,
+    pub metrics: ProxyMetricsSnapshot,
+    pub models: std::collections::BTreeMap<String, StatusModelEntry>,
+}
 
 impl ProxyState {
     /// Build the per-model status snapshot embedded in `MetricSample.models`.
@@ -92,10 +164,11 @@ impl ProxyState {
 
     /// Build a comprehensive status response for the proxy.
     ///
-    /// Returns JSON matching the spec: models as an object keyed by name,
-    /// fields flat per model (not nested in a `runtime` sub-object),
-    /// `idle_timeout_secs` at top level.
-    pub async fn build_status_response(&self) -> serde_json::Value {
+    /// Returns a typed `StatusResponse` suitable for JSON serialization.
+    /// Models are an object keyed by name, fields are flat per model
+    /// (not nested in a `runtime` sub-object), and `idle_timeout_secs`
+    /// is at the top level.
+    pub async fn build_status_response(&self) -> StatusResponse {
         use std::sync::atomic::Ordering::Relaxed;
 
         let sys_metrics = self.system_metrics.read().await.clone();
@@ -105,7 +178,7 @@ impl ProxyState {
         let auto_unload = config.proxy.auto_unload;
         let idle_timeout_secs = config.proxy.idle_timeout_secs;
         let models = self.models.read().await;
-        let mut models_obj = serde_json::Map::new();
+        let mut models_obj = std::collections::BTreeMap::new();
 
         for (model_name, model_config) in model_configs.iter() {
             let backend_path = config
@@ -115,7 +188,7 @@ impl ProxyState {
 
             let model_state = models.get(model_name);
 
-            let model_json = match model_state {
+            let entry = match model_state {
                 Some(BackendState::Ready {
                     backend_pid,
                     load_time,
@@ -125,150 +198,141 @@ impl ProxyState {
                 }) => {
                     let now = Instant::now();
                     let last_accessed_secs_ago = now.duration_since(*last_accessed).as_secs();
-                    let elapsed = now.duration_since(*last_accessed);
-                    let idle_timeout_remaining_secs: serde_json::Value = if auto_unload {
+                    let idle_timeout_remaining_secs: Option<u64> = if auto_unload {
                         let timeout = Duration::from_secs(idle_timeout_secs);
+                        let elapsed = now.duration_since(*last_accessed);
                         if elapsed < timeout {
-                            serde_json::json!((timeout - elapsed).as_secs())
+                            Some((timeout - elapsed).as_secs())
                         } else {
-                            serde_json::json!(0)
+                            Some(0)
                         }
                     } else {
                         // Auto-unload disabled — no countdown
-                        serde_json::Value::Null
+                        None
                     };
                     let load_time_secs = load_time
                         .duration_since(UNIX_EPOCH)
                         .map(|d| d.as_secs())
                         .unwrap_or(0);
 
-                    serde_json::json!({
-                        "id": model_config.db_id,
-                        "display_name": model_config.display_name,
-                        "backend": model_config.backend,
-                        "backend_path": backend_path,
-                        "model": model_config.model,
-                        "quant": model_config.quant,
-                        "context_length": model_config.context_length,
-                        "enabled": model_config.enabled,
-                        "api_name": model_config.api_name,
-                        "state": "ready",
-                        "backend_pid": *backend_pid,
-                        "load_time_secs": load_time_secs,
-                        "last_accessed_secs_ago": last_accessed_secs_ago,
-                        "idle_timeout_remaining_secs": idle_timeout_remaining_secs,
-                        "consecutive_failures": consecutive_failures.load(Relaxed),
-                    })
+                    StatusModelEntry {
+                        id: model_config.db_id,
+                        display_name: model_config.display_name.clone(),
+                        backend: model_config.backend.clone(),
+                        backend_path: backend_path.clone(),
+                        model: model_config.model.clone(),
+                        quant: model_config.quant.clone(),
+                        context_length: model_config.context_length,
+                        enabled: model_config.enabled,
+                        api_name: model_config.api_name.clone(),
+                        state: StatusModelState::Ready,
+                        backend_pid: Some(*backend_pid),
+                        load_time_secs: Some(load_time_secs),
+                        last_accessed_secs_ago: Some(last_accessed_secs_ago),
+                        idle_timeout_remaining_secs,
+                        consecutive_failures: Some(consecutive_failures.load(Relaxed)),
+                    }
                 }
                 Some(BackendState::Starting {
                     consecutive_failures,
                     ..
-                }) => {
-                    serde_json::json!({
-                        "id": model_config.db_id,
-                        "display_name": model_config.display_name,
-                        "backend": model_config.backend,
-                        "backend_path": backend_path,
-                        "model": model_config.model,
-                        "quant": model_config.quant,
-                        "context_length": model_config.context_length,
-                        "enabled": model_config.enabled,
-                        "api_name": model_config.api_name,
-                        "state": "starting",
-                        "backend_pid": null,
-                        "load_time_secs": null,
-                        "last_accessed_secs_ago": null,
-                        "idle_timeout_remaining_secs": null,
-                        "consecutive_failures": consecutive_failures.load(Relaxed),
-                    })
-                }
-                Some(BackendState::Unloading { .. }) => {
-                    serde_json::json!({
-                        "id": model_config.db_id,
-                        "display_name": model_config.display_name,
-                        "backend": model_config.backend,
-                        "backend_path": backend_path,
-                        "model": model_config.model,
-                        "quant": model_config.quant,
-                        "context_length": model_config.context_length,
-                        "enabled": model_config.enabled,
-                        "api_name": model_config.api_name,
-                        "state": "unloading",
-                        "backend_pid": null,
-                        "load_time_secs": null,
-                        "last_accessed_secs_ago": null,
-                        "idle_timeout_remaining_secs": null,
-                        "consecutive_failures": null,
-                    })
-                }
-                Some(BackendState::Failed { .. }) => {
-                    serde_json::json!({
-                        "id": model_config.db_id,
-                        "display_name": model_config.display_name,
-                        "backend": model_config.backend,
-                        "backend_path": backend_path,
-                        "model": model_config.model,
-                        "quant": model_config.quant,
-                        "context_length": model_config.context_length,
-                        "enabled": model_config.enabled,
-                        "api_name": model_config.api_name,
-                        "state": "failed",
-                        "backend_pid": null,
-                        "load_time_secs": null,
-                        "last_accessed_secs_ago": null,
-                        "idle_timeout_remaining_secs": null,
-                        "consecutive_failures": null,
-                    })
-                }
-                _ => {
-                    // Not loaded or failed
-                    serde_json::json!({
-                        "id": model_config.db_id,
-                        "display_name": model_config.display_name,
-                        "backend": model_config.backend,
-                        "backend_path": backend_path,
-                        "model": model_config.model,
-                        "quant": model_config.quant,
-                        "context_length": model_config.context_length,
-                        "enabled": model_config.enabled,
-                        "api_name": model_config.api_name,
-                        "state": "idle",
-                        "backend_pid": null,
-                        "load_time_secs": null,
-                        "last_accessed_secs_ago": null,
-                        "idle_timeout_remaining_secs": null,
-                        "consecutive_failures": null,
-                    })
-                }
+                }) => StatusModelEntry {
+                    id: model_config.db_id,
+                    display_name: model_config.display_name.clone(),
+                    backend: model_config.backend.clone(),
+                    backend_path: backend_path.clone(),
+                    model: model_config.model.clone(),
+                    quant: model_config.quant.clone(),
+                    context_length: model_config.context_length,
+                    enabled: model_config.enabled,
+                    api_name: model_config.api_name.clone(),
+                    state: StatusModelState::Loading,
+                    backend_pid: None,
+                    load_time_secs: None,
+                    last_accessed_secs_ago: None,
+                    idle_timeout_remaining_secs: None,
+                    consecutive_failures: Some(consecutive_failures.load(Relaxed)),
+                },
+                Some(BackendState::Unloading { .. }) => StatusModelEntry {
+                    id: model_config.db_id,
+                    display_name: model_config.display_name.clone(),
+                    backend: model_config.backend.clone(),
+                    backend_path: backend_path.clone(),
+                    model: model_config.model.clone(),
+                    quant: model_config.quant.clone(),
+                    context_length: model_config.context_length,
+                    enabled: model_config.enabled,
+                    api_name: model_config.api_name.clone(),
+                    state: StatusModelState::Unloading,
+                    backend_pid: None,
+                    load_time_secs: None,
+                    last_accessed_secs_ago: None,
+                    idle_timeout_remaining_secs: None,
+                    consecutive_failures: None,
+                },
+                Some(BackendState::Failed { .. }) => StatusModelEntry {
+                    id: model_config.db_id,
+                    display_name: model_config.display_name.clone(),
+                    backend: model_config.backend.clone(),
+                    backend_path: backend_path.clone(),
+                    model: model_config.model.clone(),
+                    quant: model_config.quant.clone(),
+                    context_length: model_config.context_length,
+                    enabled: model_config.enabled,
+                    api_name: model_config.api_name.clone(),
+                    state: StatusModelState::Failed,
+                    backend_pid: None,
+                    load_time_secs: None,
+                    last_accessed_secs_ago: None,
+                    idle_timeout_remaining_secs: None,
+                    consecutive_failures: None,
+                },
+                _ => StatusModelEntry {
+                    id: model_config.db_id,
+                    display_name: model_config.display_name.clone(),
+                    backend: model_config.backend.clone(),
+                    backend_path: backend_path.clone(),
+                    model: model_config.model.clone(),
+                    quant: model_config.quant.clone(),
+                    context_length: model_config.context_length,
+                    enabled: model_config.enabled,
+                    api_name: model_config.api_name.clone(),
+                    state: StatusModelState::Idle,
+                    backend_pid: None,
+                    load_time_secs: None,
+                    last_accessed_secs_ago: None,
+                    idle_timeout_remaining_secs: None,
+                    consecutive_failures: None,
+                },
             };
 
-            models_obj.insert(model_name.clone(), model_json);
+            models_obj.insert(model_name.clone(), entry);
         }
 
         drop(models);
 
         let metrics = &self.metrics;
 
-        serde_json::json!({
-            "cpu_usage_pct": sys_metrics.cpu_usage_pct,
-            "ram_used_mib": sys_metrics.ram_used_mib,
-            "ram_total_mib": sys_metrics.ram_total_mib,
-            "gpu_utilization_pct": sys_metrics.gpu_utilization_pct,
-            "vram": sys_metrics.vram.map(|v| serde_json::json!({
-                "used_mib": v.used_mib,
-                "total_mib": v.total_mib,
-            })),
-            "auto_unload": auto_unload,
-            "idle_timeout_secs": idle_timeout_secs,
-            "metrics": {
-                "total_requests": metrics.total_requests.load(Relaxed),
-                "successful_requests": metrics.successful_requests.load(Relaxed),
-                "failed_requests": metrics.failed_requests.load(Relaxed),
-                "models_loaded": metrics.models_loaded.load(Relaxed),
-                "models_unloaded": metrics.models_unloaded.load(Relaxed),
+        StatusResponse {
+            cpu_usage_pct: sys_metrics.cpu_usage_pct,
+            ram_used_mib: sys_metrics.ram_used_mib,
+            ram_total_mib: sys_metrics.ram_total_mib,
+            gpu_utilization_pct: sys_metrics.gpu_utilization_pct,
+            vram: sys_metrics.vram.map(|v| VramStatus {
+                used_mib: v.used_mib,
+                total_mib: v.total_mib,
+            }),
+            auto_unload,
+            idle_timeout_secs,
+            metrics: ProxyMetricsSnapshot {
+                total_requests: metrics.total_requests.load(Relaxed),
+                successful_requests: metrics.successful_requests.load(Relaxed),
+                failed_requests: metrics.failed_requests.load(Relaxed),
+                models_loaded: metrics.models_loaded.load(Relaxed),
+                models_unloaded: metrics.models_unloaded.load(Relaxed),
             },
-            "models": models_obj,
-        })
+            models: models_obj,
+        }
     }
 }
 
@@ -277,6 +341,7 @@ mod tests {
     use super::*;
     use crate::config::{BackendConfig, Config, ModelConfig};
     use std::collections::BTreeMap;
+    use std::sync::Arc;
 
     fn make_model_config(backend: &str) -> ModelConfig {
         ModelConfig {
@@ -539,6 +604,94 @@ mod tests {
             crate::gpu::ModelState::Failed,
             "BackendState::Failed must not be reported as ready, got: {:?}",
             alpha
+        );
+    }
+
+    // ── Drift-guard: /status response round-trip ──────────────────────────────
+
+    /// The StatusResponse struct must faithfully represent the full wire shape.
+    /// Deserializing the serialized body back into StatusResponse and comparing
+    /// against the raw Value ensures no fields are silently dropped or invented.
+    #[tokio::test]
+    async fn test_status_response_roundtrip_lossless() {
+        use crate::gpu::{SystemMetrics, VramInfo};
+        use std::sync::atomic::AtomicU32;
+        use std::time::{Instant, UNIX_EPOCH};
+
+        // Build a minimal fixture with one ready model and vram present.
+        let mut config = Config::default();
+        config.backends.insert(
+            "llama_cpp".to_string(),
+            BackendConfig {
+                path: Some("/opt/llama".into()),
+                version: None,
+                gpu_variant: None,
+            },
+        );
+        let state = ProxyState::new(config, None);
+
+        {
+            let mut mc = state.model_configs.write().await;
+            mc.insert(
+                "ready-model".to_string(),
+                ModelConfig {
+                    backend: "llama_cpp".to_string(),
+                    display_name: Some("Ready".to_string()),
+                    model: Some("test/model".to_string()),
+                    db_id: Some(42),
+                    enabled: true,
+                    ..Default::default()
+                },
+            );
+        }
+
+        {
+            let mut runtime = state.models.write().await;
+            runtime.insert(
+                "ready-model".to_string(),
+                BackendState::Ready {
+                    model_name: "ready-model".to_string(),
+                    backend: "llama_cpp".to_string(),
+                    backend_pid: 1234,
+                    backend_url: "http://127.0.0.1:8080".to_string(),
+                    load_time: UNIX_EPOCH,
+                    last_accessed: Instant::now(),
+                    consecutive_failures: Arc::new(AtomicU32::new(0)),
+                    failure_timestamp: None,
+                    restart_count: 0,
+                },
+            );
+        }
+
+        {
+            let mut sys = state.system_metrics.write().await;
+            *sys = SystemMetrics {
+                cpu_usage_pct: 10.0,
+                ram_used_mib: 512,
+                ram_total_mib: 4096,
+                gpu_utilization_pct: Some(50),
+                vram: Some(VramInfo {
+                    used_mib: 100,
+                    total_mib: 8192,
+                }),
+                ..Default::default()
+            };
+        }
+
+        let response = state.build_status_response().await;
+        let body_bytes = serde_json::to_vec(&response).unwrap();
+
+        // Deserialize into the typed struct.
+        let parsed: StatusResponse =
+            serde_json::from_slice(&body_bytes).expect("body must deserialize into StatusResponse");
+
+        // Lossless round-trip: re-serialize parsed and compare to original Value.
+        let raw_value: serde_json::Value =
+            serde_json::from_slice(&body_bytes).expect("body must be valid JSON");
+        assert_eq!(
+            serde_json::to_value(&parsed).expect("parsed must serialize"),
+            raw_value,
+            "StatusResponse round-trip must be lossless — struct fields must match wire shape exactly"
         );
     }
 }

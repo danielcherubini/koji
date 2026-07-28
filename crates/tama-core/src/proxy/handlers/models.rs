@@ -8,9 +8,25 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Json, Response},
 };
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::warn;
+
+/// A model entry as returned by a backend's own `/v1/models`.
+/// Unknown fields pass through untouched via `extra` — clients of the proxy
+/// see exactly what the backend sent (plus normalized `id`/`ready`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BackendModelEntry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aliases: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ready: Option<bool>,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
 
 /// Find a matching model entry from backend responses.
 /// - If entries has exactly one model → return it
@@ -18,9 +34,9 @@ use tracing::warn;
 ///   or against backend's `aliases` array
 /// - If no match → return first entry (best guess)
 pub(crate) fn find_model_in_entries(
-    entries: &[serde_json::Value],
+    entries: &[BackendModelEntry],
     config_model: Option<&str>,
-) -> Option<serde_json::Value> {
+) -> Option<BackendModelEntry> {
     if entries.is_empty() {
         return None;
     }
@@ -31,18 +47,16 @@ pub(crate) fn find_model_in_entries(
     if let Some(model_path) = config_model {
         for entry in entries {
             // Match by id (file path)
-            if let Some(id) = entry.get("id").and_then(|v| v.as_str()) {
+            if let Some(id) = entry.id.as_deref() {
                 if id == model_path {
                     return Some(entry.clone());
                 }
             }
             // Match by aliases array
-            if let Some(aliases) = entry.get("aliases").and_then(|a| a.as_array()) {
-                for alias in aliases {
-                    if let Some(alias_str) = alias.as_str() {
-                        if alias_str == model_path {
-                            return Some(entry.clone());
-                        }
+            if let Some(aliases) = &entry.aliases {
+                for alias_str in aliases {
+                    if alias_str == model_path {
+                        return Some(entry.clone());
                     }
                 }
             }
@@ -117,8 +131,8 @@ pub async fn handle_get_model(
             } else {
                 server_cfg.api_name.as_deref().unwrap_or(&config_name)
             };
-            entry["id"] = serde_json::json!(response_id);
-            entry["ready"] = serde_json::value::to_value(true).unwrap();
+            entry.id = Some(response_id.to_string());
+            entry.ready = Some(true);
             return Json(entry).into_response();
         }
     }
@@ -171,7 +185,7 @@ pub async fn handle_list_models(state: State<Arc<ProxyState>>) -> Json<serde_jso
         .iter()
         .filter_map(|(_, url, _)| url.as_ref().map(|u| fetch_models_from_backend(&state, u)))
         .collect();
-    let results: Vec<Vec<serde_json::Value>> = futures::future::join_all(futures).await;
+    let results: Vec<Vec<BackendModelEntry>> = futures::future::join_all(futures).await;
 
     // Phase 3: Merge results and inject `ready`.
     let mut data: Vec<serde_json::Value> = Vec::new();
@@ -188,36 +202,34 @@ pub async fn handle_list_models(state: State<Arc<ProxyState>>) -> Json<serde_jso
                 // (api_name or config_name) so deduplication works correctly.
                 let mut alias_matched = false;
                 let mut normalized_model_id: Option<String> = None;
-                if let Some(aliases) = entry.get("aliases").and_then(|a| a.as_array()) {
-                    for alias in aliases {
-                        if let Some(alias_str) = alias.as_str() {
-                            // Search all configs for a matching api_name
-                            for cfg in all_configs.values() {
-                                if cfg.enabled
-                                    && cfg.api_name.as_deref().is_some_and(|n| n == alias_str)
-                                {
-                                    let model_id = cfg.api_name.as_deref().unwrap_or(config_name);
-                                    if seen_ids.contains(model_id) {
-                                        warn!(
-                                            "Duplicate model id {} (via alias) from backends",
-                                            model_id
-                                        );
-                                        alias_matched = true;
-                                        break;
-                                    }
-                                    normalized_model_id = Some(model_id.to_string());
+                if let Some(aliases) = &entry.aliases {
+                    for alias_str in aliases {
+                        // Search all configs for a matching api_name
+                        for cfg in all_configs.values() {
+                            if cfg.enabled
+                                && cfg.api_name.as_deref().is_some_and(|n| n == alias_str)
+                            {
+                                let model_id = cfg.api_name.as_deref().unwrap_or(config_name);
+                                if seen_ids.contains(model_id) {
+                                    warn!(
+                                        "Duplicate model id {} (via alias) from backends",
+                                        model_id
+                                    );
+                                    alias_matched = true;
                                     break;
                                 }
-                            }
-                            if alias_matched || normalized_model_id.is_some() {
+                                normalized_model_id = Some(model_id.to_string());
                                 break;
                             }
+                        }
+                        if alias_matched || normalized_model_id.is_some() {
+                            break;
                         }
                     }
                 }
                 // Apply normalization after dropping the immutable borrow on aliases
                 if let Some(new_id) = normalized_model_id {
-                    entry["id"] = serde_json::json!(new_id.clone());
+                    entry.id = Some(new_id.clone());
                     seen_ids.insert(new_id);
                     alias_matched = true;
                 }
@@ -225,11 +237,7 @@ pub async fn handle_list_models(state: State<Arc<ProxyState>>) -> Json<serde_jso
                 // Only check duplicate by raw id if we didn't match via alias.
                 // (Alias match already checked uniqueness and normalized the id.)
                 if !alias_matched {
-                    let id = entry
-                        .get("id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
+                    let id = entry.id.as_deref().unwrap_or("").to_string();
                     if seen_ids.contains(&id) {
                         warn!("Duplicate model id {} from backends", id);
                         continue;
@@ -238,8 +246,14 @@ pub async fn handle_list_models(state: State<Arc<ProxyState>>) -> Json<serde_jso
                 }
 
                 // Inject ready
-                entry["ready"] = serde_json::value::to_value(true).unwrap();
-                data.push(entry);
+                entry.ready = Some(true);
+                match serde_json::to_value(entry) {
+                    Ok(v) => data.push(v),
+                    Err(e) => {
+                        warn!("Failed to serialize model entry: {}", e);
+                        continue;
+                    }
+                }
             }
         }
     }
@@ -313,16 +327,21 @@ pub async fn handle_list_models(state: State<Arc<ProxyState>>) -> Json<serde_jso
 
 /// Parse a /v1/models response body and extract the `data` array.
 /// Returns empty Vec if the response is invalid or missing `data`.
-pub fn parse_models_response(body: &[u8]) -> Vec<serde_json::Value> {
+pub fn parse_models_response(body: &[u8]) -> Vec<BackendModelEntry> {
     let parsed: serde_json::Value = match serde_json::from_slice(body) {
         Ok(v) => v,
         Err(_) => return Vec::new(),
     };
-    parsed
-        .get("data")
-        .and_then(|d| d.as_array())
-        .map(|arr| arr.to_vec())
-        .unwrap_or_default()
+    let Some(data) = parsed.get("data").and_then(|d| d.as_array()) else {
+        return Vec::new();
+    };
+    data.iter()
+        .filter_map(|v| {
+            serde_json::from_value::<BackendModelEntry>(v.clone())
+                .map_err(|e| warn!("Failed to parse model entry: {}", e))
+                .ok()
+        })
+        .collect()
 }
 
 /// Query a single backend's /v1/models endpoint and return the `data` array.
@@ -330,7 +349,7 @@ pub fn parse_models_response(body: &[u8]) -> Vec<serde_json::Value> {
 pub async fn fetch_models_from_backend(
     state: &ProxyState,
     backend_url: &str,
-) -> Vec<serde_json::Value> {
+) -> Vec<BackendModelEntry> {
     let url = format!("{}/v1/models", backend_url);
     match state
         .client

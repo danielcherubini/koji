@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use super::utils::build_model_entry;
+use super::utils::{build_model_entry, OpencodeModelsResponse};
 use crate::proxy::ProxyState;
 use axum::extract::State;
 use axum::Json;
@@ -11,7 +11,9 @@ use super::ModelCapabilities;
 /// Handle listing all enabled models for OpenCode plugin discovery.
 /// Returns rich metadata including context limits, modalities, and capabilities.
 /// Aliases are included with the same metadata as their target model, using the alias name as `id`.
-pub async fn handle_opencode_list_models(state: State<Arc<ProxyState>>) -> Json<serde_json::Value> {
+pub async fn handle_opencode_list_models(
+    state: State<Arc<ProxyState>>,
+) -> Json<OpencodeModelsResponse> {
     // 1. Snapshot data under locks — clone out so locks are dropped before any .await below.
     // `all_configs` is a clone of the HashMap contents, not the guard, so no explicit drop needed.
     let (loaded_models, all_configs): (HashMap<_, _>, _) = {
@@ -54,13 +56,13 @@ pub async fn handle_opencode_list_models(state: State<Arc<ProxyState>>) -> Json<
         .collect();
 
     // 3. Build model entries with capabilities
-    let mut models: Vec<serde_json::Value> = Vec::new();
+    let mut models: Vec<super::utils::ModelEntry> = Vec::new();
     let mut seen_ids: HashSet<String> = HashSet::new();
 
     for (id, cfg) in all_configs.iter().filter(|(_, cfg)| cfg.enabled) {
         let caps = cap_map.get(id);
         if let Some(entry) = build_model_entry(&state, id, cfg, caps).await {
-            if let Some(api_id) = entry.get("id").and_then(|v| v.as_str()) {
+            if let Some(api_id) = entry.id.as_deref() {
                 seen_ids.insert(api_id.to_lowercase());
             }
             models.push(entry);
@@ -84,7 +86,7 @@ pub async fn handle_opencode_list_models(state: State<Arc<ProxyState>>) -> Json<
         if let Some((key, cfg)) = target_cfg {
             let caps = cap_map.get(key);
             if let Some(mut entry) = build_model_entry(&state, key, cfg, caps).await {
-                entry["id"] = serde_json::json!(alias_name.to_lowercase());
+                entry.id = Some(alias_name.to_lowercase());
                 // Derive a display name from the alias slug (not from the target model).
                 let alias_display = alias_name
                     .replace(['-', '_'], " ")
@@ -92,7 +94,7 @@ pub async fn handle_opencode_list_models(state: State<Arc<ProxyState>>) -> Json<
                     .map(super::utils::capitalize_first)
                     .collect::<Vec<_>>()
                     .join(" ");
-                entry["name"] = serde_json::json!(alias_display);
+                entry.name = alias_display;
                 models.push(entry);
                 seen_ids.insert(alias_name.to_lowercase());
             }
@@ -100,7 +102,7 @@ pub async fn handle_opencode_list_models(state: State<Arc<ProxyState>>) -> Json<
     }
     drop(aliases);
 
-    Json(serde_json::json!({ "models": models }))
+    Json(OpencodeModelsResponse { models })
 }
 
 /// Extract capability flags from a /props response body.

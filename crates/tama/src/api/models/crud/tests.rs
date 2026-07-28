@@ -1,6 +1,12 @@
 use super::*;
+use axum::body::Body;
+use axum::http::Request;
+use axum::http::StatusCode;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use tama_core::config::{ModelConfig, QuantEntry, QuantKind};
+use tama_core::proxy::tama_handlers::{ModelMutationResponse, OkResponse};
+use tower::ServiceExt;
 
 fn body_with_quants(quants: BTreeMap<String, QuantEntry>) -> ModelBody {
     ModelBody {
@@ -2019,4 +2025,232 @@ fn test_apply_model_patch_context_length_override() {
 
     let result = apply_model_patch(body, &existing);
     assert_eq!(result.context_length, Some(16384));
+}
+
+// ── Drift-guard: CRUD response round-trips ─────────────────────────────────
+
+/// Model create response must deserialize into ModelMutationResponse with
+/// ok && id > 0.
+#[tokio::test]
+async fn test_create_model_response_deserializes_into_mutation_response() {
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
+
+    // Seed a model so we have a valid DB to create against.
+    {
+        let conn = tama_core::db::open(tmp_dir.path()).unwrap();
+        tama_core::db::queries::upsert_model_config(
+            &conn.conn,
+            &tama_core::db::queries::ModelConfigRecord {
+                id: 0,
+                repo_id: "test-org/seed".to_string(),
+                display_name: None,
+                backend: "llama_cpp".to_string(),
+                gpu_variant: None,
+                gpu_device: None,
+                enabled: true,
+                selected_quant: None,
+                selected_mmproj: None,
+                selected_mtp_model: None,
+                context_length: None,
+                num_parallel: None,
+                kv_unified: false,
+                gpu_layers: None,
+                cache_type_k: None,
+                cache_type_v: None,
+                port: None,
+                args: None,
+                sampling: None,
+                modalities: None,
+                profile: None,
+                api_name: None,
+                health_check: None,
+                hf_format: None,
+                hf_base_model: None,
+                hf_pipeline_tag: None,
+                hf_total_params: None,
+                hf_active_params: None,
+                hf_architecture_type: None,
+                hf_context_length: None,
+                hf_num_layers: None,
+                hf_last_modified: None,
+                spec_decoding: None,
+                created_at: "2024-01-01T00:00:00Z".to_string(),
+                updated_at: "2024-01-01T00:00:00Z".to_string(),
+            },
+        )
+        .unwrap();
+    }
+
+    let config = tama_core::config::Config::default();
+    let state = Arc::new(tama_core::proxy::ProxyState::new(
+        config,
+        Some(tmp_dir.path().to_path_buf()),
+    ));
+
+    let web_state = Arc::new(crate::web_types::WebState {
+        jobs: Some(Arc::new(crate::web_types::JobManager::new())),
+        capabilities: None,
+        update_checker: Arc::new(tama_core::updates::UpdateChecker::default()),
+        binary_version: "test".to_string(),
+        update_tx: Arc::new(tokio::sync::Mutex::new(None)),
+        upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        repository: Some(Arc::new(std::sync::Mutex::new(
+            tama_core::db::repository::Repository::open(tmp_dir.path()).unwrap(),
+        ))),
+    });
+
+    let router = crate::router::build_web_routes(web_state.clone())
+        .with_state(state)
+        .layer(axum::extract::Extension(web_state.as_ref().clone()));
+
+    // POST /tama/v1/models — create a new model.
+    let body = serde_json::json!({
+        "repo_id": "org/create-drift",
+        "backend": "llama_cpp",
+        "model": "org/create-drift"
+    });
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/tama/v1/models")
+        .header("Content-Type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+
+    let resp = router
+        .clone()
+        .oneshot(req)
+        .await
+        .expect("request should complete");
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("body must be readable");
+
+    // Deserialize into ModelMutationResponse.
+    let parsed: ModelMutationResponse = serde_json::from_slice(&body_bytes)
+        .expect("create response must deserialize into ModelMutationResponse");
+    assert!(parsed.ok, "ok must be true");
+    assert!(parsed.id > 0, "id must be > 0");
+
+    // Lossless round-trip.
+    let raw_value: serde_json::Value =
+        serde_json::from_slice(&body_bytes).expect("body must be valid JSON");
+    assert_eq!(
+        serde_json::to_value(parsed).expect("parsed must serialize"),
+        raw_value,
+        "ModelMutationResponse round-trip must be lossless"
+    );
+}
+
+/// Model delete response must deserialize into OkResponse with ok.
+#[tokio::test]
+async fn test_delete_model_response_deserializes_into_ok_response() {
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
+
+    // Seed a model to delete.
+    {
+        let conn = tama_core::db::open(tmp_dir.path()).unwrap();
+        tama_core::db::queries::upsert_model_config(
+            &conn.conn,
+            &tama_core::db::queries::ModelConfigRecord {
+                id: 0,
+                repo_id: "org/delete-drift".to_string(),
+                display_name: None,
+                backend: "llama_cpp".to_string(),
+                gpu_variant: None,
+                gpu_device: None,
+                enabled: true,
+                selected_quant: None,
+                selected_mmproj: None,
+                selected_mtp_model: None,
+                context_length: None,
+                num_parallel: None,
+                kv_unified: false,
+                gpu_layers: None,
+                cache_type_k: None,
+                cache_type_v: None,
+                port: None,
+                args: None,
+                sampling: None,
+                modalities: None,
+                profile: None,
+                api_name: None,
+                health_check: None,
+                hf_format: None,
+                hf_base_model: None,
+                hf_pipeline_tag: None,
+                hf_total_params: None,
+                hf_active_params: None,
+                hf_architecture_type: None,
+                hf_context_length: None,
+                hf_num_layers: None,
+                hf_last_modified: None,
+                spec_decoding: None,
+                created_at: "2024-01-01T00:00:00Z".to_string(),
+                updated_at: "2024-01-01T00:00:00Z".to_string(),
+            },
+        )
+        .unwrap();
+    }
+
+    let config = tama_core::config::Config::default();
+    let state = Arc::new(tama_core::proxy::ProxyState::new(
+        config,
+        Some(tmp_dir.path().to_path_buf()),
+    ));
+
+    let web_state = Arc::new(crate::web_types::WebState {
+        jobs: Some(Arc::new(crate::web_types::JobManager::new())),
+        capabilities: None,
+        update_checker: Arc::new(tama_core::updates::UpdateChecker::default()),
+        binary_version: "test".to_string(),
+        update_tx: Arc::new(tokio::sync::Mutex::new(None)),
+        upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        repository: Some(Arc::new(std::sync::Mutex::new(
+            tama_core::db::repository::Repository::open(tmp_dir.path()).unwrap(),
+        ))),
+    });
+
+    let router = crate::router::build_web_routes(web_state.clone())
+        .with_state(state)
+        .layer(axum::extract::Extension(web_state.as_ref().clone()));
+
+    // Get the model id to delete.
+    let conn = tama_core::db::open(tmp_dir.path()).unwrap();
+    let record = tama_core::db::queries::get_model_config(&conn.conn, 1).expect("model exists");
+    let model_id = record.unwrap().id;
+
+    // DELETE /tama/v1/models/:id.
+    let req = Request::builder()
+        .method("DELETE")
+        .uri(format!("/tama/v1/models/{}", model_id))
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = router
+        .clone()
+        .oneshot(req)
+        .await
+        .expect("request should complete");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("body must be readable");
+
+    // Deserialize into OkResponse.
+    let parsed: OkResponse = serde_json::from_slice(&body_bytes)
+        .expect("delete response must deserialize into OkResponse");
+    assert!(parsed.ok, "ok must be true");
+
+    // Lossless round-trip.
+    let raw_value: serde_json::Value =
+        serde_json::from_slice(&body_bytes).expect("body must be valid JSON");
+    assert_eq!(
+        serde_json::to_value(parsed).expect("parsed must serialize"),
+        raw_value,
+        "OkResponse round-trip must be lossless"
+    );
 }

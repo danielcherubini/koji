@@ -15,8 +15,8 @@ fn test_parse_models_response_integration_valid() {
     }"#;
     let result = parse_models_response(body.as_bytes());
     assert_eq!(result.len(), 2);
-    assert_eq!(result[0]["id"], "model-a");
-    assert_eq!(result[1]["id"], "model-b");
+    assert_eq!(result[0].id.as_deref(), Some("model-a"));
+    assert_eq!(result[1].id.as_deref(), Some("model-b"));
 }
 
 /// Test parse_models_response with invalid JSON
@@ -67,8 +67,8 @@ async fn test_fetch_models_from_backend_returns_data() {
     let result = fetch_models_from_backend(&state, &mock_server.uri()).await;
 
     assert_eq!(result.len(), 2);
-    assert_eq!(result[0]["id"], "mock-model-1");
-    assert_eq!(result[1]["id"], "mock-model-2");
+    assert_eq!(result[0].id.as_deref(), Some("mock-model-1"));
+    assert_eq!(result[1].id.as_deref(), Some("mock-model-2"));
 }
 
 /// Integration test: fetch_models_from_backend returns empty Vec on invalid response

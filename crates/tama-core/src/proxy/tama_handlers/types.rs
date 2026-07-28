@@ -1,5 +1,23 @@
 use serde::{Deserialize, Serialize};
 
+/// Plain success body for management endpoints that return nothing else.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct OkResponse {
+    pub ok: bool,
+}
+
+impl OkResponse {
+    /// The canonical `{"ok": true}` body.
+    pub const OK: Self = Self { ok: true };
+}
+
+/// Success body for model create/update/rename — carries the affected DB id.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct ModelMutationResponse {
+    pub ok: bool,
+    pub id: i64,
+}
+
 /// Maximum number of quants that can be pulled concurrently in a single pull request.
 ///
 /// Configurable via `TAMA_MAX_CONCURRENT_PULLS` environment variable.
@@ -225,5 +243,23 @@ mod tests {
         assert!(!is_safe_relative_path("/leading-slash"));
         assert!(!is_safe_relative_path("trailing-slash/"));
         assert!(!is_safe_relative_path("double//slash"));
+    }
+
+    // ── OkResponse / ModelMutationResponse shape tests ──────────────────────
+
+    #[test]
+    fn test_ok_response_shape() {
+        assert_eq!(
+            serde_json::to_value(OkResponse::OK).expect("serializable"),
+            serde_json::json!({ "ok": true })
+        );
+    }
+
+    #[test]
+    fn test_model_mutation_response_shape() {
+        assert_eq!(
+            serde_json::to_value(ModelMutationResponse { ok: true, id: 7 }).expect("serializable"),
+            serde_json::json!({ "ok": true, "id": 7 })
+        );
     }
 }

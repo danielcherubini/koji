@@ -1,4 +1,4 @@
-use super::models::{handle_list_models, parse_models_response};
+use super::models::{handle_list_models, parse_models_response, BackendModelEntry};
 use crate::config::{Config, ModelConfig};
 use crate::proxy::ProxyState;
 use axum::{body::to_bytes, extract::State, response::IntoResponse};
@@ -24,8 +24,8 @@ fn test_parse_models_response_valid_data() {
     });
     let result = parse_models_response(body.to_string().as_bytes());
     assert_eq!(result.len(), 2);
-    assert_eq!(result[0]["id"], "model-1");
-    assert_eq!(result[1]["id"], "model-2");
+    assert_eq!(result[0].id.as_deref(), Some("model-1"));
+    assert_eq!(result[1].id.as_deref(), Some("model-2"));
 }
 
 #[test]
@@ -593,47 +593,83 @@ async fn test_handle_list_models_no_alias_no_normalization() {
     assert!(config_entry.is_some(), "Config fallback should be present");
 }
 
+/// Parse an entry with a custom (unknown) field and verify it round-trips
+/// through parse → serialize with the custom field intact (flatten passthrough).
+#[test]
+fn test_parse_models_response_preserves_extra_fields() {
+    let body = serde_json::json!({
+        "object": "list",
+        "data": [
+            {"id": "m", "custom_field": 42, "another": "hello"}
+        ]
+    });
+    let result = parse_models_response(body.to_string().as_bytes());
+    assert_eq!(result.len(), 1);
+
+    // Typed field read
+    assert_eq!(result[0].id.as_deref(), Some("m"));
+
+    // Extra fields preserved in the flatten map
+    assert_eq!(
+        result[0].extra.get("custom_field"),
+        Some(&serde_json::json!(42))
+    );
+    assert_eq!(
+        result[0].extra.get("another"),
+        Some(&serde_json::json!("hello"))
+    );
+
+    // Round-trip: serialize back to JSON and verify custom fields survive
+    let serialized = serde_json::to_value(&result[0]).unwrap();
+    assert_eq!(serialized["id"], "m");
+    assert_eq!(serialized["custom_field"], 42);
+    assert_eq!(serialized["another"], "hello");
+}
+
 /// Test that find_model_in_entries matches by aliases array.
 #[test]
 fn test_find_model_in_entries_matches_by_alias() {
     let entries = vec![
-        serde_json::json!({
-            "id": "model-a.gguf",
-            "aliases": ["api-name-a"],
-        }),
-        serde_json::json!({
-            "id": "model-b.gguf",
-            "aliases": ["api-name-b"],
-        }),
+        BackendModelEntry {
+            id: Some("model-a.gguf".to_string()),
+            aliases: Some(vec!["api-name-a".to_string()]),
+            ..Default::default()
+        },
+        BackendModelEntry {
+            id: Some("model-b.gguf".to_string()),
+            aliases: Some(vec!["api-name-b".to_string()]),
+            ..Default::default()
+        },
     ];
 
     // Match by alias
     let result = super::models::find_model_in_entries(&entries, Some("api-name-b"));
     assert!(result.is_some());
-    assert_eq!(result.unwrap()["id"], "model-b.gguf");
+    assert_eq!(result.unwrap().id.as_deref(), Some("model-b.gguf"));
 
     // Match by id (file path)
     let result = super::models::find_model_in_entries(&entries, Some("model-a.gguf"));
     assert!(result.is_some());
-    assert_eq!(result.unwrap()["id"], "model-a.gguf");
+    assert_eq!(result.unwrap().id.as_deref(), Some("model-a.gguf"));
 
     // No match
     let result = super::models::find_model_in_entries(&entries, Some("not-found"));
     // Returns first entry as best guess
     assert!(result.is_some());
-    assert_eq!(result.unwrap()["id"], "model-a.gguf");
+    assert_eq!(result.unwrap().id.as_deref(), Some("model-a.gguf"));
 }
 
 /// Test that find_model_in_entries prefers single entry without matching.
 #[test]
 fn test_find_model_in_entries_single_entry() {
-    let entries = vec![serde_json::json!({
-        "id": "only-model.gguf",
-        "aliases": ["some-alias"],
-    })];
+    let entries = vec![BackendModelEntry {
+        id: Some("only-model.gguf".to_string()),
+        aliases: Some(vec!["some-alias".to_string()]),
+        ..Default::default()
+    }];
 
     // Single entry: should return it regardless of config_model
     let result = super::models::find_model_in_entries(&entries, Some("different-name"));
     assert!(result.is_some());
-    assert_eq!(result.unwrap()["id"], "only-model.gguf");
+    assert_eq!(result.unwrap().id.as_deref(), Some("only-model.gguf"));
 }

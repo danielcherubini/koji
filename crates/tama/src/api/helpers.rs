@@ -1,6 +1,7 @@
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
+use serde::Serialize;
 use std::sync::Arc;
 
 use crate::api::error::{error_response, error_response_simple};
@@ -68,13 +69,14 @@ pub async fn open_backend_manager(
 }
 
 /// Run a closure in spawn_blocking, handle the Result, trigger proxy reload on success.
-pub async fn spawn_model_crud<F>(
+pub async fn spawn_model_crud<F, T>(
     proxy_state: Arc<ProxyState>,
     default_status: StatusCode,
     f: F,
 ) -> axum::response::Response
 where
-    F: FnOnce() -> Result<serde_json::Value, (StatusCode, serde_json::Value)> + Send + 'static,
+    F: FnOnce() -> Result<T, (StatusCode, serde_json::Value)> + Send + 'static,
+    T: Serialize + Send + 'static,
 {
     match tokio::task::spawn_blocking(f).await {
         Ok(Ok(val)) => {

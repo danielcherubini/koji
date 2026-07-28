@@ -10,6 +10,7 @@ use std::sync::Arc;
 use crate::api::error::error_response;
 use crate::api::helpers::shared_repository;
 use crate::web_types::WebState;
+use tama_core::proxy::tama_handlers::OkResponse;
 use tama_core::proxy::ProxyState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -319,7 +320,7 @@ pub async fn check_item_for_update(
     };
 
     match result {
-        Ok(_) => Json(serde_json::json!({ "ok": true })).into_response(),
+        Ok(_) => Json(OkResponse::OK).into_response(),
         Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     }
 }

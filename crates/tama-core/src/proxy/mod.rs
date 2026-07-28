@@ -10,7 +10,7 @@ mod rename;
 pub mod scope_middleware;
 pub mod server;
 mod state;
-mod status;
+pub mod status;
 pub mod tama_handlers;
 mod types;
 
@@ -25,6 +25,7 @@ pub use handlers::forward::{
 };
 pub use handlers::models::{
     fetch_models_from_backend, handle_get_model, handle_list_models, parse_models_response,
+    BackendModelEntry,
 };
 pub use handlers::status::{handle_health, handle_metrics, handle_reload_configs, handle_status};
 pub use handlers::tts::{
@@ -39,7 +40,7 @@ mod tests {
     mod restart_test;
 
     use super::*;
-    use crate::config::{Config, ModelConfig};
+    use crate::config::{BackendConfig, Config, ModelConfig};
     use crate::proxy::pull_jobs::PullJob;
     use std::sync::Arc;
 
@@ -68,31 +69,29 @@ mod tests {
         let state = ProxyState::new(config, None);
 
         let response = state.build_status_response().await;
+        let v = serde_json::to_value(&response).unwrap();
 
-        // VRAM may or may not be present depending on GPU availability
-        let vram = response.get("vram");
-        assert!(vram.is_some(), "vram key should be present (even if null)");
+        // live wire shape: vram/gpu_utilization_pct are OMITTED when None
+        assert!(v.get("vram").is_none() || !v["vram"].is_null());
 
         // auto_unload and idle_timeout_secs at top level per spec
         assert_eq!(
-            response.get("auto_unload").and_then(|v| v.as_bool()),
+            v.get("auto_unload").and_then(|v| v.as_bool()),
             Some(false),
             "auto_unload should be a boolean (default false)"
         );
         assert!(
-            response
-                .get("idle_timeout_secs")
+            v.get("idle_timeout_secs")
                 .and_then(|v| v.as_u64())
                 .is_some(),
             "idle_timeout_secs should be a number"
         );
 
         // models is an object keyed by model name
-        let models = response.get("models").unwrap();
-        assert!(models.is_object());
+        assert!(v.get("models").unwrap().is_object());
 
-        let metrics = response.get("metrics").unwrap();
-        assert!(metrics.is_object());
+        // metrics is an object
+        assert!(v.get("metrics").unwrap().is_object());
     }
 
     #[tokio::test]
@@ -119,20 +118,18 @@ mod tests {
         let response = state.build_status_response().await;
 
         // models is an object, check that our test model is present
-        let models = response.get("models").unwrap().as_object().unwrap();
+        let models = &response.models;
         assert!(!models.is_empty(), "config should have at least one model");
 
         let (_, first_model) = models.iter().next().unwrap();
 
         // Per spec: flat fields, not nested in runtime
-        assert!(first_model.get("backend").is_some());
-        assert!(first_model.get("backend_path").is_some());
-        assert!(first_model.get("enabled").is_some());
-        assert!(first_model.get("state").is_some());
-        // Unloaded model should have state="idle"
+        assert_eq!(first_model.backend, "llama_cpp");
+        assert!(first_model.enabled);
+        // Unloaded model should have state = Idle
         assert_eq!(
-            first_model.get("state").and_then(|v| v.as_str()),
-            Some("idle")
+            first_model.state,
+            crate::proxy::status::StatusModelState::Idle
         );
     }
 
@@ -385,17 +382,224 @@ mod tests {
         let response = state.build_status_response().await;
 
         // The model should appear in the response even though backend is missing
-        let models = response.get("models").unwrap().as_object().unwrap();
         assert!(
-            models.contains_key("test-model"),
+            response.models.contains_key("test-model"),
             "model should appear in status even when backend is not in TOML"
         );
 
-        let model = &models["test-model"];
-        // backend_path should be null, not cause the model to be skipped
+        let model = &response.models["test-model"];
+        // backend_path should be None, not cause the model to be skipped
         assert!(
-            model.get("backend_path").unwrap().is_null(),
-            "backend_path should be null when backend is not configured"
+            model.backend_path.is_none(),
+            "backend_path should be None when backend is not configured"
+        );
+    }
+
+    /// Asserts the serialized /status output is key-for-key identical to the
+    /// pre-refactor shape, including omission of `vram`/`gpu_utilization_pct`
+    /// when they are `None` (the live wire contract preserved by `skip_serializing_if`).
+    #[tokio::test]
+    async fn test_build_status_response_golden_shape() {
+        use crate::gpu::{SystemMetrics, VramInfo};
+        use std::sync::atomic::AtomicU32;
+        use std::time::{Instant, UNIX_EPOCH};
+
+        // Shared fixture
+        let mut config = Config::default();
+        config.backends.insert(
+            "llama_cpp".to_string(),
+            BackendConfig {
+                path: Some("/opt/llama/llama-server".into()),
+                version: None,
+                gpu_variant: None,
+            },
+        );
+        let state = ProxyState::new(config, None);
+
+        // Two model configs: one idle, one ready (with db_id).
+        {
+            let mut mc = state.model_configs.write().await;
+            mc.insert(
+                "idle-model".to_string(),
+                ModelConfig {
+                    backend: "llama_cpp".to_string(),
+                    enabled: true,
+                    ..Default::default()
+                },
+            );
+            mc.insert(
+                "ready-model".to_string(),
+                ModelConfig {
+                    backend: "llama_cpp".to_string(),
+                    display_name: Some("Ready Model".to_string()),
+                    model: Some("test/model".to_string()),
+                    db_id: Some(7),
+                    enabled: true,
+                    ..Default::default()
+                },
+            );
+        }
+
+        // Runtime: a Ready entry for ready-model.
+        {
+            let mut runtime = state.models.write().await;
+            runtime.insert(
+                "ready-model".to_string(),
+                BackendState::Ready {
+                    model_name: "ready-model".to_string(),
+                    backend: "llama_cpp".to_string(),
+                    backend_pid: 4242,
+                    backend_url: "http://127.0.0.1:8080".to_string(),
+                    load_time: UNIX_EPOCH,
+                    last_accessed: Instant::now(),
+                    consecutive_failures: Arc::new(AtomicU32::new(0)),
+                    failure_timestamp: None,
+                    restart_count: 0,
+                },
+            );
+        }
+
+        // Block 1: vram + gpu_utilization present
+        {
+            let mut sys = state.system_metrics.write().await;
+            *sys = SystemMetrics {
+                cpu_usage_pct: 12.5,
+                ram_used_mib: 0,
+                ram_total_mib: 0,
+                gpu_utilization_pct: Some(75),
+                vram: Some(VramInfo {
+                    used_mib: 100,
+                    total_mib: 200,
+                }),
+                ..Default::default()
+            };
+        }
+        let mut v = serde_json::to_value(state.build_status_response().await).unwrap();
+        // Mask the volatile last_accessed_secs_ago field.
+        v["models"]["ready-model"]["last_accessed_secs_ago"] = serde_json::json!(0);
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "cpu_usage_pct": 12.5,
+                "ram_used_mib": 0,
+                "ram_total_mib": 0,
+                "gpu_utilization_pct": 75,
+                "vram": { "used_mib": 100, "total_mib": 200 },
+                "auto_unload": false,
+                "idle_timeout_secs": 300,
+                "metrics": {
+                    "total_requests": 0,
+                    "successful_requests": 0,
+                    "failed_requests": 0,
+                    "models_loaded": 0,
+                    "models_unloaded": 0
+                },
+                "models": {
+                    "idle-model": {
+                        "id": null,
+                        "display_name": null,
+                        "backend": "llama_cpp",
+                        "backend_path": "/opt/llama/llama-server",
+                        "model": null,
+                        "quant": null,
+                        "context_length": null,
+                        "enabled": true,
+                        "api_name": null,
+                        "state": "idle",
+                        "backend_pid": null,
+                        "load_time_secs": null,
+                        "last_accessed_secs_ago": null,
+                        "idle_timeout_remaining_secs": null,
+                        "consecutive_failures": null
+                    },
+                    "ready-model": {
+                        "id": 7,
+                        "display_name": "Ready Model",
+                        "backend": "llama_cpp",
+                        "backend_path": "/opt/llama/llama-server",
+                        "model": "test/model",
+                        "quant": null,
+                        "context_length": null,
+                        "enabled": true,
+                        "api_name": null,
+                        "state": "ready",
+                        "backend_pid": 4242,
+                        "load_time_secs": 0,
+                        "last_accessed_secs_ago": 0,
+                        "idle_timeout_remaining_secs": null,
+                        "consecutive_failures": 0
+                    }
+                }
+            })
+        );
+
+        // Block 2: vram + gpu_utilization None -> keys omitted on the wire
+        // live wire shape: vram/gpu_utilization_pct are OMITTED when None
+        {
+            let mut sys = state.system_metrics.write().await;
+            *sys = SystemMetrics {
+                cpu_usage_pct: 12.5,
+                ram_used_mib: 0,
+                ram_total_mib: 0,
+                gpu_utilization_pct: None,
+                vram: None,
+                ..Default::default()
+            };
+        }
+        let mut v = serde_json::to_value(state.build_status_response().await).unwrap();
+        v["models"]["ready-model"]["last_accessed_secs_ago"] = serde_json::json!(0);
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "cpu_usage_pct": 12.5,
+                "ram_used_mib": 0,
+                "ram_total_mib": 0,
+                "auto_unload": false,
+                "idle_timeout_secs": 300,
+                "metrics": {
+                    "total_requests": 0,
+                    "successful_requests": 0,
+                    "failed_requests": 0,
+                    "models_loaded": 0,
+                    "models_unloaded": 0
+                },
+                "models": {
+                    "idle-model": {
+                        "id": null,
+                        "display_name": null,
+                        "backend": "llama_cpp",
+                        "backend_path": "/opt/llama/llama-server",
+                        "model": null,
+                        "quant": null,
+                        "context_length": null,
+                        "enabled": true,
+                        "api_name": null,
+                        "state": "idle",
+                        "backend_pid": null,
+                        "load_time_secs": null,
+                        "last_accessed_secs_ago": null,
+                        "idle_timeout_remaining_secs": null,
+                        "consecutive_failures": null
+                    },
+                    "ready-model": {
+                        "id": 7,
+                        "display_name": "Ready Model",
+                        "backend": "llama_cpp",
+                        "backend_path": "/opt/llama/llama-server",
+                        "model": "test/model",
+                        "quant": null,
+                        "context_length": null,
+                        "enabled": true,
+                        "api_name": null,
+                        "state": "ready",
+                        "backend_pid": 4242,
+                        "load_time_secs": 0,
+                        "last_accessed_secs_ago": 0,
+                        "idle_timeout_remaining_secs": null,
+                        "consecutive_failures": 0
+                    }
+                }
+            })
         );
     }
 

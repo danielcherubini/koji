@@ -7,6 +7,7 @@ use axum::{
     Json,
 };
 use std::sync::Arc;
+use tama_core::proxy::tama_handlers::ModelMutationResponse;
 use tama_core::proxy::ProxyState;
 
 use crate::api::load_config_from_state;
@@ -89,7 +90,7 @@ pub async fn rename_model(
         // Clean up update_check record for old repo_id
         let _ = repo.delete_update_check("model", &existing_record.repo_id);
 
-        Ok(serde_json::json!({ "ok": true, "id": model_id }))
+        Ok(ModelMutationResponse { ok: true, id: model_id })
     })
     .await
 }

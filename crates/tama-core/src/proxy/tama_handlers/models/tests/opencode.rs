@@ -7,6 +7,7 @@ use wiremock::ResponseTemplate;
 use super::helpers::{call_list_models, create_state_with_model};
 use crate::config::ModelConfig;
 use crate::config::ModelModalities;
+use crate::proxy::tama_handlers::models::OpencodeModelsResponse;
 
 /// Loaded model: capabilities from /props appear in opencode response.
 #[tokio::test]
@@ -278,5 +279,36 @@ async fn test_alias_name_derived_from_slug() {
         target_entry.get("name").unwrap().as_str().unwrap(),
         "Test: Model A",
         "Target model should keep its own name"
+    );
+}
+
+// ── Drift-guard: opencode response round-trip ───────────────────────────────
+
+/// The OpencodeModelsResponse struct must faithfully represent the full wire
+/// shape returned by handle_opencode_list_models. Deserializing the response
+/// into OpencodeModelsResponse and comparing against the raw Value ensures no
+/// fields are silently dropped or invented.
+#[tokio::test]
+async fn test_opencode_response_deserializes_into_typed() {
+    let state = create_state_with_model(ModelConfig {
+        backend: "llama_cpp".to_string(),
+        api_name: Some("test-model".to_string()),
+        model: Some("org/repo".to_string()),
+        enabled: true,
+        ..Default::default()
+    })
+    .await;
+
+    let result = call_list_models(state).await;
+
+    // Deserialize into the typed struct.
+    let parsed: OpencodeModelsResponse = serde_json::from_value(result.clone())
+        .expect("opencode body must deserialize into OpencodeModelsResponse");
+
+    // Lossless round-trip: re-serialize parsed and compare to original Value.
+    assert_eq!(
+        serde_json::to_value(&parsed).expect("parsed must serialize"),
+        result,
+        "OpencodeModelsResponse round-trip must be lossless — struct fields must match wire shape exactly"
     );
 }

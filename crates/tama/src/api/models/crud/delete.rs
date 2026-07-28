@@ -7,6 +7,7 @@ use axum::{
     Json,
 };
 use std::sync::Arc;
+use tama_core::proxy::tama_handlers::OkResponse;
 use tama_core::proxy::ProxyState;
 
 use crate::api::load_config_from_state;
@@ -203,7 +204,7 @@ pub async fn delete_model(
             }
         }
 
-        Ok(serde_json::json!({ "ok": true }))
+        Ok(OkResponse::OK)
     })
     .await
 }

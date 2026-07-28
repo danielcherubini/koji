@@ -15,7 +15,9 @@ pub use handlers::{
     handle_tama_load_model, handle_tama_unload_model,
 };
 pub use opencode::handle_opencode_list_models;
-pub use utils::{capitalize_first, generate_display_name};
+pub use utils::{
+    capitalize_first, generate_display_name, ModelEntry, ModelLimit, OpencodeModelsResponse,
+};
 
 #[cfg(test)]
 mod tests {

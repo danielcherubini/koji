@@ -16,7 +16,7 @@ pub use backend_logs::handle_backend_log_sse;
 pub use models::{
     capitalize_first, generate_display_name, handle_opencode_list_models, handle_tama_cancel_load,
     handle_tama_get_model, handle_tama_list_models, handle_tama_load_model,
-    handle_tama_unload_model,
+    handle_tama_unload_model, ModelEntry, ModelLimit, OpencodeModelsResponse,
 };
 pub use pull::{
     enqueue_pull, handle_pull_job_stream, handle_tama_get_pull_job, handle_tama_pull_model,
@@ -27,6 +27,6 @@ pub use system::{
     handle_tama_system_gpu_devices_refresh, handle_tama_system_health, handle_tama_system_restart,
 };
 pub use types::{
-    max_concurrent_pulls, ListModelsResponse, ListedModelResponse, ModelResponse, PullRequest,
-    PullResponse, QuantEntry, QuantPullSpec,
+    max_concurrent_pulls, ListModelsResponse, ListedModelResponse, ModelMutationResponse,
+    ModelResponse, OkResponse, PullRequest, PullResponse, QuantEntry, QuantPullSpec,
 };
