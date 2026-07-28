@@ -22,6 +22,7 @@ pub use helpers::*;
 
 #[cfg(feature = "web-ui")]
 #[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "event", rename_all = "PascalCase")]
 pub enum UpdateEvent {
     CheckStarted {
         item_type: String,
@@ -44,6 +45,24 @@ pub enum UpdateEvent {
         item_type: String,
         reason: String,
     },
+}
+
+#[cfg(feature = "web-ui")]
+impl UpdateEvent {
+    /// Serialize into an SSE event: the `event:` name is the variant name and
+    /// the JSON data is the internally-tagged payload (includes the `"event"` key).
+    pub fn to_sse_event(&self) -> Result<axum::response::sse::Event, serde_json::Error> {
+        let value = serde_json::to_value(self)?;
+        let name = value
+            .get("event")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown")
+            .to_owned();
+        let json_str = serde_json::to_string(&value)?;
+        Ok(axum::response::sse::Event::default()
+            .event(name)
+            .data(json_str))
+    }
 }
 
 /// Shared state for the update checker. Uses Arc<Mutex<()>> as a binary semaphore
