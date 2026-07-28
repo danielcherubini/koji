@@ -2,6 +2,7 @@ use super::*;
 use crate::api::error::error_response;
 use crate::api::helpers::shared_repository;
 use crate::web_types::WebState;
+use axum::response::sse::KeepAlive;
 use tama_core::proxy::tama_handlers::OkResponse;
 use tama_core::proxy::ProxyState;
 
@@ -95,7 +96,7 @@ pub async fn benchmark_events(
 
     let stream = crate::api::sse::job_event_stream(job);
     // KeepAlive is uniform across all SSE endpoints; the stream still ends on terminal status.
-    Ok(Sse::new(stream))
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
 // ── Handler: List benchmark history ───────────────────────────────────

@@ -1,5 +1,5 @@
 use axum::extract::{Extension, Path, State};
-use axum::response::sse::Event;
+use axum::response::sse::{Event, KeepAlive};
 use axum::{
     http::StatusCode,
     response::{IntoResponse, Sse},
@@ -90,7 +90,7 @@ pub async fn job_events_sse(
 
     let stream = crate::api::sse::job_event_stream(job);
     // KeepAlive is uniform across all SSE endpoints; the stream still ends on terminal status.
-    Ok(Sse::new(stream))
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
 #[cfg(test)]
