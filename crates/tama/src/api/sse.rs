@@ -33,9 +33,13 @@ where
                     Err(e) => yield Err(axum::Error::new(e)),
                 },
                 Err(broadcast::error::RecvError::Lagged(n)) => {
-                    yield Ok(Event::default()
+                    match Event::default()
                         .event("Lagged")
-                        .json_data(json!({ "lagged": n }))?);
+                        .json_data(json!({ "lagged": n }))
+                    {
+                        Ok(e) => yield Ok(e),
+                        Err(e) => yield Err(axum::Error::new(e)),
+                    }
                 }
                 Err(broadcast::error::RecvError::Closed) => break,
             }

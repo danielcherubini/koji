@@ -5,6 +5,7 @@ use super::{PullEvent, PullQueueService};
 use crate::config::Config;
 use crate::models::ModelManager;
 use crate::proxy::ProxyState;
+use crate::sse::ToSseEvent;
 
 // NOTE: Tests use raw SQL via `svc.test_model_mgr().conn().execute(...)`
 // to set up specific DB states (timestamps, statuses) that the public API

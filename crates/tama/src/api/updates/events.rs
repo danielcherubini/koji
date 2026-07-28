@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use crate::web_types::WebState;
 use tama_core::proxy::ProxyState;
+use tama_core::sse::ToSseEvent;
 
 /// GET /tama/v1/updates/events — SSE stream of update check lifecycle events.
 pub async fn update_events_sse(

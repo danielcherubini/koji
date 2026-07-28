@@ -4,6 +4,7 @@
 //! cancel items, and stream real-time events via SSE.
 use crate::api::error::error_body;
 use tama_core::proxy::ProxyState;
+use tama_core::sse::ToSseEvent;
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;

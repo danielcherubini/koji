@@ -33,6 +33,7 @@ All event payloads are self-describing: the JSON object contains an `"event"` ke
 | `CheckCompleted` | `{ event: "CheckCompleted", item_type, item_id, variant, dto }` |
 | `CheckError` | `{ event: "CheckError", item_type, item_id, variant, error }` |
 | `CheckSkipped` | `{ event: "CheckSkipped", item_type, reason }` |
+| `Lagged` | `{ lagged: N }` (client fell behind) |
 
 ## GET /tama/v1/self-update/events
 

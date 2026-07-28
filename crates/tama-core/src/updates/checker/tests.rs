@@ -1,5 +1,6 @@
 use super::*;
 use crate::models::update::FileStatus;
+use crate::sse::ToSseEvent;
 
 // ── determine_update_status tests ─────────────────────────────────────
 
