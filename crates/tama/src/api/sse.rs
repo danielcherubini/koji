@@ -11,6 +11,38 @@ use tokio::sync::broadcast;
 use crate::api::error::error_body;
 use crate::web_types::{Job, JobEvent, JobStatus};
 
+/// Drive a broadcast receiver into an SSE stream: map each domain event with
+/// `to_event`, emit a `Lagged` marker (`{"lagged": n}`) when the receiver falls
+/// behind, and end the stream when the channel closes.
+///
+/// This is the single receive-loop scaffolding shared by all broadcast-backed
+/// SSE endpoints (pulls, updates, jobs, …).
+pub fn broadcast_to_sse<E, F>(
+    mut rx: broadcast::Receiver<E>,
+    to_event: F,
+) -> impl Stream<Item = Result<Event, axum::Error>>
+where
+    E: Clone + Send + 'static,
+    F: Fn(&E) -> Result<Event, serde_json::Error> + Send + 'static,
+{
+    async_stream::stream! {
+        loop {
+            match rx.recv().await {
+                Ok(event) => match to_event(&event) {
+                    Ok(e) => yield Ok(e),
+                    Err(e) => yield Err(axum::Error::new(e)),
+                },
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    yield Ok(Event::default()
+                        .event("Lagged")
+                        .json_data(json!({ "lagged": n }))?);
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    }
+}
+
 /// Build the SSE event stream for a job: replay the log snapshot
 /// (head → skipped-marker → tail), replay any stored result, emit the
 /// terminal status/error if the job already finished, then stream live
@@ -104,5 +136,95 @@ pub fn job_event_stream(job: Arc<Job>) -> impl Stream<Item = Result<Event, axum:
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::response::sse::Event;
+    use futures_util::StreamExt;
+    use std::sync::{Arc, Mutex};
+    use tokio::sync::broadcast;
+
+    #[derive(Debug, Clone)]
+    enum TestEvent {
+        Hello,
+        World,
+    }
+
+    fn make_to_event(
+        received: Arc<Mutex<Vec<String>>>,
+    ) -> impl Fn(&TestEvent) -> Result<Event, serde_json::Error> + Send + 'static {
+        move |e: &TestEvent| {
+            let name = match e {
+                TestEvent::Hello => "Hello",
+                TestEvent::World => "World",
+            };
+            received.lock().unwrap().push(name.to_string());
+            Ok(Event::default().event(name).data(format!("data-{name}")))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_to_sse_maps_events() {
+        let received = Arc::new(Mutex::new(Vec::<String>::new()));
+        let (tx, rx) = broadcast::channel::<TestEvent>(16);
+        let stream = broadcast_to_sse(rx, make_to_event(received.clone()));
+        tokio::pin!(stream);
+
+        tx.send(TestEvent::Hello).unwrap();
+        tx.send(TestEvent::World).unwrap();
+        drop(tx);
+
+        let mut count = 0;
+        while let Some(item) = stream.next().await {
+            let _ = item.unwrap();
+            count += 1;
+        }
+
+        assert_eq!(count, 2);
+        assert_eq!(*received.lock().unwrap(), vec!["Hello", "World"]);
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_to_sse_lagged_marker() {
+        let received = Arc::new(Mutex::new(Vec::<String>::new()));
+        let (tx, rx) = broadcast::channel::<TestEvent>(1);
+        let stream = broadcast_to_sse(rx, make_to_event(received.clone()));
+        tokio::pin!(stream);
+
+        tx.send(TestEvent::Hello).unwrap();
+        tx.send(TestEvent::World).unwrap();
+        drop(tx);
+
+        let mut count = 0;
+        while let Some(item) = stream.next().await {
+            let _ = item.unwrap();
+            count += 1;
+        }
+
+        // Lagged(1) → Ok(World) → Closed  →  2 items, to_event called once (World only)
+        assert_eq!(count, 2);
+        assert_eq!(*received.lock().unwrap(), vec!["World"]);
+    }
+
+    #[tokio::test]
+    async fn test_broadcast_to_sse_closed_ends_stream() {
+        let received = Arc::new(Mutex::new(Vec::<String>::new()));
+        let (tx, rx) = broadcast::channel::<TestEvent>(16);
+        let stream = broadcast_to_sse(rx, make_to_event(received.clone()));
+        tokio::pin!(stream);
+
+        drop(tx);
+
+        let mut count = 0;
+        while let Some(item) = stream.next().await {
+            let _ = item.unwrap();
+            count += 1;
+        }
+
+        assert_eq!(count, 0);
+        assert!(received.lock().unwrap().is_empty());
     }
 }
