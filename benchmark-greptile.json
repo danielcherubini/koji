@@ -1,0 +1,55 @@
+{
+  "branches": [
+    {
+      "variant": "Qwen baseline",
+      "session_id": "019fa7a6-29ec-7e33-9f87-05e16295440d",
+      "iterations": 2,
+      "findings_resolved": 2,
+      "remaining": 0,
+      "confidence": "5/5",
+      "issue_counts": {
+        "p0": 2,
+        "p1": 0,
+        "p2": 1,
+        "p3": 0
+      },
+      "actionable_count": 2,
+      "informational_count": 1,
+      "verdict": "clean"
+    },
+    {
+      "variant": "temp 0.5",
+      "session_id": "019fa7ec-a7d3-7949-ad8a-2457de28a803",
+      "iterations": 2,
+      "findings_resolved": 2,
+      "remaining": 0,
+      "confidence": "5/5",
+      "issue_counts": {
+        "p0": 0,
+        "p1": 0,
+        "p2": 0,
+        "p3": 0
+      },
+      "actionable_count": 0,
+      "informational_count": 0,
+      "verdict": "clean"
+    },
+    {
+      "variant": "temp 0.7 / top_p 0.95",
+      "session_id": "019fa8b8-b003-77fa-a375-30429e69df78",
+      "iterations": 1,
+      "findings_resolved": 2,
+      "remaining": 0,
+      "confidence": "4/5",
+      "issue_counts": {
+        "p0": 0,
+        "p1": 0,
+        "p2": 0,
+        "p3": 0
+      },
+      "actionable_count": 0,
+      "informational_count": 0,
+      "verdict": "clean"
+    }
+  ]
+}
