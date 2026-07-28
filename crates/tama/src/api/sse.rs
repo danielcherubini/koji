@@ -11,6 +11,35 @@ use serde_json::json;
 use crate::web_types::{Job, JobEvent, JobStatus};
 use tokio::sync::broadcast;
 
+/// Drive a broadcast receiver into an SSE stream: map each domain event with
+/// `to_event`, emit a `Lagged` marker (`{"lagged": n}`) when the receiver falls
+/// behind, and end the stream when the channel closes.
+pub fn broadcast_to_sse<E, F>(
+    mut rx: broadcast::Receiver<E>,
+    to_event: F,
+) -> impl Stream<Item = Result<Event, axum::Error>>
+where
+    E: Clone + Send + 'static,
+    F: Fn(&E) -> anyhow::Result<Event> + Send + 'static,
+{
+    stream! {
+        loop {
+            match rx.recv().await {
+                Ok(event) => match to_event(&event) {
+                    Ok(e) => yield Ok(e),
+                    Err(err) => yield Err(axum::Error::new(err.to_string())),
+                },
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    yield Ok(Event::default()
+                        .event("Lagged")
+                        .json_data(json!({ "lagged": n }))?);
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    }
+}
+
 /// Build the SSE event stream for a job: replay the log snapshot
 /// (head → skipped-marker → tail), replay any stored result, emit the
 /// terminal status/error if the job already finished, then stream live

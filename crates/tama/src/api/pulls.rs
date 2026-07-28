@@ -5,7 +5,6 @@
 use crate::api::error::error_body;
 use tama_core::proxy::ProxyState;
 
-use async_stream::stream;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{
@@ -15,7 +14,6 @@ use axum::response::{
 use futures_util::Stream;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tokio::sync::broadcast;
 
 // ── DTO types ────────────────────────────────────────────────────────────────
 
@@ -192,103 +190,10 @@ pub async fn pull_events_sse(
         .pull_queue()
         .as_ref()
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
-
-    let mut rx = svc.subscribe_events();
-
-    let stream = stream! {
-        loop {
-            match rx.recv().await {
-                Ok(event) => {
-                    let sse_event = match event {
-                        tama_core::proxy::pull_queue::PullEvent::Started { job_id, repo_id, filename, total_bytes } => {
-                            Event::default()
-                                .event("Started")
-                                .json_data(serde_json::json!({
-                                    "event": "Started",
-                                    "job_id": job_id,
-                                    "repo_id": repo_id,
-                                    "filename": filename,
-                                    "total_bytes": total_bytes,
-                                }))
-                        }
-                        tama_core::proxy::pull_queue::PullEvent::Progress { job_id, bytes_pulled, total_bytes } => {
-                            Event::default()
-                                .event("Progress")
-                                .json_data(serde_json::json!({
-                                    "event": "Progress",
-                                    "job_id": job_id,
-                                    "bytes_pulled": bytes_pulled,
-                                    "total_bytes": total_bytes,
-                                }))
-                        }
-                        tama_core::proxy::pull_queue::PullEvent::Verifying { job_id, filename } => {
-                            Event::default()
-                                .event("Verifying")
-                                .json_data(serde_json::json!({
-                                    "event": "Verifying",
-                                    "job_id": job_id,
-                                    "filename": filename,
-                                }))
-                        }
-                        tama_core::proxy::pull_queue::PullEvent::Completed { job_id, filename, size_bytes, duration_ms } => {
-                            Event::default()
-                                .event("Completed")
-                                .json_data(serde_json::json!({
-                                    "event": "Completed",
-                                    "job_id": job_id,
-                                    "filename": filename,
-                                    "size_bytes": size_bytes,
-                                    "duration_ms": duration_ms,
-                                }))
-                        }
-                        tama_core::proxy::pull_queue::PullEvent::Failed { job_id, filename, error } => {
-                            Event::default()
-                                .event("Failed")
-                                .json_data(serde_json::json!({
-                                    "event": "Failed",
-                                    "job_id": job_id,
-                                    "filename": filename,
-                                    "error": error,
-                                }))
-                        }
-                        tama_core::proxy::pull_queue::PullEvent::Cancelled { job_id, filename } => {
-                            Event::default()
-                                .event("Cancelled")
-                                .json_data(serde_json::json!({
-                                    "event": "Cancelled",
-                                    "job_id": job_id,
-                                    "filename": filename,
-                                }))
-                        }
-                        tama_core::proxy::pull_queue::PullEvent::Queued { job_id, repo_id, filename } => {
-                            Event::default()
-                                .event("Queued")
-                                .json_data(serde_json::json!({
-                                    "event": "Queued",
-                                    "job_id": job_id,
-                                    "repo_id": repo_id,
-                                    "filename": filename,
-                                }))
-                        }
-                    };
-
-                    match sse_event {
-                        Ok(e) => yield Ok(e),
-                        Err(e) => yield Err(axum::Error::new(e)),
-                    }
-                }
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    // Client fell behind; emit a marker event with the lag count.
-                    yield Ok(Event::default()
-                        .event("Lagged")
-                        .json_data(serde_json::json!({ "lagged": n }))?);
-                }
-                Err(broadcast::error::RecvError::Closed) => {
-                    break;
-                }
-            }
-        }
-    };
-
+    let rx = svc.subscribe_events();
+    let stream = crate::api::sse::broadcast_to_sse(
+        rx,
+        tama_core::proxy::pull_queue::PullEvent::to_sse_event,
+    );
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
