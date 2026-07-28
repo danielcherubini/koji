@@ -1,0 +1,25 @@
+{
+  "_comment": "Maps variant labels to the bare ULID portion of each session's JSONL filename in ~/.pi/agent/sessions/--home-daniel-Coding-Rust-tama--/. The full filename is date-prefixed: <date>_<ulid>.jsonl. Discovery rules: Qwen baseline = branch ends in 'qwen' AND first user message mentions plan-175; temp 0.5 = branch ends in 'temp-0.5'; temp 0.3 (aborted #1, #2) = two sessions on 'laguna-s-2.1' with NO 'git branch -m' rename AND last assistant stopReason != 'stop', sorted by session.timestamp ascending; temp 0.7 = most recent session on 'laguna-s-2.1' that has 'git branch -m ... temp-0.7-top-p-0.95'.",
+  "sessions": [
+    {
+      "variant": "Qwen baseline",
+      "session_id": "019fa7a6-29ec-7e33-9f87-05e16295440d"
+    },
+    {
+      "variant": "temp 0.5",
+      "session_id": "019fa7ec-a7d3-7949-ad8a-2457de28a803"
+    },
+    {
+      "variant": "temp 0.3 (aborted #1)",
+      "session_id": "019fa868-eecc-7bfa-9b3f-f947126315c5"
+    },
+    {
+      "variant": "temp 0.3 (aborted #2)",
+      "session_id": "019fa887-0183-7a62-8248-38ebf6683481"
+    },
+    {
+      "variant": "temp 0.7 / top_p 0.95",
+      "session_id": "019fa8b8-b003-77fa-a375-30429e69df78"
+    }
+  ]
+}
