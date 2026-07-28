@@ -20,6 +20,7 @@ pub mod models;
 pub mod openapi;
 pub mod pulls;
 pub mod self_update;
+pub mod sse;
 pub mod updates;
 
 // Re-export for backward compatibility

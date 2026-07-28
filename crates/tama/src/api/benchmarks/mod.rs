@@ -20,7 +20,6 @@ use axum::{
 };
 use futures_util::Stream;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use std::sync::Arc;
 
 use crate::api::error::error_response;
