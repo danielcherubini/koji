@@ -12,7 +12,7 @@ mod spec;
 
 use anyhow::Result;
 use axum::extract::{Extension, Path, State};
-use axum::response::sse::Event;
+use axum::response::sse::{Event, KeepAlive};
 use axum::{
     http::StatusCode,
     response::{IntoResponse, Sse},

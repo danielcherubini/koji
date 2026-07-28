@@ -1,5 +1,5 @@
 use axum::extract::{Extension, Path, State};
-use axum::response::sse::Event;
+use axum::response::sse::{Event, KeepAlive};
 use axum::{
     http::StatusCode,
     response::{IntoResponse, Sse},
@@ -89,7 +89,7 @@ pub async fn job_events_sse(
     let job = jobs.get(&job_id).await.ok_or(StatusCode::NOT_FOUND)?;
 
     let stream = crate::api::sse::job_event_stream(job);
-    Ok(Sse::new(stream))
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
 #[cfg(test)]

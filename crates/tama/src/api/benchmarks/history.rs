@@ -94,7 +94,7 @@ pub async fn benchmark_events(
     };
 
     let stream = crate::api::sse::job_event_stream(job);
-    Ok(Sse::new(stream))
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
 // ── Handler: List benchmark history ───────────────────────────────────
