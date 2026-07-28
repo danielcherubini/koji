@@ -1,5 +1,6 @@
 /// Events emitted by the pull queue service during lifecycle transitions.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "event", rename_all = "PascalCase")]
 pub enum PullEvent {
     Started {
         job_id: String,
@@ -36,4 +37,21 @@ pub enum PullEvent {
         repo_id: String,
         filename: String,
     },
+}
+
+impl PullEvent {
+    /// Serialize into an SSE event: the `event:` name is the variant name and
+    /// the JSON data is the internally-tagged payload (includes the `"event"` key).
+    pub fn to_sse_event(&self) -> anyhow::Result<axum::response::sse::Event> {
+        let value = serde_json::to_value(self)?;
+        let name = value
+            .get("event")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown")
+            .to_owned();
+        let event = axum::response::sse::Event::default()
+            .event(name)
+            .json_data(&value)?;
+        Ok(event)
+    }
 }

@@ -1230,3 +1230,73 @@ fn test_get_history_items_excludes_active() {
         "queued item should NOT be in history"
     );
 }
+
+// ── PullEvent tagged serialization tests ──────────────────────────────
+
+/// Test that all PullEvent variants serialize with the correct `event` tag.
+#[test]
+fn test_pull_event_tagged_serialization_all_variants() {
+    let cases: Vec<(PullEvent, &str)> = vec![
+        (
+            PullEvent::Started {
+                job_id: "j".into(),
+                repo_id: "a/b".into(),
+                filename: "f".into(),
+                total_bytes: Some(1),
+            },
+            "Started",
+        ),
+        (
+            PullEvent::Progress {
+                job_id: "j".into(),
+                bytes_pulled: 1,
+                total_bytes: None,
+            },
+            "Progress",
+        ),
+        (
+            PullEvent::Verifying {
+                job_id: "j".into(),
+                filename: "f".into(),
+            },
+            "Verifying",
+        ),
+        (
+            PullEvent::Completed {
+                job_id: "j".into(),
+                filename: "f".into(),
+                size_bytes: 2,
+                duration_ms: 3,
+            },
+            "Completed",
+        ),
+        (
+            PullEvent::Failed {
+                job_id: "j".into(),
+                filename: "f".into(),
+                error: "e".into(),
+            },
+            "Failed",
+        ),
+        (
+            PullEvent::Cancelled {
+                job_id: "j".into(),
+                filename: "f".into(),
+            },
+            "Cancelled",
+        ),
+        (
+            PullEvent::Queued {
+                job_id: "j".into(),
+                repo_id: "a/b".into(),
+                filename: "f".into(),
+            },
+            "Queued",
+        ),
+    ];
+    for (event, expected_name) in cases {
+        let v = serde_json::to_value(&event).unwrap();
+        assert_eq!(v["event"], expected_name);
+        assert!(event.to_sse_event().is_ok());
+    }
+}
