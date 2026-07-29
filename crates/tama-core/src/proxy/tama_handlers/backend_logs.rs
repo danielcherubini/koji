@@ -192,5 +192,5 @@ pub async fn handle_backend_log_sse(
         }
     };
 
-    Sse::new(stream)
+    Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default())
 }

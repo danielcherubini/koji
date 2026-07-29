@@ -379,3 +379,51 @@ async fn test_gguf_listing_cache_expired_at_boundary() {
         "Cache entry should be expired at exactly TTL_SECS (300)"
     );
 }
+
+// ── UpdateEvent tagged serialization tests ────────────────────────────
+
+/// Test that all UpdateEvent variants serialize with the correct `event` tag.
+#[cfg(feature = "web-ui")]
+#[test]
+fn test_update_event_tagged_serialization_all_variants() {
+    let cases: Vec<(UpdateEvent, &str)> = vec![
+        (
+            UpdateEvent::CheckStarted {
+                item_type: "model".into(),
+                item_id: "1".into(),
+                variant: Some("cuda".into()),
+            },
+            "CheckStarted",
+        ),
+        (
+            UpdateEvent::CheckCompleted {
+                item_type: "backend".into(),
+                item_id: "2".into(),
+                variant: None,
+                dto: serde_json::json!({}),
+            },
+            "CheckCompleted",
+        ),
+        (
+            UpdateEvent::CheckError {
+                item_type: "model".into(),
+                item_id: "3".into(),
+                variant: Some("rocm".into()),
+                error: "network error".into(),
+            },
+            "CheckError",
+        ),
+        (
+            UpdateEvent::CheckSkipped {
+                item_type: "all".into(),
+                reason: "already running".into(),
+            },
+            "CheckSkipped",
+        ),
+    ];
+    for (event, expected_name) in cases {
+        let v = serde_json::to_value(&event).unwrap();
+        assert_eq!(v["event"], expected_name);
+        assert!(event.to_sse_event().is_ok());
+    }
+}
