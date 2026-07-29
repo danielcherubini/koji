@@ -13,8 +13,8 @@ Plans for features, refactors, and bug fixes in the Tama project.
 ## Quick Stats
 
 - **Total Plans**: 75
-- **Backlog**: 5
-- **Completed**: 69 ✅
+- **Backlog**: 4
+- **Completed**: 70 ✅
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan.
 
@@ -26,7 +26,6 @@ Current plans ready for execution, ordered by dependency-first cascade priority:
 
 | Plan | Description | Findings |
 |------|-------------|----------|
-| [Server SSE Consolidation](plan-175-server-sse-consolidation.md) | serde-tagged PullEvent/UpdateEvent + shared job_event_stream | F12 |
 | [Leptos UI Consolidation](plan-176-leptos-ui-consolidation.md) | Shared wasm-safe types via #[path] inclusion, collapse mirror types | F29, F31 |
 | [ProxyState Sub-structs](plan-177-proxystate-substructs.md) | RegistryState/MetricsState/PullState composition | F32 |
 | [Test Coverage Wave 2](plan-178-test-coverage-wave2.md) | Compaction/TTS via lifecycle traits, tama-mock integration | F22–F24, F36 |
