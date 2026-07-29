@@ -14,20 +14,13 @@ use wasm_bindgen::JsCast;
 use self::mtp_bench::MtpBench;
 use self::spec_bench::SpecBench;
 use self::types::{HistoryEntry, BENCHMARK_TYPES, LLAMA_BENCH_PRESETS};
-use self::utils::{format_relative, format_timestamp};
+use self::utils::{
+    fetch_bench_backends, format_mean_stddev, format_relative, format_timestamp, parse_sizes,
+    split_id_quant, use_benchmark_form_state, BenchmarkFormState,
+};
 use crate::components::job_log_panel::JobLogPanel;
 use crate::components::tab_buttons::{TabButton, TabButtons};
 use crate::utils::{extract_and_store_csrf_token, get_request, post_request};
-
-/// Render "mean ± stddev" with one decimal place, or a single value when
-/// stddev rounds to zero.
-fn format_mean_stddev(mean: f64, stddev: f64) -> String {
-    if stddev > 0.05 {
-        format!("{:.1} ± {:.1}", mean, stddev)
-    } else {
-        format!("{:.1}", mean)
-    }
-}
 
 /// Render a table of per-summary results, adding columns for whichever
 /// per-run knobs actually vary between rows. A column for a constant knob is
@@ -152,16 +145,22 @@ fn render_summaries_table(summaries: &[serde_json::Value]) -> impl IntoView {
 
 #[component]
 pub fn Benchmarks() -> impl IntoView {
-    // Model selection — two steps: pick display_name, then pick a quant. The
-    // resolved id (db_id as a string) is what we actually submit.
-    let selected_display_name = RwSignal::new(String::new());
-    let selected_model = RwSignal::new(String::new());
-    // Raw (id, display_name, vec_of_quants) entries from /tama/v1/models.
-    let available_models = RwSignal::new(Vec::<(String, String, Vec<String>)>::new());
+    // Shared benchmark form state (model/backend selection, job tracking)
+    let state = use_benchmark_form_state();
+    let BenchmarkFormState {
+        selected_display_name,
+        selected_model,
+        available_models,
+        selected_backend,
+        available_backends,
+        is_running,
+        current_job_id,
+        benchmark_results,
+        model_refresh: _,
+    } = state;
 
-    // Backend selection — which backend's llama-bench to use
-    let selected_backend = RwSignal::new(String::new());
-    let available_backends = RwSignal::new(Vec::<(String, String)>::new()); // (name, display_name)
+    // Fetch available backends for llama-bench selection.
+    fetch_bench_backends(available_backends);
 
     // Test Type dropdown — selects a preset benchmark type that auto-fills form fields.
     let selected_bench_type = RwSignal::new("baseline".to_string());
@@ -186,74 +185,11 @@ pub fn Benchmarks() -> impl IntoView {
     let depth_str = RwSignal::new("".to_string());
     let flash_attn = RwSignal::new(true);
 
-    // Job state — is_running tracks whether a benchmark is currently running
-    let is_running = RwSignal::new(false);
-    let current_job_id = RwSignal::new(Option::<String>::None);
-    // Full BenchReport payload delivered over the SSE "result" event, parsed
-    // once for display. The frontend expects `{ model_info, config, summaries,
-    // load_time_ms, vram }`.
-    let benchmark_results = RwSignal::new(Option::<serde_json::Value>::None);
-
     // History state — always visible.
     let history = RwSignal::new(Vec::<HistoryEntry>::new());
     // IDs of history rows whose per-summary detail panel is open. Each row acts
     // as an accordion toggle — clicking flips its id in this set.
     let expanded_history = RwSignal::new(HashSet::<i64>::new());
-
-    // Refresh trigger — increment to force a refetch
-    let model_refresh = RwSignal::new(0u32);
-
-    // Fetch available models on mount.
-    Effect::new(move |_| {
-        let _ = model_refresh.get();
-        spawn_local(async move {
-            if let Ok(resp) = get_request("/tama/v1/models").send().await {
-                extract_and_store_csrf_token(&resp);
-                if let Ok(root) = resp.json::<serde_json::Value>().await {
-                    if let Some(models_arr) = root.get("models").and_then(|v| v.as_array()) {
-                        // Flatten parse_model results (one tuple per quant) and deduplicate
-                        // by (display_name, quant) keeping the first id for each unique pair.
-                        let mut seen: std::collections::HashSet<(String, String)> =
-                            std::collections::HashSet::new();
-                        let model_list: Vec<(String, String, Vec<String>)> = models_arr
-                            .iter()
-                            .filter_map(types::parse_model)
-                            .flatten()
-                            .filter(|(_, name, quant)| seen.insert((name.clone(), quant.clone())))
-                            .map(|(id, name, quant)| (id, name, vec![quant]))
-                            .collect();
-                        available_models.update(|list| *list = model_list);
-                    }
-                }
-            }
-        });
-    });
-
-    // Fetch available backends for llama-bench selection.
-    {
-        spawn_local(async move {
-            if let Ok(resp) = get_request("/tama/v1/backends").send().await {
-                extract_and_store_csrf_token(&resp);
-                if let Ok(root) = resp.json::<serde_json::Value>().await {
-                    if let Some(backends_arr) = root.get("backends").and_then(|v| v.as_array()) {
-                        let backend_list: Vec<(String, String)> = backends_arr
-                            .iter()
-                            .filter_map(|b| {
-                                let name = b.get("type")?.as_str()?.to_string();
-                                let display = b
-                                    .get("display_name")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or(&name)
-                                    .to_string();
-                                Some((name, display))
-                            })
-                            .collect();
-                        available_backends.update(|list| *list = backend_list);
-                    }
-                }
-            }
-        });
-    }
 
     // Trigger for history refetch — incremented whenever we want to reload.
     let history_refresh = RwSignal::new(0u32);
@@ -270,18 +206,6 @@ pub fn Benchmarks() -> impl IntoView {
             }
         });
     });
-
-    // Parse helpers. Zero is a meaningful value — `-p 0` pins llama-bench to
-    // pure-TG mode, which is exactly what the KV-quant and depth-validation
-    // phases of the methodology want. So we only drop empty/unparsable
-    // tokens, not zeros.
-    let parse_sizes = move |s: &str| -> Vec<u32> {
-        s.split(',')
-            .map(|v| v.trim())
-            .filter(|v| !v.is_empty())
-            .filter_map(|v| v.parse::<u32>().ok())
-            .collect()
-    };
 
     let parse_threads = move |s: &str| -> Option<Vec<u32>> {
         if s.trim().to_lowercase() == "auto" || s.trim().is_empty() {
@@ -313,14 +237,7 @@ pub fn Benchmarks() -> impl IntoView {
     let submit_benchmark = move || {
         // selected_model holds "id:quant" — split to extract both parts.
         let raw_model = selected_model.get();
-        let (model_id, quant) = if let Some(colon) = raw_model.find(':') {
-            (
-                raw_model[..colon].to_string(),
-                Some(raw_model[colon + 1..].to_string()),
-            )
-        } else {
-            (raw_model, None)
-        };
+        let (model_id, quant) = split_id_quant(&raw_model);
         let pp = parse_sizes(&pp_sizes_str.get());
         let tg = parse_sizes(&tg_sizes_str.get());
         let runs_val = runs.get();
@@ -411,22 +328,6 @@ pub fn Benchmarks() -> impl IntoView {
         if status != "running" {
             is_running.set(false);
             history_refresh.update(|n| *n += 1);
-        }
-    });
-
-    // When the display_name changes, auto-select the first quant so the id is
-    // always populated. Value format is "id:quant".
-    Effect::new(move |_| {
-        let dn = selected_display_name.get();
-        let models = available_models.get();
-        if let Some((id, _, quants)) = models.iter().find(|(_, name, _)| name == &dn) {
-            if let Some(first_quant) = quants.first() {
-                selected_model.set(format!("{}:{}", id, first_quant));
-            } else {
-                selected_model.set(id.clone());
-            }
-        } else {
-            selected_model.set(String::new());
         }
     });
 

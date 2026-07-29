@@ -5,7 +5,7 @@ use crate::utils::target_value;
 
 #[component]
 pub fn ProxyAdvancedFields(
-    config: RwSignal<Option<crate::pages::config_editor::types::Config>>,
+    config: RwSignal<Option<crate::types::config::Config>>,
 ) -> impl IntoView {
     let get_proxy = move || config.get().map(|c| c.proxy).unwrap_or_default();
 

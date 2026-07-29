@@ -5,9 +5,7 @@ use crate::components::section_card::SectionCard;
 use crate::utils::target_value;
 
 #[component]
-pub fn LangfuseForm(
-    config: RwSignal<Option<crate::pages::config_editor::types::Config>>,
-) -> impl IntoView {
+pub fn LangfuseForm(config: RwSignal<Option<crate::types::config::Config>>) -> impl IntoView {
     let get_langfuse = move || config.get().map(|c| c.langfuse).unwrap_or_default();
     let enabled = move || get_langfuse().enabled;
 

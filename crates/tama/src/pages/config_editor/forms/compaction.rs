@@ -6,9 +6,7 @@ use crate::core_mirrors::CompactionDevice as CoreCompactionDevice;
 use crate::utils::target_value;
 
 #[component]
-pub fn CompactionForm(
-    config: RwSignal<Option<crate::pages::config_editor::types::Config>>,
-) -> impl IntoView {
+pub fn CompactionForm(config: RwSignal<Option<crate::types::config::Config>>) -> impl IntoView {
     let get_compaction = move || config.get().map(|c| c.compaction).unwrap_or_default();
 
     view! {
@@ -39,7 +37,7 @@ pub fn CompactionForm(
                             let v = target_value(&ev);
                             config.update(|c| {
                                 if let Some(c) = c {
-                                    c.compaction.device = CoreCompactionDevice::from_str(&v);
+                                    c.compaction.device = CoreCompactionDevice::from_str(&v).unwrap_or_default();
                                 }
                             });
                         }

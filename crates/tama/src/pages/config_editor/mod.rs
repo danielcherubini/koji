@@ -1,5 +1,4 @@
-mod types;
-pub use types::*;
+pub use crate::types::config::*;
 
 mod forms;
 

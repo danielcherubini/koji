@@ -1,3 +1,10 @@
+//! Fetching patterns used across pages (both are accepted; do not mix within one fetch):
+//! 1. `LocalResource::new(|| async …)` + `Suspend`/manual `Option` handling — used by
+//!    LocalResource users for read-on-mount data.
+//! 2. `spawn_local` + `RwSignal` (loading/error signals managed by hand) — the dominant
+//!    pattern (~18 files). Use the `*_request` helpers below for CSRF injection and
+//!    always call `extract_and_store_csrf_token` on 2xx GET responses.
+
 pub mod chart_utils;
 pub mod self_update;
 
@@ -94,6 +101,15 @@ pub fn delete_request(url: &str) -> RequestBuilder {
     builder
 }
 
+/// Build a PATCH request with X-CSRF-Token header injected.
+pub fn patch_request(url: &str) -> RequestBuilder {
+    let mut builder = Request::patch(url);
+    if let Some(token) = get_csrf_token() {
+        builder = builder.header("X-CSRF-Token", &token);
+    }
+    builder
+}
+
 /// Format bytes into a human-readable string (KB, MB, GB).
 pub fn format_size(bytes: u64) -> String {
     if bytes >= 1_073_741_824 {
@@ -104,6 +120,40 @@ pub fn format_size(bytes: u64) -> String {
         format!("{:.1} KB", bytes as f64 / 1_024.0)
     } else {
         format!("{} B", bytes)
+    }
+}
+
+/// Set an input's value by DOM id. Handles input, select, and textarea elements.
+pub fn set_input_value(id: &str, value: &str) {
+    use wasm_bindgen::JsCast;
+    if let Some(el) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id(id))
+    {
+        if let Ok(input) = el.clone().dyn_into::<web_sys::HtmlInputElement>() {
+            input.set_value(value);
+            return;
+        }
+        if let Ok(select) = el.clone().dyn_into::<web_sys::HtmlSelectElement>() {
+            select.set_value(value);
+            return;
+        }
+        if let Ok(textarea) = el.dyn_into::<web_sys::HtmlTextAreaElement>() {
+            textarea.set_value(value);
+        }
+    }
+}
+
+/// Set a checkbox's checked state by DOM id.
+pub fn set_checked(id: &str, checked: bool) {
+    use wasm_bindgen::JsCast;
+    if let Some(el) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id(id))
+    {
+        if let Ok(input) = el.dyn_into::<web_sys::HtmlInputElement>() {
+            input.set_checked(checked);
+        }
     }
 }
 

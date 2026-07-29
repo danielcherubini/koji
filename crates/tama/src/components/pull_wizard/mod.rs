@@ -1,18 +1,9 @@
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
-// ── Local types ──────────────────────────────────────────────────────────────
+// ── Re-exports from core_shared (shared source on both ssr and csr) ─────────
 
-/// Mirrors `tama_core::config::QuantKind`. Used to distinguish model quants
-/// from auxiliary files (mmproj, MTP) in the wizard's grouping logic.
-#[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum QuantKind {
-    #[default]
-    Model,
-    Mmproj,
-    Mtp,
-}
+pub use crate::core_shared::QuantKind;
 
 /// Mirrors `tama_core::models::pull::HfModelMetadata` for frontend use.
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
@@ -110,128 +101,7 @@ pub fn step_class(current: &WizardStep, target: &WizardStep, target_idx: usize) 
     }
 }
 
-/// Try to infer the quantization type from a GGUF filename.
-/// Common patterns: "Model-Q4_K_M.gguf", "model.Q8_0.gguf", "model-q4_k_m.gguf"
-///
-/// This is a wrapper around `tama_core::models::infer_quant_from_filename` for
-/// the SSR feature. For CSR (client-side), we use a local implementation.
-#[cfg(feature = "ssr")]
-pub fn infer_quant_from_filename(filename: &str) -> Option<String> {
-    tama_core::models::infer_quant_from_filename(filename)
-}
-
-/// Try to infer the quantization type from a GGUF filename.
-/// Common patterns: "Model-Q4_K_M.gguf", "model.Q8_0.gguf", "model-q4_k_m.gguf"
-///
-/// Client-side (CSR) implementation - mirrors the core logic for WASM builds.
-#[cfg(not(feature = "ssr"))]
-pub fn infer_quant_from_filename(filename: &str) -> Option<String> {
-    let stem = filename.strip_suffix(".gguf")?;
-
-    // Ordered longest-first so "Q4_K_M" matches before "Q4_K"
-    // Includes UD (Unsloth Dynamic) and APEX variants
-    let quant_patterns = [
-        // APEX semantic quants (must come before APEX standard patterns)
-        "APEX-I-BALANCED",
-        "APEX-I-QUALITY",
-        "APEX-I-COMPACT",
-        "APEX-I-MINI",
-        // APEX IQ quants
-        "APEX-IQ2_XXS",
-        "APEX-IQ3_XXS",
-        "APEX-IQ1_S",
-        "APEX-IQ1_M",
-        "APEX-IQ2_XS",
-        "APEX-IQ2_S",
-        "APEX-IQ2_M",
-        "APEX-IQ3_XS",
-        "APEX-IQ3_S",
-        "APEX-IQ3_M",
-        "APEX-IQ4_XS",
-        "APEX-IQ4_NL",
-        // APEX standard quants
-        "APEX-Q2_K_S",
-        "APEX-Q3_K_S",
-        "APEX-Q3_K_M",
-        "APEX-Q3_K_L",
-        "APEX-Q4_K_S",
-        "APEX-Q4_K_M",
-        "APEX-Q4_K_L",
-        "APEX-Q5_K_S",
-        "APEX-Q5_K_M",
-        "APEX-Q5_K_L",
-        "APEX-Q6_K",
-        "APEX-Q8_0",
-        // UD semantic quants (must come before UD standard patterns)
-        "UD-I-BALANCED",
-        "UD-I-QUALITY",
-        "UD-I-COMPACT",
-        "UD-I-MINI",
-        // Unsloth Dynamic (UD) IQ quants
-        "UD-IQ2_XXS",
-        "UD-IQ3_XXS",
-        "UD-IQ1_S",
-        "UD-IQ1_M",
-        "UD-IQ2_XS",
-        "UD-IQ2_S",
-        "UD-IQ2_M",
-        "UD-IQ3_XS",
-        "UD-IQ3_S",
-        "UD-IQ3_M",
-        "UD-IQ4_XS",
-        "UD-IQ4_NL",
-        // Unsloth Dynamic (UD) standard quants
-        "UD-Q2_K_S",
-        "UD-Q3_K_S",
-        "UD-Q3_K_M",
-        "UD-Q3_K_L",
-        "UD-Q4_K_S",
-        "UD-Q4_K_M",
-        "UD-Q4_K_L",
-        "UD-Q5_K_S",
-        "UD-Q5_K_M",
-        "UD-Q5_K_L",
-        "UD-Q6_K",
-        "UD-Q8_0",
-        // Standard quants
-        "IQ4_NL",
-        "IQ3_NL",
-        "IQ2_NL",
-        "Q8_0",
-        "Q6_K",
-        "Q5_K_L",
-        "Q5_K_M",
-        "Q5_K_S",
-        "Q4_K_L",
-        "Q4_K_M",
-        "Q4_K_S",
-        "Q3_K_L",
-        "Q3_K_M",
-        "Q3_K_S",
-        "Q2_K_S",
-        "Q2_K",
-        "IQ4_XS",
-        "IQ3_XS",
-        "IQ3_S",
-        "IQ3_M",
-        "IQ2_S",
-        "IQ2_XS",
-        "IQ1_S",
-        "IQ1_M",
-        "IQ2_XXS",
-        "IQ3_XXS",
-    ];
-
-    let stem_upper = stem.to_uppercase();
-
-    for pattern in &quant_patterns {
-        if stem_upper.contains(pattern) {
-            return Some((*pattern).to_string());
-        }
-    }
-
-    None
-}
+pub use crate::core_shared::infer_quant_from_filename;
 
 // ── Request body type ────────────────────────────────────────────────────────
 

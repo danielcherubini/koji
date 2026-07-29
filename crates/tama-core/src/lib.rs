@@ -25,6 +25,7 @@ pub mod process;
 pub mod profiles;
 pub mod proxy;
 pub mod self_update;
+pub mod types;
 pub mod updates;
 
 #[cfg(test)]

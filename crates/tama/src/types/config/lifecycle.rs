@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use tama_core::config::RestartPolicy as CoreRestartPolicy;
+use crate::core_shared::RestartPolicy as CoreRestartPolicy;
 
 /// Backend lifecycle configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

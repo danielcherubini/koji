@@ -69,9 +69,7 @@ macro_rules! sampling_u32 {
 // ─── Sampling Templates Form ──────────────────────────────────────────────
 
 #[component]
-pub fn SamplingForm(
-    config: RwSignal<Option<crate::pages::config_editor::types::Config>>,
-) -> impl IntoView {
+pub fn SamplingForm(config: RwSignal<Option<crate::types::config::Config>>) -> impl IntoView {
     let template_keys = move || {
         config
             .get()

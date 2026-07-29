@@ -2,8 +2,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use tama_core::config::HealthCheck as CoreHealthCheck;
-
 /// Health check configuration for a model.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct HealthCheck {
@@ -16,28 +14,6 @@ pub struct HealthCheck {
     /// HTTP timeout in milliseconds per health check request (default: 3000).
     #[serde(default)]
     pub timeout_ms: Option<u64>,
-}
-
-/// Convert from tama_core::config::HealthCheck to mirror type.
-impl From<CoreHealthCheck> for HealthCheck {
-    fn from(h: CoreHealthCheck) -> Self {
-        Self {
-            url: h.url,
-            interval_ms: h.interval_ms,
-            timeout_ms: h.timeout_ms,
-        }
-    }
-}
-
-/// Convert from mirror HealthCheck to tama_core::config::HealthCheck.
-impl From<HealthCheck> for CoreHealthCheck {
-    fn from(h: HealthCheck) -> Self {
-        Self {
-            url: h.url,
-            interval_ms: h.interval_ms,
-            timeout_ms: h.timeout_ms,
-        }
-    }
 }
 
 #[cfg(test)]

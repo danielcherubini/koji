@@ -3,35 +3,7 @@ use wasm_bindgen::JsCast;
 
 use super::types::ModelForm;
 use crate::components::context_length_selector::ContextLengthSelector;
-use crate::utils::target_value;
-
-/// Set an input's value by DOM id.
-fn set_input_value(id: &str, value: &str) {
-    if let Some(el) = web_sys::window()
-        .and_then(|w| w.document())
-        .and_then(|d| d.get_element_by_id(id))
-    {
-        if let Ok(input) = el.clone().dyn_into::<web_sys::HtmlInputElement>() {
-            input.set_value(value);
-            return;
-        }
-        if let Ok(select) = el.dyn_into::<web_sys::HtmlSelectElement>() {
-            select.set_value(value);
-        }
-    }
-}
-
-/// Set a checkbox's checked state by DOM id.
-fn set_checked(id: &str, checked: bool) {
-    if let Some(el) = web_sys::window()
-        .and_then(|w| w.document())
-        .and_then(|d| d.get_element_by_id(id))
-    {
-        if let Ok(input) = el.dyn_into::<web_sys::HtmlInputElement>() {
-            input.set_checked(checked);
-        }
-    }
-}
+use crate::utils::{set_checked, set_input_value, target_value};
 
 const KV_QUANT_OPTIONS: &[&str] = &[
     "f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1",

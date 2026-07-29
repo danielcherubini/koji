@@ -1,9 +1,10 @@
-use gloo_net::http::Request;
 use leptos::prelude::*;
 use wasm_bindgen_futures::spawn_local;
 
 use crate::components::list_card::ListCard;
-use crate::utils::{post_request, self_update::stream_update_events};
+use crate::utils::{
+    extract_and_store_csrf_token, get_request, post_request, self_update::stream_update_events,
+};
 
 /// Self-update section component for the /updates page.
 ///
@@ -35,8 +36,9 @@ pub fn SelfUpdateSection() -> impl IntoView {
     let check_for_updates = move || {
         checking.set(true);
         spawn_local(async move {
-            match Request::get("/tama/v1/self-update/check").send().await {
+            match get_request("/tama/v1/self-update/check").send().await {
                 Ok(resp) if resp.ok() => {
+                    extract_and_store_csrf_token(&resp);
                     if let Ok(data) = resp.json::<serde_json::Value>().await {
                         if let Some(v) = data["current_version"].as_str() {
                             current_version.set(v.to_string());

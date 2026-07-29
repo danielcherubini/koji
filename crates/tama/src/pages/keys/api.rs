@@ -1,5 +1,7 @@
 use super::types::{ApiKey, CreateKeyResponse};
-use crate::utils::{delete_request, extract_and_store_csrf_token, get_request, post_request};
+use crate::utils::{
+    delete_request, extract_and_store_csrf_token, get_request, patch_request, post_request,
+};
 
 /// Fetch all API keys from the backend.
 pub async fn fetch_keys() -> Result<Vec<ApiKey>, String> {
@@ -38,11 +40,8 @@ pub async fn update_key_scopes(id: i64, scopes: &[String]) -> Result<ApiKey, Str
         "scopes": scopes,
     });
 
-    // gloo-net provides `Request::patch()` — use it directly with CSRF.
-    let token = crate::utils::get_csrf_token().unwrap_or_default();
-    let resp = gloo_net::http::Request::patch(&format!("/tama/v1/keys/{}", id))
+    let resp = patch_request(&format!("/tama/v1/keys/{}", id))
         .header("Content-Type", "application/json")
-        .header("X-CSRF-Token", &token)
         .body(serde_json::to_string(&body).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?
         .send()

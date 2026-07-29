@@ -5,9 +5,7 @@ use crate::core_mirrors::RestartPolicy as CoreRestartPolicy;
 use crate::utils::target_value;
 
 #[component]
-pub fn LifecycleForm(
-    config: RwSignal<Option<crate::pages::config_editor::types::Config>>,
-) -> impl IntoView {
+pub fn LifecycleForm(config: RwSignal<Option<crate::types::config::Config>>) -> impl IntoView {
     let get_lc = move || config.get().map(|c| c.lifecycle).unwrap_or_default();
 
     view! {
@@ -22,7 +20,7 @@ pub fn LifecycleForm(
                             let v = target_value(&ev);
                             config.update(|c| {
                                 if let Some(c) = c {
-                                    c.lifecycle.restart_policy = CoreRestartPolicy::from_str(&v);
+                                    c.lifecycle.restart_policy = CoreRestartPolicy::from_str(&v).unwrap_or_default();
                                 }
                             });
                         }

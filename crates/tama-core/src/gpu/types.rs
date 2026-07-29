@@ -1,59 +1,7 @@
+pub use crate::types::gpu::{GpuVendor, ModelState};
 use serde::{Deserialize, Serialize};
 
 use super::vram::VramInfo;
-
-/// GPU vendor identifier.
-///
-/// `PartialOrd`/`Ord` derive is used for stable sort ordering of GPU devices
-/// in `SystemMetrics` (Amd < Nvidia).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, PartialOrd, Ord)]
-#[serde(rename_all = "lowercase")]
-pub enum GpuVendor {
-    Amd,
-    #[default]
-    Nvidia,
-}
-
-impl GpuVendor {
-    /// Convert the vendor to its string representation.
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Nvidia => "nvidia",
-            Self::Amd => "amd",
-        }
-    }
-}
-
-/// Lifecycle state of a model's backend.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ModelState {
-    /// No model is loaded on this backend.
-    #[default]
-    Idle,
-    /// The backend is currently starting up.
-    #[serde(alias = "loading")]
-    Starting,
-    /// The backend is ready and accepting requests.
-    Ready,
-    /// The backend is unloading.
-    Unloading,
-    /// The backend has failed to load or crashed.
-    Failed,
-}
-
-impl ModelState {
-    /// Convert the state to its string representation.
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Idle => "idle",
-            Self::Starting => "starting",
-            Self::Ready => "ready",
-            Self::Unloading => "unloading",
-            Self::Failed => "failed",
-        }
-    }
-}
 
 /// Per-GPU device statistics for a single tick. One entry per detected
 /// device (NVIDIA or AMD). Order is stable per-tick: NVIDIA devices

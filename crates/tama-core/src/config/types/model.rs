@@ -1,55 +1,11 @@
+pub use crate::types::quant::{QuantEntry, QuantKind};
+
 use crate::db::queries::ModelConfigRecord;
 use crate::gpu::GpuVariant;
 use crate::profiles::SamplingParams;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::str::FromStr;
-
-/// What kind of file a quant entry represents.
-///
-/// Used to distinguish regular GGUF model quants from auxiliary files like
-/// vision projectors (mmproj) and MTP draft models. Drives both UI grouping
-/// and how the file is passed on the server command line (`-m` vs `--mmproj`
-/// vs `--spec-draft-model`).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum QuantKind {
-    /// A regular GGUF model quantization (Q4_K_M, Q8_0, F16, etc.).
-    #[default]
-    Model,
-    /// A vision projector (mmproj-*.gguf). Passed via `--mmproj` to llama.cpp.
-    Mmproj,
-    /// An MTP draft model (mtp-*.gguf). Passed via --spec-draft-model to llama.cpp.
-    Mtp,
-}
-
-impl QuantKind {
-    /// Infer the kind from a filename. Defaults to `Model` for anything that
-    /// doesn't match a known auxiliary-file pattern.
-    pub fn from_filename(filename: &str) -> Self {
-        let lower = filename.to_lowercase();
-        if lower.starts_with("mmproj") && lower.ends_with(".gguf") {
-            QuantKind::Mmproj
-        } else if lower.starts_with("mtp") && lower.ends_with(".gguf") {
-            QuantKind::Mtp
-        } else {
-            QuantKind::Model
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct QuantEntry {
-    pub file: String,
-    /// What kind of file this is. Defaults to `Model` for backward compat
-    /// with config files written before this field existed.
-    #[serde(default)]
-    pub kind: QuantKind,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub size_bytes: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context_length: Option<u32>,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]

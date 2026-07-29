@@ -7,131 +7,38 @@ use leptos::task::spawn_local;
 use wasm_bindgen::JsCast;
 
 use crate::components::job_log_panel::JobLogPanel;
-use crate::pages::benchmarks::types::parse_model;
-use crate::utils::{extract_and_store_csrf_token, get_request, post_request};
-
-/// Parse a comma-separated string of integers into a Vec<u32>.
-fn parse_sizes(s: &str) -> Vec<u32> {
-    s.split(',')
-        .map(|v| v.trim())
-        .filter(|v| !v.is_empty())
-        .filter_map(|v| v.parse::<u32>().ok())
-        .collect()
-}
+use crate::pages::benchmarks::utils::{
+    fetch_installed_backend_variants, parse_sizes, split_id_quant, split_name_variant,
+    use_benchmark_form_state, BenchmarkFormState,
+};
+use crate::utils::post_request;
 
 #[component]
 pub fn MtpBench() -> impl IntoView {
-    // ── Model selection ────────────────────────────────────────────────
-    let selected_display_name = RwSignal::new(String::new());
-    let selected_model = RwSignal::new(String::new());
-    let available_models = RwSignal::new(Vec::<(String, String, Vec<String>)>::new());
+    // ── Shared form state ──────────────────────────────────────────────
+    let state = use_benchmark_form_state();
+    let BenchmarkFormState {
+        selected_display_name,
+        selected_model,
+        available_models,
+        selected_backend,
+        available_backends,
+        is_running,
+        current_job_id,
+        benchmark_results,
+        model_refresh: _,
+    } = state;
 
-    // ── Backend selection ──────────────────────────────────────────────
-    let selected_backend = RwSignal::new(String::new());
-    let available_backends = RwSignal::new(Vec::<(String, String)>::new());
+    // Fetch installed backend variants (both backends + custom, installed-only).
+    fetch_installed_backend_variants(available_backends);
 
     // ── MTP configuration ──────────────────────────────────────────────
     let draft_max_str = RwSignal::new("0,1,2,3,4,5,6,7,8".to_string());
     let ngl_str = RwSignal::new("99".to_string());
     let flash_attn = RwSignal::new(true);
 
-    // ── Job state ──────────────────────────────────────────────────────
-    let is_running = RwSignal::new(false);
-    let current_job_id = RwSignal::new(Option::<String>::None);
-    let benchmark_results = RwSignal::new(Option::<serde_json::Value>::None);
+    // ── Per-form state ─────────────────────────────────────────────────
     let error_msg = RwSignal::new(String::new());
-
-    // ── Refresh trigger for model fetch ────────────────────────────────
-    let model_refresh = RwSignal::new(0u32);
-
-    // Fetch available models on mount.
-    Effect::new(move |_| {
-        let _ = model_refresh.get();
-        spawn_local(async move {
-            if let Ok(resp) = get_request("/tama/v1/models").send().await {
-                extract_and_store_csrf_token(&resp);
-                if let Ok(root) = resp.json::<serde_json::Value>().await {
-                    if let Some(models_arr) = root.get("models").and_then(|v| v.as_array()) {
-                        let mut seen: std::collections::HashSet<(String, String)> =
-                            std::collections::HashSet::new();
-                        let model_list: Vec<(String, String, Vec<String>)> = models_arr
-                            .iter()
-                            .filter_map(parse_model)
-                            .flatten()
-                            .filter(|(_, name, quant)| seen.insert((name.clone(), quant.clone())))
-                            .map(|(id, name, quant)| (id, name, vec![quant]))
-                            .collect();
-                        available_models.update(|list| *list = model_list);
-                    }
-                }
-            }
-        });
-    });
-
-    // Fetch available backends.
-    {
-        spawn_local(async move {
-            if let Ok(resp) = get_request("/tama/v1/backends").send().await {
-                extract_and_store_csrf_token(&resp);
-                if let Ok(root) = resp.json::<serde_json::Value>().await {
-                    let mut backend_list: Vec<(String, String)> = Vec::new();
-                    for arr_key in ["backends", "custom"] {
-                        if let Some(arr) = root.get(arr_key).and_then(|v| v.as_array()) {
-                            for b in arr {
-                                let installed = b
-                                    .get("installed")
-                                    .and_then(|v| v.as_bool())
-                                    .unwrap_or(false);
-                                if !installed {
-                                    continue;
-                                }
-                                let name = b
-                                    .get("type")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
-                                let display = b
-                                    .get("display_name")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or(&name)
-                                    .to_string();
-                                let variant = b
-                                    .get("gpu_variant")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
-                                if !variant.is_empty() {
-                                    let value = format!("{}:{}", name, variant);
-                                    let label = if variant == "cpu" {
-                                        display
-                                    } else {
-                                        format!("{} ({})", display, variant)
-                                    };
-                                    backend_list.push((value, label));
-                                }
-                            }
-                        }
-                    }
-                    available_backends.update(|list| *list = backend_list);
-                }
-            }
-        });
-    }
-
-    // Auto-select the first quant when display_name changes.
-    Effect::new(move |_| {
-        let dn = selected_display_name.get();
-        let models = available_models.get();
-        if let Some((id, _, quants)) = models.iter().find(|(_, name, _)| name == &dn) {
-            if let Some(first_quant) = quants.first() {
-                selected_model.set(format!("{}:{}", id, first_quant));
-            } else {
-                selected_model.set(id.clone());
-            }
-        } else {
-            selected_model.set(String::new());
-        }
-    });
 
     // ── Submit handler ─────────────────────────────────────────────────
     let submit_benchmark = move || {
@@ -139,23 +46,11 @@ pub fn MtpBench() -> impl IntoView {
         if raw_model.is_empty() {
             return;
         }
-        let (model_id, quant) = if let Some(colon) = raw_model.find(':') {
-            (
-                raw_model[..colon].to_string(),
-                Some(raw_model[colon + 1..].to_string()),
-            )
-        } else {
-            (raw_model, None)
-        };
+        let (model_id, quant) = split_id_quant(&raw_model);
 
+        // Parse "name:variant" format from selected backend.
         let raw_backend = selected_backend.get();
-        let (backend_name, gpu_variant) = if raw_backend.is_empty() {
-            (None, None)
-        } else if let Some((name, variant)) = raw_backend.split_once(':') {
-            (Some(name.to_string()), Some(variant.to_string()))
-        } else {
-            (Some(raw_backend), None)
-        };
+        let (backend_name, gpu_variant) = split_name_variant(&raw_backend);
 
         let draft_max_values = parse_sizes(&draft_max_str.get());
         let ngl_val: Option<u32> = if ngl_str.get().is_empty() {

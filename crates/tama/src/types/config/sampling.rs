@@ -2,8 +2,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use tama_core::profiles::SamplingParams as CoreSamplingParams;
-
 /// Sampling parameters for LLM inference.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct SamplingParams {
@@ -21,36 +19,6 @@ pub struct SamplingParams {
     pub frequency_penalty: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repeat_penalty: Option<f64>,
-}
-
-/// Convert from CoreSamplingParams to mirror type.
-impl From<CoreSamplingParams> for SamplingParams {
-    fn from(s: CoreSamplingParams) -> Self {
-        Self {
-            temperature: s.temperature,
-            top_k: s.top_k,
-            top_p: s.top_p,
-            min_p: s.min_p,
-            presence_penalty: s.presence_penalty,
-            frequency_penalty: s.frequency_penalty,
-            repeat_penalty: s.repeat_penalty,
-        }
-    }
-}
-
-/// Convert from mirror SamplingParams to tama_core::profiles::SamplingParams.
-impl From<SamplingParams> for CoreSamplingParams {
-    fn from(s: SamplingParams) -> Self {
-        Self {
-            temperature: s.temperature,
-            top_k: s.top_k,
-            top_p: s.top_p,
-            min_p: s.min_p,
-            presence_penalty: s.presence_penalty,
-            frequency_penalty: s.frequency_penalty,
-            repeat_penalty: s.repeat_penalty,
-        }
-    }
 }
 
 #[cfg(test)]

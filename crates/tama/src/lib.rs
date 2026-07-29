@@ -13,7 +13,6 @@ pub mod api;
 #[cfg(feature = "ssr")]
 pub mod gpu;
 
-#[cfg(feature = "ssr")]
 pub mod types;
 
 use leptos::prelude::*;
@@ -43,6 +42,7 @@ fn log_warn(msg: &str) {
 
 mod components;
 mod core_mirrors;
+pub mod core_shared;
 mod pages;
 pub mod utils;
 

@@ -6,11 +6,15 @@
 
 mod backend;
 mod compaction;
+#[cfg(feature = "ssr")]
+mod core_conv;
 mod general;
 mod health;
 mod langfuse;
 mod lifecycle;
 mod model;
+#[cfg(feature = "ssr")]
+mod patch;
 mod proxy;
 mod quant;
 mod sampling;
@@ -26,41 +30,25 @@ pub use proxy::*;
 pub use quant::*;
 pub use sampling::*;
 
-// ── PATCH types for /tama/v1/config/structured (PATCH) ──────────────────────
-
-mod patch;
-
+#[cfg(feature = "ssr")]
 pub use patch::CompactionConfigPatch;
+#[cfg(feature = "ssr")]
 pub use patch::ConfigPatchBody;
+#[cfg(feature = "ssr")]
 pub use patch::GeneralPatch;
+#[cfg(feature = "ssr")]
 pub use patch::LangfuseConfigPatch;
+#[cfg(feature = "ssr")]
 pub use patch::LifecyclePatch;
+#[cfg(feature = "ssr")]
 pub use patch::OAuth2ConfigPatch;
+#[cfg(feature = "ssr")]
 pub use patch::ProxyConfigPatch;
+
+// ── PATCH types for /tama/v1/config/structured (PATCH) ──────────────────────
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-
-/// Request body for POST /tama/v1/config/structured.
-///
-/// Mirrors the shape of `Config` but lives here so the API layer
-/// (`api.rs`) doesn't need a reverse dependency into `types::config`.
-#[derive(serde::Serialize, serde::Deserialize)]
-pub struct StructuredConfigBody {
-    pub general: General,
-    #[serde(default)]
-    pub backends: std::collections::BTreeMap<String, BackendConfig>,
-    #[serde(default, alias = "supervisor")]
-    pub lifecycle: Lifecycle,
-    #[serde(default)]
-    pub sampling_templates: std::collections::BTreeMap<String, SamplingParams>,
-    #[serde(default)]
-    pub proxy: ProxyConfig,
-    #[serde(default)]
-    pub compaction: CompactionConfig,
-    #[serde(default)]
-    pub langfuse: LangfuseConfig,
-}
 
 /// Main configuration struct.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -80,179 +68,142 @@ pub struct Config {
     pub langfuse: LangfuseConfig,
 }
 
-/// Convert from CoreConfig to mirror type.
-impl From<tama_core::config::Config> for Config {
-    fn from(c: tama_core::config::Config) -> Self {
-        Self {
-            general: c.general.into(),
-            backends: c.backends.into_iter().map(|(k, v)| (k, v.into())).collect(),
-            lifecycle: c.lifecycle.into(),
-            sampling_templates: c
-                .sampling_templates
-                .into_iter()
-                .map(|(k, v)| (k, v.into()))
-                .collect(),
-            proxy: c.proxy.into(),
-            compaction: c.compaction.into(),
-            langfuse: c.langfuse.into(),
-        }
-    }
+/// Request body for POST /tama/v1/config/structured.
+///
+/// Mirrors the shape of `Config` but lives here so the API layer
+/// (`api.rs`) doesn't need a reverse dependency into `types::config`.
+#[cfg(feature = "ssr")]
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct StructuredConfigBody {
+    pub general: General,
+    #[serde(default)]
+    pub backends: std::collections::BTreeMap<String, BackendConfig>,
+    #[serde(default, alias = "supervisor")]
+    pub lifecycle: Lifecycle,
+    #[serde(default)]
+    pub sampling_templates: std::collections::BTreeMap<String, SamplingParams>,
+    #[serde(default)]
+    pub proxy: ProxyConfig,
+    #[serde(default)]
+    pub compaction: CompactionConfig,
+    #[serde(default)]
+    pub langfuse: LangfuseConfig,
 }
 
-/// Convert from mirror Config to CoreConfig.
-impl From<StructuredConfigBody> for tama_core::config::Config {
-    fn from(b: StructuredConfigBody) -> Self {
-        Self {
-            general: b.general.into(),
-            backends: b.backends.into_iter().map(|(k, v)| (k, v.into())).collect(),
-            lifecycle: b.lifecycle.into(),
-            sampling_templates: b
-                .sampling_templates
-                .into_iter()
-                .map(|(k, v)| (k, v.into()))
-                .collect(),
-            proxy: b.proxy.into(),
-            compaction: b.compaction.into(),
-            langfuse: b.langfuse.into(),
-        }
-    }
-}
+// ── Regression tests (pure serde, compile on both feature sets) ────────────
 
-/// Convert from mirror Config to CoreConfig.
-impl From<Config> for tama_core::config::Config {
-    fn from(c: Config) -> Self {
-        Self {
-            general: c.general.into(),
-            backends: c.backends.into_iter().map(|(k, v)| (k, v.into())).collect(),
-            lifecycle: c.lifecycle.into(),
-            sampling_templates: c
-                .sampling_templates
-                .into_iter()
-                .map(|(k, v)| (k, v.into()))
-                .collect(),
-            proxy: c.proxy.into(),
-            compaction: c.compaction.into(),
-            langfuse: c.langfuse.into(),
-        }
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
 
-/// Convert from CoreGeneral to mirror type.
-impl From<tama_core::config::General> for General {
-    fn from(g: tama_core::config::General) -> Self {
-        Self {
-            log_level: g.log_level,
-            models_dir: g.models_dir,
-            logs_dir: g.logs_dir,
-            hf_token: g.hf_token,
-            update_check_interval: g.update_check_interval,
-        }
-    }
-}
-
-/// Convert from mirror General to CoreGeneral.
-impl From<General> for tama_core::config::General {
-    fn from(g: General) -> Self {
-        Self {
-            log_level: g.log_level,
-            models_dir: g.models_dir,
-            logs_dir: g.logs_dir,
-            hf_token: g.hf_token,
-            update_check_interval: g.update_check_interval,
-        }
-    }
-}
-
-/// Convert from CoreLifecycle to mirror type.
-impl From<tama_core::config::Lifecycle> for Lifecycle {
-    fn from(s: tama_core::config::Lifecycle) -> Self {
-        Self {
-            restart_policy: s.restart_policy,
-            max_restarts: s.max_restarts,
-            restart_delay_ms: s.restart_delay_ms,
-            health_check_interval_ms: s.health_check_interval_ms,
-            health_check_timeout_ms: s.health_check_timeout_ms,
-            health_check_retries: s.health_check_retries,
-        }
-    }
-}
-
-/// Convert from mirror Lifecycle to CoreLifecycle.
-impl From<Lifecycle> for tama_core::config::Lifecycle {
-    fn from(s: Lifecycle) -> Self {
-        Self {
-            restart_policy: s.restart_policy,
-            max_restarts: s.max_restarts,
-            restart_delay_ms: s.restart_delay_ms,
-            health_check_interval_ms: s.health_check_interval_ms,
-            health_check_timeout_ms: s.health_check_timeout_ms,
-            health_check_retries: s.health_check_retries,
-        }
-    }
-}
-
-/// Convert from CoreProxyConfig to mirror type.
-impl From<tama_core::config::ProxyConfig> for ProxyConfig {
-    fn from(p: tama_core::config::ProxyConfig) -> Self {
-        Self {
-            host: p.host,
-            port: p.port,
-            auto_unload: p.auto_unload,
-            idle_timeout_secs: p.idle_timeout_secs,
-            startup_timeout_secs: p.startup_timeout_secs,
-            circuit_breaker_threshold: p.circuit_breaker_threshold,
-            circuit_breaker_cooldown_seconds: p.circuit_breaker_cooldown_seconds,
-            metrics_retention_secs: p.metrics_retention_secs,
-            pull_queue_poll_interval_secs: p.pull_queue_poll_interval_secs,
-            max_loaded_models: p.max_loaded_models,
-            authenticator_url: p.authenticator_url,
-            authenticator_skip_paths: p.authenticator_skip_paths,
-            oauth2: OAuth2Config {
-                enabled: p.oauth2.enabled,
-                client_id: p.oauth2.client_id,
-                client_secret: p.oauth2.client_secret,
-                authorize_url: p.oauth2.authorize_url,
-                token_url: p.oauth2.token_url,
-                userinfo_url: p.oauth2.userinfo_url,
-                logout_url: p.oauth2.logout_url,
-                redirect_uri: p.oauth2.redirect_uri,
-                scopes: p.oauth2.scopes,
-                session_ttl_secs: p.oauth2.session_ttl_secs,
+    /// Build a JSON shape that mirrors what the server returns from
+    /// `GET /tama/v1/config/structured`. Every field is set to a non-default
+    /// value so any missing field in the form's mirror type round-trip can
+    /// be observed.
+    fn server_response_with_all_fields() -> serde_json::Value {
+        json!({
+            "general": {
+                "log_level": "debug",
+                "models_dir": "/mnt/models",
+                "logs_dir": "/var/log/tama",
+                "hf_token": "hf_testtoken",
+                "update_check_interval": 6,
             },
-            api_keys_enabled: p.api_keys_enabled,
-        }
-    }
-}
-
-/// Convert from mirror ProxyConfig to CoreProxyConfig.
-impl From<ProxyConfig> for tama_core::config::ProxyConfig {
-    fn from(p: ProxyConfig) -> Self {
-        Self {
-            host: p.host,
-            port: p.port,
-            auto_unload: p.auto_unload,
-            idle_timeout_secs: p.idle_timeout_secs,
-            startup_timeout_secs: p.startup_timeout_secs,
-            circuit_breaker_threshold: p.circuit_breaker_threshold,
-            circuit_breaker_cooldown_seconds: p.circuit_breaker_cooldown_seconds,
-            metrics_retention_secs: p.metrics_retention_secs,
-            pull_queue_poll_interval_secs: p.pull_queue_poll_interval_secs,
-            max_loaded_models: p.max_loaded_models,
-            authenticator_url: p.authenticator_url,
-            authenticator_skip_paths: p.authenticator_skip_paths,
-            oauth2: tama_core::config::OAuth2Config {
-                enabled: p.oauth2.enabled,
-                client_id: p.oauth2.client_id,
-                client_secret: p.oauth2.client_secret,
-                authorize_url: p.oauth2.authorize_url,
-                token_url: p.oauth2.token_url,
-                userinfo_url: p.oauth2.userinfo_url,
-                logout_url: p.oauth2.logout_url,
-                redirect_uri: p.oauth2.redirect_uri,
-                scopes: p.oauth2.scopes,
-                session_ttl_secs: p.oauth2.session_ttl_secs,
+            "backends": {},
+            "lifecycle": {
+                "restart_policy": "on-failure",
+                "max_restarts": 5,
+                "restart_delay_ms": 1000,
+                "health_check_interval_ms": 2000,
+                "health_check_timeout_ms": 5000,
+                "health_check_retries": 3,
             },
-            api_keys_enabled: p.api_keys_enabled,
-        }
+            "sampling_templates": {},
+            "proxy": {
+                "host": "127.0.0.1",
+                "port": 18910,
+                "auto_unload": true,
+                "idle_timeout_secs": 600,
+                "startup_timeout_secs": 90,
+                "circuit_breaker_threshold": 7,
+                "circuit_breaker_cooldown_seconds": 120,
+                "metrics_retention_secs": 172_800,
+                "max_loaded_models": 2,
+                "pull_queue_poll_interval_secs": 3,
+                "authenticator_url": "https://auth.example.com",
+                "authenticator_skip_paths": ["/health", "/metrics"],
+                "oauth2": {
+                    "enabled": true,
+                    "client_id": "test-client",
+                    "client_secret": "test-secret",
+                    "authorize_url": "https://auth.example.com/authorize",
+                    "token_url": "https://auth.example.com/token",
+                    "userinfo_url": "https://auth.example.com/userinfo",
+                    "logout_url": "https://auth.example.com/logout",
+                    "redirect_uri": "http://localhost:11434/login/callback",
+                    "scopes": ["openid", "profile"],
+                    "session_ttl_secs": 7200,
+                },
+                "api_keys_enabled": true,
+            },
+            "compaction": {
+                "enabled": true,
+                "server_path": "/opt/compaction/main.py",
+                "device": "cuda",
+                "port": 8081,
+                "request_timeout_ms": 60_000,
+            },
+            "langfuse": {
+                "enabled": true,
+                "public_key": "pk-lf-test123",
+                "secret_key": "sk-lf-test456",
+                "host": "https://cloud.langfuse.com",
+                "environment": "production",
+                "capture_input": true,
+                "capture_output": true,
+                "capture_streaming": true,
+                "telemetry_max_bytes": 1048576,
+                "electricity_price_per_kwh": 0.12,
+            },
+        })
+    }
+
+    /// Regression: `api_keys_enabled` was being dropped on every config save
+    /// because the form's mirror type did not include the field. serde silently
+    /// ignores unknown fields on deserialize, so the in-memory form ended up
+    /// with `api_keys_enabled = false` (default) and POSTed that to the server.
+    #[test]
+    fn test_api_keys_enabled_round_trips_through_form_config() {
+        let server_json = server_response_with_all_fields();
+        let form_cfg: Config = serde_json::from_value(server_json.clone())
+            .expect("form should accept the server's full structured config");
+
+        let round_trip: serde_json::Value =
+            serde_json::to_value(&form_cfg).expect("form should re-serialize its config");
+
+        assert_eq!(
+            round_trip["proxy"]["api_keys_enabled"], true,
+            "api_keys_enabled was dropped on the form's mirror type — \
+             this is the bug that silently disables API key auth on every config save"
+        );
+    }
+
+    /// Regression: every field in the form's mirror type must round-trip,
+    /// not just `api_keys_enabled`. Catches future drift if a new field is
+    /// added to the core config and forgotten in the form.
+    #[test]
+    fn test_full_config_round_trip_preserves_every_field() {
+        let original = server_response_with_all_fields();
+        let form_cfg: Config = serde_json::from_value(original.clone())
+            .expect("form should deserialize server's structured config");
+        let round_trip: serde_json::Value =
+            serde_json::to_value(&form_cfg).expect("form should re-serialize its config");
+
+        assert_eq!(
+            original, round_trip,
+            "form mirror type did not round-trip all fields — any missing \
+             field will be silently dropped on save"
+        );
     }
 }

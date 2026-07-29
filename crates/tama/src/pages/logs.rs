@@ -1,11 +1,10 @@
-use gloo_net::http::Request;
 use leptos::prelude::*;
 use leptos_router::hooks::use_query_map;
 use serde::Deserialize;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
 
-use crate::utils::extract_and_store_csrf_token;
+use crate::utils::{extract_and_store_csrf_token, get_request};
 
 /// Response from GET /tama/v1/logs — grouped by source.
 #[derive(Debug, Clone, Deserialize)]
@@ -69,7 +68,7 @@ pub fn Logs() -> impl IntoView {
             loading.set(true);
             error.set(None);
 
-            match Request::get("/tama/v1/logs").send().await {
+            match get_request("/tama/v1/logs").send().await {
                 Ok(resp) => {
                     extract_and_store_csrf_token(&resp);
                     let status = resp.status();

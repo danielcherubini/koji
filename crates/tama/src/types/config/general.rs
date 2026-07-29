@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use tama_core::config::LogLevel as CoreLogLevel;
+use crate::core_shared::LogLevel as CoreLogLevel;
 
 /// General configuration section.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

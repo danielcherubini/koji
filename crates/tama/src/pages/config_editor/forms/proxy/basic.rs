@@ -5,9 +5,7 @@ use leptos::prelude::*;
 use crate::utils::target_value;
 
 #[component]
-pub fn ProxyBasicFields(
-    config: RwSignal<Option<crate::pages::config_editor::types::Config>>,
-) -> impl IntoView {
+pub fn ProxyBasicFields(config: RwSignal<Option<crate::types::config::Config>>) -> impl IntoView {
     let get_proxy = move || config.get().map(|c| c.proxy).unwrap_or_default();
 
     view! {

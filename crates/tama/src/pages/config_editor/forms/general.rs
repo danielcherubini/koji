@@ -5,9 +5,7 @@ use crate::core_mirrors::LogLevel as CoreLogLevel;
 use crate::utils::target_value;
 
 #[component]
-pub fn GeneralForm(
-    config: RwSignal<Option<crate::pages::config_editor::types::Config>>,
-) -> impl IntoView {
+pub fn GeneralForm(config: RwSignal<Option<crate::types::config::Config>>) -> impl IntoView {
     let get_general = move || config.get().map(|c| c.general).unwrap_or_default();
 
     view! {
@@ -21,7 +19,7 @@ pub fn GeneralForm(
                             let v = target_value(&ev);
                             config.update(|c| {
                                 if let Some(c) = c {
-                                    c.general.log_level = CoreLogLevel::from_str(&v);
+                                    c.general.log_level = CoreLogLevel::from_str(&v).unwrap_or_default();
                                 }
                             });
                         }
