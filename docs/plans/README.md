@@ -13,8 +13,8 @@ Plans for features, refactors, and bug fixes in the Tama project.
 ## Quick Stats
 
 - **Total Plans**: 75
-- **Backlog**: 3
-- **Completed**: 71 ✅
+- **Backlog**: 2
+- **Completed**: 72 ✅
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan.
 
@@ -26,7 +26,6 @@ Current plans ready for execution, ordered by dependency-first cascade priority:
 
 | Plan | Description | Findings |
 |------|-------------|----------|
-| [ProxyState Sub-structs](plan-177-proxystate-substructs.md) | RegistryState/MetricsState/PullState composition | F32 |
 | [Test Coverage Wave 2](plan-178-test-coverage-wave2.md) | Compaction/TTS via lifecycle traits, tama-mock integration | F22–F24, F36 |
 **Full execution order & dependencies**: [execution-order.md](execution-order.md)  
 **All completed plans**: [done.md](done.md)
@@ -67,4 +66,4 @@ When implementing a new feature:
 
 ---
 
-**Last Updated**: 2026-07-18
+**Last Updated**: 2026-07-28
