@@ -87,7 +87,7 @@ async fn test_handle_list_models_returns_api_name() {
 
     // Populate model_configs
     {
-        let mut mc = state_arc.model_configs.write().await;
+        let mut mc = state_arc.registry.model_configs.write().await;
         mc.insert(
             "config-key-1".to_string(),
             ModelConfig {
@@ -273,7 +273,7 @@ async fn test_handle_list_models_unloaded_from_config() {
 
     // Add model configs — all enabled, none loaded
     {
-        let mut mc = state.model_configs.write().await;
+        let mut mc = state.registry.model_configs.write().await;
         mc.insert(
             "unloaded-model".to_string(),
             ModelConfig {
@@ -438,7 +438,7 @@ async fn test_handle_list_models_alias_deduplication() {
 
     // Config has api_name matching the alias
     {
-        let mut mc = state.model_configs.write().await;
+        let mut mc = state.registry.model_configs.write().await;
         mc.insert(
             "gemma-e2b".to_string(),
             ModelConfig {
@@ -453,7 +453,7 @@ async fn test_handle_list_models_alias_deduplication() {
 
     // Add a Ready model
     {
-        let mut models = state.models.write().await;
+        let mut models = state.registry.models.write().await;
         models.insert(
             "gemma-e2b".to_string(),
             crate::proxy::BackendState::Ready {
@@ -535,7 +535,7 @@ async fn test_handle_list_models_no_alias_no_normalization() {
     let state = ProxyState::new(config, None);
 
     {
-        let mut mc = state.model_configs.write().await;
+        let mut mc = state.registry.model_configs.write().await;
         mc.insert(
             "my-model".to_string(),
             ModelConfig {
@@ -549,7 +549,7 @@ async fn test_handle_list_models_no_alias_no_normalization() {
     }
 
     {
-        let mut models = state.models.write().await;
+        let mut models = state.registry.models.write().await;
         models.insert(
             "my-model".to_string(),
             crate::proxy::BackendState::Ready {

@@ -31,8 +31,8 @@ pub struct SystemHealthResponse {
 pub async fn handle_tama_system_health(
     state: State<Arc<ProxyState>>,
 ) -> Json<SystemHealthResponse> {
-    let models_loaded = state.models.read().await.len();
-    let metrics = state.system_metrics.read().await;
+    let models_loaded = state.registry.models.read().await.len();
+    let metrics = state.metrics.system_metrics_snapshot().await;
 
     Json(SystemHealthResponse {
         status: "ok",
@@ -123,7 +123,7 @@ pub async fn handle_tama_system_restart(state: State<Arc<ProxyState>>) -> Respon
 pub async fn handle_system_metrics_stream(
     State(state): State<Arc<ProxyState>>,
 ) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
-    let mut rx = state.metrics_tx.subscribe();
+    let mut rx = state.metrics.subscribe_metrics();
     let stream = async_stream::stream! {
         loop {
             match rx.recv().await {

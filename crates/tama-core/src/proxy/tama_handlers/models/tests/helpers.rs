@@ -12,7 +12,7 @@ use tower::ServiceExt;
 pub async fn create_state_with_model(model_cfg: ModelConfig) -> Arc<ProxyState> {
     let config = Config::default();
     let state = ProxyState::new(config, None);
-    let mut mc = state.model_configs.write().await;
+    let mut mc = state.registry.model_configs.write().await;
     mc.insert("test-model".to_string(), model_cfg);
     drop(mc);
     Arc::new(state)

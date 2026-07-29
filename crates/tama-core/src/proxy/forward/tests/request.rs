@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::proxy::types::LatestInferenceStats;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -13,7 +14,7 @@ use crate::proxy::{BackendState, ProxyState};
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
-/// Build a `BackendState::Ready` for direct insertion into `state.models`.
+/// Build a `BackendState::Ready` for direct insertion into `state.models()`.
 fn make_ready_state(
     backend_url: String,
     pid: u32,
@@ -72,15 +73,15 @@ async fn test_forward_request_dead_pid_returns_502_and_cleans_up() {
     let state = test_state();
 
     // Insert a model with a definitely-dead PID (99999999 is the repo convention).
-    state.models.write().await.insert(
+    state.registry.models.write().await.insert(
         "test-model".to_string(),
         make_ready_state("http://127.0.0.1:1".into(), 99999999, 0, None),
     );
 
     // Pre-seed inference_stats so we can assert it's cleared.
-    state.inference_stats.send_modify(|map| {
-        map.insert("test-model".to_string(), LatestInferenceStats::default());
-    });
+    state
+        .metrics
+        .record_inference_stats("test-model", LatestInferenceStats::default());
 
     let resp = forward_request(
         &state,
@@ -102,11 +103,20 @@ async fn test_forward_request_dead_pid_returns_502_and_cleans_up() {
         .unwrap()
         .contains("has crashed, reloading"));
 
-    // Model removed from state.models
-    assert!(state.models.read().await.get("test-model").is_none());
+    // Model removed from state.models()
+    assert!(state
+        .registry
+        .models
+        .read()
+        .await
+        .get("test-model")
+        .is_none());
 
     // Inference stats entry cleared
-    assert!(state.inference_stats.borrow().get("test-model").is_none());
+    assert!(!state
+        .metrics
+        .inference_stats_snapshot()
+        .contains_key("test-model"));
 }
 
 /// Dead PID crash path increments only `total_requests`, not `failed_requests`.
@@ -115,7 +125,7 @@ async fn test_forward_request_dead_pid_increments_only_total_requests() {
     let state = test_state();
 
     // Insert model with dead PID.
-    state.models.write().await.insert(
+    state.registry.models.write().await.insert(
         "test-model".to_string(),
         make_ready_state("http://127.0.0.1:1".into(), 99999999, 0, None),
     );
@@ -130,12 +140,33 @@ async fn test_forward_request_dead_pid_increments_only_total_requests() {
     .await;
 
     // Crash-detection short-circuit increments total_requests only.
-    assert_eq!(state.metrics.total_requests.load(Ordering::Relaxed), 1);
-    assert_eq!(state.metrics.successful_requests.load(Ordering::Relaxed), 0);
-    assert_eq!(state.metrics.failed_requests.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        state
+            .metrics
+            .counters
+            .total_requests
+            .load(Ordering::Relaxed),
+        1
+    );
+    assert_eq!(
+        state
+            .metrics
+            .counters
+            .successful_requests
+            .load(Ordering::Relaxed),
+        0
+    );
+    assert_eq!(
+        state
+            .metrics
+            .counters
+            .failed_requests
+            .load(Ordering::Relaxed),
+        0
+    );
 }
 
-/// Model not loaded (no entry in `state.models`) → 502 + `BackendUrlError`.
+/// Model not loaded (no entry in `state.models()`) → 502 + `BackendUrlError`.
 #[tokio::test]
 async fn test_forward_request_model_not_loaded_returns_502() {
     let state = test_state();
@@ -174,7 +205,7 @@ async fn test_forward_request_circuit_breaker_cooldown_returns_503_without_unloa
     let threshold = state.config.read().await.proxy.circuit_breaker_threshold;
 
     // Insert a model with failures == threshold and a fresh timestamp → cooldown active.
-    state.models.write().await.insert(
+    state.registry.models.write().await.insert(
         "test-model".to_string(),
         make_ready_state(
             "http://127.0.0.1:1".into(),
@@ -204,14 +235,27 @@ async fn test_forward_request_circuit_breaker_cooldown_returns_503_without_unloa
         .unwrap()
         .contains("in cooldown"));
 
-    // Model STILL in state.models — no unload happened.
-    assert!(state.models.read().await.get("test-model").is_some());
+    // Model STILL in state.models() — no unload happened.
+    assert!(state
+        .registry
+        .models
+        .read()
+        .await
+        .get("test-model")
+        .is_some());
 
     // Process still alive — proves no SIGTERM was sent.
     assert!(crate::process::is_process_alive(pid));
 
     // failed_requests NOT incremented (short-circuit bypasses failure counters).
-    assert_eq!(state.metrics.failed_requests.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        state
+            .metrics
+            .counters
+            .failed_requests
+            .load(Ordering::Relaxed),
+        0
+    );
 
     child.kill().unwrap();
     let _ = child.wait();
@@ -229,7 +273,7 @@ async fn test_forward_request_circuit_breaker_trips_and_unloads_after_cooldown()
 
     // Insert a model with failures == threshold and a timestamp older than the
     // 60s default cooldown → can_reload is true → trip.
-    state.models.write().await.insert(
+    state.registry.models.write().await.insert(
         "test-model".to_string(),
         make_ready_state(
             "http://127.0.0.1:1".into(),
@@ -259,8 +303,14 @@ async fn test_forward_request_circuit_breaker_trips_and_unloads_after_cooldown()
         .unwrap()
         .contains("currently unavailable"));
 
-    // Model removed from state.models by unload_model.
-    assert!(state.models.read().await.get("test-model").is_none());
+    // Model removed from state.models() by unload_model.
+    assert!(state
+        .registry
+        .models
+        .read()
+        .await
+        .get("test-model")
+        .is_none());
 
     // Process should be dead — SIGTERM/SIGKILL landed via unload_model.
     // Use child.try_wait() instead of is_process_alive() because some test
@@ -288,7 +338,14 @@ async fn test_forward_request_circuit_breaker_trips_and_unloads_after_cooldown()
     );
 
     // models_unloaded incremented exactly once.
-    assert_eq!(state.metrics.models_unloaded.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        state
+            .metrics
+            .counters
+            .models_unloaded
+            .load(Ordering::Relaxed),
+        1
+    );
 }
 
 /// Failures below threshold → request passes through to backend,
@@ -301,7 +358,7 @@ async fn test_forward_request_below_threshold_passes_circuit_breaker() {
     let threshold = state.config.read().await.proxy.circuit_breaker_threshold;
 
     // Insert a model with failures == threshold - 1 (below the trip point).
-    state.models.write().await.insert(
+    state.registry.models.write().await.insert(
         "test-model".to_string(),
         make_ready_state(
             "http://127.0.0.1:1".into(), // nothing listening → transport error
@@ -362,7 +419,7 @@ async fn test_forward_request_success_increments_metrics_and_rewrites_model() {
     let state = test_state();
 
     // Insert a model with pre-existing failure count of 2 — success path should reset to 0.
-    state.models.write().await.insert(
+    state.registry.models.write().await.insert(
         "test-model".to_string(),
         make_ready_state(server.uri(), std::process::id(), 2, None),
     );
@@ -393,9 +450,30 @@ async fn test_forward_request_success_increments_metrics_and_rewrites_model() {
 
     // Metrics: total_requests == 1 (fresh state), successful_requests == 1,
     // failed_requests == 0.
-    assert_eq!(state.metrics.total_requests.load(Ordering::Relaxed), 1);
-    assert_eq!(state.metrics.successful_requests.load(Ordering::Relaxed), 1);
-    assert_eq!(state.metrics.failed_requests.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        state
+            .metrics
+            .counters
+            .total_requests
+            .load(Ordering::Relaxed),
+        1
+    );
+    assert_eq!(
+        state
+            .metrics
+            .counters
+            .successful_requests
+            .load(Ordering::Relaxed),
+        1
+    );
+    assert_eq!(
+        state
+            .metrics
+            .counters
+            .failed_requests
+            .load(Ordering::Relaxed),
+        0
+    );
 
     // consecutive_failures reset from 2 → 0 on success.
     assert_eq!(
@@ -426,7 +504,7 @@ async fn test_forward_request_backend_500_increments_failures_and_sets_timestamp
     let state = test_state();
 
     // Insert a model with no pre-existing failures.
-    state.models.write().await.insert(
+    state.registry.models.write().await.insert(
         "test-model".to_string(),
         make_ready_state(server.uri(), std::process::id(), 0, None),
     );
@@ -446,8 +524,22 @@ async fn test_forward_request_backend_500_increments_failures_and_sets_timestamp
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
 
     // Metrics: failed_requests == 1, successful_requests == 0.
-    assert_eq!(state.metrics.failed_requests.load(Ordering::Relaxed), 1);
-    assert_eq!(state.metrics.successful_requests.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        state
+            .metrics
+            .counters
+            .failed_requests
+            .load(Ordering::Relaxed),
+        1
+    );
+    assert_eq!(
+        state
+            .metrics
+            .counters
+            .successful_requests
+            .load(Ordering::Relaxed),
+        0
+    );
 
     // consecutive_failures incremented to 1.
     assert_eq!(
@@ -476,5 +568,11 @@ async fn test_forward_request_backend_500_increments_failures_and_sets_timestamp
     }
 
     // Model is STILL loaded — proxied 5xx with live pid never unloads.
-    assert!(state.models.read().await.get("test-model").is_some());
+    assert!(state
+        .registry
+        .models
+        .read()
+        .await
+        .get("test-model")
+        .is_some());
 }

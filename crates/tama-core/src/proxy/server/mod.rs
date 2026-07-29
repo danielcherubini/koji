@@ -43,7 +43,7 @@ impl ProxyServer {
             match crate::db::load_model_configs(&conn) {
                 Ok(db_models) if !db_models.is_empty() => {
                     tracing::info!("Loaded {} models from database", db_models.len());
-                    *state.model_configs.write().await = db_models;
+                    *state.registry.model_configs.write().await = db_models;
                 }
                 Ok(_) => {}
                 Err(e) => tracing::error!("Failed to load model configs from database: {}", e),
@@ -57,7 +57,7 @@ impl ProxyServer {
                     if !pairs.is_empty() {
                         tracing::info!("Loaded {} aliases from database", pairs.len());
                     }
-                    *state.aliases.write().await = pairs.into_iter().collect();
+                    *state.registry.aliases.write().await = pairs.into_iter().collect();
                 }
                 Err(e) => tracing::error!("Failed to load aliases from database: {}", e),
             }
@@ -134,7 +134,7 @@ impl ProxyServer {
                     pid,
                     entry.port
                 );
-                let mut models = state.models.write().await;
+                let mut models = state.registry.models.write().await;
                 models.insert(
                     entry.server_name.clone(),
                     super::types::BackendState::Ready {
@@ -231,7 +231,7 @@ impl ProxyServer {
         let cleanup_state = Arc::clone(&self.state);
         let app = self.into_router().await;
         let on_shutdown = async move {
-            let models = cleanup_state.models.read().await;
+            let models = cleanup_state.registry.models.read().await;
             let tts_backends: Vec<String> = models
                 .iter()
                 .filter(|(_, ms)| ms.is_tts_backend())

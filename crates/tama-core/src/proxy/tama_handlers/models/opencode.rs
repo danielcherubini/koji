@@ -17,8 +17,8 @@ pub async fn handle_opencode_list_models(
     // 1. Snapshot data under locks — clone out so locks are dropped before any .await below.
     // `all_configs` is a clone of the HashMap contents, not the guard, so no explicit drop needed.
     let (loaded_models, all_configs): (HashMap<_, _>, _) = {
-        let models = state.models.read().await;
-        let configs = state.model_configs.read().await;
+        let models = state.registry.models.read().await;
+        let configs = state.registry.model_configs.read().await;
         // Collect (config_name, backend_url) for Ready backends
         let loaded: HashMap<_, _> = models
             .iter()
@@ -70,7 +70,7 @@ pub async fn handle_opencode_list_models(
     }
 
     // 4. Add alias entries — inherit capabilities from target model
-    let aliases = state.aliases.read().await;
+    let aliases = state.registry.aliases.read().await;
     for (alias_name, resolved_model) in aliases.iter() {
         if seen_ids.contains(&alias_name.to_lowercase()) {
             continue;

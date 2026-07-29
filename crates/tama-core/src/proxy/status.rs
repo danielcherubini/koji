@@ -83,16 +83,12 @@ impl ProxyState {
     /// between SSE samples.
     pub async fn collect_model_state_snapshots(&self) -> Vec<crate::models::ModelStateSnapshot> {
         let config = self.config.read().await;
-        let model_configs = self.model_configs.read().await;
+        let model_configs = self.registry.model_configs.read().await;
 
         // Borrow inference_stats before acquiring runtime to avoid lock-order issues.
-        // Clone out of the borrow guard so it doesn't live across the .await below.
-        let inference_stats: std::collections::HashMap<
-            String,
-            crate::proxy::types::LatestInferenceStats,
-        > = self.inference_stats.borrow().clone();
+        let inference_stats = self.metrics.inference_stats_snapshot();
 
-        let runtime = self.models.read().await;
+        let runtime = self.registry.models.read().await;
         let mut out: Vec<crate::models::ModelStateSnapshot> =
             Vec::with_capacity(model_configs.len());
         for (model_id, model_cfg) in model_configs.iter() {
@@ -171,13 +167,13 @@ impl ProxyState {
     pub async fn build_status_response(&self) -> StatusResponse {
         use std::sync::atomic::Ordering::Relaxed;
 
-        let sys_metrics = self.system_metrics.read().await.clone();
+        let sys_metrics = self.metrics.system_metrics_snapshot().await;
 
         let config = self.config.read().await;
-        let model_configs = self.model_configs.read().await;
+        let model_configs = self.registry.model_configs.read().await;
         let auto_unload = config.proxy.auto_unload;
         let idle_timeout_secs = config.proxy.idle_timeout_secs;
-        let models = self.models.read().await;
+        let models = self.registry.models.read().await;
         let mut models_obj = std::collections::BTreeMap::new();
 
         for (model_name, model_config) in model_configs.iter() {
@@ -311,7 +307,7 @@ impl ProxyState {
 
         drop(models);
 
-        let metrics = &self.metrics;
+        let metrics = &self.metrics.counters;
 
         StatusResponse {
             cpu_usage_pct: sys_metrics.cpu_usage_pct,
@@ -371,7 +367,7 @@ mod tests {
         }
     }
 
-    /// When `state.models` has no runtime entries, every configured model
+    /// When `state.models()` has no runtime entries, every configured model
     /// should be reported as `loaded == false`, with the returned vector
     /// sorted by id ascending and the `backend` field matching the
     /// corresponding `ModelConfig.backend` value.
@@ -382,13 +378,13 @@ mod tests {
 
         // Populate model_configs
         {
-            let mut mc = state.model_configs.write().await;
+            let mut mc = state.registry.model_configs.write().await;
             mc.insert("zephyr".to_string(), make_model_config("llama_cpp"));
             mc.insert("alpha".to_string(), make_model_config("vllm"));
         }
 
         // Sanity check: no runtime entries.
-        assert!(state.models.read().await.is_empty());
+        assert!(state.registry.models.read().await.is_empty());
 
         let statuses = state.collect_model_state_snapshots().await;
 
@@ -415,7 +411,7 @@ mod tests {
         assert_eq!(statuses[1].backend, "llama_cpp");
     }
 
-    /// When `state.models` contains a `BackendState::Ready` entry under the
+    /// When `state.models()` contains a `BackendState::Ready` entry under the
     /// server name that resolves for one of the configured models, that
     /// model should be reported as `loaded == true` while all other
     /// configured models remain `loaded == false`. The returned vector
@@ -449,7 +445,7 @@ mod tests {
 
         // Populate model_configs
         {
-            let mut mc = state.model_configs.write().await;
+            let mut mc = state.registry.model_configs.write().await;
             mc.insert("zephyr".to_string(), make_model_config("llama_cpp"));
             mc.insert("alpha".to_string(), make_model_config("vllm"));
         }
@@ -458,7 +454,7 @@ mod tests {
         // `resolve_backends_for_model("alpha")` will return — the config key
         // itself, since `make_model_config` leaves `model` as `None`.
         {
-            let mut runtime = state.models.write().await;
+            let mut runtime = state.registry.models.write().await;
             runtime.insert(
                 "alpha".to_string(),
                 BackendState::Ready {
@@ -530,7 +526,7 @@ mod tests {
 
         // Populate model_configs
         {
-            let mut mc = state.model_configs.write().await;
+            let mut mc = state.registry.model_configs.write().await;
             mc.insert("alpha".to_string(), make_model_config("llama_cpp"));
         }
 
@@ -541,7 +537,7 @@ mod tests {
 
         // --- Case 1: Starting must NOT count as loaded ---------------------
         {
-            let mut runtime = state.models.write().await;
+            let mut runtime = state.registry.models.write().await;
             runtime.insert(
                 backend_name.clone(),
                 BackendState::Starting {
@@ -577,7 +573,7 @@ mod tests {
 
         // --- Case 2: Failed must NOT count as loaded -----------------------
         {
-            let mut runtime = state.models.write().await;
+            let mut runtime = state.registry.models.write().await;
             runtime.insert(
                 backend_name.clone(),
                 BackendState::Failed {
@@ -631,7 +627,7 @@ mod tests {
         let state = ProxyState::new(config, None);
 
         {
-            let mut mc = state.model_configs.write().await;
+            let mut mc = state.registry.model_configs.write().await;
             mc.insert(
                 "ready-model".to_string(),
                 ModelConfig {
@@ -646,7 +642,7 @@ mod tests {
         }
 
         {
-            let mut runtime = state.models.write().await;
+            let mut runtime = state.registry.models.write().await;
             runtime.insert(
                 "ready-model".to_string(),
                 BackendState::Ready {
@@ -664,18 +660,20 @@ mod tests {
         }
 
         {
-            let mut sys = state.system_metrics.write().await;
-            *sys = SystemMetrics {
-                cpu_usage_pct: 10.0,
-                ram_used_mib: 512,
-                ram_total_mib: 4096,
-                gpu_utilization_pct: Some(50),
-                vram: Some(VramInfo {
-                    used_mib: 100,
-                    total_mib: 8192,
-                }),
-                ..Default::default()
-            };
+            state
+                .metrics
+                .set_system_metrics(SystemMetrics {
+                    cpu_usage_pct: 10.0,
+                    ram_used_mib: 512,
+                    ram_total_mib: 4096,
+                    gpu_utilization_pct: Some(50),
+                    vram: Some(VramInfo {
+                        used_mib: 100,
+                        total_mib: 8192,
+                    }),
+                    ..Default::default()
+                })
+                .await;
         }
 
         let response = state.build_status_response().await;

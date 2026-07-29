@@ -151,13 +151,7 @@ async fn main() -> Result<()> {
                 }
             }
             // Unload TTS backends
-            let models = cleanup_state.state.models().read().await;
-            let tts_backends: Vec<String> = models
-                .iter()
-                .filter(|(_, ms)| ms.is_tts_backend())
-                .map(|(name, _)| name.clone())
-                .collect();
-            drop(models);
+            let tts_backends: Vec<String> = cleanup_state.state.tts_backend_names().await;
             for name in tts_backends {
                 if let Err(e) = cleanup_state.state.unload_tts_backend(&name).await {
                     tracing::warn!("Failed to unload TTS backend '{}': {}", name, e);

@@ -39,7 +39,7 @@ impl ProxyState {
         let startup_timeout = Duration::from_secs(startup_timeout_secs);
 
         // === PHASE 1: Collect candidates under read lock (fast only) ===
-        let models = self.models.read().await;
+        let models = self.registry.models.read().await;
         for (backend_name, state) in models.iter() {
             // Check Starting state first (including TTS — they can also get stuck)
             if let BackendState::Starting { start_time, .. } = state {
@@ -148,10 +148,10 @@ impl ProxyState {
 
         // Remove Failed models
         if !failed_to_remove.is_empty() {
-            let mut models = self.models.write().await;
+            let mut models = self.registry.models.write().await;
             for backend_name in &failed_to_remove {
                 models.remove(backend_name);
-                self.inference_stats.send_modify(|map| {
+                self.metrics.modify_inference_stats(|map| {
                     map.remove(backend_name);
                 });
                 info!("Removed failed backend '{}' from model map", backend_name);
@@ -162,7 +162,7 @@ impl ProxyState {
         if !stuck_starting_backends.is_empty() {
             let mut pids_to_clean: Vec<(String, u32)> = Vec::new();
             {
-                let mut models = self.models.write().await;
+                let mut models = self.registry.models.write().await;
                 for (backend_name, model_name, backend, observed_start, observed_pid) in
                     &stuck_starting_backends
                 {
@@ -220,7 +220,7 @@ impl ProxyState {
             let mut to_restart: Vec<(String, String, u32)> = Vec::new();
             let mut removed_backends: Vec<String> = Vec::new();
             {
-                let mut models = self.models.write().await;
+                let mut models = self.registry.models.write().await;
                 for (backend_name, model_name, backend, restart_count, observed_pid) in
                     &confirmed_dead
                 {
@@ -244,7 +244,7 @@ impl ProxyState {
 
                     if pid_matches.unwrap_or(false) {
                         models.remove(backend_name);
-                        self.inference_stats.send_modify(|map| {
+                        self.metrics.modify_inference_stats(|map| {
                             map.remove(backend_name);
                         });
                         removed_backends.push(backend_name.clone());
@@ -310,7 +310,7 @@ impl ProxyState {
                         .await
                     {
                         Ok(Ok(_)) => {
-                            let mut models = state.models.write().await;
+                            let mut models = state.registry.models.write().await;
                             if let Some(BackendState::Ready {
                                 restart_count: rc, ..
                             }) = models.get_mut(&sn)

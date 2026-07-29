@@ -39,15 +39,9 @@ pub struct ConfigBody {
 }
 
 /// Update the proxy's live in-memory config after a successful disk save.
+/// (Bundles write-lock + Langfuse refresh — see `ProxyState::replace_config`.)
 async fn sync_proxy_config(state: &Arc<ProxyState>, new_config: tama_core::config::Config) {
-    let mut config = state.config().write().await;
-    *config = new_config;
-    drop(config);
-    // Refresh the Langfuse client so config changes (enabled, keys, host) take
-    // effect without requiring a Tama restart. The client is recreated from
-    // the latest config; if langfuse is disabled or credentials are missing,
-    // from_config returns None and the client is set to None (disabling tracing).
-    state.refresh_langfuse_client().await;
+    state.replace_config(new_config).await;
 }
 
 /// Body for structured config save.

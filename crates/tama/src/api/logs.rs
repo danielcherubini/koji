@@ -44,7 +44,7 @@ pub async fn get_backend_logs(
     Path(backend): Path<String>,
     Query(query): Query<BackendLogsQuery>,
 ) -> impl IntoResponse {
-    let dir = match state.config().read().await.logs_dir() {
+    let dir = match state.with_config(|c| c.logs_dir()).await {
         Ok(d) => d,
         Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     };

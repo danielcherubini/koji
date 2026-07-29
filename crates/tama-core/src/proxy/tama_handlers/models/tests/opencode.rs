@@ -199,7 +199,7 @@ async fn test_alias_inherits_capabilities() {
 
     // Add an alias pointing to model-a
     {
-        let mut aliases = state.aliases.write().await;
+        let mut aliases = state.registry.aliases.write().await;
         aliases.insert("my-alias".to_string(), "api-model-a".to_string());
     }
 
@@ -250,7 +250,7 @@ async fn test_alias_name_derived_from_slug() {
 
     // Add an alias pointing to model-a (model: "test/model-a" → name would be "Test: Model A")
     {
-        let mut aliases = state.aliases.write().await;
+        let mut aliases = state.registry.aliases.write().await;
         aliases.insert("my-awesome-alias".to_string(), "api-model-a".to_string());
     }
 

@@ -239,7 +239,7 @@ where
         Ok(d) => d.join("tama.db"),
         Err(resp) => return Err(resp),
     };
-    let proxy_base_url = state.config().read().await.proxy_url();
+    let proxy_base_url = state.with_config(|c| c.proxy_url()).await;
     let client = state.client().clone();
 
     let repo_handle = match shared_repository(web_state) {

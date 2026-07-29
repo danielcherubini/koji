@@ -263,20 +263,12 @@ pub async fn list_backends(
     }
 
     // Get compaction config
-    let compaction_config = state.config().read().await.compaction.clone();
+    let compaction_config = state.with_config(|c| c.compaction.clone()).await;
 
     // Check if compaction backend is running (in model registry as "compaction")
-    let (compaction_running, compaction_url) = {
-        let models = state.models().read().await;
-        if let Some(model_state) = models.get("compaction") {
-            if model_state.is_ready() {
-                (true, model_state.backend_url().map(|u| u.to_string()))
-            } else {
-                (false, None)
-            }
-        } else {
-            (false, None)
-        }
+    let (compaction_running, compaction_url) = match state.get_model_state("compaction").await {
+        Some(s) if s.is_ready() => (true, s.backend_url().map(|u| u.to_string())),
+        _ => (false, None),
     };
 
     let compaction_card = CompactionCardDto {

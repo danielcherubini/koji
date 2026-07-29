@@ -64,7 +64,7 @@ fn make_unloading_state(model_name: &str, backend: &str) -> BackendState {
 async fn test_starting_state_skipped_in_idle_check() {
     let config = Config::default();
     let state = ProxyState::new(config, None);
-    state.models.write().await.insert(
+    state.registry.models.write().await.insert(
         "test-server".to_string(),
         make_starting_state("model.gguf", "llama-cpp"),
     );
@@ -82,6 +82,7 @@ async fn test_failed_server_marked_for_cleanup() {
     let config = Config::default();
     let state = ProxyState::new(config, None);
     state
+        .registry
         .models
         .write()
         .await
@@ -288,7 +289,7 @@ async fn test_evict_lru_if_needed_zero_is_unlimited() {
     let state = ProxyState::new(config, None);
 
     // Add a Ready model to ensure we're not returning None due to empty map
-    state.models.write().await.insert(
+    state.registry.models.write().await.insert(
         "server1".to_string(),
         make_ready_state("model.gguf", "llama-cpp"),
     );
@@ -313,7 +314,7 @@ async fn test_evict_lru_if_needed_under_limit_no_eviction() {
     let state = ProxyState::new(config, None);
 
     // Add 1 Ready model (below limit of 2)
-    state.models.write().await.insert(
+    state.registry.models.write().await.insert(
         "server1".to_string(),
         make_ready_state("model.gguf", "llama-cpp"),
     );
@@ -324,7 +325,7 @@ async fn test_evict_lru_if_needed_under_limit_no_eviction() {
 
     // Verify model count is unchanged
     assert_eq!(
-        state.models.read().await.len(),
+        state.registry.models.read().await.len(),
         1,
         "Model count should be unchanged"
     );
@@ -343,6 +344,7 @@ async fn test_evict_lru_if_needed_at_limit_evicts_lru() {
         *last_accessed = Instant::now() - Duration::from_secs(300);
     }
     state
+        .registry
         .models
         .write()
         .await
@@ -358,7 +360,7 @@ async fn test_evict_lru_if_needed_at_limit_evicts_lru() {
 
     // Verify model was removed from the map
     assert!(
-        !state.models.read().await.contains_key("server1"),
+        !state.registry.models.read().await.contains_key("server1"),
         "Evicted model should be removed from the map"
     );
 }
@@ -371,7 +373,7 @@ async fn test_evict_lru_if_needed_skips_starting_models() {
     let state = ProxyState::new(config, None);
 
     // Add a Starting model (not Ready)
-    state.models.write().await.insert(
+    state.registry.models.write().await.insert(
         "server1".to_string(),
         make_starting_state("model.gguf", "llama-cpp"),
     );
@@ -386,7 +388,7 @@ async fn test_evict_lru_if_needed_skips_starting_models() {
 
     // Verify Starting model remains in the map
     assert!(
-        state.models.read().await.contains_key("server1"),
+        state.registry.models.read().await.contains_key("server1"),
         "Starting model should remain in the map"
     );
 }
@@ -400,6 +402,7 @@ async fn test_evict_lru_if_needed_skips_failed_models() {
 
     // Add a Failed model
     state
+        .registry
         .models
         .write()
         .await
@@ -429,6 +432,7 @@ async fn test_evict_lru_if_needed_concurrent_no_double_eviction() {
         *last_accessed = Instant::now() - Duration::from_secs(600); // older
     }
     state
+        .registry
         .models
         .write()
         .await
@@ -439,6 +443,7 @@ async fn test_evict_lru_if_needed_concurrent_no_double_eviction() {
         *last_accessed = Instant::now() - Duration::from_secs(100); // newer
     }
     state
+        .registry
         .models
         .write()
         .await
@@ -446,7 +451,7 @@ async fn test_evict_lru_if_needed_concurrent_no_double_eviction() {
 
     // Add 1 Starting model — it should be skipped by eviction, ensuring
     // both concurrent calls have a Ready model to evict.
-    state.models.write().await.insert(
+    state.registry.models.write().await.insert(
         "server3".to_string(),
         make_starting_state("model3.gguf", "llama-cpp"),
     );
@@ -474,12 +479,12 @@ async fn test_evict_lru_if_needed_concurrent_no_double_eviction() {
 
     // Both evicted models should be removed from the map
     assert!(
-        !state.models.read().await.contains_key(&name_a),
+        !state.registry.models.read().await.contains_key(&name_a),
         "Evicted model '{}' should be removed",
         name_a
     );
     assert!(
-        !state.models.read().await.contains_key(&name_b),
+        !state.registry.models.read().await.contains_key(&name_b),
         "Evicted model '{}' should be removed",
         name_b
     );
@@ -524,7 +529,7 @@ async fn test_evict_lru_excludes_tts_backends() {
 
     // Register the TTS server in model_configs with a tts_ backend
     // so it's excluded from the LLM count.
-    state.model_configs.write().await.insert(
+    state.registry.model_configs.write().await.insert(
         "tts-server".to_string(),
         ModelConfig {
             backend: "tts_kokoro".to_string(),
@@ -535,6 +540,7 @@ async fn test_evict_lru_excludes_tts_backends() {
     // Add a TTS backend (tts_kokoro) — should NOT count toward limit
     let tts_state = make_ready_state("model.gguf", "tts_kokoro");
     state
+        .registry
         .models
         .write()
         .await
@@ -546,7 +552,12 @@ async fn test_evict_lru_excludes_tts_backends() {
 
     // Verify the TTS model is still in the map
     assert!(
-        state.models.read().await.contains_key("tts-server"),
+        state
+            .registry
+            .models
+            .read()
+            .await
+            .contains_key("tts-server"),
         "TTS backend should remain loaded"
     );
 }
@@ -563,7 +574,7 @@ async fn test_evict_lru_per_gpu_isolation() {
     let state = ProxyState::new(config, None);
 
     // Register CUDA0 server in model_configs with gpu_device = "CUDA0"
-    state.model_configs.write().await.insert(
+    state.registry.model_configs.write().await.insert(
         "cuda0-server".to_string(),
         ModelConfig {
             backend: "llama-cpp".to_string(),
@@ -573,7 +584,7 @@ async fn test_evict_lru_per_gpu_isolation() {
     );
 
     // Register CUDA1 server in model_configs with gpu_device = "CUDA1"
-    state.model_configs.write().await.insert(
+    state.registry.model_configs.write().await.insert(
         "cuda1-server".to_string(),
         ModelConfig {
             backend: "llama-cpp".to_string(),
@@ -588,6 +599,7 @@ async fn test_evict_lru_per_gpu_isolation() {
         *last_accessed = Instant::now() - Duration::from_secs(300);
     }
     state
+        .registry
         .models
         .write()
         .await
@@ -605,7 +617,12 @@ async fn test_evict_lru_per_gpu_isolation() {
 
     // Verify CUDA0 model is still in the map
     assert!(
-        state.models.read().await.contains_key("cuda0-server"),
+        state
+            .registry
+            .models
+            .read()
+            .await
+            .contains_key("cuda0-server"),
         "CUDA0 model should still be loaded"
     );
 }
@@ -621,7 +638,7 @@ async fn test_evict_lru_same_gpu_counts_together() {
     let state = ProxyState::new(config, None);
 
     // Register two servers both targeting CUDA0
-    state.model_configs.write().await.insert(
+    state.registry.model_configs.write().await.insert(
         "cuda0-server1".to_string(),
         ModelConfig {
             backend: "llama-cpp".to_string(),
@@ -629,7 +646,7 @@ async fn test_evict_lru_same_gpu_counts_together() {
             ..Default::default()
         },
     );
-    state.model_configs.write().await.insert(
+    state.registry.model_configs.write().await.insert(
         "cuda0-server2".to_string(),
         ModelConfig {
             backend: "llama-cpp".to_string(),
@@ -644,6 +661,7 @@ async fn test_evict_lru_same_gpu_counts_together() {
         *last_accessed = Instant::now() - Duration::from_secs(600);
     }
     state
+        .registry
         .models
         .write()
         .await
@@ -655,6 +673,7 @@ async fn test_evict_lru_same_gpu_counts_together() {
         *last_accessed = Instant::now() - Duration::from_secs(100);
     }
     state
+        .registry
         .models
         .write()
         .await
@@ -673,12 +692,22 @@ async fn test_evict_lru_same_gpu_counts_together() {
 
     // Verify the LRU model was removed
     assert!(
-        !state.models.read().await.contains_key("cuda0-server1"),
+        !state
+            .registry
+            .models
+            .read()
+            .await
+            .contains_key("cuda0-server1"),
         "Evicted LRU model should be removed"
     );
     // Verify the newer model is still there
     assert!(
-        state.models.read().await.contains_key("cuda0-server2"),
+        state
+            .registry
+            .models
+            .read()
+            .await
+            .contains_key("cuda0-server2"),
         "Newer model on same GPU should remain"
     );
 }
@@ -694,7 +723,7 @@ async fn test_evict_lru_none_gpu_grouped() {
     let state = ProxyState::new(config, None);
 
     // Register two servers without gpu_device (None)
-    state.model_configs.write().await.insert(
+    state.registry.model_configs.write().await.insert(
         "default-server1".to_string(),
         ModelConfig {
             backend: "llama-cpp".to_string(),
@@ -702,7 +731,7 @@ async fn test_evict_lru_none_gpu_grouped() {
             ..Default::default()
         },
     );
-    state.model_configs.write().await.insert(
+    state.registry.model_configs.write().await.insert(
         "default-server2".to_string(),
         ModelConfig {
             backend: "llama-cpp".to_string(),
@@ -717,6 +746,7 @@ async fn test_evict_lru_none_gpu_grouped() {
         *last_accessed = Instant::now() - Duration::from_secs(600);
     }
     state
+        .registry
         .models
         .write()
         .await
@@ -728,6 +758,7 @@ async fn test_evict_lru_none_gpu_grouped() {
         *last_accessed = Instant::now() - Duration::from_secs(100);
     }
     state
+        .registry
         .models
         .write()
         .await
@@ -769,13 +800,14 @@ async fn test_three_phase_idle_timeout_with_mock_health_checker() {
         *last_accessed = Instant::now() - Duration::from_secs(300);
     }
     state
+        .registry
         .models
         .write()
         .await
         .insert("idle-server".to_string(), idle_state);
 
     // Phase 1 setup: Add a Ready model with a "dead" PID that will be confirmed
-    state.models.write().await.insert(
+    state.registry.models.write().await.insert(
         "dead-server".to_string(),
         make_ready_state("dead-model", "llama-cpp"),
     );
@@ -798,7 +830,7 @@ async fn test_three_phase_idle_timeout_with_mock_health_checker() {
 
     // With max_restarts=0, the dead server transitions to Failed state
     // (not removed entirely)
-    let models = state.models.read().await;
+    let models = state.registry.models.read().await;
     if let Some(server_state) = models.get("dead-server") {
         assert!(
             matches!(server_state, BackendState::Failed { .. }),
@@ -821,7 +853,7 @@ async fn test_health_checker_confirms_alive_server_not_dead() {
     let mock_checker = MockHealthChecker::new();
 
     // Add a Ready model with a PID that doesn't exist (would normally be dead)
-    state.models.write().await.insert(
+    state.registry.models.write().await.insert(
         "reuse-server".to_string(),
         make_ready_state("reuse-model", "llama-cpp"),
     );
@@ -844,7 +876,7 @@ async fn test_health_checker_confirms_alive_server_not_dead() {
     // Note: it might be removed due to idle timeout, but not due to dead PID
     // We verify by checking the server wasn't removed as "confirmed dead"
     // (which would transition it to Failed or restart)
-    let models = state.models.read().await;
+    let models = state.registry.models.read().await;
     if let Some(server_state) = models.get("reuse-server") {
         // If still present, it shouldn't be in Failed state from dead PID
         assert!(
@@ -870,7 +902,7 @@ async fn test_load_model_pipeline_with_mock_health_checker() {
     let mock_checker = MockHealthChecker::new();
 
     // Register a model in the config
-    state.model_configs.write().await.insert(
+    state.registry.model_configs.write().await.insert(
         "test-model".to_string(),
         ModelConfig {
             backend: "llama_cpp".to_string(),
@@ -892,7 +924,7 @@ async fn test_load_model_pipeline_with_mock_health_checker() {
     // but the important thing is that the mock health checker
     // was used and the trait system works
     // The model should be in Starting state (reservation succeeded)
-    let models = state.models.read().await;
+    let models = state.registry.models.read().await;
     if let Some(state) = models.get("llama_cpp") {
         // The model was reserved (Starting state)
         assert!(
@@ -915,7 +947,7 @@ async fn test_load_model_health_check_failure_cleanup() {
     let mock_checker = MockHealthChecker::new();
 
     // Register a model in the config
-    state.model_configs.write().await.insert(
+    state.registry.model_configs.write().await.insert(
         "test-model".to_string(),
         ModelConfig {
             backend: "llama_cpp".to_string(),
@@ -938,7 +970,7 @@ async fn test_load_model_health_check_failure_cleanup() {
     );
 
     // The backend should be cleaned up (not left in Starting state)
-    let models = state.models.read().await;
+    let models = state.registry.models.read().await;
     assert!(
         !models.contains_key("llama_cpp"),
         "Failed backend should be cleaned up from models map"
@@ -985,14 +1017,19 @@ async fn test_unload_model_graceful_shutdown() {
     let state = ProxyState::new(config, None);
 
     // Add a Ready model
-    state.models.write().await.insert(
+    state.registry.models.write().await.insert(
         "unload-test".to_string(),
         make_ready_state("unload-model", "llama-cpp"),
     );
 
     // Verify the model exists
     assert!(
-        state.models.read().await.contains_key("unload-test"),
+        state
+            .registry
+            .models
+            .read()
+            .await
+            .contains_key("unload-test"),
         "Model should exist before unload"
     );
 
@@ -1002,7 +1039,12 @@ async fn test_unload_model_graceful_shutdown() {
 
     // Verify the model was removed
     assert!(
-        !state.models.read().await.contains_key("unload-test"),
+        !state
+            .registry
+            .models
+            .read()
+            .await
+            .contains_key("unload-test"),
         "Model should be removed after unload"
     );
 }
@@ -1027,7 +1069,7 @@ async fn test_unload_model_non_ready_state() {
     let state = ProxyState::new(config, None);
 
     // Add a Starting model
-    state.models.write().await.insert(
+    state.registry.models.write().await.insert(
         "starting-server".to_string(),
         make_starting_state("model", "llama-cpp"),
     );

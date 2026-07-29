@@ -15,7 +15,7 @@ impl ProxyState {
     ///   - Removes the entry at `old_name`, inserts at `new_name`
     ///   - Attempts `config.save()`
     ///   - If save fails: rollback — remove `new_name`, re-insert at `old_name`, return error
-    /// - Takes a write lock on `self.models`:
+    /// - Takes a write lock on `self.registry.models`:
     ///   - If `old_name` exists in the map, removes and re-inserts at `new_name`
     /// - DB update (best-effort): calls `rename_active_model(conn, old_name, new_name)` if db is available
     pub async fn rename_model(&self, old_name: &str, new_name: &str) -> Result<()> {
@@ -29,7 +29,7 @@ impl ProxyState {
 
         // Lock config and model configs and perform rename
         let _config = self.config.write().await;
-        let mut model_configs = self.model_configs.write().await;
+        let mut model_configs = self.registry.model_configs.write().await;
 
         // Check old name exists
         if !model_configs.contains_key(old_name) {
@@ -72,14 +72,14 @@ impl ProxyState {
 
         // Update in-memory models map
         {
-            let mut models = self.models.write().await;
+            let mut models = self.registry.models.write().await;
             if let Some(model_state) = models.remove(old_name) {
                 models.insert(new_name.to_string(), model_state);
             }
         }
 
         // Migrate inference_stats entry from old name to new name
-        self.inference_stats.send_modify(|map| {
+        self.metrics.modify_inference_stats(|map| {
             if let Some(stats) = map.remove(old_name) {
                 map.insert(new_name.to_string(), stats);
             }

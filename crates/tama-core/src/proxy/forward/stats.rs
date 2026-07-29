@@ -1,5 +1,5 @@
+use crate::proxy::state::MetricsState;
 use crate::proxy::types::LatestInferenceStats;
-use std::collections::HashMap;
 use std::time::SystemTime;
 
 /// Extract inference stats from a llama_cpp `timings` object in a JSON response.
@@ -7,10 +7,10 @@ use std::time::SystemTime;
 /// Inserts the stats into the per-backend HashMap keyed by `backend_name` and sends
 /// the updated map via the watch channel. Returns the computed stats.
 /// Division by zero (prompt_n == 0, draft_n == 0) produces `None` for that field.
-pub fn extract_inference_stats(
+pub(crate) fn extract_inference_stats(
     backend_name: &str,
     json: &serde_json::Value,
-    inference_stats: &tokio::sync::watch::Sender<HashMap<String, LatestInferenceStats>>,
+    metrics_state: &MetricsState,
 ) -> Option<LatestInferenceStats> {
     let timings = json.get("timings")?;
 
@@ -33,7 +33,8 @@ pub fn extract_inference_stats(
         .as_millis() as i64;
 
     // Read previous spec_decoding_active flag for THIS backend (sticky: once true, stays true)
-    let prev_active = inference_stats
+    let prev_active = metrics_state
+        .inference_stats
         .borrow()
         .get(backend_name)
         .map(|s| s.spec_decoding_active)
@@ -56,10 +57,7 @@ pub fn extract_inference_stats(
         last_updated_ms: now_ms,
     };
 
-    // Insert into per-backend HashMap and send updated map
-    let mut map = inference_stats.borrow().clone();
-    map.insert(backend_name.to_string(), stats);
-    inference_stats.send_replace(map);
+    metrics_state.record_inference_stats(backend_name, stats);
 
     Some(stats)
 }

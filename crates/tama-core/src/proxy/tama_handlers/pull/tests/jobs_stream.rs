@@ -11,7 +11,7 @@ use super::helpers::{create_test_state, pull_router};
 
 /// Seed a pull job into the in-memory state map.
 fn seed_job(state: &Arc<ProxyState>, job_id: &str, status: PullJobStatus) {
-    state.pull_jobs.try_write().unwrap().insert(
+    state.pull.pull_jobs.try_write().unwrap().insert(
         job_id.to_string(),
         PullJob {
             job_id: job_id.to_string(),
@@ -99,7 +99,7 @@ async fn test_pull_job_stream_emits_progress_then_done() {
     let job_id_for_flip = "pull-sse".to_string();
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(800)).await;
-        let mut jobs = state_clone.pull_jobs.write().await;
+        let mut jobs = state_clone.pull.pull_jobs.write().await;
         if let Some(job) = jobs.get_mut(&job_id_for_flip) {
             job.status = PullJobStatus::Completed;
         }

@@ -52,7 +52,7 @@ impl ProxyState {
 
         // Atomically check if already loaded and reserve if not
         {
-            let mut models = self.models.write().await;
+            let mut models = self.registry.models.write().await;
             if let Some(state) = models.get(backend_name) {
                 if state.is_ready() || matches!(state, BackendState::Starting { .. }) {
                     debug!("TTS backend '{}' already loaded/starting", backend_name);
@@ -118,7 +118,7 @@ impl ProxyState {
 
         // Update the PID in the Starting state so cleanup paths can find it
         {
-            let mut models = self.models.write().await;
+            let mut models = self.registry.models.write().await;
             if let Some(BackendState::Starting { backend_pid, .. }) = models.get_mut(backend_name) {
                 *backend_pid = pid;
             }
@@ -176,9 +176,9 @@ impl ProxyState {
         }
 
         if !health_ok {
-            let mut models = self.models.write().await;
+            let mut models = self.registry.models.write().await;
             models.remove(backend_name);
-            self.inference_stats.send_modify(|map| {
+            self.metrics.modify_inference_stats(|map| {
                 map.remove(backend_name);
             });
             return Err(anyhow::anyhow!(
@@ -190,7 +190,7 @@ impl ProxyState {
 
         // Update to Ready state
         {
-            let mut models = self.models.write().await;
+            let mut models = self.registry.models.write().await;
             if let Some(state) = models.get_mut(backend_name) {
                 if let BackendState::Starting {
                     consecutive_failures,
@@ -219,6 +219,7 @@ impl ProxyState {
 
         info!("TTS backend '{}' loaded successfully", backend_name);
         self.metrics
+            .counters
             .models_loaded
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(backend_name.to_string())
@@ -274,10 +275,11 @@ impl ProxyState {
         }
 
         // Remove from models
-        self.models.write().await.remove(backend_name);
+        self.registry.models.write().await.remove(backend_name);
 
         info!("TTS backend '{}' unloaded", backend_name);
         self.metrics
+            .counters
             .models_unloaded
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(())

@@ -28,7 +28,7 @@ impl ProxyState {
 
         // 3. Fast path — already starting or ready
         {
-            let models = self.models.read().await;
+            let models = self.registry.models.read().await;
             if let Some(state) = models.get("compaction") {
                 if state.is_ready() || matches!(state, BackendState::Starting { .. }) {
                     debug!("Compaction backend already loaded/starting");
@@ -61,7 +61,7 @@ impl ProxyState {
 
         // 7. Register in model registry
         {
-            let mut models = self.models.write().await;
+            let mut models = self.registry.models.write().await;
             models.insert(
                 "compaction".to_string(),
                 BackendState::Starting {
@@ -118,7 +118,7 @@ impl ProxyState {
 
         // 10. Update PID in Starting state
         {
-            let mut models = self.models.write().await;
+            let mut models = self.registry.models.write().await;
             if let Some(BackendState::Starting { backend_pid, .. }) = models.get_mut("compaction") {
                 *backend_pid = pid;
             }
@@ -154,7 +154,7 @@ impl ProxyState {
                     tokio::time::sleep(Duration::from_millis(500)).await;
                 }
                 // Set Failed state
-                let mut models = self.models.write().await;
+                let mut models = self.registry.models.write().await;
                 models.insert(
                     "compaction".to_string(),
                     BackendState::Failed {
@@ -179,7 +179,7 @@ impl ProxyState {
 
         // 13. Transition to Ready (always reached — timeout returns early)
         {
-            let mut models = self.models.write().await;
+            let mut models = self.registry.models.write().await;
             if let Some(state) = models.get_mut("compaction") {
                 if let BackendState::Starting {
                     consecutive_failures,

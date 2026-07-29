@@ -208,13 +208,15 @@ pub fn start_metrics_collector(
             snapshot.network = network_stats.clone();
 
             // Update the cached snapshot read by /tama/v1/system/health.
-            *metrics_state.system_metrics.write().await = snapshot.clone();
+            metrics_state
+                .metrics
+                .set_system_metrics(snapshot.clone())
+                .await;
 
             // 2. Read latest inference stats from watch channel (per-server HashMap)
             // Aggregate across all servers: use the most recently updated server's stats
             // for numeric fields; OR the spec_decoding_active flag across all servers.
-            // Clone out of the borrow guard so it doesn't live across the .await below.
-            let inference_map = metrics_state.inference_stats.borrow().clone();
+            let inference_map = metrics_state.metrics.inference_stats_snapshot();
             let latest_server = inference_map.values().max_by_key(|s| s.last_updated_ms);
             let tps = latest_server.and_then(|s| s.tps);
             let prompt_tps = latest_server.and_then(|s| s.prompt_tps);
@@ -308,7 +310,7 @@ pub fn start_metrics_collector(
                 buckets: all_buckets,
                 current,
             };
-            let _ = metrics_state.metrics_tx.send(snapshot);
+            metrics_state.metrics.publish_metrics(snapshot);
 
             tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
         }

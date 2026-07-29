@@ -1,4 +1,5 @@
 use super::*;
+use crate::proxy::state::MetricsState;
 
 #[test]
 fn test_process_sse_line_rewrites_model_in_data() {
@@ -108,8 +109,7 @@ fn test_process_sse_line_multiline_buffer() {
 
 #[test]
 fn test_process_sse_line_extracts_inference_stats() {
-    let (sender, mut rx) = watch::channel::<HashMap<String, LatestInferenceStats>>(HashMap::new());
-    let sender = std::sync::Arc::new(sender);
+    let metrics_state = MetricsState::new();
     let mut out = String::new();
 
     // Simulate a streaming data line with timings
@@ -118,14 +118,13 @@ fn test_process_sse_line_extracts_inference_stats() {
         Some("user-model"),
         "test-server",
         &mut out,
-        Some(&sender),
+        Some(&metrics_state),
     );
 
     // Verify the SSE output was rewritten
     assert!(out.contains("user-model"), "output: {}", out);
     // Verify inference stats were extracted and stored in the HashMap
-    assert!(rx.has_changed().is_ok());
-    let map = rx.borrow_and_update();
+    let map = metrics_state.inference_stats_snapshot();
     assert_eq!(map.len(), 1);
     let stats = map.get("test-server").unwrap();
     assert_eq!(stats.tps, Some(42.5f32));

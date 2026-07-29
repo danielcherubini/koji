@@ -31,24 +31,24 @@ pub async fn update_compaction(
 ) -> impl IntoResponse {
     // Update config
     {
-        let mut config = state.config().write().await;
-        if let Some(device) = &req.device {
-            config.compaction.device = device.clone();
-        }
-        match &req.port {
-            FieldUpdate::Set(v) => config.compaction.port = Some(*v),
-            FieldUpdate::Clear => config.compaction.port = None,
-            FieldUpdate::Unchanged => {}
-        }
-        if let Some(timeout) = &req.request_timeout_ms {
-            config.compaction.request_timeout_ms = *timeout;
-        }
-        let was_enabled = config.compaction.enabled;
-        config.compaction.enabled = req.enabled;
-
-        // Persist config to DB (clone to release the write guard)
-        let config_to_save = (*config).clone();
-        drop(config);
+        let (config_to_save, was_enabled) = state
+            .with_config_mut(|config| {
+                if let Some(device) = &req.device {
+                    config.compaction.device = device.clone();
+                }
+                match &req.port {
+                    FieldUpdate::Set(v) => config.compaction.port = Some(*v),
+                    FieldUpdate::Clear => config.compaction.port = None,
+                    FieldUpdate::Unchanged => {}
+                }
+                if let Some(timeout) = &req.request_timeout_ms {
+                    config.compaction.request_timeout_ms = *timeout;
+                }
+                let was_enabled = config.compaction.enabled;
+                config.compaction.enabled = req.enabled;
+                ((*config).clone(), was_enabled)
+            })
+            .await;
         if let Err(e) = config_to_save.save() {
             tracing::warn!(error = %e, "Failed to persist compaction config to database");
         }
@@ -63,13 +63,11 @@ pub async fn update_compaction(
     }
 
     // Check current running status
-    let running = {
-        let models = state.models().read().await;
-        models
-            .get("compaction")
-            .map(|s| s.is_ready())
-            .unwrap_or(false)
-    };
+    let running = state
+        .get_model_state("compaction")
+        .await
+        .map(|s| s.is_ready())
+        .unwrap_or(false);
 
     (
         StatusCode::OK,

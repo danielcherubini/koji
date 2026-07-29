@@ -25,7 +25,7 @@ async fn test_handle_get_model_by_config_key_returns_api_name() {
 
     // Populate model_configs
     {
-        let mut mc = state_arc.model_configs.write().await;
+        let mut mc = state_arc.registry.model_configs.write().await;
         mc.insert(
             "config-key-1".to_string(),
             ModelConfig {
@@ -58,7 +58,7 @@ async fn test_handle_get_model_by_api_name_returns_api_name() {
 
     // Populate model_configs
     {
-        let mut mc = state_arc.model_configs.write().await;
+        let mut mc = state_arc.registry.model_configs.write().await;
         mc.insert(
             "config-key-1".to_string(),
             ModelConfig {
@@ -91,7 +91,7 @@ async fn test_handle_get_model_without_api_name_falls_back_to_config_key() {
 
     // Populate model_configs
     {
-        let mut mc = state_arc.model_configs.write().await;
+        let mut mc = state_arc.registry.model_configs.write().await;
         mc.insert(
             "config-key-2".to_string(),
             ModelConfig {
@@ -153,7 +153,7 @@ async fn test_handle_get_model_fetches_from_backend_with_meta() {
 
     // Add model config
     {
-        let mut mc = state.model_configs.write().await;
+        let mut mc = state.registry.model_configs.write().await;
         mc.insert(
             "test-model".to_string(),
             ModelConfig {
@@ -168,7 +168,7 @@ async fn test_handle_get_model_fetches_from_backend_with_meta() {
 
     // Add a Ready model state
     {
-        let mut models = state.models.write().await;
+        let mut models = state.registry.models.write().await;
         models.insert(
             "test-model".to_string(),
             crate::proxy::BackendState::Ready {
@@ -218,7 +218,7 @@ async fn test_handle_get_model_fallback_to_config_when_not_loaded() {
 
     // Add model config but do NOT add it to loaded models
     {
-        let mut mc = state_arc.model_configs.write().await;
+        let mut mc = state_arc.registry.model_configs.write().await;
         mc.insert(
             "unloaded-model".to_string(),
             ModelConfig {
@@ -310,7 +310,7 @@ async fn test_handle_get_model_matches_by_model_field_when_multiple() {
 
     // Config's model field matches model-b
     {
-        let mut mc = state.model_configs.write().await;
+        let mut mc = state.registry.model_configs.write().await;
         mc.insert(
             "my-model".to_string(),
             ModelConfig {
@@ -324,7 +324,7 @@ async fn test_handle_get_model_matches_by_model_field_when_multiple() {
     }
 
     {
-        let mut models = state.models.write().await;
+        let mut models = state.registry.models.write().await;
         models.insert(
             "my-model".to_string(),
             crate::proxy::BackendState::Ready {
@@ -364,7 +364,7 @@ async fn test_handle_get_model_backend_failure_fallback() {
 
     // Add model config
     {
-        let mut mc = state.model_configs.write().await;
+        let mut mc = state.registry.model_configs.write().await;
         mc.insert(
             "fail-model".to_string(),
             ModelConfig {
@@ -379,7 +379,7 @@ async fn test_handle_get_model_backend_failure_fallback() {
 
     // Add a Ready model with unreachable backend URL
     {
-        let mut models = state.models.write().await;
+        let mut models = state.registry.models.write().await;
         models.insert(
             "fail-model".to_string(),
             crate::proxy::BackendState::Ready {
@@ -440,7 +440,7 @@ async fn test_handle_get_model_normalizes_id_from_alias() {
     let state = ProxyState::new(config, None);
 
     {
-        let mut mc = state.model_configs.write().await;
+        let mut mc = state.registry.model_configs.write().await;
         mc.insert(
             "gemma-e2b".to_string(),
             ModelConfig {
@@ -454,7 +454,7 @@ async fn test_handle_get_model_normalizes_id_from_alias() {
     }
 
     {
-        let mut models = state.models.write().await;
+        let mut models = state.registry.models.write().await;
         models.insert(
             "gemma-e2b".to_string(),
             crate::proxy::BackendState::Ready {

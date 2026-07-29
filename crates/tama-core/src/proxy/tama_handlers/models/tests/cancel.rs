@@ -28,7 +28,7 @@ async fn test_cancel_returns_200_for_starting_model() {
     .await;
 
     // Insert a Starting entry with a fake PID
-    state.models.write().await.insert(
+    state.registry.models.write().await.insert(
         "test-model".to_string(),
         BackendState::Starting {
             model_name: "test-model".into(),
@@ -69,7 +69,13 @@ async fn test_cancel_returns_200_for_starting_model() {
 
     // Model entry should be removed
     assert!(
-        state_clone.models.read().await.get("test-model").is_none(),
+        state_clone
+            .registry
+            .models
+            .read()
+            .await
+            .get("test-model")
+            .is_none(),
         "Model entry should be removed after cancel"
     );
 }
@@ -87,7 +93,7 @@ async fn test_cancel_returns_409_for_ready_model() {
     .await;
 
     // Insert a Ready entry
-    state.models.write().await.insert(
+    state.registry.models.write().await.insert(
         "test-model".to_string(),
         BackendState::Ready {
             model_name: "test-model".to_string(),
@@ -187,7 +193,7 @@ async fn test_cancel_returns_404_for_failed_model() {
     .await;
 
     // Insert a Failed entry
-    state.models.write().await.insert(
+    state.registry.models.write().await.insert(
         "test-model".to_string(),
         BackendState::Failed {
             model_name: "test-model".to_string(),

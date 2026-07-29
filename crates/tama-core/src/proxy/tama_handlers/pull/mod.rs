@@ -30,7 +30,7 @@ pub fn enqueue_pull(
     quant: Option<&str>,
     context_length: Option<u32>,
 ) -> Result<(), anyhow::Error> {
-    if let Some(ref svc) = state.pull_queue {
+    if let Some(ref svc) = state.pull_queue() {
         svc.enqueue(
             &job_id,
             &repo_id,

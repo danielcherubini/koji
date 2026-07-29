@@ -41,12 +41,12 @@ async fn create_pull_state(
     let svc = PullQueueService::new(mgr, 2);
 
     let mut state = ProxyState::new(config, Some(db_dir));
-    state.set_pull_queue(Some(Arc::new(svc)));
+    state.pull.pull_queue = Some(Arc::new(svc));
 
     // Seed the in-memory job — start_pull_from_queue early-returns with "Job not found"
     // if it's absent from pull_jobs.
     let job_id = uuid::Uuid::new_v4().to_string();
-    state.pull_jobs.write().await.insert(
+    state.pull.pull_jobs.write().await.insert(
         job_id.clone(),
         PullJob {
             job_id: job_id.clone(),
@@ -130,7 +130,10 @@ async fn test_pull_hash_mismatch_fails_job_and_deletes_file() {
 
     // Enqueue a DB queue row — start_pull_from_queue calls svc.update_status()
     // which requires the row to already exist.
-    let svc = state.pull_queue.as_ref().expect("pull_queue should be set");
+    let svc = state
+        .pull_queue()
+        .as_ref()
+        .expect("pull_queue should be set");
     svc.enqueue(&job_id, REPO, FILE, None, "model", Some("Q4_K_M"), None)
         .unwrap();
 
@@ -165,7 +168,7 @@ async fn test_pull_hash_mismatch_fails_job_and_deletes_file() {
     }
 
     // --- Assertions ---
-    let jobs = state.pull_jobs.read().await;
+    let jobs = state.pull.pull_jobs.read().await;
     let job = jobs.get(&job_id).expect("job should exist");
     assert_eq!(
         job.status,
@@ -190,7 +193,10 @@ async fn test_pull_hash_mismatch_fails_job_and_deletes_file() {
     );
 
     // DB queue row should reflect failure
-    let svc = state.pull_queue.as_ref().expect("pull_queue should be set");
+    let svc = state
+        .pull_queue()
+        .as_ref()
+        .expect("pull_queue should be set");
     let db_row = svc.test_model_mgr().queue_get_by_job_id(&job_id).unwrap();
     assert!(db_row.is_some(), "DB queue row should exist");
     assert_eq!(
@@ -264,7 +270,10 @@ async fn test_pull_success_completes_and_records_model_files() {
 
     // Enqueue a DB queue row — start_pull_from_queue calls svc.update_status()
     // which requires the row to already exist.
-    let svc = state.pull_queue.as_ref().expect("pull_queue should be set");
+    let svc = state
+        .pull_queue()
+        .as_ref()
+        .expect("pull_queue should be set");
     svc.enqueue(&job_id, REPO, FILE, None, "model", Some("Q4_K_M"), None)
         .unwrap();
 
@@ -301,7 +310,7 @@ async fn test_pull_success_completes_and_records_model_files() {
     // --- Assertions ---
 
     // 1. Job should be Completed with verified_ok == Some(true)
-    let jobs = state.pull_jobs.read().await;
+    let jobs = state.pull.pull_jobs.read().await;
     let job = jobs.get(&job_id).expect("job should exist");
     assert_eq!(
         job.status,
@@ -347,7 +356,10 @@ async fn test_pull_success_completes_and_records_model_files() {
     );
 
     // 5. DB queue row should be "completed"
-    let svc = state.pull_queue.as_ref().expect("pull_queue should be set");
+    let svc = state
+        .pull_queue()
+        .as_ref()
+        .expect("pull_queue should be set");
     let db_row = svc.test_model_mgr().queue_get_by_job_id(&job_id).unwrap();
     assert!(db_row.is_some(), "DB queue row should exist");
     assert_eq!(

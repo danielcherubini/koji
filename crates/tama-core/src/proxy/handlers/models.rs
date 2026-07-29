@@ -72,7 +72,7 @@ pub async fn handle_get_model(
     Path(model_id): Path<String>,
 ) -> Response {
     // Check if model_id is an alias first
-    let aliases = state.aliases.read().await;
+    let aliases = state.registry.aliases.read().await;
     let (lookup_id, is_alias) = if let Some(resolved) = aliases.get(&model_id) {
         (resolved.clone(), true)
     } else {
@@ -83,7 +83,7 @@ pub async fn handle_get_model(
     // Phase 1: Look up model by lookup_id in config.
     // Match by config_name, api_name, or model field.
     let (config_name, server_cfg) = {
-        let model_configs = state.model_configs.read().await;
+        let model_configs = state.registry.model_configs.read().await;
         let mut found: Option<(&String, &crate::config::ModelConfig)> = None;
 
         for (name, cfg) in model_configs.iter() {
@@ -118,7 +118,7 @@ pub async fn handle_get_model(
 
     // Phase 2: Check if the config's backend is loaded and Ready.
     if let Some(crate::proxy::BackendState::Ready { backend_url, .. }) =
-        state.models.read().await.get(&config_name)
+        state.registry.models.read().await.get(&config_name)
     {
         // Query backend's /v1/models and find matching entry
         let entries = fetch_models_from_backend(&state, backend_url).await;
@@ -158,8 +158,8 @@ pub async fn handle_get_model(
 pub async fn handle_list_models(state: State<Arc<ProxyState>>) -> Json<serde_json::Value> {
     // Phase 1: Snapshot data under locks, then drop them before I/O.
     let (backend_info, all_configs) = {
-        let models = state.models.read().await;
-        let configs = state.model_configs.read().await;
+        let models = state.registry.models.read().await;
+        let configs = state.registry.model_configs.read().await;
 
         // Collect (config_name, backend_url, is_ready) for all models
         let backend_info: Vec<_> = models
@@ -278,7 +278,7 @@ pub async fn handle_list_models(state: State<Arc<ProxyState>>) -> Json<serde_jso
 
     // Phase 5: Add alias entries from the alias cache.
     // Inherit metadata (context_length, modalities, backend) from the target model.
-    let aliases = state.aliases.read().await;
+    let aliases = state.registry.aliases.read().await;
     for (alias_name, resolved_model) in aliases.iter() {
         if seen_ids.contains(alias_name.as_str()) {
             continue; // skip duplicate — model already in list

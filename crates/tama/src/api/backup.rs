@@ -371,7 +371,9 @@ pub async fn start_restore(
         .await;
         match result {
             Ok(Ok((merged_config, summary))) => {
-                *state_for_spawn.config().write().await = merged_config;
+                state_for_spawn
+                    .with_config_mut(|c| *c = merged_config)
+                    .await;
                 jobs_for_spawn.append_log(&job_for_spawn, summary).await;
                 jobs_for_spawn
                     .finish(&job_for_spawn, crate::web_types::JobStatus::Succeeded, None)
@@ -1205,11 +1207,10 @@ mod tests {
 
         // Verify: backends HashMap contains "llama_cpp" key.
         {
-            let config = proxy_state.config().read().await;
-            assert!(
-                config.backends.contains_key("llama_cpp"),
-                "backends should contain 'llama_cpp'"
-            );
+            let has_backend = proxy_state
+                .with_config(|c| c.backends.contains_key("llama_cpp"))
+                .await;
+            assert!(has_backend, "backends should contain 'llama_cpp'");
         }
 
         // Verify: uploaded archive file no longer exists (cleanup after restore).

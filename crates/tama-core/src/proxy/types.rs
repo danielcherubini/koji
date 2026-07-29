@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::task::JoinSet;
 
-use super::pull_jobs::PullJob;
 use super::pull_queue::PullQueueService;
+use super::state::{MetricsState, PullState, RegistryState};
 
 /// Cache entry for discovered GPU devices: (discovered_at, devices).
 type GpuDeviceCacheEntry = (Instant, Vec<crate::gpu::GpuDeviceInfo>);
@@ -225,27 +225,20 @@ pub struct LatestInferenceStats {
 
 /// Manages proxy state and model lifecycle.
 ///
-/// TODO(2026-06-27): Consider splitting into sub-structs (ModelRegistry, MetricsCollector, DownloadManager)
-/// to reduce the 20+ public fields and improve cohesion.
-/// See docs/plans/README.md Code Quality Backlog.
+/// Composed from three domain sub-structs: `registry` (models/configs/aliases),
+/// `metrics` (counters/channels), `pull` (jobs/downloads). Remaining fields
+/// are standalone configuration or service handles.
 impl Clone for ProxyState {
     fn clone(&self) -> Self {
         Self {
+            registry: self.registry.clone(),
+            metrics: self.metrics.clone(),
+            pull: self.pull.clone(),
             config: Arc::clone(&self.config),
-            model_configs: Arc::clone(&self.model_configs),
-            aliases: Arc::clone(&self.aliases),
-            models: Arc::clone(&self.models),
             client: self.client.clone(),
-            metrics: Arc::clone(&self.metrics),
             db_dir: self.db_dir.clone(),
-            pull_jobs: Arc::clone(&self.pull_jobs),
-            system_metrics: Arc::clone(&self.system_metrics),
-            in_flight_pulls: Arc::clone(&self.in_flight_pulls),
-            metrics_tx: self.metrics_tx.clone(),
-            pull_queue: self.pull_queue.clone(),
             config_write_semaphore: Arc::clone(&self.config_write_semaphore),
             backend_logs: self.backend_logs.clone(),
-            inference_stats: self.inference_stats.clone(),
             gpu_devices_cache: Arc::clone(&self.gpu_devices_cache),
             model_tasks: tokio::sync::RwLock::new(std::collections::HashMap::new()),
             cookie_key: self.cookie_key.clone(),
@@ -255,34 +248,21 @@ impl Clone for ProxyState {
 }
 
 pub struct ProxyState {
+    /// Model registry: loaded backends, model configs, and alias caches.
+    pub(crate) registry: RegistryState,
+    /// Metrics and channel handles: counters, system metrics, inference stats.
+    pub(crate) metrics: MetricsState,
+    /// Pull job state: active jobs, in-flight downloads, queue service.
+    pub(crate) pull: PullState,
     pub(crate) config: Arc<tokio::sync::RwLock<crate::config::Config>>,
-    pub(crate) model_configs:
-        Arc<tokio::sync::RwLock<std::collections::HashMap<String, crate::config::ModelConfig>>>,
-    /// alias_name → resolved model name (api_name or repo_id)
-    /// Only enabled aliases are cached. Populated from DB on init and reload.
-    pub(crate) aliases: Arc<tokio::sync::RwLock<std::collections::HashMap<String, String>>>,
-    pub(crate) models: Arc<tokio::sync::RwLock<std::collections::HashMap<String, BackendState>>>,
     pub(crate) client: reqwest::Client,
-    pub(crate) metrics: Arc<ProxyMetrics>,
     pub(crate) db_dir: Option<std::path::PathBuf>,
-    pub(crate) pull_jobs: Arc<tokio::sync::RwLock<std::collections::HashMap<String, PullJob>>>,
-    pub(crate) system_metrics: Arc<tokio::sync::RwLock<crate::gpu::SystemMetrics>>,
-    /// Set of destination paths currently being pulled. Used to prevent
-    /// concurrent pulls writing to the same temp files, which would silently
-    /// corrupt the assembled output.
-    pub(crate) in_flight_pulls:
-        Arc<tokio::sync::Mutex<std::collections::HashSet<std::path::PathBuf>>>,
-    pub(crate) metrics_tx: tokio::sync::broadcast::Sender<crate::gpu::MetricsSnapshot>,
-    pub(crate) pull_queue: Option<Arc<PullQueueService>>,
     /// Semaphore controlling concurrent post-pull config writes.
     /// Replaces the old global CONFIG_WRITE_LOCK to allow controlled
     /// parallelism (default capacity=4) instead of full serialization.
     pub(crate) config_write_semaphore: Arc<tokio::sync::Semaphore>,
     /// Backend log stream manager — broadcasts backend stdout/stderr via SSE.
     pub(crate) backend_logs: crate::backends::log_stream::BackendLogManager,
-    /// Watch channel for per-backend inference stats. Keyed by backend_name.
-    /// Single-producer (intercept handler), multi-consumer (metrics task).
-    pub(crate) inference_stats: tokio::sync::watch::Sender<HashMap<String, LatestInferenceStats>>,
     /// Cache for discovered GPU devices, keyed by backend name.
     /// Value is (discovered_at_instant, list_of_devices).
     #[allow(clippy::type_complexity)]
@@ -301,7 +281,12 @@ pub struct ProxyState {
 impl ProxyState {
     /// Open a DB connection for a quick sync operation.
     /// Returns None if db_dir is not configured (e.g., in tests).
-    pub fn open_db(&self) -> Option<rusqlite::Connection> {
+    ///
+    /// Crate-internal connection factory for proxy services (API-key validation,
+    /// metrics persistence, auth). The management API in the `tama` crate uses
+    /// the shared `Repository` from `WebState` (plan-160) instead — do NOT add
+    /// new callers there.
+    pub(crate) fn open_db(&self) -> Option<rusqlite::Connection> {
         self.db_dir
             .as_ref()
             .and_then(|dir| crate::db::open(dir).ok().map(|r| r.conn))
@@ -316,10 +301,13 @@ impl ProxyState {
     /// - Clears in-flight pulls
     pub async fn shutdown(&self) {
         // Close the metrics broadcast channel to stop the metrics stream
-        let _ = self.metrics_tx.send(crate::gpu::MetricsSnapshot::default());
+        let _ = self
+            .metrics
+            .metrics_tx
+            .send(crate::gpu::MetricsSnapshot::default());
 
         // Clear all loaded models
-        let mut models = self.models.write().await;
+        let mut models = self.registry.models.write().await;
         models.clear();
 
         // Abort all per-model task JoinSets (stdout/stderr readers, reapers)
@@ -328,43 +316,11 @@ impl ProxyState {
             tasks.abort_all();
         }
 
-        // Clear active pull jobs
-        let mut pull_jobs = self.pull_jobs.write().await;
-        pull_jobs.clear();
-
-        // Clear in-flight pulls
-        let mut in_flight = self.in_flight_pulls.lock().await;
-        in_flight.clear();
-
         // Clear inference stats
-        let _ = self.inference_stats.send_replace(HashMap::new());
-    }
+        self.metrics.clear_inference_stats();
 
-    // ── Read-only accessors for commonly-accessed fields ──
-
-    /// Returns a reference to the config RwLock.
-    pub fn config(&self) -> &Arc<tokio::sync::RwLock<crate::config::Config>> {
-        &self.config
-    }
-
-    /// Returns a reference to the model configs RwLock.
-    pub fn model_configs(
-        &self,
-    ) -> &Arc<tokio::sync::RwLock<std::collections::HashMap<String, crate::config::ModelConfig>>>
-    {
-        &self.model_configs
-    }
-
-    /// Returns a reference to the aliases RwLock.
-    pub fn aliases(&self) -> &Arc<tokio::sync::RwLock<std::collections::HashMap<String, String>>> {
-        &self.aliases
-    }
-
-    /// Returns a reference to the models RwLock.
-    pub fn models(
-        &self,
-    ) -> &Arc<tokio::sync::RwLock<std::collections::HashMap<String, BackendState>>> {
-        &self.models
+        // Clear pull jobs and in-flight pulls
+        self.pull.clear().await;
     }
 
     /// Returns a reference to the HTTP client.
@@ -372,86 +328,25 @@ impl ProxyState {
         &self.client
     }
 
-    /// Returns a reference to the metrics.
-    pub fn metrics(&self) -> &Arc<ProxyMetrics> {
-        &self.metrics
-    }
-
     /// Returns a reference to the database directory.
     pub fn db_dir(&self) -> &Option<std::path::PathBuf> {
         &self.db_dir
     }
 
-    /// Returns a reference to the pull jobs RwLock.
-    pub fn pull_jobs(
-        &self,
-    ) -> &Arc<tokio::sync::RwLock<std::collections::HashMap<String, PullJob>>> {
-        &self.pull_jobs
-    }
-
-    /// Returns a reference to the system metrics RwLock.
-    pub fn system_metrics(&self) -> &Arc<tokio::sync::RwLock<crate::gpu::SystemMetrics>> {
-        &self.system_metrics
-    }
-
-    /// Returns a reference to the in-flight pulls Mutex.
-    pub fn in_flight_pulls(
-        &self,
-    ) -> &Arc<tokio::sync::Mutex<std::collections::HashSet<std::path::PathBuf>>> {
-        &self.in_flight_pulls
-    }
-
-    /// Returns a reference to the metrics broadcast sender.
-    pub fn metrics_tx(&self) -> &tokio::sync::broadcast::Sender<crate::gpu::MetricsSnapshot> {
-        &self.metrics_tx
-    }
-
     /// Returns a reference to the pull queue service.
     pub fn pull_queue(&self) -> &Option<Arc<PullQueueService>> {
-        &self.pull_queue
+        &self.pull.pull_queue
     }
 
-    /// Sets the pull queue service. Used by tests.
+    /// Sets the pull queue service. Used by tests in other workspace crates.
+    #[allow(dead_code)]
     pub fn set_pull_queue(&mut self, queue: Option<Arc<PullQueueService>>) {
-        self.pull_queue = queue;
-    }
-
-    /// Returns a reference to the config write semaphore.
-    pub fn config_write_semaphore(&self) -> &Arc<tokio::sync::Semaphore> {
-        &self.config_write_semaphore
+        self.pull.pull_queue = queue;
     }
 
     /// Returns a reference to the backend log stream manager.
     pub fn backend_logs(&self) -> &crate::backends::log_stream::BackendLogManager {
         &self.backend_logs
-    }
-
-    /// Returns a reference to the inference stats watch sender.
-    pub fn inference_stats(
-        &self,
-    ) -> &tokio::sync::watch::Sender<HashMap<String, LatestInferenceStats>> {
-        &self.inference_stats
-    }
-
-    /// Returns a reference to the Langfuse client RwLock.
-    /// The client can be refreshed when config is updated via PATCH.
-    pub fn langfuse_client(
-        &self,
-    ) -> &Arc<tokio::sync::RwLock<Option<Arc<crate::proxy::forward::langfuse::LangfuseClient>>>>
-    {
-        &self.langfuse_client
-    }
-
-    /// Returns a reference to the GPU devices cache RwLock.
-    pub fn gpu_devices_cache(
-        &self,
-    ) -> &Arc<tokio::sync::RwLock<HashMap<String, GpuDeviceCacheEntry>>> {
-        &self.gpu_devices_cache
-    }
-
-    /// Returns a reference to the model tasks RwLock.
-    pub fn model_tasks(&self) -> &tokio::sync::RwLock<HashMap<String, JoinSet<()>>> {
-        &self.model_tasks
     }
 }
 
@@ -459,38 +354,19 @@ impl ProxyState {
 mod tests {
     use super::*;
 
-    /// Verify that ProxyState exposes accessor methods for commonly-accessed fields.
+    /// Verify the public surface exposes service handles and sub-struct
+    /// composition — not lock guards.
     #[test]
-    fn test_proxy_state_accessors_exist() {
-        let config = crate::config::Config::default();
-        let state = ProxyState::new(config, None);
-
-        // Core field accessors return correct types
-        let _: &Arc<tokio::sync::RwLock<crate::config::Config>> = state.config();
-        let _: &Arc<
-            tokio::sync::RwLock<std::collections::HashMap<String, crate::config::ModelConfig>>,
-        > = state.model_configs();
-        let _: &Arc<tokio::sync::RwLock<std::collections::HashMap<String, String>>> =
-            state.aliases();
-        let _: &Arc<tokio::sync::RwLock<std::collections::HashMap<String, BackendState>>> =
-            state.models();
+    fn test_proxy_state_public_surface() {
+        let state = ProxyState::new(crate::config::Config::default(), None);
         let _: &reqwest::Client = state.client();
-        let _: &Arc<ProxyMetrics> = state.metrics();
         let _: &Option<std::path::PathBuf> = state.db_dir();
-        let _: &Arc<tokio::sync::RwLock<std::collections::HashMap<String, PullJob>>> =
-            state.pull_jobs();
-        let _: &Arc<tokio::sync::RwLock<crate::gpu::SystemMetrics>> = state.system_metrics();
-        let _: &Arc<tokio::sync::Mutex<std::collections::HashSet<std::path::PathBuf>>> =
-            state.in_flight_pulls();
-        let _: &tokio::sync::broadcast::Sender<crate::gpu::MetricsSnapshot> = state.metrics_tx();
         let _: &Option<Arc<PullQueueService>> = state.pull_queue();
-        let _: &Arc<tokio::sync::Semaphore> = state.config_write_semaphore();
         let _: &crate::backends::log_stream::BackendLogManager = state.backend_logs();
-        let _: &tokio::sync::watch::Sender<HashMap<String, LatestInferenceStats>> =
-            state.inference_stats();
-        let _: &Arc<tokio::sync::RwLock<HashMap<String, GpuDeviceCacheEntry>>> =
-            state.gpu_devices_cache();
-        let _: &tokio::sync::RwLock<HashMap<String, JoinSet<()>>> = state.model_tasks();
+        // Sub-structs are composed and independently cloneable.
+        let _registry = state.registry.clone();
+        let _metrics = state.metrics.clone();
+        let _pull = state.pull.clone();
     }
 
     #[test]

@@ -172,7 +172,7 @@ async fn test_metrics_merges_backend_metrics() {
     let state = Arc::new(crate::proxy::ProxyState::new(config, None));
 
     {
-        let mut models = state.models.write().await;
+        let mut models = state.registry.models.write().await;
         models.insert(
             "test-model".to_string(),
             super::super::types::BackendState::Ready {
@@ -263,7 +263,7 @@ async fn test_metrics_task_broadcasts_samples() {
         Some(tmp.path().to_path_buf()),
     ));
 
-    let mut rx = state.metrics_tx.subscribe();
+    let mut rx = state.metrics.metrics_tx.subscribe();
 
     let _server = ProxyServer::new(state.clone()).await;
 
@@ -304,7 +304,7 @@ async fn test_metric_sample_broadcast_populates_models_field() {
 
     // Manually insert a model into model_configs since it's no longer in Config
     {
-        let mut mc = state.model_configs.write().await;
+        let mut mc = state.registry.model_configs.write().await;
         mc.insert(
             "alpha".to_string(),
             ModelConfig {
@@ -336,7 +336,7 @@ async fn test_metric_sample_broadcast_populates_models_field() {
     }
 
     // Subscribe BEFORE starting the server so we don't miss the first tick.
-    let mut rx = state.metrics_tx.subscribe();
+    let mut rx = state.metrics.metrics_tx.subscribe();
 
     let _server = ProxyServer::new(state.clone()).await;
 
@@ -480,7 +480,7 @@ async fn test_system_metrics_stream_sample_models_round_trip() {
 
     // Manually insert a model into model_configs since it's no longer in Config
     {
-        let mut mc = state.model_configs.write().await;
+        let mut mc = state.registry.model_configs.write().await;
         mc.insert(
             "alpha".to_string(),
             ModelConfig {
@@ -659,7 +659,7 @@ async fn test_proxy_loads_models_from_db_on_startup() {
     let _server = ProxyServer::new(state.clone()).await;
 
     // Verify that the model from DB is now in the proxy state
-    let model_configs = state.model_configs.read().await;
+    let model_configs = state.registry.model_configs.read().await;
     assert!(
         model_configs.contains_key("db-model-key"),
         "Expected model 'db-model-key' to be loaded from DB"
@@ -715,7 +715,7 @@ async fn test_proxy_loads_aliases_from_db_on_startup() {
     let _server = ProxyServer::new(state.clone()).await;
 
     // Verify that the alias from DB is now in the proxy state's alias cache
-    let aliases = state.aliases.read().await;
+    let aliases = state.registry.aliases.read().await;
     assert!(
         aliases.contains_key("my-alias"),
         "Expected alias 'my-alias' to be loaded from DB into cache"

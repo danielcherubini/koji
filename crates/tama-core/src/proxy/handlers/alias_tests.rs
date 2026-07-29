@@ -24,7 +24,7 @@ async fn test_chat_completions_resolves_alias() {
 
     // Populate alias cache: "my-alias" -> "real-model-name"
     {
-        let mut aliases = state_arc.aliases.write().await;
+        let mut aliases = state_arc.registry.aliases.write().await;
         aliases.insert("my-alias".to_string(), "real-model-name".to_string());
     }
 
@@ -62,7 +62,7 @@ async fn test_list_models_includes_aliases() {
 
     // Populate alias cache
     {
-        let mut aliases = state_arc.aliases.write().await;
+        let mut aliases = state_arc.registry.aliases.write().await;
         aliases.insert("short-alias".to_string(), "owner--real-model".to_string());
         aliases.insert(
             "another-alias".to_string(),
@@ -109,7 +109,7 @@ async fn test_get_model_resolves_alias() {
 
     // Add a model config
     {
-        let mut mc = state_arc.model_configs.write().await;
+        let mut mc = state_arc.registry.model_configs.write().await;
         mc.insert(
             "real-config".to_string(),
             ModelConfig {
@@ -124,7 +124,7 @@ async fn test_get_model_resolves_alias() {
 
     // Add alias: "my-alias" -> "real-model-name" (the api_name)
     {
-        let mut aliases = state_arc.aliases.write().await;
+        let mut aliases = state_arc.registry.aliases.write().await;
         aliases.insert("my-alias".to_string(), "real-model-name".to_string());
     }
 

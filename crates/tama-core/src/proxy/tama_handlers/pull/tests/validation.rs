@@ -410,11 +410,11 @@ async fn test_pull_model_enqueues_job_and_returns_pending() {
 
     // Verify the pull job exists in memory with Pending status.
     assert!(
-        state.pull_jobs().read().await.contains_key(&job_id),
+        state.pull.pull_jobs.read().await.contains_key(&job_id),
         "pull_jobs should contain {}",
         job_id
     );
-    let jobs = state.pull_jobs().read().await;
+    let jobs = state.pull.pull_jobs.read().await;
     let job = jobs.get(&job_id).unwrap();
     use crate::proxy::pull_jobs::PullJobStatus;
     assert_eq!(job.status, PullJobStatus::Pending);
@@ -422,7 +422,7 @@ async fn test_pull_model_enqueues_job_and_returns_pending() {
     assert_eq!(job.filename, "repo-Q4_K_M.gguf");
 
     // Verify the DB queue row exists.
-    let svc = state.pull_queue.as_ref().unwrap();
+    let svc = state.pull_queue().as_ref().unwrap();
     let db_row = svc.test_model_mgr().queue_get_by_job_id(&job_id).unwrap();
     assert!(
         db_row.is_some(),

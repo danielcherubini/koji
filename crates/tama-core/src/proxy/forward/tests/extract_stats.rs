@@ -1,8 +1,9 @@
 use super::*;
+use crate::proxy::types::LatestInferenceStats;
 
 #[test]
 fn test_extract_inference_stats_full_timings() {
-    let sender = make_sender();
+    let metrics_state = make_metrics_state();
     let json = serde_json::json!({
         "model": "test-model",
         "choices": [],
@@ -16,7 +17,7 @@ fn test_extract_inference_stats_full_timings() {
         }
     });
 
-    let result = extract_inference_stats("test-server", &json, &sender);
+    let result = extract_inference_stats("test-server", &json, &metrics_state);
 
     assert!(result.is_some());
     let stats = result.unwrap();
@@ -27,7 +28,7 @@ fn test_extract_inference_stats_full_timings() {
     assert!(stats.spec_decoding_active);
     assert!(stats.last_updated_ms > 0);
     // Verify stats are stored in the HashMap under the server key
-    let map = sender.borrow();
+    let map = metrics_state.inference_stats_snapshot();
     assert!(map.contains_key("test-server"));
     let stored = map.get("test-server").unwrap();
     assert_eq!(stored.tps, Some(50.5f32));
@@ -35,20 +36,20 @@ fn test_extract_inference_stats_full_timings() {
 
 #[test]
 fn test_extract_inference_stats_missing_timings() {
-    let sender = make_sender();
+    let metrics_state = make_metrics_state();
     let json = serde_json::json!({
         "model": "test-model",
         "choices": []
     });
 
-    let result = extract_inference_stats("test-server", &json, &sender);
+    let result = extract_inference_stats("test-server", &json, &metrics_state);
 
     assert!(result.is_none());
 }
 
 #[test]
 fn test_extract_inference_stats_zero_prompt_n() {
-    let sender = make_sender();
+    let metrics_state = make_metrics_state();
     let json = serde_json::json!({
         "timings": {
             "predicted_per_second": 50.0,
@@ -60,7 +61,7 @@ fn test_extract_inference_stats_zero_prompt_n() {
         }
     });
 
-    let result = extract_inference_stats("test-server", &json, &sender);
+    let result = extract_inference_stats("test-server", &json, &metrics_state);
 
     assert!(result.is_some());
     let stats = result.unwrap();
@@ -71,7 +72,7 @@ fn test_extract_inference_stats_zero_prompt_n() {
 
 #[test]
 fn test_extract_inference_stats_zero_draft_n() {
-    let sender = make_sender();
+    let metrics_state = make_metrics_state();
     let json = serde_json::json!({
         "timings": {
             "predicted_per_second": 50.0,
@@ -83,7 +84,7 @@ fn test_extract_inference_stats_zero_draft_n() {
         }
     });
 
-    let result = extract_inference_stats("test-server", &json, &sender);
+    let result = extract_inference_stats("test-server", &json, &metrics_state);
 
     assert!(result.is_some());
     let stats = result.unwrap();
@@ -93,7 +94,7 @@ fn test_extract_inference_stats_zero_draft_n() {
 
 #[test]
 fn test_extract_inference_stats_partial_timings() {
-    let sender = make_sender();
+    let metrics_state = make_metrics_state();
     let json = serde_json::json!({
         "timings": {
             "predicted_per_second": 30.0,
@@ -101,7 +102,7 @@ fn test_extract_inference_stats_partial_timings() {
         }
     });
 
-    let result = extract_inference_stats("test-server", &json, &sender);
+    let result = extract_inference_stats("test-server", &json, &metrics_state);
 
     assert!(result.is_some());
     let stats = result.unwrap();
@@ -114,8 +115,11 @@ fn test_extract_inference_stats_partial_timings() {
 
 #[test]
 fn test_extract_inference_stats_spec_decoding_sticky() {
-    let initial_map = HashMap::from_iter([(
-        "test-server".to_string(),
+    let metrics_state = make_metrics_state();
+
+    // Pre-seed with spec_decoding_active=true (sticky behavior)
+    metrics_state.record_inference_stats(
+        "test-server",
         LatestInferenceStats {
             tps: Some(10.0),
             prompt_tps: None,
@@ -124,8 +128,8 @@ fn test_extract_inference_stats_spec_decoding_sticky() {
             spec_decoding_active: true,
             last_updated_ms: 100,
         },
-    )]);
-    let (sender, _rx) = watch::channel(initial_map);
+    );
+
     let json = serde_json::json!({
         "timings": {
             "predicted_per_second": 40.0,
@@ -137,7 +141,7 @@ fn test_extract_inference_stats_spec_decoding_sticky() {
         }
     });
 
-    let result = extract_inference_stats("test-server", &json, &sender);
+    let result = extract_inference_stats("test-server", &json, &metrics_state);
 
     assert!(result.is_some());
     let stats = result.unwrap();

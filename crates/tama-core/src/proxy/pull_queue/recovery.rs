@@ -77,7 +77,7 @@ async fn start_pull_from_queue(
 /// This is the ONLY code path that transitions items from `queued` → `running`.
 pub(crate) async fn queue_processor_loop(state: Arc<crate::proxy::ProxyState>) {
     let svc = state
-        .pull_queue
+        .pull_queue()
         .as_ref()
         .expect("pull_queue must be configured");
 
@@ -133,7 +133,7 @@ pub(crate) async fn queue_processor_loop(state: Arc<crate::proxy::ProxyState>) {
             // Task is still running. Check if it's actually alive in pull_jobs
             // (has registered itself). If not, the task may still be initializing.
             let is_alive = {
-                let jobs = state.pull_jobs.read().await;
+                let jobs = state.pull.pull_jobs.read().await;
                 jobs.contains_key(&item.job_id)
             };
             if !is_alive {

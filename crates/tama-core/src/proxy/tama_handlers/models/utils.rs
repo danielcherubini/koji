@@ -52,7 +52,7 @@ pub fn generate_display_name(hf_repo: &str) -> String {
 /// resolves to the same bucket.
 pub(super) async fn resolve_config_key(state: &ProxyState, raw: &str) -> String {
     if let Ok(id) = raw.parse::<i64>() {
-        let configs = state.model_configs.read().await;
+        let configs = state.registry.model_configs.read().await;
         if let Some((key, _)) = configs.iter().find(|(_, c)| c.db_id == Some(id)) {
             return key.clone();
         }

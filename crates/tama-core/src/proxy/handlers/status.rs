@@ -63,7 +63,7 @@ pub async fn handle_health() -> Json<serde_json::Value> {
 pub async fn handle_metrics(state: State<Arc<ProxyState>>) -> Response {
     // Collect Ready non-TTS backends and drop the lock immediately
     let backends: Vec<(String, String)> = {
-        let models = state.models.read().await;
+        let models = state.registry.models.read().await;
         models
             .iter()
             .filter_map(|(name, ms)| {
@@ -137,9 +137,9 @@ pub async fn handle_metrics(state: State<Arc<ProxyState>>) -> Response {
             output.push('\n');
         }
     }
-    let sys = state.system_metrics.read().await;
+    let sys = state.metrics.system_metrics_snapshot().await;
     output.push_str(&format_system_metrics(&sys));
-    output.push_str(&format_tama_metrics(&state.metrics, active_count));
+    output.push_str(&format_tama_metrics(&state.metrics.counters, active_count));
 
     Response::builder()
         .header("content-type", "text/plain; version=0.0.4; charset=utf-8")

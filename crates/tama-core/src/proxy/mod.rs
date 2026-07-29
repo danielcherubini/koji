@@ -48,7 +48,7 @@ mod tests {
     async fn test_proxy_state_new() {
         let config = Config::default();
         let state = ProxyState::new(config.clone(), None);
-        assert!(state.models.read().await.is_empty());
+        assert!(state.registry.models.read().await.is_empty());
         assert_eq!(
             state.config.read().await.proxy.idle_timeout_secs,
             config.proxy.idle_timeout_secs
@@ -102,7 +102,7 @@ mod tests {
 
         // Add a model to the registry
         {
-            let mut model_configs = state.model_configs.write().await;
+            let mut model_configs = state.registry.model_configs.write().await;
             model_configs.insert(
                 "test-model".to_string(),
                 ModelConfig {
@@ -143,7 +143,7 @@ mod tests {
 
         // Add a model to the registry
         {
-            let mut model_configs = state.model_configs.write().await;
+            let mut model_configs = state.registry.model_configs.write().await;
             model_configs.insert(
                 "old-name".to_string(),
                 ModelConfig {
@@ -158,7 +158,7 @@ mod tests {
         state.rename_model("old-name", "new-name").await.unwrap();
 
         // Verify old name is gone, new name exists
-        let model_configs = state.model_configs.read().await;
+        let model_configs = state.registry.model_configs.read().await;
         assert!(!model_configs.contains_key("old-name"));
         assert!(model_configs.contains_key("new-name"));
     }
@@ -170,7 +170,7 @@ mod tests {
 
         // Add models to the registry
         {
-            let mut model_configs = state.model_configs.write().await;
+            let mut model_configs = state.registry.model_configs.write().await;
             model_configs.insert(
                 "old-name".to_string(),
                 ModelConfig {
@@ -205,7 +205,7 @@ mod tests {
 
         // Add a model to the registry
         {
-            let mut model_configs = state.model_configs.write().await;
+            let mut model_configs = state.registry.model_configs.write().await;
             model_configs.insert(
                 "existing-name".to_string(),
                 ModelConfig {
@@ -232,7 +232,7 @@ mod tests {
 
         // Add a model to the registry
         {
-            let mut model_configs = state.model_configs.write().await;
+            let mut model_configs = state.registry.model_configs.write().await;
             model_configs.insert(
                 "old-name".to_string(),
                 ModelConfig {
@@ -256,7 +256,7 @@ mod tests {
 
         // Add a model to the registry
         {
-            let mut model_configs = state.model_configs.write().await;
+            let mut model_configs = state.registry.model_configs.write().await;
             model_configs.insert(
                 "same-name".to_string(),
                 ModelConfig {
@@ -282,7 +282,7 @@ mod tests {
         let state = ProxyState::new(config, None);
 
         // Add a model to the state
-        let mut models = state.models.write().await;
+        let mut models = state.registry.models.write().await;
         models.insert(
             "test-model".to_string(),
             crate::proxy::types::BackendState::Ready {
@@ -300,7 +300,7 @@ mod tests {
         drop(models);
 
         // Verify the model exists
-        let models = state.models.read().await;
+        let models = state.registry.models.read().await;
         assert!(models.contains_key("test-model"));
         drop(models);
 
@@ -308,7 +308,7 @@ mod tests {
         state.shutdown().await;
 
         // Verify the model is gone
-        let models = state.models.read().await;
+        let models = state.registry.models.read().await;
         assert!(models.is_empty());
     }
 
@@ -320,7 +320,7 @@ mod tests {
         let state = ProxyState::new(config, None);
 
         // Add a pull job
-        let mut pull_jobs = state.pull_jobs.write().await;
+        let mut pull_jobs = state.pull.pull_jobs.write().await;
         pull_jobs.insert(
             "test-job".to_string(),
             PullJob {
@@ -336,7 +336,7 @@ mod tests {
         drop(pull_jobs);
 
         // Verify the job exists
-        let jobs = state.pull_jobs.read().await;
+        let jobs = state.pull.pull_jobs.read().await;
         assert!(jobs.contains_key("test-job"));
         drop(jobs);
 
@@ -344,7 +344,7 @@ mod tests {
         state.shutdown().await;
 
         // Verify the job is gone
-        let jobs = state.pull_jobs.read().await;
+        let jobs = state.pull.pull_jobs.read().await;
         assert!(jobs.is_empty());
     }
 
@@ -367,7 +367,7 @@ mod tests {
 
         // Add a model with backend "llama_cpp" (not in config)
         {
-            let mut model_configs = state.model_configs.write().await;
+            let mut model_configs = state.registry.model_configs.write().await;
             model_configs.insert(
                 "test-model".to_string(),
                 ModelConfig {
@@ -418,7 +418,7 @@ mod tests {
 
         // Two model configs: one idle, one ready (with db_id).
         {
-            let mut mc = state.model_configs.write().await;
+            let mut mc = state.registry.model_configs.write().await;
             mc.insert(
                 "idle-model".to_string(),
                 ModelConfig {
@@ -442,7 +442,7 @@ mod tests {
 
         // Runtime: a Ready entry for ready-model.
         {
-            let mut runtime = state.models.write().await;
+            let mut runtime = state.registry.models.write().await;
             runtime.insert(
                 "ready-model".to_string(),
                 BackendState::Ready {
@@ -461,18 +461,20 @@ mod tests {
 
         // Block 1: vram + gpu_utilization present
         {
-            let mut sys = state.system_metrics.write().await;
-            *sys = SystemMetrics {
-                cpu_usage_pct: 12.5,
-                ram_used_mib: 0,
-                ram_total_mib: 0,
-                gpu_utilization_pct: Some(75),
-                vram: Some(VramInfo {
-                    used_mib: 100,
-                    total_mib: 200,
-                }),
-                ..Default::default()
-            };
+            state
+                .metrics
+                .set_system_metrics(SystemMetrics {
+                    cpu_usage_pct: 12.5,
+                    ram_used_mib: 0,
+                    ram_total_mib: 0,
+                    gpu_utilization_pct: Some(75),
+                    vram: Some(VramInfo {
+                        used_mib: 100,
+                        total_mib: 200,
+                    }),
+                    ..Default::default()
+                })
+                .await;
         }
         let mut v = serde_json::to_value(state.build_status_response().await).unwrap();
         // Mask the volatile last_accessed_secs_ago field.
@@ -536,15 +538,17 @@ mod tests {
         // Block 2: vram + gpu_utilization None -> keys omitted on the wire
         // live wire shape: vram/gpu_utilization_pct are OMITTED when None
         {
-            let mut sys = state.system_metrics.write().await;
-            *sys = SystemMetrics {
-                cpu_usage_pct: 12.5,
-                ram_used_mib: 0,
-                ram_total_mib: 0,
-                gpu_utilization_pct: None,
-                vram: None,
-                ..Default::default()
-            };
+            state
+                .metrics
+                .set_system_metrics(SystemMetrics {
+                    cpu_usage_pct: 12.5,
+                    ram_used_mib: 0,
+                    ram_total_mib: 0,
+                    gpu_utilization_pct: None,
+                    vram: None,
+                    ..Default::default()
+                })
+                .await;
         }
         let mut v = serde_json::to_value(state.build_status_response().await).unwrap();
         v["models"]["ready-model"]["last_accessed_secs_ago"] = serde_json::json!(0);

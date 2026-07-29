@@ -99,16 +99,14 @@ pub async fn handle_tama_pull_model(
                 ..Default::default()
             };
 
-            {
-                let mut jobs = state.pull_jobs.write().await;
-                jobs.insert(job_id.clone(), pull_job);
-            }
+            state.pull.upsert_pull_job(job_id.clone(), pull_job).await;
 
             // Infer quant from filename for display name lookup
             let quant = crate::models::pull::infer_quant_from_filename(filename);
             // NOTE: quant-suffixed lookup key can never match `model_configs`
             // (keyed by bare ConfigKey). Known limitation — tracked separately.
             let display_name = state
+                .registry
                 .model_configs
                 .read()
                 .await
@@ -205,15 +203,13 @@ pub async fn handle_tama_pull_model(
                 ..Default::default()
             };
 
-            {
-                let mut jobs = state.pull_jobs.write().await;
-                jobs.insert(job_id.clone(), pull_job);
-            }
+            state.pull.upsert_pull_job(job_id.clone(), pull_job).await;
 
             // Enqueue in the DB queue (best-effort — don't fail the pull if enqueue fails)
             // NOTE: quant-suffixed lookup key can never match `model_configs`
             // (keyed by bare ConfigKey). Known limitation — tracked separately.
             let display_name = state
+                .registry
                 .model_configs
                 .read()
                 .await
@@ -332,15 +328,13 @@ pub async fn handle_tama_pull_model(
     };
 
     // Store the job
-    {
-        let mut jobs = state.pull_jobs.write().await;
-        jobs.insert(job_id.clone(), pull_job);
-    }
+    state.pull.upsert_pull_job(job_id.clone(), pull_job).await;
 
     // Enqueue in the DB queue (best-effort — don't fail the pull if enqueue fails)
     // NOTE: quant-suffixed lookup key can never match `model_configs`
     // (keyed by bare ConfigKey). Known limitation — tracked separately.
     let display_name = state
+        .registry
         .model_configs
         .read()
         .await
@@ -377,15 +371,12 @@ pub async fn handle_tama_get_pull_job(
     state: State<Arc<ProxyState>>,
     Path(job_id): Path<String>,
 ) -> Response {
-    let jobs = state.pull_jobs.read().await;
-    let map_ptr = &*jobs as *const _;
+    let job = state.pull.get_pull_job(&job_id).await;
     tracing::info!(
         job_id = %job_id,
-        map_size = jobs.len(),
-        map_addr = ?map_ptr,
-        "GET pull job - map state"
+        "GET pull job - found={}",
+        job.is_some()
     );
-    let job = jobs.get(&job_id).cloned();
 
     match job {
         Some(j) => {
@@ -453,12 +444,10 @@ pub async fn handle_pull_job_stream(
             // Poll every 500 ms.
             tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
-            let jobs = state.pull_jobs.read().await;
-            let Some(job) = jobs.get(&job_id).cloned() else {
+            let Some(job) = state.pull.get_pull_job(&job_id).await else {
                 // Job not found — close the stream.
                 return None;
             };
-            drop(jobs);
 
             let is_terminal =
                 matches!(job.status, PullJobStatus::Completed | PullJobStatus::Failed);

@@ -951,7 +951,7 @@ async fn test_queue_processor_loop_dead_task_detection() {
     .unwrap();
 
     // Verify the job is NOT in pull_jobs (simulating a crashed task)
-    let jobs = state.pull_jobs.read().await;
+    let jobs = state.pull.pull_jobs.read().await;
     assert!(
         !jobs.contains_key("loop-dead-job"),
         "Job should not be in pull_jobs"

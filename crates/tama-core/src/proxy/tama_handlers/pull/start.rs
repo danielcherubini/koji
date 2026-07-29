@@ -17,8 +17,8 @@ pub async fn start_pull_from_queue(
     filename: String,
     spec: QuantPullSpec,
 ) {
-    let pull_jobs_arc = Arc::clone(&state.pull_jobs);
-    let in_flight_clone = Arc::clone(&state.in_flight_pulls);
+    let pull_jobs_arc = Arc::clone(&state.pull.pull_jobs);
+    let in_flight_clone = Arc::clone(&state.pull.in_flight_pulls);
     let state_clone = Arc::clone(&state);
     let job_id_clone = job_id.clone();
     let repo_id_clone = repo_id.clone();
@@ -43,7 +43,7 @@ pub async fn start_pull_from_queue(
             job.error = Some("Invalid filename".to_string());
         }
         drop(jobs);
-        if let Some(ref svc) = state_clone.pull_queue {
+        if let Some(ref svc) = state_clone.pull_queue() {
             let _ = svc.update_status(
                 &job_id_clone,
                 "failed",
@@ -62,7 +62,7 @@ pub async fn start_pull_from_queue(
             job.error = Some("Invalid repo_id".to_string());
         }
         drop(jobs);
-        if let Some(ref svc) = state_clone.pull_queue {
+        if let Some(ref svc) = state_clone.pull_queue() {
             let _ = svc.update_status(
                 &job_id_clone,
                 "failed",
@@ -101,7 +101,7 @@ pub async fn start_pull_from_queue(
                 job.error = Some(format!("Failed to get models dir: {}", e));
             }
             drop(jobs);
-            if let Some(ref svc) = state_clone.pull_queue {
+            if let Some(ref svc) = state_clone.pull_queue() {
                 let _ = svc.update_status(
                     &job_id_clone,
                     "failed",
@@ -124,7 +124,7 @@ pub async fn start_pull_from_queue(
             job.error = Some(format!("Failed to create dest dir: {}", e));
         }
         drop(jobs);
-        if let Some(ref svc) = state_clone.pull_queue {
+        if let Some(ref svc) = state_clone.pull_queue() {
             let _ = svc.update_status(
                 &job_id_clone,
                 "failed",
@@ -149,7 +149,7 @@ pub async fn start_pull_from_queue(
                 job.error = Some(format!("Failed to create destination subdirectory: {}", e));
             }
             drop(jobs);
-            if let Some(ref svc) = state_clone.pull_queue {
+            if let Some(ref svc) = state_clone.pull_queue() {
                 let _ = svc.update_status(
                     &job_id_clone,
                     "failed",
@@ -178,7 +178,7 @@ pub async fn start_pull_from_queue(
                 ));
             }
             drop(jobs);
-            if let Some(ref svc) = state_clone.pull_queue {
+            if let Some(ref svc) = state_clone.pull_queue() {
                 let _ = svc.update_status(
                     &job_id_clone,
                     "failed",
@@ -220,7 +220,7 @@ pub async fn start_pull_from_queue(
     let poll_jobs = Arc::clone(&pull_jobs_arc);
     let poll_job_id = job_id_clone.clone();
     let poll_dest = dest_path.clone();
-    let poll_pull_queue = state_clone.pull_queue.clone();
+    let poll_pull_queue = state_clone.pull_queue().clone();
     let poll_handle = tokio::spawn(async move {
         let mut last_progress_pct: u32 = 0;
         loop {
@@ -267,7 +267,7 @@ pub async fn start_pull_from_queue(
     // Create progress callback that updates job status and emits SSE events
     let progress_jobs = Arc::clone(&pull_jobs_arc);
     let progress_job_id = job_id_clone.clone();
-    let progress_queue = state_clone.pull_queue.clone();
+    let progress_queue = state_clone.pull_queue().clone();
     let progress_callback: crate::models::pull::ProgressCallback =
         Arc::new(move |pulled: u64, total: u64| {
             let job_id = progress_job_id.clone();
@@ -311,7 +311,7 @@ pub async fn start_pull_from_queue(
             drop(jobs);
             poll_handle.abort();
             in_flight_clone.lock().await.remove(&dest_path);
-            if let Some(ref svc) = state_clone.pull_queue {
+            if let Some(ref svc) = state_clone.pull_queue() {
                 let _ = svc.update_status(
                     &job_id_clone,
                     "failed",
@@ -346,7 +346,7 @@ pub async fn start_pull_from_queue(
             drop(jobs);
             poll_handle.abort();
             in_flight_clone.lock().await.remove(&dest_path);
-            if let Some(ref svc) = state_clone.pull_queue {
+            if let Some(ref svc) = state_clone.pull_queue() {
                 let _ = svc.update_status(
                     &job_id_clone,
                     "failed",
@@ -385,7 +385,7 @@ pub async fn start_pull_from_queue(
     let outcome = super::verify::run_verification(
         Arc::clone(&pull_jobs_arc),
         state_clone.db_dir.clone(),
-        state_clone.pull_queue.clone(),
+        state_clone.pull_queue().clone(),
         job_id_clone.clone(),
         repo_id_clone.clone(),
         filename_clone.clone(),
@@ -558,7 +558,7 @@ pub async fn start_pull_from_queue(
         None
     };
 
-    if let Some(ref svc) = state_clone.pull_queue {
+    if let Some(ref svc) = state_clone.pull_queue() {
         let _ = svc.update_status(
             &job_id_clone,
             final_status,

@@ -34,7 +34,7 @@ pub async fn create_state_with_two_backends(
 
     // Add model configs
     {
-        let mut mc = state.model_configs.write().await;
+        let mut mc = state.registry.model_configs.write().await;
         mc.insert(
             "model-a".to_string(),
             ModelConfig {
@@ -70,7 +70,7 @@ pub async fn create_state_with_two_backends(
 
     // Add two Ready model states
     {
-        let mut models = state.models.write().await;
+        let mut models = state.registry.models.write().await;
         models.insert(
             "model-a".to_string(),
             crate::proxy::BackendState::Ready {

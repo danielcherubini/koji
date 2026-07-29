@@ -579,7 +579,7 @@ pub(crate) async fn setup_model_after_pull(
     };
     // Config read guard is dropped here automatically when it goes out of scope.
 
-    let mut model_configs = state.model_configs.write().await;
+    let mut model_configs = state.registry.model_configs.write().await;
     let model_key = _setup_model_after_pull_with_config(
         &configs_dir,
         &mut model_configs,

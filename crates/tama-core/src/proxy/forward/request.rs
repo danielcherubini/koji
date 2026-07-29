@@ -25,6 +25,7 @@ pub async fn forward_request(
 ) -> axum::response::Response {
     state
         .metrics
+        .counters
         .total_requests
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
@@ -43,9 +44,9 @@ pub async fn forward_request(
                 "Backend process for backend '{}' is dead (detected at request entry), cleaning up",
                 backend_name
             );
-            let mut models = state.models.write().await;
+            let mut models = state.registry.models.write().await;
             models.remove(backend_name);
-            state.inference_stats.send_modify(|map| {
+            state.metrics.modify_inference_stats(|map| {
                 map.remove(backend_name);
             });
             if let Some(mgr) = state.model_mgr() {
@@ -108,7 +109,7 @@ pub async fn forward_request(
     }
 
     let backend_url = {
-        let models = state.models.read().await;
+        let models = state.registry.models.read().await;
         match models.get(backend_name).and_then(|ms| ms.backend_url()) {
             Some(url) => url.to_string(),
             None => {
@@ -154,6 +155,7 @@ pub async fn forward_request(
     // Resolve GPU device from model config using backend_name (the correct HashMap key).
     // Clone to own the value — can't borrow from temporary RwLockReadGuard.
     let gpu_info: String = state
+        .registry
         .model_configs
         .read()
         .await
@@ -250,6 +252,7 @@ pub async fn forward_request(
             if status.is_success() {
                 state
                     .metrics
+                    .counters
                     .successful_requests
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 if let Some(ms) = &model_state {
@@ -260,6 +263,7 @@ pub async fn forward_request(
             } else {
                 state
                     .metrics
+                    .counters
                     .failed_requests
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 if status.is_server_error() {
@@ -270,7 +274,7 @@ pub async fn forward_request(
                         // Set failure timestamp for cooldown
                         if ms.is_ready() || matches!(ms, BackendState::Starting { .. }) {
                             let new_ts = SystemTime::now();
-                            let mut models = state.models.write().await;
+                            let mut models = state.registry.models.write().await;
                             #[allow(clippy::collapsible_match)]
                             if let Some(existing) = models.get_mut(backend_name) {
                                 match existing {
@@ -306,7 +310,7 @@ pub async fn forward_request(
 
             // Langfuse config already read once above — reuse it here.
             let capture_streaming = langfuse_cfg.enabled && langfuse_cfg.capture_streaming;
-            let langfuse_client = state.langfuse_client().read().await.clone();
+            let langfuse_client = state.langfuse_client.read().await.clone();
 
             let body = if is_streaming {
                 // Streaming response — rewrite the model name in each SSE chunk.
@@ -315,10 +319,8 @@ pub async fn forward_request(
                 // for background accumulation and telemetry reporting.
                 let model_name: Option<String> = model_name.map(|s| s.to_string());
                 let backend_name_owned = backend_name.to_string();
-                // Wrap inference_stats sender in Arc so it can be shared across
-                // async unfold iterations (watch::Sender is Clone but Arc avoids
-                // per-iteration cloning and keeps a single owned reference).
-                let inference_stats = Arc::new(state.inference_stats.clone());
+                // Clone metrics_state for sharing across async unfold iterations.
+                let metrics_state = state.metrics.clone();
                 let byte_stream = response.bytes_stream();
 
                 // Channel for tee'd bytes — None when capture disabled.
@@ -387,7 +389,7 @@ pub async fn forward_request(
                     move |(mut stream, mut line_buf)| {
                         let model_name = model_name.clone();
                         let backend_name = backend_name_owned.clone();
-                        let inference_stats = inference_stats.clone();
+                        let metrics_state = metrics_state.clone();
                         let tx = tx.clone(); // Option<UnboundedSender<Bytes>> clone for closure
                         async move {
                             let chunk_result = stream.next().await?;
@@ -411,7 +413,7 @@ pub async fn forward_request(
                                                 model_name.as_deref(),
                                                 &backend_name,
                                                 &mut out,
-                                                Some(&inference_stats),
+                                                Some(&metrics_state),
                                             );
                                         }
                                     }
@@ -447,14 +449,13 @@ pub async fn forward_request(
                 let new_body = if let Ok(parsed) = serde_json::from_slice::<JsonValue>(&body_bytes)
                 {
                     // Extract inference stats from timings (before rewrite — timings unaffected by model name change)
-                    let _stats =
-                        extract_inference_stats(backend_name, &parsed, &state.inference_stats);
+                    let _stats = extract_inference_stats(backend_name, &parsed, &state.metrics);
 
                     // Collect Langfuse telemetry (non-streaming path) — fire-and-forget.
                     // MUST be before rewrite_json_model_name which consumes `parsed`.
                     {
                         if langfuse_cfg.enabled {
-                            let langfuse_client = state.langfuse_client().read().await.clone();
+                            let langfuse_client = state.langfuse_client.read().await.clone();
 
                             // Use langfuse_req_fields captured before the send (body_bytes is shadowed here by response body)
                             let (req_model, input, model_params) = langfuse_req_fields.clone();
@@ -490,7 +491,7 @@ pub async fn forward_request(
 
                             // Compute energy cost (best-effort — uses first GPU's power_w)
                             let (energy_cost, energy_wh, gpu_watts) = {
-                                let metrics = state.system_metrics.read().await;
+                                let metrics = state.metrics.system_metrics_snapshot().await;
                                 let power_w = get_gpu_power_watts(&metrics);
                                 if let (Some(pw), Some(t)) = (power_w, &timings) {
                                     match compute_energy_cost(
@@ -572,6 +573,7 @@ pub async fn forward_request(
         Err(e) => {
             state
                 .metrics
+                .counters
                 .failed_requests
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
@@ -590,9 +592,9 @@ pub async fn forward_request(
                     "Backend process for backend '{}' is dead, cleaning up model state",
                     backend_name
                 );
-                let mut models = state.models.write().await;
+                let mut models = state.registry.models.write().await;
                 models.remove(backend_name);
-                state.inference_stats.send_modify(|map| {
+                state.metrics.modify_inference_stats(|map| {
                     map.remove(backend_name);
                 });
                 // Best-effort DB cleanup

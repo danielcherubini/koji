@@ -72,7 +72,7 @@ impl ProxyState {
         let config = self.config.read().await.clone();
 
         // Resolve the backend name for this model
-        let model_configs = self.model_configs.read().await;
+        let model_configs = self.registry.model_configs.read().await;
         let backends = config.resolve_backends_for_model(&model_configs, model_name);
         let backend_name = backends
             .first()
@@ -85,7 +85,7 @@ impl ProxyState {
 
         // Atomically check if already loaded and reserve if not (single write lock)
         {
-            let mut models = self.models.write().await;
+            let mut models = self.registry.models.write().await;
             if let Some(state) = models.get(&backend_name) {
                 if state.is_ready() || matches!(state, BackendState::Starting { .. }) {
                     debug!(
@@ -255,7 +255,7 @@ impl ProxyState {
 
         // Update the PID in the Starting state so cleanup paths can find it
         {
-            let mut models = self.models.write().await;
+            let mut models = self.registry.models.write().await;
             if let Some(BackendState::Starting { backend_pid, .. }) = models.get_mut(&backend_name)
             {
                 *backend_pid = pid;
@@ -383,9 +383,9 @@ impl ProxyState {
                 tasks.abort_all();
             }
             // Clean up the Starting entry so future load_model calls don't short-circuit
-            let mut models = self.models.write().await;
+            let mut models = self.registry.models.write().await;
             models.remove(&backend_name);
-            self.inference_stats.send_modify(|map| {
+            self.metrics.modify_inference_stats(|map| {
                 map.remove(&backend_name);
             });
             return Err(anyhow::anyhow!(
@@ -399,7 +399,7 @@ impl ProxyState {
         // Update the loaded model state to Ready, reusing the existing
         // consecutive_failures Arc so external holders keep observing updates.
         {
-            let mut models = self.models.write().await;
+            let mut models = self.registry.models.write().await;
             if let Some(state) = models.get_mut(&backend_name) {
                 if let BackendState::Starting {
                     consecutive_failures,
@@ -440,6 +440,7 @@ impl ProxyState {
 
         info!("Backend '{}' loaded successfully", backend_name);
         self.metrics
+            .counters
             .models_loaded
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(backend_name)
@@ -456,7 +457,7 @@ impl ProxyState {
         model_toml: Option<&crate::models::ModelToml>,
     ) -> Option<String> {
         let config = self.config.read().await.clone();
-        let model_configs = self.model_configs.read().await;
+        let model_configs = self.registry.model_configs.read().await;
         let backends = config.resolve_backends_for_model(&model_configs, model_name);
         let backend_name = backends.first().map(|(name, _, _)| name.clone())?;
         let (model_config, _) = config.resolve_backend(&model_configs, &backend_name).ok()?;
@@ -492,7 +493,7 @@ impl ProxyState {
         // Collect all Ready backend names AND non-inference backend names while
         // holding the write lock. Non-inference backends (TTS, compaction) are
         // NOT in model_configs (DB), so we must check the runtime `models` map.
-        let models = self.models.write().await;
+        let models = self.registry.models.write().await;
         let ready_backends: Vec<String> = models
             .iter()
             .filter(|(_, s)| matches!(s, BackendState::Ready { .. }))
@@ -513,7 +514,7 @@ impl ProxyState {
 
         // Only count LLM (non-TTS, non-compaction) models on the same GPU
         // against the limit.
-        let model_configs = self.model_configs.read().await;
+        let model_configs = self.registry.model_configs.read().await;
         let llm_count = ready_backends
             .iter()
             .filter(|backend_name| {
@@ -539,7 +540,7 @@ impl ProxyState {
 
         // Find LRU Ready model among LLM (non-TTS, non-compaction) models
         // on the same GPU only.
-        let mut models = self.models.write().await;
+        let mut models = self.registry.models.write().await;
         let lru_name = ready_backends
             .iter()
             .filter(|backend_name| {
@@ -642,6 +643,7 @@ impl ProxyState {
         };
 
         let gpu_info: String = self
+            .registry
             .model_configs
             .read()
             .await
@@ -682,11 +684,11 @@ impl ProxyState {
         }
 
         // Remove from models
-        let mut models = self.models.write().await;
+        let mut models = self.registry.models.write().await;
         models.remove(backend_name);
 
         // Clear stale inference stats for this backend
-        self.inference_stats.send_modify(|map| {
+        self.metrics.modify_inference_stats(|map| {
             map.remove(backend_name);
         });
 
@@ -697,6 +699,7 @@ impl ProxyState {
 
         info!(gpu = %gpu_info, "Backend '{}' unloaded", backend_name);
         self.metrics
+            .counters
             .models_unloaded
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(())

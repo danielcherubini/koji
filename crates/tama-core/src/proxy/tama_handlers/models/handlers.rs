@@ -21,8 +21,8 @@ pub async fn handle_tama_list_models(state: State<Arc<ProxyState>>) -> Json<List
     use std::sync::atomic::Ordering::Relaxed;
 
     let config = state.config.read().await;
-    let model_configs = state.model_configs.read().await;
-    let models = state.models.read().await;
+    let model_configs = state.registry.model_configs.read().await;
+    let models = state.registry.models.read().await;
     let auto_unload = config.proxy.auto_unload;
     let idle_timeout_secs = config.proxy.idle_timeout_secs;
 
@@ -147,7 +147,7 @@ pub async fn handle_tama_get_model(
     }
 
     // Check if it's a configured (but not loaded) model
-    let model_configs = state.model_configs.read().await;
+    let model_configs = state.registry.model_configs.read().await;
     let config = state.config.read().await;
     let servers = config.resolve_backends_for_model(&model_configs, &model_id);
     if let Some((config_name, server_cfg, _)) = servers.first() {
@@ -227,7 +227,7 @@ pub async fn handle_tama_cancel_load(
 
     // ── Step b: read lock — initial check ──────────────────────────────
     let (backend_name, pid) = {
-        let models = state.models.read().await;
+        let models = state.registry.models.read().await;
         let entry = match models.get(&model_id) {
             Some(e) => e,
             None => {
@@ -275,7 +275,7 @@ pub async fn handle_tama_cancel_load(
 
     // ── Step c+d: write lock — re-validate and remove ──────────────────
     {
-        let mut models = state.models.write().await;
+        let mut models = state.registry.models.write().await;
         match models.get(&backend_name) {
             Some(BackendState::Starting { .. }) => {
                 // TODO: race with load_model's mgr.insert_active() — if health check

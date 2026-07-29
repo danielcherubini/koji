@@ -11,7 +11,7 @@ pub(crate) async fn get_backend_url(
     state: &ProxyState,
     backend_name: &str,
 ) -> anyhow::Result<Option<String>> {
-    let models = state.models.read().await;
+    let models = state.registry.models.read().await;
     Ok(models
         .get(backend_name)
         .and_then(|ms| ms.backend_url())

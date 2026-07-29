@@ -1,14 +1,27 @@
-use anyhow::{Context, Result};
+//! Proxy state sub-structs and the main `ProxyState` implementation.
+//!
+//! `ProxyState` is composed from three domain sub-structs:
+//! - `RegistryState` — models, model_configs, aliases caches
+//! - `MetricsState` — counters, system_metrics, metrics_tx, inference_stats channels
+//! - `PullState` — pull_jobs, in_flight_pulls, pull_queue service
+
+mod metrics;
+mod pull;
+mod registry;
+
+pub(crate) use metrics::MetricsState;
+pub(crate) use pull::PullState;
+pub(crate) use registry::RegistryState;
+
+use anyhow::Context;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use super::pull_queue::{queue_processor_loop, PullQueueService};
-use super::types::{BackendState, ProxyMetrics, ProxyState};
+use super::types::{BackendState, ProxyState};
 
 impl ProxyState {
     pub fn new(config: crate::config::Config, db_dir: Option<std::path::PathBuf>) -> Self {
-        let (metrics_tx, _) = tokio::sync::broadcast::channel(3);
-
         // Initialize Langfuse client from config before wrapping in Arc.
         let langfuse_client =
             crate::proxy::forward::langfuse::LangfuseClient::from_config(&config.langfuse)
@@ -23,10 +36,10 @@ impl ProxyState {
         });
 
         let state = Self {
+            registry: RegistryState::new(),
+            metrics: MetricsState::new(),
+            pull: PullState::new(pull_queue.clone()),
             config: Arc::new(tokio::sync::RwLock::new(config)),
-            model_configs: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-            aliases: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-            models: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             client: reqwest::Client::builder()
                 // Only set a connect timeout — not an overall timeout.
                 // The overall timeout covers the entire response lifetime
@@ -37,18 +50,9 @@ impl ProxyState {
                 // reqwest Client::build() only fails if TLS backend init fails,
                 // which is not recoverable — panic is acceptable here.
                 .expect("failed to build HTTP client"),
-            metrics: Arc::new(ProxyMetrics::default()),
             db_dir,
-            pull_jobs: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-            system_metrics: Arc::new(tokio::sync::RwLock::new(
-                crate::gpu::SystemMetrics::default(),
-            )),
-            in_flight_pulls: Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::new())),
-            metrics_tx,
-            pull_queue: pull_queue.clone(),
             config_write_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
             backend_logs: crate::backends::log_stream::BackendLogManager::default(),
-            inference_stats: tokio::sync::watch::channel(std::collections::HashMap::new()).0,
             gpu_devices_cache: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             model_tasks: tokio::sync::RwLock::new(std::collections::HashMap::new()),
             cookie_key: cookie::Key::generate(),
@@ -69,9 +73,9 @@ impl ProxyState {
     }
 
     /// Get the backend URL for a backend name.
-    pub async fn get_backend_url(&self, backend_name: &str) -> Result<String> {
+    pub async fn get_backend_url(&self, backend_name: &str) -> anyhow::Result<String> {
         let config = self.config.read().await;
-        let model_configs = self.model_configs.read().await;
+        let model_configs = self.registry.model_configs.read().await;
         let backend_config = config
             .resolve_backend(&model_configs, backend_name)
             .with_context(|| format!("Backend '{}' not found", backend_name))?
@@ -101,62 +105,20 @@ impl ProxyState {
 
     /// Get the state of a loaded model (backend).
     pub async fn get_model_state(&self, backend_name: &str) -> Option<BackendState> {
-        let models = self.models.read().await;
-        models.get(backend_name).cloned()
+        self.registry.get_model_state(backend_name).await
     }
 
     /// Find an available loaded backend for a given model name.
     pub async fn get_available_backend_for_model(&self, model_name: &str) -> Option<String> {
-        let (backend_names, circuit_breaker_threshold) = {
-            let config = self.config.read().await;
-            let model_configs = self.model_configs.read().await;
-            // Collect just the backend names (owned Strings) so we can drop the lock.
-            let names: Vec<String> = config
-                .resolve_backends_for_model(&model_configs, model_name)
-                .into_iter()
-                .map(|(name, _, _)| name)
-                .collect();
-            let threshold = config.proxy.circuit_breaker_threshold;
-            (names, threshold)
-        };
-
-        let models = self.models.read().await;
-
-        // Simple round-robin or first available
-        for backend_name in backend_names {
-            if let Some(state) = models.get(&backend_name) {
-                if (state.is_ready() || matches!(state, BackendState::Starting { .. }))
-                    && state
-                        .consecutive_failures()
-                        .map(|f| f.load(std::sync::atomic::Ordering::Relaxed))
-                        .unwrap_or(0)
-                        < circuit_breaker_threshold
-                {
-                    return Some(backend_name);
-                }
-            }
-        }
-
-        None
+        let config = self.config.read().await;
+        self.registry
+            .get_available_backend_for_model(&config, model_name)
+            .await
     }
 
     /// Update the last accessed time for a backend.
     pub async fn update_last_accessed(&self, backend_name: &str) {
-        let mut models = self.models.write().await;
-        if let Some(state) = models.get_mut(backend_name) {
-            match state {
-                BackendState::Starting { last_accessed, .. } => {
-                    *last_accessed = Instant::now();
-                }
-                BackendState::Ready { last_accessed, .. } => {
-                    *last_accessed = Instant::now();
-                }
-                BackendState::Unloading { last_accessed, .. } => {
-                    *last_accessed = Instant::now();
-                }
-                BackendState::Failed { .. } => {}
-            }
-        }
+        self.registry.update_last_accessed(backend_name).await
     }
 
     /// Get the model TOML for a model name.
@@ -184,14 +146,37 @@ impl ProxyState {
     ///
     /// This ensures that the in-memory registry stays in sync with mutations
     /// made via the web API or CLI.
-    pub async fn reload_model_configs(&self) -> Result<()> {
+    pub async fn reload_model_configs(&self) -> anyhow::Result<()> {
         let mgr = self
             .model_mgr()
             .with_context(|| "Database directory not configured")?;
         let configs = crate::db::load_model_configs(mgr.conn())?;
-        let mut model_configs = self.model_configs.write().await;
-        *model_configs = configs;
+        self.registry.reload_model_configs(configs).await;
         Ok(())
+    }
+
+    /// Read from the live config without exposing the lock. The closure runs
+    /// under a read guard that is dropped before this method returns.
+    pub async fn with_config<R>(&self, f: impl FnOnce(&crate::config::Config) -> R) -> R {
+        let config = self.config.read().await;
+        f(&config)
+    }
+
+    /// Mutate the live config without exposing the lock. Returns the closure's
+    /// result (e.g. a cloned `Config` to persist) after the write guard drops.
+    pub async fn with_config_mut<R>(&self, f: impl FnOnce(&mut crate::config::Config) -> R) -> R {
+        let mut config = self.config.write().await;
+        f(&mut config)
+    }
+
+    /// Replace the live config and refresh config-derived clients (Langfuse).
+    /// Mirrors what the config PATCH endpoint did inline (`sync_proxy_config`).
+    pub async fn replace_config(&self, new_config: crate::config::Config) {
+        {
+            let mut config = self.config.write().await;
+            *config = new_config;
+        }
+        self.refresh_langfuse_client().await;
     }
 
     /// Refresh the Langfuse client from the current config.
@@ -213,13 +198,12 @@ impl ProxyState {
     ///
     /// Populates the in-memory alias map with enabled aliases only.
     /// Disabled aliases are filtered out by the DB query.
-    pub async fn reload_aliases(&self) -> Result<()> {
+    pub async fn reload_aliases(&self) -> anyhow::Result<()> {
         let mgr = self
             .model_mgr()
             .with_context(|| "Database directory not configured")?;
         let pairs = crate::db::queries::load_aliases_for_cache(mgr.conn())?;
-        let mut aliases = self.aliases.write().await;
-        *aliases = pairs.into_iter().collect();
+        self.registry.reload_aliases(pairs).await;
         Ok(())
     }
 
@@ -227,22 +211,17 @@ impl ProxyState {
     /// - If `name` is an alias → returns the resolved model name (api_name or repo_id)
     /// - If `name` is not an alias → returns `name` unchanged (pass-through)
     pub async fn resolve_alias(&self, name: &str) -> String {
-        let aliases = self.aliases.read().await;
-        if let Some(resolved) = aliases.get(name) {
-            return resolved.clone();
-        }
-        name.to_string()
+        self.registry.resolve_alias(name).await
     }
 
     /// Open a ModelManager for model-related database operations.
-    ///
     /// Returns `None` if `db_dir` is not configured (e.g., in tests).
     ///
-    /// Each call opens a fresh `ModelManager` (and thus a fresh `rusqlite::Connection`).
-    /// This is deliberate: `Connection` is `Send` but not `Sync`, so we cannot
-    /// share a single instance across threads via `Arc`. For persistent reuse,
-    /// see `PullQueueService` which wraps `ModelManager` in `Mutex`.
-    pub fn model_mgr(&self) -> Option<crate::models::ModelManager> {
+    /// Crate-internal ModelManager factory for proxy lifecycle code
+    /// (`PullQueueService`, reload paths). The `tama` API layer uses the
+    /// shared `Repository` from `WebState` (plan-160) — do NOT add new
+    /// callers there.
+    pub(crate) fn model_mgr(&self) -> Option<crate::models::ModelManager> {
         self.db_dir
             .as_ref()
             .and_then(|dir| crate::models::ModelManager::open(dir).ok())
@@ -258,7 +237,7 @@ impl ProxyState {
         backend_name: &str,
         gpu_variant: &str,
         binary_path: &std::path::Path,
-    ) -> Result<Vec<crate::gpu::GpuDeviceInfo>> {
+    ) -> anyhow::Result<Vec<crate::gpu::GpuDeviceInfo>> {
         let cache_key = format!("{}:{}", backend_name, gpu_variant);
         // Check cache first
         {
@@ -282,7 +261,7 @@ impl ProxyState {
         backend_name: &str,
         gpu_variant: &str,
         binary_path: &std::path::Path,
-    ) -> Result<Vec<crate::gpu::GpuDeviceInfo>> {
+    ) -> anyhow::Result<Vec<crate::gpu::GpuDeviceInfo>> {
         let binary_path = binary_path.to_path_buf();
         let cache_key = format!("{}:{}", backend_name, gpu_variant);
 
@@ -299,6 +278,11 @@ impl ProxyState {
         Ok(devices)
     }
 
+    /// Return the names of all loaded backends that are TTS (text-to-speech) backends.
+    pub async fn tts_backend_names(&self) -> Vec<String> {
+        self.registry.tts_backend_names().await
+    }
+
     /// Resolve the binary path for a backend name using the same logic as `load_model`.
     ///
     /// Opens the BackendManager, looks up the active installation, and returns the path.
@@ -307,7 +291,7 @@ impl ProxyState {
         &self,
         backend_name: &str,
         gpu_variant: Option<&crate::gpu::GpuVariant>,
-    ) -> Result<std::path::PathBuf> {
+    ) -> anyhow::Result<std::path::PathBuf> {
         let config = self.config.read().await;
         let manager = self
             .db_dir
@@ -331,8 +315,8 @@ mod tests {
     fn test_proxy_state_new_creates_metrics_channel() {
         let config = crate::config::Config::default();
         let state = ProxyState::new(config, None);
-        let _subscriber = state.metrics_tx.subscribe();
-        assert_eq!(state.metrics_tx.receiver_count(), 1);
+        let _subscriber = state.metrics.subscribe_metrics();
+        assert_eq!(state.metrics.metrics_tx.receiver_count(), 1);
     }
 
     // ── Alias cache tests ─────────────────────────────────────────────────────
@@ -354,7 +338,7 @@ mod tests {
 
         // Manually populate the alias cache
         {
-            let mut aliases = state.aliases.write().await;
+            let mut aliases = state.registry.aliases.write().await;
             aliases.insert("my-alias".to_string(), "owner--real-model".to_string());
         }
 
@@ -387,13 +371,13 @@ mod tests {
         .unwrap();
 
         // Cache should be empty before reload
-        assert!(state.aliases.read().await.is_empty());
+        assert!(state.registry.aliases.read().await.is_empty());
 
         // Reload
         state.reload_aliases().await.unwrap();
 
         // Cache should now contain the alias
-        let aliases = state.aliases.read().await;
+        let aliases = state.registry.aliases.read().await;
         assert!(
             aliases.contains_key("short-name"),
             "alias 'short-name' should be in cache"
@@ -403,6 +387,20 @@ mod tests {
             Some(&"TestModel".to_string()),
             "resolved name should be the api_name"
         );
+    }
+
+    /// Test that `with_config` / `with_config_mut` / `replace_config` work correctly.
+    #[tokio::test]
+    async fn test_with_config_and_replace_config() {
+        let state = ProxyState::new(crate::config::Config::default(), None);
+        let port = state.with_config(|c| c.proxy.port).await;
+        assert_eq!(port, crate::config::Config::default().proxy.port);
+        let mut new_config = crate::config::Config::default();
+        new_config.proxy.port = 19999;
+        state.replace_config(new_config).await;
+        assert_eq!(state.with_config(|c| c.proxy.port).await, 19999);
+        state.with_config_mut(|c| c.proxy.port = 18888).await;
+        assert_eq!(state.with_config(|c| c.proxy.port).await, 18888);
     }
 
     /// Test that disabled aliases are not included in the cache after reload.
@@ -437,7 +435,7 @@ mod tests {
         // Reload
         state.reload_aliases().await.unwrap();
 
-        let aliases = state.aliases.read().await;
+        let aliases = state.registry.aliases.read().await;
         assert!(
             aliases.contains_key("enabled-alias"),
             "enabled alias should be in cache"
