@@ -68,6 +68,13 @@ pub struct ModelConfig {
     /// KV cache quantization for values.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_type_v: Option<String>,
+    /// Pre-allocated context KV cache size (llama.cpp --batch). None = backend default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n_batch: Option<u32>,
+    /// Maximum number of unique sequences to process in a single batch
+    /// (llama.cpp --ubatch). None = backend default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n_ubatch: Option<u32>,
     /// Forward-compatibility: preserve unknown fields
     #[serde(flatten, skip_serializing_if = "Option::is_none")]
     pub extra: Option<serde_json::Map<String, serde_json::Value>>,

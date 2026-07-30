@@ -30,6 +30,8 @@ pub fn MtpBench(
         current_job_id,
         benchmark_results,
         model_refresh: _,
+        model_n_batch: _,
+        model_n_ubatch: _,
     } = state;
 
     // Fetch installed backend variants (both backends + custom, installed-only).
@@ -164,7 +166,7 @@ pub fn MtpBench(
                             {move || {
                                 let models = available_models_sig.get();
                                 let mut grouped: BTreeMap<String, ()> = BTreeMap::new();
-                                for (_, name, _) in models.iter() {
+                                for (_, name, _, _, _) in models.iter() {
                                     grouped.insert(name.clone(), ());
                                 }
                                 grouped.keys().map(|name| {
@@ -193,8 +195,8 @@ pub fn MtpBench(
                                 let dn = selected_display_sig.get();
                                 let selected_id = selected_model_sig.get();
                                 models.iter()
-                                    .filter(|(_, name, _)| name == &dn)
-                                    .flat_map(|(id, _, quants)| {
+                                    .filter(|(_, name, _, _, _)| name == &dn)
+                                    .flat_map(|(id, _, quants, _, _)| {
                                         quants.iter().map(move |quant| (id.clone(), quant.clone()))
                                     })
                                     .map(|(id_clone, quant)| {

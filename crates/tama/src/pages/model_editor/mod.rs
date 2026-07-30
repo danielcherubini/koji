@@ -224,6 +224,8 @@ pub fn ModelEditor() -> impl IntoView {
                         quants: d.quants.clone(),
                         modalities,
                         spec_decoding,
+                        n_batch: d.n_batch,
+                        n_ubatch: d.n_ubatch,
                     }));
 
                     repo_commit_sha.set(d.repo_commit_sha.clone());
@@ -450,6 +452,8 @@ pub fn ModelEditor() -> impl IntoView {
                 quants: initial_form.quants.clone(),
                 modalities: initial_form.modalities.clone(),
                 spec_decoding: initial_form.spec_decoding.clone(),
+                n_batch: initial_form.n_batch,
+                n_ubatch: initial_form.n_ubatch,
             };
 
             let new_id = form_data.id.clone();
@@ -643,6 +647,42 @@ pub fn ModelEditor() -> impl IntoView {
             verify_busy.set(false);
         });
 
+    // ── Validation warnings for batch/ubatch fields ────────────────────
+    let validation_warnings = Signal::derive(move || {
+        let mut warnings: Vec<String> = Vec::new();
+        if let Some(f) = form.get() {
+            let batch = f.n_batch;
+            let ubatch = f.n_ubatch;
+
+            // Warn if ubatch > batch (both set)
+            if let (Some(b), Some(ub)) = (batch, ubatch) {
+                if ub > b {
+                    warnings.push(
+                        "µ-batch size exceeds batch size — llama.cpp requires µ-batch ≤ batch.\n"
+                            .into(),
+                    );
+                }
+            }
+
+            // Warn if typed args contain batch/ubatch flags while dropdown is set
+            let has_batch_flag = f.args.lines().any(|line| {
+                let trimmed = line.trim();
+                trimmed == "-b"
+                    || trimmed.starts_with("-b ")
+                    || trimmed.starts_with("--batch-size")
+                    || trimmed == "-ub"
+                    || trimmed.starts_with("-ub ")
+                    || trimmed.starts_with("--ubatch-size")
+            });
+            if has_batch_flag && (batch.is_some() || ubatch.is_some()) {
+                warnings.push(
+                    "Extra Args contains batch/µ-batch flags that will be overridden by the dropdown values.\n".into(),
+                );
+            }
+        }
+        warnings
+    });
+
     // View
     view! {
         <div class="page-header">
@@ -780,6 +820,15 @@ pub fn ModelEditor() -> impl IntoView {
                                     }.into_any(),
                                 }}
                             </div>
+
+                            // Validation warnings (batch/µ-batch)
+                            <Show when=move || !validation_warnings.get().is_empty()>
+                                <div class="alert alert--warning mb-3">
+                                    {move || validation_warnings.get().into_iter().map(|w| view! {
+                                        <div>{w}</div>
+                                    }).collect::<Vec<_>>()}
+                                </div>
+                            </Show>
 
                             // Sticky save bar
                             <div class="model-editor-save-bar">

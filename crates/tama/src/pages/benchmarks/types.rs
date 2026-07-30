@@ -2,6 +2,12 @@
 
 use serde::{Deserialize, Serialize};
 
+/// A parsed model entry: (id, display_name, quant, n_batch, n_ubatch).
+pub type ModelEntry = (String, String, String, Option<u32>, Option<u32>);
+
+/// A model list entry: (id, display_name, quants, n_batch, n_ubatch).
+pub type ModelListItem = (String, String, Vec<String>, Option<u32>, Option<u32>);
+
 /// Valid benchmark type identifiers and their display labels.
 pub const BENCHMARK_TYPES: &[(&str, &str)] = &[
     ("baseline", "Baseline"),
@@ -14,12 +20,11 @@ pub const BENCHMARK_TYPES: &[(&str, &str)] = &[
     ("mtp_sweep", "MTP Sweep"),
 ];
 
-/// Parse a model JSON value into (id, display_name, quant).
+/// Parse a model JSON value into (id, display_name, quant, n_batch, n_ubatch).
 /// The API returns `id` as an integer (db_id), not a string.
-/// Parse a model entry from the API response.
-/// Returns one (id, display_name, quant) tuple per quant in the "quants" map,
+/// Returns one tuple per quant in the "quants" map,
 /// plus one for any standalone "quant" field not already in the map.
-pub fn parse_model(m: &serde_json::Value) -> Option<Vec<(String, String, String)>> {
+pub fn parse_model(m: &serde_json::Value) -> Option<Vec<ModelEntry>> {
     let id = m.get("id").map(|v| v.to_string()).unwrap_or_default();
     let name = m
         .get("display_name")
@@ -45,12 +50,15 @@ pub fn parse_model(m: &serde_json::Value) -> Option<Vec<(String, String, String)
         return None;
     }
 
-    // Flatten: one tuple per quant, each with the same id and display_name.
+    let n_batch = m.get("n_batch").and_then(|v| v.as_u64()).map(|v| v as u32);
+    let n_ubatch = m.get("n_ubatch").and_then(|v| v.as_u64()).map(|v| v as u32);
+
+    // Flatten: one tuple per quant, each with the same id, display_name, and batch values.
     Some(
         quants
             .into_iter()
-            .map(|q| (id.clone(), name.clone(), q))
-            .collect(),
+            .map(|q| (id.clone(), name.clone(), q, n_batch, n_ubatch))
+            .collect::<Vec<_>>(),
     )
 }
 
@@ -158,3 +166,76 @@ pub const SPEC_BENCH_PRESETS: &[(&str, (&[u32], &str, &str, &str))] = &[
         (&[8, 16, 32, 48, 64], "8,16,32,48,64", "12,16,24", "32,48"),
     ),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_model_with_n_batch_and_n_ubatch() {
+        let model_json = serde_json::json!({
+            "id": 1,
+            "display_name": "test-model",
+            "quant": "Q4_K_M",
+            "quants": {
+                "Q4_K_M": {},
+                "Q6_K": {}
+            },
+            "n_batch": 2048,
+            "n_ubatch": 512,
+        });
+
+        let result = parse_model(&model_json).unwrap();
+
+        // Should produce one entry per quant, all with same n_batch/n_ubatch
+        assert_eq!(result.len(), 2);
+        for (id, _name, _quant, n_batch, n_ubatch) in &result {
+            assert_eq!(id, "1");
+            assert_eq!(*n_batch, Some(2048));
+            assert_eq!(*n_ubatch, Some(512));
+        }
+    }
+
+    #[test]
+    fn test_parse_model_without_n_batch_and_n_ubatch() {
+        let model_json = serde_json::json!({
+            "id": 2,
+            "display_name": "legacy-model",
+            "quant": "Q5_K_M",
+            "quants": {
+                "Q5_K_M": {},
+            },
+        });
+
+        let result = parse_model(&model_json).unwrap();
+
+        assert_eq!(result.len(), 1);
+        for (id, _name, _quant, n_batch, n_ubatch) in &result {
+            assert_eq!(id, "2");
+            assert_eq!(*n_batch, None);
+            assert_eq!(*n_ubatch, None);
+        }
+    }
+
+    #[test]
+    fn test_parse_model_n_batch_only() {
+        let model_json = serde_json::json!({
+            "id": 3,
+            "display_name": "partial-model",
+            "quant": "Q4_K_M",
+            "quants": {
+                "Q4_K_M": {},
+            },
+            "n_batch": 4096,
+        });
+
+        let result = parse_model(&model_json).unwrap();
+
+        assert_eq!(result.len(), 1);
+        for (id, _name, _quant, n_batch, n_ubatch) in &result {
+            assert_eq!(id, "3");
+            assert_eq!(*n_batch, Some(4096));
+            assert_eq!(*n_ubatch, None);
+        }
+    }
+}

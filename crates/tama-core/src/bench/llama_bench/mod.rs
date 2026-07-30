@@ -466,6 +466,8 @@ mod tests {
             display_name: Some("Test Model".to_string()),
             db_id: None,
             spec_decoding: Default::default(),
+            n_batch: None,
+            n_ubatch: None,
         };
 
         let config_key = "test--test-model";

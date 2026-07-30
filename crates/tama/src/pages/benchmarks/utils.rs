@@ -3,6 +3,7 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
+use super::types;
 use crate::utils::{extract_and_store_csrf_token, get_request};
 
 /// Parse a comma-separated string of integers into a Vec<u32>.
@@ -51,7 +52,7 @@ pub fn split_name_variant(raw: &str) -> (Option<String>, Option<String>) {
 pub struct BenchmarkFormState {
     pub selected_display_name: RwSignal<String>,
     pub selected_model: RwSignal<String>,
-    pub available_models: RwSignal<Vec<(String, String, Vec<String>)>>,
+    pub available_models: RwSignal<Vec<types::ModelListItem>>,
     pub selected_backend: RwSignal<String>,
     pub available_backends: RwSignal<Vec<(String, String)>>,
     pub is_running: RwSignal<bool>,
@@ -60,6 +61,10 @@ pub struct BenchmarkFormState {
     /// Trigger for refetching models. Incremented to force a refresh.
     #[expect(dead_code)]
     pub model_refresh: RwSignal<u32>,
+    /// Prefilled batch size from the selected model's n_batch (if set).
+    pub model_n_batch: RwSignal<Option<u32>>,
+    /// Prefilled micro-batch size from the selected model's n_ubatch (if set).
+    pub model_n_ubatch: RwSignal<Option<u32>>,
 }
 
 /// Create shared benchmark form state with universal Effects:
@@ -68,7 +73,9 @@ pub struct BenchmarkFormState {
 pub fn use_benchmark_form_state() -> BenchmarkFormState {
     let selected_display_name = RwSignal::new(String::new());
     let selected_model = RwSignal::new(String::new());
-    let available_models = RwSignal::new(Vec::<(String, String, Vec<String>)>::new());
+    let available_models = RwSignal::new(Vec::<types::ModelListItem>::new());
+    let model_n_batch = RwSignal::new(None);
+    let model_n_ubatch = RwSignal::new(None);
     let selected_backend = RwSignal::new(String::new());
     let available_backends = RwSignal::new(Vec::<(String, String)>::new());
     let is_running = RwSignal::new(false);
@@ -88,12 +95,16 @@ pub fn use_benchmark_form_state() -> BenchmarkFormState {
                         // by (display_name, quant) keeping the first id for each unique pair.
                         let mut seen: std::collections::HashSet<(String, String)> =
                             std::collections::HashSet::new();
-                        let model_list: Vec<(String, String, Vec<String>)> = models_arr
+                        let model_list: Vec<types::ModelListItem> = models_arr
                             .iter()
                             .filter_map(super::types::parse_model)
                             .flatten()
-                            .filter(|(_, name, quant)| seen.insert((name.clone(), quant.clone())))
-                            .map(|(id, name, quant)| (id, name, vec![quant]))
+                            .filter(|(_, name, quant, _, _)| {
+                                seen.insert((name.clone(), quant.clone()))
+                            })
+                            .map(|(id, name, quant, n_batch, n_ubatch)| {
+                                (id, name, vec![quant], n_batch, n_ubatch)
+                            })
                             .collect();
                         available_models.update(|list| *list = model_list);
                     }
@@ -107,14 +118,21 @@ pub fn use_benchmark_form_state() -> BenchmarkFormState {
     Effect::new(move |_| {
         let dn = selected_display_name.get();
         let models = available_models.get();
-        if let Some((id, _, quants)) = models.iter().find(|(_, name, _)| name == &dn) {
+        if let Some((id, _, quants, n_batch, n_ubatch)) =
+            models.iter().find(|(_, name, _, _, _)| name == &dn)
+        {
             if let Some(first_quant) = quants.first() {
                 selected_model.set(format!("{}:{}", id, first_quant));
             } else {
                 selected_model.set(id.clone());
             }
+            // Prefill batch/ubatch inputs from model defaults (only when set).
+            model_n_batch.set(*n_batch);
+            model_n_ubatch.set(*n_ubatch);
         } else {
             selected_model.set(String::new());
+            model_n_batch.set(None);
+            model_n_ubatch.set(None);
         }
     });
 
@@ -128,6 +146,8 @@ pub fn use_benchmark_form_state() -> BenchmarkFormState {
         current_job_id,
         benchmark_results,
         model_refresh,
+        model_n_batch,
+        model_n_ubatch,
     }
 }
 

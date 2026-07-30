@@ -479,6 +479,8 @@ installed_at = 1700000000
             spec_decoding: None,
             created_at: now.clone(),
             updated_at: now,
+            n_batch: None,
+            n_ubatch: None,
         };
         let model_id = upsert_model_config(&conn, &record).unwrap();
 
@@ -569,6 +571,8 @@ installed_at = 1700000000
             spec_decoding: None,
             created_at: now.clone(),
             updated_at: now,
+            n_batch: None,
+            n_ubatch: None,
         };
         let id = upsert_model_config(&conn, &record).unwrap();
 

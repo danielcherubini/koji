@@ -366,6 +366,18 @@ impl Config {
             }
         }
 
+        // Inject -b (batch size). Typed field wins over any leftover
+        // `-b`/`--batch-size` in args via merge_args dedup.
+        if let Some(b) = server.n_batch {
+            grouped = crate::config::merge_args(&grouped, &[format!("-b {}", b)]);
+        }
+
+        // Inject -ub (ubatch size). Typed field wins over any leftover
+        // `-ub`/`--ubatch-size` in args via merge_args dedup.
+        if let Some(ub) = server.n_ubatch {
+            grouped = crate::config::merge_args(&grouped, &[format!("-ub {}", ub)]);
+        }
+
         // Inject -ngl only if not already present.
         if let Some(ngl) = server.gpu_layers {
             let already_has_ngl = grouped.iter().any(|e| {

@@ -403,6 +403,8 @@ mod tests {
             spec_decoding: None,
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-01-01T00:00:00Z".to_string(),
+            n_batch: None,
+            n_ubatch: None,
         };
         queries::upsert_model_config(conn, &record).unwrap()
     }

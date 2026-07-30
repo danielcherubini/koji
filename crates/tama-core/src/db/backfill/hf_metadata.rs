@@ -152,6 +152,8 @@ mod tests {
                 spec_decoding: None,
                 created_at: now.clone(),
                 updated_at: now,
+                n_batch: None,
+                n_ubatch: None,
             };
             upsert_model_config(&conn, &record).unwrap();
 
@@ -239,6 +241,8 @@ mod tests {
                 spec_decoding: None,
                 created_at: now.clone(),
                 updated_at: now,
+                n_batch: None,
+                n_ubatch: None,
             };
             upsert_model_config(&conn, &record).unwrap();
         }

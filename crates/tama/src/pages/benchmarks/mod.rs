@@ -286,12 +286,12 @@ pub fn Benchmarks() -> impl IntoView {
         current_job_id,
         benchmark_results,
         model_refresh: _,
+        model_n_batch,
+        model_n_ubatch,
     } = state;
 
     // Fetch installed backend variants for llama-bench selection.
     fetch_installed_backend_variants(available_backends);
-
-    // Test Type dropdown — selects a preset benchmark type that auto-fills form fields.
     let selected_bench_type = RwSignal::new("baseline".to_string());
 
     // Error signal for llama-bench submit failures.
@@ -316,6 +316,18 @@ pub fn Benchmarks() -> impl IntoView {
     let kv_cache_type = RwSignal::new("default".to_string());
     let depth_str = RwSignal::new("".to_string());
     let flash_attn = RwSignal::new(true);
+
+    // When the model's n_batch/n_ubatch changes, prefill the batch/ubatch inputs
+    // only when the model has values set (respecting that preset/model defaults
+    // may already have populated these fields).
+    Effect::new(move |_| {
+        if let Some(n_batch) = model_n_batch.get() {
+            batch_sizes_str.set(n_batch.to_string());
+        }
+        if let Some(n_ubatch) = model_n_ubatch.get() {
+            ubatch_sizes_str.set(n_ubatch.to_string());
+        }
+    });
 
     // History state — always visible.
     let history = RwSignal::new(Vec::<HistoryEntry>::new());
@@ -556,7 +568,7 @@ pub fn Benchmarks() -> impl IntoView {
                             // Deduplicate by display_name; BTreeMap keeps them
                             // sorted alphabetically for stable rendering.
                             let mut grouped: BTreeMap<String, ()> = BTreeMap::new();
-                            for (_, name, _) in models.iter() {
+                            for (_, name, _, _, _) in models.iter() {
                                 grouped.insert(name.clone(), ());
                             }
                             grouped.keys().map(|name| {
@@ -586,8 +598,8 @@ pub fn Benchmarks() -> impl IntoView {
                             let selected_id = selected_model_sig.get();
                             // Flatten all quants from matching model entries into individual options.
                             models.iter()
-                                .filter(|(_, name, _)| name == &dn)
-                                .flat_map(|(id, _, quants)| {
+                                .filter(|(_, name, _, _, _)| name == &dn)
+                                .flat_map(|(id, _, quants, _, _)| {
                                     quants.iter().map(move |quant| (id.clone(), quant.clone()))
                                 })
                                 .map(|(id_clone, quant)| {

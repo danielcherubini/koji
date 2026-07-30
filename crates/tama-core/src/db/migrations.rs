@@ -43,6 +43,7 @@ mod _0037_add_langfuse;
 mod _0038_rename_app_config_pull_poll_interval;
 mod _0039_rename_model_files_pulled_at;
 mod _0040_rename_app_supervisor_to_app_lifecycle;
+mod _0041_add_model_batch_sizes;
 
 #[cfg(test)]
 mod migrations_tests;
@@ -78,7 +79,7 @@ impl Drop for FkGuard<'_> {
 type Migration = (i32, bool, &'static str);
 
 /// Version number for the latest migration
-pub const LATEST_VERSION: i32 = 40;
+pub const LATEST_VERSION: i32 = 41;
 
 /// All migrations collected from individual files, sorted by version.
 const MIGRATIONS: &[Migration] = &[
@@ -122,6 +123,7 @@ const MIGRATIONS: &[Migration] = &[
     _0038_rename_app_config_pull_poll_interval::MIGRATION,
     _0039_rename_model_files_pulled_at::MIGRATION,
     _0040_rename_app_supervisor_to_app_lifecycle::MIGRATION,
+    _0041_add_model_batch_sizes::MIGRATION,
 ];
 
 /// Run all applicable migrations on the database

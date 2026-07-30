@@ -406,6 +406,8 @@ mod tests {
                 spec_decoding: None,
                 created_at: "2024-01-01".into(),
                 updated_at: "2024-01-01".into(),
+                n_batch: None,
+                n_ubatch: None,
             },
         )
         .unwrap();
@@ -529,6 +531,8 @@ mod tests {
                 spec_decoding: None,
                 created_at: "2024-01-01".into(),
                 updated_at: "2024-01-01".into(),
+                n_batch: None,
+                n_ubatch: None,
             },
         )
         .unwrap();

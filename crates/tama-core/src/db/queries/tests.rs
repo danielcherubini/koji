@@ -343,6 +343,8 @@ fn test_upsert_and_get_model_config() {
         spec_decoding: None,
         created_at: "2024-04-15T12:00:00Z".to_string(),
         updated_at: "2024-04-15T12:00:00Z".to_string(),
+        n_batch: None,
+        n_ubatch: None,
     };
 
     upsert_model_config(&conn, &record).unwrap();
@@ -463,6 +465,8 @@ fn test_get_all_model_configs() {
         spec_decoding: None,
         created_at: "2024-01-01T00:00:00Z".to_string(),
         updated_at: "2024-01-01T00:00:00Z".to_string(),
+        n_batch: None,
+        n_ubatch: None,
     };
     let rec2 = ModelConfigRecord {
         id: 0,
@@ -500,6 +504,8 @@ fn test_get_all_model_configs() {
         spec_decoding: None,
         created_at: "2024-01-01T00:00:00Z".to_string(),
         updated_at: "2024-01-01T00:00:00Z".to_string(),
+        n_batch: None,
+        n_ubatch: None,
     };
 
     upsert_model_config(&conn, &rec1).unwrap();
@@ -548,6 +554,8 @@ fn test_delete_model_config() {
         spec_decoding: None,
         created_at: "2024-01-01T00:00:00Z".to_string(),
         updated_at: "2024-01-01T00:00:00Z".to_string(),
+        n_batch: None,
+        n_ubatch: None,
     };
 
     upsert_model_config(&conn, &record).unwrap();

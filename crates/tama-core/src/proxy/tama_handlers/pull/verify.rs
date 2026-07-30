@@ -417,6 +417,8 @@ pub(crate) async fn _setup_model_after_pull_with_config(
                     display_name: Some(display_name.clone()),
                     db_id: None, // will be set after reload_model_configs()
                     spec_decoding: Default::default(),
+                    n_batch: None,
+                    n_ubatch: None,
                 });
 
             // Promote a stub entry (created by a prior mmproj-first pull) into a
@@ -512,6 +514,8 @@ pub(crate) async fn _setup_model_after_pull_with_config(
                     display_name: Some(display_name),
                     db_id: None,
                     spec_decoding: Default::default(),
+                    n_batch: None,
+                    n_ubatch: None,
                 });
             stub_key
         }

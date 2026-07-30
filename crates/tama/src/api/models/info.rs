@@ -180,6 +180,8 @@ fn model_entry_json(
         "quants": quants_json,
         "modalities": m.modalities,
         "spec_decoding": serde_json::to_value(&m.spec_decoding).unwrap_or_default(),
+        "n_batch": m.n_batch,
+        "n_ubatch": m.n_ubatch,
     });
 
     if let Some(meta) = db_meta {
@@ -399,6 +401,8 @@ mod tests {
             spec_decoding: None,
             created_at: "2025-01-01T00:00:00Z".to_string(),
             updated_at: "2025-01-01T00:00:00Z".to_string(),
+            n_batch: None,
+            n_ubatch: None,
         }
     }
 

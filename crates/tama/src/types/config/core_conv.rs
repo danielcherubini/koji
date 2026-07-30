@@ -398,6 +398,8 @@ impl From<tama_core::config::ModelConfig> for ModelConfig {
             kv_unified: m.kv_unified,
             cache_type_k: m.cache_type_k,
             cache_type_v: m.cache_type_v,
+            n_batch: m.n_batch,
+            n_ubatch: m.n_ubatch,
             extra: None, // Forward-compat field - preserve unknown fields on POST
         }
     }
@@ -461,6 +463,8 @@ impl From<ModelConfig> for tama_core::config::ModelConfig {
             hf_last_modified: None,
             db_id: None,                       // Auto-generated primary key
             spec_decoding: Default::default(), // Managed through model CRUD endpoints
+            n_batch: m.n_batch,
+            n_ubatch: m.n_ubatch,
         }
     }
 }
