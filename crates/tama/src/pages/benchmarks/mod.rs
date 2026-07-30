@@ -143,6 +143,135 @@ fn render_summaries_table(summaries: &[serde_json::Value]) -> impl IntoView {
     }
 }
 
+/// Render a table of spec-decoding benchmark summaries.
+///
+/// Columns: SPEC TYPE | DRAFT MAX | T/S (±STDDEV) | Δ%
+fn render_spec_table(summaries: &[serde_json::Value]) -> impl IntoView {
+    let get_u64 = |s: &serde_json::Value, k: &str| s.get(k).and_then(|v| v.as_u64());
+    let get_str =
+        |s: &serde_json::Value, k: &str| s.get(k).and_then(|v| v.as_str()).map(|x| x.to_string());
+
+    fn format_delta(delta_pct: f64) -> String {
+        if delta_pct >= 0.0 {
+            format!("+{:.1}%", delta_pct)
+        } else {
+            format!("−{:.1}%", (-delta_pct))
+        }
+    }
+
+    fn delta_badge_class(delta_pct: f64) -> &'static str {
+        if delta_pct > 0.5 {
+            "badge badge-success"
+        } else if delta_pct < -0.5 {
+            "badge badge-danger"
+        } else {
+            "badge badge-muted"
+        }
+    }
+
+    let rows: Vec<_> = summaries
+        .iter()
+        .map(|s| {
+            let spec_type = get_str(s, "spec_type").unwrap_or_else(|| "—".to_string());
+            let draft_max = get_u64(s, "draft_max").unwrap_or(0);
+            let tg_mean = s.get("tg_mean").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let tg_stddev = s.get("tg_stddev").and_then(|v| v.as_f64()).unwrap_or(0.0);
+
+            // Prefer pre-rendered delta_pct_display from the backend,
+            // fall back to formatting delta_pct raw value.
+            let delta_display = if let Some(d) = get_str(s, "delta_pct_display") {
+                d
+            } else {
+                format_delta(s.get("delta_pct").and_then(|v| v.as_f64()).unwrap_or(0.0))
+            };
+            let delta_class =
+                delta_badge_class(s.get("delta_pct").and_then(|v| v.as_f64()).unwrap_or(0.0));
+
+            let ts_display = format_mean_stddev(tg_mean, tg_stddev);
+
+            (spec_type, draft_max, ts_display, delta_display, delta_class)
+        })
+        .collect();
+
+    view! {
+        <table class="table table-striped">
+            <thead>
+                <tr>
+                    <th>"Spec Type"</th>
+                    <th>"Draft Max"</th>
+                    <th class="text-right">"t/s (± stddev)"</th>
+                    <th class="text-right">"Δ%"</th>
+                </tr>
+            </thead>
+            <tbody>
+                {rows.into_iter().map(|(spec_type, draft_max, ts_display, delta_display, delta_class)| {
+                    view! {
+                        <tr>
+                            <td>{spec_type}</td>
+                            <td class="text-mono">{draft_max}</td>
+                            <td class="text-mono text-right">{ts_display}</td>
+                            <td class="text-mono text-right">
+                                <span class={delta_class}>{delta_display}</span>
+                            </td>
+                        </tr>
+                    }
+                }).collect::<Vec<_>>()}
+            </tbody>
+        </table>
+    }
+}
+
+/// Render a table of MTP (Multi-Token Prediction) benchmark summaries.
+///
+/// Columns: TEST | DRAFT MAX | T/S | ACCEPT %
+fn render_mtp_table(summaries: &[serde_json::Value]) -> impl IntoView {
+    let get_u64 = |s: &serde_json::Value, k: &str| s.get(k).and_then(|v| v.as_u64());
+    let get_str =
+        |s: &serde_json::Value, k: &str| s.get(k).and_then(|v| v.as_str()).map(|x| x.to_string());
+
+    let rows: Vec<_> = summaries
+        .iter()
+        .map(|s| {
+            let name = get_str(s, "name").unwrap_or_else(|| "—".to_string());
+            let draft_max = get_u64(s, "draft_max").unwrap_or(0);
+            let tg_mean = s.get("tg_mean").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let accept_rate = s.get("accept_rate").and_then(|v| v.as_f64());
+
+            let ts_display = format_mean_stddev(tg_mean, 0.0);
+            let acc_display = accept_rate
+                .map(|r| format!("{:.0}%", r * 100.0))
+                .unwrap_or_else(|| "—".to_string());
+
+            (name, draft_max, ts_display, acc_display)
+        })
+        .collect();
+
+    view! {
+        <table class="table table-striped">
+            <thead>
+                <tr>
+                    <th>"Test"</th>
+                    <th>"Draft Max"</th>
+                    <th class="text-right">"t/s"</th>
+                    <th class="text-right">"Accept %"</th>
+                </tr>
+            </thead>
+            <tbody>
+                {rows.into_iter().map(|(name, draft_max, ts_display, acc_display)| {
+                    view! {
+                        <tr>
+                            <td>{name}</td>
+                            <td class="text-mono">{draft_max}</td>
+                            <td class="text-mono text-right">{ts_display}</td>
+                            <td class="text-mono text-right">{acc_display}</td>
+                        </tr>
+                    }
+                }).collect::<Vec<_>>()}
+            </tbody>
+        </table>
+    }
+}
+
 #[component]
 pub fn Benchmarks() -> impl IntoView {
     // Shared benchmark form state (model/backend selection, job tracking)
@@ -929,19 +1058,24 @@ pub fn Benchmarks() -> impl IntoView {
                                             <td title=when_title_for_row>{when_rel}</td>
                                             <td>{model_cell}</td>
                                             <td><span class={type_badge_class}>{bench_type_text}</span></td>
-                                            <td><span class={engine_badge}>{engine_text}</span></td>
+                                            <td><span class={engine_badge}>{engine_text.clone()}</span></td>
                                             <td><span class="badge badge-muted">{backend_text}</span></td>
                                             <td class="text-mono">{sizes}</td>
                                             <td class="text-mono">{best_cell}</td>
                                             <td><span class={badge_class}>{status_text}</span></td>
                                         </tr>
-                                        {move || is_open.get().then(|| view! {
-                                            <tr class="bench-history__detail">
-                                                <td></td>
-                                                <td colspan="8">
-                                                    {render_summaries_table(&summaries)}
-                                                </td>
-                                            </tr>
+                                        {move || is_open.get().then(|| {
+                                            let detail_table = match engine_text.as_str() {
+                                                "llama_cli_spec" => render_spec_table(&summaries).into_any(),
+                                                "llama_cli_mtp" => render_mtp_table(&summaries).into_any(),
+                                                _ => render_summaries_table(&summaries).into_any(),
+                                            };
+                                            view! {
+                                                <tr class="bench-history__detail">
+                                                    <td></td>
+                                                    <td colspan="8">{detail_table}</td>
+                                                </tr>
+                                            }
                                         })}
                                     }.into_any()
                                 }).collect::<Vec<_>>()}
