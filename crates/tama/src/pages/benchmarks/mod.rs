@@ -17,8 +17,8 @@ use self::mtp_bench::MtpBench;
 use self::spec_bench::SpecBench;
 use self::types::BenchmarkHistoryEntry;
 use self::utils::{
-    fetch_installed_backend_variants, format_mean_stddev, format_relative, format_timestamp,
-    use_benchmark_form_state, BenchmarkFormState,
+    delta_badge_class, fetch_installed_backend_variants, format_delta, format_mean_stddev,
+    format_relative, format_timestamp, use_benchmark_form_state, BenchmarkFormState,
 };
 use crate::components::tab_buttons::{TabButton, TabButtons};
 use crate::utils::{extract_and_store_csrf_token, get_request};
@@ -151,24 +151,6 @@ fn render_spec_table(summaries: &[serde_json::Value]) -> impl IntoView {
     let get_u64 = |s: &serde_json::Value, k: &str| s.get(k).and_then(|v| v.as_u64());
     let get_str =
         |s: &serde_json::Value, k: &str| s.get(k).and_then(|v| v.as_str()).map(|x| x.to_string());
-
-    fn format_delta(delta_pct: f64) -> String {
-        if delta_pct >= 0.0 {
-            format!("+{:.1}%", delta_pct)
-        } else {
-            format!("−{:.1}%", (-delta_pct))
-        }
-    }
-
-    fn delta_badge_class(delta_pct: f64) -> &'static str {
-        if delta_pct > 0.5 {
-            "badge badge-success"
-        } else if delta_pct < -0.5 {
-            "badge badge-danger"
-        } else {
-            "badge badge-muted"
-        }
-    }
 
     let rows: Vec<_> = summaries
         .iter()

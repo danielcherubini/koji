@@ -277,6 +277,26 @@ pub async fn submit_bench_job(url: &str, body: serde_json::Value) -> Result<Stri
         .ok_or_else(|| "Response missing job_id".to_string())
 }
 
+/// Format a delta percentage with `+` or `−` prefix.
+pub fn format_delta(delta_pct: f64) -> String {
+    if delta_pct >= 0.0 {
+        format!("+{:.1}%", delta_pct)
+    } else {
+        format!("−{:.1}%", (-delta_pct))
+    }
+}
+
+/// Return a badge CSS class based on delta percentage.
+pub fn delta_badge_class(delta_pct: f64) -> &'static str {
+    if delta_pct > 0.5 {
+        "badge badge-success"
+    } else if delta_pct < -0.5 {
+        "badge badge-danger"
+    } else {
+        "badge badge-muted"
+    }
+}
+
 /// Format a Unix timestamp as a short relative "time ago" string (e.g. "5m
 /// ago", "2h ago", "3d ago"). Falls back to the absolute format for anything
 /// older than a week.
@@ -401,5 +421,48 @@ mod tests {
     #[test]
     fn test_parse_threads_single_value() {
         assert_eq!(parse_threads("8"), Some(vec![8]));
+    }
+
+    #[test]
+    fn test_format_delta_positive() {
+        assert_eq!(format_delta(5.3), "+5.3%");
+    }
+
+    #[test]
+    fn test_format_delta_negative() {
+        assert_eq!(format_delta(-5.3), "−5.3%");
+    }
+
+    #[test]
+    fn test_format_delta_zero() {
+        assert_eq!(format_delta(0.0), "+0.0%");
+    }
+
+    #[test]
+    fn test_delta_badge_class_positive() {
+        assert_eq!(delta_badge_class(1.0), "badge badge-success");
+    }
+
+    #[test]
+    fn test_delta_badge_class_negative() {
+        assert_eq!(delta_badge_class(-1.0), "badge badge-danger");
+    }
+
+    #[test]
+    fn test_delta_badge_class_near_zero() {
+        assert_eq!(delta_badge_class(0.3), "badge badge-muted");
+        assert_eq!(delta_badge_class(-0.2), "badge badge-muted");
+    }
+
+    #[test]
+    fn test_delta_badge_class_boundary_positive() {
+        // 0.5 is NOT > 0.5, so it's muted
+        assert_eq!(delta_badge_class(0.5), "badge badge-muted");
+    }
+
+    #[test]
+    fn test_delta_badge_class_boundary_negative() {
+        // -0.5 is NOT < -0.5, so it's muted
+        assert_eq!(delta_badge_class(-0.5), "badge badge-muted");
     }
 }

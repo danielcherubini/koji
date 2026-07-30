@@ -7,8 +7,8 @@ use crate::components::job_log_panel::JobLogPanel;
 use crate::pages::benchmarks::selectors::{BackendSelect, ModelQuantSelect};
 use crate::pages::benchmarks::types::BENCHMARK_TYPES;
 use crate::pages::benchmarks::utils::{
-    format_mean_stddev, parse_sizes, split_id_quant, split_name_variant, submit_bench_job,
-    target_bool, BenchmarkFormState,
+    delta_badge_class, format_delta, format_mean_stddev, parse_sizes, split_id_quant,
+    split_name_variant, submit_bench_job, target_bool, BenchmarkFormState,
 };
 use crate::utils::target_value;
 
@@ -96,26 +96,6 @@ impl SpecPreset {
                 runs: 3,
             },
         ]
-    }
-}
-
-/// CSS class for delta badge based on percentage value.
-fn delta_badge_class(delta_pct: f64) -> &'static str {
-    if delta_pct > 0.5 {
-        "badge badge-success"
-    } else if delta_pct < -0.5 {
-        "badge badge-danger"
-    } else {
-        "badge badge-muted"
-    }
-}
-
-/// Format delta percentage with Unicode minus for negative values.
-fn format_delta(delta_pct: f64) -> String {
-    if delta_pct >= 0.0 {
-        format!("+{:.1}%", delta_pct)
-    } else {
-        format!("−{:.1}%", (-delta_pct))
     }
 }
 
