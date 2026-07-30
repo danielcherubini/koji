@@ -2,6 +2,7 @@
 
 mod llama_bench;
 mod mtp_bench;
+mod selectors;
 mod spec_bench;
 mod types;
 mod utils;

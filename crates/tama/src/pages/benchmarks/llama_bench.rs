@@ -1,13 +1,12 @@
 //! LLaMA-Bench form and results display.
 
-use std::collections::BTreeMap;
-
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use wasm_bindgen::JsCast;
 
 use crate::components::job_log_panel::JobLogPanel;
 use crate::pages::benchmarks::render_summaries_table;
+use crate::pages::benchmarks::selectors::{BackendSelect, ModelQuantSelect};
 use crate::pages::benchmarks::types::{BENCHMARK_TYPES, LLAMA_BENCH_PRESETS};
 use crate::pages::benchmarks::utils::{
     fetch_installed_backend_variants, parse_sizes, split_id_quant, split_name_variant,
@@ -206,7 +205,6 @@ pub fn LlamaBench(
 
     // ── Read-only splits for views ─────────────────────────────────────
     let (available_models_sig, _) = available_models.split();
-    let (selected_display_sig, _) = selected_display_name.split();
     let (selected_model_sig, _) = selected_model.split();
     let (available_backends_sig, _) = available_backends.split();
     let (pp_sizes_sig, _) = pp_sizes_str.split();
@@ -250,94 +248,21 @@ pub fn LlamaBench(
             // ── Model selection ─────────────────────────────────────────
             <section class="card">
                 <h3>"Model"</h3>
-                <div class="grid-2">
-                    <div class="form-group">
-                        <label>"Model"</label>
-                        <select
-                            class="form-select"
-                            on:change=move |e| {
-                                let val = e.target().unwrap().dyn_into::<web_sys::HtmlSelectElement>().unwrap().value();
-                                selected_display_name.set(val);
-                            }
-                        >
-                            <option value="" disabled selected=move || selected_display_sig.get().is_empty()>"Select a model..."</option>
-                            {move || {
-                                let models = available_models_sig.get();
-                                // Deduplicate by display_name; BTreeMap keeps them
-                                // sorted alphabetically for stable rendering.
-                                let mut grouped: BTreeMap<String, ()> = BTreeMap::new();
-                                for (_, name, _, _, _) in models.iter() {
-                                    grouped.insert(name.clone(), ());
-                                }
-                                grouped.keys().map(|name| {
-                                    let value = name.clone();
-                                    let label = name.clone();
-                                    view! {
-                                        <option value=value>{label}</option>
-                                    }.into_any()
-                                }).collect::<Vec<_>>()
-                            }}
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>"Quant"</label>
-                        <select
-                            class="form-select"
-                            prop:disabled=move || selected_display_sig.get().is_empty()
-                            on:change=move |e| {
-                                let val = e.target().unwrap().dyn_into::<web_sys::HtmlSelectElement>().unwrap().value();
-                                selected_model.set(val);
-                            }
-                        >
-                            <option value="" disabled>"Select quant..."</option>
-                            {move || {
-                                let models = available_models_sig.get();
-                                let dn = selected_display_sig.get();
-                                let selected_id = selected_model_sig.get();
-                                // Flatten all quants from matching model entries into individual options.
-                                models.iter()
-                                    .filter(|(_, name, _, _, _)| name == &dn)
-                                    .flat_map(|(id, _, quants, _, _)| {
-                                        quants.iter().map(move |quant| (id.clone(), quant.clone()))
-                                    })
-                                    .map(|(id_clone, quant)| {
-                                        let value = format!("{}:{}", id_clone, quant);
-                                        let is_selected = value == selected_id;
-                                        view! {
-                                            <option value=value selected=is_selected>{quant}</option>
-                                        }.into_any()
-                                    }).collect::<Vec<_>>()
-                            }}
-                        </select>
-                    </div>
-                </div>
+                <ModelQuantSelect
+                    models=available_models_sig
+                    selected_model=selected_display_name
+                    selected_quant=selected_model
+                />
             </section>
 
             // ── Backend selection ───────────────────────────────────────
             <section class="card">
                 <h3>"Backend"</h3>
-                <select
-                    class="form-select"
-                    on:change=move |e| {
-                        let val = e.target().unwrap().dyn_into::<web_sys::HtmlSelectElement>().unwrap().value();
-                        selected_backend.set(val);
-                    }
-                >
-                    <option value="">"Auto (model's backend)"</option>
-                    {move || {
-                        let backends = available_backends_sig.get();
-                        backends.iter().map(|(name, display)| {
-                            let name_clone = name.clone();
-                            let display_clone = display.clone();
-                            view! {
-                                <option value=name_clone>{display_clone}</option>
-                            }.into_any()
-                        }).collect::<Vec<_>>()
-                    }}
-                </select>
-                <small class="bench-hint">
-                    "Select a specific backend's llama-bench, or leave empty to use the model's backend."
-                </small>
+                <BackendSelect
+                    backends=available_backends_sig
+                    selected_backend=selected_backend
+                    hint_text="Select a specific backend's llama-bench, or leave empty to use the model's backend."
+                />
             </section>
 
             // ── Test configuration ──────────────────────────────────────
