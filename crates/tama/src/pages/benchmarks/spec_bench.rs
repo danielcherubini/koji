@@ -1,18 +1,16 @@
 //! Speculative decoding benchmark form and results display.
 
-use std::collections::BTreeMap;
-
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use wasm_bindgen::JsCast;
 
 use crate::components::job_log_panel::JobLogPanel;
-use crate::pages::benchmarks::types::{BENCHMARK_TYPES, SPEC_BENCH_PRESETS};
+use crate::pages::benchmarks::selectors::{BackendSelect, ModelQuantSelect};
+use crate::pages::benchmarks::types::BENCHMARK_TYPES;
 use crate::pages::benchmarks::utils::{
-    fetch_installed_backend_variants, format_mean_stddev, parse_sizes, split_id_quant,
-    split_name_variant, use_benchmark_form_state, BenchmarkFormState,
+    delta_badge_class, format_delta, format_mean_stddev, parse_sizes, split_id_quant,
+    split_name_variant, submit_bench_job, BenchmarkFormState,
 };
-use crate::utils::post_request;
+use crate::utils::target_value;
 
 /// Human-readable descriptions for each spec type.
 const SPEC_TYPE_DESC: &[(&str, &str)] = &[
@@ -101,49 +99,26 @@ impl SpecPreset {
     }
 }
 
-/// CSS class for delta badge based on percentage value.
-fn delta_badge_class(delta_pct: f64) -> &'static str {
-    if delta_pct > 0.5 {
-        "badge badge-success"
-    } else if delta_pct < -0.5 {
-        "badge badge-danger"
-    } else {
-        "badge badge-muted"
-    }
-}
-
-/// Format delta percentage with Unicode minus for negative values.
-fn format_delta(delta_pct: f64) -> String {
-    if delta_pct >= 0.0 {
-        format!("+{:.1}%", delta_pct)
-    } else {
-        format!("−{:.1}%", (-delta_pct))
-    }
-}
-
 #[component]
 pub fn SpecBench(
     /// Trigger to bump history refetch after a run completes.
     history_refresh_trigger: RwSignal<u32>,
+    shared_state: BenchmarkFormState,
 ) -> impl IntoView {
-    // ── Shared form state ──────────────────────────────────────────────
-    let state = use_benchmark_form_state();
+    // ── Shared form state (hoisted from parent) ────────────────────────
     let BenchmarkFormState {
         selected_display_name,
         selected_model,
         available_models,
         selected_backend,
         available_backends,
-        is_running,
-        current_job_id,
-        benchmark_results,
-        model_refresh: _,
-        model_n_batch: _,
-        model_n_ubatch: _,
-    } = state;
+        ..
+    } = shared_state;
 
-    // Fetch installed backend variants (both backends + custom, installed-only).
-    fetch_installed_backend_variants(available_backends);
+    // ── Per-tab job state (isolated from other tabs) ───────────────────
+    let is_running = RwSignal::new(false);
+    let current_job_id = RwSignal::new(Option::<String>::None);
+    let benchmark_results = RwSignal::new(Option::<serde_json::Value>::None);
 
     // Test Type dropdown — selects a preset benchmark type that auto-fills form fields.
     let selected_bench_type = RwSignal::new("spec_scan".to_string());
@@ -166,24 +141,6 @@ pub fn SpecBench(
     // ── Per-form state ─────────────────────────────────────────────────
     let error_msg = RwSignal::new(String::new());
 
-    // Test Type auto-fill handler — when the user picks a benchmark type,
-    // auto-populate the relevant form fields.
-    let apply_bench_type = move |bench_type: &str| {
-        if let Some((_, (draft_max, _draft_max_str_val, ngram_n, ngram_m))) =
-            SPEC_BENCH_PRESETS.iter().find(|(k, _)| *k == bench_type)
-        {
-            draft_max_str.set(
-                draft_max
-                    .iter()
-                    .map(|v| v.to_string())
-                    .collect::<Vec<_>>()
-                    .join(","),
-            );
-            ngram_n_str.set(ngram_n.to_string());
-            ngram_m_str.set(ngram_m.to_string());
-        }
-    };
-
     // ── Preset handler ─────────────────────────────────────────────────
     let apply_preset = move |preset: SpecPreset| {
         spec_types.set(preset.spec_types.iter().map(|s| s.to_string()).collect());
@@ -194,6 +151,24 @@ pub fn SpecBench(
         ngram_max_str.set(preset.ngram_max.to_string());
         gen_tokens.set(preset.gen_tokens);
         runs.set(preset.runs);
+    };
+
+    // Test Type auto-fill handler — when the user picks a benchmark type,
+    // auto-populate the relevant form fields. Matches spec_scan→Quick filter,
+    // spec_sweep→Draft sweep.
+    let apply_bench_type = move |bench_type: &str| {
+        let preset = match bench_type {
+            "spec_scan" => SpecPreset::all()
+                .into_iter()
+                .find(|p| p.label == "Quick filter"),
+            "spec_sweep" => SpecPreset::all()
+                .into_iter()
+                .find(|p| p.label == "Draft sweep"),
+            _ => None,
+        };
+        if let Some(preset) = preset {
+            apply_preset(preset);
+        }
     };
 
     // ── Submit handler ─────────────────────────────────────────────────
@@ -238,37 +213,12 @@ pub fn SpecBench(
                 "runs": runs_val,
             });
 
-            let submitted = async {
-                let builder = post_request("/tama/v1/benchmarks/spec-run")
-                    .header("Content-Type", "application/json")
-                    .body(body.to_string())
-                    .ok()?;
-                let resp = builder.send().await.ok()?;
-                if resp.status() >= 400 {
-                    let err_text =
-                        resp.text().await.ok().unwrap_or_else(|| {
-                            format!("Request failed with status {}", resp.status())
-                        });
-                    return Some(Err(err_text));
-                }
-                let body = resp.json::<serde_json::Value>().await.ok()?;
-                body.get("job_id")
-                    .and_then(|v| v.as_str())
-                    .map(|s| Ok(s.to_string()))
-            }
-            .await;
-
-            match submitted {
-                Some(Ok(job_id)) => {
+            match submit_bench_job("/tama/v1/benchmarks/spec-run", body).await {
+                Ok(job_id) => {
                     current_job_id.set(Some(job_id));
                 }
-                Some(Err(err)) => {
+                Err(err) => {
                     error_msg.set(err);
-                    is_running.set(false);
-                }
-                None => {
-                    error_msg
-                        .set("Failed to submit benchmark — check network connection.".to_string());
                     is_running.set(false);
                 }
             }
@@ -293,7 +243,6 @@ pub fn SpecBench(
 
     // ── Read-only splits for views ─────────────────────────────────────
     let (available_models_sig, _) = available_models.split();
-    let (selected_display_sig, _) = selected_display_name.split();
     let (selected_model_sig, _) = selected_model.split();
     let (available_backends_sig, _) = available_backends.split();
     let (spec_types_sig, _) = spec_types.split();
@@ -317,7 +266,7 @@ pub fn SpecBench(
                 <select
                     class="form-select"
                     on:change=move |e| {
-                        let val = e.target().unwrap().dyn_into::<web_sys::HtmlSelectElement>().unwrap().value();
+                        let val = target_value(&e);
                         selected_bench_type.set(val.clone());
                         apply_bench_type(&val);
                     }
@@ -336,91 +285,21 @@ pub fn SpecBench(
             // ── Model selection ───────────────────────────────────────
             <section class="card">
                 <h3>"Model"</h3>
-                <div class="grid-2">
-                    <div class="form-group">
-                        <label>"Model"</label>
-                        <select
-                            class="form-select"
-                            on:change=move |e| {
-                                let val = e.target().unwrap().dyn_into::<web_sys::HtmlSelectElement>().unwrap().value();
-                                selected_display_name.set(val);
-                            }
-                        >
-                            <option value="" disabled selected=move || selected_display_sig.get().is_empty()>"Select a model..."</option>
-                            {move || {
-                                let models = available_models_sig.get();
-                                let mut grouped: BTreeMap<String, ()> = BTreeMap::new();
-                                for (_, name, _, _, _) in models.iter() {
-                                    grouped.insert(name.clone(), ());
-                                }
-                                grouped.keys().map(|name| {
-                                    let value = name.clone();
-                                    let label = name.clone();
-                                    view! {
-                                        <option value=value>{label}</option>
-                                    }.into_any()
-                                }).collect::<Vec<_>>()
-                            }}
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>"Quant"</label>
-                        <select
-                            class="form-select"
-                            prop:disabled=move || selected_display_sig.get().is_empty()
-                            on:change=move |e| {
-                                let val = e.target().unwrap().dyn_into::<web_sys::HtmlSelectElement>().unwrap().value();
-                                selected_model.set(val);
-                            }
-                        >
-                            <option value="" disabled>"Select quant..."</option>
-                            {move || {
-                                let models = available_models_sig.get();
-                                let dn = selected_display_sig.get();
-                                let selected_id = selected_model_sig.get();
-                                models.iter()
-                                    .filter(|(_, name, _, _, _)| name == &dn)
-                                    .flat_map(|(id, _, quants, _, _)| {
-                                        quants.iter().map(move |quant| (id.clone(), quant.clone()))
-                                    })
-                                    .map(|(id_clone, quant)| {
-                                        let value = format!("{}:{}", id_clone, quant);
-                                        let is_selected = value == selected_id;
-                                        view! {
-                                            <option value=value selected=is_selected>{quant}</option>
-                                        }.into_any()
-                                    }).collect::<Vec<_>>()
-                            }}
-                        </select>
-                    </div>
-                </div>
+                <ModelQuantSelect
+                    models=available_models_sig
+                    selected_model=selected_display_name
+                    selected_quant=selected_model
+                />
             </section>
 
             // ── Backend selection ─────────────────────────────────────
             <section class="card">
                 <h3>"Backend"</h3>
-                <select
-                    class="form-select"
-                    on:change=move |e| {
-                        let val = e.target().unwrap().dyn_into::<web_sys::HtmlSelectElement>().unwrap().value();
-                        selected_backend.set(val);
-                    }
-                >
-                    <option value="">"Auto (model's backend)"</option>
-                    {move || {
-                        available_backends_sig.get().iter().map(|(value, label)| {
-                            let value2 = value.clone();
-                            view! {
-                                <option value=value2>
-                                    {label.clone()}
-                                </option>
-                            }.into_any()
-                        }).collect::<Vec<_>>()
-                    }}
-                </select>
-                <small class="bench-hint">
-                    "Select a specific backend variant (e.g. llama.cpp with CUDA), or leave empty to use the model's backend."
-                </small>
+                <BackendSelect
+                    backends=available_backends_sig
+                    selected_backend=selected_backend
+                    hint_text="Select a specific backend variant (e.g. llama.cpp with CUDA), or leave empty to use the model's backend."
+                />
             </section>
 
             // ── Spec types checkboxes ─────────────────────────────────
@@ -438,7 +317,7 @@ pub fn SpecBench(
                                 id=for_attr.clone()
                                 prop:checked=move || spec_types_sig.get().contains(&id_for_checked)
                                 on:change=move |e| {
-                                    let checked = e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().checked();
+                                    let checked = event_target_checked(&e);
                                     let id_inner = id_str.clone();
                                     spec_types.update(|types| {
                                         if checked {
@@ -475,7 +354,7 @@ pub fn SpecBench(
                                 type="text"
                                 class="form-control"
                                 prop:value=move || draft_max_sig.get()
-                                on:input=move |e| { draft_max_str.set(e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().value()); }
+                                on:input=move |e| { draft_max_str.set(target_value(&e)); }
                             />
                             <small class="text-muted">"Tokens to draft per round, e.g. 8,16,32,64 (not used for n-gram-mod)"</small>
                         </div>
@@ -486,7 +365,7 @@ pub fn SpecBench(
                             type="text"
                             class="form-control"
                             prop:value=move || ngram_n_sig.get()
-                            on:input=move |e| { ngram_n_str.set(e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().value()); }
+                            on:input=move |e| { ngram_n_str.set(target_value(&e)); }
                         />
                         <small class="text-muted">"Lookup pattern length (for ngram-mod/map), e.g. 12,16,24"</small>
                     </div>
@@ -496,7 +375,7 @@ pub fn SpecBench(
                             type="text"
                             class="form-control"
                             prop:value=move || ngram_m_sig.get()
-                            on:input=move |e| { ngram_m_str.set(e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().value()); }
+                            on:input=move |e| { ngram_m_str.set(target_value(&e)); }
                         />
                         <small class="text-muted">"Draft pattern length (for ngram-map-k/k4v only), e.g. 32,48"</small>
                     </div>
@@ -511,7 +390,7 @@ pub fn SpecBench(
                                 type="text"
                                 class="form-control"
                                 prop:value=move || ngram_min_sig.get()
-                                on:input=move |e| { ngram_min_str.set(e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().value()); }
+                                on:input=move |e| { ngram_min_str.set(target_value(&e)); }
                             />
                             <small class="text-muted">"Minimum n-gram matches (n-gram-mod only), e.g. 3,5"</small>
                         </div>
@@ -521,7 +400,7 @@ pub fn SpecBench(
                                 type="text"
                                 class="form-control"
                                 prop:value=move || ngram_max_sig.get()
-                                on:input=move |e| { ngram_max_str.set(e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().value()); }
+                                on:input=move |e| { ngram_max_str.set(target_value(&e)); }
                             />
                             <small class="text-muted">"Maximum n-gram matches (n-gram-mod only), e.g. 48,64"</small>
                         </div>
@@ -541,7 +420,7 @@ pub fn SpecBench(
                             prop:value=move || gen_tokens_sig.get()
                             min="1" max="4096"
                             on:input=move |e| {
-                                let val = e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().value();
+                                let val = target_value(&e);
                                 if let Ok(n) = val.parse::<u32>() { gen_tokens.set(n); }
                             }
                         />
@@ -554,7 +433,7 @@ pub fn SpecBench(
                             prop:value=move || runs_sig.get()
                             min="1" max="20"
                             on:input=move |e| {
-                                let val = e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().value();
+                                let val = target_value(&e);
                                 if let Ok(n) = val.parse::<u32>() { runs.set(n); }
                             }
                         />

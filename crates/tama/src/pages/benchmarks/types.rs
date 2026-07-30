@@ -17,7 +17,6 @@ pub const BENCHMARK_TYPES: &[(&str, &str)] = &[
     ("context_test", "Context Test"),
     ("spec_scan", "Spec Scan"),
     ("spec_sweep", "Spec Sweep"),
-    ("mtp_sweep", "MTP Sweep"),
 ];
 
 /// Parse a model JSON value into (id, display_name, quant, n_batch, n_ubatch).
@@ -62,8 +61,9 @@ pub fn parse_model(m: &serde_json::Value) -> Option<Vec<ModelEntry>> {
     )
 }
 
+/// Benchmark history entry returned from `GET /tama/v1/benchmarks/history`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HistoryEntry {
+pub struct BenchmarkHistoryEntry {
     pub id: i64,
     pub created_at: i64,
     pub model_id: String,
@@ -154,16 +154,6 @@ pub const LLAMA_BENCH_PRESETS: &[(&str, BenchmarkPresetSpec)] = &[
             kv_cache_type: "q8_0",
             depth: "131072",
         },
-    ),
-];
-
-/// Auto-fill presets for the Spec Decoding Test Type dropdown.
-#[allow(clippy::type_complexity)]
-pub const SPEC_BENCH_PRESETS: &[(&str, (&[u32], &str, &str, &str))] = &[
-    ("spec_scan", (&[256], "16", "12", "48")),
-    (
-        "spec_sweep",
-        (&[8, 16, 32, 48, 64], "8,16,32,48,64", "12,16,24", "32,48"),
     ),
 ];
 

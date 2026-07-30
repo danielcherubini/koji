@@ -1,41 +1,36 @@
 //! MTP (Multi-Token Prediction) benchmark form and results display.
 
-use std::collections::BTreeMap;
-
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use wasm_bindgen::JsCast;
 
 use crate::components::job_log_panel::JobLogPanel;
+use crate::pages::benchmarks::selectors::{BackendSelect, ModelQuantSelect};
 use crate::pages::benchmarks::utils::{
-    fetch_installed_backend_variants, parse_sizes, split_id_quant, split_name_variant,
-    use_benchmark_form_state, BenchmarkFormState,
+    format_mean_stddev, parse_sizes, split_id_quant, split_name_variant, submit_bench_job,
+    BenchmarkFormState,
 };
-use crate::utils::post_request;
+use crate::utils::target_value;
 
 #[component]
 pub fn MtpBench(
     /// Trigger to bump history refetch after a run completes.
     history_refresh_trigger: RwSignal<u32>,
+    shared_state: BenchmarkFormState,
 ) -> impl IntoView {
-    // ── Shared form state ──────────────────────────────────────────────
-    let state = use_benchmark_form_state();
+    // ── Shared form state (hoisted from parent) ────────────────────────
     let BenchmarkFormState {
         selected_display_name,
         selected_model,
         available_models,
         selected_backend,
         available_backends,
-        is_running,
-        current_job_id,
-        benchmark_results,
-        model_refresh: _,
-        model_n_batch: _,
-        model_n_ubatch: _,
-    } = state;
+        ..
+    } = shared_state;
 
-    // Fetch installed backend variants (both backends + custom, installed-only).
-    fetch_installed_backend_variants(available_backends);
+    // ── Per-tab job state (isolated from other tabs) ───────────────────
+    let is_running = RwSignal::new(false);
+    let current_job_id = RwSignal::new(Option::<String>::None);
+    let benchmark_results = RwSignal::new(Option::<serde_json::Value>::None);
 
     // ── MTP configuration ──────────────────────────────────────────────
     let draft_max_str = RwSignal::new("0,1,2,3,4,5,6,7,8".to_string());
@@ -81,37 +76,12 @@ pub fn MtpBench(
                 "flash_attn": flash,
             });
 
-            let submitted = async {
-                let builder = post_request("/tama/v1/benchmarks/mtp-run")
-                    .header("Content-Type", "application/json")
-                    .body(body.to_string())
-                    .ok()?;
-                let resp = builder.send().await.ok()?;
-                if resp.status() >= 400 {
-                    let err_text =
-                        resp.text().await.ok().unwrap_or_else(|| {
-                            format!("Request failed with status {}", resp.status())
-                        });
-                    return Some(Err(err_text));
-                }
-                let body = resp.json::<serde_json::Value>().await.ok()?;
-                body.get("job_id")
-                    .and_then(|v| v.as_str())
-                    .map(|s| Ok(s.to_string()))
-            }
-            .await;
-
-            match submitted {
-                Some(Ok(job_id)) => {
+            match submit_bench_job("/tama/v1/benchmarks/mtp-run", body).await {
+                Ok(job_id) => {
                     current_job_id.set(Some(job_id));
                 }
-                Some(Err(err)) => {
+                Err(err) => {
                     error_msg.set(err);
-                    is_running.set(false);
-                }
-                None => {
-                    error_msg
-                        .set("Failed to submit benchmark — check network connection.".to_string());
                     is_running.set(false);
                 }
             }
@@ -136,7 +106,6 @@ pub fn MtpBench(
 
     // ── Read-only splits for views ─────────────────────────────────────
     let (available_models_sig, _) = available_models.split();
-    let (selected_display_sig, _) = selected_display_name.split();
     let (selected_model_sig, _) = selected_model.split();
     let (available_backends_sig, _) = available_backends.split();
     let (draft_max_sig, _) = draft_max_str.split();
@@ -152,91 +121,21 @@ pub fn MtpBench(
             // ── Model selection ───────────────────────────────────────
             <section class="card">
                 <h3>"Model"</h3>
-                <div class="grid-2">
-                    <div class="form-group">
-                        <label>"Model"</label>
-                        <select
-                            class="form-select"
-                            on:change=move |e| {
-                                let val = e.target().unwrap().dyn_into::<web_sys::HtmlSelectElement>().unwrap().value();
-                                selected_display_name.set(val);
-                            }
-                        >
-                            <option value="" disabled selected=move || selected_display_sig.get().is_empty()>"Select a model..."</option>
-                            {move || {
-                                let models = available_models_sig.get();
-                                let mut grouped: BTreeMap<String, ()> = BTreeMap::new();
-                                for (_, name, _, _, _) in models.iter() {
-                                    grouped.insert(name.clone(), ());
-                                }
-                                grouped.keys().map(|name| {
-                                    let value = name.clone();
-                                    let label = name.clone();
-                                    view! {
-                                        <option value=value>{label}</option>
-                                    }.into_any()
-                                }).collect::<Vec<_>>()
-                            }}
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>"Quant"</label>
-                        <select
-                            class="form-select"
-                            prop:disabled=move || selected_display_sig.get().is_empty()
-                            on:change=move |e| {
-                                let val = e.target().unwrap().dyn_into::<web_sys::HtmlSelectElement>().unwrap().value();
-                                selected_model.set(val);
-                            }
-                        >
-                            <option value="" disabled>"Select quant..."</option>
-                            {move || {
-                                let models = available_models_sig.get();
-                                let dn = selected_display_sig.get();
-                                let selected_id = selected_model_sig.get();
-                                models.iter()
-                                    .filter(|(_, name, _, _, _)| name == &dn)
-                                    .flat_map(|(id, _, quants, _, _)| {
-                                        quants.iter().map(move |quant| (id.clone(), quant.clone()))
-                                    })
-                                    .map(|(id_clone, quant)| {
-                                        let value = format!("{}:{}", id_clone, quant);
-                                        let is_selected = value == selected_id;
-                                        view! {
-                                            <option value=value selected=is_selected>{quant}</option>
-                                        }.into_any()
-                                    }).collect::<Vec<_>>()
-                            }}
-                        </select>
-                    </div>
-                </div>
+                <ModelQuantSelect
+                    models=available_models_sig
+                    selected_model=selected_display_name
+                    selected_quant=selected_model
+                />
             </section>
 
             // ── Backend selection ─────────────────────────────────────
             <section class="card">
                 <h3>"Backend"</h3>
-                <select
-                    class="form-select"
-                    on:change=move |e| {
-                        let val = e.target().unwrap().dyn_into::<web_sys::HtmlSelectElement>().unwrap().value();
-                        selected_backend.set(val);
-                    }
-                >
-                    <option value="">"Auto (model's backend)"</option>
-                    {move || {
-                        available_backends_sig.get().iter().map(|(value, label)| {
-                            let value2 = value.clone();
-                            view! {
-                                <option value=value2>
-                                    {label.clone()}
-                                </option>
-                            }.into_any()
-                        }).collect::<Vec<_>>()
-                    }}
-                </select>
-                <small class="bench-hint">
-                    "Select a specific backend variant, or leave empty to use the model's backend."
-                </small>
+                <BackendSelect
+                    backends=available_backends_sig
+                    selected_backend=selected_backend
+                    hint_text="Select a specific backend variant, or leave empty to use the model's backend."
+                />
             </section>
 
             // ── MTP Configuration ─────────────────────────────────────
@@ -249,7 +148,7 @@ pub fn MtpBench(
                             type="text"
                             class="form-control"
                             prop:value=move || draft_max_sig.get()
-                            on:input=move |e| { draft_max_str.set(e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().value()); }
+                            on:input=move |e| { draft_max_str.set(target_value(&e)); }
                         />
                         <small class="text-muted">"Comma-separated, e.g. 0,1,2,3,4,5,6,7,8"</small>
                     </div>
@@ -259,7 +158,7 @@ pub fn MtpBench(
                             type="text"
                             class="form-control"
                             prop:value=move || ngl_sig.get()
-                            on:input=move |e| { ngl_str.set(e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().value()); }
+                            on:input=move |e| { ngl_str.set(target_value(&e)); }
                         />
                         <small class="text-muted">"GPU layers for the draft model (default 99)"</small>
                     </div>
@@ -270,8 +169,7 @@ pub fn MtpBench(
                                 type="checkbox"
                                 prop:checked=move || flash_sig.get()
                                 on:change=move |e| {
-                                    let checked = e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().checked();
-                                    flash_attn.set(checked);
+                                    flash_attn.set(event_target_checked(&e));
                                 }
                             />
                             <label class="form-check-label" for="mtp-flash-attn">"Flash attention"</label>
@@ -301,7 +199,7 @@ pub fn MtpBench(
                         </div>
                     }.into_any()
                 } else {
-                    view! { <div></div> }.into_any()
+                    ().into_view().into_any()
                 }
             }}
 
@@ -316,14 +214,14 @@ pub fn MtpBench(
                         />
                     }.into_any()
                 } else {
-                    view! { <div></div> }.into_any()
+                    ().into_view().into_any()
                 }
             }}
 
             // ── Results display ───────────────────────────────────────
             {move || {
                 let Some(result) = benchmark_results_sig.get() else {
-                    return view! { <div></div> }.into_any();
+                    return ().into_view().into_any();
                 };
 
                 let entries: Vec<serde_json::Value> = result
@@ -355,7 +253,7 @@ pub fn MtpBench(
                     .unwrap_or(0.0);
 
                 if entries.is_empty() {
-                    return view! { <div></div> }.into_any();
+                    return ().into_view().into_any();
                 }
 
                 // Group entries by draft_max value
@@ -474,7 +372,7 @@ pub fn MtpBench(
                                                             {if let Some(err) = error {
                                                                 view! { <br /><small class="text-danger">{err}</small> }.into_any()
                                                             } else {
-                                                                view! { <div></div> }.into_any()
+                                                                ().into_view().into_any()
                                                             }}
                                                         </td>
                                                         <td class="text-mono text-right">{format!("{:.2}", wall_s)}</td>
@@ -482,9 +380,9 @@ pub fn MtpBench(
                                                         <td class="text-mono text-right">{draft_n}</td>
                                                         <td class="text-mono text-right">{draft_n_accepted}</td>
                                                         <td class="text-mono text-right">{rate_display}</td>
-                                                        <td class="text-mono text-right">{format!("{:.1}", tok_per_s)}</td>
+                                                        <td class="text-mono text-right">{format_mean_stddev(tok_per_s, 0.0)}</td>
                                                     </tr>
-                                                }.into_any()
+                                                }
                                             }).collect::<Vec<_>>()}
                                             // Group aggregate row
                                             <tr class="table-active">
@@ -494,12 +392,12 @@ pub fn MtpBench(
                                                 <td class="text-mono text-right"><strong>{group_draft_total}</strong></td>
                                                 <td class="text-mono text-right"><strong>{group_draft_accepted}</strong></td>
                                                 <td class="text-mono text-right"><strong>{format!("{:.0}%", group_accept_rate * 100.0)}</strong></td>
-                                                <td class="text-mono text-right"><strong>{format!("{:.1}", group_avg_tok_s)}</strong></td>
+                                                <td class="text-mono text-right"><strong>{format_mean_stddev(group_avg_tok_s, 0.0)}</strong></td>
                                             </tr>
                                         </tbody>
                                     </table>
                                 </div>
-                            }.into_any()
+                            }
                         }).collect::<Vec<_>>()}
                     </section>
                 }.into_any()
