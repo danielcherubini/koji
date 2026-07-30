@@ -20,6 +20,19 @@ See [execution-order.md](execution-order.md) for the full dependency-first casca
 
 ## Plans
 
+### Benchmarks Track (2026-07 — independent of audit backlog)
+
+| Plan | Description |
+|------|-------------|
+| [Benchmark Bug Fixes](plan-180-benchmark-bug-fixes.md) | history.rs spec/MTP conversion arms, gpu_variant dropdown + DTO (ADR-0005), history refresh, draft_ngl, derived run status |
+| [Model Batch/µ-batch Fields](plan-181-model-batch-ubatch-fields.md) | Typed `n_batch`/`n_ubatch` model fields replacing free-text args flags (migration `_0041`) |
+| [Benchmarks Frontend Refactor](plan-182-benchmarks-frontend-refactor.md) | ~500-line dedup: shared selectors/submit, LlamaBenchForm extraction, hoisted tab state |
+| [Benchmark Suite](plan-183-benchmark-suite.md) | One-button capability-aware suite (ADR-0004), `suite_id` grouping (migration `_0042`) |
+
+Execute in order 180 → 181 → 182 → 183 (180 and 181 are independent of each other).
+
+### Audit Backlog (2026-07-18)
+
 | Plan | Description | Findings |
 |------|-------------|----------|
 | [Error Contract Unification](plan-161-error-contract.md) | Migrate ~55 flat error sites to structured shape, shared tama-core error helper, fix OpenAPI ErrorResponse schema, shape-assertion tests | F4 |

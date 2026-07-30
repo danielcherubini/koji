@@ -1,0 +1,3 @@
+# gpu_variant is a first-class field on benchmark request DTOs
+
+All benchmark run endpoints (`run`, `mtp`, `spec`, `suite`) accept `backend_name` and a separate optional `gpu_variant` field, passed through to `config.resolve_backend_path`. Rejected alternative: encoding variant in the name (`"llama_cpp:cuda"`) and parsing server-side — the frontend uses the `"name:variant"` string only as an HTML `<option>` value and splits it client-side before POSTing. This keeps backend identity explicit in the API and matches how `resolve_backend_path` already takes name and variant as separate parameters.

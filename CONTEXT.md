@@ -56,6 +56,10 @@ _Avoid_: API token, secret key, bearer key
 The authenticated identity attached to requests by the auth middleware: `User` (OAuth2 session, full access) or `Key` (API key, scoped access). Used by the scope middleware to enforce authorization.
 _Avoid_: Auth context, principal, identity
 
+**Suite** (benchmark suite):
+An ordered group of benchmark runs (llama_bench, spec, MTP) auto-selected from a model's capabilities and executed sequentially as a single job. Sub-runs share a `suite_id` on their history rows.
+_Avoid_: Benchmark batch, benchmark pack
+
 **Scope middleware**:
 The authorization layer that runs after authentication. Checks `AuthSubject` against route requirements — `User` bypasses, `Key` must have matching scopes.
 _Avoid_: Permission middleware, ACL layer, role check
