@@ -229,6 +229,12 @@ async fn run_suite(
     let mut outcomes: Vec<SubRunOutcome> = Vec::new();
 
     for typ in &selected_types {
+        jobs.append_log(
+            &job,
+            format!("\n═══ Starting {} benchmark ═══", typ),
+        )
+        .await;
+
         tracing::info!(
             job_id = %job.id,
             suite_id = %suite_id,
@@ -336,6 +342,13 @@ async fn run_suite(
     // Log summary.
     let succeeded = outcomes.iter().filter(|o| o.success).count();
     let failed = outcomes.len() - succeeded;
+
+    jobs.append_log(
+        &job,
+        format!("\n═══ Suite complete: {}/{} succeeded ═══", succeeded, outcomes.len()),
+    )
+    .await;
+
     tracing::info!(
         job_id = %job.id,
         suite_id = %suite_id,

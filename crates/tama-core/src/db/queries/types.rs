@@ -55,7 +55,35 @@ pub struct ModelConfigRecord {
 }
 
 impl ModelConfigRecord {
-    /// All 37 columns in SELECT order (id first). Must match `from_row` index order.
+    /// All 37 columns in SELECT order (id first).
+    ///
+    /// Column index map (matching `from_row` .get(N) indices):
+    ///
+    /// | Index | Column              | Index | Column               |
+    /// |-------|---------------------|-------|----------------------|
+    /// | 0     | id                  | 19    | modalities           |
+    /// | 1     | repo_id             | 20    | profile              |
+    /// | 2     | display_name        | 21    | api_name             |
+    /// | 3     | backend             | 22    | health_check         |
+    /// | 4     | gpu_variant         | 23    | hf_format            |
+    /// | 5     | gpu_device          | 24    | hf_base_model        |
+    /// | 6     | enabled             | 25    | hf_pipeline_tag      |
+    /// | 7     | selected_quant      | 26    | hf_total_params      |
+    /// | 8     | selected_mmproj     | 27    | hf_active_params     |
+    /// | 9     | selected_mtp_model  | 28    | hf_architecture_type |
+    /// | 10    | context_length      | 29    | hf_context_length    |
+    /// | 11    | num_parallel        | 30    | hf_num_layers        |
+    /// | 12    | kv_unified          | 31    | hf_last_modified     |
+    /// | 13    | gpu_layers          | 32    | spec_decoding        |
+    /// | 14    | cache_type_k        | 33    | created_at           |
+    /// | 15    | cache_type_v        | 34    | updated_at           |
+    /// | 16    | port                | 35    | n_batch              |
+    /// | 17    | args                | 36    | n_ubatch             |
+    /// | 18    | sampling            |
+    ///
+    /// Migration _0041 appended `n_batch` (index 35) and `n_ubatch` (index 36)
+    /// as the final two columns. All queries use `COLUMNS` so indices stay
+    /// consistent across construction sites.
     pub(crate) const COLUMNS: &str =
         "id, repo_id, display_name, backend, gpu_variant, gpu_device, enabled, selected_quant, \
          selected_mmproj, selected_mtp_model, context_length, num_parallel, kv_unified, gpu_layers, \
