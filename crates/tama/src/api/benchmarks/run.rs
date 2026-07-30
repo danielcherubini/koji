@@ -1,5 +1,5 @@
 use super::*;
-use crate::api::benchmarks::BenchmarkProgressSink;
+use crate::api::benchmarks::{derive_status, BenchmarkProgressSink};
 use anyhow::Context;
 
 // ── Handler: Submit benchmark job ─────────────────────────────────────
@@ -150,12 +150,17 @@ pub async fn run_benchmark_inner(
         .transpose()
         .context("Failed to serialize threads")?;
 
+    // Llama-bench has no per-test failure concept — parse_bench_json only emits
+    // successful tests and failed runs bail! before insert. Always derive success.
+    let run_status = derive_status(report.summaries.len(), 0, false);
+
     // Get VRAM info
     let vram = query_vram();
 
     // Clone values before moving into the spawn_blocking closure.
     let display_name_for_trace = display_name.clone();
     let backend_for_trace = report.model_info.backend.clone();
+    let run_status_for_insert = run_status.to_string();
 
     // Segment 2: insert benchmark record on the blocking pool.
     let repo_for_insert = repo_handle.clone();
@@ -178,7 +183,7 @@ pub async fn run_benchmark_inner(
             vram_used_mib: vram.as_ref().map(|v| v.used_mib as i64),
             vram_total_mib: vram.as_ref().map(|v| v.total_mib as i64),
             duration_seconds: 0.0, // duration tracked by job system
-            status: "success".to_string(),
+            status: run_status_for_insert,
             benchmark_type: benchmark_type.clone(),
         })?;
         Ok(())

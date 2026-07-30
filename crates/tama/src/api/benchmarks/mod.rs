@@ -296,3 +296,46 @@ pub fn job_conflict_response() -> axum::response::Response {
         Some("ConflictError"),
     )
 }
+
+// ── Status derivation helper ──────────────────────────────────────────
+
+/// Derive the canonical run status from per-entry counts.
+///
+/// - `run_errored` → `"failed"` (run failed before producing results)
+/// - `entries_failed > 0` → `"partial"` (some entries succeeded, some failed)
+/// - otherwise → `"success"` (all entries ok)
+pub fn derive_status(_entries_ok: usize, entries_failed: usize, run_errored: bool) -> &'static str {
+    if run_errored {
+        "failed"
+    } else if entries_failed > 0 {
+        "partial"
+    } else {
+        "success"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_derive_status_success() {
+        assert_eq!(derive_status(5, 0, false), "success");
+        assert_eq!(derive_status(1, 0, false), "success");
+        assert_eq!(derive_status(0, 0, false), "success");
+    }
+
+    #[test]
+    fn test_derive_status_partial() {
+        assert_eq!(derive_status(5, 1, false), "partial");
+        assert_eq!(derive_status(0, 1, false), "partial");
+        assert_eq!(derive_status(3, 2, false), "partial");
+    }
+
+    #[test]
+    fn test_derive_status_failed() {
+        assert_eq!(derive_status(5, 0, true), "failed");
+        assert_eq!(derive_status(0, 0, true), "failed");
+        assert_eq!(derive_status(5, 3, true), "failed");
+    }
+}

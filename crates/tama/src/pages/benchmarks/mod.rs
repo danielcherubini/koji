@@ -1007,10 +1007,10 @@ pub fn Benchmarks() -> impl IntoView {
                                     let entry_id = entry.id;
                                     let when_title = format_timestamp(entry.created_at);
                                     let when_rel = format_relative(entry.created_at);
-                                    let badge_class = if entry.status == "success" {
-                                        "badge badge-success"
-                                    } else {
-                                        "badge badge-danger"
+                                    let badge_class = match entry.status.as_str() {
+                                        "success" => "badge badge-success",
+                                        "partial" => "badge badge-warning",
+                                        _ => "badge badge-danger",
                                     };
                                     let name = entry.display_name.clone().unwrap_or_else(|| entry.model_id.clone());
                                     let quant_suffix = entry.quant
