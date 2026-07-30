@@ -29,6 +29,8 @@ pub struct BenchmarkRow {
     /// Identifies what kind of benchmark was run (e.g., "baseline", "pp_sweep").
     /// NULL for legacy rows.
     pub benchmark_type: Option<String>,
+    /// Suite identifier for grouping related benchmark runs. NULL for legacy rows.
+    pub suite_id: Option<String>,
 }
 
 /// Parameters for inserting a benchmark result row.
@@ -53,6 +55,8 @@ pub struct BenchmarkInsertParams<'a> {
     pub status: &'a str,
     /// Identifies what kind of benchmark was run (e.g., "baseline", "pp_sweep").
     pub benchmark_type: Option<&'a str>,
+    /// Suite identifier for grouping related benchmark runs.
+    pub suite_id: Option<&'a str>,
 }
 
 /// Insert a benchmark result row. Returns the new row id.
@@ -67,8 +71,8 @@ pub fn insert_benchmark(conn: &Connection, params: &BenchmarkInsertParams) -> Re
             created_at, model_id, display_name, quant, backend, engine,
             pp_sizes, tg_sizes, threads, ngl_range, runs, warmup,
             results, load_time_ms, vram_used_mib, vram_total_mib,
-            duration_seconds, status, benchmark_type
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+            duration_seconds, status, benchmark_type, suite_id
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
         params![
             created_at,
             params.model_id,
@@ -89,6 +93,7 @@ pub fn insert_benchmark(conn: &Connection, params: &BenchmarkInsertParams) -> Re
             params.duration_seconds,
             params.status,
             params.benchmark_type,
+            params.suite_id,
         ],
     )?;
     let id = tx.last_insert_rowid();
@@ -102,7 +107,7 @@ pub fn list_benchmarks(conn: &Connection) -> Result<Vec<BenchmarkRow>> {
         "SELECT id, created_at, model_id, display_name, quant, backend, engine,
                 pp_sizes, tg_sizes, threads, ngl_range, runs, warmup,
                 results, load_time_ms, vram_used_mib, vram_total_mib,
-                duration_seconds, status, benchmark_type
+                duration_seconds, status, benchmark_type, suite_id
          FROM benchmarks
          ORDER BY created_at DESC",
     )?;
@@ -128,6 +133,7 @@ pub fn list_benchmarks(conn: &Connection) -> Result<Vec<BenchmarkRow>> {
             duration_seconds: row.get(17)?,
             status: row.get(18)?,
             benchmark_type: row.get(19)?,
+            suite_id: row.get(20)?,
         })
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -168,7 +174,8 @@ mod tests {
                 vram_total_mib      INTEGER,
                 duration_seconds    REAL,
                 status              TEXT NOT NULL DEFAULT 'success',
-                benchmark_type      TEXT
+                benchmark_type      TEXT,
+                suite_id            TEXT
             )",
         )
         .unwrap();
@@ -202,6 +209,7 @@ mod tests {
             duration_seconds: 30.5,
             status: "success",
             benchmark_type: Some("baseline"),
+            suite_id: None,
         }
     }
 
@@ -306,6 +314,7 @@ mod tests {
             duration_seconds: 30.5,
             status: "success",
             benchmark_type: None,
+            suite_id: None,
         };
 
         let id = insert_benchmark(&conn, &params).unwrap();
@@ -350,6 +359,7 @@ mod tests {
             duration_seconds: 45.5,
             status: "success",
             benchmark_type: Some("baseline"),
+            suite_id: None,
         };
         let id = insert_benchmark(&conn, &params).unwrap();
 
@@ -385,6 +395,7 @@ mod tests {
             duration_seconds: 0.0,
             status: "success",
             benchmark_type: None,
+            suite_id: None,
         };
         let params_b = BenchmarkInsertParams {
             model_id: "b",
@@ -394,5 +405,136 @@ mod tests {
         let id2 = insert_benchmark(&conn, &params_b).unwrap();
         assert_eq!(id1, 1);
         assert_eq!(id2, 2);
+    }
+
+    #[test]
+    fn test_suite_id_round_trip_some() {
+        let conn = migration_conn();
+        let params = BenchmarkInsertParams {
+            model_id: "suite-model",
+            display_name: Some("Suite Model"),
+            quant: Some("Q4_K_M"),
+            backend: "llama_cpp",
+            engine: "llama_bench",
+            pp_sizes_json: "[512]",
+            tg_sizes_json: "[128]",
+            threads_json: None,
+            ngl_range: None,
+            runs: 3,
+            warmup: 1,
+            results_json: "[]",
+            load_time_ms: None,
+            vram_used_mib: None,
+            vram_total_mib: None,
+            duration_seconds: 0.0,
+            status: "success",
+            benchmark_type: Some("baseline"),
+            suite_id: Some("suite-abc"),
+        };
+
+        let id = insert_benchmark(&conn, &params).unwrap();
+        assert_eq!(id, 1);
+
+        let entries = list_benchmarks(&conn).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].suite_id, Some("suite-abc".to_string()));
+    }
+
+    #[test]
+    fn test_suite_id_round_trip_none() {
+        let conn = migration_conn();
+        let params = BenchmarkInsertParams {
+            model_id: "no-suite-model",
+            display_name: None,
+            quant: None,
+            backend: "llama_cpp",
+            engine: "llama_bench",
+            pp_sizes_json: "[512]",
+            tg_sizes_json: "[128]",
+            threads_json: None,
+            ngl_range: None,
+            runs: 3,
+            warmup: 1,
+            results_json: "[]",
+            load_time_ms: None,
+            vram_used_mib: None,
+            vram_total_mib: None,
+            duration_seconds: 0.0,
+            status: "success",
+            benchmark_type: None,
+            suite_id: None,
+        };
+
+        let id = insert_benchmark(&conn, &params).unwrap();
+        assert_eq!(id, 1);
+
+        let entries = list_benchmarks(&conn).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].suite_id.is_none());
+    }
+
+    #[test]
+    fn test_suite_id_mixed_in_list() {
+        let conn = migration_conn();
+
+        // Insert with suite_id
+        let params_with_suite = BenchmarkInsertParams {
+            model_id: "model-a",
+            display_name: None,
+            quant: None,
+            backend: "llama_cpp",
+            engine: "llama_bench",
+            pp_sizes_json: "[512]",
+            tg_sizes_json: "[128]",
+            threads_json: None,
+            ngl_range: None,
+            runs: 3,
+            warmup: 1,
+            results_json: "[]",
+            load_time_ms: None,
+            vram_used_mib: None,
+            vram_total_mib: None,
+            duration_seconds: 0.0,
+            status: "success",
+            benchmark_type: Some("baseline"),
+            suite_id: Some("suite-1"),
+        };
+
+        // Insert without suite_id
+        let params_no_suite = BenchmarkInsertParams {
+            model_id: "model-b",
+            display_name: None,
+            quant: None,
+            backend: "llama_cpp",
+            engine: "llama_bench",
+            pp_sizes_json: "[512]",
+            tg_sizes_json: "[128]",
+            threads_json: None,
+            ngl_range: None,
+            runs: 3,
+            warmup: 1,
+            results_json: "[]",
+            load_time_ms: None,
+            vram_used_mib: None,
+            vram_total_mib: None,
+            duration_seconds: 0.0,
+            status: "success",
+            benchmark_type: None,
+            suite_id: None,
+        };
+
+        insert_benchmark(&conn, &params_with_suite).unwrap();
+        insert_benchmark(&conn, &params_no_suite).unwrap();
+
+        let entries = list_benchmarks(&conn).unwrap();
+        assert_eq!(entries.len(), 2);
+
+        // Both have same created_at (SystemTime::now()), so rowid tie-breaks:
+        // model-a was inserted first → lower rowid → comes first in DESC.
+        assert_eq!(entries[0].model_id, "model-a");
+        assert_eq!(entries[0].suite_id, Some("suite-1".to_string()));
+
+        assert_eq!(entries[1].model_id, "model-b");
+        assert!(entries[1].suite_id.is_none());
     }
 }

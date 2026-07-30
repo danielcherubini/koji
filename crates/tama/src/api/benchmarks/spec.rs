@@ -273,6 +273,7 @@ pub async fn run_spec_benchmark_inner(
             duration_seconds: 0.0,
             status: run_status_for_insert,
             benchmark_type: benchmark_type.clone(),
+            suite_id: req.suite_id,
         })?;
         Ok(())
     })

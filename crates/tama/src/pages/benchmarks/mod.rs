@@ -4,17 +4,20 @@ mod llama_bench;
 mod mtp_bench;
 mod selectors;
 mod spec_bench;
+pub mod suite_bench;
 pub mod types;
 mod utils;
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
+use leptos_router::hooks::use_query_map;
 
 use self::llama_bench::LlamaBench;
 use self::mtp_bench::MtpBench;
 use self::spec_bench::SpecBench;
+use self::suite_bench::SuiteBench;
 use self::types::BenchmarkHistoryEntry;
 use self::utils::{
     delta_badge_class, fetch_installed_backend_variants, format_delta, format_mean_stddev,
@@ -255,19 +258,156 @@ fn render_mtp_table(summaries: &[serde_json::Value]) -> impl IntoView {
     }
 }
 
+/// Group benchmark history entries by `suite_id` for collapsible rendering.
+///
+/// Returns a `Vec` of groups where each group has:
+/// - `suite_id`: the shared suite identifier (or `None` for ungrouped entries)
+/// - `entries`: the entries belonging to this group
+/// - `timestamp`: earliest `created_at` in the group (used for header display)
+/// - `display_name`: model name from the first entry with a display_name
+/// - `status_chips`: per-type status badges for the group
+fn group_entries_by_suite(entries: &[BenchmarkHistoryEntry]) -> Vec<BenchmarkGroup<'_>> {
+    // Group entries by suite_id while preserving insertion order.
+    // Each ungrouped entry (suite_id = None) gets its own unique group
+    // to preserve global timestamp ordering across the entire history.
+    let mut suite_counter: u64 = 0;
+    let mut type_map: BTreeMap<Option<String>, Vec<&BenchmarkHistoryEntry>> = BTreeMap::new();
+
+    for entry in entries {
+        let key = match &entry.suite_id {
+            Some(id) => Some(id.clone()),
+            None => {
+                // Create a unique key per ungrouped entry to preserve ordering.
+                let unique_key = format!("__ungrouped_{}", suite_counter);
+                suite_counter += 1;
+                Some(unique_key)
+            }
+        };
+        type_map.entry(key).or_default().push(entry);
+    }
+
+    // Build groups in insertion order.
+    type_map
+        .into_iter()
+        .map(|(suite_id, group_entries)| {
+            let first = group_entries
+                .first()
+                .copied()
+                .unwrap_or_else(|| &entries[0]);
+            // Earliest timestamp in group (newest-first, so last element).
+            let timestamp = group_entries
+                .iter()
+                .map(|e| e.created_at)
+                .min()
+                .unwrap_or(first.created_at);
+            // Display name from first entry with one.
+            let display_name = group_entries
+                .iter()
+                .find_map(|e| e.display_name.clone().or_else(|| Some(e.model_id.clone())));
+            // Per-type status chips (sorted by key for deterministic rendering).
+            let mut type_statuses: BTreeMap<String, String> = BTreeMap::new();
+            for entry in &group_entries {
+                if let Some(typ) = &entry.benchmark_type {
+                    type_statuses.insert(typ.clone(), entry.status.clone());
+                }
+            }
+
+            BenchmarkGroup {
+                suite_id,
+                entries: group_entries,
+                timestamp,
+                display_name,
+                type_statuses,
+            }
+        })
+        .collect()
+}
+
+/// A group of benchmark history entries sharing the same `suite_id`.
+struct BenchmarkGroup<'a> {
+    suite_id: Option<String>,
+    entries: Vec<&'a BenchmarkHistoryEntry>,
+    timestamp: i64,
+    display_name: Option<String>,
+    type_statuses: BTreeMap<String, String>,
+}
+/// Render per-type status chips for a suite group header as Leptos views.
+///
+/// Uses proper reactive rendering instead of string-built `inner_html` to
+/// prevent stored XSS from attacker-controlled benchmark_type values.
+fn render_suite_chips(type_statuses: &BTreeMap<String, String>) -> impl IntoView {
+    view! {
+        <>
+            {type_statuses.iter().map(|(typ, status)| {
+                let badge_class = match status.as_str() {
+                    "success" => "badge badge-success",
+                    "partial" => "badge badge-warning",
+                    _ => "badge badge-danger",
+                };
+                view! {
+                    <span class={badge_class}>{format!("{}: {}", typ, status)}</span>
+                }
+            }).collect::<Vec<_>>()}
+        </>
+    }
+}
+
 #[component]
 pub fn Benchmarks() -> impl IntoView {
+    // ── Query-param preselect ──────────────────────────────────────
+    let query = use_query_map();
+    // Read query params once at mount time.
+    let initial_tab_val = query.with(|q| {
+        if let Some(tab) = q.get("tab") {
+            if tab == "suite"
+                || tab == "llama-bench"
+                || tab == "spec-decode"
+                || tab == "mtp-testing"
+            {
+                return tab.to_string();
+            }
+        }
+        // Fallback to default
+        "llama-bench".to_string()
+    });
+    // get() returns Option<String> — no clone needed
+    let initial_model_val = query.with(|q| q.get("model").clone());
+
     // Shared benchmark form state (model/backend selection only)
     let state = use_benchmark_form_state();
     let BenchmarkFormState {
-        selected_display_name: _,
+        selected_display_name,
         selected_model: _,
-        available_models: _,
+        available_models,
         selected_backend: _,
         available_backends,
         model_n_batch: _,
         model_n_ubatch: _,
-    } = state;
+    } = state.clone();
+
+    // Preselect model from query param — store id for later resolution.
+    let preselect_model_id = RwSignal::new(initial_model_val);
+
+    // Once available_models loads, resolve the query-param model id to its
+    // display_name so the dropdown shows the correct selection and the
+    // existing utils.rs effect populates selected_model as "id:quant".
+    Effect::new(move |_| {
+        let _ = preselect_model_id.get();
+        let models = available_models.get();
+        if let Some(ref model_id) = preselect_model_id.get() {
+            // Try matching by display_name first, then by db_id string.
+            if let Some(entry) = models
+                .iter()
+                .find(|(_, name, _, _, _, _)| name == model_id)
+                .or_else(|| models.iter().find(|(id, _, _, _, _, _)| id == model_id))
+            {
+                let display_name = entry.1.clone();
+                selected_display_name.set(display_name);
+                // Clear the signal so this effect doesn't re-run.
+                preselect_model_id.set(None);
+            }
+        }
+    });
 
     // Fetch installed backend variants for llama-bench selection.
     fetch_installed_backend_variants(available_backends);
@@ -277,6 +417,8 @@ pub fn Benchmarks() -> impl IntoView {
     // IDs of history rows whose per-summary detail panel is open. Each row acts
     // as an accordion toggle — clicking flips its id in this set.
     let expanded_history = RwSignal::new(HashSet::<i64>::new());
+    // IDs of suite groups that are expanded (for grouped history).
+    let expanded_suites = RwSignal::new(HashSet::<String>::new());
 
     // Trigger for history refetch — incremented whenever we want to reload.
     let history_refresh = RwSignal::new(0u32);
@@ -297,9 +439,10 @@ pub fn Benchmarks() -> impl IntoView {
     // ── Read-only splits for shared view (history) ───────────────
     let (history_sig, _) = history.split();
     let (expanded_sig, _) = expanded_history.split();
+    let (expanded_suites_sig, _) = expanded_suites.split();
 
-    // Tab toggle — switch between llama-bench and spec-decoding views.
-    let active_tab: RwSignal<String> = RwSignal::new("llama-bench".to_string());
+    // Tab toggle — switch between llama-bench, spec-decode, mtp-testing, and suite views.
+    let active_tab: RwSignal<String> = RwSignal::new(initial_tab_val);
 
     view! {
         <div class="page-header">
@@ -313,15 +456,19 @@ pub fn Benchmarks() -> impl IntoView {
                 TabButton { key: "llama-bench".into(), label: "LLaMA-Bench".into() },
                 TabButton { key: "spec-decode".into(), label: "Spec Decoding".into() },
                 TabButton { key: "mtp-testing".into(), label: "MTP Testing".into() },
+                TabButton { key: "suite".into(), label: "Suite".into() },
             ]
             on_select=Callback::new(move |key| active_tab.set(key))
         />
 
-        // LLaMA-Bench tab content (shared form state hoisted from parent)
+        // Tab content — shared form state hoisted from parent
         {move || {
-            if active_tab.get() == "mtp-testing" {
+            let tab = active_tab.get();
+            if tab == "suite" {
+                view! { <SuiteBench history_refresh_trigger=history_refresh shared_state=state.clone() /> }.into_any()
+            } else if tab == "mtp-testing" {
                 view! { <MtpBench history_refresh_trigger=history_refresh shared_state=state.clone() /> }.into_any()
-            } else if active_tab.get() == "spec-decode" {
+            } else if tab == "spec-decode" {
                 view! { <SpecBench history_refresh_trigger=history_refresh shared_state=state.clone() /> }.into_any()
             } else {
                 view! { <LlamaBench history_refresh_trigger=history_refresh shared_state=state.clone() /> }.into_any()
@@ -330,6 +477,7 @@ pub fn Benchmarks() -> impl IntoView {
 
         // History — always shown. Newest rows appear at the top because the
         // server returns ORDER BY created_at DESC.
+        // Entries sharing a `suite_id` are grouped under one expandable header.
         <section class="card mt-3">
             <h3>"Benchmark History"</h3>
             {move || {
@@ -339,6 +487,9 @@ pub fn Benchmarks() -> impl IntoView {
                         <p class="text-muted">"No benchmarks yet. Run one above to see results here."</p>
                     }.into_any()
                 } else {
+                    // Group entries by suite_id.
+                    let groups = group_entries_by_suite(&entries);
+
                     view! {
                         <table class="table table-striped">
                             <thead>
@@ -355,101 +506,176 @@ pub fn Benchmarks() -> impl IntoView {
                                 </tr>
                             </thead>
                             <tbody>
-                                {entries.into_iter().map(|entry| {
-                                    let entry_id = entry.id;
-                                    let when_title = format_timestamp(entry.created_at);
-                                    let when_rel = format_relative(entry.created_at);
-                                    let badge_class = match entry.status.as_str() {
-                                        "success" => "badge badge-success",
-                                        "partial" => "badge badge-warning",
-                                        _ => "badge badge-danger",
-                                    };
-                                    let name = entry.display_name.clone().unwrap_or_else(|| entry.model_id.clone());
-                                    let quant_suffix = entry.quant
-                                        .as_ref()
-                                        .filter(|q| !q.is_empty())
-                                        .map(|q| format!(" · {}", q))
-                                        .unwrap_or_default();
-                                    let model_cell = format!("{}{}", name, quant_suffix);
+                                {groups.into_iter().flat_map(|group| {
+                                    let is_grouped = group.suite_id.is_some();
 
-                                    let arr = entry.results.as_array();
-                                    let best = |field: &str| -> String {
-                                        arr.and_then(|items| {
-                                            items.iter()
-                                                .filter_map(|s| s.get(field).and_then(|v| v.as_f64()))
-                                                .filter(|v| *v > 0.01)
-                                                .fold(None, |acc: Option<f64>, v| Some(acc.map_or(v, |a| a.max(v))))
-                                        })
-                                        .map(|v| format!("{v:.0}"))
-                                        .unwrap_or_else(|| "—".to_string())
-                                    };
-                                    let best_cell = format!("PP {} · TG {}", best("pp_mean"), best("tg_mean"));
-
-                                    let sizes = format!(
-                                        "{} / {}",
-                                        entry.pp_sizes.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","),
-                                        entry.tg_sizes.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","),
-                                    );
-
-                                    // Reactive expansion state for this row. Leptos re-renders
-                                    // just the chevron and the detail <tr> when the set flips.
-                                    let is_open = Memo::new(move |_| expanded_sig.get().contains(&entry_id));
-                                    let toggle = move |_| {
-                                        expanded_history.update(|set| {
-                                            if !set.insert(entry_id) { set.remove(&entry_id); }
-                                        });
-                                    };
-                                    let summaries = entry.results.as_array().cloned().unwrap_or_default();
-                                    let status_text = entry.status.clone();
-                                    let backend_text = entry.backend.clone();
-                                    let bench_type_text = entry.benchmark_type.clone().unwrap_or_default();
-                                    let type_badge_class = match entry.benchmark_type.as_deref() {
-                                        Some("baseline") => "badge badge-muted",
-                                        Some("pp_sweep") => "badge badge-info",
-                                        Some("kv_quant_q8") | Some("kv_quant_q4") => "badge badge-success",
-                                        Some("context_test") => "badge badge-warning",
-                                        Some("spec_scan") | Some("spec_sweep") => "badge badge-danger",
-                                        _ => "badge badge-muted",
-                                    };
-                                    let engine_text = entry
-                                        .engine
-                                        .clone()
-                                        .unwrap_or_else(|| "llama_bench".to_string());
-                                    let when_title_for_row = when_title.clone();
-
-                                    // Engine badge — distinguishes llama-bench from spec-decode and MTP runs
-                                    let engine_badge = if engine_text == "llama_cli_spec" || engine_text == "llama_cli_mtp" {
-                                        "badge badge-info".to_string()
+                                    // For grouped entries, prepare suite-level state.
+                                    let (suite_key_for_view, suite_toggle_closure) = if is_grouped {
+                                        let suite_key = group.suite_id.as_ref().unwrap().clone();
+                                        let suite_key_clone = suite_key.clone();
+                                        let toggle_suite = move |_| {
+                                            expanded_suites.update(|set| {
+                                                if !set.insert(suite_key_clone.clone()) { set.remove(&suite_key_clone); }
+                                            });
+                                        };
+                                        (suite_key, Some(toggle_suite))
                                     } else {
-                                        "badge badge-muted".to_string()
+                                        (String::new(), None)
                                     };
 
-                                    view! {
-                                        <tr class="bench-history__row" on:click=toggle>
-                                            <td class="text-mono text-muted">{move || if is_open.get() { "▾" } else { "▸" }}</td>
-                                            <td title=when_title_for_row>{when_rel}</td>
-                                            <td>{model_cell}</td>
-                                            <td><span class={type_badge_class}>{bench_type_text}</span></td>
-                                            <td><span class={engine_badge}>{engine_text.clone()}</span></td>
-                                            <td><span class="badge badge-muted">{backend_text}</span></td>
-                                            <td class="text-mono">{sizes}</td>
-                                            <td class="text-mono">{best_cell}</td>
-                                            <td><span class={badge_class}>{status_text}</span></td>
-                                        </tr>
-                                        {move || is_open.get().then(|| {
-                                            let detail_table = match engine_text.as_str() {
-                                                "llama_cli_spec" => render_spec_table(&summaries).into_any(),
-                                                "llama_cli_mtp" => render_mtp_table(&summaries).into_any(),
-                                                _ => render_summaries_table(&summaries).into_any(),
-                                            };
+                                    // Build group header row if this is a suite group.
+                                    let mut rows: Vec<AnyView> = if is_grouped {
+                                        let toggle_suite = suite_toggle_closure.as_ref().unwrap().clone();
+
+                                        // Per-type status chips (XSS-safe Leptos views).
+                                        let when_title = format_timestamp(group.timestamp);
+                                        let when_rel = format_relative(group.timestamp);
+                                        let model_name = group.display_name.clone().unwrap_or_else(|| "Suite".to_string());
+                                        let suite_key_header = suite_key_for_view.clone();
+
+                                        vec![
                                             view! {
+                                                <tr class="bench-history__group-row" on:click=toggle_suite>
+                                                    <td class="text-mono text-muted">
+                                                        {move || {
+                                                            let is_open = expanded_suites_sig.get().contains(&suite_key_header);
+                                                            if is_open { "▾" } else { "▸" }
+                                                        }}
+                                                    </td>
+                                                    <td title=when_title>{when_rel}</td>
+                                                    <td><strong>{model_name}</strong> <small class="text-muted">(suite)</small></td>
+                                                    <td colspan="6">
+                                                        <span class="bench-history__group-chips">{render_suite_chips(&group.type_statuses)}</span>
+                                                    </td>
+                                                </tr>
+                                            }.into_any(),
+                                        ]
+                                    } else {
+                                        vec![]
+                                    };
+
+                                    // Render individual entries (ungrouped or within a group).
+                                    // Gate member-row rendering on group expansion so the header
+                                    // toggle actually collapses/expands the visible rows.
+                                    let group_is_open = if is_grouped {
+                                        expanded_suites_sig.get().contains(&suite_key_for_view)
+                                    } else {
+                                        true
+                                    };
+                                    for entry in &group.entries {
+                                        if !group_is_open {
+                                            continue;
+                                        }
+
+                                        let entry_id = entry.id;
+                                        let when_title = format_timestamp(entry.created_at);
+                                        let when_rel = format_relative(entry.created_at);
+                                        let badge_class = match entry.status.as_str() {
+                                            "success" => "badge badge-success",
+                                            "partial" => "badge badge-warning",
+                                            _ => "badge badge-danger",
+                                        };
+                                        let name = entry.display_name.clone().unwrap_or_else(|| entry.model_id.clone());
+                                        let quant_suffix = entry.quant
+                                            .as_ref()
+                                            .filter(|q| !q.is_empty())
+                                            .map(|q| format!(" · {}", q))
+                                            .unwrap_or_default();
+                                        let model_cell = format!("{}{}", name, quant_suffix);
+
+                                        let arr = entry.results.as_array();
+                                        let best = |field: &str| -> String {
+                                            arr.and_then(|items| {
+                                                items.iter()
+                                                    .filter_map(|s| s.get(field).and_then(|v| v.as_f64()))
+                                                    .filter(|v| *v > 0.01)
+                                                    .fold(None, |acc: Option<f64>, v| Some(acc.map_or(v, |a| a.max(v))))
+                                            })
+                                            .map(|v| format!("{v:.0}"))
+                                            .unwrap_or_else(|| "—".to_string())
+                                        };
+                                        let best_cell = format!("PP {} · TG {}", best("pp_mean"), best("tg_mean"));
+
+                                        let sizes = format!(
+                                            "{} / {}",
+                                            entry.pp_sizes.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","),
+                                            entry.tg_sizes.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","),
+                                        );
+
+                                        // Reactive expansion state for this row.
+                                        let is_open = Memo::new(move |_| expanded_sig.get().contains(&entry_id));
+                                        let toggle = move |_| {
+                                            expanded_history.update(|set| {
+                                                if !set.insert(entry_id) { set.remove(&entry_id); }
+                                            });
+                                        };
+                                        let summaries = entry.results.as_array().cloned().unwrap_or_default();
+                                        let status_text = entry.status.clone();
+                                        let backend_text = entry.backend.clone();
+                                        let bench_type_text = entry.benchmark_type.clone().unwrap_or_default();
+                                        let type_badge_class = match entry.benchmark_type.as_deref() {
+                                            Some("baseline") => "badge badge-muted",
+                                            Some("pp_sweep") => "badge badge-info",
+                                            Some("kv_quant_q8") | Some("kv_quant_q4") => "badge badge-success",
+                                            Some("context_test") => "badge badge-warning",
+                                            Some("spec_scan") | Some("spec_sweep") => "badge badge-danger",
+                                            _ => "badge badge-muted",
+                                        };
+                                        let engine_text = entry
+                                            .engine
+                                            .clone()
+                                            .unwrap_or_else(|| "llama_bench".to_string());
+                                        let when_title_for_row = when_title.clone();
+
+                                        // Engine badge
+                                        let engine_badge = if engine_text == "llama_cli_spec" || engine_text == "llama_cli_mtp" {
+                                            "badge badge-info".to_string()
+                                        } else {
+                                            "badge badge-muted".to_string()
+                                        };
+
+                                        rows.push(view! {
+                                            <tr class="bench-history__row bench-history__group-entry" on:click=toggle>
+                                                <td class="text-mono text-muted">{move || if is_open.get() { "▾" } else { "▸" }}</td>
+                                                <td title=when_title_for_row>{when_rel}</td>
+                                                <td>{model_cell}</td>
+                                                <td><span class={type_badge_class}>{bench_type_text}</span></td>
+                                                <td><span class={engine_badge}>{engine_text.clone()}</span></td>
+                                                <td><span class="badge badge-muted">{backend_text}</span></td>
+                                                <td class="text-mono">{sizes}</td>
+                                                <td class="text-mono">{best_cell}</td>
+                                                <td><span class={badge_class}>{status_text}</span></td>
+                                            </tr>
+                                        }.into_any());
+
+                                        // Detail row — only when group is expanded AND this row is individually expanded.
+                                        let show_detail = if is_grouped {
+                                            expanded_suites_sig.get().contains(&suite_key_for_view)
+                                                && is_open.get()
+                                        } else {
+                                            is_open.get()
+                                        };
+
+                                        if show_detail {
+                                            let engine_text_for_detail = engine_text.clone();
+                                            let summaries_for_detail = summaries.clone();
+                                            rows.push(view! {
                                                 <tr class="bench-history__detail">
                                                     <td></td>
-                                                    <td colspan="8">{detail_table}</td>
+                                                    <td colspan="8">{move || {
+                                                        let detail_table = match engine_text_for_detail.as_str() {
+                                                            "llama_cli_spec" => render_spec_table(&summaries_for_detail).into_any(),
+                                                            "llama_cli_mtp" => render_mtp_table(&summaries_for_detail).into_any(),
+                                                            _ => render_summaries_table(&summaries_for_detail).into_any(),
+                                                        };
+                                                        detail_table
+                                                    }}</td>
                                                 </tr>
-                                            }
-                                        })}
-                                    }.into_any()
+                                            }.into_any());
+                                        }
+                                    }
+
+                                    rows
                                 }).collect::<Vec<_>>()}
                             </tbody>
                         </table>

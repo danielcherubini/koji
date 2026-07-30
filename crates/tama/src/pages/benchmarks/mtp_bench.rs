@@ -4,7 +4,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use crate::components::job_log_panel::JobLogPanel;
-use crate::pages::benchmarks::selectors::{BackendSelect, ModelQuantSelect};
+use crate::pages::benchmarks::selectors::{BackendSelect, ModelEntry, ModelQuantSelect};
 use crate::pages::benchmarks::utils::{
     format_mean_stddev, parse_sizes, split_id_quant, split_name_variant, submit_bench_job,
     BenchmarkFormState,
@@ -125,6 +125,14 @@ pub fn MtpBench(
                     models=available_models_sig
                     selected_model=selected_display_name
                     selected_quant=selected_model
+                    label_suffix_fn=Some(|entry: &ModelEntry| {
+                        // Entry index 5 is supports_mtp.
+                        if entry.5 {
+                            None
+                        } else {
+                            Some("no MTP".to_string())
+                        }
+                    })
                 />
             </section>
 

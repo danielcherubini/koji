@@ -26,6 +26,9 @@ pub struct MtpBenchmarkRunRequest {
     pub context_size: Option<u32>,
     #[serde(default)]
     pub benchmark_type: Option<String>,
+    /// Suite identifier for grouping related benchmark runs within a suite.
+    #[serde(skip, default)]
+    pub suite_id: Option<String>,
 }
 
 fn default_draft_max_values() -> Vec<u32> {
@@ -256,6 +259,7 @@ pub async fn run_mtp_benchmark_inner(
             duration_seconds: 0.0,
             status: run_status_for_insert,
             benchmark_type: benchmark_type.clone(),
+            suite_id: req.suite_id,
         })?;
         Ok(())
     })

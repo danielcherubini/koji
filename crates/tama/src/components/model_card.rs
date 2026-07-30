@@ -46,6 +46,15 @@ fn edit_icon() -> impl IntoView {
     }
 }
 
+/// A play/triangle glyph for running benchmarks.
+fn run_icon() -> impl IntoView {
+    view! {
+        <svg viewBox="0 0 14 14" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+            <path d="M4 2.5v9l7-4.5z" stroke="currentColor" stroke-width="1.2" fill="none" />
+        </svg>
+    }
+}
+
 // ── Pip metadata struct ─────────────────────────────────────────────────────
 
 /// Pip metadata for model cards (KV cache, spec decoding, GPU variant).
@@ -229,6 +238,7 @@ pub fn ModelCard(
     // Clone values for closures (need 'static for Children type)
     let log_source_clone = log_source.clone();
     let edit_id_clone = edit_id.clone();
+    let db_id_clone = db_id;
     let quant_clone = quant.clone();
     let context_length_clone = context_length;
     let backend_clone = backend.clone();
@@ -256,6 +266,20 @@ pub fn ModelCard(
                             attr:title="View backend logs"
                         >
                             {logs_icon()}
+                        </A>
+                    }.into_any()
+                } else {
+                    view! { <span/> }.into_any()
+                }}
+                // Run Suite link — navigates to benchmarks page with suite tab preselected
+                {if let Some(db_id_val) = db_id_clone {
+                    view! {
+                        <A
+                            href=format!("/tama/benchmarks?tab=suite&model={}", db_id_val)
+                            attr:class="btn-icon"
+                            attr:title="Run benchmark suite"
+                        >
+                            {run_icon()}
                         </A>
                     }.into_any()
                 } else {

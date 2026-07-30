@@ -10,8 +10,8 @@ use leptos::prelude::*;
 
 use crate::utils::target_value;
 
-/// Available model entry type: `(id, display_name, quants, n_batch, n_ubatch)`.
-type ModelEntry = (String, String, Vec<String>, Option<u32>, Option<u32>);
+/// Available model entry type: `(id, display_name, quants, n_batch, n_ubatch, supports_mtp)`.
+pub(crate) type ModelEntry = (String, String, Vec<String>, Option<u32>, Option<u32>, bool);
 
 /// Shared Model + Quant selector dropdowns.
 ///
@@ -27,6 +27,10 @@ pub fn ModelQuantSelect(
     selected_model: RwSignal<String>,
     /// Selected quant signal (holds `"id:quant"` format).
     selected_quant: RwSignal<String>,
+    /// Optional function to add a suffix to model labels based on capabilities.
+    /// Return `Some(suffix)` to append it to the model name, or `None` for no suffix.
+    #[prop(default = None)]
+    label_suffix_fn: Option<fn(&ModelEntry) -> Option<String>>,
 ) -> impl IntoView {
     let (selected_display_sig, _) = selected_model.split();
     let (selected_quant_sig, _) = selected_quant.split();
@@ -46,14 +50,24 @@ pub fn ModelQuantSelect(
                     {move || {
                         let models = models.get();
                         // Deduplicate by display_name; BTreeMap keeps them sorted
-                        // alphabetically for stable rendering.
-                        let mut grouped: BTreeMap<String, ()> = BTreeMap::new();
-                        for (_, name, _, _, _) in models.iter() {
-                            grouped.insert(name.clone(), ());
+                        // alphabetically for stable rendering. Keep first entry per name.
+                        let mut grouped: BTreeMap<String, &ModelEntry> = BTreeMap::new();
+                        for entry in models.iter() {
+                            let (_, name, _, _, _, _) = entry;
+                            grouped.entry(name.clone()).or_insert(entry);
                         }
-                        grouped.keys().map(|name| {
+                        let suffix_fn = label_suffix_fn;
+                        grouped.into_iter().map(|(name, entry)| {
                             let value = name.clone();
-                            let label = name.clone();
+                            let label = if let Some(fn_ref) = suffix_fn {
+                                if let Some(suffix) = fn_ref(entry) {
+                                    format!("{} ({})", name, suffix)
+                                } else {
+                                    name.clone()
+                                }
+                            } else {
+                                name.clone()
+                            };
                             view! {
                                 <option value=value>{label}</option>
                             }.into_any()
@@ -78,8 +92,8 @@ pub fn ModelQuantSelect(
                         let selected_id = selected_quant_sig.get();
                         // Flatten all quants from matching model entries into individual options.
                         models.iter()
-                            .filter(|(_, name, _, _, _)| name == &dn)
-                            .flat_map(|(id, _, quants, _, _)| {
+                            .filter(|(_, name, _, _, _, _)| name == &dn)
+                            .flat_map(|(id, _, quants, _, _, _)| {
                                 quants.iter().map(move |quant| (id.clone(), quant.clone()))
                             })
                             .map(|(id_clone, quant)| {

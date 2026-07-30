@@ -185,6 +185,7 @@ pub async fn run_benchmark_inner(
             duration_seconds: 0.0, // duration tracked by job system
             status: run_status_for_insert,
             benchmark_type: benchmark_type.clone(),
+            suite_id: req.suite_id,
         })?;
         Ok(())
     })

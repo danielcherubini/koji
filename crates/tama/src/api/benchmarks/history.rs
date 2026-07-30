@@ -146,6 +146,7 @@ pub async fn list_benchmark_history(
                 backend: e.backend,
                 engine: Some(e.engine),
                 benchmark_type: e.benchmark_type,
+                suite_id: e.suite_id,
                 pp_sizes,
                 tg_sizes,
                 runs: e.runs,

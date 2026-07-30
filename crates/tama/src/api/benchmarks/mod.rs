@@ -7,6 +7,7 @@ mod history;
 mod mtp;
 mod run;
 mod spec;
+mod suite;
 
 // ── Shared imports (re-exported for sub-modules) ─────────────────────
 
@@ -70,6 +71,9 @@ pub struct BenchmarkRunRequest {
     /// Identifies what kind of benchmark was run (e.g., "baseline", "pp_sweep").
     #[serde(default)]
     pub benchmark_type: Option<String>,
+    /// Suite identifier for grouping related benchmark runs within a suite.
+    #[serde(skip, default)]
+    pub suite_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -116,6 +120,9 @@ pub struct SpecBenchmarkRunRequest {
     /// Identifies what kind of benchmark was run (e.g., "spec_scan", "spec_sweep").
     #[serde(default)]
     pub benchmark_type: Option<String>,
+    /// Suite identifier for grouping related benchmark runs within a suite.
+    #[serde(skip, default)]
+    pub suite_id: Option<String>,
 }
 
 fn default_min_hits() -> u32 {
@@ -142,6 +149,7 @@ pub use history::{
 pub use mtp::run_mtp_benchmark;
 pub use run::{run_benchmark, run_benchmark_inner};
 pub use spec::{run_spec_benchmark, run_spec_benchmark_inner, validate_spec_sweep};
+pub use suite::{run_benchmark_suite, select_suite_types, BenchmarkSuiteRequest};
 
 // ── Shared helpers ────────────────────────────────────────────────────
 
@@ -187,26 +195,50 @@ impl ProgressSink for BenchmarkProgressSink {
     }
 }
 
-/// Generic job submission helper for benchmark handlers.
-/// Takes ownership of the request to avoid borrow-checker issues with
-/// `tokio::spawn` (borrowed references can't escape into `'static` tasks).
-pub async fn submit_benchmark_job<F, Fut, R>(
+/// Shared setup data extracted during job submission.
+#[derive(Clone)]
+pub struct BenchmarkJobContext {
+    pub db_path: std::path::PathBuf,
+    pub proxy_base_url: String,
+    pub client: reqwest::Client,
+    pub repo_handle: std::sync::Arc<std::sync::Mutex<tama_core::db::repository::Repository>>,
+}
+
+/// Resolve shared context needed for benchmark execution.
+pub async fn resolve_benchmark_context(
     state: &tama_core::proxy::ProxyState,
     web_state: &WebState,
-    req: R,
-    run_inner: F,
+) -> std::result::Result<BenchmarkJobContext, axum::response::Response> {
+    let db_path = match crate::api::helpers::resolve_config_dir(state) {
+        Ok(d) => d.join("tama.db"),
+        Err(resp) => return Err(resp),
+    };
+    let proxy_base_url = state.with_config(|c| c.proxy_url()).await;
+    let client = state.client().clone();
+
+    let repo_handle = match shared_repository(web_state) {
+        Ok(h) => h,
+        Err(resp) => return Err(resp),
+    };
+
+    Ok(BenchmarkJobContext {
+        db_path,
+        proxy_base_url,
+        client,
+        repo_handle,
+    })
+}
+
+/// Spawn a benchmark task: create a job, spawn a worker task, and mark it
+/// finished when done. The `work` closure runs inside the spawned task
+/// and receives the jobs handle, job reference, and resolved context.
+pub async fn spawn_benchmark_task<F, Fut>(
+    web_state: &WebState,
+    ctx: BenchmarkJobContext,
+    work: F,
 ) -> std::result::Result<(String, Arc<JobManager>), axum::response::Response>
 where
-    R: Send + 'static,
-    F: FnOnce(
-            Arc<JobManager>,
-            Arc<crate::web_types::Job>,
-            R,
-            std::path::PathBuf,
-            String,
-            reqwest::Client,
-            std::sync::Arc<std::sync::Mutex<tama_core::db::repository::Repository>>,
-        ) -> Fut
+    F: FnOnce(Arc<JobManager>, Arc<crate::web_types::Job>, BenchmarkJobContext) -> Fut
         + Send
         + 'static,
     Fut: std::future::Future<Output = anyhow::Result<()>> + Send,
@@ -221,32 +253,12 @@ where
         .await
         .map_err(|_| job_conflict_response())?;
     let job_id = job.id.clone();
-    let db_path = match crate::api::helpers::resolve_config_dir(state) {
-        Ok(d) => d.join("tama.db"),
-        Err(resp) => return Err(resp),
-    };
-    let proxy_base_url = state.with_config(|c| c.proxy_url()).await;
-    let client = state.client().clone();
-
-    let repo_handle = match shared_repository(web_state) {
-        Ok(h) => h,
-        Err(resp) => return Err(resp),
-    };
 
     let jobs_for_spawn = jobs.clone();
     let job_for_spawn = job.clone();
+    let work_ctx = ctx.clone();
     tokio::spawn(async move {
-        if let Err(e) = run_inner(
-            jobs_for_spawn.clone(),
-            job_for_spawn.clone(),
-            req,
-            db_path,
-            proxy_base_url,
-            client,
-            repo_handle,
-        )
-        .await
-        {
+        if let Err(e) = work(jobs_for_spawn.clone(), job_for_spawn.clone(), work_ctx).await {
             tracing::error!(job_id = %job_for_spawn.id, error = %e, "Benchmark job failed");
             jobs_for_spawn
                 .finish(&job_for_spawn, JobStatus::Failed, Some(e.to_string()))
@@ -259,6 +271,54 @@ where
     });
 
     Ok((job_id, jobs))
+}
+
+/// Generic job submission helper for benchmark handlers.
+/// Delegates to `resolve_benchmark_context` + `spawn_benchmark_task` to avoid
+/// duplicating the shared setup / spawn / finish logic.
+pub async fn submit_benchmark_job<F, Fut, R>(
+    state: &tama_core::proxy::ProxyState,
+    web_state: &WebState,
+    req: R,
+    run_inner: F,
+) -> std::result::Result<(String, Arc<JobManager>), axum::response::Response>
+where
+    R: Send + Clone + 'static,
+    F: FnOnce(
+            Arc<JobManager>,
+            Arc<crate::web_types::Job>,
+            R,
+            std::path::PathBuf,
+            String,
+            reqwest::Client,
+            std::sync::Arc<std::sync::Mutex<tama_core::db::repository::Repository>>,
+        ) -> Fut
+        + Send
+        + Clone
+        + 'static,
+    Fut: std::future::Future<Output = anyhow::Result<()>> + Send,
+{
+    // Resolve shared context using the dedicated helper.
+    let ctx = resolve_benchmark_context(state, web_state).await?;
+
+    // Delegate to the generic spawn helper.
+    spawn_benchmark_task(web_state, ctx, move |jobs, job, ctx| {
+        let req = req.clone();
+        let run_inner = run_inner.clone();
+        async move {
+            run_inner(
+                jobs,
+                job,
+                req,
+                ctx.db_path,
+                ctx.proxy_base_url,
+                ctx.client,
+                ctx.repo_handle,
+            )
+            .await
+        }
+    })
+    .await
 }
 
 /// Build the shared error response for job manager unavailability.

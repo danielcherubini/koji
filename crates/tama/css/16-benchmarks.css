@@ -188,6 +188,42 @@
   margin-bottom: 0;
 }
 
+/* Suite group header row — clickable to expand/collapse suite entries. */
+.bench-history__group-row {
+  cursor: pointer;
+  background-color: var(--bg-tertiary);
+  border-left: 3px solid var(--accent-blue);
+}
+.bench-history__group-row:hover {
+  background-color: rgba(56, 139, 253, 0.08) !important;
+}
+
+/* Per-type status chips inside suite group header. */
+.bench-history__group-chips {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+/* Indented entries within a suite group.
+ * Use td:first-child since padding-left on <tr> has no effect in table layout.
+ * Higher specificity than .table td ensures override without !important. */
+.bench-history__group-entry > td:first-child {
+  padding-left: 1.5rem;
+}
+
+/* Suite tab — advanced overrides collapsible section. */
+.suite-advanced__header {
+  cursor: pointer;
+  user-select: none;
+  margin-bottom: 0;
+}
+.suite-advanced__header:hover {
+  color: var(--accent-blue);
+}
+.suite-advanced__content {
+  margin-top: 1rem;
+}
+
 .my-3 {
   margin-top: 1rem;
   margin-bottom: 1rem;

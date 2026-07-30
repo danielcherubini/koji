@@ -110,11 +110,11 @@ pub fn use_benchmark_form_state() -> BenchmarkFormState {
                             .iter()
                             .filter_map(super::types::parse_model)
                             .flatten()
-                            .filter(|(_, name, quant, _, _)| {
+                            .filter(|(_, name, quant, _, _, _)| {
                                 seen.insert((name.clone(), quant.clone()))
                             })
-                            .map(|(id, name, quant, n_batch, n_ubatch)| {
-                                (id, name, vec![quant], n_batch, n_ubatch)
+                            .map(|(id, name, quant, n_batch, n_ubatch, supports_mtp)| {
+                                (id, name, vec![quant], n_batch, n_ubatch, supports_mtp)
                             })
                             .collect();
                         available_models.update(|list| *list = model_list);
@@ -129,8 +129,8 @@ pub fn use_benchmark_form_state() -> BenchmarkFormState {
     Effect::new(move |_| {
         let dn = selected_display_name.get();
         let models = available_models.get();
-        if let Some((id, _, quants, n_batch, n_ubatch)) =
-            models.iter().find(|(_, name, _, _, _)| name == &dn)
+        if let Some((id, _, quants, n_batch, n_ubatch, _)) =
+            models.iter().find(|(_, name, _, _, _, _)| name == &dn)
         {
             if let Some(first_quant) = quants.first() {
                 selected_model.set(format!("{}:{}", id, first_quant));

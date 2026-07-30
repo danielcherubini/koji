@@ -2,11 +2,11 @@
 
 use serde::{Deserialize, Serialize};
 
-/// A parsed model entry: (id, display_name, quant, n_batch, n_ubatch).
-pub type ModelEntry = (String, String, String, Option<u32>, Option<u32>);
+/// A parsed model entry: (id, display_name, quant, n_batch, n_ubatch, supports_mtp).
+pub type ModelEntry = (String, String, String, Option<u32>, Option<u32>, bool);
 
-/// A model list entry: (id, display_name, quants, n_batch, n_ubatch).
-pub type ModelListItem = (String, String, Vec<String>, Option<u32>, Option<u32>);
+/// A model list entry: (id, display_name, quants, n_batch, n_ubatch, supports_mtp).
+pub type ModelListItem = (String, String, Vec<String>, Option<u32>, Option<u32>, bool);
 
 /// Valid benchmark type identifiers and their display labels.
 pub const BENCHMARK_TYPES: &[(&str, &str)] = &[
@@ -52,11 +52,18 @@ pub fn parse_model(m: &serde_json::Value) -> Option<Vec<ModelEntry>> {
     let n_batch = m.get("n_batch").and_then(|v| v.as_u64()).map(|v| v as u32);
     let n_ubatch = m.get("n_ubatch").and_then(|v| v.as_u64()).map(|v| v as u32);
 
+    // Extract capabilities.supports_mtp from the model JSON.
+    let supports_mtp = m
+        .get("capabilities")
+        .and_then(|v| v.get("supports_mtp"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
     // Flatten: one tuple per quant, each with the same id, display_name, and batch values.
     Some(
         quants
             .into_iter()
-            .map(|q| (id.clone(), name.clone(), q, n_batch, n_ubatch))
+            .map(|q| (id.clone(), name.clone(), q, n_batch, n_ubatch, supports_mtp))
             .collect::<Vec<_>>(),
     )
 }
@@ -76,6 +83,9 @@ pub struct BenchmarkHistoryEntry {
     /// Identifies what kind of benchmark was run (e.g., "baseline", "pp_sweep").
     #[serde(default)]
     pub benchmark_type: Option<String>,
+    /// Suite identifier for grouping related benchmark runs.
+    #[serde(default)]
+    pub suite_id: Option<String>,
     pub pp_sizes: Vec<u32>,
     pub tg_sizes: Vec<u32>,
     pub runs: u32,
@@ -179,7 +189,7 @@ mod tests {
 
         // Should produce one entry per quant, all with same n_batch/n_ubatch
         assert_eq!(result.len(), 2);
-        for (id, _name, _quant, n_batch, n_ubatch) in &result {
+        for (id, _name, _quant, n_batch, n_ubatch, _) in &result {
             assert_eq!(id, "1");
             assert_eq!(*n_batch, Some(2048));
             assert_eq!(*n_ubatch, Some(512));
@@ -200,7 +210,7 @@ mod tests {
         let result = parse_model(&model_json).unwrap();
 
         assert_eq!(result.len(), 1);
-        for (id, _name, _quant, n_batch, n_ubatch) in &result {
+        for (id, _name, _quant, n_batch, n_ubatch, _) in &result {
             assert_eq!(id, "2");
             assert_eq!(*n_batch, None);
             assert_eq!(*n_ubatch, None);
@@ -222,7 +232,7 @@ mod tests {
         let result = parse_model(&model_json).unwrap();
 
         assert_eq!(result.len(), 1);
-        for (id, _name, _quant, n_batch, n_ubatch) in &result {
+        for (id, _name, _quant, n_batch, n_ubatch, _) in &result {
             assert_eq!(id, "3");
             assert_eq!(*n_batch, Some(4096));
             assert_eq!(*n_ubatch, None);

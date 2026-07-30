@@ -32,6 +32,8 @@ pub struct BenchmarkParams {
     pub duration_seconds: f64,
     pub status: String,
     pub benchmark_type: Option<String>,
+    /// Suite identifier for grouping related benchmark runs.
+    pub suite_id: Option<String>,
 }
 
 // ── Repository ───────────────────────────────────────────────────────────────
@@ -210,6 +212,7 @@ impl Repository {
             duration_seconds: params.duration_seconds,
             status: &params.status,
             benchmark_type: params.benchmark_type.as_deref(),
+            suite_id: params.suite_id.as_deref(),
         };
         let id = queries::insert_benchmark(&self.conn, &insert_params)?;
         Ok(id)
@@ -502,6 +505,7 @@ mod tests {
             duration_seconds: 30.5,
             status: "success".to_string(),
             benchmark_type: Some("baseline".to_string()),
+            suite_id: None,
         };
 
         // Insert
