@@ -127,7 +127,8 @@ pub fn MtpBench(
                     selected_quant=selected_model
                     label_suffix_fn=Some(|entry: &ModelEntry| {
                         // Entry index 5 is supports_mtp.
-                        if entry.5 {
+                        let (_, _, _, _, _, supports_mtp) = entry;
+                        if *supports_mtp {
                             None
                         } else {
                             Some("no MTP".to_string())

@@ -52,7 +52,12 @@ List all model configs plus available backends and sampling templates.
       "modalities": null,
       "spec_decoding": {},
       "repo_commit_sha": null,
-      "repo_pulled_at": null
+      "repo_pulled_at": null,
+      "capabilities": {
+        "supports_mtp": true,
+        "has_mtp_draft_file": false,
+        "has_mmproj": false
+      }
     }
   ],
   "backends": [
@@ -108,7 +113,12 @@ Create a new model config.
   "cache_type_k": null,
   "cache_type_v": null,
   "spec_decoding": null,
-  "metadata": null
+  "metadata": null,
+  "capabilities": {
+    "supports_mtp": true,
+    "has_mtp_draft_file": false,
+    "has_mmproj": false
+  }
 }
 ```
 

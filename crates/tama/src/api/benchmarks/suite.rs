@@ -229,11 +229,8 @@ async fn run_suite(
     let mut outcomes: Vec<SubRunOutcome> = Vec::new();
 
     for typ in &selected_types {
-        jobs.append_log(
-            &job,
-            format!("\n═══ Starting {} benchmark ═══", typ),
-        )
-        .await;
+        jobs.append_log(&job, format!("\n═══ Starting {} benchmark ═══", typ))
+            .await;
 
         tracing::info!(
             job_id = %job.id,
@@ -345,7 +342,11 @@ async fn run_suite(
 
     jobs.append_log(
         &job,
-        format!("\n═══ Suite complete: {}/{} succeeded ═══", succeeded, outcomes.len()),
+        format!(
+            "\n═══ Suite complete: {}/{} succeeded ═══",
+            succeeded,
+            outcomes.len()
+        ),
     )
     .await;
 
@@ -712,6 +713,33 @@ mod tests {
         // by the integration of run_suite_mtp with its inner function.
         let _ = expected_draft_max; // smoke test that the range is correct
         assert_eq!(expected_draft_max.len(), 9);
+    }
+
+    /// Verify that when `types` is omitted from the request and the model supports MTP,
+    /// the auto-selected types include `"mtp"`. This tests the full type-selection pipeline:
+    /// request deserialization (`types: None`) → `select_suite_types(&caps)` → result contains `"mtp"`.
+    #[test]
+    fn test_suite_type_selection_includes_mtp_when_supported() {
+        // Simulate a request body with `types` omitted — deserializes to `None`.
+        let json = r#"{"model_id": "42", "quant": "Q4_K_M"}"#;
+        let req: BenchmarkSuiteRequest =
+            serde_json::from_str(json).expect("request should deserialize");
+        assert!(
+            req.types.is_none(),
+            "types should be None when omitted from JSON"
+        );
+
+        // With an MTP-capable model, auto-selection must include "mtp".
+        let caps = ModelCapabilities {
+            supports_mtp: true,
+            has_mtp_draft_file: false,
+            has_mmproj: false,
+        };
+        let selected = select_suite_types(&caps);
+        assert!(
+            selected.contains(&"mtp".to_string()),
+            "auto-selected types should include \"mtp\" when model supports it"
+        );
     }
 
     /// Verify spec sub-request default values when no overrides are provided.

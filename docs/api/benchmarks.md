@@ -168,6 +168,51 @@ List all benchmark history entries from the database.
 ]
 ```
 
+## POST /tama/v1/benchmarks/suite
+
+Run multiple benchmark types sequentially under a single job with shared log/SSE stream and continue-on-error semantics.
+
+**Request body:**
+
+```json
+{
+  "model_id": "1",
+  "quant": "Q4_K_M",
+  "backend_name": "llama_cpp",
+  "gpu_variant": "cuda",
+  "types": ["llama_bench", "spec", "mtp"]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `model_id` | string | Model ID (accepts integer or config_key) |
+| `quant` | string | Optional quant label (e.g. `"Q6_K"`) — benchmarks use this GGUF file instead of the default |
+| `backend_name` | string | Optional backend name override |
+| `gpu_variant` | string | Optional GPU variant override (`"cpu"`, `"cuda"`, `"rocm"`, `"vulkan"`) |
+| `types` | string[] | Optional list of benchmark types to run. Supported: `"llama_bench"`, `"spec"`, `"mtp"`. When omitted, auto-selects based on model capabilities. |
+
+**Advanced override fields (all optional — when absent, sub-run builders use sensible defaults):**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `pp_sizes` | int[] | Override prompt sizes for llama_bench sub-run |
+| `tg_sizes` | int[] | Override generation lengths for llama_bench sub-run |
+| `runs` | int | Override runs per type (default: 3) |
+| `warmup` | int | Override warmup runs for llama_bench sub-run (default: 1) |
+| `threads` | int[] | Override thread counts for llama_bench sub-run |
+| `batch_sizes` | int[] | Override batch sizes for llama_bench sub-run |
+| `ubatch_sizes` | int[] | Override micro-batch sizes for llama_bench sub-run |
+| `kv_cache_type` | string | Override KV cache type for llama_bench sub-run |
+| `depth` | int[] | Override depth (pre-fill tokens) for llama_bench sub-run |
+| `flash_attn` | bool | Override flash attention flag for llama_bench sub-run |
+
+**Auto-selection behavior:** When `types` is omitted, the endpoint always includes `"llama_bench"` and `"spec"`, then adds `"mtp"` when the model supports multi-token prediction (detected from GGUF `nextn_predict_count` and config heuristics).
+
+**Response (202 Accepted):** `{ "jobId": "uuid-string" }`
+
+Track via [GET /tama/v1/benchmarks/jobs/:id](#get-tamav1benchmarksjobsid). Errors from individual sub-benchmarks do not abort the suite — the final job status is `Failed` only when ALL sub-runs fail.
+
 ## DELETE /tama/v1/benchmarks/history/:id
 
 Delete a benchmark history entry.

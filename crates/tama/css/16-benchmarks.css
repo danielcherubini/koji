@@ -194,8 +194,8 @@
   background-color: var(--bg-tertiary);
   border-left: 3px solid var(--accent-blue);
 }
-.bench-history__group-row:hover {
-  background-color: rgba(56, 139, 253, 0.08) !important;
+.table .bench-history__group-row:hover {
+  background-color: rgba(56, 139, 253, 0.08);
 }
 
 /* Per-type status chips inside suite group header. */
