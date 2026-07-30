@@ -74,7 +74,7 @@ pub fn MtpBench(
                 "backend_name": backend_name,
                 "gpu_variant": gpu_variant,
                 "draft_max_values": draft_max_values,
-                "ngl": Option::<u32>::None,
+                "ngl": 99u32,
                 "draft_ngl": draft_ngl,
                 "flash_attn": flash,
             });
