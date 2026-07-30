@@ -132,13 +132,13 @@ pub fn SpecBench(
         available_models,
         selected_backend,
         available_backends,
-        is_running,
-        current_job_id,
-        benchmark_results,
-
-        model_n_batch: _,
-        model_n_ubatch: _,
+        ..
     } = shared_state;
+
+    // ── Per-tab job state (isolated from other tabs) ───────────────────
+    let is_running = RwSignal::new(false);
+    let current_job_id = RwSignal::new(Option::<String>::None);
+    let benchmark_results = RwSignal::new(Option::<serde_json::Value>::None);
 
     // Test Type dropdown — selects a preset benchmark type that auto-fills form fields.
     let selected_bench_type = RwSignal::new("spec_scan".to_string());

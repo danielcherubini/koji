@@ -24,13 +24,13 @@ pub fn MtpBench(
         available_models,
         selected_backend,
         available_backends,
-        is_running,
-        current_job_id,
-        benchmark_results,
-
-        model_n_batch: _,
-        model_n_ubatch: _,
+        ..
     } = shared_state;
+
+    // ── Per-tab job state (isolated from other tabs) ───────────────────
+    let is_running = RwSignal::new(false);
+    let current_job_id = RwSignal::new(Option::<String>::None);
+    let benchmark_results = RwSignal::new(Option::<serde_json::Value>::None);
 
     // ── MTP configuration ──────────────────────────────────────────────
     let draft_max_str = RwSignal::new("0,1,2,3,4,5,6,7,8".to_string());

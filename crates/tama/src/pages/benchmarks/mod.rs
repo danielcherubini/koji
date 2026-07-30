@@ -275,7 +275,7 @@ fn render_mtp_table(summaries: &[serde_json::Value]) -> impl IntoView {
 
 #[component]
 pub fn Benchmarks() -> impl IntoView {
-    // Shared benchmark form state (model/backend selection, job tracking)
+    // Shared benchmark form state (model/backend selection only)
     let state = use_benchmark_form_state();
     let BenchmarkFormState {
         selected_display_name: _,
@@ -283,9 +283,6 @@ pub fn Benchmarks() -> impl IntoView {
         available_models: _,
         selected_backend: _,
         available_backends,
-        is_running: _,
-        current_job_id: _,
-        benchmark_results: _,
         model_n_batch: _,
         model_n_ubatch: _,
     } = state;

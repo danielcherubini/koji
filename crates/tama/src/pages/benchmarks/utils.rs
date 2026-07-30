@@ -77,6 +77,8 @@ pub fn split_name_variant(raw: &str) -> (Option<String>, Option<String>) {
 }
 
 /// Shared reactive state for benchmark forms.
+/// Only truly cross-tab fields live here — each tab keeps its own
+/// is_running / current_job_id / benchmark_results as local signals.
 #[derive(Clone)]
 pub struct BenchmarkFormState {
     pub selected_display_name: RwSignal<String>,
@@ -84,9 +86,6 @@ pub struct BenchmarkFormState {
     pub available_models: RwSignal<Vec<types::ModelListItem>>,
     pub selected_backend: RwSignal<String>,
     pub available_backends: RwSignal<Vec<(String, String)>>,
-    pub is_running: RwSignal<bool>,
-    pub current_job_id: RwSignal<Option<String>>,
-    pub benchmark_results: RwSignal<Option<serde_json::Value>>,
     /// Prefilled batch size from the selected model's n_batch (if set).
     pub model_n_batch: RwSignal<Option<u32>>,
     /// Prefilled micro-batch size from the selected model's n_ubatch (if set).
@@ -104,9 +103,6 @@ pub fn use_benchmark_form_state() -> BenchmarkFormState {
     let model_n_ubatch = RwSignal::new(None);
     let selected_backend = RwSignal::new(String::new());
     let available_backends = RwSignal::new(Vec::<(String, String)>::new());
-    let is_running = RwSignal::new(false);
-    let current_job_id = RwSignal::new(Option::<String>::None);
-    let benchmark_results = RwSignal::new(Option::<serde_json::Value>::None);
 
     // Fetch available models on mount.
     Effect::new(move |_| {
@@ -166,9 +162,6 @@ pub fn use_benchmark_form_state() -> BenchmarkFormState {
         available_models,
         selected_backend,
         available_backends,
-        is_running,
-        current_job_id,
-        benchmark_results,
         model_n_batch,
         model_n_ubatch,
     }

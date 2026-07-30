@@ -26,13 +26,14 @@ pub fn LlamaBench(
         available_models,
         selected_backend,
         available_backends,
-        is_running,
-        current_job_id,
-        benchmark_results,
-
         model_n_batch,
         model_n_ubatch,
     } = shared_state;
+
+    // ── Per-tab job state (isolated from other tabs) ───────────────────
+    let is_running = RwSignal::new(false);
+    let current_job_id = RwSignal::new(Option::<String>::None);
+    let benchmark_results = RwSignal::new(Option::<serde_json::Value>::None);
 
     // ── Test configuration ─────────────────────────────────────────────
     let selected_bench_type = RwSignal::new("baseline".to_string());
@@ -187,6 +188,7 @@ pub fn LlamaBench(
     let (kv_sig, _) = kv_cache_type.split();
     let (depth_sig, _) = depth_str.split();
     let (fa_sig, _) = flash_attn.split();
+    let (ctx_sig, _) = ctx_override.split();
     let (is_running_sig, _) = is_running.split();
     let (current_job_id_sig, _) = current_job_id.split();
     let (error_sig, _) = error_msg.split();
@@ -303,6 +305,16 @@ pub fn LlamaBench(
                             on:input=move |e| { ngl_range.set(target_value(&e)); }
                         />
                         <small class="text-muted">"e.g. 0-99+1 to sweep, or empty for all"</small>
+                    </div>
+                    <div class="form-group">
+                        <label>"Context size override"</label>
+                        <input
+                            type="number"
+                            class="form-control"
+                            prop:value=move || ctx_sig.get()
+                            on:input=move |e| { ctx_override.set(target_value(&e)); }
+                        />
+                        <small class="text-muted">"Override the model's context length (tokens). Leave empty to use default."</small>
                     </div>
                 </div>
             </section>
