@@ -232,11 +232,11 @@ pub async fn run_spec_benchmark_inner(
     let tg_sizes_json =
         serde_json::to_string(&[gen_tokens]).context("Failed to serialize gen_tokens")?;
 
-    // Derive run status from per-entry results: count entries with status == "failed".
+    // Derive run status from per-entry results: count entries with any non-success status.
     let entries_failed = result
         .entries
         .iter()
-        .filter(|e| e.status == "failed")
+        .filter(|e| e.status != "success")
         .count();
     let run_status = derive_status(result.entries.len() - entries_failed, entries_failed, false);
 

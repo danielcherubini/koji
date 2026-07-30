@@ -301,7 +301,7 @@ fn summaries_from_results_json(raw: &serde_json::Value, tg_sizes: &[u32]) -> ser
         return raw.clone();
     }
 
-    // 4. Anything else → empty array
+    // 5. Anything else → empty array
     serde_json::Value::Array(vec![])
 }
 
