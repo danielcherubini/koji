@@ -398,6 +398,7 @@ pub fn Benchmarks() -> impl IntoView {
         benchmark_results.set(None);
         is_running.set(true);
         current_job_id.set(None);
+        error_msg.set(String::new());
 
         spawn_local(async move {
             // Parse "name:variant" format from selected backend.
