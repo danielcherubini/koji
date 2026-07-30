@@ -6,6 +6,15 @@ use leptos::task::spawn_local;
 use super::types;
 use crate::utils::{extract_and_store_csrf_token, get_request, post_request};
 
+/// Helper to convert event.target.checked as bool for checkboxes.
+pub fn target_bool(ev: &leptos::ev::Event) -> bool {
+    use wasm_bindgen::JsCast;
+    ev.target()
+        .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
+        .map(|i| i.checked())
+        .unwrap_or(false)
+}
+
 /// Parse a comma-separated string of integers into a Vec<u32>.
 /// Zero is a meaningful value — `-p 0` pins llama-bench to pure-TG mode.
 pub fn parse_sizes(s: &str) -> Vec<u32> {
@@ -14,6 +23,25 @@ pub fn parse_sizes(s: &str) -> Vec<u32> {
         .filter(|v| !v.is_empty())
         .filter_map(|v| v.parse::<u32>().ok())
         .collect()
+}
+
+/// Parse a comma-separated string of thread counts into a Vec<u32>.
+///
+/// - `"auto"` (case-insensitive) or empty → `None`
+/// - Unparseable entries map to `0`, then get filtered out
+///
+/// Example: `"4,8,abc,16"` → `Some([4, 8, 16])`
+pub fn parse_threads(s: &str) -> Option<Vec<u32>> {
+    if s.trim().to_lowercase() == "auto" || s.trim().is_empty() {
+        None
+    } else {
+        Some(
+            s.split(',')
+                .map(|v| v.trim().parse::<u32>().unwrap_or(0))
+                .filter(|v| *v > 0)
+                .collect(),
+        )
+    }
 }
 
 /// Render "mean ± stddev" with one decimal place, or a single value when
@@ -59,9 +87,6 @@ pub struct BenchmarkFormState {
     pub is_running: RwSignal<bool>,
     pub current_job_id: RwSignal<Option<String>>,
     pub benchmark_results: RwSignal<Option<serde_json::Value>>,
-    /// Trigger for refetching models. Incremented to force a refresh.
-    #[expect(dead_code)]
-    pub model_refresh: RwSignal<u32>,
     /// Prefilled batch size from the selected model's n_batch (if set).
     pub model_n_batch: RwSignal<Option<u32>>,
     /// Prefilled micro-batch size from the selected model's n_ubatch (if set).
@@ -82,11 +107,9 @@ pub fn use_benchmark_form_state() -> BenchmarkFormState {
     let is_running = RwSignal::new(false);
     let current_job_id = RwSignal::new(Option::<String>::None);
     let benchmark_results = RwSignal::new(Option::<serde_json::Value>::None);
-    let model_refresh = RwSignal::new(0u32);
 
     // Fetch available models on mount.
     Effect::new(move |_| {
-        let _ = model_refresh.get();
         spawn_local(async move {
             if let Ok(resp) = get_request("/tama/v1/models").send().await {
                 extract_and_store_csrf_token(&resp);
@@ -146,7 +169,6 @@ pub fn use_benchmark_form_state() -> BenchmarkFormState {
         is_running,
         current_job_id,
         benchmark_results,
-        model_refresh,
         model_n_batch,
         model_n_ubatch,
     }
@@ -280,5 +302,111 @@ pub fn format_relative(ts: i64) -> String {
         format!("{}d ago", secs / 86_400)
     } else {
         format_timestamp(ts)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_sizes_basic() {
+        assert_eq!(parse_sizes("128,256,512"), vec![128, 256, 512]);
+    }
+
+    #[test]
+    fn test_parse_sizes_single() {
+        assert_eq!(parse_sizes("2048"), vec![2048]);
+    }
+
+    #[test]
+    fn test_parse_sizes_zero_is_meaningful() {
+        // Zero is a meaningful value — `-p 0` pins llama-bench to pure-TG mode.
+        assert_eq!(parse_sizes("0"), vec![0]);
+        assert_eq!(parse_sizes("128,0,512"), vec![128, 0, 512]);
+    }
+
+    #[test]
+    fn test_parse_sizes_empty_and_whitespace() {
+        assert!(parse_sizes("").is_empty());
+        assert!(parse_sizes("   ").is_empty());
+    }
+
+    #[test]
+    fn test_parse_sizes_skips_non_numeric() {
+        assert_eq!(parse_sizes("128,abc,512"), vec![128, 512]);
+    }
+
+    #[test]
+    fn test_parse_sizes_handles_spaces() {
+        assert_eq!(parse_sizes("128 , 256 , 512"), vec![128, 256, 512]);
+    }
+
+    #[test]
+    fn test_split_id_quant_with_colon() {
+        assert_eq!(
+            split_id_quant("123:Q4_K_M"),
+            ("123".to_string(), Some("Q4_K_M".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_split_id_quant_without_colon() {
+        assert_eq!(split_id_quant("abc123"), ("abc123".to_string(), None));
+    }
+
+    #[test]
+    fn test_split_name_variant_with_colon() {
+        let (name, variant) = split_name_variant("llama_cpp:cuda");
+        assert_eq!(name, Some("llama_cpp".to_string()));
+        assert_eq!(variant, Some("cuda".to_string()));
+    }
+
+    #[test]
+    fn test_split_name_variant_without_colon() {
+        let (name, variant) = split_name_variant("llama_cpp");
+        assert_eq!(name, Some("llama_cpp".to_string()));
+        assert_eq!(variant, None);
+    }
+
+    #[test]
+    fn test_split_name_variant_empty() {
+        let (name, variant) = split_name_variant("");
+        assert_eq!(name, None);
+        assert_eq!(variant, None);
+    }
+
+    #[test]
+    fn test_parse_threads_auto() {
+        assert_eq!(parse_threads("auto"), None);
+        assert_eq!(parse_threads("AUTO"), None);
+        assert_eq!(parse_threads("Auto"), None);
+    }
+
+    #[test]
+    fn test_parse_threads_empty() {
+        assert_eq!(parse_threads(""), None);
+        assert_eq!(parse_threads("   "), None);
+    }
+
+    #[test]
+    fn test_parse_threads_values() {
+        assert_eq!(parse_threads("4,8,16"), Some(vec![4, 8, 16]));
+    }
+
+    #[test]
+    fn test_parse_threads_skips_unparseable() {
+        // Unparseable entries map to 0, then get filtered out
+        assert_eq!(parse_threads("4,abc,16"), Some(vec![4, 16]));
+    }
+
+    #[test]
+    fn test_parse_threads_filters_zero() {
+        assert_eq!(parse_threads("0,4,0,8"), Some(vec![4, 8]));
+    }
+
+    #[test]
+    fn test_parse_threads_single_value() {
+        assert_eq!(parse_threads("8"), Some(vec![8]));
     }
 }

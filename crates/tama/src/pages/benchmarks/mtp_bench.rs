@@ -2,13 +2,14 @@
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use wasm_bindgen::JsCast;
 
 use crate::components::job_log_panel::JobLogPanel;
 use crate::pages::benchmarks::selectors::{BackendSelect, ModelQuantSelect};
 use crate::pages::benchmarks::utils::{
-    parse_sizes, split_id_quant, split_name_variant, submit_bench_job, BenchmarkFormState,
+    format_mean_stddev, parse_sizes, split_id_quant, split_name_variant, submit_bench_job,
+    target_bool, BenchmarkFormState,
 };
+use crate::utils::target_value;
 
 #[component]
 pub fn MtpBench(
@@ -26,7 +27,7 @@ pub fn MtpBench(
         is_running,
         current_job_id,
         benchmark_results,
-        model_refresh: _,
+
         model_n_batch: _,
         model_n_ubatch: _,
     } = shared_state;
@@ -147,7 +148,7 @@ pub fn MtpBench(
                             type="text"
                             class="form-control"
                             prop:value=move || draft_max_sig.get()
-                            on:input=move |e| { draft_max_str.set(e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().value()); }
+                            on:input=move |e| { draft_max_str.set(target_value(&e)); }
                         />
                         <small class="text-muted">"Comma-separated, e.g. 0,1,2,3,4,5,6,7,8"</small>
                     </div>
@@ -157,7 +158,7 @@ pub fn MtpBench(
                             type="text"
                             class="form-control"
                             prop:value=move || ngl_sig.get()
-                            on:input=move |e| { ngl_str.set(e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().value()); }
+                            on:input=move |e| { ngl_str.set(target_value(&e)); }
                         />
                         <small class="text-muted">"GPU layers for the draft model (default 99)"</small>
                     </div>
@@ -168,8 +169,7 @@ pub fn MtpBench(
                                 type="checkbox"
                                 prop:checked=move || flash_sig.get()
                                 on:change=move |e| {
-                                    let checked = e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().checked();
-                                    flash_attn.set(checked);
+                                    flash_attn.set(target_bool(&e));
                                 }
                             />
                             <label class="form-check-label" for="mtp-flash-attn">"Flash attention"</label>
@@ -199,7 +199,7 @@ pub fn MtpBench(
                         </div>
                     }.into_any()
                 } else {
-                    view! { <div></div> }.into_any()
+                    ().into_view().into_any()
                 }
             }}
 
@@ -214,14 +214,14 @@ pub fn MtpBench(
                         />
                     }.into_any()
                 } else {
-                    view! { <div></div> }.into_any()
+                    ().into_view().into_any()
                 }
             }}
 
             // ── Results display ───────────────────────────────────────
             {move || {
                 let Some(result) = benchmark_results_sig.get() else {
-                    return view! { <div></div> }.into_any();
+                    return ().into_view().into_any();
                 };
 
                 let entries: Vec<serde_json::Value> = result
@@ -253,7 +253,7 @@ pub fn MtpBench(
                     .unwrap_or(0.0);
 
                 if entries.is_empty() {
-                    return view! { <div></div> }.into_any();
+                    return ().into_view().into_any();
                 }
 
                 // Group entries by draft_max value
@@ -372,7 +372,7 @@ pub fn MtpBench(
                                                             {if let Some(err) = error {
                                                                 view! { <br /><small class="text-danger">{err}</small> }.into_any()
                                                             } else {
-                                                                view! { <div></div> }.into_any()
+                                                                ().into_view().into_any()
                                                             }}
                                                         </td>
                                                         <td class="text-mono text-right">{format!("{:.2}", wall_s)}</td>
@@ -380,9 +380,9 @@ pub fn MtpBench(
                                                         <td class="text-mono text-right">{draft_n}</td>
                                                         <td class="text-mono text-right">{draft_n_accepted}</td>
                                                         <td class="text-mono text-right">{rate_display}</td>
-                                                        <td class="text-mono text-right">{format!("{:.1}", tok_per_s)}</td>
+                                                        <td class="text-mono text-right">{format_mean_stddev(tok_per_s, 0.0)}</td>
                                                     </tr>
-                                                }.into_any()
+                                                }
                                             }).collect::<Vec<_>>()}
                                             // Group aggregate row
                                             <tr class="table-active">
@@ -392,12 +392,12 @@ pub fn MtpBench(
                                                 <td class="text-mono text-right"><strong>{group_draft_total}</strong></td>
                                                 <td class="text-mono text-right"><strong>{group_draft_accepted}</strong></td>
                                                 <td class="text-mono text-right"><strong>{format!("{:.0}%", group_accept_rate * 100.0)}</strong></td>
-                                                <td class="text-mono text-right"><strong>{format!("{:.1}", group_avg_tok_s)}</strong></td>
+                                                <td class="text-mono text-right"><strong>{format_mean_stddev(group_avg_tok_s, 0.0)}</strong></td>
                                             </tr>
                                         </tbody>
                                     </table>
                                 </div>
-                            }.into_any()
+                            }
                         }).collect::<Vec<_>>()}
                     </section>
                 }.into_any()

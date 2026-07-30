@@ -2,15 +2,15 @@
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use wasm_bindgen::JsCast;
 
 use crate::components::job_log_panel::JobLogPanel;
 use crate::pages::benchmarks::selectors::{BackendSelect, ModelQuantSelect};
-use crate::pages::benchmarks::types::{BENCHMARK_TYPES, SPEC_BENCH_PRESETS};
+use crate::pages::benchmarks::types::BENCHMARK_TYPES;
 use crate::pages::benchmarks::utils::{
     format_mean_stddev, parse_sizes, split_id_quant, split_name_variant, submit_bench_job,
-    BenchmarkFormState,
+    target_bool, BenchmarkFormState,
 };
+use crate::utils::target_value;
 
 /// Human-readable descriptions for each spec type.
 const SPEC_TYPE_DESC: &[(&str, &str)] = &[
@@ -135,7 +135,7 @@ pub fn SpecBench(
         is_running,
         current_job_id,
         benchmark_results,
-        model_refresh: _,
+
         model_n_batch: _,
         model_n_ubatch: _,
     } = shared_state;
@@ -161,24 +161,6 @@ pub fn SpecBench(
     // ── Per-form state ─────────────────────────────────────────────────
     let error_msg = RwSignal::new(String::new());
 
-    // Test Type auto-fill handler — when the user picks a benchmark type,
-    // auto-populate the relevant form fields.
-    let apply_bench_type = move |bench_type: &str| {
-        if let Some((_, (draft_max, _draft_max_str_val, ngram_n, ngram_m))) =
-            SPEC_BENCH_PRESETS.iter().find(|(k, _)| *k == bench_type)
-        {
-            draft_max_str.set(
-                draft_max
-                    .iter()
-                    .map(|v| v.to_string())
-                    .collect::<Vec<_>>()
-                    .join(","),
-            );
-            ngram_n_str.set(ngram_n.to_string());
-            ngram_m_str.set(ngram_m.to_string());
-        }
-    };
-
     // ── Preset handler ─────────────────────────────────────────────────
     let apply_preset = move |preset: SpecPreset| {
         spec_types.set(preset.spec_types.iter().map(|s| s.to_string()).collect());
@@ -189,6 +171,24 @@ pub fn SpecBench(
         ngram_max_str.set(preset.ngram_max.to_string());
         gen_tokens.set(preset.gen_tokens);
         runs.set(preset.runs);
+    };
+
+    // Test Type auto-fill handler — when the user picks a benchmark type,
+    // auto-populate the relevant form fields. Matches spec_scan→Quick filter,
+    // spec_sweep→Draft sweep.
+    let apply_bench_type = move |bench_type: &str| {
+        let preset = match bench_type {
+            "spec_scan" => SpecPreset::all()
+                .into_iter()
+                .find(|p| p.label == "Quick filter"),
+            "spec_sweep" => SpecPreset::all()
+                .into_iter()
+                .find(|p| p.label == "Draft sweep"),
+            _ => None,
+        };
+        if let Some(preset) = preset {
+            apply_preset(preset);
+        }
     };
 
     // ── Submit handler ─────────────────────────────────────────────────
@@ -286,7 +286,7 @@ pub fn SpecBench(
                 <select
                     class="form-select"
                     on:change=move |e| {
-                        let val = e.target().unwrap().dyn_into::<web_sys::HtmlSelectElement>().unwrap().value();
+                        let val = target_value(&e);
                         selected_bench_type.set(val.clone());
                         apply_bench_type(&val);
                     }
@@ -337,7 +337,7 @@ pub fn SpecBench(
                                 id=for_attr.clone()
                                 prop:checked=move || spec_types_sig.get().contains(&id_for_checked)
                                 on:change=move |e| {
-                                    let checked = e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().checked();
+                                    let checked = target_bool(&e);
                                     let id_inner = id_str.clone();
                                     spec_types.update(|types| {
                                         if checked {
@@ -374,7 +374,7 @@ pub fn SpecBench(
                                 type="text"
                                 class="form-control"
                                 prop:value=move || draft_max_sig.get()
-                                on:input=move |e| { draft_max_str.set(e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().value()); }
+                                on:input=move |e| { draft_max_str.set(target_value(&e)); }
                             />
                             <small class="text-muted">"Tokens to draft per round, e.g. 8,16,32,64 (not used for n-gram-mod)"</small>
                         </div>
@@ -385,7 +385,7 @@ pub fn SpecBench(
                             type="text"
                             class="form-control"
                             prop:value=move || ngram_n_sig.get()
-                            on:input=move |e| { ngram_n_str.set(e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().value()); }
+                            on:input=move |e| { ngram_n_str.set(target_value(&e)); }
                         />
                         <small class="text-muted">"Lookup pattern length (for ngram-mod/map), e.g. 12,16,24"</small>
                     </div>
@@ -395,7 +395,7 @@ pub fn SpecBench(
                             type="text"
                             class="form-control"
                             prop:value=move || ngram_m_sig.get()
-                            on:input=move |e| { ngram_m_str.set(e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().value()); }
+                            on:input=move |e| { ngram_m_str.set(target_value(&e)); }
                         />
                         <small class="text-muted">"Draft pattern length (for ngram-map-k/k4v only), e.g. 32,48"</small>
                     </div>
@@ -410,7 +410,7 @@ pub fn SpecBench(
                                 type="text"
                                 class="form-control"
                                 prop:value=move || ngram_min_sig.get()
-                                on:input=move |e| { ngram_min_str.set(e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().value()); }
+                                on:input=move |e| { ngram_min_str.set(target_value(&e)); }
                             />
                             <small class="text-muted">"Minimum n-gram matches (n-gram-mod only), e.g. 3,5"</small>
                         </div>
@@ -420,7 +420,7 @@ pub fn SpecBench(
                                 type="text"
                                 class="form-control"
                                 prop:value=move || ngram_max_sig.get()
-                                on:input=move |e| { ngram_max_str.set(e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().value()); }
+                                on:input=move |e| { ngram_max_str.set(target_value(&e)); }
                             />
                             <small class="text-muted">"Maximum n-gram matches (n-gram-mod only), e.g. 48,64"</small>
                         </div>
@@ -440,7 +440,7 @@ pub fn SpecBench(
                             prop:value=move || gen_tokens_sig.get()
                             min="1" max="4096"
                             on:input=move |e| {
-                                let val = e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().value();
+                                let val = target_value(&e);
                                 if let Ok(n) = val.parse::<u32>() { gen_tokens.set(n); }
                             }
                         />
@@ -453,7 +453,7 @@ pub fn SpecBench(
                             prop:value=move || runs_sig.get()
                             min="1" max="20"
                             on:input=move |e| {
-                                let val = e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().value();
+                                let val = target_value(&e);
                                 if let Ok(n) = val.parse::<u32>() { runs.set(n); }
                             }
                         />

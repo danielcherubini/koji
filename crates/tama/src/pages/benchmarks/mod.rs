@@ -4,7 +4,7 @@ mod llama_bench;
 mod mtp_bench;
 mod selectors;
 mod spec_bench;
-mod types;
+pub mod types;
 mod utils;
 
 use std::collections::HashSet;
@@ -15,7 +15,7 @@ use leptos::task::spawn_local;
 use self::llama_bench::LlamaBench;
 use self::mtp_bench::MtpBench;
 use self::spec_bench::SpecBench;
-use self::types::HistoryEntry;
+use self::types::BenchmarkHistoryEntry;
 use self::utils::{
     fetch_installed_backend_variants, format_mean_stddev, format_relative, format_timestamp,
     use_benchmark_form_state, BenchmarkFormState,
@@ -286,7 +286,6 @@ pub fn Benchmarks() -> impl IntoView {
         is_running: _,
         current_job_id: _,
         benchmark_results: _,
-        model_refresh: _,
         model_n_batch: _,
         model_n_ubatch: _,
     } = state;
@@ -295,7 +294,7 @@ pub fn Benchmarks() -> impl IntoView {
     fetch_installed_backend_variants(available_backends);
 
     // History state — always visible.
-    let history = RwSignal::new(Vec::<HistoryEntry>::new());
+    let history = RwSignal::new(Vec::<BenchmarkHistoryEntry>::new());
     // IDs of history rows whose per-summary detail panel is open. Each row acts
     // as an accordion toggle — clicking flips its id in this set.
     let expanded_history = RwSignal::new(HashSet::<i64>::new());
@@ -309,7 +308,7 @@ pub fn Benchmarks() -> impl IntoView {
         spawn_local(async move {
             if let Ok(resp) = get_request("/tama/v1/benchmarks/history").send().await {
                 extract_and_store_csrf_token(&resp);
-                if let Ok(entries) = resp.json::<Vec<HistoryEntry>>().await {
+                if let Ok(entries) = resp.json::<Vec<BenchmarkHistoryEntry>>().await {
                     history.set(entries);
                 }
             }

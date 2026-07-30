@@ -2,15 +2,16 @@
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use wasm_bindgen::JsCast;
 
 use crate::components::job_log_panel::JobLogPanel;
 use crate::pages::benchmarks::render_summaries_table;
 use crate::pages::benchmarks::selectors::{BackendSelect, ModelQuantSelect};
 use crate::pages::benchmarks::types::{BENCHMARK_TYPES, LLAMA_BENCH_PRESETS};
 use crate::pages::benchmarks::utils::{
-    parse_sizes, split_id_quant, split_name_variant, submit_bench_job, BenchmarkFormState,
+    parse_sizes, parse_threads, split_id_quant, split_name_variant, submit_bench_job, target_bool,
+    BenchmarkFormState,
 };
+use crate::utils::target_value;
 
 #[component]
 pub fn LlamaBench(
@@ -28,7 +29,7 @@ pub fn LlamaBench(
         is_running,
         current_job_id,
         benchmark_results,
-        model_refresh: _,
+
         model_n_batch,
         model_n_ubatch,
     } = shared_state;
@@ -88,19 +89,6 @@ pub fn LlamaBench(
         // selected_model holds "id:quant" — split to extract both parts.
         let raw_model = selected_model.get();
         let (model_id, quant) = split_id_quant(&raw_model);
-
-        let parse_threads = move |s: &str| -> Option<Vec<u32>> {
-            if s.trim().to_lowercase() == "auto" || s.trim().is_empty() {
-                None
-            } else {
-                Some(
-                    s.split(',')
-                        .map(|v| v.trim().parse::<u32>().unwrap_or(0))
-                        .filter(|v| *v > 0)
-                        .collect(),
-                )
-            }
-        };
 
         let pp = parse_sizes(&pp_sizes_str.get());
         let tg = parse_sizes(&tg_sizes_str.get());
@@ -212,7 +200,7 @@ pub fn LlamaBench(
                 <select
                     class="form-select"
                     on:change=move |e| {
-                        let val = e.target().unwrap().dyn_into::<web_sys::HtmlSelectElement>().unwrap().value();
+                        let val = target_value(&e);
                         selected_bench_type.set(val.clone());
                         apply_bench_type(&val);
                     }
@@ -256,7 +244,7 @@ pub fn LlamaBench(
                             type="text"
                             class="form-control"
                             prop:value=move || pp_sizes_sig.get()
-                            on:input=move |e| { pp_sizes_str.set(e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().value()); }
+                            on:input=move |e| { pp_sizes_str.set(target_value(&e)); }
                         />
                         <small class="text-muted">"Comma-separated, e.g. 128,256,512"</small>
                     </div>
@@ -266,7 +254,7 @@ pub fn LlamaBench(
                             type="text"
                             class="form-control"
                             prop:value=move || tg_sizes_sig.get()
-                            on:input=move |e| { tg_sizes_str.set(e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().value()); }
+                            on:input=move |e| { tg_sizes_str.set(target_value(&e)); }
                         />
                         <small class="text-muted">"Comma-separated, e.g. 32,64,128"</small>
                     </div>
@@ -278,7 +266,7 @@ pub fn LlamaBench(
                             prop:value=move || runs_sig.get()
                             min="1" max="20"
                             on:input=move |e| {
-                                let val = e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().value();
+                                let val = target_value(&e);
                                 if let Ok(n) = val.parse::<u32>() { runs.set(n); }
                             }
                         />
@@ -291,7 +279,7 @@ pub fn LlamaBench(
                             prop:value=move || warmup_sig.get()
                             min="0" max="10"
                             on:input=move |e| {
-                                let val = e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().value();
+                                let val = target_value(&e);
                                 if let Ok(n) = val.parse::<u32>() { warmup.set(n); }
                             }
                         />
@@ -302,7 +290,7 @@ pub fn LlamaBench(
                             type="text"
                             class="form-control"
                             prop:value=move || threads_sig.get()
-                            on:input=move |e| { threads_str.set(e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().value()); }
+                            on:input=move |e| { threads_str.set(target_value(&e)); }
                         />
                         <small class="text-muted">"auto, or comma-separated e.g. 4,8,16"</small>
                     </div>
@@ -312,7 +300,7 @@ pub fn LlamaBench(
                             type="text"
                             class="form-control"
                             prop:value=move || ngl_sig.get()
-                            on:input=move |e| { ngl_range.set(e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().value()); }
+                            on:input=move |e| { ngl_range.set(target_value(&e)); }
                         />
                         <small class="text-muted">"e.g. 0-99+1 to sweep, or empty for all"</small>
                     </div>
@@ -329,7 +317,7 @@ pub fn LlamaBench(
                             type="text"
                             class="form-control"
                             prop:value=move || batch_sig.get()
-                            on:input=move |e| { batch_sizes_str.set(e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().value()); }
+                            on:input=move |e| { batch_sizes_str.set(target_value(&e)); }
                         />
                         <small class="text-muted">"Logical batch. Try 512,1024,2048 — can yield up to ~36% PP."</small>
                     </div>
@@ -339,7 +327,7 @@ pub fn LlamaBench(
                             type="text"
                             class="form-control"
                             prop:value=move || ubatch_sig.get()
-                            on:input=move |e| { ubatch_sizes_str.set(e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().value()); }
+                            on:input=move |e| { ubatch_sizes_str.set(target_value(&e)); }
                         />
                         <small class="text-muted">"Physical micro-batch. Typically ≤ batch size."</small>
                     </div>
@@ -348,7 +336,7 @@ pub fn LlamaBench(
                         <select
                             class="form-select"
                             on:change=move |e| {
-                                let val = e.target().unwrap().dyn_into::<web_sys::HtmlSelectElement>().unwrap().value();
+                                let val = target_value(&e);
                                 kv_cache_type.set(val);
                             }
                         >
@@ -375,7 +363,7 @@ pub fn LlamaBench(
                             type="text"
                             class="form-control"
                             prop:value=move || depth_sig.get()
-                            on:input=move |e| { depth_str.set(e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().value()); }
+                            on:input=move |e| { depth_str.set(target_value(&e)); }
                         />
                         <small class="text-muted">"Pre-fill tokens before timing. e.g. 0,4096,16384 when testing KV quant."</small>
                     </div>
@@ -386,7 +374,7 @@ pub fn LlamaBench(
                                 type="checkbox"
                                 prop:checked=move || fa_sig.get()
                                 on:change=move |e| {
-                                    let checked = e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().checked();
+                                    let checked = target_bool(&e);
                                     flash_attn.set(checked);
                                 }
                             />

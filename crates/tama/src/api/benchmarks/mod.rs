@@ -131,26 +131,8 @@ fn default_flash_attn() -> bool {
     true
 }
 
-#[derive(Debug, Serialize)]
-pub struct BenchmarkHistoryEntry {
-    pub id: i64,
-    pub created_at: i64,
-    pub model_id: String,
-    pub display_name: Option<String>,
-    pub quant: Option<String>,
-    pub backend: String,
-    #[serde(default)]
-    pub engine: Option<String>,
-    /// Identifies what kind of benchmark was run (e.g., "baseline", "pp_sweep").
-    #[serde(default)]
-    pub benchmark_type: Option<String>,
-    pub pp_sizes: Vec<u32>,
-    pub tg_sizes: Vec<u32>,
-    pub runs: u32,
-    pub results_count: usize,
-    pub status: String,
-    pub results: serde_json::Value,
-}
+// Re-export the shared BenchmarkHistoryEntry so external consumers can use it.
+pub use crate::pages::benchmarks::types::BenchmarkHistoryEntry;
 
 // ── Re-exports from sub-modules ───────────────────────────────────────
 

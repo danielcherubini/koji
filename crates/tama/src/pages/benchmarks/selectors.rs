@@ -7,7 +7,8 @@
 use std::collections::BTreeMap;
 
 use leptos::prelude::*;
-use wasm_bindgen::JsCast;
+
+use crate::utils::target_value;
 
 /// Available model entry type: `(id, display_name, quants, n_batch, n_ubatch)`.
 type ModelEntry = (String, String, Vec<String>, Option<u32>, Option<u32>);
@@ -37,7 +38,7 @@ pub fn ModelQuantSelect(
                 <select
                     class="form-select"
                     on:change=move |e| {
-                        let val = e.target().unwrap().dyn_into::<web_sys::HtmlSelectElement>().unwrap().value();
+                        let val = target_value(&e);
                         selected_model.set(val);
                     }
                 >
@@ -66,7 +67,7 @@ pub fn ModelQuantSelect(
                     class="form-select"
                     prop:disabled=move || selected_display_sig.get().is_empty()
                     on:change=move |e| {
-                        let val = e.target().unwrap().dyn_into::<web_sys::HtmlSelectElement>().unwrap().value();
+                        let val = target_value(&e);
                         selected_quant.set(val);
                     }
                 >
@@ -116,7 +117,7 @@ pub fn BackendSelect(
         <select
             class="form-select"
             on:change=move |e| {
-                let val = e.target().unwrap().dyn_into::<web_sys::HtmlSelectElement>().unwrap().value();
+                let val = target_value(&e);
                 selected_backend.set(val);
             }
         >
