@@ -115,8 +115,9 @@ mod tests {
         }
     }
 
+    /// GET unknown job ID → 404.
     #[tokio::test]
-    async fn test_get_job_not_found_error_shape() {
+    async fn test_get_job_unknown_returns_404() {
         let config = Config::default();
         let state = Arc::new(ProxyState::new(config, None));
         let web_state = Arc::new(test_web_state());
@@ -126,7 +127,7 @@ mod tests {
 
         let req = Request::builder()
             .method("GET")
-            .uri("/tama/v1/backends/jobs/nonexistent")
+            .uri("/tama/v1/backends/jobs/nonexistent-job-uuid")
             .body(Body::empty())
             .unwrap();
 
@@ -135,7 +136,7 @@ mod tests {
         assert_eq!(
             resp.status(),
             axum::http::StatusCode::NOT_FOUND,
-            "get_job should return 404 for non-existent job"
+            "get_job should return 404 for unknown job"
         );
 
         let detail = assert_error_shape(resp).await;
@@ -143,6 +144,72 @@ mod tests {
             detail.r#type,
             Some("NotFoundError".to_string()),
             "404 error should have NotFoundError type"
+        );
+    }
+
+    /// GET returns a snapshot for a real job submitted via JobManager.
+    #[tokio::test]
+    async fn test_get_job_returns_snapshot() {
+        let config = Config::default();
+        let state = Arc::new(ProxyState::new(config, None));
+        let web_state = Arc::new(test_web_state());
+        let router = crate::router::build_web_routes(web_state.clone())
+            .with_state(state)
+            .layer(axum::extract::Extension(web_state.as_ref().clone()));
+
+        // Submit a real job through JobManager.
+        let jobs = web_state.jobs.as_ref().unwrap();
+        let job_result = jobs.submit(crate::web_types::JobKind::Install, None).await;
+        assert!(job_result.is_ok(), "submit should succeed");
+        let job_id = job_result.unwrap().id.clone();
+
+        // GET the job — should return 200 with matching data.
+        let req = Request::builder()
+            .method("GET")
+            .uri(format!("/tama/v1/backends/jobs/{}", job_id))
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = router.oneshot(req).await.expect("request should complete");
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+
+        let body_str = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("body should be readable");
+        let json: serde_json::Value =
+            serde_json::from_slice(&body_str).expect("body should be valid JSON");
+
+        assert_eq!(json["id"].as_str().unwrap(), job_id);
+        assert_eq!(json["kind"], "install");
+        // Status may be "queued" or "running" depending on timing
+        assert!(
+            json["status"] == "queued" || json["status"] == "running",
+            "job status should be queued or running, got: {}",
+            json["status"]
+        );
+    }
+
+    /// GET events for unknown job ID → 404.
+    #[tokio::test]
+    async fn test_job_events_sse_unknown_job() {
+        let config = Config::default();
+        let state = Arc::new(ProxyState::new(config, None));
+        let web_state = Arc::new(test_web_state());
+        let router = crate::router::build_web_routes(web_state.clone())
+            .with_state(state)
+            .layer(axum::extract::Extension(web_state.as_ref().clone()));
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/tama/v1/backends/jobs/nonexistent/events")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = router.oneshot(req).await.expect("request should complete");
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::NOT_FOUND,
+            "job_events_sse should return 404 for unknown job"
         );
     }
 }

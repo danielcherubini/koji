@@ -13,6 +13,9 @@ mod cache;
 mod helpers;
 mod model;
 
+#[cfg(all(test, feature = "web-ui"))]
+mod orchestration_tests;
+
 #[cfg(test)]
 mod tests;
 

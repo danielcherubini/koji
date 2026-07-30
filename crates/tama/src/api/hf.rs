@@ -82,6 +82,8 @@ mod tests {
     use tama_core::config::Config;
     use tama_core::proxy::ProxyState;
     use tower::ServiceExt;
+    use wiremock::matchers::{method, path_regex};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     /// GET /tama/v1/hf/*repo_id/metadata — a repo_id containing a `..` segment
     /// should be rejected with 400 and the canonical error shape.
@@ -124,6 +126,104 @@ mod tests {
             detail.r#type,
             Some("ValidationError".to_string()),
             "path traversal should return ValidationError type"
+        );
+    }
+
+    /// GET /tama/v1/hf/*repo_id/metadata — happy path with wiremock.
+    #[tokio::test]
+    async fn test_hf_metadata_happy_path() {
+        let mock_server = MockServer::start().await;
+
+        // Mock the HF API repo info endpoint: {endpoint}/api/models/{repo_id}
+        let hf_response = serde_json::json!({
+            "lastModified": "2024-01-15T00:00:00.000Z",
+            "tags": ["gguf", "text-generation"],
+            "pipeline_tag": "text-generation"
+        });
+        // Match any GET path starting with /api/models.
+        Mock::given(method("GET"))
+            .and(path_regex("^/api/models/.*$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&hf_response))
+            .mount(&mock_server)
+            .await;
+
+        // Set HF_ENDPOINT env var so the handler uses our mock server.
+        std::env::set_var("HF_ENDPOINT", mock_server.uri());
+
+        let config = Config::default();
+        let state = Arc::new(ProxyState::new(config, None));
+
+        // Build a minimal router with just the hf route for isolation.
+        let web_state = Arc::new(crate::web_types::WebState {
+            jobs: Some(Arc::new(crate::web_types::JobManager::new())),
+            capabilities: None,
+            update_checker: Arc::new(tama_core::updates::UpdateChecker::default()),
+            binary_version: "test".to_string(),
+            update_tx: Arc::new(tokio::sync::Mutex::new(None)),
+            upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            repository: None,
+        });
+
+        let router = crate::router::build_web_routes(web_state.clone())
+            .with_state(state)
+            .layer(axum::extract::Extension(web_state.as_ref().clone()));
+
+        // Request metadata for a repo.
+        let req = Request::builder()
+            .method("GET")
+            .uri("/tama/v1/hf/bartowski/Qwen3-8B-GGUF/metadata")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = router.oneshot(req).await.expect("request should complete");
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+
+        let body_str = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("body should be readable");
+        let json: serde_json::Value =
+            serde_json::from_slice(&body_str).expect("body should be valid JSON");
+
+        // Assert parsed metadata fields (HfModelMetadata serializes with hf_ prefix).
+        assert_eq!(json["hf_pipeline_tag"], "text-generation");
+        assert_eq!(json["hf_last_modified"], "2024-01-15T00:00:00.000Z");
+
+        // Clean up env var.
+        std::env::remove_var("HF_ENDPOINT");
+    }
+
+    /// GET /tama/v1/hf/*repo_id — a repo_id containing `..` should return 400.
+    #[tokio::test]
+    async fn test_hf_metadata_rejects_traversal() {
+        let config = Config::default();
+        let state = Arc::new(ProxyState::new(config, None));
+
+        let web_state = Arc::new(crate::web_types::WebState {
+            jobs: Some(Arc::new(crate::web_types::JobManager::new())),
+            capabilities: None,
+            update_checker: Arc::new(tama_core::updates::UpdateChecker::default()),
+            binary_version: "test".to_string(),
+            update_tx: Arc::new(tokio::sync::Mutex::new(None)),
+            upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            repository: None,
+        });
+
+        let router = crate::router::build_web_routes(web_state.clone())
+            .with_state(state)
+            .layer(axum::extract::Extension(web_state.as_ref().clone()));
+
+        // Path with `..` in repo_id.
+        let req = Request::builder()
+            .method("GET")
+            .uri("/tama/v1/hf/evil/../secret/metadata")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = router.oneshot(req).await.expect("request should complete");
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::BAD_REQUEST,
+            "hf_metadata should reject path traversal"
         );
     }
 }

@@ -775,7 +775,9 @@ async fn test_evict_lru_none_gpu_grouped() {
 
 // ─── Integration tests using trait abstractions ───────────────────────
 
-use crate::proxy::lifecycle::traits::{MockHealthChecker, MockProcessChecker, ProcessChecker};
+use crate::proxy::lifecycle::traits::{
+    MockHealthChecker, MockPortAllocator, MockProcessChecker, MockProcessSpawner, ProcessChecker,
+};
 
 /// Test the 3-phase idle timeout logic:
 /// Phase 1: Collect candidates (idle Ready, dead PIDs, stuck Starting, Failed)
@@ -1076,4 +1078,338 @@ async fn test_unload_model_non_ready_state() {
 
     let result = state.unload_model("starting-server").await;
     assert!(result.is_err(), "Unload should fail for Starting state");
+}
+
+// ─── Compaction & TTS lifecycle trait tests ────────────────────────────
+
+/// Test that compaction health timeout marks the backend as Failed.
+///
+/// The compaction server extracts into a tempdir, a port is allocated,
+/// and a Starting reservation is created. When the health checker always
+/// returns false, the startup timeout fires after `startup_timeout_secs`
+/// and the backend transitions to Failed (not left stuck in Starting).
+#[tokio::test]
+async fn test_load_compaction_health_timeout_marks_failed() {
+    let mut config = Config::default();
+    config.compaction.enabled = true;
+    config.proxy.startup_timeout_secs = 1;
+
+    let tempdir = tempfile::tempdir().unwrap();
+    let state = ProxyState::new(config, Some(tempdir.path().to_path_buf()));
+
+    let mock_checker = MockHealthChecker::new();
+    mock_checker.set_response(false); // Always unhealthy
+
+    let mock_port = MockPortAllocator::new();
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    mock_port.set_port(port);
+
+    let mock_spawner = MockProcessSpawner::new();
+
+    let result = state
+        .load_compaction_backend(&mock_checker, &mock_spawner, &mock_port)
+        .await;
+
+    // Should fail due to timeout
+    assert!(
+        result.is_err(),
+        "load_compaction_backend should fail on timeout"
+    );
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("timeout"),
+        "Error should mention timeout, got: {}",
+        err_msg
+    );
+
+    // Verify the compaction entry is in Failed state (not stuck in Starting)
+    let models = state.registry.models.read().await;
+    assert!(
+        models.contains_key("compaction"),
+        "compaction entry should exist after timeout"
+    );
+    if let Some(BackendState::Failed { error, .. }) = models.get("compaction") {
+        assert!(
+            error.contains("timeout"),
+            "Failed error should mention timeout, got: {}",
+            error
+        );
+    } else {
+        panic!(
+            "Expected BackendState::Failed for compaction, got: {:?}",
+            models.get("compaction")
+        );
+    }
+
+    // Verify spawner was called exactly once
+    assert_eq!(
+        mock_spawner
+            .spawn_count
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "Should have spawned exactly once"
+    );
+}
+
+/// Test that compaction spawn failure cleans up the Starting reservation.
+///
+/// When the spawner fails (via set_fail_spawn), the entry should be
+/// completely removed from the models map — no stuck Starting entry.
+#[tokio::test]
+async fn test_load_compaction_spawn_failure_cleans_up() {
+    let mut config = Config::default();
+    config.compaction.enabled = true;
+    config.proxy.startup_timeout_secs = 10; // Long enough that timeout won't fire
+
+    let tempdir = tempfile::tempdir().unwrap();
+    let state = ProxyState::new(config, Some(tempdir.path().to_path_buf()));
+
+    let mock_checker = MockHealthChecker::new();
+    let mock_port = MockPortAllocator::new();
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    mock_port.set_port(port);
+
+    let mock_spawner = MockProcessSpawner::new();
+    mock_spawner.set_fail_spawn(true); // Force spawn to fail
+
+    let result = state
+        .load_compaction_backend(&mock_checker, &mock_spawner, &mock_port)
+        .await;
+
+    assert!(result.is_err(), "Should fail when spawn fails");
+
+    // The compaction entry should be removed entirely (not stuck in Starting)
+    let models = state.registry.models.read().await;
+    assert!(
+        !models.contains_key("compaction"),
+        "Spawn failure should remove the compaction entry from models map"
+    );
+
+    // Verify spawner was called exactly once
+    assert_eq!(
+        mock_spawner
+            .spawn_count
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "Should have spawned exactly once"
+    );
+}
+
+/// Test that TTS health timeout cleans up the Starting reservation.
+///
+/// Seeds a TTS backend installation, reserves it in Starting state,
+/// then waits for timeout. The backend should be removed from both
+/// models map and inference_stats.
+#[tokio::test]
+async fn test_load_tts_health_timeout_cleans_up() {
+    let mut config = Config::default();
+    config.proxy.startup_timeout_secs = 1;
+
+    let tempdir = tempfile::tempdir().unwrap();
+    let state = ProxyState::new(config, Some(tempdir.path().to_path_buf()));
+
+    // Seed a TTS backend installation in the backend registry
+    let base_dir = tempdir.path().join("backends");
+    std::fs::create_dir_all(&base_dir).unwrap();
+    let backend_dir = base_dir.join("tts_kokoro");
+    std::fs::create_dir_all(&backend_dir).unwrap();
+
+    let mgr = crate::backends::BackendManager::open(tempdir.path()).unwrap();
+    mgr.add_installation(&crate::backends::BackendInfo {
+        name: "tts_kokoro".into(),
+        backend_type: crate::backends::BackendType::TtsKokoro,
+        version: "1.0.0".into(),
+        path: backend_dir.clone(),
+        installed_at: 0,
+        gpu_variant: "cpu".into(),
+        source: None,
+    })
+    .unwrap();
+
+    let mock_checker = MockHealthChecker::new();
+    mock_checker.set_response(false); // Always unhealthy
+
+    let mock_port = MockPortAllocator::new();
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    mock_port.set_port(port);
+
+    let mock_spawner = MockProcessSpawner::new();
+
+    let result = state
+        .load_tts_backend("tts_kokoro", &mock_checker, &mock_spawner, &mock_port)
+        .await;
+
+    assert!(result.is_err(), "Should fail on health timeout");
+
+    // Backend should be removed from models map
+    let models = state.registry.models.read().await;
+    assert!(
+        !models.contains_key("tts_kokoro"),
+        "Timeout should remove tts_kokoro from models map"
+    );
+
+    // Backend should also be removed from inference_stats
+    assert!(
+        state.metrics.inference_stats.borrow().is_empty()
+            || !state
+                .metrics
+                .inference_stats
+                .borrow()
+                .contains_key("tts_kokoro"),
+        "Timeout should remove tts_kokoro from inference_stats"
+    );
+}
+
+/// Test that TTS spawn failure cleans up the Starting reservation.
+///
+/// When the spawner fails, the entry should be completely removed from
+/// the models map — no stuck Starting entry.
+#[tokio::test]
+async fn test_load_tts_spawn_failure_cleans_up() {
+    let mut config = Config::default();
+    config.proxy.startup_timeout_secs = 10; // Long enough that timeout won't fire
+
+    let tempdir = tempfile::tempdir().unwrap();
+    let state = ProxyState::new(config, Some(tempdir.path().to_path_buf()));
+
+    // Seed a TTS backend installation
+    let base_dir = tempdir.path().join("backends");
+    std::fs::create_dir_all(&base_dir).unwrap();
+    let backend_dir = base_dir.join("tts_kokoro");
+    std::fs::create_dir_all(&backend_dir).unwrap();
+
+    let mgr = crate::backends::BackendManager::open(tempdir.path()).unwrap();
+    mgr.add_installation(&crate::backends::BackendInfo {
+        name: "tts_kokoro".into(),
+        backend_type: crate::backends::BackendType::TtsKokoro,
+        version: "1.0.0".into(),
+        path: backend_dir.clone(),
+        installed_at: 0,
+        gpu_variant: "cpu".into(),
+        source: None,
+    })
+    .unwrap();
+
+    let mock_checker = MockHealthChecker::new();
+    let mock_port = MockPortAllocator::new();
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    mock_port.set_port(port);
+
+    let mock_spawner = MockProcessSpawner::new();
+    mock_spawner.set_fail_spawn(true); // Force spawn to fail
+
+    let result = state
+        .load_tts_backend("tts_kokoro", &mock_checker, &mock_spawner, &mock_port)
+        .await;
+
+    assert!(result.is_err(), "Should fail when spawn fails");
+
+    // The tts_kokoro entry should be removed entirely
+    let models = state.registry.models.read().await;
+    assert!(
+        !models.contains_key("tts_kokoro"),
+        "Spawn failure should remove the tts_kokoro entry from models map"
+    );
+
+    // Verify spawner was called exactly once
+    assert_eq!(
+        mock_spawner
+            .spawn_count
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "Should have spawned exactly once"
+    );
+}
+
+/// Test that TTS health check success marks the backend as Ready.
+///
+/// Seeds a TTS backend, configures the mock to report healthy,
+/// and verifies the final state is Ready with correct URL and PID.
+#[tokio::test]
+async fn test_load_tts_success_marks_ready() {
+    let mut config = Config::default();
+    config.proxy.startup_timeout_secs = 10;
+
+    let tempdir = tempfile::tempdir().unwrap();
+    let state = ProxyState::new(config, Some(tempdir.path().to_path_buf()));
+
+    // Seed a TTS backend installation
+    let base_dir = tempdir.path().join("backends");
+    std::fs::create_dir_all(&base_dir).unwrap();
+    let backend_dir = base_dir.join("tts_kokoro");
+    std::fs::create_dir_all(&backend_dir).unwrap();
+
+    let mgr = crate::backends::BackendManager::open(tempdir.path()).unwrap();
+    mgr.add_installation(&crate::backends::BackendInfo {
+        name: "tts_kokoro".into(),
+        backend_type: crate::backends::BackendType::TtsKokoro,
+        version: "1.0.0".into(),
+        path: backend_dir.clone(),
+        installed_at: 0,
+        gpu_variant: "cpu".into(),
+        source: None,
+    })
+    .unwrap();
+
+    let mock_checker = MockHealthChecker::new();
+    mock_checker.set_response(true); // Healthy immediately
+
+    let mock_port = MockPortAllocator::new();
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    mock_port.set_port(port);
+
+    let mock_spawner = MockProcessSpawner::new();
+    mock_spawner.set_return_pid(12345);
+
+    let result = state
+        .load_tts_backend("tts_kokoro", &mock_checker, &mock_spawner, &mock_port)
+        .await;
+
+    assert!(result.is_ok(), "Should succeed when health check passes");
+    assert_eq!(result.unwrap(), "tts_kokoro");
+
+    // Verify the backend is in Ready state with correct details
+    let models = state.registry.models.read().await;
+    let ready_state = models.get("tts_kokoro").expect("tts_kokoro should exist");
+    if let BackendState::Ready {
+        backend_url,
+        backend_pid,
+        ..
+    } = ready_state
+    {
+        assert_eq!(
+            backend_url,
+            &format!("http://127.0.0.1:{}", port),
+            "Backend URL should match allocated port"
+        );
+        assert_eq!(
+            *backend_pid, 12345,
+            "Backend PID should match mock return value"
+        );
+    } else {
+        panic!(
+            "Expected BackendState::Ready for tts_kokoro, got: {:?}",
+            ready_state
+        );
+    }
 }

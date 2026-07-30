@@ -329,3 +329,228 @@ pub struct UpdateAliasRequest {
     #[serde(default)]
     pub enabled: Option<bool>,
 }
+
+#[cfg(test)]
+mod tests {
+    use axum::body::Body;
+    use axum::http::Request;
+    use std::sync::{Arc, Mutex};
+    use tama_core::db::repository::Repository;
+    use tama_core::proxy::ProxyState;
+    use tower::ServiceExt;
+
+    fn build_test_state(
+        tmp_dir: &std::path::Path,
+    ) -> (Arc<ProxyState>, Arc<crate::web_types::WebState>) {
+        let config = tama_core::config::Config::default();
+        let state = Arc::new(ProxyState::new(config, Some(tmp_dir.to_path_buf())));
+
+        // Re-open the repository so we have a live handle
+        let repo = Repository::open(tmp_dir).unwrap();
+
+        let web_state = Arc::new(crate::web_types::WebState {
+            jobs: Some(Arc::new(crate::web_types::JobManager::new())),
+            capabilities: None,
+            update_checker: Arc::new(tama_core::updates::UpdateChecker::default()),
+            binary_version: "test".to_string(),
+            update_tx: Arc::new(tokio::sync::Mutex::new(None)),
+            upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            repository: Some(Arc::new(Mutex::new(repo))),
+        });
+
+        (state, web_state)
+    }
+
+    /// POST → GET list → GET single → PATCH disable → DELETE → final GET empty.
+    #[tokio::test]
+    async fn test_alias_crud_round_trip() {
+        let tmp_dir = tempfile::tempdir().expect("tempdir");
+
+        // Seed a model in the DB so alias creation can validate model_id.
+        let conn = tama_core::db::open(tmp_dir.path()).unwrap();
+        tama_core::db::queries::upsert_model_config(
+            &conn.conn,
+            &tama_core::db::queries::ModelConfigRecord {
+                id: 0,
+                repo_id: "test-org/test-model".to_string(),
+                display_name: None,
+                backend: "llama_cpp".to_string(),
+                gpu_variant: None,
+                gpu_device: None,
+                enabled: true,
+                selected_quant: None,
+                selected_mmproj: None,
+                selected_mtp_model: None,
+                context_length: None,
+                num_parallel: None,
+                kv_unified: false,
+                gpu_layers: None,
+                cache_type_k: None,
+                cache_type_v: None,
+                port: None,
+                args: None,
+                sampling: None,
+                modalities: None,
+                profile: None,
+                api_name: Some("test-model".to_string()),
+                health_check: None,
+                hf_format: None,
+                hf_base_model: None,
+                hf_pipeline_tag: None,
+                hf_total_params: None,
+                hf_active_params: None,
+                hf_architecture_type: None,
+                hf_context_length: None,
+                hf_num_layers: None,
+                hf_last_modified: None,
+                spec_decoding: None,
+                created_at: "2024-01-01".into(),
+                updated_at: "2024-01-01".into(),
+            },
+        )
+        .unwrap();
+
+        let (state, web_state) = build_test_state(tmp_dir.path());
+        let router = crate::router::build_web_routes(web_state.clone())
+            .with_state(state)
+            .layer(axum::extract::Extension(web_state.as_ref().clone()));
+
+        // POST create alias
+        let body = serde_json::json!({"name": "my-alias", "model_id": 1}).to_string();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/tama/v1/aliases")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = router.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::CREATED);
+
+        // GET list — should contain one alias
+        let req = Request::builder()
+            .method("GET")
+            .uri("/tama/v1/aliases")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        let body_str = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body_str).unwrap();
+        assert_eq!(json.as_array().unwrap().len(), 1);
+
+        // GET single alias by id
+        let req = Request::builder()
+            .method("GET")
+            .uri("/tama/v1/aliases/1")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+
+        // PUT disable
+        let body = serde_json::json!({"enabled": false}).to_string();
+        let req = Request::builder()
+            .method("PUT")
+            .uri("/tama/v1/aliases/1")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = router.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+
+        // DELETE
+        let req = Request::builder()
+            .method("DELETE")
+            .uri("/tama/v1/aliases/1")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+
+        // Final GET list — should be empty
+        let req = Request::builder()
+            .method("GET")
+            .uri("/tama/v1/aliases")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        let body_str = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body_str).unwrap();
+        assert_eq!(json.as_array().unwrap().len(), 0);
+    }
+
+    /// POST with invalid alias name returns 422.
+    #[tokio::test]
+    async fn test_create_alias_rejects_invalid_name() {
+        let tmp_dir = tempfile::tempdir().expect("tempdir");
+
+        // Seed a model in the DB so alias creation can validate model_id.
+        let conn = tama_core::db::open(tmp_dir.path()).unwrap();
+        tama_core::db::queries::upsert_model_config(
+            &conn.conn,
+            &tama_core::db::queries::ModelConfigRecord {
+                id: 0,
+                repo_id: "test-org/test-model".to_string(),
+                display_name: None,
+                backend: "llama_cpp".to_string(),
+                gpu_variant: None,
+                gpu_device: None,
+                enabled: true,
+                selected_quant: None,
+                selected_mmproj: None,
+                selected_mtp_model: None,
+                context_length: None,
+                num_parallel: None,
+                kv_unified: false,
+                gpu_layers: None,
+                cache_type_k: None,
+                cache_type_v: None,
+                port: None,
+                args: None,
+                sampling: None,
+                modalities: None,
+                profile: None,
+                api_name: Some("test-model".to_string()),
+                health_check: None,
+                hf_format: None,
+                hf_base_model: None,
+                hf_pipeline_tag: None,
+                hf_total_params: None,
+                hf_active_params: None,
+                hf_architecture_type: None,
+                hf_context_length: None,
+                hf_num_layers: None,
+                hf_last_modified: None,
+                spec_decoding: None,
+                created_at: "2024-01-01".into(),
+                updated_at: "2024-01-01".into(),
+            },
+        )
+        .unwrap();
+
+        let (state, web_state) = build_test_state(tmp_dir.path());
+        let router = crate::router::build_web_routes(web_state.clone())
+            .with_state(state)
+            .layer(axum::extract::Extension(web_state.as_ref().clone()));
+
+        // POST with invalid name containing space and exclamation
+        let body = serde_json::json!({"name": "bad name!", "model_id": 1}).to_string();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/tama/v1/aliases")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid alias name should return 422"
+        );
+    }
+}

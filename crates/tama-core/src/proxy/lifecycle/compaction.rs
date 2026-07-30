@@ -2,10 +2,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
-use crate::process::{
-    check_health, configure_process_group, force_kill_process_group, is_process_group_alive,
-    kill_process_group,
-};
+use super::traits::{HealthChecker, PortAllocator, ProcessSpawner};
 use crate::proxy::types::{BackendState, ProxyState};
 use anyhow::{Context, Result};
 
@@ -14,7 +11,12 @@ impl ProxyState {
     ///
     /// Uses the model registry lifecycle (Starting → Ready/Failed) for state tracking.
     /// Follows the Kokoro TTS pattern for registry registration and state transitions.
-    pub async fn load_compaction_backend(&self) -> Result<()> {
+    pub async fn load_compaction_backend<H: HealthChecker, S: ProcessSpawner, P: PortAllocator>(
+        &self,
+        health_checker: &H,
+        spawner: &S,
+        port_allocator: &P,
+    ) -> Result<()> {
         // 1. Read config (scoped read lock)
         let compaction = {
             let config = self.config.read().await;
@@ -37,9 +39,12 @@ impl ProxyState {
             }
         }
 
-        // 4. Extract embedded files
-        let base_dir =
-            crate::config::Config::base_dir().with_context(|| "Failed to get config directory")?;
+        // 4. Resolve base directory from self.db_dir first, fall back to Config::base_dir()
+        let base_dir = match self.db_dir.clone() {
+            Some(dir) => dir,
+            None => crate::config::Config::base_dir()
+                .with_context(|| "Failed to get config directory")?,
+        };
         let server_dir = crate::compaction_server::get_server_dir(&base_dir)
             .with_context(|| "Failed to get compaction server directory")?;
 
@@ -47,19 +52,16 @@ impl ProxyState {
         let server_path = crate::compaction_server::get_server_entrypoint(&compaction, &base_dir)
             .with_context(|| "Failed to resolve compaction server entrypoint")?;
 
-        // 6. Determine port — honor config port, auto-assign otherwise
+        // 6. Determine port — honor config port, allocate via trait otherwise
         let port = if let Some(p) = compaction.port {
             p
         } else {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-                .await
-                .with_context(|| "Failed to bind TcpListener for port assignment")?;
-            let p = listener.local_addr()?.port();
-            drop(listener); // Free the port for the backend
-            p
+            port_allocator
+                .allocate_port()
+                .with_context(|| "Failed to allocate port for compaction backend")?
         };
 
-        // 7. Register in model registry
+        // 7. Register in model registry (Starting reservation)
         {
             let mut models = self.registry.models.write().await;
             models.insert(
@@ -91,30 +93,38 @@ impl ProxyState {
         info!("Starting compaction backend on port {}", port);
 
         // 9. Spawn via `uv run` (uses project venv so deps are available)
-        let mut child = tokio::process::Command::new("uv");
-        configure_process_group(&mut child);
-        child
-            .arg("run")
-            .arg("--project")
-            .arg(&server_dir)
-            .arg("uvicorn")
-            .arg(&uvicorn_target)
-            .arg("--host")
-            .arg("127.0.0.1")
-            .arg("--port")
-            .arg(port.to_string())
-            .env("COMPACTION_PORT", port.to_string())
-            .env("COMPACTION_DEVICE", compaction.device.as_str())
-            .current_dir(&server_dir);
+        let args: Vec<String> = vec![
+            "run".into(),
+            "--project".into(),
+            server_dir.to_string_lossy().into_owned(),
+            "uvicorn".into(),
+            uvicorn_target.clone(),
+            "--host".into(),
+            "127.0.0.1".into(),
+            "--port".into(),
+            port.to_string(),
+        ];
+        let env: Vec<(&str, String)> = vec![
+            ("COMPACTION_PORT", port.to_string()),
+            ("COMPACTION_DEVICE", compaction.device.as_str().to_string()),
+        ];
+        let spawned = match spawner.spawn("uv", &args, &env, Some(&server_dir)).await {
+            Ok(s) => s,
+            Err(e) => {
+                // Clean up the Starting reservation on spawn failure
+                let mut models = self.registry.models.write().await;
+                models.remove("compaction");
+                drop(models);
+                self.metrics.modify_inference_stats(|map| {
+                    map.remove("compaction");
+                });
+                return Err(e).with_context(|| {
+                    "Failed to spawn compaction server via uv run (install with: pipx install uv)"
+                });
+            }
+        };
 
-        let mut child = child.spawn().with_context(|| {
-            "Failed to spawn compaction server via uv run (install with: pipx install uv)"
-                .to_string()
-        })?;
-
-        let pid = child
-            .id()
-            .ok_or_else(|| anyhow::anyhow!("Failed to get PID for compaction server"))?;
+        let pid = spawned.pid;
 
         // 10. Update PID in Starting state
         {
@@ -124,19 +134,7 @@ impl ProxyState {
             }
         }
 
-        // 11. Spawn reaper task
-        tokio::spawn(async move {
-            match child.wait().await {
-                Ok(status) => {
-                    debug!("Compaction server process {} exited with {}", pid, status);
-                }
-                Err(e) => {
-                    warn!("Failed to wait on compaction server process {}: {}", pid, e);
-                }
-            }
-        });
-
-        // 12. Health poll loop — single success is enough.
+        // 11. Health poll loop — single success is enough.
         let timeout = Duration::from_secs(self.config.read().await.proxy.startup_timeout_secs);
         let start = Instant::now();
 
@@ -147,10 +145,10 @@ impl ProxyState {
                     "Startup health check timeout for compaction backend after {}s, killing process group",
                     timeout.as_secs()
                 );
-                let _ = kill_process_group(pid).await;
+                let _ = spawner.kill_process_group(pid).await;
                 tokio::time::sleep(Duration::from_millis(250)).await;
-                if is_process_group_alive(pid) {
-                    let _ = force_kill_process_group(pid).await;
+                if crate::process::is_process_group_alive(pid) {
+                    let _ = spawner.force_kill_process_group(pid).await;
                     tokio::time::sleep(Duration::from_millis(500)).await;
                 }
                 // Set Failed state
@@ -169,15 +167,13 @@ impl ProxyState {
                 ));
             }
 
-            if let Ok(response) = check_health(&health_url, Some(5)).await {
-                if response.status().is_success() {
-                    debug!("Health check passed for compaction backend");
-                    break;
-                }
+            if health_checker.check_health(&health_url, Some(5)).await {
+                debug!("Health check passed for compaction backend");
+                break;
             }
         }
 
-        // 13. Transition to Ready (always reached — timeout returns early)
+        // 12. Transition to Ready (always reached — timeout returns early)
         {
             let mut models = self.registry.models.write().await;
             if let Some(state) = models.get_mut("compaction") {

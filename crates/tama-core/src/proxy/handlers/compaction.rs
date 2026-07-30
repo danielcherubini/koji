@@ -103,7 +103,7 @@ async fn ensure_compaction_backend(state: &ProxyState) -> anyhow::Result<String>
         return Ok(url);
     }
     // Not loaded — try to load it
-    state.load_compaction_backend().await?;
+    state.load_compaction_backend(&(), &(), &()).await?;
     // After loading, get the server URL from models map
     get_backend_url(state, COMPACTION_BACKEND_NAME)
         .await?

@@ -75,7 +75,7 @@ async fn ensure_tts_server(state: &ProxyState, model_name: &str) -> anyhow::Resu
     }
 
     // Not loaded — try to load it
-    state.load_tts_backend(backend_name).await?;
+    state.load_tts_backend(backend_name, &(), &(), &()).await?;
 
     // After loading, get the backend URL from models map
     get_backend_url(state, backend_name)

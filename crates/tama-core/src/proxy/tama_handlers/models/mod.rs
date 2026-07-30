@@ -24,5 +24,6 @@ mod tests {
     mod cancel;
     mod capabilities;
     mod helpers;
+    mod model_handlers;
     mod opencode;
 }

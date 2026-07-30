@@ -91,6 +91,7 @@ axum = { workspace = true }
 tempfile = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
 rusqlite = { workspace = true }
+wiremock = "0.6"
 
 [package.metadata.deb]
 maintainer = "Daniel Cherubini <daniel@cherubini.casa>"

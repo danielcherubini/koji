@@ -284,3 +284,258 @@ async fn cleanup_temp_files(paths: &[PathBuf]) {
         tokio::fs::remove_file(path).await.ok();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use indicatif::{ProgressBar, ProgressStyle};
+    use reqwest::Client;
+    use wiremock::matchers::{header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// Verify that `exponential_backoff` returns durations within expected bounds
+    /// for a range of attempt values.
+    #[test]
+    fn test_exponential_backoff_bounds() {
+        // Attempt 0: base = 300 + 0² + jitter(0..=500) = 300..=800
+        for _ in 0..20 {
+            let dur = exponential_backoff(0);
+            let ms = dur.as_millis();
+            assert!(
+                (300..=800).contains(&ms),
+                "attempt 0: {}ms not in [300, 800]",
+                ms
+            );
+        }
+
+        // Attempt 1: base = 300 + 1² + jitter(0..=500) = 301..=801
+        for _ in 0..20 {
+            let dur = exponential_backoff(1);
+            let ms = dur.as_millis();
+            assert!(
+                (301..=801).contains(&ms),
+                "attempt 1: {}ms not in [301, 801]",
+                ms
+            );
+        }
+
+        // Attempt 3: base = 300 + 9 + jitter(0..=500) = 309..=809
+        for _ in 0..20 {
+            let dur = exponential_backoff(3);
+            let ms = dur.as_millis();
+            assert!(
+                (309..=809).contains(&ms),
+                "attempt 3: {}ms not in [309, 809]",
+                ms
+            );
+        }
+
+        // Attempt 10: base = 300 + 100 + jitter(0..=500) = 400..=900
+        for _ in 0..20 {
+            let dur = exponential_backoff(10);
+            let ms = dur.as_millis();
+            assert!(
+                (400..=900).contains(&ms),
+                "attempt 10: {}ms not in [400, 900]",
+                ms
+            );
+        }
+
+        // Attempt 100: base = 300 + 10000 + jitter → capped at 10_000
+        for _ in 0..5 {
+            let dur = exponential_backoff(100);
+            assert_eq!(dur.as_millis(), 10_000);
+        }
+    }
+
+    /// Verify that `pull_parallel` correctly reassembles chunks from a wiremock
+    /// server returning 206 Partial Content responses.
+    #[tokio::test]
+    async fn test_pull_parallel_happy_path() {
+        let server = MockServer::start().await;
+
+        // Total size: 100 bytes, 2 connections → 50 bytes each
+        let total_size: u64 = 100;
+        let num_connections = 2;
+
+        // Wiremock matches most-recently-mounted mocks first. Mount the more specific
+        // Range header mocks AFTER the fallback so they take precedence.
+        Mock::given(method("GET"))
+            .and(path("/test.bin"))
+            .respond_with(
+                ResponseTemplate::new(206)
+                    .set_body_string("AB")
+                    .append_header("Content-Range", "bytes 0-1/100")
+                    .append_header("Content-Length", "2"),
+            )
+            .mount(&server)
+            .await;
+
+        // Chunk 0: Range bytes=0-49 → 50 'a' characters
+        Mock::given(method("GET"))
+            .and(path("/test.bin"))
+            .and(header("Range", "bytes=0-49"))
+            .respond_with(
+                ResponseTemplate::new(206)
+                    .set_body_string("a".repeat(50))
+                    .append_header("Content-Range", "bytes 0-49/100")
+                    .append_header("Content-Length", "50"),
+            )
+            .with_priority(1) // highest priority
+            .mount(&server)
+            .await;
+
+        // Chunk 1: Range bytes=50-99 → 50 'b' characters
+        Mock::given(method("GET"))
+            .and(path("/test.bin"))
+            .and(header("Range", "bytes=50-99"))
+            .respond_with(
+                ResponseTemplate::new(206)
+                    .set_body_string("b".repeat(50))
+                    .append_header("Content-Range", "bytes 50-99/100")
+                    .append_header("Content-Length", "50"),
+            )
+            .with_priority(1) // highest priority
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let dest = temp_dir.path().join("test.bin");
+
+        let pb = ProgressBar::new(total_size);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec})")
+                .expect("valid template"),
+        );
+
+        let result = pull_parallel(
+            &client,
+            &format!("{}/test.bin", server.uri()),
+            &dest,
+            total_size,
+            num_connections,
+            &pb,
+            None::<&ProgressCallback>,
+            None::<&HeaderMap>,
+        )
+        .await;
+
+        // The parallel download should succeed and reassemble a 100-byte file.
+        assert!(result.is_ok(), "pull_parallel should succeed: {:?}", result);
+        let content = tokio::fs::read(&dest).await.expect("file should exist");
+        assert_eq!(content.len(), 100);
+    }
+
+    /// Verify that a short chunk (incomplete body) errors after MAX_RETRIES.
+    #[tokio::test]
+    async fn test_pull_parallel_short_chunk_errors_after_retries() {
+        let server = MockServer::start().await;
+
+        // Total size: 100 bytes, but server only sends 30 bytes
+        let total_size: u64 = 100;
+        let num_connections = 1;
+
+        Mock::given(method("GET"))
+            .and(path("/test.bin"))
+            .respond_with(
+                ResponseTemplate::new(206)
+                    .set_body_string("X".repeat(30))
+                    .append_header("Content-Range", "bytes 0-29/100")
+                    .append_header("Content-Length", "30"),
+            )
+            .mount(&server)
+            .await;
+
+        let client = Client::new();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let dest = temp_dir.path().join("test.bin");
+
+        let pb = ProgressBar::new(total_size);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec})")
+                .expect("valid template"),
+        );
+
+        let result = pull_parallel(
+            &client,
+            &format!("{}/test.bin", server.uri()),
+            &dest,
+            total_size,
+            num_connections,
+            &pb,
+            None::<&ProgressCallback>,
+            None::<&HeaderMap>,
+        )
+        .await;
+
+        assert!(result.is_err(), "pull_parallel should fail for short chunk");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("incomplete") || err_msg.contains("short read"),
+            "Error should mention incomplete/short, got: {}",
+            err_msg
+        );
+    }
+
+    /// Verify that `pull_parallel` rejects invalid arguments.
+    #[tokio::test]
+    async fn test_pull_parallel_rejects_bad_args() {
+        let client = Client::new();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let dest = temp_dir.path().join("test.bin");
+
+        let pb = ProgressBar::new(100);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec})")
+                .expect("valid template"),
+        );
+
+        // num_connections = 0 should error
+        let result = pull_parallel(
+            &client,
+            "http://example.com/test.bin",
+            &dest,
+            100,
+            0, // num_connections = 0
+            &pb,
+            None::<&ProgressCallback>,
+            None::<&HeaderMap>,
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "num_connections=0 should error: {:?}",
+            result
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("must be > 0"),
+            "Error should mention > 0, got: {}",
+            err_msg
+        );
+
+        // total_size < num_connections should error
+        let result = pull_parallel(
+            &client,
+            "http://example.com/test.bin",
+            &dest,
+            5,  // total_size = 5
+            10, // num_connections = 10 > total_size
+            &pb,
+            None::<&ProgressCallback>,
+            None::<&HeaderMap>,
+        )
+        .await;
+        assert!(result.is_err(), "total_size < num_connections should error");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("must be >="),
+            "Error should mention must be >=, got: {}",
+            err_msg
+        );
+    }
+}

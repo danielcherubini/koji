@@ -6,6 +6,8 @@ mod system;
 mod types;
 
 #[cfg(test)]
+mod system_tests;
+#[cfg(test)]
 mod tests;
 
 pub use api_keys::{

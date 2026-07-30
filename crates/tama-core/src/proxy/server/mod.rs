@@ -157,11 +157,7 @@ impl ProxyServer {
                     entry.server_name,
                     pid
                 );
-                // Use tokio::process::Command to avoid blocking the async context.
-                let _ = tokio::process::Command::new("kill")
-                    .arg(pid.to_string())
-                    .status()
-                    .await;
+                let _ = crate::process::kill_process(pid).await;
                 let _ = mgr.remove_active(&entry.server_name);
             }
         }

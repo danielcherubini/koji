@@ -239,3 +239,87 @@ pub async fn verify_model_files(
         Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use axum::body::Body;
+    use axum::http::Request;
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+    use tama_core::config::Config;
+    use tama_core::db::repository::Repository;
+    use tama_core::proxy::ProxyState;
+    use tower::ServiceExt;
+
+    fn build_test_state(
+        tmp_dir: &std::path::Path,
+    ) -> (Arc<ProxyState>, Arc<crate::web_types::WebState>) {
+        let config = Config::default();
+        let state = Arc::new(ProxyState::new(config, Some(tmp_dir.to_path_buf())));
+
+        // Open a repository handle for the web_state.
+        let repo = Repository::open(tmp_dir).unwrap();
+
+        let web_state = Arc::new(crate::web_types::WebState {
+            jobs: Some(Arc::new(crate::web_types::JobManager::new())),
+            capabilities: None,
+            update_checker: Arc::new(tama_core::updates::UpdateChecker::default()),
+            binary_version: "test".to_string(),
+            update_tx: Arc::new(tokio::sync::Mutex::new(None)),
+            upload_lock: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            repository: Some(Arc::new(Mutex::new(repo))),
+        });
+
+        (state, web_state)
+    }
+
+    /// POST /tama/v1/models/:id/refresh for unknown model → 404.
+    #[tokio::test]
+    async fn test_refresh_model_metadata_unknown_model_404() {
+        let tmp_dir = tempfile::tempdir().expect("tempdir");
+
+        let (state, web_state) = build_test_state(tmp_dir.path());
+        let router = crate::router::build_web_routes(web_state.clone())
+            .with_state(state)
+            .layer(axum::extract::Extension(web_state.as_ref().clone()));
+
+        // POST refresh for a model that doesn't exist in the DB.
+        let req = Request::builder()
+            .method("POST")
+            .uri("/tama/v1/models/99999/refresh")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = router.oneshot(req).await.expect("request should complete");
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::NOT_FOUND,
+            "unknown model refresh should return 404"
+        );
+    }
+
+    /// POST /tama/v1/models/:id/verify for unknown model → 404.
+    #[tokio::test]
+    async fn test_verify_model_files_unknown_model_404() {
+        let tmp_dir = tempfile::tempdir().expect("tempdir");
+
+        let (state, web_state) = build_test_state(tmp_dir.path());
+        let router = crate::router::build_web_routes(web_state.clone())
+            .with_state(state)
+            .layer(axum::extract::Extension(web_state.as_ref().clone()));
+
+        // POST verify for a model that doesn't exist in the DB.
+        let req = Request::builder()
+            .method("POST")
+            .uri("/tama/v1/models/99999/verify")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = router.oneshot(req).await.expect("request should complete");
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::NOT_FOUND,
+            "unknown model verify should return 404"
+        );
+    }
+}

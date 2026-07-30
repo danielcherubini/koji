@@ -77,10 +77,35 @@ pub async fn run_llama_bench(
     bench_config: &LlamaBenchConfig,
     progress: &dyn ProgressSink,
 ) -> Result<BenchReport> {
+    let db_dir = Config::config_dir()?;
+    run_llama_bench_with_dir(
+        config,
+        &db_dir,
+        model_id,
+        quant,
+        backend_name,
+        bench_config,
+        progress,
+    )
+    .await
+}
+
+/// Internal implementation of [`run_llama_bench`] that takes an explicit database directory.
+///
+/// This is the extraction point used by tests — the public function resolves
+/// `Config::config_dir()` and delegates here.
+pub(crate) async fn run_llama_bench_with_dir(
+    config: &Config,
+    db_dir: &std::path::Path,
+    model_id: &str,
+    quant: Option<&str>,
+    backend_name: Option<&str>,
+    bench_config: &LlamaBenchConfig,
+    progress: &dyn ProgressSink,
+) -> Result<BenchReport> {
     use crate::db::OpenResult;
 
-    let db_dir = Config::config_dir()?;
-    let OpenResult { conn, .. } = crate::db::open(&db_dir)?;
+    let OpenResult { conn, .. } = crate::db::open(db_dir)?;
     let model_configs = crate::db::load_model_configs(&conn)?;
 
     // If model_id is an integer db_id, resolve it to the config key first.
@@ -98,11 +123,10 @@ pub async fn run_llama_bench(
         .resolve_backend(&model_configs, resolved_id)
         .context("Failed to resolve server config for benchmark")?;
 
-    let model_path =
-        resolve_model_path(config, &db_dir, &conn, &model_configs, resolved_id, quant)?;
+    let model_path = resolve_model_path(config, db_dir, &conn, &model_configs, resolved_id, quant)?;
 
     let target_backend = backend_name.unwrap_or(&model_config.backend);
-    let manager = crate::backends::BackendManager::open(&db_dir)?;
+    let manager = crate::backends::BackendManager::open(db_dir)?;
     let backend_path =
         config.resolve_backend_path(target_backend, model_config.gpu_variant.as_ref(), &manager)?;
 
@@ -278,4 +302,366 @@ fn resolve_model_path(
         candidate,
         legacy_candidate
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{Config, LogLevel, ModelConfig};
+    use crate::db::queries::{insert_backend_installation, upsert_backend_config, upsert_general};
+    use std::collections::BTreeMap;
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::{Mutex, MutexGuard};
+
+    /// A simple progress sink that captures log lines and result JSON.
+    struct CaptureSink {
+        logs: Mutex<Vec<String>>,
+        results: Mutex<Vec<String>>,
+    }
+
+    /// Guard to serialize env var tests without needing serial_test.
+    static ENV_GUARD: Mutex<()> = Mutex::new(());
+
+    impl CaptureSink {
+        fn new() -> Self {
+            Self {
+                logs: Mutex::new(Vec::new()),
+                results: Mutex::new(Vec::new()),
+            }
+        }
+
+        pub fn logs(&self) -> MutexGuard<'_, Vec<String>> {
+            self.logs.lock().unwrap()
+        }
+
+        pub fn results(&self) -> MutexGuard<'_, Vec<String>> {
+            self.results.lock().unwrap()
+        }
+    }
+
+    impl ProgressSink for CaptureSink {
+        fn log(&self, line: &str) {
+            self.logs.lock().unwrap().push(line.to_string());
+        }
+        fn result(&self, json: &str) {
+            self.results.lock().unwrap().push(json.to_string());
+        }
+    }
+
+    /// Helper to set up a minimal test database with a backend config,
+    /// an installation record, and a model config + file entry.
+    fn seed_test_db(temp_dir: &tempfile::TempDir) -> anyhow::Result<(std::path::PathBuf, String)> {
+        let db_path = temp_dir.path().join("tama.db");
+
+        // Open the database and run migrations
+        let conn = rusqlite::Connection::open(&db_path)?;
+        crate::db::migrations::run(&conn)?;
+
+        // Seed defaults so Config::from_db works
+        crate::db::queries::seed_defaults(&conn)?;
+
+        // Set models_dir to point to our temp dir's models subdirectory
+        let models_dir = temp_dir.path().join("models");
+        upsert_general(
+            &conn,
+            &LogLevel::Info,
+            Some(models_dir.to_string_lossy().as_ref()),
+            None, // logs_dir
+            None, // hf_token
+            60,   // update_check_interval
+        )?;
+
+        // 1. Insert a backend config (llama_cpp, cpu)
+        upsert_backend_config(
+            &conn,
+            "llama_cpp",
+            "cpu",
+            &[],
+            &[],
+            Some("http://localhost:8080/health"),
+        )?;
+
+        // 2. Create a fake llama-server binary in the temp dir
+        let backend_dir = temp_dir
+            .path()
+            .join("backends")
+            .join("llama_cpp")
+            .join("cpu");
+        std::fs::create_dir_all(&backend_dir)?;
+        let fake_server = backend_dir.join("llama-server");
+        std::fs::write(&fake_server, "#!/bin/sh\necho 'fake llama-server'\nexit 0")?;
+        let mut perms = std::fs::metadata(&fake_server)?.permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&fake_server, perms)?;
+
+        // 3. Insert a backend installation record pointing to the fake binary
+        insert_backend_installation(
+            &conn,
+            &crate::db::queries::BackendInstallationRecord {
+                id: 0,
+                name: "llama_cpp".to_string(),
+                backend_type: "llama_cpp".to_string(),
+                version: "test".to_string(),
+                path: fake_server.to_string_lossy().to_string(),
+                installed_at: 1000,
+                gpu_variant: "cpu".to_string(),
+                source: None,
+                is_active: true,
+            },
+        )?;
+
+        // 4. Insert a model config using the high-level API
+        let mut quants = BTreeMap::new();
+        quants.insert(
+            "Q4_K_M".to_string(),
+            crate::config::QuantEntry {
+                file: "test-model-Q4_K_M.gguf".to_string(),
+                kind: crate::config::QuantKind::from_filename("test-model-Q4_K_M.gguf"),
+                size_bytes: Some(4_294_967_296),
+                context_length: None,
+            },
+        );
+
+        let model_config = ModelConfig {
+            backend: "llama_cpp".to_string(),
+            gpu_variant: None,
+            gpu_device: None,
+            args: vec![],
+            sampling: None,
+            model: Some("test/test-model".to_string()),
+            quant: Some("Q4_K_M".to_string()),
+            mmproj: None,
+            mtp_model: None,
+            port: None,
+            health_check: None,
+            enabled: true,
+            context_length: Some(4096),
+            num_parallel: Some(1),
+            kv_unified: false,
+            profile: None,
+            api_name: Some("test-model".to_string()),
+            gpu_layers: None,
+            cache_type_k: None,
+            cache_type_v: None,
+            hf_format: None,
+            hf_base_model: None,
+            hf_pipeline_tag: None,
+            hf_total_params: None,
+            hf_active_params: None,
+            hf_architecture_type: None,
+            hf_context_length: None,
+            hf_num_layers: None,
+            hf_last_modified: None,
+            quants,
+            modalities: None,
+            display_name: Some("Test Model".to_string()),
+            db_id: None,
+            spec_decoding: Default::default(),
+        };
+
+        let config_key = "test--test-model";
+        crate::db::save_model_config(&conn, config_key, &model_config)?;
+
+        // 5. Insert a model file record
+        crate::db::queries::upsert_model_file(
+            &conn,
+            1, // model_id
+            "test/test-model",
+            "test-model-Q4_K_M.gguf",
+            Some("Q4_K_M"),
+            None,                // lfs_oid
+            Some(4_294_967_296), // size_bytes
+        )?;
+
+        let config_dir = temp_dir.path().to_path_buf();
+
+        Ok((config_dir, "test-model-Q4_K_M.gguf".to_string()))
+    }
+
+    /// Verifies that `run_llama_bench_with_dir` executes llama-bench via a stub
+    /// script, parses the JSON output, and streams progress through the sink.
+    #[tokio::test]
+    async fn test_run_llama_bench_with_stub_binary() {
+        let _env_guard = ENV_GUARD.lock().unwrap();
+
+        // Clean slate for env vars
+        std::env::remove_var("LLAMA_BENCH_PATH");
+
+        let temp_dir = tempfile::tempdir().unwrap();
+
+        // Seed the database with backend + model entries
+        let (config_dir, gguf_filename) = seed_test_db(&temp_dir).unwrap();
+
+        // Create models directory with a dummy GGUF file
+        let models_dir = config_dir.join("models");
+        std::fs::create_dir_all(&models_dir).unwrap();
+        let model_dir = models_dir.join("test/test-model");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        let gguf_path = model_dir.join(&gguf_filename);
+        std::fs::write(&gguf_path, vec![0u8; 1024]).unwrap();
+
+        // Write a stub llama-bench script that outputs valid JSON
+        let stub_script = temp_dir.path().join("stub-llama-bench");
+        std::fs::write(
+            &stub_script,
+            r#"#!/bin/sh
+echo '[{"n_prompt": 512, "n_gen": 0, "avg_ts": 5120.5, "stddev_ts": 42.3}, {"n_prompt": 0, "n_gen": 128, "avg_ts": 1000.0, "stddev_ts": 15.5}]'
+exit 0
+"#,
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(&stub_script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&stub_script, perms).unwrap();
+
+        // Set LLAMA_BENCH_PATH
+        std::env::set_var("LLAMA_BENCH_PATH", stub_script.to_string_lossy().as_ref());
+
+        // Load Config from the seeded database
+        let config = Config::load_from(&config_dir.join("tama.db")).unwrap();
+
+        // Create a bench config with PP and TG tests
+        let bench_config = LlamaBenchConfig {
+            pp_sizes: vec![512],
+            tg_sizes: vec![128],
+            runs: 1,
+            warmup: 0,
+            threads: None,
+            ngl_range: None,
+            ctx_override: Some(4096),
+            batch_sizes: vec![],
+            ubatch_sizes: vec![],
+            kv_cache_type: None,
+            depth: vec![],
+            flash_attn: None,
+        };
+
+        let sink = std::sync::Arc::new(CaptureSink::new());
+
+        // Drop the env guard before calling the async function
+        drop(_env_guard);
+
+        // Call the function under test (model_id must be the config key format)
+        let result = run_llama_bench_with_dir(
+            &config,
+            &config_dir,
+            "test--test-model",
+            None,
+            None,
+            &bench_config,
+            &*sink,
+        )
+        .await;
+
+        // Restore env
+        std::env::remove_var("LLAMA_BENCH_PATH");
+
+        // Assert the benchmark succeeded
+        assert!(
+            result.is_ok(),
+            "run_llama_bench_with_dir should succeed: {:?}",
+            result.err()
+        );
+        let report = result.unwrap();
+
+        // Assert 2 summaries (one PP, one TG)
+        assert_eq!(report.summaries.len(), 2);
+        assert_eq!(report.summaries[0].test_name, "pp512");
+        assert!((report.summaries[0].pp_mean - 5120.5).abs() < 0.01);
+        assert_eq!(report.summaries[1].test_name, "tg128");
+        assert!((report.summaries[1].tg_mean - 1000.0).abs() < 0.01);
+
+        // Assert progress sink captured logs
+        assert!(
+            !sink.logs().is_empty(),
+            "ProgressSink should have received log lines"
+        );
+
+        // Assert the report was serialized and sent via result()
+        assert!(
+            !sink.results().is_empty(),
+            "ProgressSink should have received a result"
+        );
+    }
+
+    /// Verifies that when llama-bench exits with a non-zero status, the error
+    /// message contains the stderr output.
+    #[tokio::test]
+    async fn test_run_llama_bench_stub_failure_surfaces_stderr() {
+        let _env_guard = ENV_GUARD.lock().unwrap();
+
+        std::env::remove_var("LLAMA_BENCH_PATH");
+
+        let temp_dir = tempfile::tempdir().unwrap();
+
+        // Seed the database
+        let (config_dir, gguf_filename) = seed_test_db(&temp_dir).unwrap();
+
+        // Create models directory with a dummy GGUF file (needed for path resolution)
+        let models_dir = config_dir.join("models");
+        std::fs::create_dir_all(&models_dir).unwrap();
+        let model_dir = models_dir.join("test/test-model");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        std::fs::write(model_dir.join(&gguf_filename), vec![0u8; 1024]).unwrap();
+
+        // Write a stub that exits with error and prints to stderr
+        let stub_script = temp_dir.path().join("stub-llama-bench-fail");
+        std::fs::write(
+            &stub_script,
+            r#"#!/bin/sh
+echo "llama-bench crashed: out of memory" >&2
+exit 1
+"#,
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(&stub_script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&stub_script, perms).unwrap();
+
+        std::env::set_var("LLAMA_BENCH_PATH", stub_script.to_string_lossy().as_ref());
+
+        let config_dir = temp_dir.path().to_path_buf();
+        let config = Config::load_from(&config_dir.join("tama.db")).unwrap();
+
+        let bench_config = LlamaBenchConfig {
+            pp_sizes: vec![512],
+            tg_sizes: vec![128],
+            runs: 1,
+            warmup: 0,
+            threads: None,
+            ngl_range: None,
+            ctx_override: None,
+            batch_sizes: vec![],
+            ubatch_sizes: vec![],
+            kv_cache_type: None,
+            depth: vec![],
+            flash_attn: None,
+        };
+
+        let sink = std::sync::Arc::new(CaptureSink::new());
+
+        // Drop the env guard before calling the async function
+        drop(_env_guard);
+
+        let result = run_llama_bench_with_dir(
+            &config,
+            &config_dir,
+            "test--test-model",
+            None,
+            None,
+            &bench_config,
+            &*sink,
+        )
+        .await;
+
+        std::env::remove_var("LLAMA_BENCH_PATH");
+
+        assert!(result.is_err(), "Should return Err when llama-bench fails");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("llama-bench exited with error"),
+            "Error should mention 'llama-bench exited with error', got: {}",
+            err_msg
+        );
+    }
 }

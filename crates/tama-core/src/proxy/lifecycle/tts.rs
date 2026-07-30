@@ -2,11 +2,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
+use super::traits::{HealthChecker, PortAllocator, ProcessSpawner};
 use crate::backends::BackendManager;
-use crate::process::{
-    check_health, configure_process_group, force_kill_process, force_kill_process_group,
-    is_process_alive, is_process_group_alive, kill_process, kill_process_group,
-};
+use crate::process::{force_kill_process, is_process_alive, kill_process};
 use crate::proxy::types::{BackendState, ProxyState};
 use anyhow::{Context, Result};
 
@@ -16,14 +14,23 @@ impl ProxyState {
     /// This method opens the backend registry, looks up the requested backend,
     /// derives paths from its install directory, finds a free port, and spawns
     /// the Kokoro-FastAPI uvicorn process with appropriate environment variables.
-    /// It then performs a health check (polling every 2s, timeout 60s) before
-    /// transitioning the model state to Ready.
-    pub async fn load_tts_backend(&self, backend_name: &str) -> Result<String> {
+    /// It then performs a health check (polling every 500ms, timeout configurable)
+    /// before transitioning the model state to Ready.
+    pub async fn load_tts_backend<H: HealthChecker, S: ProcessSpawner, P: PortAllocator>(
+        &self,
+        backend_name: &str,
+        health_checker: &H,
+        spawner: &S,
+        port_allocator: &P,
+    ) -> Result<String> {
         debug!("Loading TTS backend: {}", backend_name);
 
-        // Open manager and look up backend by name
-        let base_dir =
-            crate::config::Config::base_dir().with_context(|| "Failed to get config directory")?;
+        // Resolve base directory from self.db_dir first, fall back to Config::base_dir()
+        let base_dir = match self.db_dir.clone() {
+            Some(dir) => dir,
+            None => crate::config::Config::base_dir()
+                .with_context(|| "Failed to get config directory")?,
+        };
         let mgr =
             BackendManager::open(&base_dir).with_context(|| "Failed to open backend manager")?;
 
@@ -76,44 +83,57 @@ impl ProxyState {
             );
         }
 
-        // Find a free port
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        let port = listener.local_addr()?.port();
-        drop(listener);
+        // Allocate port via trait
+        let port = port_allocator.allocate_port()?;
 
         let backend_url = format!("http://127.0.0.1:{}", port);
         let health_url = format!("http://127.0.0.1:{}/health", port);
 
         info!("Starting Kokoro-FastAPI TTS backend on port {}", port);
 
-        // Spawn the uvicorn server process
-        let mut child = tokio::process::Command::new(&python_bin);
-        configure_process_group(&mut child);
-        child
-            .args([
-                "-m",
-                "uvicorn",
-                "api.src.main:app",
-                "--host",
-                "127.0.0.1",
-                "--port",
-                &port.to_string(),
-            ])
-            .current_dir(&repo_root)
-            .env("PYTHONPATH", &repo_root)
-            .env("MODEL_DIR", "api/src/models")
-            .env("VOICES_DIR", "api/src/voices/v1_0");
-
-        let mut child = child.spawn().with_context(|| {
-            format!(
-                "Failed to spawn Kokoro-FastAPI process: {}",
-                python_bin.display()
+        // Spawn the uvicorn server process via trait
+        let args: Vec<String> = vec![
+            "-m".into(),
+            "uvicorn".into(),
+            "api.src.main:app".into(),
+            "--host".into(),
+            "127.0.0.1".into(),
+            "--port".into(),
+            port.to_string(),
+        ];
+        let env: Vec<(&str, String)> = vec![
+            ("PYTHONPATH", repo_root.to_string_lossy().into_owned()),
+            ("MODEL_DIR", "api/src/models".into()),
+            ("VOICES_DIR", "api/src/voices/v1_0".into()),
+        ];
+        let spawned = match spawner
+            .spawn(
+                &python_bin.to_string_lossy(),
+                &args,
+                &env,
+                Some(repo_root.as_path()),
             )
-        })?;
+            .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                // Clean up the Starting reservation on spawn failure
+                let mut models = self.registry.models.write().await;
+                models.remove(backend_name);
+                drop(models);
+                self.metrics.modify_inference_stats(|map| {
+                    map.remove(backend_name);
+                });
+                return Err(e).with_context(|| {
+                    format!(
+                        "Failed to spawn Kokoro-FastAPI process: {}",
+                        python_bin.display()
+                    )
+                });
+            }
+        };
 
-        let pid = child
-            .id()
-            .ok_or_else(|| anyhow::anyhow!("Failed to get PID for Kokoro-FastAPI"))?;
+        let pid = spawned.pid;
         info!("Kokoro-FastAPI started (pid: {:?})", pid);
 
         // Update the PID in the Starting state so cleanup paths can find it
@@ -123,25 +143,6 @@ impl ProxyState {
                 *backend_pid = pid;
             }
         }
-
-        // Spawn a reaper task so the child process is waited on
-        let reaper_backend = backend_name.to_string();
-        tokio::spawn(async move {
-            match child.wait().await {
-                Ok(status) => {
-                    debug!(
-                        "Kokoro-FastAPI process {} for backend '{}' exited with {}",
-                        pid, reaper_backend, status
-                    );
-                }
-                Err(e) => {
-                    warn!(
-                        "Failed to wait on Kokoro-FastAPI process {} for backend '{}': {}",
-                        pid, reaper_backend, e
-                    );
-                }
-            }
-        });
 
         // Health check: poll every 500ms, single success is enough.
         let timeout = Duration::from_secs(self.config.read().await.proxy.startup_timeout_secs);
@@ -155,23 +156,20 @@ impl ProxyState {
                     "Startup health check timeout for TTS backend '{}' after {}s, killing process group",
                     backend_name, timeout.as_secs()
                 );
-                // Kill entire process group, not just parent
-                let _ = kill_process_group(pid).await;
+                let _ = spawner.kill_process_group(pid).await;
                 tokio::time::sleep(Duration::from_millis(250)).await;
-                if is_process_group_alive(pid) {
+                if crate::process::is_process_group_alive(pid) {
                     warn!("Process group {} still alive, sending SIGKILL", pid);
-                    let _ = force_kill_process_group(pid).await;
+                    let _ = spawner.force_kill_process_group(pid).await;
                     tokio::time::sleep(Duration::from_millis(500)).await;
                 }
                 break;
             }
 
-            if let Ok(response) = check_health(&health_url, Some(5)).await {
-                if response.status().is_success() {
-                    debug!("Health check passed for TTS backend '{}'", backend_name);
-                    health_ok = true;
-                    break;
-                }
+            if health_checker.check_health(&health_url, Some(5)).await {
+                debug!("Health check passed for TTS backend '{}'", backend_name);
+                health_ok = true;
+                break;
             }
         }
 

@@ -209,6 +209,7 @@ pub struct MockProcessSpawner {
     pub spawn_count: std::sync::Arc<std::sync::atomic::AtomicU32>,
     pub return_pid: std::sync::Arc<std::sync::Mutex<u32>>,
     pub kill_errors: std::sync::Arc<std::sync::Mutex<Vec<u32>>>,
+    pub fail_spawn: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[allow(dead_code)]
@@ -234,19 +235,28 @@ impl MockProcessSpawner {
     pub fn expect_kill_error(&self, pid: u32) {
         self.kill_errors.lock().unwrap().push(pid);
     }
+
+    /// Configure the mock to fail the next (and every subsequent) spawn.
+    pub fn set_fail_spawn(&self, fail: bool) {
+        self.fail_spawn
+            .store(fail, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 #[async_trait::async_trait]
 impl ProcessSpawner for MockProcessSpawner {
     async fn spawn(
         &self,
-        _cmd: &str,
+        cmd: &str,
         _args: &[String],
         _env: &[(&str, String)],
         _cwd: Option<&Path>,
     ) -> Result<SpawnedProcess> {
         self.spawn_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.fail_spawn.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(anyhow::anyhow!("Mock spawn error for '{}'", cmd));
+        }
         let pid = *self.return_pid.lock().unwrap();
         Ok(SpawnedProcess { pid })
     }

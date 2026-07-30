@@ -615,3 +615,81 @@ pub async fn list_backend_versions(
         ),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use axum::body::Body;
+    use axum::http::Request;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use tama_core::config::Config;
+    use tama_core::proxy::ProxyState;
+    use tower::ServiceExt;
+
+    fn test_web_state() -> crate::web_types::WebState {
+        crate::web_types::WebState {
+            jobs: Some(Arc::new(crate::web_types::JobManager::new())),
+            capabilities: None,
+            update_checker: Arc::new(tama_core::updates::UpdateChecker::default()),
+            binary_version: "test".to_string(),
+            update_tx: Arc::new(tokio::sync::Mutex::new(None)),
+            upload_lock: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            repository: None,
+        }
+    }
+
+    /// GET /tama/v1/backends on empty registry → 200 with empty arrays.
+    #[tokio::test]
+    async fn test_list_backends_empty_registry() {
+        let config = Config::default();
+        let state = Arc::new(ProxyState::new(config, None));
+
+        let web_state = Arc::new(test_web_state());
+        let router = crate::router::build_web_routes(web_state.clone())
+            .with_state(state)
+            .layer(axum::extract::Extension(web_state.as_ref().clone()));
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/tama/v1/backends")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = router.oneshot(req).await.expect("request should complete");
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+
+        let body_str = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("body should be readable");
+        let json: serde_json::Value =
+            serde_json::from_slice(&body_str).expect("body should be valid JSON");
+
+        assert_eq!(json["backends"], serde_json::Value::Array(Vec::new()));
+        assert_eq!(json["custom"], serde_json::Value::Array(Vec::new()));
+    }
+
+    /// GET /tama/v1/backends/:name/versions for unknown backend → 404.
+    #[tokio::test]
+    async fn test_list_backend_versions_unknown_404() {
+        let config = Config::default();
+        let state = Arc::new(ProxyState::new(config, None));
+
+        let web_state = Arc::new(test_web_state());
+        let router = crate::router::build_web_routes(web_state.clone())
+            .with_state(state)
+            .layer(axum::extract::Extension(web_state.as_ref().clone()));
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/tama/v1/backends/nonexistent_backend/versions")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = router.oneshot(req).await.expect("request should complete");
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::NOT_FOUND,
+            "unknown backend versions should return 404"
+        );
+    }
+}
