@@ -6,15 +6,6 @@ use leptos::task::spawn_local;
 use super::types;
 use crate::utils::{extract_and_store_csrf_token, get_request, post_request};
 
-/// Helper to convert event.target.checked as bool for checkboxes.
-pub fn target_bool(ev: &leptos::ev::Event) -> bool {
-    use wasm_bindgen::JsCast;
-    ev.target()
-        .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
-        .map(|i| i.checked())
-        .unwrap_or(false)
-}
-
 /// Parse a comma-separated string of integers into a Vec<u32>.
 /// Zero is a meaningful value — `-p 0` pins llama-bench to pure-TG mode.
 pub fn parse_sizes(s: &str) -> Vec<u32> {

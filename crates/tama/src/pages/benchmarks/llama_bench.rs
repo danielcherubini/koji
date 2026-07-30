@@ -8,7 +8,7 @@ use crate::pages::benchmarks::render_summaries_table;
 use crate::pages::benchmarks::selectors::{BackendSelect, ModelQuantSelect};
 use crate::pages::benchmarks::types::{BENCHMARK_TYPES, LLAMA_BENCH_PRESETS};
 use crate::pages::benchmarks::utils::{
-    parse_sizes, parse_threads, split_id_quant, split_name_variant, submit_bench_job, target_bool,
+    parse_sizes, parse_threads, split_id_quant, split_name_variant, submit_bench_job,
     BenchmarkFormState,
 };
 use crate::utils::target_value;
@@ -386,7 +386,7 @@ pub fn LlamaBench(
                                 type="checkbox"
                                 prop:checked=move || fa_sig.get()
                                 on:change=move |e| {
-                                    let checked = target_bool(&e);
+                                    let checked = event_target_checked(&e);
                                     flash_attn.set(checked);
                                 }
                             />

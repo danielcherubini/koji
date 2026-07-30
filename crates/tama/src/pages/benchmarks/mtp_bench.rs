@@ -7,7 +7,7 @@ use crate::components::job_log_panel::JobLogPanel;
 use crate::pages::benchmarks::selectors::{BackendSelect, ModelQuantSelect};
 use crate::pages::benchmarks::utils::{
     format_mean_stddev, parse_sizes, split_id_quant, split_name_variant, submit_bench_job,
-    target_bool, BenchmarkFormState,
+    BenchmarkFormState,
 };
 use crate::utils::target_value;
 
@@ -169,7 +169,7 @@ pub fn MtpBench(
                                 type="checkbox"
                                 prop:checked=move || flash_sig.get()
                                 on:change=move |e| {
-                                    flash_attn.set(target_bool(&e));
+                                    flash_attn.set(event_target_checked(&e));
                                 }
                             />
                             <label class="form-check-label" for="mtp-flash-attn">"Flash attention"</label>

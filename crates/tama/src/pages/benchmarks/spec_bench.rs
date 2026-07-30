@@ -8,7 +8,7 @@ use crate::pages::benchmarks::selectors::{BackendSelect, ModelQuantSelect};
 use crate::pages::benchmarks::types::BENCHMARK_TYPES;
 use crate::pages::benchmarks::utils::{
     delta_badge_class, format_delta, format_mean_stddev, parse_sizes, split_id_quant,
-    split_name_variant, submit_bench_job, target_bool, BenchmarkFormState,
+    split_name_variant, submit_bench_job, BenchmarkFormState,
 };
 use crate::utils::target_value;
 
@@ -317,7 +317,7 @@ pub fn SpecBench(
                                 id=for_attr.clone()
                                 prop:checked=move || spec_types_sig.get().contains(&id_for_checked)
                                 on:change=move |e| {
-                                    let checked = target_bool(&e);
+                                    let checked = event_target_checked(&e);
                                     let id_inner = id_str.clone();
                                     spec_types.update(|types| {
                                         if checked {
