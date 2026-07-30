@@ -294,6 +294,9 @@ pub fn Benchmarks() -> impl IntoView {
     // Test Type dropdown — selects a preset benchmark type that auto-fills form fields.
     let selected_bench_type = RwSignal::new("baseline".to_string());
 
+    // Error signal for llama-bench submit failures.
+    let error_msg = RwSignal::new(String::new());
+
     // Test configuration
     let pp_sizes_str = RwSignal::new("512".to_string());
     let tg_sizes_str = RwSignal::new("128".to_string());
@@ -439,8 +442,10 @@ pub fn Benchmarks() -> impl IntoView {
                     current_job_id.set(Some(job_id));
                 }
                 None => {
-                    // Submission failed — roll back is_running so the user can retry.
+                    // Submission failed — roll back is_running and show error.
                     is_running.set(false);
+                    error_msg
+                        .set("Failed to submit benchmark — check network connection.".to_string());
                 }
             }
         });
@@ -480,6 +485,7 @@ pub fn Benchmarks() -> impl IntoView {
     let (expanded_sig, _) = expanded_history.split();
     let (is_running_sig, _) = is_running.split();
     let (current_job_id_sig, _) = current_job_id.split();
+    let (error_sig, _) = error_msg.split();
 
     // Tab toggle — switch between llama-bench and spec-decoding views.
     let active_tab: RwSignal<String> = RwSignal::new("llama-bench".to_string());
@@ -503,9 +509,9 @@ pub fn Benchmarks() -> impl IntoView {
         // LLaMA-Bench tab content
         {move || {
             if active_tab.get() == "mtp-testing" {
-                view! { <MtpBench /> }.into_any()
+                view! { <MtpBench history_refresh_trigger=history_refresh /> }.into_any()
             } else if active_tab.get() == "spec-decode" {
-                view! { <SpecBench /> }.into_any()
+                view! { <SpecBench history_refresh_trigger=history_refresh /> }.into_any()
             } else {
                 view! {
                     // Test Type dropdown
@@ -796,6 +802,20 @@ pub fn Benchmarks() -> impl IntoView {
                         on_result=on_result_cb
                         on_status=on_status_cb
                     />
+                }.into_any()
+            } else {
+                view! { <div></div> }.into_any()
+            }
+        }}
+
+        // Error display
+        {move || {
+            let err = error_sig.get();
+            if !err.is_empty() {
+                view! {
+                    <div class="alert alert-danger mt-2">
+                        <p class="mb-0">{err}</p>
+                    </div>
                 }.into_any()
             } else {
                 view! { <div></div> }.into_any()

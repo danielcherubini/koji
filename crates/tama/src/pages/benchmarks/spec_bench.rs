@@ -122,7 +122,10 @@ fn format_delta(delta_pct: f64) -> String {
 }
 
 #[component]
-pub fn SpecBench() -> impl IntoView {
+pub fn SpecBench(
+    /// Trigger to bump history refetch after a run completes.
+    history_refresh_trigger: RwSignal<u32>,
+) -> impl IntoView {
     // ── Shared form state ──────────────────────────────────────────────
     let state = use_benchmark_form_state();
     let BenchmarkFormState {
@@ -275,12 +278,14 @@ pub fn SpecBench() -> impl IntoView {
         if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&results_json) {
             benchmark_results.set(Some(parsed));
         }
-        // Receiving a result event means the job is done — mark not running.
+        // Receiving a result event means the job is done — bump history.
         is_running.set(false);
+        history_refresh_trigger.update(|n| *n += 1);
     });
     let on_status_cb = Callback::new(move |status: String| {
         if status != "running" {
             is_running.set(false);
+            history_refresh_trigger.update(|n| *n += 1);
         }
     });
 

@@ -14,7 +14,10 @@ use crate::pages::benchmarks::utils::{
 use crate::utils::post_request;
 
 #[component]
-pub fn MtpBench() -> impl IntoView {
+pub fn MtpBench(
+    /// Trigger to bump history refetch after a run completes.
+    history_refresh_trigger: RwSignal<u32>,
+) -> impl IntoView {
     // ── Shared form state ──────────────────────────────────────────────
     let state = use_benchmark_form_state();
     let BenchmarkFormState {
@@ -53,7 +56,7 @@ pub fn MtpBench() -> impl IntoView {
         let (backend_name, gpu_variant) = split_name_variant(&raw_backend);
 
         let draft_max_values = parse_sizes(&draft_max_str.get());
-        let ngl_val: Option<u32> = if ngl_str.get().is_empty() {
+        let draft_ngl: Option<u32> = if ngl_str.get().is_empty() {
             None
         } else {
             ngl_str.get().parse::<u32>().ok()
@@ -71,8 +74,8 @@ pub fn MtpBench() -> impl IntoView {
                 "backend_name": backend_name,
                 "gpu_variant": gpu_variant,
                 "draft_max_values": draft_max_values,
-                "ngl": ngl_val,
-                "draft_ngl": Some(99u32),
+                "ngl": Option::<u32>::None,
+                "draft_ngl": draft_ngl,
                 "flash_attn": flash,
             });
 
@@ -118,12 +121,14 @@ pub fn MtpBench() -> impl IntoView {
         if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&results_json) {
             benchmark_results.set(Some(parsed));
         }
-        // Receiving a result event means the job is done.
+        // Receiving a result event means the job is done — bump history.
         is_running.set(false);
+        history_refresh_trigger.update(|n| *n += 1);
     });
     let on_status_cb = Callback::new(move |status: String| {
         if status != "running" {
             is_running.set(false);
+            history_refresh_trigger.update(|n| *n += 1);
         }
     });
 
