@@ -15,8 +15,8 @@ use self::mtp_bench::MtpBench;
 use self::spec_bench::SpecBench;
 use self::types::{HistoryEntry, BENCHMARK_TYPES, LLAMA_BENCH_PRESETS};
 use self::utils::{
-    fetch_bench_backends, format_mean_stddev, format_relative, format_timestamp, parse_sizes,
-    split_id_quant, use_benchmark_form_state, BenchmarkFormState,
+    fetch_installed_backend_variants, format_mean_stddev, format_relative, format_timestamp,
+    parse_sizes, split_id_quant, split_name_variant, use_benchmark_form_state, BenchmarkFormState,
 };
 use crate::components::job_log_panel::JobLogPanel;
 use crate::components::tab_buttons::{TabButton, TabButtons};
@@ -288,8 +288,8 @@ pub fn Benchmarks() -> impl IntoView {
         model_refresh: _,
     } = state;
 
-    // Fetch available backends for llama-bench selection.
-    fetch_bench_backends(available_backends);
+    // Fetch installed backend variants for llama-bench selection.
+    fetch_installed_backend_variants(available_backends);
 
     // Test Type dropdown — selects a preset benchmark type that auto-fills form fields.
     let selected_bench_type = RwSignal::new("baseline".to_string());
@@ -397,15 +397,15 @@ pub fn Benchmarks() -> impl IntoView {
         current_job_id.set(None);
 
         spawn_local(async move {
-            let backend_name = if selected_backend.get().is_empty() {
-                None
-            } else {
-                Some(selected_backend.get())
-            };
+            // Parse "name:variant" format from selected backend.
+            let raw_backend = selected_backend.get();
+            let (backend_name, gpu_variant) = split_name_variant(&raw_backend);
+
             let body = serde_json::json!({
                 "model_id": model_id,
                 "quant": quant,
                 "backend_name": backend_name,
+                "gpu_variant": gpu_variant,
                 "benchmark_type": Some(selected_bench_type.get()),
                 "pp_sizes": pp,
                 "tg_sizes": tg,

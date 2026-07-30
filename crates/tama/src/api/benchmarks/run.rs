@@ -32,6 +32,14 @@ pub async fn run_benchmark_inner(
     // This prevents GPU memory conflicts when the model is already loaded.
     unload_model_before_benchmark(&client, &proxy_base_url, &req.model_id, &job.id).await;
 
+    // Parse gpu_variant from wire string to GpuVariant enum.
+    let gpu_variant: Option<tama_core::gpu::GpuVariant> = match req.gpu_variant {
+        Some(ref s) => Some(<tama_core::gpu::GpuVariant as std::str::FromStr>::from_str(
+            s,
+        )?),
+        None => None,
+    };
+
     // Clone fields we need after consuming `req`
     let model_id = req.model_id.clone();
     let backend_name = req.backend_name.clone();
@@ -92,6 +100,7 @@ pub async fn run_benchmark_inner(
         &model_id,
         quant.as_deref(),
         backend_name.as_deref(),
+        gpu_variant,
         &bench_config,
         &sink,
     )

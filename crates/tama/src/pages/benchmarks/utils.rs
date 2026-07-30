@@ -131,33 +131,6 @@ pub fn use_benchmark_form_state() -> BenchmarkFormState {
     }
 }
 
-/// Fetch available backends for llama-bench selection.
-/// Populates (name, display_name) pairs from root["backends"].
-pub fn fetch_bench_backends(available_backends: RwSignal<Vec<(String, String)>>) {
-    spawn_local(async move {
-        if let Ok(resp) = get_request("/tama/v1/backends").send().await {
-            extract_and_store_csrf_token(&resp);
-            if let Ok(root) = resp.json::<serde_json::Value>().await {
-                if let Some(backends_arr) = root.get("backends").and_then(|v| v.as_array()) {
-                    let backend_list: Vec<(String, String)> = backends_arr
-                        .iter()
-                        .filter_map(|b| {
-                            let name = b.get("type")?.as_str()?.to_string();
-                            let display = b
-                                .get("display_name")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or(&name)
-                                .to_string();
-                            Some((name, display))
-                        })
-                        .collect();
-                    available_backends.update(|list| *list = backend_list);
-                }
-            }
-        }
-    });
-}
-
 /// Fetch installed backend variants for spec/mtp forms.
 /// Reads both root["backends"] and root["custom"], installed-only,
 /// value format is "name:variant".

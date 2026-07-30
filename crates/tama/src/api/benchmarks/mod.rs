@@ -43,6 +43,10 @@ pub struct BenchmarkRunRequest {
     /// backend is resolved from the model config.
     #[serde(default)]
     pub backend_name: Option<String>,
+    /// Optional GPU variant to use for the backend (e.g. "cpu", "cuda", "rocm", "vulkan").
+    /// When provided, overrides config/DB resolution for the backend path.
+    #[serde(default)]
+    pub gpu_variant: Option<String>,
     pub pp_sizes: Vec<u32>,
     pub tg_sizes: Vec<u32>,
     pub runs: u32,
