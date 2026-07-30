@@ -43,6 +43,8 @@ fn make_test_record(repo_id: &str) -> ModelConfigRecord {
         spec_decoding: None,
         created_at: now.clone(),
         updated_at: now,
+        n_batch: None,
+        n_ubatch: None,
     }
 }
 

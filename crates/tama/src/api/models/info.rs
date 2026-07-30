@@ -180,6 +180,13 @@ fn model_entry_json(
         "quants": quants_json,
         "modalities": m.modalities,
         "spec_decoding": serde_json::to_value(&m.spec_decoding).unwrap_or_default(),
+        "n_batch": m.n_batch,
+        "n_ubatch": m.n_ubatch,
+        "capabilities": serde_json::to_value(tama_core::models::model_capabilities(
+            m,
+            None, // list-time: GGUF not parsed, use heuristics only
+        ))
+        .unwrap_or_default(),
     });
 
     if let Some(meta) = db_meta {
@@ -399,6 +406,8 @@ mod tests {
             spec_decoding: None,
             created_at: "2025-01-01T00:00:00Z".to_string(),
             updated_at: "2025-01-01T00:00:00Z".to_string(),
+            n_batch: None,
+            n_ubatch: None,
         }
     }
 
@@ -467,6 +476,27 @@ mod tests {
             result_none["mtp_model"].is_null(),
             "mtp_model should be null in API JSON when not set"
         );
+    }
+
+    #[test]
+    fn test_model_entry_json_includes_capabilities() {
+        let record = make_record();
+        let config = make_config(None);
+        let tmp = std::path::Path::new("/tmp");
+
+        let result = model_entry_json(1, &record, &config, tmp, None);
+
+        // capabilities should be present in the JSON
+        assert!(
+            result.get("capabilities").is_some(),
+            "capabilities field should be present in model JSON"
+        );
+
+        // With no MTP/mmproj indicators, all should be false
+        let caps = result["capabilities"].as_object().unwrap();
+        assert_eq!(caps["supports_mtp"], false);
+        assert_eq!(caps["has_mtp_draft_file"], false);
+        assert_eq!(caps["has_mmproj"], false);
     }
 
     // ── resolve_model_record integration tests ────────────────────────────────

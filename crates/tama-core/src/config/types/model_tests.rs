@@ -1,4 +1,5 @@
 use super::*;
+use crate::db::queries::ModelConfigRecord;
 
 /// Test that SpecDecodingConfig round-trips through TOML serialization.
 #[test]
@@ -188,4 +189,176 @@ fn test_spec_decoding_json_camel_case_roundtrip() {
     let deserialized: SpecDecodingConfig =
         serde_json::from_str(&json).expect("Failed to deserialize SpecDecodingConfig");
     assert_eq!(deserialized, spec);
+}
+
+/// Test that legacy `-b` / `--batch-size` args normalize into `n_batch`.
+#[test]
+fn test_normalize_legacy_batch_args_short_flag() {
+    let record = ModelConfigRecord {
+        repo_id: "test/model".to_string(),
+        backend: "llama_cpp".to_string(),
+        args: Some(serde_json::to_string(&vec!["-ngl", "99", "-b", "2048"]).unwrap()),
+        ..Default::default()
+    };
+
+    let config = ModelConfig::from_db_record(&record);
+    assert_eq!(config.n_batch, Some(2048));
+    assert_eq!(config.args, vec!["-ngl", "99"]);
+}
+
+/// Test that legacy `--ubatch-size=VALUE` arg normalizes into `n_ubatch`.
+#[test]
+fn test_normalize_legacy_ubatch_flag_equals_form() {
+    let record = ModelConfigRecord {
+        repo_id: "test/model".to_string(),
+        backend: "llama_cpp".to_string(),
+        args: Some(serde_json::to_string(&vec!["-ngl", "99", "--ubatch-size=512"]).unwrap()),
+        ..Default::default()
+    };
+
+    let config = ModelConfig::from_db_record(&record);
+    assert_eq!(config.n_ubatch, Some(512));
+    assert_eq!(config.args, vec!["-ngl", "99"]);
+}
+
+/// Test that both `-b` and `--ubatch-size` normalize together.
+#[test]
+fn test_normalize_both_batch_and_ubatch() {
+    let record = ModelConfigRecord {
+        repo_id: "test/model".to_string(),
+        backend: "llama_cpp".to_string(),
+        args: Some(
+            serde_json::to_string(&vec!["-ngl", "99", "-b", "2048", "--ubatch-size=512"]).unwrap(),
+        ),
+        ..Default::default()
+    };
+
+    let config = ModelConfig::from_db_record(&record);
+    assert_eq!(config.n_batch, Some(2048));
+    assert_eq!(config.n_ubatch, Some(512));
+    assert_eq!(config.args, vec!["-ngl", "99"]);
+}
+
+/// Test that explicit column values win over args flags.
+/// Legacy `-b`/`--batch-size` and `-ub`/`--ubatch-size` flags are always
+/// removed from args once processed, regardless of whether the column
+/// already has a value (the column value takes priority for spawn args).
+#[test]
+fn test_column_values_win_over_args() {
+    let record = ModelConfigRecord {
+        repo_id: "test/model".to_string(),
+        backend: "llama_cpp".to_string(),
+        n_batch: Some(4096),
+        n_ubatch: Some(1024),
+        args: Some(
+            serde_json::to_string(&vec!["-ngl", "99", "-b", "2048", "--ubatch-size=512"]).unwrap(),
+        ),
+        ..Default::default()
+    };
+
+    let config = ModelConfig::from_db_record(&record);
+    // Column values should win
+    assert_eq!(config.n_batch, Some(4096));
+    assert_eq!(config.n_ubatch, Some(1024));
+    // Legacy flags are removed from args even when columns already have values
+    assert_eq!(config.args, vec!["-ngl", "99"]);
+}
+
+/// Test that unparseable values are left in args.
+#[test]
+fn test_unparseable_values_left_in_args() {
+    let record = ModelConfigRecord {
+        repo_id: "test/model".to_string(),
+        backend: "llama_cpp".to_string(),
+        args: Some(serde_json::to_string(&vec!["-b", "not_a_number"]).unwrap()),
+        ..Default::default()
+    };
+
+    let config = ModelConfig::from_db_record(&record);
+    assert_eq!(config.n_batch, None);
+    assert_eq!(config.args, vec!["-b", "not_a_number"]);
+}
+
+/// Test that `--batch-size VALUE` (long flag with space) normalizes.
+#[test]
+fn test_normalize_long_flag_with_space() {
+    let record = ModelConfigRecord {
+        repo_id: "test/model".to_string(),
+        backend: "llama_cpp".to_string(),
+        args: Some(serde_json::to_string(&vec!["--batch-size", "8192"]).unwrap()),
+        ..Default::default()
+    };
+
+    let config = ModelConfig::from_db_record(&record);
+    assert_eq!(config.n_batch, Some(8192));
+    assert!(config.args.is_empty());
+}
+
+/// Test that `-ub VALUE` (short flag) normalizes.
+#[test]
+fn test_normalize_short_ub_flag() {
+    let record = ModelConfigRecord {
+        repo_id: "test/model".to_string(),
+        backend: "llama_cpp".to_string(),
+        args: Some(serde_json::to_string(&vec!["-ub", "256"]).unwrap()),
+        ..Default::default()
+    };
+
+    let config = ModelConfig::from_db_record(&record);
+    assert_eq!(config.n_ubatch, Some(256));
+    assert!(config.args.is_empty());
+}
+
+/// Test that ModelConfig with n_batch/n_ubatch round-trips through DB record.
+#[test]
+fn test_model_config_n_batch_n_ubatch_roundtrip() {
+    let mc = ModelConfig {
+        backend: "llama_cpp".to_string(),
+        n_batch: Some(2048),
+        n_ubatch: Some(512),
+        ..Default::default()
+    };
+
+    let record = mc.to_db_record("owner/repo");
+    assert_eq!(record.n_batch, Some(2048));
+    assert_eq!(record.n_ubatch, Some(512));
+
+    let round_trip = ModelConfig::from_db_record(&record);
+    assert_eq!(round_trip.n_batch, Some(2048));
+    assert_eq!(round_trip.n_ubatch, Some(512));
+}
+
+/// Test that None values round-trip as NULL.
+#[test]
+fn test_model_config_none_n_batch_n_ubatch_roundtrip() {
+    let mc = ModelConfig {
+        backend: "llama_cpp".to_string(),
+        n_batch: None,
+        n_ubatch: None,
+        ..Default::default()
+    };
+
+    let record = mc.to_db_record("owner/repo");
+    assert_eq!(record.n_batch, None);
+    assert_eq!(record.n_ubatch, None);
+
+    let round_trip = ModelConfig::from_db_record(&record);
+    assert_eq!(round_trip.n_batch, None);
+    assert_eq!(round_trip.n_ubatch, None);
+}
+
+/// Test that args without legacy flags are left untouched.
+#[test]
+fn test_no_legacy_flags_unchanged() {
+    let record = ModelConfigRecord {
+        repo_id: "test/model".to_string(),
+        backend: "llama_cpp".to_string(),
+        args: Some(serde_json::to_string(&vec!["-ngl", "99", "--log-tokens"]).unwrap()),
+        ..Default::default()
+    };
+
+    let config = ModelConfig::from_db_record(&record);
+    assert_eq!(config.n_batch, None);
+    assert_eq!(config.n_ubatch, None);
+    assert_eq!(config.args, vec!["-ngl", "99", "--log-tokens"]);
 }

@@ -1,3 +1,5 @@
+pub mod capabilities;
+pub use capabilities::{model_capabilities, ModelCapabilities};
 pub mod card;
 pub mod config_key;
 pub mod gguf;

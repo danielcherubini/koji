@@ -13,8 +13,8 @@ Plans for features, refactors, and bug fixes in the Tama project.
 ## Quick Stats
 
 - **Total Plans**: 79
-- **Backlog**: 5
-- **Completed**: 73 ✅
+- **Backlog**: 0
+- **Completed**: 79 ✅
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan.
 
@@ -29,10 +29,7 @@ Current plans ready for execution, ordered by dependency-first cascade priority:
 
 | Plan | Description | Depends on |
 |------|-------------|------------|
-| [plan-180 Benchmark Bug Fixes](plan-180-benchmark-bug-fixes.md) | Fix spec/MTP history conversion arms, gpu_variant backend dropdown, history refresh, draft_ngl, success/partial/failed status, silent submit errors | — |
-| [plan-181 Model Batch/µ-batch Fields](plan-181-model-batch-ubatch-fields.md) | First-class `n_batch`/`n_ubatch` model fields (migration `_0041`, args normalization, `-b`/`-ub` spawn injection, editor dropdowns, bench prefill) | — |
-| [plan-182 Benchmarks Frontend Refactor](plan-182-benchmarks-frontend-refactor.md) | Extract LlamaBenchForm, shared ModelQuantSelect/BackendSelect/submit helper, hoisted tab state, type dedup, dead code, utils tests | plan-180 |
-| [plan-183 Benchmark Suite](plan-183-benchmark-suite.md) | One-button capability-aware benchmark suite: GGUF nextn detection, `POST /benchmarks/suite` sequential job (ADR-0004), `suite_id` grouping (migration `_0042`), Suite tab + models-page button | plan-180, plan-181, plan-182 |
+| *(backlog empty)* | | |
 
 ---
 

@@ -138,6 +138,98 @@ pub struct ModelConfig {
     /// Speculative decoding configuration.
     #[serde(default)]
     pub spec_decoding: SpecDecodingConfig,
+    /// Pre-allocated context KV cache size (llama.cpp --batch). None = backend default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n_batch: Option<u32>,
+    /// Maximum number of unique sequences to process in a single batch
+    /// (llama.cpp --ubatch). None = backend default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n_ubatch: Option<u32>,
+}
+
+/// Normalize legacy `-b`/`--batch-size` and `-ub`/`--ubatch-size` args into
+/// explicit `n_batch` / `n_ubatch` fields.
+///
+/// Rules:
+/// - Explicit column values (when `Some`) always take priority over any flag found in args.
+/// - Only extracts a value from args when the corresponding column is `None`.
+/// - Legacy `-b`/`--batch-size` and `-ub`/`--ubatch-size` flags are always removed
+///   from args once processed, regardless of whether a column value was set.
+/// - Supports both `--flag value` (two elements) and `--flag=value` (one element).
+///   Also supports short forms `-b` and `-ub`.
+///   Also supports long forms like `--batch-size` and `--ubatch-size`.
+/// - Unparseable values are left in args.
+///
+pub fn normalize_legacy_args(
+    mut args: Vec<String>,
+    col_n_batch: Option<u32>,
+    col_n_ubatch: Option<u32>,
+) -> (Option<u32>, Option<u32>, Vec<String>) {
+    let mut n_batch = col_n_batch;
+    let mut n_ubatch = col_n_ubatch;
+
+    let mut i = 0;
+    while i < args.len() {
+        let arg = &args[i];
+        if let Some((flag_kind, size, consumed)) = try_parse_flag(arg, &args, i) {
+            match (flag_kind, size) {
+                ("batch", v) if n_batch.is_none() => {
+                    n_batch = Some(v);
+                }
+                ("ubatch", v) if n_ubatch.is_none() => {
+                    n_ubatch = Some(v);
+                }
+                _ => {}
+            }
+            // Remove consumed elements (from end to preserve indices)
+            for _ in 0..consumed {
+                args.remove(i);
+            }
+        } else {
+            i += 1;
+        }
+    }
+
+    (n_batch, n_ubatch, args)
+}
+
+/// Try to parse a flag at position `i` in `args`.
+/// Returns `(flag_kind, value_as_u32, elements_consumed)` on success,
+/// where `flag_kind` is normalized to "batch" or "ubatch".
+fn try_parse_flag<'a>(arg: &'a str, args: &'a [String], i: usize) -> Option<(&'a str, u32, usize)> {
+    // Check for --flag=value form
+    if let Some((flag, value)) = arg.split_once('=') {
+        let flag_stripped = flag.strip_prefix("--").or_else(|| flag.strip_prefix('-'))?;
+        let kind = normalize_flag_name(flag_stripped);
+        if let Some(kind) = kind {
+            if let Ok(size) = value.parse::<u32>() {
+                return Some((kind, size, 1));
+            }
+        }
+        return None;
+    }
+
+    // Check for --flag value (next element) or -b / -ub
+    let flag_stripped = arg.strip_prefix("--").or_else(|| arg.strip_prefix('-'))?;
+    if let Some(kind) = normalize_flag_name(flag_stripped) {
+        // Need a next element for the value
+        let value = args.get(i + 1)?;
+        if let Ok(size) = value.parse::<u32>() {
+            return Some((kind, size, 2));
+        }
+    }
+    None // unparseable — leave in args
+}
+
+/// Normalize a flag name to "batch" or "ubatch".
+/// Handles: `b` → `batch`, `ub` → `ubatch`, `batch-size` → `batch`,
+/// `ubatch-size` → `ubatch`, and exact matches like `batch`, `ubatch`.
+fn normalize_flag_name(name: &str) -> Option<&'static str> {
+    match name {
+        "b" | "batch" | "batch-size" => Some("batch"),
+        "ub" | "ubatch" | "ubatch-size" => Some("ubatch"),
+        _ => None,
+    }
 }
 
 impl ModelConfig {
@@ -193,12 +285,34 @@ impl ModelConfig {
             spec_decoding: serde_json::to_string(&self.spec_decoding).ok(),
             created_at: now.clone(),
             updated_at: now,
+            n_batch: self.n_batch.map(|v| v as i32),
+            n_ubatch: self.n_ubatch.map(|v| v as i32),
         }
     }
 
     /// Deserialise from a DB record. JSON fields are parsed; parse errors
     /// fall back to None / default so a bad JSON column never hard-fails.
+    ///
+    /// Legacy args normalization: when `n_batch` or `n_ubatch` is `None` in the
+    /// DB row, scans the parsed `args` array for `-b`/`--batch-size` and `-ub`/
+    /// `--ubatch-size` flags (both `--flag value` and `--flag=value` forms),
+    /// populates the corresponding field from the parsed u32, and removes those
+    /// elements from `args`. Explicit column values always win over args flags.
     pub fn from_db_record(record: &ModelConfigRecord) -> Self {
+        // Parse args from JSON
+        let args: Vec<String> = record
+            .args
+            .as_ref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
+
+        // Extract explicit column values (these always win)
+        let col_n_batch = record.n_batch.map(|v| v as u32);
+        let col_n_ubatch = record.n_ubatch.map(|v| v as u32);
+
+        // Normalize legacy args into new fields when columns are None
+        let (n_batch, n_ubatch, args) = normalize_legacy_args(args, col_n_batch, col_n_ubatch);
+
         Self {
             backend: record.backend.clone(),
             gpu_variant: record.gpu_variant.as_deref().map(|s| {
@@ -229,11 +343,7 @@ impl ModelConfig {
             quant: record.selected_quant.clone(),
             mmproj: record.selected_mmproj.clone(),
             mtp_model: record.selected_mtp_model.clone().filter(|s| !s.is_empty()),
-            args: record
-                .args
-                .as_ref()
-                .and_then(|s| serde_json::from_str(s).ok())
-                .unwrap_or_default(),
+            args,
             sampling: record
                 .sampling
                 .as_ref()
@@ -266,6 +376,8 @@ impl ModelConfig {
                 .as_ref()
                 .and_then(|s| serde_json::from_str(s).ok())
                 .unwrap_or_default(),
+            n_batch,
+            n_ubatch,
         }
     }
 }

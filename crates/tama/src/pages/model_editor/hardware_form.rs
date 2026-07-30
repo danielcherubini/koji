@@ -9,6 +9,9 @@ const KV_QUANT_OPTIONS: &[&str] = &[
     "f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1",
 ];
 
+const BATCH_OPTIONS: &[u32] = &[128, 256, 512, 1024, 2048, 4096, 8192];
+const UBATCH_OPTIONS: &[u32] = &[32, 64, 128, 256, 512, 1024, 2048, 4096];
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum KvQuantField {
     K,
@@ -91,6 +94,15 @@ pub fn ModelEditorHardwareForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                 set_input_value(
                     "field-kv-custom-v",
                     f.cache_type_v.as_deref().unwrap_or_default(),
+                );
+                // Batch / µ-batch selects
+                set_input_value(
+                    "field-batch",
+                    &f.n_batch.map(|v| v.to_string()).unwrap_or_default(),
+                );
+                set_input_value(
+                    "field-ubatch",
+                    &f.n_ubatch.map(|v| v.to_string()).unwrap_or_default(),
                 );
                 last_init_id.set_value(Some(f.id.clone()));
             }
@@ -228,6 +240,70 @@ pub fn ModelEditorHardwareForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                 </option>
             </select>
             <KvQuantCustomInput form=form field=KvQuantField::V />
+
+            <label class="form-label" for="field-batch">
+                "Batch size"
+                <div class="form-hint">Pre-allocated context KV cache size (llama.cpp --batch). Default = backend default.</div>
+            </label>
+            <select
+                id="field-batch"
+                class="form-select"
+                on:change=move |e| {
+                    let val = target_value(&e);
+                    form.update(|f| {
+                        if let Some(form) = f {
+                            form.n_batch = if val.is_empty() {
+                                None
+                            } else {
+                                val.parse::<u32>().ok()
+                            };
+                        }
+                    });
+                }
+            >
+                <option value="">"Default (backend default)"</option>
+                {BATCH_OPTIONS.iter().map(|opt| {
+                    let selected = form.get_untracked()
+                        .as_ref()
+                        .and_then(|f| f.n_batch)
+                        == Some(*opt);
+                    let val = opt.to_string();
+                    let label = opt.to_string();
+                    view! { <option value=val selected=selected>{label}</option> }
+                }).collect::<Vec<_>>()}
+            </select>
+
+            <label class="form-label" for="field-ubatch">
+                "µ-batch size"
+                <div class="form-hint">Maximum number of unique sequences per batch (llama.cpp --ubatch). Must be at most equal to batch size.</div>
+            </label>
+            <select
+                id="field-ubatch"
+                class="form-select"
+                on:change=move |e| {
+                    let val = target_value(&e);
+                    form.update(|f| {
+                        if let Some(form) = f {
+                            form.n_ubatch = if val.is_empty() {
+                                None
+                            } else {
+                                val.parse::<u32>().ok()
+                            };
+                        }
+                    });
+                }
+            >
+                <option value="">"Default (backend default)"</option>
+                {UBATCH_OPTIONS.iter().map(|opt| {
+                    let selected = form.get_untracked()
+                        .as_ref()
+                        .and_then(|f| f.n_ubatch)
+                        == Some(*opt);
+                    let val = opt.to_string();
+                    let label = opt.to_string();
+                    view! { <option value=val selected=selected>{label}</option> }
+                }).collect::<Vec<_>>()}
+            </select>
         </div>
     }
 }

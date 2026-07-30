@@ -61,6 +61,8 @@ fn seed_model(config_dir: &std::path::Path, repo_id: &str, commit_sha: &str, lfs
         spec_decoding: None,
         created_at: "2024-01-01T00:00:00Z".into(),
         updated_at: "2024-01-01T00:00:00Z".into(),
+        n_batch: None,
+        n_ubatch: None,
     };
     let model_id = queries::upsert_model_config(&open.conn, &record).unwrap();
 
@@ -284,6 +286,8 @@ async fn test_run_check_model_without_repo_records_unknown() {
         spec_decoding: None,
         created_at: "2024-01-01T00:00:00Z".into(),
         updated_at: "2024-01-01T00:00:00Z".into(),
+        n_batch: None,
+        n_ubatch: None,
     };
     let model_id = queries::upsert_model_config(&open.conn, &record).unwrap();
 

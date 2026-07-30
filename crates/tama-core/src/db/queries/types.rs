@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// This type is part of `ModelManager`'s public API and is also returned
 /// directly by `Repository` methods.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModelConfigRecord {
     pub id: i64,         // auto-increment primary key
     pub repo_id: String, // HF repo name
@@ -47,10 +47,43 @@ pub struct ModelConfigRecord {
     pub spec_decoding: Option<String>, // raw JSON string
     pub created_at: String,
     pub updated_at: String,
+    /// Pre-allocated context KV cache size (llama.cpp --batch). None = backend default.
+    pub n_batch: Option<i32>,
+    /// Maximum number of unique sequences to process in a single batch
+    /// (llama.cpp --ubatch). None = backend default.
+    pub n_ubatch: Option<i32>,
 }
 
 impl ModelConfigRecord {
-    /// All 35 columns in SELECT order (id first). Must match `from_row` index order.
+    /// All 37 columns in SELECT order (id first).
+    ///
+    /// Column index map (matching `from_row` .get(N) indices):
+    ///
+    /// | Index | Column              | Index | Column               |
+    /// |-------|---------------------|-------|----------------------|
+    /// | 0     | id                  | 19    | modalities           |
+    /// | 1     | repo_id             | 20    | profile              |
+    /// | 2     | display_name        | 21    | api_name             |
+    /// | 3     | backend             | 22    | health_check         |
+    /// | 4     | gpu_variant         | 23    | hf_format            |
+    /// | 5     | gpu_device          | 24    | hf_base_model        |
+    /// | 6     | enabled             | 25    | hf_pipeline_tag      |
+    /// | 7     | selected_quant      | 26    | hf_total_params      |
+    /// | 8     | selected_mmproj     | 27    | hf_active_params     |
+    /// | 9     | selected_mtp_model  | 28    | hf_architecture_type |
+    /// | 10    | context_length      | 29    | hf_context_length    |
+    /// | 11    | num_parallel        | 30    | hf_num_layers        |
+    /// | 12    | kv_unified          | 31    | hf_last_modified     |
+    /// | 13    | gpu_layers          | 32    | spec_decoding        |
+    /// | 14    | cache_type_k        | 33    | created_at           |
+    /// | 15    | cache_type_v        | 34    | updated_at           |
+    /// | 16    | port                | 35    | n_batch              |
+    /// | 17    | args                | 36    | n_ubatch             |
+    /// | 18    | sampling            |
+    ///
+    /// Migration _0041 appended `n_batch` (index 35) and `n_ubatch` (index 36)
+    /// as the final two columns. All queries use `COLUMNS` so indices stay
+    /// consistent across construction sites.
     pub(crate) const COLUMNS: &str =
         "id, repo_id, display_name, backend, gpu_variant, gpu_device, enabled, selected_quant, \
          selected_mmproj, selected_mtp_model, context_length, num_parallel, kv_unified, gpu_layers, \
@@ -59,9 +92,9 @@ impl ModelConfigRecord {
          hf_format, hf_base_model, hf_pipeline_tag, hf_total_params, \
          hf_active_params, hf_architecture_type, hf_context_length, \
          hf_num_layers, hf_last_modified, spec_decoding, \
-         created_at, updated_at";
+         created_at, updated_at, n_batch, n_ubatch";
 
-    /// The 34 non-`id` columns in INSERT order. Must stay in sync with `COLUMNS` minus `id`.
+    /// The 36 non-`id` columns in INSERT order. Must stay in sync with `COLUMNS` minus `id`.
     pub(crate) const INSERT_COLUMNS: &str =
         "repo_id, display_name, backend, gpu_variant, gpu_device, enabled, selected_quant, \
          selected_mmproj, selected_mtp_model, context_length, num_parallel, kv_unified, gpu_layers, \
@@ -70,7 +103,7 @@ impl ModelConfigRecord {
          hf_format, hf_base_model, hf_pipeline_tag, hf_total_params, \
          hf_active_params, hf_architecture_type, hf_context_length, \
          hf_num_layers, hf_last_modified, spec_decoding, \
-         created_at, updated_at";
+         created_at, updated_at, n_batch, n_ubatch";
 
     /// Map a row selected with `COLUMNS` order into a record.
     pub(crate) fn from_row(row: &Row) -> rusqlite::Result<Self> {
@@ -110,6 +143,8 @@ impl ModelConfigRecord {
             spec_decoding: row.get(32)?,
             created_at: row.get(33)?,
             updated_at: row.get(34)?,
+            n_batch: row.get(35)?,
+            n_ubatch: row.get(36)?,
         })
     }
 }

@@ -2,6 +2,7 @@ use crate::config::BackendConfig;
 
 mod aliases;
 mod basic;
+mod batch_args;
 mod context_np;
 mod gpu_device;
 mod kv_cache_types;

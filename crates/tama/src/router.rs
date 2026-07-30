@@ -22,7 +22,7 @@ use crate::api::backends::{
 use crate::api::backup::{create_backup, restore_preview, start_restore};
 use crate::api::benchmarks::{
     benchmark_events, delete_benchmark, get_benchmark_result, list_benchmark_history,
-    run_benchmark, run_mtp_benchmark, run_spec_benchmark,
+    run_benchmark, run_benchmark_suite, run_mtp_benchmark, run_spec_benchmark,
 };
 use tama_core::proxy::{
     forward_to_backend,
@@ -268,6 +268,10 @@ pub fn build_web_routes(
         .route(
             "/tama/v1/benchmarks/mtp-run",
             post(run_mtp_benchmark).layer(json_body_limit),
+        )
+        .route(
+            "/tama/v1/benchmarks/suite",
+            post(run_benchmark_suite).layer(json_body_limit),
         )
         .route(
             "/tama/v1/pulls/:job_id/cancel",

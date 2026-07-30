@@ -66,6 +66,9 @@ pub struct LlamaBenchConfig {
 /// `backend_name` is an optional override — if provided, llama-bench is
 /// resolved from that backend's installation path instead of the model's
 /// configured backend.
+/// `gpu_variant` is an optional override for the GPU variant used to resolve
+/// the backend binary path. When `None`, falls back to the model config's
+/// own gpu_variant (preserving Auto behavior).
 ///
 /// This function is designed to be called from a background job — it streams
 /// progress via the provided ProgressSink.
@@ -74,6 +77,7 @@ pub async fn run_llama_bench(
     model_id: &str,
     quant: Option<&str>,
     backend_name: Option<&str>,
+    gpu_variant: Option<crate::gpu::GpuVariant>,
     bench_config: &LlamaBenchConfig,
     progress: &dyn ProgressSink,
 ) -> Result<BenchReport> {
@@ -84,6 +88,7 @@ pub async fn run_llama_bench(
         model_id,
         quant,
         backend_name,
+        gpu_variant,
         bench_config,
         progress,
     )
@@ -94,12 +99,14 @@ pub async fn run_llama_bench(
 ///
 /// This is the extraction point used by tests — the public function resolves
 /// `Config::config_dir()` and delegates here.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_llama_bench_with_dir(
     config: &Config,
     db_dir: &std::path::Path,
     model_id: &str,
     quant: Option<&str>,
     backend_name: Option<&str>,
+    gpu_variant: Option<crate::gpu::GpuVariant>,
     bench_config: &LlamaBenchConfig,
     progress: &dyn ProgressSink,
 ) -> Result<BenchReport> {
@@ -126,9 +133,11 @@ pub(crate) async fn run_llama_bench_with_dir(
     let model_path = resolve_model_path(config, db_dir, &conn, &model_configs, resolved_id, quant)?;
 
     let target_backend = backend_name.unwrap_or(&model_config.backend);
+    // CRITICAL: gpu_variant from the request takes priority; fall back to the
+    // model config's own gpu_variant (preserving Auto behavior when None).
+    let variant = gpu_variant.as_ref().or(model_config.gpu_variant.as_ref());
     let manager = crate::backends::BackendManager::open(db_dir)?;
-    let backend_path =
-        config.resolve_backend_path(target_backend, model_config.gpu_variant.as_ref(), &manager)?;
+    let backend_path = config.resolve_backend_path(target_backend, variant, &manager)?;
 
     let bench_binary = discovery::find_llama_bench(&backend_path).context(format!(
         "llama-bench not found for backend '{}'. Install llama.cpp from source or set LLAMA_BENCH_PATH",
@@ -457,6 +466,8 @@ mod tests {
             display_name: Some("Test Model".to_string()),
             db_id: None,
             spec_decoding: Default::default(),
+            n_batch: None,
+            n_ubatch: None,
         };
 
         let config_key = "test--test-model";
@@ -546,6 +557,7 @@ exit 0
             &config,
             &config_dir,
             "test--test-model",
+            None,
             None,
             None,
             &bench_config,
@@ -647,6 +659,7 @@ exit 1
             &config,
             &config_dir,
             "test--test-model",
+            None,
             None,
             None,
             &bench_config,

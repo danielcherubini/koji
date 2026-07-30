@@ -1,6 +1,6 @@
 use super::*;
 use crate::api::benchmarks::run::{resolve_model_path, unload_model_before_benchmark};
-use crate::api::benchmarks::BenchmarkProgressSink;
+use crate::api::benchmarks::{derive_status, BenchmarkProgressSink};
 use anyhow::Context;
 
 // ── Request DTO ───────────────────────────────────────────────────────
@@ -26,6 +26,9 @@ pub struct MtpBenchmarkRunRequest {
     pub context_size: Option<u32>,
     #[serde(default)]
     pub benchmark_type: Option<String>,
+    /// Suite identifier for grouping related benchmark runs within a suite.
+    #[serde(skip, default)]
+    pub suite_id: Option<String>,
 }
 
 fn default_draft_max_values() -> Vec<u32> {
@@ -219,6 +222,10 @@ pub async fn run_mtp_benchmark_inner(
     let pp_sizes_json = "[]";
     let tg_sizes_json = "[]";
 
+    // Derive run status from per-entry results: count entries with non-null error.
+    let entries_failed = result.entries.iter().filter(|e| e.error.is_some()).count();
+    let run_status = derive_status(result.entries.len() - entries_failed, entries_failed, false);
+
     // Get VRAM info
     let vram = query_vram();
 
@@ -227,6 +234,7 @@ pub async fn run_mtp_benchmark_inner(
     let model_id_for_trace = model_id.clone();
     let quant_for_trace = quant.clone();
     let target_backend_for_trace = target_backend.clone();
+    let run_status_for_insert = run_status.to_string();
 
     // Insert into database — pool the blocking SQLite call.
     let repo_handle_for_insert = repo_handle.clone();
@@ -249,8 +257,9 @@ pub async fn run_mtp_benchmark_inner(
             vram_used_mib: vram.as_ref().map(|v| v.used_mib as i64),
             vram_total_mib: vram.as_ref().map(|v| v.total_mib as i64),
             duration_seconds: 0.0,
-            status: "success".to_string(),
+            status: run_status_for_insert,
             benchmark_type: benchmark_type.clone(),
+            suite_id: req.suite_id,
         })?;
         Ok(())
     })

@@ -1,26 +1,30 @@
 //! Benchmarks page — run llama-bench and spec-decoding benchmarks from the web UI.
 
+mod llama_bench;
 mod mtp_bench;
+mod selectors;
 mod spec_bench;
-mod types;
+pub mod suite_bench;
+pub mod types;
 mod utils;
 
 use std::collections::{BTreeMap, HashSet};
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use wasm_bindgen::JsCast;
+use leptos_router::hooks::use_query_map;
 
+use self::llama_bench::LlamaBench;
 use self::mtp_bench::MtpBench;
 use self::spec_bench::SpecBench;
-use self::types::{HistoryEntry, BENCHMARK_TYPES, LLAMA_BENCH_PRESETS};
+use self::suite_bench::SuiteBench;
+use self::types::BenchmarkHistoryEntry;
 use self::utils::{
-    fetch_bench_backends, format_mean_stddev, format_relative, format_timestamp, parse_sizes,
-    split_id_quant, use_benchmark_form_state, BenchmarkFormState,
+    delta_badge_class, fetch_installed_backend_variants, format_delta, format_mean_stddev,
+    format_relative, format_timestamp, use_benchmark_form_state, BenchmarkFormState,
 };
-use crate::components::job_log_panel::JobLogPanel;
 use crate::components::tab_buttons::{TabButton, TabButtons};
-use crate::utils::{extract_and_store_csrf_token, get_request, post_request};
+use crate::utils::{extract_and_store_csrf_token, get_request};
 
 /// Render a table of per-summary results, adding columns for whichever
 /// per-run knobs actually vary between rows. A column for a constant knob is
@@ -143,53 +147,278 @@ fn render_summaries_table(summaries: &[serde_json::Value]) -> impl IntoView {
     }
 }
 
+/// Render a table of spec-decoding benchmark summaries.
+///
+/// Columns: SPEC TYPE | DRAFT MAX | T/S (±STDDEV) | Δ%
+fn render_spec_table(summaries: &[serde_json::Value]) -> impl IntoView {
+    let get_u64 = |s: &serde_json::Value, k: &str| s.get(k).and_then(|v| v.as_u64());
+    let get_str =
+        |s: &serde_json::Value, k: &str| s.get(k).and_then(|v| v.as_str()).map(|x| x.to_string());
+
+    let rows: Vec<_> = summaries
+        .iter()
+        .map(|s| {
+            let spec_type = get_str(s, "spec_type").unwrap_or_else(|| "—".to_string());
+            let draft_max = get_u64(s, "draft_max").unwrap_or(0);
+            let tg_mean = s.get("tg_mean").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let tg_stddev = s.get("tg_stddev").and_then(|v| v.as_f64()).unwrap_or(0.0);
+
+            // Prefer pre-rendered delta_pct_display from the backend,
+            // fall back to formatting delta_pct raw value.
+            let delta_display = if let Some(d) = get_str(s, "delta_pct_display") {
+                d
+            } else {
+                format_delta(s.get("delta_pct").and_then(|v| v.as_f64()).unwrap_or(0.0))
+            };
+            let delta_class =
+                delta_badge_class(s.get("delta_pct").and_then(|v| v.as_f64()).unwrap_or(0.0));
+
+            let ts_display = format_mean_stddev(tg_mean, tg_stddev);
+
+            (spec_type, draft_max, ts_display, delta_display, delta_class)
+        })
+        .collect();
+
+    view! {
+        <table class="table table-striped">
+            <thead>
+                <tr>
+                    <th>"Spec Type"</th>
+                    <th>"Draft Max"</th>
+                    <th class="text-right">"t/s (± stddev)"</th>
+                    <th class="text-right">"Δ%"</th>
+                </tr>
+            </thead>
+            <tbody>
+                {rows.into_iter().map(|(spec_type, draft_max, ts_display, delta_display, delta_class)| {
+                    view! {
+                        <tr>
+                            <td>{spec_type}</td>
+                            <td class="text-mono">{draft_max}</td>
+                            <td class="text-mono text-right">{ts_display}</td>
+                            <td class="text-mono text-right">
+                                <span class={delta_class}>{delta_display}</span>
+                            </td>
+                        </tr>
+                    }
+                }).collect::<Vec<_>>()}
+            </tbody>
+        </table>
+    }
+}
+
+/// Render a table of MTP (Multi-Token Prediction) benchmark summaries.
+///
+/// Columns: TEST | DRAFT MAX | T/S | ACCEPT %
+fn render_mtp_table(summaries: &[serde_json::Value]) -> impl IntoView {
+    let get_u64 = |s: &serde_json::Value, k: &str| s.get(k).and_then(|v| v.as_u64());
+    let get_str =
+        |s: &serde_json::Value, k: &str| s.get(k).and_then(|v| v.as_str()).map(|x| x.to_string());
+
+    let rows: Vec<_> = summaries
+        .iter()
+        .map(|s| {
+            let name = get_str(s, "name").unwrap_or_else(|| "—".to_string());
+            let draft_max = get_u64(s, "draft_max").unwrap_or(0);
+            let tg_mean = s.get("tg_mean").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let accept_rate = s.get("accept_rate").and_then(|v| v.as_f64());
+
+            let ts_display = format_mean_stddev(tg_mean, 0.0);
+            let acc_display = accept_rate
+                .map(|r| format!("{:.0}%", r * 100.0))
+                .unwrap_or_else(|| "—".to_string());
+
+            (name, draft_max, ts_display, acc_display)
+        })
+        .collect();
+
+    view! {
+        <table class="table table-striped">
+            <thead>
+                <tr>
+                    <th>"Test"</th>
+                    <th>"Draft Max"</th>
+                    <th class="text-right">"t/s"</th>
+                    <th class="text-right">"Accept %"</th>
+                </tr>
+            </thead>
+            <tbody>
+                {rows.into_iter().map(|(name, draft_max, ts_display, acc_display)| {
+                    view! {
+                        <tr>
+                            <td>{name}</td>
+                            <td class="text-mono">{draft_max}</td>
+                            <td class="text-mono text-right">{ts_display}</td>
+                            <td class="text-mono text-right">{acc_display}</td>
+                        </tr>
+                    }
+                }).collect::<Vec<_>>()}
+            </tbody>
+        </table>
+    }
+}
+
+/// Group benchmark history entries by `suite_id` for collapsible rendering.
+///
+/// Returns a `Vec` of groups where each group has:
+/// - `suite_id`: the shared suite identifier (or `None` for ungrouped entries)
+/// - `entries`: the entries belonging to this group
+/// - `timestamp`: earliest `created_at` in the group (used for header display)
+/// - `display_name`: model name from the first entry with a display_name
+/// - `status_chips`: per-type status badges for the group
+fn group_entries_by_suite(entries: &[BenchmarkHistoryEntry]) -> Vec<BenchmarkGroup<'_>> {
+    // Group entries by suite_id while preserving insertion order.
+    // Each ungrouped entry (suite_id = None) gets its own unique group
+    // to preserve global timestamp ordering across the entire history.
+    let mut suite_counter: u64 = 0;
+    let mut type_map: BTreeMap<Option<String>, Vec<&BenchmarkHistoryEntry>> = BTreeMap::new();
+
+    for entry in entries {
+        let key = match &entry.suite_id {
+            Some(id) => Some(id.clone()),
+            None => {
+                // Create a unique key per ungrouped entry to preserve ordering.
+                let unique_key = format!("__ungrouped_{}", suite_counter);
+                suite_counter += 1;
+                Some(unique_key)
+            }
+        };
+        type_map.entry(key).or_default().push(entry);
+    }
+
+    // Build groups in insertion order.
+    type_map
+        .into_iter()
+        .map(|(suite_id, group_entries)| {
+            let first = group_entries
+                .first()
+                .copied()
+                .unwrap_or_else(|| &entries[0]);
+            // Earliest timestamp in group (newest-first, so last element).
+            let timestamp = group_entries
+                .iter()
+                .map(|e| e.created_at)
+                .min()
+                .unwrap_or(first.created_at);
+            // Display name from first entry with one.
+            let display_name = group_entries
+                .iter()
+                .find_map(|e| e.display_name.clone().or_else(|| Some(e.model_id.clone())));
+            // Per-type status chips (sorted by key for deterministic rendering).
+            let mut type_statuses: BTreeMap<String, String> = BTreeMap::new();
+            for entry in &group_entries {
+                if let Some(typ) = &entry.benchmark_type {
+                    type_statuses.insert(typ.clone(), entry.status.clone());
+                }
+            }
+
+            BenchmarkGroup {
+                suite_id,
+                entries: group_entries,
+                timestamp,
+                display_name,
+                type_statuses,
+            }
+        })
+        .collect()
+}
+
+/// A group of benchmark history entries sharing the same `suite_id`.
+struct BenchmarkGroup<'a> {
+    suite_id: Option<String>,
+    entries: Vec<&'a BenchmarkHistoryEntry>,
+    timestamp: i64,
+    display_name: Option<String>,
+    type_statuses: BTreeMap<String, String>,
+}
+/// Render per-type status chips for a suite group header as Leptos views.
+///
+/// Uses proper reactive rendering instead of string-built `inner_html` to
+/// prevent stored XSS from attacker-controlled benchmark_type values.
+fn render_suite_chips(type_statuses: &BTreeMap<String, String>) -> impl IntoView {
+    view! {
+        <>
+            {type_statuses.iter().map(|(typ, status)| {
+                let badge_class = match status.as_str() {
+                    "success" => "badge badge-success",
+                    "partial" => "badge badge-warning",
+                    _ => "badge badge-danger",
+                };
+                view! {
+                    <span class={badge_class}>{format!("{}: {}", typ, status)}</span>
+                }
+            }).collect::<Vec<_>>()}
+        </>
+    }
+}
+
 #[component]
 pub fn Benchmarks() -> impl IntoView {
-    // Shared benchmark form state (model/backend selection, job tracking)
+    // ── Query-param preselect ──────────────────────────────────────
+    let query = use_query_map();
+    // Read query params once at mount time.
+    let initial_tab_val = query.with(|q| {
+        if let Some(tab) = q.get("tab") {
+            if tab == "suite"
+                || tab == "llama-bench"
+                || tab == "spec-decode"
+                || tab == "mtp-testing"
+            {
+                return tab.to_string();
+            }
+        }
+        // Fallback to default
+        "llama-bench".to_string()
+    });
+    // get() returns Option<String> — no clone needed
+    let initial_model_val = query.with(|q| q.get("model").clone());
+
+    // Shared benchmark form state (model/backend selection only)
     let state = use_benchmark_form_state();
     let BenchmarkFormState {
         selected_display_name,
-        selected_model,
+        selected_model: _,
         available_models,
-        selected_backend,
+        selected_backend: _,
         available_backends,
-        is_running,
-        current_job_id,
-        benchmark_results,
-        model_refresh: _,
-    } = state;
+        model_n_batch: _,
+        model_n_ubatch: _,
+    } = state.clone();
 
-    // Fetch available backends for llama-bench selection.
-    fetch_bench_backends(available_backends);
+    // Preselect model from query param — store id for later resolution.
+    let preselect_model_id = RwSignal::new(initial_model_val);
 
-    // Test Type dropdown — selects a preset benchmark type that auto-fills form fields.
-    let selected_bench_type = RwSignal::new("baseline".to_string());
+    // Once available_models loads, resolve the query-param model id to its
+    // display_name so the dropdown shows the correct selection and the
+    // existing utils.rs effect populates selected_model as "id:quant".
+    Effect::new(move |_| {
+        let _ = preselect_model_id.get();
+        let models = available_models.get();
+        if let Some(ref model_id) = preselect_model_id.get() {
+            // Try matching by display_name first, then by db_id string.
+            if let Some(entry) = models
+                .iter()
+                .find(|(_, name, _, _, _, _)| name == model_id)
+                .or_else(|| models.iter().find(|(id, _, _, _, _, _)| id == model_id))
+            {
+                let display_name = entry.1.clone();
+                selected_display_name.set(display_name);
+                // Clear the signal so this effect doesn't re-run.
+                preselect_model_id.set(None);
+            }
+        }
+    });
 
-    // Test configuration
-    let pp_sizes_str = RwSignal::new("512".to_string());
-    let tg_sizes_str = RwSignal::new("128".to_string());
-    let runs = RwSignal::new(3u32);
-    let warmup = RwSignal::new(1u32);
-    let threads_str = RwSignal::new("auto".to_string());
-    let ngl_range = RwSignal::new("".to_string());
-    let ctx_override = RwSignal::new("".to_string());
-
-    // Methodology-driven knobs (from llm-inference-tuning-methodology.md):
-    //   -b / -ub  : batch / micro-batch — biggest single PP win documented (~36%)
-    //   -ctk/-ctv : KV cache quant — MUST be matched or attention falls back to CPU
-    //   -d        : depth — pre-fill N tokens, essential when evaluating KV quant
-    //   -fa       : flash attention — default on for modern backends
-    let batch_sizes_str = RwSignal::new("".to_string());
-    let ubatch_sizes_str = RwSignal::new("".to_string());
-    let kv_cache_type = RwSignal::new("default".to_string());
-    let depth_str = RwSignal::new("".to_string());
-    let flash_attn = RwSignal::new(true);
+    // Fetch installed backend variants for llama-bench selection.
+    fetch_installed_backend_variants(available_backends);
 
     // History state — always visible.
-    let history = RwSignal::new(Vec::<HistoryEntry>::new());
+    let history = RwSignal::new(Vec::<BenchmarkHistoryEntry>::new());
     // IDs of history rows whose per-summary detail panel is open. Each row acts
     // as an accordion toggle — clicking flips its id in this set.
     let expanded_history = RwSignal::new(HashSet::<i64>::new());
+    // IDs of suite groups that are expanded (for grouped history).
+    let expanded_suites = RwSignal::new(HashSet::<String>::new());
 
     // Trigger for history refetch — incremented whenever we want to reload.
     let history_refresh = RwSignal::new(0u32);
@@ -200,160 +429,20 @@ pub fn Benchmarks() -> impl IntoView {
         spawn_local(async move {
             if let Ok(resp) = get_request("/tama/v1/benchmarks/history").send().await {
                 extract_and_store_csrf_token(&resp);
-                if let Ok(entries) = resp.json::<Vec<HistoryEntry>>().await {
+                if let Ok(entries) = resp.json::<Vec<BenchmarkHistoryEntry>>().await {
                     history.set(entries);
                 }
             }
         });
     });
 
-    let parse_threads = move |s: &str| -> Option<Vec<u32>> {
-        if s.trim().to_lowercase() == "auto" || s.trim().is_empty() {
-            None
-        } else {
-            Some(
-                s.split(',')
-                    .map(|v| v.trim().parse::<u32>().unwrap_or(0))
-                    .filter(|v| *v > 0)
-                    .collect(),
-            )
-        }
-    };
-
-    // Test Type auto-fill handler — when the user picks a benchmark type,
-    // auto-populate the relevant form fields.
-    let apply_bench_type = move |bench_type: &str| {
-        if let Some((_, preset)) = LLAMA_BENCH_PRESETS.iter().find(|(k, _)| *k == bench_type) {
-            pp_sizes_str.set(preset.pp_sizes.to_string());
-            tg_sizes_str.set(preset.tg_sizes.to_string());
-            batch_sizes_str.set(preset.batch_sizes.to_string());
-            ubatch_sizes_str.set(preset.ubatch_sizes.to_string());
-            kv_cache_type.set(preset.kv_cache_type.to_string());
-            depth_str.set(preset.depth.to_string());
-        }
-    };
-
-    // Submit benchmark and connect SSE
-    let submit_benchmark = move || {
-        // selected_model holds "id:quant" — split to extract both parts.
-        let raw_model = selected_model.get();
-        let (model_id, quant) = split_id_quant(&raw_model);
-        let pp = parse_sizes(&pp_sizes_str.get());
-        let tg = parse_sizes(&tg_sizes_str.get());
-        let runs_val = runs.get();
-        let warmup_val = warmup.get();
-        let threads = parse_threads(&threads_str.get());
-        let ngl = if ngl_range.get().is_empty() {
-            None
-        } else {
-            Some(ngl_range.get())
-        };
-        let ctx = if ctx_override.get().is_empty() {
-            None
-        } else {
-            ctx_override.get().parse::<u32>().ok()
-        };
-
-        // Methodology knobs
-        let batch_sizes = parse_sizes(&batch_sizes_str.get());
-        let ubatch_sizes = parse_sizes(&ubatch_sizes_str.get());
-        let kv = kv_cache_type.get();
-        let kv_payload: Option<String> = if kv == "default" { None } else { Some(kv) };
-        let depth = parse_sizes(&depth_str.get());
-        let fa_payload: Option<bool> = Some(flash_attn.get());
-
-        // Clear any previous results and mark the job as running.
-        benchmark_results.set(None);
-        is_running.set(true);
-        current_job_id.set(None);
-
-        spawn_local(async move {
-            let backend_name = if selected_backend.get().is_empty() {
-                None
-            } else {
-                Some(selected_backend.get())
-            };
-            let body = serde_json::json!({
-                "model_id": model_id,
-                "quant": quant,
-                "backend_name": backend_name,
-                "benchmark_type": Some(selected_bench_type.get()),
-                "pp_sizes": pp,
-                "tg_sizes": tg,
-                "runs": runs_val,
-                "warmup": warmup_val,
-                "threads": threads,
-                "ngl_range": ngl,
-                "ctx_override": ctx,
-                "batch_sizes": batch_sizes,
-                "ubatch_sizes": ubatch_sizes,
-                "kv_cache_type": kv_payload,
-                "depth": depth,
-                "flash_attn": fa_payload,
-            });
-
-            let submitted = async {
-                let resp = post_request("/tama/v1/benchmarks/run")
-                    .header("Content-Type", "application/json")
-                    .body(body.to_string())
-                    .ok()?;
-                let resp = resp.send().await.ok()?;
-                let body = resp.json::<serde_json::Value>().await.ok()?;
-                body.get("job_id")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
-            }
-            .await;
-
-            match submitted {
-                Some(job_id) => {
-                    current_job_id.set(Some(job_id));
-                }
-                None => {
-                    // Submission failed — roll back is_running so the user can retry.
-                    is_running.set(false);
-                }
-            }
-        });
-    };
-
-    // Callbacks passed to JobLogPanel.
-    let on_result_cb = Callback::new(move |results_json: String| {
-        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&results_json) {
-            benchmark_results.set(Some(parsed));
-        }
-        history_refresh.update(|n| *n += 1);
-    });
-    let on_status_cb = Callback::new(move |status: String| {
-        if status != "running" {
-            is_running.set(false);
-            history_refresh.update(|n| *n += 1);
-        }
-    });
-
-    // Read-only splits for views
-    let (available_models_sig, _) = available_models.split();
-    let (selected_display_sig, _) = selected_display_name.split();
-    let (selected_model_sig, _) = selected_model.split();
-    let (available_backends_sig, _) = available_backends.split();
-    let (pp_sizes_sig, _) = pp_sizes_str.split();
-    let (tg_sizes_sig, _) = tg_sizes_str.split();
-    let (runs_sig, _) = runs.split();
-    let (warmup_sig, _) = warmup.split();
-    let (threads_sig, _) = threads_str.split();
-    let (ngl_sig, _) = ngl_range.split();
-    let (batch_sig, _) = batch_sizes_str.split();
-    let (ubatch_sig, _) = ubatch_sizes_str.split();
-    let (kv_sig, _) = kv_cache_type.split();
-    let (depth_sig, _) = depth_str.split();
-    let (fa_sig, _) = flash_attn.split();
+    // ── Read-only splits for shared view (history) ───────────────
     let (history_sig, _) = history.split();
     let (expanded_sig, _) = expanded_history.split();
-    let (is_running_sig, _) = is_running.split();
-    let (current_job_id_sig, _) = current_job_id.split();
+    let (expanded_suites_sig, _) = expanded_suites.split();
 
-    // Tab toggle — switch between llama-bench and spec-decoding views.
-    let active_tab: RwSignal<String> = RwSignal::new("llama-bench".to_string());
+    // Tab toggle — switch between llama-bench, spec-decode, mtp-testing, and suite views.
+    let active_tab: RwSignal<String> = RwSignal::new(initial_tab_val);
 
     view! {
         <div class="page-header">
@@ -367,468 +456,28 @@ pub fn Benchmarks() -> impl IntoView {
                 TabButton { key: "llama-bench".into(), label: "LLaMA-Bench".into() },
                 TabButton { key: "spec-decode".into(), label: "Spec Decoding".into() },
                 TabButton { key: "mtp-testing".into(), label: "MTP Testing".into() },
+                TabButton { key: "suite".into(), label: "Suite".into() },
             ]
             on_select=Callback::new(move |key| active_tab.set(key))
         />
 
-        // LLaMA-Bench tab content
+        // Tab content — shared form state hoisted from parent
         {move || {
-            if active_tab.get() == "mtp-testing" {
-                view! { <MtpBench /> }.into_any()
-            } else if active_tab.get() == "spec-decode" {
-                view! { <SpecBench /> }.into_any()
+            let tab = active_tab.get();
+            if tab == "suite" {
+                view! { <SuiteBench history_refresh_trigger=history_refresh shared_state=state.clone() /> }.into_any()
+            } else if tab == "mtp-testing" {
+                view! { <MtpBench history_refresh_trigger=history_refresh shared_state=state.clone() /> }.into_any()
+            } else if tab == "spec-decode" {
+                view! { <SpecBench history_refresh_trigger=history_refresh shared_state=state.clone() /> }.into_any()
             } else {
-                view! {
-                    // Test Type dropdown
-                    <section class="card">
-                        <h3>"Test Type"</h3>
-                        <select
-                            class="form-select"
-                            on:change=move |e| {
-                                let val = e.target().unwrap().dyn_into::<web_sys::HtmlSelectElement>().unwrap().value();
-                                selected_bench_type.set(val.clone());
-                                apply_bench_type(&val);
-                            }
-                        >
-                            {BENCHMARK_TYPES.iter().map(|(val, label)| {
-                                let is_selected = move || selected_bench_type.get() == *val;
-                                view! {
-                                    <option value=*val selected=is_selected>{*label}</option>
-                                }.into_any()
-                            }).collect::<Vec<_>>()}
-                        </select>
-                    </section>
-
-                    // Model selection — two-step: model, then quant. Models can ship with
-        // multiple quants (e.g. Q4_K_M vs Q6_K) and the delta matters for
-        // benchmarking, so we make the quant an explicit choice.
-        <section class="card">
-            <h3>"Model"</h3>
-            <div class="grid-2">
-                <div class="form-group">
-                    <label>"Model"</label>
-                    <select
-                        class="form-select"
-                        on:change=move |e| {
-                            let val = e.target().unwrap().dyn_into::<web_sys::HtmlSelectElement>().unwrap().value();
-                            selected_display_name.set(val);
-                        }
-                    >
-                        <option value="" disabled selected=move || selected_display_sig.get().is_empty()>"Select a model..."</option>
-                        {move || {
-                            let models = available_models_sig.get();
-                            // Deduplicate by display_name; BTreeMap keeps them
-                            // sorted alphabetically for stable rendering.
-                            let mut grouped: BTreeMap<String, ()> = BTreeMap::new();
-                            for (_, name, _) in models.iter() {
-                                grouped.insert(name.clone(), ());
-                            }
-                            grouped.keys().map(|name| {
-                                let value = name.clone();
-                                let label = name.clone();
-                                view! {
-                                    <option value=value>{label}</option>
-                                }.into_any()
-                            }).collect::<Vec<_>>()
-                        }}
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>"Quant"</label>
-                    <select
-                        class="form-select"
-                        prop:disabled=move || selected_display_sig.get().is_empty()
-                        on:change=move |e| {
-                            let val = e.target().unwrap().dyn_into::<web_sys::HtmlSelectElement>().unwrap().value();
-                            selected_model.set(val);
-                        }
-                    >
-                        <option value="" disabled>"Select quant..."</option>
-                        {move || {
-                            let models = available_models_sig.get();
-                            let dn = selected_display_sig.get();
-                            let selected_id = selected_model_sig.get();
-                            // Flatten all quants from matching model entries into individual options.
-                            models.iter()
-                                .filter(|(_, name, _)| name == &dn)
-                                .flat_map(|(id, _, quants)| {
-                                    quants.iter().map(move |quant| (id.clone(), quant.clone()))
-                                })
-                                .map(|(id_clone, quant)| {
-                                    let value = format!("{}:{}", id_clone, quant);
-                                    let is_selected = value == selected_id;
-                                    view! {
-                                        <option value=value selected=is_selected>{quant}</option>
-                                    }.into_any()
-                                }).collect::<Vec<_>>()
-                        }}
-                    </select>
-                </div>
-            </div>
-        </section>
-
-        // Backend selection (which llama-bench to use)
-        <section class="card">
-            <h3>"Backend"</h3>
-            <select
-                class="form-select"
-                on:change=move |e| {
-                    let val = e.target().unwrap().dyn_into::<web_sys::HtmlSelectElement>().unwrap().value();
-                    selected_backend.set(val);
-                }
-            >
-                <option value="">"Auto (model's backend)"</option>
-                {move || {
-                    let backends = available_backends_sig.get();
-                    backends.iter().map(|(name, display)| {
-                        let name_clone = name.clone();
-                        let display_clone = display.clone();
-                        view! {
-                            <option value=name_clone>{display_clone}</option>
-                        }.into_any()
-                    }).collect::<Vec<_>>()
-                }}
-            </select>
-            <small class="bench-hint">
-                "Select a specific backend's llama-bench, or leave empty to use the model's backend."
-            </small>
-        </section>
-
-        // Test configuration
-        <section class="card">
-            <h3>"Test Configuration"</h3>
-            <div class="grid-2">
-                <div class="form-group">
-                    <label>"Prompt sizes (tokens)"</label>
-                    <input
-                        type="text"
-                        class="form-control"
-                        prop:value=move || pp_sizes_sig.get()
-                        on:input=move |e| { pp_sizes_str.set(e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().value()); }
-                    />
-                    <small class="text-muted">"Comma-separated, e.g. 128,256,512"</small>
-                </div>
-                <div class="form-group">
-                    <label>"Generation lengths (tokens)"</label>
-                    <input
-                        type="text"
-                        class="form-control"
-                        prop:value=move || tg_sizes_sig.get()
-                        on:input=move |e| { tg_sizes_str.set(e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().value()); }
-                    />
-                    <small class="text-muted">"Comma-separated, e.g. 32,64,128"</small>
-                </div>
-                <div class="form-group">
-                    <label>"Runs"</label>
-                    <input
-                        type="number"
-                        class="form-control"
-                        prop:value=move || runs_sig.get()
-                        min="1" max="20"
-                        on:input=move |e| {
-                            let val = e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().value();
-                            if let Ok(n) = val.parse::<u32>() { runs.set(n); }
-                        }
-                    />
-                </div>
-                <div class="form-group">
-                    <label>"Warmup runs"</label>
-                    <input
-                        type="number"
-                        class="form-control"
-                        prop:value=move || warmup_sig.get()
-                        min="0" max="10"
-                        on:input=move |e| {
-                            let val = e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().value();
-                            if let Ok(n) = val.parse::<u32>() { warmup.set(n); }
-                        }
-                    />
-                </div>
-                <div class="form-group">
-                    <label>"Threads"</label>
-                    <input
-                        type="text"
-                        class="form-control"
-                        prop:value=move || threads_sig.get()
-                        on:input=move |e| { threads_str.set(e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().value()); }
-                    />
-                    <small class="text-muted">"auto, or comma-separated e.g. 4,8,16"</small>
-                </div>
-                <div class="form-group">
-                    <label>"GPU layers range (sweet spot)"</label>
-                    <input
-                        type="text"
-                        class="form-control"
-                        prop:value=move || ngl_sig.get()
-                        on:input=move |e| { ngl_range.set(e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().value()); }
-                    />
-                    <small class="text-muted">"e.g. 0-99+1 to sweep, or empty for all"</small>
-                </div>
-            </div>
-        </section>
-
-        // Advanced tuning — knobs from the LLM-inference-tuning methodology.
-        // Each one is worth a full paragraph of explanation; the small text
-        // below each field is the cheat-sheet version.
-        <section class="card">
-            <h3>"Advanced Tuning"</h3>
-            <div class="grid-2">
-                <div class="form-group">
-                    <label>"Batch size (-b)"</label>
-                    <input
-                        type="text"
-                        class="form-control"
-                        prop:value=move || batch_sig.get()
-                        on:input=move |e| { batch_sizes_str.set(e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().value()); }
-                    />
-                    <small class="text-muted">"Logical batch. Try 512,1024,2048 — can yield up to ~36% PP."</small>
-                </div>
-                <div class="form-group">
-                    <label>"Micro-batch size (-ub)"</label>
-                    <input
-                        type="text"
-                        class="form-control"
-                        prop:value=move || ubatch_sig.get()
-                        on:input=move |e| { ubatch_sizes_str.set(e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().value()); }
-                    />
-                    <small class="text-muted">"Physical micro-batch. Typically ≤ batch size."</small>
-                </div>
-                <div class="form-group">
-                    <label>"KV cache type (-ctk/-ctv)"</label>
-                    <select
-                        class="form-select"
-                        on:change=move |e| {
-                            let val = e.target().unwrap().dyn_into::<web_sys::HtmlSelectElement>().unwrap().value();
-                            kv_cache_type.set(val);
-                        }
-                    >
-                        {move || {
-                            let current = kv_sig.get();
-                            vec!["default", "f16", "q8_0", "q4_0"].into_iter().map(|opt| {
-                                let opt_str = opt.to_string();
-                                let selected = opt == current;
-                                let label = match opt {
-                                    "default" => "Default (backend)",
-                                    other => other,
-                                };
-                                view! {
-                                    <option value=opt_str selected=selected>{label}</option>
-                                }.into_any()
-                            }).collect::<Vec<_>>()
-                        }}
-                    </select>
-                    <small class="text-muted">"Applied to both K and V. Mismatched pair = CPU attention fallback."</small>
-                </div>
-                <div class="form-group">
-                    <label>"Depth (-d)"</label>
-                    <input
-                        type="text"
-                        class="form-control"
-                        prop:value=move || depth_sig.get()
-                        on:input=move |e| { depth_str.set(e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().value()); }
-                    />
-                    <small class="text-muted">"Pre-fill tokens before timing. e.g. 0,4096,16384 when testing KV quant."</small>
-                </div>
-                <div class="form-group">
-                    <div class="form-check">
-                        <input
-                            id="bench-flash-attn"
-                            type="checkbox"
-                            prop:checked=move || fa_sig.get()
-                            on:change=move |e| {
-                                let checked = e.target().unwrap().dyn_into::<web_sys::HtmlInputElement>().unwrap().checked();
-                                flash_attn.set(checked);
-                            }
-                        />
-                        <label class="form-check-label" for="bench-flash-attn">"Flash attention (-fa)"</label>
-                    </div>
-                    <small class="text-muted">"Default on. Disable to measure attention-kernel impact."</small>
-                </div>
-            </div>
-        </section>
-
-        // Run button
-        <div class="text-center my-3">
-            <button
-                class="btn btn-primary btn-lg"
-                prop:disabled=move || selected_model_sig.get().is_empty() || is_running_sig.get()
-                on:click=move |_| { submit_benchmark(); }
-            >
-                {move || if is_running_sig.get() { "Running..." } else { "▶ Run Benchmark" }}
-            </button>
-        </div>
-
-        // Progress / logs — handled by JobLogPanel component.
-        {move || {
-            if let Some(job_id) = current_job_id_sig.get() {
-                view! {
-                    <JobLogPanel
-                        job_id=job_id
-                        on_result=on_result_cb
-                        on_status=on_status_cb
-                    />
-                }.into_any()
-            } else {
-                view! { <div></div> }.into_any()
+                view! { <LlamaBench history_refresh_trigger=history_refresh shared_state=state.clone() /> }.into_any()
             }
         }}
-
-        // Benchmark results — single table with "t/s ± stddev" plus a header
-        // card that surfaces the model metadata (backend, GPU, VRAM, load
-        // time, batch/ubatch/KV choices) from the full BenchReport payload.
-        {move || {
-            let Some(report) = benchmark_results.get() else {
-                return view! { <div></div> }.into_any();
-            };
-
-            // Accept either the full BenchReport shape or a bare summaries array
-            // (legacy). Normalise to (summaries, model_info, vram, load_time, config).
-            let (summaries, model_info, vram, load_time, config) = if let Some(arr) = report.as_array() {
-                (arr.clone(), serde_json::Value::Null, serde_json::Value::Null, 0.0, serde_json::Value::Null)
-            } else {
-                let summaries = report.get("summaries")
-                    .and_then(|v| v.as_array())
-                    .cloned()
-                    .unwrap_or_default();
-                let model_info = report.get("model_info").cloned().unwrap_or(serde_json::Value::Null);
-                let vram = report.get("vram").cloned().unwrap_or(serde_json::Value::Null);
-                let load_time = report.get("load_time_ms").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                let config = report.get("config").cloned().unwrap_or(serde_json::Value::Null);
-                (summaries, model_info, vram, load_time, config)
-            };
-
-            if summaries.is_empty() {
-                return view! { <div></div> }.into_any();
-            }
-
-            // Header card fields
-            let mi_name = model_info.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let mi_quant = model_info.get("quant").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let mi_backend = model_info.get("backend").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let mi_gpu = model_info.get("gpu_variant").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let mi_ctx = model_info.get("context_length").and_then(|v| v.as_u64());
-            let vram_used = vram.get("used_mib").and_then(|v| v.as_u64());
-            let vram_total = vram.get("total_mib").and_then(|v| v.as_u64());
-            let cfg_batch = config.get("batch_sizes").and_then(|v| v.as_array()).cloned();
-            let cfg_ubatch = config.get("ubatch_sizes").and_then(|v| v.as_array()).cloned();
-            let cfg_kv = config.get("kv_cache_type").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let cfg_depth = config.get("depth").and_then(|v| v.as_array()).cloned();
-            let cfg_fa = config.get("flash_attn").and_then(|v| v.as_bool());
-
-            let has_header = !mi_name.is_empty();
-
-            view! {
-                <section class="card mt-3">
-                    <h3>"Benchmark Results"</h3>
-
-                    {if has_header {
-                        view! {
-                            <div class="bench-summary">
-                                <div class="bench-summary__item">
-                                    <div class="bench-summary__label">"Model"</div>
-                                    <div class="bench-summary__value">{mi_name.clone()}</div>
-                                </div>
-                                {if !mi_quant.is_empty() {
-                                    view! {
-                                        <div class="bench-summary__item">
-                                            <div class="bench-summary__label">"Quant"</div>
-                                            <div class="bench-summary__value">{mi_quant}</div>
-                                        </div>
-                                    }.into_any()
-                                } else { view!{ <div></div> }.into_any() }}
-                                <div class="bench-summary__item">
-                                    <div class="bench-summary__label">"Backend"</div>
-                                    <div class="bench-summary__value">{format!("{} · {}", mi_backend, mi_gpu)}</div>
-                                </div>
-                                {if let (Some(used), Some(total)) = (vram_used, vram_total) {
-                                    view! {
-                                        <div class="bench-summary__item">
-                                            <div class="bench-summary__label">"VRAM"</div>
-                                            <div class="bench-summary__value">{format!("{} / {} MiB", used, total)}</div>
-                                        </div>
-                                    }.into_any()
-                                } else { view!{ <div></div> }.into_any() }}
-                                {if let Some(ctx) = mi_ctx {
-                                    view! {
-                                        <div class="bench-summary__item">
-                                            <div class="bench-summary__label">"Context"</div>
-                                            <div class="bench-summary__value">{ctx.to_string()}</div>
-                                        </div>
-                                    }.into_any()
-                                } else { view!{ <div></div> }.into_any() }}
-                                {if load_time > 0.0 {
-                                    view! {
-                                        <div class="bench-summary__item">
-                                            <div class="bench-summary__label">"Load time"</div>
-                                            <div class="bench-summary__value">{format!("{:.1} ms", load_time)}</div>
-                                        </div>
-                                    }.into_any()
-                                } else { view!{ <div></div> }.into_any() }}
-                                {if let Some(b) = cfg_batch.as_ref() {
-                                    if !b.is_empty() {
-                                        let s = b.iter().filter_map(|v| v.as_u64()).map(|v| v.to_string()).collect::<Vec<_>>().join(",");
-                                        view! {
-                                            <div class="bench-summary__item">
-                                                <div class="bench-summary__label">"Batch"</div>
-                                                <div class="bench-summary__value">{s}</div>
-                                            </div>
-                                        }.into_any()
-                                    } else { view!{ <div></div> }.into_any() }
-                                } else { view!{ <div></div> }.into_any() }}
-                                {if let Some(b) = cfg_ubatch.as_ref() {
-                                    if !b.is_empty() {
-                                        let s = b.iter().filter_map(|v| v.as_u64()).map(|v| v.to_string()).collect::<Vec<_>>().join(",");
-                                        view! {
-                                            <div class="bench-summary__item">
-                                                <div class="bench-summary__label">"µ-batch"</div>
-                                                <div class="bench-summary__value">{s}</div>
-                                            </div>
-                                        }.into_any()
-                                    } else { view!{ <div></div> }.into_any() }
-                                } else { view!{ <div></div> }.into_any() }}
-                                {if !cfg_kv.is_empty() {
-                                    view! {
-                                        <div class="bench-summary__item">
-                                            <div class="bench-summary__label">"KV cache"</div>
-                                            <div class="bench-summary__value">{cfg_kv}</div>
-                                        </div>
-                                    }.into_any()
-                                } else { view!{ <div></div> }.into_any() }}
-                                {if let Some(b) = cfg_depth.as_ref() {
-                                    if !b.is_empty() {
-                                        let s = b.iter().filter_map(|v| v.as_u64()).map(|v| v.to_string()).collect::<Vec<_>>().join(",");
-                                        view! {
-                                            <div class="bench-summary__item">
-                                                <div class="bench-summary__label">"Depth"</div>
-                                                <div class="bench-summary__value">{s}</div>
-                                            </div>
-                                        }.into_any()
-                                    } else { view!{ <div></div> }.into_any() }
-                                } else { view!{ <div></div> }.into_any() }}
-                                {if let Some(fa) = cfg_fa {
-                                    view! {
-                                        <div class="bench-summary__item">
-                                            <div class="bench-summary__label">"Flash attn"</div>
-                                            <div class="bench-summary__value">{if fa { "on" } else { "off" }}</div>
-                                        </div>
-                                    }.into_any()
-                                } else { view!{ <div></div> }.into_any() }}
-                            </div>
-                        }.into_any()
-                    } else {
-                        view! { <div></div> }.into_any()
-                    }}
-
-                    {render_summaries_table(&summaries)}
-                </section>
-            }.into_any()
-        }}
-                    }.into_any() // close inner view!{} for else branch (llama-bench form)
-                }
-                }}    // closes tab conditional closure
 
         // History — always shown. Newest rows appear at the top because the
         // server returns ORDER BY created_at DESC.
+        // Entries sharing a `suite_id` are grouped under one expandable header.
         <section class="card mt-3">
             <h3>"Benchmark History"</h3>
             {move || {
@@ -838,6 +487,9 @@ pub fn Benchmarks() -> impl IntoView {
                         <p class="text-muted">"No benchmarks yet. Run one above to see results here."</p>
                     }.into_any()
                 } else {
+                    // Group entries by suite_id.
+                    let groups = group_entries_by_suite(&entries);
+
                     view! {
                         <table class="table table-striped">
                             <thead>
@@ -854,96 +506,176 @@ pub fn Benchmarks() -> impl IntoView {
                                 </tr>
                             </thead>
                             <tbody>
-                                {entries.into_iter().map(|entry| {
-                                    let entry_id = entry.id;
-                                    let when_title = format_timestamp(entry.created_at);
-                                    let when_rel = format_relative(entry.created_at);
-                                    let badge_class = if entry.status == "success" {
-                                        "badge badge-success"
+                                {groups.into_iter().flat_map(|group| {
+                                    let is_grouped = group.suite_id.is_some();
+
+                                    // For grouped entries, prepare suite-level state.
+                                    let (suite_key_for_view, suite_toggle_closure) = if is_grouped {
+                                        let suite_key = group.suite_id.as_ref().unwrap().clone();
+                                        let suite_key_clone = suite_key.clone();
+                                        let toggle_suite = move |_| {
+                                            expanded_suites.update(|set| {
+                                                if !set.insert(suite_key_clone.clone()) { set.remove(&suite_key_clone); }
+                                            });
+                                        };
+                                        (suite_key, Some(toggle_suite))
                                     } else {
-                                        "badge badge-danger"
+                                        (String::new(), None)
                                     };
-                                    let name = entry.display_name.clone().unwrap_or_else(|| entry.model_id.clone());
-                                    let quant_suffix = entry.quant
-                                        .as_ref()
-                                        .filter(|q| !q.is_empty())
-                                        .map(|q| format!(" · {}", q))
-                                        .unwrap_or_default();
-                                    let model_cell = format!("{}{}", name, quant_suffix);
 
-                                    let arr = entry.results.as_array();
-                                    let best = |field: &str| -> String {
-                                        arr.and_then(|items| {
-                                            items.iter()
-                                                .filter_map(|s| s.get(field).and_then(|v| v.as_f64()))
-                                                .filter(|v| *v > 0.01)
-                                                .fold(None, |acc: Option<f64>, v| Some(acc.map_or(v, |a| a.max(v))))
-                                        })
-                                        .map(|v| format!("{v:.0}"))
-                                        .unwrap_or_else(|| "—".to_string())
-                                    };
-                                    let best_cell = format!("PP {} · TG {}", best("pp_mean"), best("tg_mean"));
+                                    // Build group header row if this is a suite group.
+                                    let mut rows: Vec<AnyView> = if is_grouped {
+                                        let toggle_suite = suite_toggle_closure.as_ref().unwrap().clone();
 
-                                    let sizes = format!(
-                                        "{} / {}",
-                                        entry.pp_sizes.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","),
-                                        entry.tg_sizes.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","),
-                                    );
+                                        // Per-type status chips (XSS-safe Leptos views).
+                                        let when_title = format_timestamp(group.timestamp);
+                                        let when_rel = format_relative(group.timestamp);
+                                        let model_name = group.display_name.clone().unwrap_or_else(|| "Suite".to_string());
+                                        let suite_key_header = suite_key_for_view.clone();
 
-                                    // Reactive expansion state for this row. Leptos re-renders
-                                    // just the chevron and the detail <tr> when the set flips.
-                                    let is_open = Memo::new(move |_| expanded_sig.get().contains(&entry_id));
-                                    let toggle = move |_| {
-                                        expanded_history.update(|set| {
-                                            if !set.insert(entry_id) { set.remove(&entry_id); }
-                                        });
-                                    };
-                                    let summaries = entry.results.as_array().cloned().unwrap_or_default();
-                                    let status_text = entry.status.clone();
-                                    let backend_text = entry.backend.clone();
-                                    let bench_type_text = entry.benchmark_type.clone().unwrap_or_default();
-                                    let type_badge_class = match entry.benchmark_type.as_deref() {
-                                        Some("baseline") => "badge badge-muted",
-                                        Some("pp_sweep") => "badge badge-info",
-                                        Some("kv_quant_q8") | Some("kv_quant_q4") => "badge badge-success",
-                                        Some("context_test") => "badge badge-warning",
-                                        Some("spec_scan") | Some("spec_sweep") => "badge badge-danger",
-                                        _ => "badge badge-muted",
-                                    };
-                                    let engine_text = entry
-                                        .engine
-                                        .clone()
-                                        .unwrap_or_else(|| "llama_bench".to_string());
-                                    let when_title_for_row = when_title.clone();
-
-                                    // Engine badge — distinguishes llama-bench from spec-decode and MTP runs
-                                    let engine_badge = if engine_text == "llama_cli_spec" || engine_text == "llama_cli_mtp" {
-                                        "badge badge-info".to_string()
+                                        vec![
+                                            view! {
+                                                <tr class="bench-history__group-row" on:click=toggle_suite>
+                                                    <td class="text-mono text-muted">
+                                                        {move || {
+                                                            let is_open = expanded_suites_sig.get().contains(&suite_key_header);
+                                                            if is_open { "▾" } else { "▸" }
+                                                        }}
+                                                    </td>
+                                                    <td title=when_title>{when_rel}</td>
+                                                    <td><strong>{model_name}</strong> <small class="text-muted">(suite)</small></td>
+                                                    <td colspan="6">
+                                                        <span class="bench-history__group-chips">{render_suite_chips(&group.type_statuses)}</span>
+                                                    </td>
+                                                </tr>
+                                            }.into_any(),
+                                        ]
                                     } else {
-                                        "badge badge-muted".to_string()
+                                        vec![]
                                     };
 
-                                    view! {
-                                        <tr class="bench-history__row" on:click=toggle>
-                                            <td class="text-mono text-muted">{move || if is_open.get() { "▾" } else { "▸" }}</td>
-                                            <td title=when_title_for_row>{when_rel}</td>
-                                            <td>{model_cell}</td>
-                                            <td><span class={type_badge_class}>{bench_type_text}</span></td>
-                                            <td><span class={engine_badge}>{engine_text}</span></td>
-                                            <td><span class="badge badge-muted">{backend_text}</span></td>
-                                            <td class="text-mono">{sizes}</td>
-                                            <td class="text-mono">{best_cell}</td>
-                                            <td><span class={badge_class}>{status_text}</span></td>
-                                        </tr>
-                                        {move || is_open.get().then(|| view! {
-                                            <tr class="bench-history__detail">
-                                                <td></td>
-                                                <td colspan="8">
-                                                    {render_summaries_table(&summaries)}
-                                                </td>
+                                    // Render individual entries (ungrouped or within a group).
+                                    // Gate member-row rendering on group expansion so the header
+                                    // toggle actually collapses/expands the visible rows.
+                                    let group_is_open = if is_grouped {
+                                        expanded_suites_sig.get().contains(&suite_key_for_view)
+                                    } else {
+                                        true
+                                    };
+                                    for entry in &group.entries {
+                                        if !group_is_open {
+                                            continue;
+                                        }
+
+                                        let entry_id = entry.id;
+                                        let when_title = format_timestamp(entry.created_at);
+                                        let when_rel = format_relative(entry.created_at);
+                                        let badge_class = match entry.status.as_str() {
+                                            "success" => "badge badge-success",
+                                            "partial" => "badge badge-warning",
+                                            _ => "badge badge-danger",
+                                        };
+                                        let name = entry.display_name.clone().unwrap_or_else(|| entry.model_id.clone());
+                                        let quant_suffix = entry.quant
+                                            .as_ref()
+                                            .filter(|q| !q.is_empty())
+                                            .map(|q| format!(" · {}", q))
+                                            .unwrap_or_default();
+                                        let model_cell = format!("{}{}", name, quant_suffix);
+
+                                        let arr = entry.results.as_array();
+                                        let best = |field: &str| -> String {
+                                            arr.and_then(|items| {
+                                                items.iter()
+                                                    .filter_map(|s| s.get(field).and_then(|v| v.as_f64()))
+                                                    .filter(|v| *v > 0.01)
+                                                    .fold(None, |acc: Option<f64>, v| Some(acc.map_or(v, |a| a.max(v))))
+                                            })
+                                            .map(|v| format!("{v:.0}"))
+                                            .unwrap_or_else(|| "—".to_string())
+                                        };
+                                        let best_cell = format!("PP {} · TG {}", best("pp_mean"), best("tg_mean"));
+
+                                        let sizes = format!(
+                                            "{} / {}",
+                                            entry.pp_sizes.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","),
+                                            entry.tg_sizes.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","),
+                                        );
+
+                                        // Reactive expansion state for this row.
+                                        let is_open = Memo::new(move |_| expanded_sig.get().contains(&entry_id));
+                                        let toggle = move |_| {
+                                            expanded_history.update(|set| {
+                                                if !set.insert(entry_id) { set.remove(&entry_id); }
+                                            });
+                                        };
+                                        let summaries = entry.results.as_array().cloned().unwrap_or_default();
+                                        let status_text = entry.status.clone();
+                                        let backend_text = entry.backend.clone();
+                                        let bench_type_text = entry.benchmark_type.clone().unwrap_or_default();
+                                        let type_badge_class = match entry.benchmark_type.as_deref() {
+                                            Some("baseline") => "badge badge-muted",
+                                            Some("pp_sweep") => "badge badge-info",
+                                            Some("kv_quant_q8") | Some("kv_quant_q4") => "badge badge-success",
+                                            Some("context_test") => "badge badge-warning",
+                                            Some("spec_scan") | Some("spec_sweep") => "badge badge-danger",
+                                            _ => "badge badge-muted",
+                                        };
+                                        let engine_text = entry
+                                            .engine
+                                            .clone()
+                                            .unwrap_or_else(|| "llama_bench".to_string());
+                                        let when_title_for_row = when_title.clone();
+
+                                        // Engine badge
+                                        let engine_badge = if engine_text == "llama_cli_spec" || engine_text == "llama_cli_mtp" {
+                                            "badge badge-info".to_string()
+                                        } else {
+                                            "badge badge-muted".to_string()
+                                        };
+
+                                        rows.push(view! {
+                                            <tr class="bench-history__row bench-history__group-entry" on:click=toggle>
+                                                <td class="text-mono text-muted">{move || if is_open.get() { "▾" } else { "▸" }}</td>
+                                                <td title=when_title_for_row>{when_rel}</td>
+                                                <td>{model_cell}</td>
+                                                <td><span class={type_badge_class}>{bench_type_text}</span></td>
+                                                <td><span class={engine_badge}>{engine_text.clone()}</span></td>
+                                                <td><span class="badge badge-muted">{backend_text}</span></td>
+                                                <td class="text-mono">{sizes}</td>
+                                                <td class="text-mono">{best_cell}</td>
+                                                <td><span class={badge_class}>{status_text}</span></td>
                                             </tr>
-                                        })}
-                                    }.into_any()
+                                        }.into_any());
+
+                                        // Detail row — only when group is expanded AND this row is individually expanded.
+                                        let show_detail = if is_grouped {
+                                            expanded_suites_sig.get().contains(&suite_key_for_view)
+                                                && is_open.get()
+                                        } else {
+                                            is_open.get()
+                                        };
+
+                                        if show_detail {
+                                            let engine_text_for_detail = engine_text.clone();
+                                            let summaries_for_detail = summaries.clone();
+                                            rows.push(view! {
+                                                <tr class="bench-history__detail">
+                                                    <td></td>
+                                                    <td colspan="8">{move || {
+                                                        let detail_table = match engine_text_for_detail.as_str() {
+                                                            "llama_cli_spec" => render_spec_table(&summaries_for_detail).into_any(),
+                                                            "llama_cli_mtp" => render_mtp_table(&summaries_for_detail).into_any(),
+                                                            _ => render_summaries_table(&summaries_for_detail).into_any(),
+                                                        };
+                                                        detail_table
+                                                    }}</td>
+                                                </tr>
+                                            }.into_any());
+                                        }
+                                    }
+
+                                    rows
                                 }).collect::<Vec<_>>()}
                             </tbody>
                         </table>

@@ -3,7 +3,8 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::utils::{extract_and_store_csrf_token, get_request};
+use super::types;
+use crate::utils::{extract_and_store_csrf_token, get_request, post_request};
 
 /// Parse a comma-separated string of integers into a Vec<u32>.
 /// Zero is a meaningful value — `-p 0` pins llama-bench to pure-TG mode.
@@ -13,6 +14,25 @@ pub fn parse_sizes(s: &str) -> Vec<u32> {
         .filter(|v| !v.is_empty())
         .filter_map(|v| v.parse::<u32>().ok())
         .collect()
+}
+
+/// Parse a comma-separated string of thread counts into a Vec<u32>.
+///
+/// - `"auto"` (case-insensitive) or empty → `None`
+/// - Unparseable entries map to `0`, then get filtered out
+///
+/// Example: `"4,8,abc,16"` → `Some([4, 8, 16])`
+pub fn parse_threads(s: &str) -> Option<Vec<u32>> {
+    if s.trim().to_lowercase() == "auto" || s.trim().is_empty() {
+        None
+    } else {
+        Some(
+            s.split(',')
+                .map(|v| v.trim().parse::<u32>().unwrap_or(0))
+                .filter(|v| *v > 0)
+                .collect(),
+        )
+    }
 }
 
 /// Render "mean ± stddev" with one decimal place, or a single value when
@@ -48,18 +68,19 @@ pub fn split_name_variant(raw: &str) -> (Option<String>, Option<String>) {
 }
 
 /// Shared reactive state for benchmark forms.
+/// Only truly cross-tab fields live here — each tab keeps its own
+/// is_running / current_job_id / benchmark_results as local signals.
+#[derive(Clone)]
 pub struct BenchmarkFormState {
     pub selected_display_name: RwSignal<String>,
     pub selected_model: RwSignal<String>,
-    pub available_models: RwSignal<Vec<(String, String, Vec<String>)>>,
+    pub available_models: RwSignal<Vec<types::ModelListItem>>,
     pub selected_backend: RwSignal<String>,
     pub available_backends: RwSignal<Vec<(String, String)>>,
-    pub is_running: RwSignal<bool>,
-    pub current_job_id: RwSignal<Option<String>>,
-    pub benchmark_results: RwSignal<Option<serde_json::Value>>,
-    /// Trigger for refetching models. Incremented to force a refresh.
-    #[expect(dead_code)]
-    pub model_refresh: RwSignal<u32>,
+    /// Prefilled batch size from the selected model's n_batch (if set).
+    pub model_n_batch: RwSignal<Option<u32>>,
+    /// Prefilled micro-batch size from the selected model's n_ubatch (if set).
+    pub model_n_ubatch: RwSignal<Option<u32>>,
 }
 
 /// Create shared benchmark form state with universal Effects:
@@ -68,17 +89,14 @@ pub struct BenchmarkFormState {
 pub fn use_benchmark_form_state() -> BenchmarkFormState {
     let selected_display_name = RwSignal::new(String::new());
     let selected_model = RwSignal::new(String::new());
-    let available_models = RwSignal::new(Vec::<(String, String, Vec<String>)>::new());
+    let available_models = RwSignal::new(Vec::<types::ModelListItem>::new());
+    let model_n_batch = RwSignal::new(None);
+    let model_n_ubatch = RwSignal::new(None);
     let selected_backend = RwSignal::new(String::new());
     let available_backends = RwSignal::new(Vec::<(String, String)>::new());
-    let is_running = RwSignal::new(false);
-    let current_job_id = RwSignal::new(Option::<String>::None);
-    let benchmark_results = RwSignal::new(Option::<serde_json::Value>::None);
-    let model_refresh = RwSignal::new(0u32);
 
     // Fetch available models on mount.
     Effect::new(move |_| {
-        let _ = model_refresh.get();
         spawn_local(async move {
             if let Ok(resp) = get_request("/tama/v1/models").send().await {
                 extract_and_store_csrf_token(&resp);
@@ -88,12 +106,16 @@ pub fn use_benchmark_form_state() -> BenchmarkFormState {
                         // by (display_name, quant) keeping the first id for each unique pair.
                         let mut seen: std::collections::HashSet<(String, String)> =
                             std::collections::HashSet::new();
-                        let model_list: Vec<(String, String, Vec<String>)> = models_arr
+                        let model_list: Vec<types::ModelListItem> = models_arr
                             .iter()
                             .filter_map(super::types::parse_model)
                             .flatten()
-                            .filter(|(_, name, quant)| seen.insert((name.clone(), quant.clone())))
-                            .map(|(id, name, quant)| (id, name, vec![quant]))
+                            .filter(|(_, name, quant, _, _, _)| {
+                                seen.insert((name.clone(), quant.clone()))
+                            })
+                            .map(|(id, name, quant, n_batch, n_ubatch, supports_mtp)| {
+                                (id, name, vec![quant], n_batch, n_ubatch, supports_mtp)
+                            })
                             .collect();
                         available_models.update(|list| *list = model_list);
                     }
@@ -107,14 +129,21 @@ pub fn use_benchmark_form_state() -> BenchmarkFormState {
     Effect::new(move |_| {
         let dn = selected_display_name.get();
         let models = available_models.get();
-        if let Some((id, _, quants)) = models.iter().find(|(_, name, _)| name == &dn) {
+        if let Some((id, _, quants, n_batch, n_ubatch, _)) =
+            models.iter().find(|(_, name, _, _, _, _)| name == &dn)
+        {
             if let Some(first_quant) = quants.first() {
                 selected_model.set(format!("{}:{}", id, first_quant));
             } else {
                 selected_model.set(id.clone());
             }
+            // Prefill batch/ubatch inputs from model defaults (only when set).
+            model_n_batch.set(*n_batch);
+            model_n_ubatch.set(*n_ubatch);
         } else {
             selected_model.set(String::new());
+            model_n_batch.set(None);
+            model_n_ubatch.set(None);
         }
     });
 
@@ -124,38 +153,9 @@ pub fn use_benchmark_form_state() -> BenchmarkFormState {
         available_models,
         selected_backend,
         available_backends,
-        is_running,
-        current_job_id,
-        benchmark_results,
-        model_refresh,
+        model_n_batch,
+        model_n_ubatch,
     }
-}
-
-/// Fetch available backends for llama-bench selection.
-/// Populates (name, display_name) pairs from root["backends"].
-pub fn fetch_bench_backends(available_backends: RwSignal<Vec<(String, String)>>) {
-    spawn_local(async move {
-        if let Ok(resp) = get_request("/tama/v1/backends").send().await {
-            extract_and_store_csrf_token(&resp);
-            if let Ok(root) = resp.json::<serde_json::Value>().await {
-                if let Some(backends_arr) = root.get("backends").and_then(|v| v.as_array()) {
-                    let backend_list: Vec<(String, String)> = backends_arr
-                        .iter()
-                        .filter_map(|b| {
-                            let name = b.get("type")?.as_str()?.to_string();
-                            let display = b
-                                .get("display_name")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or(&name)
-                                .to_string();
-                            Some((name, display))
-                        })
-                        .collect();
-                    available_backends.update(|list| *list = backend_list);
-                }
-            }
-        }
-    });
 }
 
 /// Fetch installed backend variants for spec/mtp forms.
@@ -236,6 +236,58 @@ pub fn format_timestamp(ts: i64) -> String {
     )
 }
 
+/// Submit a benchmark job via POST and return the job_id.
+///
+/// Posts `body` as JSON to `url`. On HTTP status >= 400 returns the response
+/// text as an error. On success parses `job_id` from the JSON body.
+pub async fn submit_bench_job(url: &str, body: serde_json::Value) -> Result<String, String> {
+    let resp = post_request(url)
+        .header("Content-Type", "application/json")
+        .body(body.to_string())
+        .map_err(|e| format!("Request build failed: {e}"))?
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {e}"))?;
+
+    if resp.status() >= 400 {
+        let err_text = resp
+            .text()
+            .await
+            .unwrap_or_else(|_| format!("Request failed with status {}", resp.status()));
+        return Err(err_text);
+    }
+
+    let json = resp
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| format!("Failed to parse response: {e}"))?;
+
+    json.get("job_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "Response missing job_id".to_string())
+}
+
+/// Format a delta percentage with `+` or `−` prefix.
+pub fn format_delta(delta_pct: f64) -> String {
+    if delta_pct >= 0.0 {
+        format!("+{:.1}%", delta_pct)
+    } else {
+        format!("−{:.1}%", (-delta_pct))
+    }
+}
+
+/// Return a badge CSS class based on delta percentage.
+pub fn delta_badge_class(delta_pct: f64) -> &'static str {
+    if delta_pct > 0.5 {
+        "badge badge-success"
+    } else if delta_pct < -0.5 {
+        "badge badge-danger"
+    } else {
+        "badge badge-muted"
+    }
+}
+
 /// Format a Unix timestamp as a short relative "time ago" string (e.g. "5m
 /// ago", "2h ago", "3d ago"). Falls back to the absolute format for anything
 /// older than a week.
@@ -254,5 +306,154 @@ pub fn format_relative(ts: i64) -> String {
         format!("{}d ago", secs / 86_400)
     } else {
         format_timestamp(ts)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_sizes_basic() {
+        assert_eq!(parse_sizes("128,256,512"), vec![128, 256, 512]);
+    }
+
+    #[test]
+    fn test_parse_sizes_single() {
+        assert_eq!(parse_sizes("2048"), vec![2048]);
+    }
+
+    #[test]
+    fn test_parse_sizes_zero_is_meaningful() {
+        // Zero is a meaningful value — `-p 0` pins llama-bench to pure-TG mode.
+        assert_eq!(parse_sizes("0"), vec![0]);
+        assert_eq!(parse_sizes("128,0,512"), vec![128, 0, 512]);
+    }
+
+    #[test]
+    fn test_parse_sizes_empty_and_whitespace() {
+        assert!(parse_sizes("").is_empty());
+        assert!(parse_sizes("   ").is_empty());
+    }
+
+    #[test]
+    fn test_parse_sizes_skips_non_numeric() {
+        assert_eq!(parse_sizes("128,abc,512"), vec![128, 512]);
+    }
+
+    #[test]
+    fn test_parse_sizes_handles_spaces() {
+        assert_eq!(parse_sizes("128 , 256 , 512"), vec![128, 256, 512]);
+    }
+
+    #[test]
+    fn test_split_id_quant_with_colon() {
+        assert_eq!(
+            split_id_quant("123:Q4_K_M"),
+            ("123".to_string(), Some("Q4_K_M".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_split_id_quant_without_colon() {
+        assert_eq!(split_id_quant("abc123"), ("abc123".to_string(), None));
+    }
+
+    #[test]
+    fn test_split_name_variant_with_colon() {
+        let (name, variant) = split_name_variant("llama_cpp:cuda");
+        assert_eq!(name, Some("llama_cpp".to_string()));
+        assert_eq!(variant, Some("cuda".to_string()));
+    }
+
+    #[test]
+    fn test_split_name_variant_without_colon() {
+        let (name, variant) = split_name_variant("llama_cpp");
+        assert_eq!(name, Some("llama_cpp".to_string()));
+        assert_eq!(variant, None);
+    }
+
+    #[test]
+    fn test_split_name_variant_empty() {
+        let (name, variant) = split_name_variant("");
+        assert_eq!(name, None);
+        assert_eq!(variant, None);
+    }
+
+    #[test]
+    fn test_parse_threads_auto() {
+        assert_eq!(parse_threads("auto"), None);
+        assert_eq!(parse_threads("AUTO"), None);
+        assert_eq!(parse_threads("Auto"), None);
+    }
+
+    #[test]
+    fn test_parse_threads_empty() {
+        assert_eq!(parse_threads(""), None);
+        assert_eq!(parse_threads("   "), None);
+    }
+
+    #[test]
+    fn test_parse_threads_values() {
+        assert_eq!(parse_threads("4,8,16"), Some(vec![4, 8, 16]));
+    }
+
+    #[test]
+    fn test_parse_threads_skips_unparseable() {
+        // Unparseable entries map to 0, then get filtered out
+        assert_eq!(parse_threads("4,abc,16"), Some(vec![4, 16]));
+    }
+
+    #[test]
+    fn test_parse_threads_filters_zero() {
+        assert_eq!(parse_threads("0,4,0,8"), Some(vec![4, 8]));
+    }
+
+    #[test]
+    fn test_parse_threads_single_value() {
+        assert_eq!(parse_threads("8"), Some(vec![8]));
+    }
+
+    #[test]
+    fn test_format_delta_positive() {
+        assert_eq!(format_delta(5.3), "+5.3%");
+    }
+
+    #[test]
+    fn test_format_delta_negative() {
+        assert_eq!(format_delta(-5.3), "−5.3%");
+    }
+
+    #[test]
+    fn test_format_delta_zero() {
+        assert_eq!(format_delta(0.0), "+0.0%");
+    }
+
+    #[test]
+    fn test_delta_badge_class_positive() {
+        assert_eq!(delta_badge_class(1.0), "badge badge-success");
+    }
+
+    #[test]
+    fn test_delta_badge_class_negative() {
+        assert_eq!(delta_badge_class(-1.0), "badge badge-danger");
+    }
+
+    #[test]
+    fn test_delta_badge_class_near_zero() {
+        assert_eq!(delta_badge_class(0.3), "badge badge-muted");
+        assert_eq!(delta_badge_class(-0.2), "badge badge-muted");
+    }
+
+    #[test]
+    fn test_delta_badge_class_boundary_positive() {
+        // 0.5 is NOT > 0.5, so it's muted
+        assert_eq!(delta_badge_class(0.5), "badge badge-muted");
+    }
+
+    #[test]
+    fn test_delta_badge_class_boundary_negative() {
+        // -0.5 is NOT < -0.5, so it's muted
+        assert_eq!(delta_badge_class(-0.5), "badge badge-muted");
     }
 }

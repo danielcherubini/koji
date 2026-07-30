@@ -100,6 +100,13 @@ pub struct ModelDetail {
     pub modalities: Option<ModelModalities>,
     #[serde(default)]
     pub spec_decoding: Option<serde_json::Value>,
+    /// Pre-allocated context KV cache size (llama.cpp --batch). None = backend default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n_batch: Option<u32>,
+    /// Maximum number of unique sequences to process in a single batch (llama.cpp --ubatch).
+    /// None = backend default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n_ubatch: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -163,6 +170,13 @@ pub struct ModelForm {
     pub modalities: Option<ModelModalities>,
     #[serde(default)]
     pub spec_decoding: SpecDecodingForm,
+    /// Pre-allocated context KV cache size (llama.cpp --batch). None = backend default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n_batch: Option<u32>,
+    /// Maximum number of unique sequences to process in a single batch (llama.cpp --ubatch).
+    /// None = backend default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n_ubatch: Option<u32>,
 }
 
 fn default_kv_unified() -> bool {

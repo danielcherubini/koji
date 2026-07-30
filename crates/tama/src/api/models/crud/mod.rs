@@ -68,6 +68,13 @@ pub struct ModelBody {
     #[serde(default)]
     pub cache_type_v: Option<String>,
     pub spec_decoding: Option<tama_core::config::SpecDecodingConfig>,
+    /// Pre-allocated context KV cache size (llama.cpp --batch).
+    #[serde(default)]
+    pub n_batch: Option<u32>,
+    /// Maximum number of unique sequences to process in a single batch
+    /// (llama.cpp --ubatch).
+    #[serde(default)]
+    pub n_ubatch: Option<u32>,
 }
 
 /// Body for PATCH /tama/v1/models/:id — all fields optional for surgical updates.
@@ -96,6 +103,8 @@ pub struct ModelPatchBody {
     pub cache_type_k: Option<String>,
     pub cache_type_v: Option<String>,
     pub spec_decoding: Option<tama_core::config::SpecDecodingConfig>,
+    pub n_batch: Option<u32>,
+    pub n_ubatch: Option<u32>,
 }
 
 pub fn apply_model_patch(
@@ -170,6 +179,8 @@ pub fn apply_model_patch(
         hf_last_modified: existing.hf_last_modified.clone(),
         db_id: existing.db_id,
         spec_decoding: body.spec_decoding.unwrap_or(existing_spec_decoding),
+        n_batch: body.n_batch,
+        n_ubatch: body.n_ubatch,
     }
 }
 
@@ -182,6 +193,8 @@ fn apply_model_body(
     let existing_spec_decoding = existing.as_ref().map(|m| m.spec_decoding.clone());
 
     let base = existing.unwrap_or_else(|| tama_core::config::ModelConfig {
+        n_batch: None,
+        n_ubatch: None,
         gpu_variant: None,
         gpu_device: None,
         backend: String::new(),
@@ -293,6 +306,8 @@ fn apply_model_body(
         spec_decoding: body
             .spec_decoding
             .unwrap_or_else(|| existing_spec_decoding.unwrap_or_default()),
+        n_batch: body.n_batch,
+        n_ubatch: body.n_ubatch,
     }
 }
 

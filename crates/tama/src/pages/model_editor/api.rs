@@ -57,6 +57,8 @@ pub async fn fetch_model(id: String) -> Option<ModelDetail> {
             repo_pulled_at: None,
             modalities: None,
             spec_decoding: None,
+            n_batch: None,
+            n_ubatch: None,
         });
     }
     let encoded_id = urlencoding::encode(&id);
@@ -146,6 +148,8 @@ pub async fn save_model(args: Vec<String>, form: ModelForm, is_new: bool) -> Res
         "quants": form.quants,
         "modalities": form.modalities,
         "spec_decoding": form.spec_decoding,
+        "n_batch": form.n_batch,
+        "n_ubatch": form.n_ubatch,
     });
 
     let encoded_id = urlencoding::encode(&form.id);
