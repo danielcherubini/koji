@@ -339,14 +339,14 @@ pub fn Benchmarks() -> impl IntoView {
             on_select=Callback::new(move |key| active_tab.set(key))
         />
 
-        // LLaMA-Bench tab content
+        // LLaMA-Bench tab content (shared form state hoisted from parent)
         {move || {
             if active_tab.get() == "mtp-testing" {
-                view! { <MtpBench history_refresh_trigger=history_refresh /> }.into_any()
+                view! { <MtpBench history_refresh_trigger=history_refresh shared_state=state.clone() /> }.into_any()
             } else if active_tab.get() == "spec-decode" {
-                view! { <SpecBench history_refresh_trigger=history_refresh /> }.into_any()
+                view! { <SpecBench history_refresh_trigger=history_refresh shared_state=state.clone() /> }.into_any()
             } else {
-                view! { <LlamaBench history_refresh_trigger=history_refresh /> }.into_any()
+                view! { <LlamaBench history_refresh_trigger=history_refresh shared_state=state.clone() /> }.into_any()
             }
         }}
 

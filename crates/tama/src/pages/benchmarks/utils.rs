@@ -4,7 +4,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use super::types;
-use crate::utils::{extract_and_store_csrf_token, get_request};
+use crate::utils::{extract_and_store_csrf_token, get_request, post_request};
 
 /// Parse a comma-separated string of integers into a Vec<u32>.
 /// Zero is a meaningful value — `-p 0` pins llama-bench to pure-TG mode.
@@ -49,6 +49,7 @@ pub fn split_name_variant(raw: &str) -> (Option<String>, Option<String>) {
 }
 
 /// Shared reactive state for benchmark forms.
+#[derive(Clone)]
 pub struct BenchmarkFormState {
     pub selected_display_name: RwSignal<String>,
     pub selected_model: RwSignal<String>,
@@ -227,6 +228,38 @@ pub fn format_timestamp(ts: i64) -> String {
         date.get_hours(),
         date.get_minutes(),
     )
+}
+
+/// Submit a benchmark job via POST and return the job_id.
+///
+/// Posts `body` as JSON to `url`. On HTTP status >= 400 returns the response
+/// text as an error. On success parses `job_id` from the JSON body.
+pub async fn submit_bench_job(url: &str, body: serde_json::Value) -> Result<String, String> {
+    let resp = post_request(url)
+        .header("Content-Type", "application/json")
+        .body(body.to_string())
+        .map_err(|e| format!("Request build failed: {e}"))?
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {e}"))?;
+
+    if resp.status() >= 400 {
+        let err_text = resp
+            .text()
+            .await
+            .unwrap_or_else(|_| format!("Request failed with status {}", resp.status()));
+        return Err(err_text);
+    }
+
+    let json = resp
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| format!("Failed to parse response: {e}"))?;
+
+    json.get("job_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "Response missing job_id".to_string())
 }
 
 /// Format a Unix timestamp as a short relative "time ago" string (e.g. "5m

@@ -8,10 +8,9 @@ use crate::components::job_log_panel::JobLogPanel;
 use crate::pages::benchmarks::selectors::{BackendSelect, ModelQuantSelect};
 use crate::pages::benchmarks::types::{BENCHMARK_TYPES, SPEC_BENCH_PRESETS};
 use crate::pages::benchmarks::utils::{
-    fetch_installed_backend_variants, format_mean_stddev, parse_sizes, split_id_quant,
-    split_name_variant, use_benchmark_form_state, BenchmarkFormState,
+    format_mean_stddev, parse_sizes, split_id_quant, split_name_variant, submit_bench_job,
+    BenchmarkFormState,
 };
-use crate::utils::post_request;
 
 /// Human-readable descriptions for each spec type.
 const SPEC_TYPE_DESC: &[(&str, &str)] = &[
@@ -124,9 +123,9 @@ fn format_delta(delta_pct: f64) -> String {
 pub fn SpecBench(
     /// Trigger to bump history refetch after a run completes.
     history_refresh_trigger: RwSignal<u32>,
+    shared_state: BenchmarkFormState,
 ) -> impl IntoView {
-    // ── Shared form state ──────────────────────────────────────────────
-    let state = use_benchmark_form_state();
+    // ── Shared form state (hoisted from parent) ────────────────────────
     let BenchmarkFormState {
         selected_display_name,
         selected_model,
@@ -139,10 +138,7 @@ pub fn SpecBench(
         model_refresh: _,
         model_n_batch: _,
         model_n_ubatch: _,
-    } = state;
-
-    // Fetch installed backend variants (both backends + custom, installed-only).
-    fetch_installed_backend_variants(available_backends);
+    } = shared_state;
 
     // Test Type dropdown — selects a preset benchmark type that auto-fills form fields.
     let selected_bench_type = RwSignal::new("spec_scan".to_string());
@@ -237,37 +233,12 @@ pub fn SpecBench(
                 "runs": runs_val,
             });
 
-            let submitted = async {
-                let builder = post_request("/tama/v1/benchmarks/spec-run")
-                    .header("Content-Type", "application/json")
-                    .body(body.to_string())
-                    .ok()?;
-                let resp = builder.send().await.ok()?;
-                if resp.status() >= 400 {
-                    let err_text =
-                        resp.text().await.ok().unwrap_or_else(|| {
-                            format!("Request failed with status {}", resp.status())
-                        });
-                    return Some(Err(err_text));
-                }
-                let body = resp.json::<serde_json::Value>().await.ok()?;
-                body.get("job_id")
-                    .and_then(|v| v.as_str())
-                    .map(|s| Ok(s.to_string()))
-            }
-            .await;
-
-            match submitted {
-                Some(Ok(job_id)) => {
+            match submit_bench_job("/tama/v1/benchmarks/spec-run", body).await {
+                Ok(job_id) => {
                     current_job_id.set(Some(job_id));
                 }
-                Some(Err(err)) => {
+                Err(err) => {
                     error_msg.set(err);
-                    is_running.set(false);
-                }
-                None => {
-                    error_msg
-                        .set("Failed to submit benchmark — check network connection.".to_string());
                     is_running.set(false);
                 }
             }

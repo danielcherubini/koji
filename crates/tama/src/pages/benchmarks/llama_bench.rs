@@ -9,18 +9,16 @@ use crate::pages::benchmarks::render_summaries_table;
 use crate::pages::benchmarks::selectors::{BackendSelect, ModelQuantSelect};
 use crate::pages::benchmarks::types::{BENCHMARK_TYPES, LLAMA_BENCH_PRESETS};
 use crate::pages::benchmarks::utils::{
-    fetch_installed_backend_variants, parse_sizes, split_id_quant, split_name_variant,
-    use_benchmark_form_state, BenchmarkFormState,
+    parse_sizes, split_id_quant, split_name_variant, submit_bench_job, BenchmarkFormState,
 };
-use crate::utils::post_request;
 
 #[component]
 pub fn LlamaBench(
     /// Trigger to bump history refetch after a run completes.
     history_refresh_trigger: RwSignal<u32>,
+    shared_state: BenchmarkFormState,
 ) -> impl IntoView {
-    // ── Shared form state ──────────────────────────────────────────────
-    let state = use_benchmark_form_state();
+    // ── Shared form state (hoisted from parent) ────────────────────────
     let BenchmarkFormState {
         selected_display_name,
         selected_model,
@@ -33,10 +31,7 @@ pub fn LlamaBench(
         model_refresh: _,
         model_n_batch,
         model_n_ubatch,
-    } = state;
-
-    // Fetch installed backend variants (both backends + custom, installed-only).
-    fetch_installed_backend_variants(available_backends);
+    } = shared_state;
 
     // ── Test configuration ─────────────────────────────────────────────
     let selected_bench_type = RwSignal::new("baseline".to_string());
@@ -162,28 +157,14 @@ pub fn LlamaBench(
                 "flash_attn": fa_payload,
             });
 
-            let submitted = async {
-                let resp = post_request("/tama/v1/benchmarks/run")
-                    .header("Content-Type", "application/json")
-                    .body(body.to_string())
-                    .ok()?;
-                let resp = resp.send().await.ok()?;
-                let body = resp.json::<serde_json::Value>().await.ok()?;
-                body.get("job_id")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
-            }
-            .await;
-
-            match submitted {
-                Some(job_id) => {
+            match submit_bench_job("/tama/v1/benchmarks/run", body).await {
+                Ok(job_id) => {
                     current_job_id.set(Some(job_id));
                 }
-                None => {
+                Err(err) => {
                     // Submission failed — roll back is_running and show error.
                     is_running.set(false);
-                    error_msg
-                        .set("Failed to submit benchmark — check network connection.".to_string());
+                    error_msg.set(err);
                 }
             }
         });
