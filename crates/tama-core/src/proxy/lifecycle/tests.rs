@@ -19,6 +19,7 @@ fn make_ready_state(model_name: &str, backend: &str) -> BackendState {
         consecutive_failures: Arc::new(AtomicU32::new(0)),
         failure_timestamp: None,
         restart_count: 0,
+        is_docker: false,
     }
 }
 
@@ -33,6 +34,7 @@ fn make_starting_state(model_name: &str, backend: &str) -> BackendState {
         start_time: Instant::now(),
         consecutive_failures: Arc::new(AtomicU32::new(0)),
         failure_timestamp: None,
+        is_docker: false,
     }
 }
 
@@ -56,6 +58,7 @@ fn make_unloading_state(model_name: &str, backend: &str) -> BackendState {
         consecutive_failures: Arc::new(AtomicU32::new(0)),
         failure_timestamp: None,
         restart_count: 0,
+        is_docker: false,
     }
 }
 
@@ -1231,6 +1234,7 @@ async fn test_load_tts_health_timeout_cleans_up() {
         installed_at: 0,
         gpu_variant: "cpu".into(),
         source: None,
+        docker_config: None,
     })
     .unwrap();
 
@@ -1299,6 +1303,7 @@ async fn test_load_tts_spawn_failure_cleans_up() {
         installed_at: 0,
         gpu_variant: "cpu".into(),
         source: None,
+        docker_config: None,
     })
     .unwrap();
 
@@ -1364,6 +1369,7 @@ async fn test_load_tts_success_marks_ready() {
         installed_at: 0,
         gpu_variant: "cpu".into(),
         source: None,
+        docker_config: None,
     })
     .unwrap();
 

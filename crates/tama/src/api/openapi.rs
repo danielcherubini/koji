@@ -23,6 +23,17 @@ pub fn spec() -> serde_json::Value {
         // ── Backends ────────────────────────────────────────────────────────────
         (
             "/tama/v1/backends",
+            post_op(
+                "registerBackend",
+                "Register a backend",
+                "Register a backend directly without binary install. For docker backends, requires docker_config in the request body.",
+                &["backends"],
+                Some(("RegisterBackendRequest", "application/json")),
+                Some("RegisterBackendResponse"),
+            ),
+        ),
+        (
+            "/tama/v1/backends",
             op(
                 "get",
                 "listBackends",
@@ -694,6 +705,34 @@ fn schemas() -> serde_json::Value {
     map.insert(
         "ActivateRequest".into(),
         serde_json::json!({"type": "object", "required": ["version"], "properties": {"version": {"type": "string"}}}),
+    );
+    map.insert(
+        "RegisterBackendRequest".into(),
+        serde_json::json!({"type": "object", "required": ["name", "backend_type", "version"], "properties": {"name": {"type": "string"}, "backend_type": {"type": "string"}, "version": {"type": "string"}, "gpu_variant": {"type": "string", "default": "cpu"}, "docker_config": {"$ref": "#/components/schemas/DockerConfig"}}}),
+    );
+    map.insert(
+        "RegisterBackendResponse".into(),
+        serde_json::json!({"type": "object", "required": ["name", "backend_type", "version", "path", "installedAt"], "properties": {"name": {"type": "string"}, "backend_type": {"type": "string"}, "version": {"type": "string"}, "path": {"type": "string"}, "installed_at": {"type": "integer", "format": "int64"}, "gpu_variant": {"type": "string"}, "source": {"$ref": "#/components/schemas/BackendSourceDto"}, "docker_config": {"$ref": "#/components/schemas/DockerConfigDto"}}}),
+    );
+    map.insert(
+        "DockerConfig".into(),
+        serde_json::json!({"type": "object", "required": ["image", "model_mount"], "properties": {"image": {"type": "string"}, "container_port": {"type": "integer", "default": 8000}, "model_mount": {"$ref": "#/components/schemas/DockerVolume"}, "volumes": {"type": "array", "items": {"$ref": "#/components/schemas/DockerVolume"}}, "devices": {"type": "array", "items": {"type": "string"}}, "gpus": {"type": ["string", "null"]}, "shm_size": {"type": ["string", "null"]}, "cap_adds": {"type": "array", "items": {"type": "string"}}, "security_opts": {"type": "array", "items": {"type": "string"}}, "group_adds": {"type": "array", "items": {"type": "string"}}}}),
+    );
+    map.insert(
+        "DockerVolume".into(),
+        serde_json::json!({"type": "object", "required": ["host_path", "container_path"], "properties": {"host_path": {"type": "string"}, "container_path": {"type": "string"}, "read_only": {"type": "boolean", "default": false}}}),
+    );
+    map.insert(
+        "DockerConfigDto".into(),
+        serde_json::json!({"type": "object", "properties": {"image": {"type": "string"}, "container_port": {"type": "integer"}, "model_mount": {"$ref": "#/components/schemas/DockerVolumeDto"}, "volumes": {"type": "array", "items": {"$ref": "#/components/schemas/DockerVolumeDto"}}, "devices": {"type": "array", "items": {"type": "string"}}, "gpus": {"type": ["string", "null"]}, "shm_size": {"type": ["string", "null"]}, "cap_adds": {"type": "array", "items": {"type": "string"}}, "security_opts": {"type": "array", "items": {"type": "string"}}, "group_adds": {"type": "array", "items": {"type": "string"}}}}),
+    );
+    map.insert(
+        "DockerVolumeDto".into(),
+        serde_json::json!({"type": "object", "properties": {"host_path": {"type": "string"}, "container_path": {"type": "string"}, "read_only": {"type": "boolean"}}}),
+    );
+    map.insert(
+        "BackendSourceDto".into(),
+        serde_json::json!({"type": "object", "properties": {"kind": {"type": "string"}, "version": {"type": "string"}, "git_url": {"type": ["string", "null"]}, "commit": {"type": ["string", "null"]}}}),
     );
 
     // Job/Update schemas

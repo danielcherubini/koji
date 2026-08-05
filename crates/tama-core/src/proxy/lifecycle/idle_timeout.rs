@@ -2,6 +2,7 @@ use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
 use super::traits::HealthChecker;
+use crate::backends::docker::{remove_container, stop_container};
 use crate::process::{
     force_kill_process_group, is_process_alive, is_process_group_alive, kill_process_group,
 };
@@ -21,8 +22,9 @@ impl ProxyState {
         let mut failed_to_remove = Vec::new();
         // (backend_name, model_name, backend, restart_count, pid, backend_url)
         let mut dead_pid_candidates: Vec<(String, String, String, u32, u32, String)> = Vec::new();
-        // (backend_name, model_name, backend, start_time, pid)
-        let mut stuck_starting_backends: Vec<(String, String, String, Instant, u32)> = Vec::new();
+        // (backend_name, model_name, backend, start_time, pid, is_docker)
+        let mut stuck_starting_backends: Vec<(String, String, String, Instant, u32, bool)> =
+            Vec::new();
 
         let (auto_unload, idle_timeout_secs, startup_timeout_secs, max_restarts, restart_delay_ms) = {
             let cfg = self.config.read().await;
@@ -56,6 +58,7 @@ impl ProxyState {
                         state.backend().to_string(),
                         *start_time,
                         state.backend_pid().unwrap_or(0),
+                        state.is_docker(),
                     ));
                 }
                 continue;
@@ -160,10 +163,10 @@ impl ProxyState {
 
         // Handle stuck Starting — transition to Failed and kill orphaned process groups
         if !stuck_starting_backends.is_empty() {
-            let mut pids_to_clean: Vec<(String, u32)> = Vec::new();
+            let mut pids_to_clean: Vec<(String, u32, bool)> = Vec::new();
             {
                 let mut models = self.registry.models.write().await;
-                for (backend_name, model_name, backend, observed_start, observed_pid) in
+                for (backend_name, model_name, backend, observed_start, observed_pid, is_docker) in
                     &stuck_starting_backends
                 {
                     // Revalidate: only transition if still in Starting state with matching start_time
@@ -193,21 +196,29 @@ impl ProxyState {
                         "Transitioned '{}' to Failed (stuck in Starting)",
                         backend_name
                     );
-                    pids_to_clean.push((backend_name.clone(), *observed_pid));
+                    pids_to_clean.push((backend_name.clone(), *observed_pid, *is_docker));
                 }
             }
             // Kill orphaned process groups outside the write lock
-            for (backend_name, pid) in pids_to_clean {
+            for (backend_name, pid, is_docker) in pids_to_clean {
                 if pid > 0 {
                     warn!(
-                        "Killing orphaned process group {} for stuck backend '{}'",
+                        "Killing orphaned process {} for stuck backend '{}'",
                         pid, backend_name
                     );
-                    let _ = kill_process_group(pid).await;
-                    tokio::time::sleep(Duration::from_millis(250)).await;
-                    if is_process_group_alive(pid) {
-                        let _ = force_kill_process_group(pid).await;
-                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    if is_docker {
+                        // Docker path: stop + remove container
+                        let container_name = format!("tama-{}", backend_name);
+                        let _ = stop_container(&container_name).await;
+                        let _ = remove_container(&container_name).await;
+                    } else {
+                        // Native path: kill process group
+                        let _ = kill_process_group(pid).await;
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                        if is_process_group_alive(pid) {
+                            let _ = force_kill_process_group(pid).await;
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                        }
                     }
                 }
             }
@@ -346,7 +357,7 @@ impl ProxyState {
         cleaned.extend(
             stuck_starting_backends
                 .iter()
-                .map(|(n, _, _, _, _)| n.clone()),
+                .map(|(n, _, _, _, _, _)| n.clone()),
         );
         cleaned.extend(confirmed_dead.iter().map(|(n, _, _, _, _)| n.clone()));
         cleaned.extend(to_unload);

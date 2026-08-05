@@ -25,8 +25,12 @@ pub struct BackendEntry {
     pub version: String,
     /// Backend type as string (e.g., "llama_cpp", "ik_llama", "custom")
     pub backend_type: String,
-    /// Source as string (e.g., "prebuilt", "source")
-    pub source: String,
+    /// Source as optional string (e.g., Some("prebuilt"), Some("source"), None for Docker)
+    #[serde(default)]
+    pub source: Option<String>,
+    /// Serialized DockerConfig JSON for Docker-based backends
+    #[serde(default)]
+    pub docker_config: Option<String>,
 }
 
 /// Full backup manifest describing what's in the archive.

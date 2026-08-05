@@ -180,6 +180,7 @@ async fn test_handle_get_model_fetches_from_backend_with_meta() {
                 last_accessed: std::time::Instant::now(),
                 consecutive_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
                 failure_timestamp: None,
+                is_docker: false,
                 restart_count: 0,
             },
         );
@@ -336,6 +337,7 @@ async fn test_handle_get_model_matches_by_model_field_when_multiple() {
                 last_accessed: std::time::Instant::now(),
                 consecutive_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
                 failure_timestamp: None,
+                is_docker: false,
                 restart_count: 0,
             },
         );
@@ -391,6 +393,7 @@ async fn test_handle_get_model_backend_failure_fallback() {
                 last_accessed: std::time::Instant::now(),
                 consecutive_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
                 failure_timestamp: None,
+                is_docker: false,
                 restart_count: 0,
             },
         );
@@ -466,6 +469,7 @@ async fn test_handle_get_model_normalizes_id_from_alias() {
                 last_accessed: std::time::Instant::now(),
                 consecutive_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
                 failure_timestamp: None,
+                is_docker: false,
                 restart_count: 0,
             },
         );

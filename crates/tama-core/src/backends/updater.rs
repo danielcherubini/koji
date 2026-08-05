@@ -105,6 +105,7 @@ pub async fn check_latest_version(
             Err(anyhow!("Cannot check updates for non-inference backends"))
         }
         BackendType::Custom => Err(anyhow!("Cannot check updates for custom backends")),
+        BackendType::Docker => Err(anyhow!("Cannot check updates for Docker backends")),
     }
 }
 

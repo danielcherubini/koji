@@ -6,6 +6,8 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumIs};
 
+use super::docker::DockerConfig;
+
 /// Metadata for an installed backend.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackendInfo {
@@ -18,6 +20,9 @@ pub struct BackendInfo {
     pub gpu_variant: String,
     #[serde(default)]
     pub source: Option<BackendSource>,
+    /// Docker configuration for Docker-based backends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub docker_config: Option<DockerConfig>,
 }
 
 /// Source of a backend installation
@@ -46,6 +51,7 @@ pub enum BackendType {
     TtsKokoro,
     Compaction,
     Custom,
+    Docker,
 }
 
 impl BackendType {
@@ -64,7 +70,10 @@ impl BackendType {
         match self {
             BackendType::LlamaCpp => "https://github.com/ggml-org/llama.cpp.git",
             BackendType::IkLlama => "https://github.com/ikawrakow/ik_llama.cpp.git",
-            BackendType::TtsKokoro | BackendType::Compaction | BackendType::Custom => {
+            BackendType::TtsKokoro
+            | BackendType::Compaction
+            | BackendType::Custom
+            | BackendType::Docker => {
                 "https://github.com/ggml-org/llama.cpp.git" // fallback, never reached in practice
             }
         }
@@ -81,8 +90,9 @@ impl FromStr for BackendType {
             "tts_kokoro" | "ttskokoro" => Ok(BackendType::TtsKokoro),
             "compaction" => Ok(BackendType::Compaction),
             "custom" => Ok(BackendType::Custom),
+            "docker" => Ok(BackendType::Docker),
             _ => Err(format!(
-                "Unknown backend type '{}'. Supported: llama_cpp, ik_llama, tts_kokoro, compaction, custom",
+                "Unknown backend type '{}'. Supported: llama_cpp, ik_llama, tts_kokoro, compaction, custom, docker",
                 s
             )),
         }
@@ -115,6 +125,10 @@ mod tests {
             BackendType::Custom.default_git_url(),
             "https://github.com/ggml-org/llama.cpp.git"
         );
+        assert_eq!(
+            BackendType::Docker.default_git_url(),
+            "https://github.com/ggml-org/llama.cpp.git" // fallback, never reached
+        );
     }
 
     #[test]
@@ -124,6 +138,7 @@ mod tests {
         assert!(!BackendType::LlamaCpp.is_non_inference_backend());
         assert!(!BackendType::IkLlama.is_non_inference_backend());
         assert!(!BackendType::Custom.is_non_inference_backend());
+        assert!(!BackendType::Docker.is_non_inference_backend());
     }
 
     // --- Tests for derived Display / EnumIs ---
@@ -135,6 +150,7 @@ mod tests {
         assert_eq!(BackendType::TtsKokoro.to_string(), "tts_kokoro");
         assert_eq!(BackendType::Compaction.to_string(), "compaction");
         assert_eq!(BackendType::Custom.to_string(), "custom");
+        assert_eq!(BackendType::Docker.to_string(), "docker");
     }
 
     #[test]
@@ -144,12 +160,14 @@ mod tests {
         let tts_kokoro = BackendType::TtsKokoro;
         let compaction = BackendType::Compaction;
         let custom = BackendType::Custom;
+        let docker = BackendType::Docker;
 
         assert!(llama_cpp.is_llama_cpp());
         assert!(!llama_cpp.is_ik_llama());
         assert!(!llama_cpp.is_tts_kokoro());
         assert!(!llama_cpp.is_compaction());
         assert!(!llama_cpp.is_custom());
+        assert!(!llama_cpp.is_docker());
 
         assert!(ik_llama.is_ik_llama());
         assert!(!ik_llama.is_llama_cpp());
@@ -161,6 +179,10 @@ mod tests {
         assert!(compaction.is_non_inference_backend());
 
         assert!(custom.is_custom());
+
+        assert!(docker.is_docker());
+        assert!(!docker.is_llama_cpp());
+        assert!(!docker.is_ik_llama());
     }
 
     #[test]
@@ -199,6 +221,10 @@ mod tests {
             BackendType::from_str("custom").unwrap(),
             BackendType::Custom
         );
+        assert_eq!(
+            BackendType::from_str("docker").unwrap(),
+            BackendType::Docker
+        );
         assert!(BackendType::from_str("unknown").is_err());
     }
 
@@ -210,6 +236,7 @@ mod tests {
             BackendType::TtsKokoro,
             BackendType::Compaction,
             BackendType::Custom,
+            BackendType::Docker,
         ] {
             let name = variant.to_string();
             // Round-trip: Display → from_str → Display should match

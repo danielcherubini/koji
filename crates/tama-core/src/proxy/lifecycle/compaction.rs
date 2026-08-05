@@ -67,6 +67,7 @@ impl ProxyState {
             models.insert(
                 "compaction".to_string(),
                 BackendState::Starting {
+                    is_docker: false,
                     model_name: "compaction".to_string(),
                     backend: "compaction".to_string(),
                     backend_url: String::new(),
@@ -187,6 +188,7 @@ impl ProxyState {
                     let cf = Arc::clone(consecutive_failures);
                     let ft = *failure_timestamp;
                     *state = BackendState::Ready {
+                        is_docker: false,
                         model_name: "compaction".to_string(),
                         backend: "compaction".to_string(),
                         backend_pid: pid,

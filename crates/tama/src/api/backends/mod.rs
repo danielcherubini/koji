@@ -4,6 +4,7 @@ pub mod install;
 pub mod jobs;
 pub mod list;
 pub mod manage;
+pub mod register;
 pub mod types;
 
 // Re-export all public types and functions for backward compatibility
@@ -12,6 +13,7 @@ pub use install::*;
 pub use jobs::*;
 pub use list::*;
 pub use manage::*;
+pub use register::*;
 pub use types::*;
 
 /// Returns true if a path parameter contains separators or traversal sequences.

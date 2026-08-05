@@ -211,15 +211,31 @@ pub fn merge_database(
     let after = count_model_files(local_db)?;
     stats.new_model_files = after.saturating_sub(before);
 
-    // Merge backend_installations (explicit column list, no id)
+    // Merge backend_installations (explicit column list, no id).
+    // The live table has docker_config (migration v43). Old backups (pre-v43)
+    // don't have it. Detect whether the backup DB has the column.
+    let has_docker_config = local_db
+        .query_row(
+            "SELECT name FROM backup_db.pragma_table_info('backend_installations') WHERE name = 'docker_config'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .is_ok();
+
+    let dc_select = if has_docker_config {
+        "bf.docker_config"
+    } else {
+        "NULL"
+    };
+
     let before = count_backend_installations(local_db)?;
     local_db
-        .execute_batch(
+        .execute_batch(&format!(
             "INSERT OR IGNORE INTO backend_installations \
-         (name, backend_type, version, path, installed_at, gpu_variant, source, is_active) \
-         SELECT name, backend_type, version, path, installed_at, gpu_variant, source, is_active \
-         FROM backup_db.backend_installations",
-        )
+         (name, backend_type, version, path, installed_at, gpu_variant, source, is_active, docker_config) \
+         SELECT name, backend_type, version, path, installed_at, gpu_variant, source, is_active, {dc_select} \
+         FROM backup_db.backend_installations bf",
+        ))
         .context("Failed to merge backend_installations")?;
     let after = count_backend_installations(local_db)?;
     stats.new_backend_installations = after.saturating_sub(before);

@@ -62,7 +62,10 @@ pub struct BackendEntry {
     pub name: String,
     pub version: String,
     pub backend_type: String,
-    pub source: String,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub docker_config: Option<String>,
 }
 
 /// GET /tama/v1/backup - Create backup and return as file download
@@ -209,6 +212,7 @@ pub async fn restore_preview(
                         version: b.version,
                         backend_type: b.backend_type,
                         source: b.source,
+                        docker_config: b.docker_config,
                     })
                     .collect(),
             })
@@ -521,7 +525,8 @@ mod tests {
                 name: "llama-cpp".to_string(),
                 version: "b8407".to_string(),
                 backend_type: "llama_cpp".to_string(),
-                source: "prebuilt".to_string(),
+                source: Some("prebuilt".to_string()),
+                docker_config: None,
             }],
         };
 
@@ -646,13 +651,14 @@ mod tests {
             name: "llama-cpp".to_string(),
             version: "b8407".to_string(),
             backend_type: "llama_cpp".to_string(),
-            source: "prebuilt".to_string(),
+            source: Some("prebuilt".to_string()),
+            docker_config: None,
         };
 
         assert_eq!(entry.name, "llama-cpp");
         assert_eq!(entry.version, "b8407");
         assert_eq!(entry.backend_type, "llama_cpp");
-        assert_eq!(entry.source, "prebuilt");
+        assert_eq!(entry.source, Some("prebuilt".to_string()));
     }
 
     #[test]
@@ -661,10 +667,11 @@ mod tests {
             name: "llama-cpp".to_string(),
             version: "b8407".to_string(),
             backend_type: "llama_cpp".to_string(),
-            source: "build".to_string(),
+            source: Some("build".to_string()),
+            docker_config: None,
         };
 
-        assert_eq!(entry.source, "build");
+        assert_eq!(entry.source, Some("build".to_string()));
     }
 
     #[test]

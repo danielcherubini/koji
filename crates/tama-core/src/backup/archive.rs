@@ -186,7 +186,7 @@ fn build_manifest_from_db(conn: &rusqlite::Connection, sha256: &str) -> Result<B
         .collect();
 
     let mut stmt_backends = conn.prepare(
-        "SELECT name, version, backend_type, source FROM backend_installations WHERE is_active = 1"
+        "SELECT name, version, backend_type, source, docker_config FROM backend_installations WHERE is_active = 1"
     ).context("Failed to prepare backend_installations query")?;
     let backends: Vec<BackendEntry> = stmt_backends
         .query_map([], |row| {
@@ -195,6 +195,7 @@ fn build_manifest_from_db(conn: &rusqlite::Connection, sha256: &str) -> Result<B
                 version: row.get(1)?,
                 backend_type: row.get(2)?,
                 source: row.get(3)?,
+                docker_config: row.get(4)?,
             })
         })?
         .collect::<Result<_, _>>()?;
@@ -496,7 +497,7 @@ size_bytes = 1000
         conn.execute_batch(
             "CREATE TABLE model_pulls (id INTEGER PRIMARY KEY AUTOINCREMENT, repo_id TEXT NOT NULL, commit_sha TEXT NOT NULL, pulled_at TEXT NOT NULL, UNIQUE(repo_id));
              CREATE TABLE model_files (id INTEGER PRIMARY KEY AUTOINCREMENT, repo_id TEXT NOT NULL, filename TEXT NOT NULL, quant TEXT, lfs_oid TEXT, size_bytes INTEGER NOT NULL, pulled_at TEXT NOT NULL, last_verified_at TEXT, verified_ok INTEGER, verify_error TEXT, UNIQUE(repo_id, filename));
-             CREATE TABLE backend_installations (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, backend_type TEXT NOT NULL, version TEXT NOT NULL, path TEXT NOT NULL, installed_at INTEGER NOT NULL, gpu_variant TEXT NOT NULL DEFAULT 'cpu', source TEXT, is_active INTEGER NOT NULL DEFAULT 0, UNIQUE(name, gpu_variant, version));"
+             CREATE TABLE backend_installations (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, backend_type TEXT NOT NULL, version TEXT NOT NULL, path TEXT NOT NULL, installed_at INTEGER NOT NULL, gpu_variant TEXT NOT NULL DEFAULT 'cpu', source TEXT, is_active INTEGER NOT NULL DEFAULT 0, docker_config TEXT DEFAULT NULL, UNIQUE(name, gpu_variant, version));"
         ).expect("create tables");
         conn.execute(
             "INSERT INTO model_pulls (repo_id, commit_sha, pulled_at) VALUES ('test/repo', 'abc123', '2024-01-01T00:00:00Z');",
@@ -656,7 +657,7 @@ size_bytes = 1000
         conn.execute_batch(
             "CREATE TABLE model_pulls (id INTEGER PRIMARY KEY AUTOINCREMENT, repo_id TEXT NOT NULL, commit_sha TEXT NOT NULL, pulled_at TEXT NOT NULL, UNIQUE(repo_id));
              CREATE TABLE model_files (id INTEGER PRIMARY KEY AUTOINCREMENT, repo_id TEXT NOT NULL, filename TEXT NOT NULL, quant TEXT, lfs_oid TEXT, size_bytes INTEGER NOT NULL, pulled_at TEXT NOT NULL, last_verified_at TEXT, verified_ok INTEGER, verify_error TEXT, UNIQUE(repo_id, filename));
-             CREATE TABLE backend_installations (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, backend_type TEXT NOT NULL, version TEXT NOT NULL, path TEXT NOT NULL, installed_at INTEGER NOT NULL, gpu_variant TEXT NOT NULL DEFAULT 'cpu', source TEXT, is_active INTEGER NOT NULL DEFAULT 0, UNIQUE(name, gpu_variant, version));"
+             CREATE TABLE backend_installations (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, backend_type TEXT NOT NULL, version TEXT NOT NULL, path TEXT NOT NULL, installed_at INTEGER NOT NULL, gpu_variant TEXT NOT NULL DEFAULT 'cpu', source TEXT, is_active INTEGER NOT NULL DEFAULT 0, docker_config TEXT DEFAULT NULL, UNIQUE(name, gpu_variant, version));"
         ).expect("create tables");
 
         // Create a backup normally

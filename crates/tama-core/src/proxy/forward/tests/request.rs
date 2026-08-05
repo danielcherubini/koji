@@ -30,6 +30,7 @@ fn make_ready_state(
         last_accessed: Instant::now(),
         consecutive_failures: Arc::new(AtomicU32::new(failures)),
         failure_timestamp,
+        is_docker: false,
         restart_count: 0,
     }
 }

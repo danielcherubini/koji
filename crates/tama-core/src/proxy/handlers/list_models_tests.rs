@@ -465,6 +465,7 @@ async fn test_handle_list_models_alias_deduplication() {
                 last_accessed: std::time::Instant::now(),
                 consecutive_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
                 failure_timestamp: None,
+                is_docker: false,
                 restart_count: 0,
             },
         );
@@ -561,6 +562,7 @@ async fn test_handle_list_models_no_alias_no_normalization() {
                 last_accessed: std::time::Instant::now(),
                 consecutive_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
                 failure_timestamp: None,
+                is_docker: false,
                 restart_count: 0,
             },
         );

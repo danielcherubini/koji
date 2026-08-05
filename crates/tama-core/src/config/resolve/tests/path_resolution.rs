@@ -18,6 +18,7 @@ fn insert_active_backend(
         installed_at: 0,
         gpu_variant: gpu_variant.to_string(),
         source: None,
+        docker_config: None,
     };
     manager.add_installation(&info).unwrap();
 }

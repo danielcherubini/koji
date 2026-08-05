@@ -294,6 +294,7 @@ mod tests {
                 last_accessed: std::time::Instant::now(),
                 consecutive_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
                 failure_timestamp: None,
+                is_docker: false,
                 restart_count: 0,
             },
         );
@@ -454,6 +455,7 @@ mod tests {
                     last_accessed: Instant::now(),
                     consecutive_failures: Arc::new(AtomicU32::new(0)),
                     failure_timestamp: None,
+                    is_docker: false,
                     restart_count: 0,
                 },
             );

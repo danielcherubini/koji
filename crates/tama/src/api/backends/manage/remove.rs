@@ -110,6 +110,7 @@ pub async fn remove_backend_version(
         installed_at: info.installed_at,
         gpu_variant: info.gpu_variant.clone(),
         source: None,
+        docker_config: None,
     };
 
     // Check if a job is running for this backend

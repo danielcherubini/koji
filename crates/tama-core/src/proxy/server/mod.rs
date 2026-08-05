@@ -85,6 +85,13 @@ impl ProxyServer {
             }
         }
 
+        // Reap any managed Docker containers left behind from crashed Tama instances.
+        // Must run before cleanup_stale_processes so that stale containers are removed
+        // before the process reaper tries to adopt them as native Ready backends.
+        if let Err(e) = crate::backends::docker::reconcile::startup_reconcile().await {
+            tracing::warn!("Startup reconciliation failed: {}", e);
+        }
+
         Self::cleanup_stale_processes(&state).await;
         let idle_timeout_handle = Self::start_idle_timeout_checker(state.clone());
 
@@ -149,6 +156,7 @@ impl ProxyServer {
                         ),
                         failure_timestamp: None,
                         restart_count: 0,
+                        is_docker: false,
                     },
                 );
             } else {

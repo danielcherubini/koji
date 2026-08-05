@@ -184,6 +184,7 @@ async fn test_metrics_merges_backend_metrics() {
                 last_accessed: std::time::Instant::now(),
                 consecutive_failures: std::sync::Arc::new(AtomicU32::new(0)),
                 failure_timestamp: None,
+                is_docker: false,
                 restart_count: 0,
             },
         );

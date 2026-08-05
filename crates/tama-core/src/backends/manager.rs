@@ -225,6 +225,7 @@ impl BackendManager {
                 .map_or(0, |d| d.as_secs() as i64),
             gpu_variant: existing.gpu_variant,
             source: new_source,
+            docker_config: existing.docker_config,
         };
         self.add_installation(&updated)
     }
@@ -317,6 +318,12 @@ impl BackendManager {
             .map(serde_json::to_string)
             .transpose()
             .context("Failed to serialize source")?;
+        let docker_config_json = info
+            .docker_config
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .context("Failed to serialize docker_config")?;
         Ok(crate::db::queries::BackendInstallationRecord {
             id: 0,
             name: info.name.clone(),
@@ -327,6 +334,7 @@ impl BackendManager {
             gpu_variant: info.gpu_variant.clone(),
             source: source_json,
             is_active: true,
+            docker_config: docker_config_json,
         })
     }
 
@@ -339,6 +347,12 @@ impl BackendManager {
             .map(serde_json::from_str)
             .transpose()
             .context("Failed to deserialize source")?;
+        let docker_config = record
+            .docker_config
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()
+            .context("Failed to deserialize docker_config")?;
         Ok(BackendInfo {
             name: record.name,
             backend_type: record.backend_type.parse().map_err(|e| {
@@ -353,6 +367,7 @@ impl BackendManager {
             installed_at: record.installed_at,
             gpu_variant: record.gpu_variant,
             source,
+            docker_config,
         })
     }
 }
@@ -381,6 +396,7 @@ mod tests {
                 gpu_variant: gpu_variant.to_string(),
                 source: None,
                 is_active: true,
+                docker_config: None,
             },
         )
     }
@@ -562,6 +578,7 @@ mod tests {
                 .as_secs() as i64,
             gpu_variant: "cpu".to_string(),
             source: None,
+            docker_config: None,
         }
     }
 
@@ -652,6 +669,7 @@ mod tests {
             installed_at: info1.installed_at,
             gpu_variant: "cuda".to_string(),
             source: None,
+            docker_config: None,
         };
         manager.add_installation(&info_cuda).unwrap();
 
@@ -904,6 +922,7 @@ mod tests {
                 gpu_variant: gpu_variant.to_string(),
                 source: source_json,
                 is_active: true,
+                docker_config: None,
             },
         )
     }

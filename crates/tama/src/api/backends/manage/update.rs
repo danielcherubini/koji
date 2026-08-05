@@ -110,6 +110,15 @@ pub async fn update_backend(
 
     let backend_type = backend_info.backend_type.clone();
 
+    // Docker backends cannot be updated via the binary update flow
+    if backend_info.docker_config.is_some() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "update not supported for docker backends",
+            Some("ValidationError"),
+        );
+    }
+
     // Check latest version
     let latest_version =
         match tama_core::backends::check_latest_version(&backend_type, None, None).await {

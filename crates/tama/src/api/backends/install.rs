@@ -73,6 +73,13 @@ pub async fn install_backend(
         "llama_cpp" => tama_core::backends::BackendType::LlamaCpp,
         "ik_llama" => tama_core::backends::BackendType::IkLlama,
         "tts_kokoro" => tama_core::backends::BackendType::TtsKokoro,
+        "docker" => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "docker backends use POST /tama/v1/backends, not /install",
+                Some("ValidationError"),
+            )
+        }
         "custom" => {
             return error_response(
                 StatusCode::BAD_REQUEST,
@@ -443,6 +450,7 @@ pub async fn install_backend(
                             installed_at,
                             gpu_variant: reg_gpu_variant,
                             source: Some(reg_source),
+                            docker_config: None,
                         })
                     })
                     .await

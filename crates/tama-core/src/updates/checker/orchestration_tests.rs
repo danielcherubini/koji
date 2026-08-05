@@ -17,6 +17,7 @@ fn seed_backend(config_dir: &std::path::Path) {
         installed_at: 0,
         gpu_variant: "cpu".into(),
         source: None,
+        docker_config: None,
     })
     .unwrap();
 }

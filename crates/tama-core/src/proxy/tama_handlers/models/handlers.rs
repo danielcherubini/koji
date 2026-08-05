@@ -9,6 +9,7 @@ use axum::{
 };
 
 use super::utils::resolve_config_key;
+use crate::backends::docker::{remove_container, stop_container};
 use crate::gpu::ModelState;
 use crate::process::{force_kill_process_group, is_process_group_alive, kill_process_group};
 use crate::proxy::tama_handlers::{ListModelsResponse, ListedModelResponse, ModelResponse};
@@ -226,7 +227,7 @@ pub async fn handle_tama_cancel_load(
     let model_id = resolve_config_key(&state, &model_id).await;
 
     // ── Step b: read lock — initial check ──────────────────────────────
-    let (backend_name, pid) = {
+    let (backend_name, pid, is_docker) = {
         let models = state.registry.models.read().await;
         let entry = match models.get(&model_id) {
             Some(e) => e,
@@ -245,7 +246,11 @@ pub async fn handle_tama_cancel_load(
         };
 
         match entry {
-            BackendState::Starting { backend_pid, .. } => (model_id.clone(), *backend_pid),
+            BackendState::Starting {
+                backend_pid,
+                is_docker,
+                ..
+            } => (model_id.clone(), *backend_pid, *is_docker),
             BackendState::Ready { .. } => {
                 return (
                     StatusCode::CONFLICT,
@@ -311,27 +316,34 @@ pub async fn handle_tama_cancel_load(
         }
     } // write lock dropped
 
-    // ── Step f: kill process group ─────────────────────────────────────
+    // ── Step f: kill process or container ──────────────────────────────
     if pid > 0 {
-        // First attempt: SIGTERM
-        if let Err(e) = kill_process_group(pid).await {
-            warn!("Cancel kill failed for '{}': {}", backend_name, e);
-        }
-
-        // Poll up to 2s for the group to die (every 250ms)
-        for _ in 0..8 {
-            tokio::time::sleep(Duration::from_millis(250)).await;
-            if !is_process_group_alive(pid) {
-                break;
+        if is_docker {
+            // Docker path: stop + remove container
+            let container_name = format!("tama-{}", backend_name);
+            let _ = stop_container(&container_name).await;
+            let _ = remove_container(&container_name).await;
+        } else {
+            // Native path: kill process group
+            if let Err(e) = kill_process_group(pid).await {
+                warn!("Cancel kill failed for '{}': {}", backend_name, e);
             }
-        }
 
-        // Escalate: SIGKILL if still alive
-        if is_process_group_alive(pid) {
-            if let Err(e) = force_kill_process_group(pid).await {
-                warn!("Cancel force kill failed for '{}': {}", backend_name, e);
+            // Poll up to 2s for the group to die (every 250ms)
+            for _ in 0..8 {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                if !is_process_group_alive(pid) {
+                    break;
+                }
             }
-            tokio::time::sleep(Duration::from_millis(500)).await;
+
+            // Escalate: SIGKILL if still alive
+            if is_process_group_alive(pid) {
+                if let Err(e) = force_kill_process_group(pid).await {
+                    warn!("Cancel force kill failed for '{}': {}", backend_name, e);
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
         }
     }
 

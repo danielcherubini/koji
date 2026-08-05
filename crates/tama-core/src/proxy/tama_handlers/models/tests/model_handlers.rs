@@ -57,6 +57,7 @@ async fn test_handle_tama_list_models_states() {
             last_accessed: Instant::now(),
             consecutive_failures: Arc::new(AtomicU32::new(0)),
             failure_timestamp: None,
+            is_docker: false,
             restart_count: 0,
         },
     );
@@ -128,6 +129,7 @@ async fn test_handle_tama_get_model_loaded() {
             last_accessed: Instant::now(),
             consecutive_failures: Arc::new(AtomicU32::new(0)),
             failure_timestamp: None,
+            is_docker: false,
             restart_count: 0,
         },
     );
@@ -285,6 +287,7 @@ async fn test_handle_tama_cancel_load_starting() {
             last_accessed: Instant::now(),
             start_time: Instant::now(),
             consecutive_failures: Arc::new(AtomicU32::new(0)),
+            is_docker: false,
             failure_timestamp: None,
         },
     );
@@ -342,6 +345,7 @@ async fn test_handle_tama_cancel_load_ready_conflict() {
             last_accessed: Instant::now(),
             consecutive_failures: Arc::new(AtomicU32::new(0)),
             failure_timestamp: None,
+            is_docker: false,
             restart_count: 0,
         },
     );
@@ -432,6 +436,7 @@ async fn test_handle_tama_unload_model_ready() {
             last_accessed: Instant::now(),
             consecutive_failures: Arc::new(AtomicU32::new(0)),
             failure_timestamp: None,
+            is_docker: false,
             restart_count: 0,
         },
     );

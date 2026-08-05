@@ -23,6 +23,7 @@ pub enum BackendState {
         start_time: Instant,
         consecutive_failures: Arc<std::sync::atomic::AtomicU32>,
         failure_timestamp: Option<std::time::SystemTime>,
+        is_docker: bool,
     },
     /// Backend is ready and accepting traffic
     Ready {
@@ -35,6 +36,7 @@ pub enum BackendState {
         consecutive_failures: Arc<std::sync::atomic::AtomicU32>,
         failure_timestamp: Option<std::time::SystemTime>,
         restart_count: u32,
+        is_docker: bool,
     },
     /// Backend failed to start
     Failed {
@@ -52,6 +54,7 @@ pub enum BackendState {
         consecutive_failures: Arc<std::sync::atomic::AtomicU32>,
         failure_timestamp: Option<std::time::SystemTime>,
         restart_count: u32,
+        is_docker: bool,
     },
 }
 
@@ -102,6 +105,16 @@ impl BackendState {
             BackendState::Ready { backend_pid, .. } => Some(*backend_pid),
             BackendState::Unloading { backend_pid, .. } => Some(*backend_pid),
             _ => None,
+        }
+    }
+
+    /// Returns true if this backend is running inside a Docker container.
+    pub fn is_docker(&self) -> bool {
+        match self {
+            BackendState::Starting { is_docker, .. }
+            | BackendState::Ready { is_docker, .. }
+            | BackendState::Unloading { is_docker, .. } => *is_docker,
+            BackendState::Failed { .. } => false,
         }
     }
 

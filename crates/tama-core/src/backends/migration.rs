@@ -300,6 +300,7 @@ fn parse_backend_type(type_str: &str) -> BackendType {
         "llama_cpp" => BackendType::LlamaCpp,
         "ik_llama" => BackendType::IkLlama,
         "tts_kokoro" => BackendType::TtsKokoro,
+        "docker" => BackendType::Docker,
         _ => BackendType::Custom,
     }
 }

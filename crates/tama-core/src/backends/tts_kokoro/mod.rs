@@ -39,6 +39,7 @@ pub async fn install_tts_kokoro(
             git_url: paths::KOKORO_FASTAPI_URL.to_string(),
             commit: None,
         }),
+        docker_config: None,
     };
 
     manager

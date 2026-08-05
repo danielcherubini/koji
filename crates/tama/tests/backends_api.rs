@@ -44,6 +44,7 @@ fn seed_llama_cpp_backend(tmp_dir: &std::path::Path) {
         installed_at: 1000,
         gpu_variant: "cpu".to_string(),
         source: None,
+        docker_config: None,
     };
     mgr.add_installation(&info).unwrap();
 }
@@ -61,6 +62,7 @@ fn seed_custom_backend(tmp_dir: &std::path::Path) {
         installed_at: 2000,
         gpu_variant: "cpu".to_string(),
         source: None,
+        docker_config: None,
     };
     mgr.add_installation(&info).unwrap();
 }

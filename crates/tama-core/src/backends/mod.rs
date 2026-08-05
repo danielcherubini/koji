@@ -1,3 +1,4 @@
+pub mod docker;
 pub mod installer;
 pub mod log_stream;
 pub mod manager;
@@ -5,6 +6,8 @@ pub mod migration;
 pub mod tts_kokoro;
 pub mod types;
 pub mod updater;
+
+pub use docker::{DockerConfig, DockerVolume};
 
 pub use installer::{install_backend, install_backend_with_progress, InstallOptions};
 pub use manager::{BackendManager, BackendOption};
@@ -173,6 +176,7 @@ mod tests {
             installed_at: 0,
             gpu_variant: "cpu".to_string(),
             source: None,
+            docker_config: None,
         };
 
         let result = safe_remove_installation(&outside_info);
@@ -259,6 +263,7 @@ mod tests {
             installed_at: 0,
             gpu_variant: "cpu".to_string(),
             source: None,
+            docker_config: None,
         };
 
         // Call safe_remove_installation — since info.path is a directory,

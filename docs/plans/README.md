@@ -12,8 +12,8 @@ Plans for features, refactors, and bug fixes in the Tama project.
 
 ## Quick Stats
 
-- **Total Plans**: 79
-- **Backlog**: 0
+- **Total Plans**: 80
+- **Backlog**: 1
 - **Completed**: 79 ✅
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan.
@@ -29,7 +29,7 @@ Current plans ready for execution, ordered by dependency-first cascade priority:
 
 | Plan | Description | Depends on |
 |------|-------------|------------|
-| *(backlog empty)* | | |
+| [plan-080](plan-080-docker-backend.md) | Docker backend support — run inference backends in containers | None |
 
 ---
 

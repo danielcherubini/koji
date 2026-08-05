@@ -38,6 +38,7 @@ async fn test_cancel_returns_200_for_starting_model() {
             last_accessed: Instant::now(),
             start_time: Instant::now(),
             consecutive_failures: Arc::new(AtomicU32::new(0)),
+            is_docker: false,
             failure_timestamp: None,
         },
     );
@@ -104,6 +105,7 @@ async fn test_cancel_returns_409_for_ready_model() {
             last_accessed: Instant::now(),
             consecutive_failures: Arc::new(AtomicU32::new(0)),
             failure_timestamp: None,
+            is_docker: false,
             restart_count: 0,
         },
     );

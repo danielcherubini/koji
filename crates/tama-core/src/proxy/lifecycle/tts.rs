@@ -79,6 +79,7 @@ impl ProxyState {
                     start_time: Instant::now(),
                     consecutive_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
                     failure_timestamp: None,
+                    is_docker: false,
                 },
             );
         }
@@ -210,6 +211,7 @@ impl ProxyState {
                         consecutive_failures: cf,
                         failure_timestamp: ft,
                         restart_count: 0,
+                        is_docker: false,
                     };
                 }
             }

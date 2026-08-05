@@ -16,7 +16,7 @@ use crate::api::aliases::{create_alias, delete_alias, get_alias, list_aliases, u
 use crate::api::backends::{
     activate_backend_version, check_backend_updates, compaction::update_compaction, get_job,
     install_backend, job_events_sse, list_backend_versions, list_backends, patch_backend,
-    remove_backend, remove_backend_version, system_capabilities, update_backend,
+    register_backend, remove_backend, remove_backend_version, system_capabilities, update_backend,
     update_backend_default_args, update_backend_default_env, update_backend_source,
 };
 use crate::api::backup::{create_backup, restore_preview, start_restore};
@@ -118,7 +118,10 @@ pub fn build_web_routes(
     // CorsLayer must be outermost (applied last) so it runs before same-origin check.
     let backend_routes = Router::new()
         .route("/tama/v1/system/capabilities", get(system_capabilities))
-        .route("/tama/v1/backends", get(list_backends))
+        .route(
+            "/tama/v1/backends",
+            post(register_backend).get(list_backends),
+        )
         // Install/update endpoints: 16MB body limit
         .route(
             "/tama/v1/backends/install",

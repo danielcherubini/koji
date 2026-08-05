@@ -16,6 +16,8 @@ pub struct BackendInstallationRecord {
     pub gpu_variant: String,
     pub source: Option<String>,
     pub is_active: bool,
+    /// Serialized `DockerConfig` JSON for Docker-based backends.
+    pub docker_config: Option<String>,
 }
 
 /// Shared row-mapping closure for BackendInstallationRecord queries.
@@ -33,6 +35,7 @@ fn map_backend_record(row: &rusqlite::Row) -> rusqlite::Result<BackendInstallati
         gpu_variant: row.get(6)?,
         source: row.get(7)?,
         is_active: row.get::<_, i64>(8)? != 0,
+        docker_config: row.get(9)?,
     })
 }
 
@@ -52,8 +55,8 @@ pub fn insert_backend_installation(
     let tx = conn.unchecked_transaction()?;
     tx.execute(
         "INSERT OR REPLACE INTO backend_installations
-             (name, backend_type, version, path, installed_at, gpu_variant, source, is_active)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1)",
+             (name, backend_type, version, path, installed_at, gpu_variant, source, is_active, docker_config)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8)",
         (
             &record.name,
             &record.backend_type,
@@ -62,6 +65,7 @@ pub fn insert_backend_installation(
             record.installed_at,
             &record.gpu_variant,
             record.source.as_deref(),
+            record.docker_config.as_deref(),
         ),
     )?;
     tx.execute(
@@ -79,7 +83,7 @@ pub fn get_active_backend(
     gpu_variant: &str,
 ) -> Result<Option<BackendInstallationRecord>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, backend_type, version, path, installed_at, gpu_variant, source, is_active
+        "SELECT id, name, backend_type, version, path, installed_at, gpu_variant, source, is_active, docker_config
          FROM backend_installations
          WHERE name = ?1 AND gpu_variant = ?2 AND is_active = 1",
     )?;
@@ -93,7 +97,7 @@ pub fn get_active_backend(
 /// Return all active backend installations (one per backend name/variant).
 pub fn list_active_backends(conn: &Connection) -> Result<Vec<BackendInstallationRecord>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, backend_type, version, path, installed_at, gpu_variant, source, is_active
+        "SELECT id, name, backend_type, version, path, installed_at, gpu_variant, source, is_active, docker_config
          FROM backend_installations
          WHERE is_active = 1",
     )?;
@@ -112,12 +116,12 @@ pub fn list_backend_versions(
     gpu_variant: Option<&str>,
 ) -> Result<Vec<BackendInstallationRecord>> {
     let sql = if let Some(_variant) = gpu_variant {
-        "SELECT id, name, backend_type, version, path, installed_at, gpu_variant, source, is_active
+        "SELECT id, name, backend_type, version, path, installed_at, gpu_variant, source, is_active, docker_config
          FROM backend_installations
          WHERE name = ?1 AND gpu_variant = ?2
          ORDER BY installed_at DESC"
     } else {
-        "SELECT id, name, backend_type, version, path, installed_at, gpu_variant, source, is_active
+        "SELECT id, name, backend_type, version, path, installed_at, gpu_variant, source, is_active, docker_config
          FROM backend_installations
          WHERE name = ?1
          ORDER BY installed_at DESC"
@@ -141,7 +145,7 @@ pub fn get_backend_by_version(
     version: &str,
 ) -> Result<Option<BackendInstallationRecord>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, backend_type, version, path, installed_at, gpu_variant, source, is_active
+        "SELECT id, name, backend_type, version, path, installed_at, gpu_variant, source, is_active, docker_config
          FROM backend_installations
          WHERE name = ?1 AND gpu_variant = ?2 AND version = ?3",
     )?;
@@ -553,6 +557,7 @@ mod tests {
                 gpu_variant: "cpu".to_string(),
                 source: None,
                 is_active: true,
+                docker_config: None,
             },
         )
         .unwrap();

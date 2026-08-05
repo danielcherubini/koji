@@ -226,7 +226,7 @@ pub async fn check_item_for_update(
             let item_id_clone = item_id.clone();
             let requested_variant = query.gpu_variant.clone();
             let bt_result = tokio::task::spawn_blocking(
-                move || -> anyhow::Result<Option<(tama_core::backends::BackendType, String)>> {
+                move || -> anyhow::Result<Option<(tama_core::backends::BackendType, String, bool)>> {
                     let mgr = tama_core::backends::BackendManager::open(&config_dir_clone)?;
                     let versions = mgr.list_versions(&item_id_clone, None)?;
 
@@ -245,6 +245,7 @@ pub async fn check_item_for_update(
                     };
 
                     Ok(record.map(|r| {
+                        let is_docker = r.docker_config.is_some();
                         (
                             match r.backend_type {
                                 tama_core::backends::BackendType::LlamaCpp => {
@@ -256,6 +257,7 @@ pub async fn check_item_for_update(
                                 _ => tama_core::backends::BackendType::Custom,
                             },
                             r.gpu_variant.clone(),
+                            is_docker,
                         )
                     }))
                 },
@@ -263,10 +265,16 @@ pub async fn check_item_for_update(
             .await;
 
             match bt_result {
-                Ok(Ok(Some((bt, gpu_variant)))) => checker
-                    .check_backend(&config_dir, &item_id, &bt, &gpu_variant)
-                    .await
-                    .map(|_| ()),
+                Ok(Ok(Some((bt, gpu_variant, is_docker)))) => {
+                    if is_docker {
+                        // Docker backends have no release feed to check
+                        return Json(OkResponse::OK).into_response();
+                    }
+                    checker
+                        .check_backend(&config_dir, &item_id, &bt, &gpu_variant)
+                        .await
+                        .map(|_| ())
+                }
                 Ok(Ok(None)) => Err(anyhow::anyhow!("Backend not found")),
                 Ok(Err(e)) => Err(e),
                 Err(e) => Err(anyhow::anyhow!("Join error: {}", e)),

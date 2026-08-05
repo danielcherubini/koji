@@ -148,6 +148,7 @@ pub fn migrate_backend_registry_toml(
             gpu_variant: "cpu".to_string(), // Legacy TOML data has no gpu_variant; default to cpu
             source: source_json,
             is_active: true,
+            docker_config: None,
         };
 
         // INSERT OR REPLACE handles duplicate (name, version) by replacing the row
@@ -408,6 +409,7 @@ installed_at = 1700000000
                 gpu_variant: "cpu".to_string(),
                 source: None,
                 is_active: true,
+                docker_config: None,
             },
         )
         .unwrap();

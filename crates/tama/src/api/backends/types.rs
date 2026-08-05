@@ -232,6 +232,124 @@ pub struct DeleteResponse {
     pub removed: bool,
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Docker backend registration DTOs (POST /tama/v1/backends)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Request body for POST /tama/v1/backends — register a backend directly.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RegisterBackendRequest {
+    /// Backend name (e.g. "vllm", "ollama")
+    pub name: String,
+    /// Backend type identifier (e.g. "docker")
+    pub backend_type: String,
+    /// Version string
+    pub version: String,
+    /// GPU variant for the installation (e.g. "cpu", "cuda"). Defaults to "cpu".
+    #[serde(default = "default_cpu_variant")]
+    pub gpu_variant: String,
+    /// Docker configuration — required when backend_type is "docker".
+    #[serde(default)]
+    pub docker_config: Option<tama_core::backends::DockerConfig>,
+}
+
+fn default_cpu_variant() -> String {
+    "cpu".to_string()
+}
+
+/// Response for POST /tama/v1/backends — created backend info.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RegisterBackendResponse {
+    pub name: String,
+    pub backend_type: String,
+    pub version: String,
+    pub path: String,
+    pub installed_at: i64,
+    #[serde(default)]
+    pub gpu_variant: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<BackendSourceDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub docker_config: Option<DockerConfigDto>,
+}
+
+impl From<tama_core::backends::BackendInfo> for RegisterBackendResponse {
+    fn from(info: tama_core::backends::BackendInfo) -> Self {
+        Self {
+            name: info.name,
+            backend_type: info.backend_type.to_string(),
+            version: info.version,
+            path: info.path.to_string_lossy().to_string(),
+            installed_at: info.installed_at,
+            gpu_variant: info.gpu_variant,
+            source: info.source.as_ref().map(|s| s.into()),
+            docker_config: info.docker_config.as_ref().map(|d| d.into()),
+        }
+    }
+}
+
+/// Docker configuration DTO for API responses.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct DockerConfigDto {
+    pub image: String,
+    pub container_port: u16,
+    pub model_mount: DockerVolumeDto,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volumes: Vec<DockerVolumeDto>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub devices: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpus: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shm_size: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cap_adds: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub security_opts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub group_adds: Vec<String>,
+}
+
+impl From<&tama_core::backends::DockerConfig> for DockerConfigDto {
+    fn from(cfg: &tama_core::backends::DockerConfig) -> Self {
+        Self {
+            image: cfg.image.clone(),
+            container_port: cfg.container_port,
+            model_mount: (&cfg.model_mount).into(),
+            volumes: cfg.volumes.iter().map(|v| v.into()).collect(),
+            devices: cfg.devices.clone(),
+            gpus: cfg.gpus.clone(),
+            shm_size: cfg.shm_size.clone(),
+            cap_adds: cfg.cap_adds.clone(),
+            security_opts: cfg.security_opts.clone(),
+            group_adds: cfg.group_adds.clone(),
+        }
+    }
+}
+
+/// Docker volume DTO for API responses.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct DockerVolumeDto {
+    pub host_path: String,
+    pub container_path: String,
+    #[serde(default)]
+    pub read_only: bool,
+}
+
+impl From<&tama_core::backends::DockerVolume> for DockerVolumeDto {
+    fn from(vol: &tama_core::backends::DockerVolume) -> Self {
+        Self {
+            host_path: vol.host_path.clone(),
+            container_path: vol.container_path.clone(),
+            read_only: vol.read_only,
+        }
+    }
+}
+
 /// Version info returned by the versions endpoint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

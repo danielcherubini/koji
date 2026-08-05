@@ -416,6 +416,7 @@ mod tests {
                 gpu_variant: "cpu".to_string(),
                 source: None,
                 is_active: true,
+                docker_config: None,
             },
         )?;
 

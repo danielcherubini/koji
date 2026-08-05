@@ -48,6 +48,7 @@ List all installed backends grouped by type + GPU variant, plus available (not y
       "releaseNotesUrl": "https://github.com/ggml-org/llama.cpp/releases",
       "defaultArgs": [],
       "defaultEnv": [],
+      "dockerConfig": null,
       "isActive": true
     }
   ],
@@ -66,6 +67,73 @@ List all installed backends grouped by type + GPU variant, plus available (not y
 **Backend source kinds:**
 - `Prebuilt` — `{ "kind": "Prebuilt", "version": "b5900" }`
 - `SourceCode` — `{ "kind": "SourceCode", "version": "main", "gitUrl": "..." }`
+
+## POST /tama/v1/backends
+
+Register a backend directly (bypasses binary install). Used for docker-based backends.
+
+**Request body:**
+
+```json
+{
+  "name": "vllm",
+  "backend_type": "docker",
+  "version": "0.5.8",
+  "gpu_variant": "cpu",
+  "docker_config": {
+    "image": "stilldeadcode/vllm-radiance:0.5.8",
+    "container_port": 8000,
+    "model_mount": {
+      "host_path": "{{MODEL_DIR}}",
+      "container_path": "/models",
+      "read_only": true
+    },
+    "volumes": [],
+    "devices": ["/dev/nvidia0", "/dev/nvidiactl", "/dev/nvidia-uvm"],
+    "gpus": "all",
+    "shm_size": "16G",
+    "cap_adds": [],
+    "security_opts": [],
+    "group_adds": ["video"]
+  }
+}
+```
+
+**Validation:**
+- `backend_type="docker"` requires non-null `docker_config` → 400 if missing
+- Non-docker types reject non-null `docker_config` → 400
+- `DockerConfig.validate()` runs: image non-empty, container_port 1-65535, absolute container paths
+- `docker_available()` preflight at registration time → 400 if docker not available
+
+**Response (201 Created):**
+
+```json
+{
+  "name": "vllm",
+  "backend_type": "docker",
+  "version": "0.5.8",
+  "path": "stilldeadcode/vllm-radiance:0.5.8",
+  "installed_at": 1700000000,
+  "gpu_variant": "cpu",
+  "source": null,
+  "docker_config": {
+    "image": "stilldeadcode/vllm-radiance:0.5.8",
+    "container_port": 8000,
+    "model_mount": {
+      "host_path": "{{MODEL_DIR}}",
+      "container_path": "/models",
+      "read_only": true
+    },
+    "volumes": [],
+    "devices": ["/dev/nvidia0", "/dev/nvidiactl", "/dev/nvidia-uvm"],
+    "gpus": "all",
+    "shm_size": "16G",
+    "cap_adds": [],
+    "security_opts": [],
+    "group_adds": ["video"]
+  }
+}
+```
 
 ## GET /tama/v1/backends/:name/versions
 

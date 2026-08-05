@@ -100,10 +100,21 @@ mod tests {
             server_path: Some("/nonexistent/path.py".to_string()),
             ..Default::default()
         };
-        // Config path doesn't exist, should fall back to embedded
-        // This will extract files to /tmp and check main.py exists
-        let result = get_server_entrypoint(&config, &std::path::PathBuf::from("/tmp"));
-        assert!(result.is_ok());
+        // Use a unique tempdir to avoid interference from other tests
+        let tmp_dir = std::env::temp_dir().join(format!(
+            "compaction_test_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        // Clean up any pre-existing directory (get_server_dir skips unpack if dir exists)
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        let result = get_server_entrypoint(&config, &tmp_dir);
+        assert!(result.is_ok(), "expected Ok, got {:?}", result.err());
         assert!(result.unwrap().ends_with("main.py"));
+        // Clean up
+        let _ = std::fs::remove_dir_all(tmp_dir.parent().unwrap());
     }
 }
