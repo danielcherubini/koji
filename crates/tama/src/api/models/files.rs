@@ -89,6 +89,13 @@ pub async fn refresh_model_metadata(
                         repo.update_hf_metadata(model_id, &meta)
                     })
                     .await;
+                    // Keep the in-memory registry (dashboard SSE snapshots) in
+                    // sync with the new hf_format/architecture values.
+                    if matches!(&write, Ok(Ok(()))) {
+                        if let Err(e) = state.reload_model_configs().await {
+                            tracing::warn!("reload_model_configs after refresh failed: {}", e);
+                        }
+                    }
                     return match write {
                         Ok(Ok(())) => Json(serde_json::json!({
                             "ok": true,
