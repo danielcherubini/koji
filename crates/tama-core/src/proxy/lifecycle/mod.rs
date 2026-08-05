@@ -128,8 +128,10 @@ impl ProxyState {
             .clone()
             .unwrap_or(crate::gpu::GpuVariant::CpuOnly);
 
-        // Get active installation to check for docker_config
-        let active = manager.get_active(&backend_name, gpu_variant.variant_folder())?;
+        // Get active installation to check for docker_config.
+        // Note: use the backend *name* (e.g. "vllm"), not the model config key,
+        // since backend_installations rows are keyed by backend name + gpu_variant.
+        let active = manager.get_active(&model_config.backend, gpu_variant.variant_folder())?;
         let docker_config = active.and_then(|a| a.docker_config);
 
         // Atomically check if already loaded and reserve if not (single write lock).
