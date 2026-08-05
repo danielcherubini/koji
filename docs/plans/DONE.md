@@ -4,6 +4,7 @@
 
 | Plan | Description | PR | Git References |
 |------|-------------|-----|---------------------|
+| [Safetensors/vLLM Model Config](done/plan-081-safetensors-vllm-model-config.md) | Native safetensors (transformers) model support: `hf_format` auto-detection from HF siblings, format pill + vLLM editor form (quantization/kv-cache/gpu-memory/max-model-len/prefix-caching), format-aware arg building (positional path, llama.cpp flag gating) | — ✅ COMPLETED (squash merge to main) | [`46addc44`](../../commit/46addc44) |
 | [Benchmark Suite](done/plan-183-benchmark-suite.md) | One-button capability-aware benchmark suite: GGUF nextn detection, `POST /benchmarks/suite` sequential job (ADR-0004), `suite_id` grouping (migration `_0042`), Suite tab + models-page button | — ✅ COMPLETED (squash merge to main) | [`c70999fa`](../../commit/c70999fa) |
 | [Benchmark Bug Fixes](done/plan-180-benchmark-bug-fixes.md) | Fix spec/MTP history conversion arms, gpu_variant backend dropdown, history refresh, draft_ngl, success/partial/failed status, silent submit errors | — ✅ COMPLETED (squash merge to main) | [`c70999fa`](../../commit/c70999fa) |
 | [Model Batch/µ-batch Fields](done/plan-181-model-batch-ubatch-fields.md) | First-class `n_batch`/`n_ubatch` model fields (migration `_0041`, args normalization, `-b`/`-ub` spawn injection, editor dropdowns, bench prefill) | — ✅ COMPLETED (squash merge to main) | [`c70999fa`](../../commit/c70999fa) |
