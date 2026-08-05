@@ -77,12 +77,48 @@ pub async fn refresh_model_metadata(
     // Step 2: async HF fetches (no DB handle held).
     let listing = match tama_core::models::pull::list_gguf_files(&repo_id).await {
         Ok(l) => l,
-        Err(e) => {
-            return error_response(
-                StatusCode::BAD_GATEWAY,
-                format!("HuggingFace listing failed: {}", e),
-                None,
-            )
+        Err(listing_err) => {
+            // GGUF listing failed — safetensors/transformers repos have no GGUF
+            // files. Fall back to a metadata-only refresh (hf_format,
+            // architecture, base model, …) instead of erroring out.
+            match tama_core::models::pull::lookup_hf_metadata(&repo_id).await {
+                Ok(meta) => {
+                    let repo_id_out = repo_id.clone();
+                    let write = tokio::task::spawn_blocking(move || {
+                        let repo = repo_handle_for_write.lock().unwrap();
+                        repo.update_hf_metadata(model_id, &meta)
+                    })
+                    .await;
+                    return match write {
+                        Ok(Ok(())) => Json(serde_json::json!({
+                            "ok": true,
+                            "id": model_id,
+                            "repo_id": repo_id_out,
+                            "metadata_only": true,
+                            "files": [],
+                        }))
+                        .into_response(),
+                        Ok(Err(e)) => error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("DB write failed: {}", e),
+                            None,
+                        ),
+                        Err(e) => {
+                            error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None)
+                        }
+                    };
+                }
+                Err(meta_err) => {
+                    return error_response(
+                        StatusCode::BAD_GATEWAY,
+                        format!(
+                            "HuggingFace listing failed: {} (metadata fallback also failed: {})",
+                            listing_err, meta_err
+                        ),
+                        None,
+                    )
+                }
+            }
         }
     };
     let blobs = match tama_core::models::pull::lookup_blob_metadata(&listing.repo_id).await {

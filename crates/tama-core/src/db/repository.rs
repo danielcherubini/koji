@@ -329,6 +329,16 @@ impl Repository {
             .with_context(|| format!("Failed to get pull record for id={}", model_id))
     }
 
+    /// Update the HF metadata columns on a model_config row (format, architecture,
+    /// base model, …). COALESCE semantics — NULL fields preserve existing values.
+    pub fn update_hf_metadata(
+        &self,
+        model_id: i64,
+        meta: &crate::models::pull::HfModelMetadata,
+    ) -> anyhow::Result<()> {
+        crate::models::update::update_model_config_hf_metadata(&self.conn, model_id, meta)
+    }
+
     /// Delete the model configuration by id. CASCADE deletes model_pulls and model_files.
     pub fn delete_config(&self, id: i64) -> anyhow::Result<()> {
         queries::delete_model_config(&self.conn, id)
@@ -637,6 +647,37 @@ mod tests {
     }
 
     // ── Model Configs ──────────────────────────────────────────────────────
+
+    /// `update_hf_metadata` writes HF metadata columns (e.g. hf_format) and
+    /// preserves existing values for fields that are NULL in the new metadata.
+    #[test]
+    fn test_update_hf_metadata() {
+        let repo = test_repo();
+        let id = insert_model_config(&repo.conn, "Qwen/Qwen3.6-27B-FP8", None, "vllm");
+
+        let meta = crate::models::pull::HfModelMetadata {
+            hf_format: Some("transformers".to_string()),
+            hf_architecture_type: Some("Dense".to_string()),
+            ..Default::default()
+        };
+        repo.update_hf_metadata(id, &meta).unwrap();
+
+        let record = repo.get_model_config(id).unwrap().unwrap();
+        assert_eq!(record.hf_format.as_deref(), Some("transformers"));
+        assert_eq!(record.hf_architecture_type.as_deref(), Some("Dense"));
+        // NULL fields in meta must not overwrite / must stay NULL
+        assert!(record.hf_base_model.is_none());
+
+        // COALESCE: a subsequent update with hf_format = None keeps the old value
+        let meta2 = crate::models::pull::HfModelMetadata {
+            hf_base_model: Some("Qwen/Qwen3.6-27B".to_string()),
+            ..Default::default()
+        };
+        repo.update_hf_metadata(id, &meta2).unwrap();
+        let record = repo.get_model_config(id).unwrap().unwrap();
+        assert_eq!(record.hf_format.as_deref(), Some("transformers"));
+        assert_eq!(record.hf_base_model.as_deref(), Some("Qwen/Qwen3.6-27B"));
+    }
 
     #[test]
     fn test_load_model_configs_empty() {
