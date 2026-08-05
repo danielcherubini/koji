@@ -108,6 +108,20 @@ pub fn rewrite_args_for_container(
                     }
                 }
             }
+
+            // Not a path-flag pair — pass through original flag arg
+            result.push(arg.clone());
+            continue;
+        }
+
+        // Bare positional absolute path (e.g. vLLM's model path as first arg).
+        // Rewrite paths under models_dir to the container path.
+        if unquoted.starts_with('/') {
+            if let Some(rewritten) = maybe_rewrite_path(unquoted, models_dir, container_model_path)?
+            {
+                result.push(rewritten);
+                continue;
+            }
         }
 
         // Non-path arg — pass through unchanged
@@ -482,6 +496,15 @@ mod tests {
         let args = vec!["--model=/models/gguf/model.gguf".to_string()];
         let result = rewrite_args_for_container(&args, models_dir, "/container-models").unwrap();
         assert_eq!(result, vec!["--model=/container-models/gguf/model.gguf"]);
+    }
+
+    #[test]
+    fn test_rewrite_bare_positional_path_under_models_dir() {
+        // vLLM passes the model path as the first positional arg (no flag prefix).
+        let models_dir = Path::new("/mnt/models");
+        let args = vec!["/mnt/models/Qwen/Qwen3.6-27B-FP8".to_string()];
+        let result = rewrite_args_for_container(&args, models_dir, "/models").unwrap();
+        assert_eq!(result, vec!["/models/Qwen/Qwen3.6-27B-FP8"]);
     }
 
     #[test]
