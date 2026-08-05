@@ -7,7 +7,6 @@ pub(crate) enum Section {
     Sampling,
     Files,
     Advanced,
-    Vllm,
 }
 
 impl Section {
@@ -18,7 +17,6 @@ impl Section {
             Self::Sampling => "Sampling",
             Self::Files => "Files",
             Self::Advanced => "Advanced",
-            Self::Vllm => "vLLM",
         }
     }
 
@@ -29,7 +27,6 @@ impl Section {
             Self::Sampling => "🎲",
             Self::Files => "📁",
             Self::Advanced => "🔧",
-            Self::Vllm => "🤖",
         }
     }
 }

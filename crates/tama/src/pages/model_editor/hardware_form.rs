@@ -1,13 +1,16 @@
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
-use super::types::ModelForm;
+use super::types::{is_transformers, ModelForm};
+use super::vllm_form::VllmSettings;
 use crate::components::context_length_selector::ContextLengthSelector;
 use crate::utils::{set_checked, set_input_value, target_value};
 
 const KV_QUANT_OPTIONS: &[&str] = &[
     "f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1",
 ];
+
+const KV_CACHE_DTYPE_OPTIONS: &[&str] = &["auto", "fp8", "bf16"];
 
 const BATCH_OPTIONS: &[u32] = &[128, 256, 512, 1024, 2048, 4096, 8192];
 const UBATCH_OPTIONS: &[u32] = &[32, 64, 128, 256, 512, 1024, 2048, 4096];
@@ -67,12 +70,33 @@ fn KvQuantCustomInput(form: RwSignal<Option<ModelForm>>, field: KvQuantField) ->
 }
 
 #[component]
-pub fn ModelEditorHardwareForm(form: RwSignal<Option<ModelForm>>) -> impl IntoView {
+pub fn ModelEditorHardwareForm(
+    form: RwSignal<Option<ModelForm>>,
+    vllm_settings: RwSignal<VllmSettings>,
+) -> impl IntoView {
     // Populate input values when the form data loads (or model changes).
     let last_init_id = StoredValue::new(None::<String>);
     Effect::new(move |_| {
         if let Some(f) = form.get() {
             if last_init_id.get_value() != Some(f.id.clone()) {
+                // Transformers-format (vLLM) fields
+                if is_transformers(f.hf_format.as_deref()) {
+                    let s = vllm_settings.get();
+                    set_input_value(
+                        "field-max-model-len",
+                        &s.max_model_len.map(|v| v.to_string()).unwrap_or_default(),
+                    );
+                    set_input_value(
+                        "field-kv-cache-dtype",
+                        s.kv_cache_dtype.as_deref().unwrap_or_default(),
+                    );
+                    set_input_value(
+                        "field-max-num-batched-tokens",
+                        &s.max_num_batched_tokens
+                            .map(|v| v.to_string())
+                            .unwrap_or_default(),
+                    );
+                }
                 set_input_value(
                     "field-num-parallel",
                     &f.num_parallel.map(|v| v.to_string()).unwrap_or_default(),
@@ -110,6 +134,8 @@ pub fn ModelEditorHardwareForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
     });
 
     view! {
+        // ── GGUF / llama.cpp fields ─────────────────────────────────────
+        <Show when=move || !is_transformers(form.get().and_then(|f| f.hf_format.clone()).as_deref())>
         <div class="form-grid">
             <label class="form-label" for="field-ctx">"Context length"</label>
             <ContextLengthSelector
@@ -305,5 +331,68 @@ pub fn ModelEditorHardwareForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                 }).collect::<Vec<_>>()}
             </select>
         </div>
+        </Show>
+
+        // ── Transformers / vLLM fields ──────────────────────────────────
+        <Show when=move || is_transformers(form.get().and_then(|f| f.hf_format.clone()).as_deref())>
+        <div class="form-grid">
+            <label class="form-label" for="field-max-model-len">
+                "Max model length"
+                <div class="form-hint">{"vLLM --max-model-len. Leave blank for the model's default."}</div>
+            </label>
+            <input
+                id="field-max-model-len"
+                class="form-input"
+                type="number"
+                min="1"
+                placeholder="e.g. 32768"
+                on:input=move |ev| {
+                    let val = target_value(&ev);
+                    vllm_settings.update(|s| {
+                        s.max_model_len = if val.is_empty() { None } else { val.parse::<u32>().ok() };
+                    });
+                }
+            />
+
+            <label class="form-label" for="field-kv-cache-dtype">
+                "KV cache dtype"
+                <div class="form-hint">{"vLLM --kv-cache-dtype. fp8 reduces VRAM at a small quality cost."}</div>
+            </label>
+            <select
+                id="field-kv-cache-dtype"
+                class="form-select"
+                on:change=move |e| {
+                    let val = target_value(&e);
+                    vllm_settings.update(|s| {
+                        s.kv_cache_dtype = if val.is_empty() { None } else { Some(val) };
+                    });
+                }
+            >
+                <option value="">"Default (auto)"</option>
+                {KV_CACHE_DTYPE_OPTIONS.iter().map(|opt| {
+                    let opt_str = *opt;
+                    view! { <option value=opt_str>{opt_str}</option> }
+                }).collect::<Vec<_>>()}
+            </select>
+
+            <label class="form-label" for="field-max-num-batched-tokens">
+                "Max batched tokens"
+                <div class="form-hint">{"vLLM --max-num-batched-tokens. Caps prefill batch size."}</div>
+            </label>
+            <input
+                id="field-max-num-batched-tokens"
+                class="form-input"
+                type="number"
+                min="1"
+                placeholder="e.g. 8192"
+                on:input=move |ev| {
+                    let val = target_value(&ev);
+                    vllm_settings.update(|s| {
+                        s.max_num_batched_tokens = if val.is_empty() { None } else { val.parse::<u32>().ok() };
+                    });
+                }
+            />
+        </div>
+        </Show>
     }
 }

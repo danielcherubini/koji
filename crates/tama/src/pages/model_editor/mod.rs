@@ -7,7 +7,6 @@ mod sections;
 mod settings_form;
 mod types;
 mod vllm_form;
-mod vllm_settings_form;
 
 use leptos::prelude::*;
 use leptos_router::components::A;
@@ -25,7 +24,6 @@ use self::sampling_form::ModelEditorSamplingForm;
 use self::settings_form::ModelEditorSettingsForm;
 use self::types::*;
 use self::vllm_form::{args_to_vllm_form, vllm_form_to_args, VllmSettings};
-use self::vllm_settings_form::ModelEditorVllmForm;
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
@@ -82,6 +80,53 @@ pub fn ModelEditor() -> impl IntoView {
 
     // vLLM settings derived form args for transformers-format models
     let vllm_settings = RwSignal::new(VllmSettings::default());
+
+    // Sync vLLM settings from form args (user edits in the Advanced textarea).
+    // Guard: only update when settings actually differ (prevents reactive loops).
+    Effect::new(move |_| {
+        if let Some(f) = form.get() {
+            if is_transformers(f.hf_format.as_deref()) {
+                let settings = args_to_vllm_form(&f.args);
+                if vllm_settings.with_untracked(|s| *s != settings) {
+                    vllm_settings.set(settings);
+                }
+            }
+        }
+    });
+
+    // Sync args back to the form when vLLM settings change (field edits).
+    // Guard: only write when args would actually change (prevents reactive loops).
+    Effect::new(move |_| {
+        let settings = vllm_settings.get();
+        let needs_write = form.with_untracked(|f| {
+            f.as_ref()
+                .map(|f| {
+                    is_transformers(f.hf_format.as_deref())
+                        && vllm_form_to_args(&settings, &f.args) != f.args
+                })
+                .unwrap_or(false)
+        });
+        if needs_write {
+            form.update(|f| {
+                if let Some(f) = f {
+                    f.args = vllm_form_to_args(&settings, &f.args);
+                }
+            });
+        }
+    });
+
+    // GGUF-only tabs (Sampling, Files) are hidden for transformers models —
+    // fall back to Settings if one of them is active when the format changes.
+    Effect::new(move |_| {
+        if let Some(f) = form.get() {
+            if is_transformers(f.hf_format.as_deref()) {
+                match active_section.get() {
+                    Section::Sampling | Section::Files => active_section.set(Section::Settings),
+                    _ => {}
+                }
+            }
+        }
+    });
 
     // Dirty tracking via snapshot comparison
     let last_saved_form = RwSignal::new(Option::<String>::None);
@@ -745,19 +790,6 @@ pub fn ModelEditor() -> impl IntoView {
                         <div class="model-editor-layout">
                             // Pill-style tab navigation
                             <div class="model-editor-pills">
-                                // vLLM tab (only for transformers-format models)
-                                <Show when=move || {
-                                    form.get().map(|f| is_transformers(f.hf_format.as_deref())).unwrap_or(false)
-                                }>
-                                    <button
-                                        class="model-editor-pill"
-                                        class:model-editor-pill--active=move || active_section.get() == Section::Vllm
-                                        on:click=move |_| { active_section.set(Section::Vllm); }
-                                    >
-                                        <span>{Section::Vllm.icon()}</span>
-                                        <span>{Section::Vllm.name()}</span>
-                                    </button>
-                                </Show>
                                 <button
                                     class="model-editor-pill"
                                     class:model-editor-pill--active=move || active_section.get() == Section::Settings
@@ -766,7 +798,16 @@ pub fn ModelEditor() -> impl IntoView {
                                     <span>{Section::Settings.icon()}</span>
                                     <span>{Section::Settings.name()}</span>
                                 </button>
-                                // Context tab (hidden for transformers-format models)
+                                // Context tab (GGUF: llama.cpp fields; transformers: vLLM fields)
+                                <button
+                                    class="model-editor-pill"
+                                    class:model-editor-pill--active=move || active_section.get() == Section::Context
+                                    on:click=move |_| { active_section.set(Section::Context); }
+                                >
+                                    <span>{Section::Context.icon()}</span>
+                                    <span>{Section::Context.name()}</span>
+                                </button>
+                                // Sampling tab (llama.cpp-only flags — hidden for transformers)
                                 <Show
                                     when=move || {
                                         !is_transformers(
@@ -778,29 +819,32 @@ pub fn ModelEditor() -> impl IntoView {
                                 >
                                     <button
                                         class="model-editor-pill"
-                                        class:model-editor-pill--active=move || active_section.get() == Section::Context
-                                        on:click=move |_| { active_section.set(Section::Context); }
+                                        class:model-editor-pill--active=move || active_section.get() == Section::Sampling
+                                        on:click=move |_| { active_section.set(Section::Sampling); }
                                     >
-                                        <span>{Section::Context.icon()}</span>
-                                        <span>{Section::Context.name()}</span>
+                                        <span>{Section::Sampling.icon()}</span>
+                                        <span>{Section::Sampling.name()}</span>
                                     </button>
                                 </Show>
-                                <button
-                                    class="model-editor-pill"
-                                    class:model-editor-pill--active=move || active_section.get() == Section::Sampling
-                                    on:click=move |_| { active_section.set(Section::Sampling); }
+                                // Files tab (GGUF quants/mmproj/MTP — hidden for transformers)
+                                <Show
+                                    when=move || {
+                                        !is_transformers(
+                                            form.get()
+                                                .and_then(|f| f.hf_format.clone())
+                                                .as_deref(),
+                                        )
+                                    }
                                 >
-                                    <span>{Section::Sampling.icon()}</span>
-                                    <span>{Section::Sampling.name()}</span>
-                                </button>
-                                <button
-                                    class="model-editor-pill"
-                                    class:model-editor-pill--active=move || active_section.get() == Section::Files
-                                    on:click=move |_| { active_section.set(Section::Files); }
-                                >
-                                    <span>{Section::Files.icon()}</span>
-                                    <span>{Section::Files.name()}</span>
-                                </button>
+                                    <button
+                                        class="model-editor-pill"
+                                        class:model-editor-pill--active=move || active_section.get() == Section::Files
+                                        on:click=move |_| { active_section.set(Section::Files); }
+                                    >
+                                        <span>{Section::Files.icon()}</span>
+                                        <span>{Section::Files.name()}</span>
+                                    </button>
+                                </Show>
                                 <button
                                     class="model-editor-pill"
                                     class:model-editor-pill--active=move || active_section.get() == Section::Advanced
@@ -820,63 +864,58 @@ pub fn ModelEditor() -> impl IntoView {
                                             <ModelEditorSettingsForm
                                                 form=form
                                                 backends=backends
-                                            />
-                                        </div>
-                                    }.into_any(),
-                                    Section::Vllm => view! {
-                                        <div class="card">
-                                            <h2 class="card__title">"vLLM Settings"</h2>
-                                            <ModelEditorVllmForm
-                                                form=form
                                                 vllm_settings=vllm_settings
                                             />
                                         </div>
                                     }.into_any(),
                                     Section::Context => view! {
+                                        <div class="card">
+                                            <h2 class="card__title">"Context"</h2>
+                                            <ModelEditorHardwareForm
+                                                form=form
+                                                vllm_settings=vllm_settings
+                                            />
+                                        </div>
+                                    }.into_any(),
+                                    Section::Sampling => view! {
                                         <Show when=move || !is_transformers(form.get().and_then(|f| f.hf_format.clone()).as_deref())>
-                                            <div class="card">
-                                                <h2 class="card__title">"Context"</h2>
-                                                <ModelEditorHardwareForm
+                                            <div class="card mt-2">
+                                                <h2 class="card__title">"Sampling"</h2>
+                                                <ModelEditorSamplingForm
                                                     form=form
+                                                    templates=templates
+                                                    load_preset_action=load_preset_action
+                                                    active_preset=active_preset
+                                                    save_preset_action=save_preset_action
                                                 />
                                             </div>
                                         </Show>
                                     }.into_any(),
-                                    Section::Sampling => view! {
-                                        <div class="card mt-2">
-                                            <h2 class="card__title">"Sampling"</h2>
-                                            <ModelEditorSamplingForm
-                                                form=form
-                                                templates=templates
-                                                load_preset_action=load_preset_action
-                                                active_preset=active_preset
-                                                save_preset_action=save_preset_action
-                                            />
-                                        </div>
-                                    }.into_any(),
                                     Section::Files => view! {
-                                        <div class="card mt-2">
-                                            <h2 class="card__title">"Files"</h2>
-                                            <ModelEditorFilesForm
-                                                form=form
-                                                repo_commit_sha=repo_commit_sha
-                                                repo_pulled_at=repo_pulled_at
-                                                refresh_busy=refresh_busy
-                                                verify_busy=verify_busy
-                                                refresh_status=refresh_status
-                                                verify_status=verify_status
-                                                pull_modal_open_signal=pull_modal_open_signal
-                                                delete_quant_action=delete_quant_action
-                                                original_id=original_id
-                                                refresh_action=refresh_action
-                                                verify_action=verify_action
-                                            />
-                                        </div>
+                                        <Show when=move || !is_transformers(form.get().and_then(|f| f.hf_format.clone()).as_deref())>
+                                            <div class="card mt-2">
+                                                <h2 class="card__title">"Files"</h2>
+                                                <ModelEditorFilesForm
+                                                    form=form
+                                                    repo_commit_sha=repo_commit_sha
+                                                    repo_pulled_at=repo_pulled_at
+                                                    refresh_busy=refresh_busy
+                                                    verify_busy=verify_busy
+                                                    refresh_status=refresh_status
+                                                    verify_status=verify_status
+                                                    pull_modal_open_signal=pull_modal_open_signal
+                                                    delete_quant_action=delete_quant_action
+                                                    original_id=original_id
+                                                    refresh_action=refresh_action
+                                                    verify_action=verify_action
+                                                />
+                                            </div>
+                                        </Show>
                                     }.into_any(),
                                     Section::Advanced => view! {
                                         <div class="card mt-2">
                                             <h2 class="card__title">"Advanced"</h2>
-                                            <ModelEditorAdvancedForm form=form />
+                                            <ModelEditorAdvancedForm form=form vllm_settings=vllm_settings />
                                         </div>
                                     }.into_any(),
                                 }}

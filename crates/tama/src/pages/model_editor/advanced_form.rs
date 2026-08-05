@@ -1,7 +1,8 @@
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
-use super::types::ModelForm;
+use super::types::{is_transformers, ModelForm};
+use super::vllm_form::VllmSettings;
 use crate::utils::{set_checked, set_input_value, target_value};
 
 const SPEC_TYPE_DRAFT_MTP: &str = "draft-mtp";
@@ -9,7 +10,10 @@ const SPEC_TYPE_NGRAM_SIMPLE: &str = "ngram-simple";
 
 /// Advanced form section combining Speculative Decoding and Extra Args.
 #[component]
-pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoView {
+pub fn ModelEditorAdvancedForm(
+    form: RwSignal<Option<ModelForm>>,
+    vllm_settings: RwSignal<VllmSettings>,
+) -> impl IntoView {
     // Checkboxes for spec types
     let toggle_spec_type = move |e: web_sys::Event, spec_type: String| {
         let checked = e
@@ -95,7 +99,8 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
     });
 
     view! {
-        // ── Speculative Decoding subsection ──────────────────────────────
+        // ── Speculative Decoding subsection (llama.cpp-only) ─────────────
+        <Show when=move || !is_transformers(form.get().and_then(|f| f.hf_format.clone()).as_deref())>
         <h3 class="form-section-title">"Speculative Decoding"</h3>
         <div class="form-grid">
             // Spec type checkboxes
@@ -212,6 +217,53 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                 />
             </Show>
         </div>
+        </Show>
+
+        // ── vLLM subsection (transformers-format only) ────────────────────
+        <Show when=move || is_transformers(form.get().and_then(|f| f.hf_format.clone()).as_deref())>
+        <h3 class="form-section-title">"vLLM"</h3>
+        <div class="form-grid">
+            <label class="form-label">"Prefix caching"</label>
+            <div class="form-check">
+                <input
+                    id="field-vllm-prefix-caching"
+                    type="checkbox"
+                    prop:checked=move || vllm_settings.get().enable_prefix_caching
+                    on:change=move |e| {
+                        let checked = e.target()
+                            .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
+                            .map(|el| el.checked())
+                            .unwrap_or(false);
+                        vllm_settings.update(|s| s.enable_prefix_caching = checked);
+                    }
+                />
+                <label class="form-check-label" for="field-vllm-prefix-caching">
+                    "Enable prefix caching"
+                    <div class="form-hint">"vLLM --enable-prefix-caching — reuse KV blocks across requests with shared prefixes"</div>
+                </label>
+            </div>
+
+            <label class="form-label">"Remote code"</label>
+            <div class="form-check">
+                <input
+                    id="field-vllm-trust-remote-code"
+                    type="checkbox"
+                    prop:checked=move || vllm_settings.get().trust_remote_code
+                    on:change=move |e| {
+                        let checked = e.target()
+                            .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
+                            .map(|el| el.checked())
+                            .unwrap_or(false);
+                        vllm_settings.update(|s| s.trust_remote_code = checked);
+                    }
+                />
+                <label class="form-check-label" for="field-vllm-trust-remote-code">
+                    "Trust remote code"
+                    <div class="form-hint">"vLLM --trust-remote-code — required for repos with custom modeling code"</div>
+                </label>
+            </div>
+        </div>
+        </Show>
 
         // ── Extra Args subsection ────────────────────────────────────────
         <h3 class="form-section-title mt-2">"Extra Args"</h3>
