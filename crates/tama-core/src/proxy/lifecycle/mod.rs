@@ -172,11 +172,25 @@ impl ProxyState {
             let args =
                 config.build_full_args(&model_config, backend_config, None, &default_args)?;
 
+            // Build env vars for the container from the backend's default_env,
+            // plus auto-inject HF_TOKEN so vLLM can download gated models.
+            let mut env_vars =
+                manager.get_default_env(&model_config.backend, gpu_variant.variant_folder());
+            let has_hf_token = env_vars
+                .iter()
+                .any(|e| e.split_once('=').map(|(k, _)| k) == Some("HF_TOKEN"));
+            if !has_hf_token {
+                if let Some(token) = crate::models::pull::get_hf_token() {
+                    env_vars.push(format!("HF_TOKEN={}", token));
+                }
+            }
+
             self.load_model_docker(
                 config,
                 model_config.clone(),
                 backend_config.clone(),
                 args,
+                env_vars,
                 gpu_variant,
                 model_name,
                 &backend_name,
@@ -212,6 +226,7 @@ impl ProxyState {
         model_config: crate::config::ModelConfig,
         _backend_config: crate::config::BackendConfig,
         args: Vec<String>,
+        env_vars: Vec<String>,
         _gpu_variant: crate::gpu::GpuVariant,
         model_name: &str,
         backend_name: &str,
@@ -299,7 +314,7 @@ impl ProxyState {
             &docker_cfg,
             host_port,
             container_args,
-            Vec::new(),
+            env_vars,
             &models_dir,
         )
         .await
