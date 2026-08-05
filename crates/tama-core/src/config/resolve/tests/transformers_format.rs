@@ -355,21 +355,35 @@ fn test_build_full_args_transformers_served_model_name() {
 
     let config = h::sample_config(models_dir);
 
-    // api_name set → used as served name
+    // api_name set → used as served name (plus lowercase variant)
     let server = h::sample_server(|s| {
         s.backend = "vllm".to_string();
         s.hf_format = Some("transformers".to_string());
-        s.model = Some("org/repo".to_string());
-        s.api_name = Some("org/repo".to_string());
+        s.model = Some("org/Repo".to_string());
+        s.api_name = Some("org/Repo".to_string());
         s.quant = None;
     });
     let args = config
         .build_full_args(&server, &h::sample_backend(), None, &[])
         .expect("build_full_args failed");
+    // Canonical name present.
     assert!(
         args.windows(2)
-            .any(|w| w[0] == "--served-model-name" && w[1] == "org/repo"),
-        "expected --served-model-name org/repo in {:?}",
+            .any(|w| w[0] == "--served-model-name" && w[1] == "org/Repo"),
+        "expected --served-model-name org/Repo in {:?}",
+        args
+    );
+    // Lowercase variant registered too (clients send lowercase / case-insensitive).
+    // vLLM's flag is case-sensitive, so each spelling must be listed. The value
+    // is flattened to multiple tokens: [--served-model-name, org/Repo, org/repo].
+    let found = args
+        .iter()
+        .zip(args.iter().skip(1))
+        .zip(args.iter().skip(2))
+        .any(|((a, b), c)| a == "--served-model-name" && b == "org/Repo" && c == "org/repo");
+    assert!(
+        found,
+        "expected --served-model-name with canonical and lowercase aliases in {:?}",
         args
     );
 
