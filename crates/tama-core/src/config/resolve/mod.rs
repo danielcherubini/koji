@@ -227,167 +227,227 @@ impl Config {
     ) -> Result<Vec<String>> {
         let mut grouped = crate::config::merge_args(default_args, &server.args);
 
-        // Inject -m from model card, only if not already present.
-        if let (Some(ref model_id), Some(ref quant_name)) = (&server.model, &server.quant) {
-            if let Some(quant_entry) = server.quants.get(quant_name.as_str()) {
+        // Determine the HuggingFace format for format-aware arg injection.
+        let is_transformers = server.hf_format.as_deref() == Some("transformers");
+
+        // ── Positional model path for transformers format ──────────────
+        // vLLM (and other transformers backends) expect the model path
+        // as the first positional arg.  For GGUF / llama.cpp the model
+        // path is emitted via `-m <file>` below.
+        if is_transformers {
+            if let Some(ref model_id) = server.model {
                 let models_dir = self.models_dir()?;
-                let model_path = repo_path(&models_dir, model_id).join(&quant_entry.file);
-                let already_has_m = grouped
+                let model_path = repo_path(&models_dir, model_id);
+                let path_str = model_path.to_string_lossy();
+
+                // Dedup: skip if the user already has a positional model path
+                // or --model flag in their args. Mirrors the already_has_m pattern.
+                let already_has_positional = grouped
                     .iter()
-                    .any(|e| matches!(crate::config::flag_name(e), Some("-m") | Some("--model")));
-                if !already_has_m {
-                    let path_str = model_path.to_string_lossy();
-                    let quoted = crate::config::quote_value(&path_str);
-                    grouped.push(format!("-m {}", quoted));
+                    .any(|e| matches!(crate::config::flag_name(e), Some("--model")))
+                    || grouped.iter().any(|e| {
+                        // Check if any entry matches the resolved model path
+                        *e == path_str
+                            || e.starts_with(&format!("\"{}", path_str))
+                            || e.starts_with(&format!("'{}", path_str))
+                    });
+
+                if !already_has_positional {
+                    // Insert after any subcommand (e.g. "serve") and before
+                    // the first `--` flag.  Entries are still grouped at this
+                    // point (flatten_args runs later), so we scan for the first
+                    // flag-like entry to find the insertion position.
+                    let path_token = crate::config::quote_value(&path_str);
+                    // Find insertion point: after subcommand, before first flag.
+                    let insert_at = grouped.iter().position(|e| {
+                        // End of grouped entries: stop at the first flag-like entry
+                        e.starts_with('-')
+                    });
+                    match insert_at {
+                        Some(pos) => grouped.insert(pos, path_token.to_string()),
+                        None => grouped.push(path_token.to_string()),
+                    }
                 }
-            } else {
-                tracing::warn!(
-                    "Quant '{}' not found in ModelConfig for model '{}'",
-                    quant_name,
-                    model_id
-                );
             }
         }
 
-        // Inject --mmproj from model card, only if not already present.
-        // The mmproj entry must exist in `server.quants` and have kind = Mmproj.
-        if let (Some(ref model_id), Some(ref mmproj_name)) = (&server.model, &server.mmproj) {
-            if let Some(mmproj_entry) = server.quants.get(mmproj_name.as_str()) {
-                if mmproj_entry.kind == crate::config::QuantKind::Mmproj {
+        // ── llama.cpp-only flags — gate on non-transformers format ─────
+        let is_llama_cpp_backend = backend_is_llama_cpp(&server.backend);
+
+        // Inject -m from model card, only if not transformers format.
+        if !is_transformers {
+            if let (Some(ref model_id), Some(ref quant_name)) = (&server.model, &server.quant) {
+                if let Some(quant_entry) = server.quants.get(quant_name.as_str()) {
                     let models_dir = self.models_dir()?;
-                    let mmproj_path = repo_path(&models_dir, model_id).join(&mmproj_entry.file);
-                    let already_has_mmproj = grouped
-                        .iter()
-                        .any(|e| matches!(crate::config::flag_name(e), Some("--mmproj")));
-                    if !already_has_mmproj {
-                        let path_str = mmproj_path.to_string_lossy();
+                    let model_path = repo_path(&models_dir, model_id).join(&quant_entry.file);
+                    let already_has_m = grouped.iter().any(|e| {
+                        matches!(crate::config::flag_name(e), Some("-m") | Some("--model"))
+                    });
+                    if !already_has_m {
+                        let path_str = model_path.to_string_lossy();
                         let quoted = crate::config::quote_value(&path_str);
-                        grouped.push(format!("--mmproj {}", quoted));
+                        grouped.push(format!("-m {}", quoted));
                     }
                 } else {
                     tracing::warn!(
-                        "mmproj '{}' for model '{}' has kind={:?}, expected Mmproj",
-                        mmproj_name,
-                        model_id,
-                        mmproj_entry.kind
+                        "Quant '{}' not found in ModelConfig for model '{}'",
+                        quant_name,
+                        model_id
                     );
                 }
-            } else {
-                tracing::warn!(
-                    "mmproj '{}' not found in ModelConfig for model '{}'",
-                    mmproj_name,
-                    model_id
-                );
             }
-        }
+        } // end !is_transformers guard for -m
 
-        // Inject --spec-draft-model from model card, only if:
-        // 1. mtp_model is set
-        // 2. The referenced quant has kind = Mtp
-        // 3. draft-mtp is in spec_decoding.spec_types (user enabled it)
-        // No backend gate — mirrors --mmproj; silently ignored by non-llama.cpp
-        // backends if they don't recognise the flag.
-        if let (Some(ref model_id), Some(ref mtp_name)) = (&server.model, &server.mtp_model) {
-            let has_draft_mtp = server
-                .spec_decoding
-                .spec_types
-                .iter()
-                .any(|t| t == "draft-mtp");
-            if has_draft_mtp {
-                if let Some(mtp_entry) = server.quants.get(mtp_name.as_str()) {
-                    if mtp_entry.kind == crate::config::QuantKind::Mtp {
+        // Inject --mmproj from model card, only if not transformers format.
+        // The mmproj entry must exist in `server.quants` and have kind = Mmproj.
+        if !is_transformers {
+            if let (Some(ref model_id), Some(ref mmproj_name)) = (&server.model, &server.mmproj) {
+                if let Some(mmproj_entry) = server.quants.get(mmproj_name.as_str()) {
+                    if mmproj_entry.kind == crate::config::QuantKind::Mmproj {
                         let models_dir = self.models_dir()?;
-                        let mtp_path = repo_path(&models_dir, model_id).join(&mtp_entry.file);
-                        let already_has_draft = grouped.iter().any(|e| {
-                            matches!(crate::config::flag_name(e), Some("--spec-draft-model"))
-                        });
-                        if !already_has_draft {
-                            let path_str = mtp_path.to_string_lossy();
+                        let mmproj_path = repo_path(&models_dir, model_id).join(&mmproj_entry.file);
+                        let already_has_mmproj = grouped
+                            .iter()
+                            .any(|e| matches!(crate::config::flag_name(e), Some("--mmproj")));
+                        if !already_has_mmproj {
+                            let path_str = mmproj_path.to_string_lossy();
                             let quoted = crate::config::quote_value(&path_str);
-                            grouped.push(format!("--spec-draft-model {}", quoted));
+                            grouped.push(format!("--mmproj {}", quoted));
                         }
                     } else {
                         tracing::warn!(
-                            "mtp_model '{}' for model '{}' has kind={:?}, expected Mtp",
-                            mtp_name,
+                            "mmproj '{}' for model '{}' has kind={:?}, expected Mmproj",
+                            mmproj_name,
                             model_id,
-                            mtp_entry.kind
+                            mmproj_entry.kind
                         );
                     }
                 } else {
                     tracing::warn!(
-                        "mtp_model '{}' not found in ModelConfig for model '{}'",
-                        mtp_name,
+                        "mmproj '{}' not found in ModelConfig for model '{}'",
+                        mmproj_name,
                         model_id
                     );
                 }
             }
         }
 
-        // Inject -c (context length) only if not already present.
-        let ctx = ctx_override.or(server.context_length).or_else(|| {
-            server
-                .quant
-                .as_ref()
-                .and_then(|q| server.quants.get(q).and_then(|qe| qe.context_length))
-        });
-        let is_llama_cpp_backend = backend_is_llama_cpp(&server.backend);
+        // Inject --spec-draft-model from model card, only if not transformers format.
+        // 1. mtp_model is set
+        // 2. The referenced quant has kind = Mtp
+        // 3. draft-mtp is in spec_decoding.spec_types (user enabled it)
+        if !is_transformers {
+            if let (Some(ref model_id), Some(ref mtp_name)) = (&server.model, &server.mtp_model) {
+                let has_draft_mtp = server
+                    .spec_decoding
+                    .spec_types
+                    .iter()
+                    .any(|t| t == "draft-mtp");
+                if has_draft_mtp {
+                    if let Some(mtp_entry) = server.quants.get(mtp_name.as_str()) {
+                        if mtp_entry.kind == crate::config::QuantKind::Mtp {
+                            let models_dir = self.models_dir()?;
+                            let mtp_path = repo_path(&models_dir, model_id).join(&mtp_entry.file);
+                            let already_has_draft = grouped.iter().any(|e| {
+                                matches!(crate::config::flag_name(e), Some("--spec-draft-model"))
+                            });
+                            if !already_has_draft {
+                                let path_str = mtp_path.to_string_lossy();
+                                let quoted = crate::config::quote_value(&path_str);
+                                grouped.push(format!("--spec-draft-model {}", quoted));
+                            }
+                        } else {
+                            tracing::warn!(
+                                "mtp_model '{}' for model '{}' has kind={:?}, expected Mtp",
+                                mtp_name,
+                                model_id,
+                                mtp_entry.kind
+                            );
+                        }
+                    } else {
+                        tracing::warn!(
+                            "mtp_model '{}' not found in ModelConfig for model '{}'",
+                            mtp_name,
+                            model_id
+                        );
+                    }
+                }
+            }
+        } // end !is_transformers guard for --spec-draft-model
 
-        if let Some(ctx) = ctx {
-            let already_has_c = grouped
-                .iter()
-                .any(|e| matches!(crate::config::flag_name(e), Some("-c") | Some("--ctx-size")));
-            if !already_has_c {
-                let slots = server.num_parallel.unwrap_or(1).max(1); // 0 = auto, treat as 1 for ctx calc
-                let total_ctx = if is_llama_cpp_backend && server.kv_unified {
-                    // Unified KV: all slots share one pool, -c = per-slot context
-                    ctx
-                } else {
-                    // Non-unified: each slot gets dedicated region, -c = per_slot * slots
-                    ctx.saturating_mul(slots)
-                };
-                grouped.push(format!("-c {}", total_ctx));
+        // Inject -c (context length) only if not transformers format.
+        if !is_transformers {
+            let ctx = ctx_override.or(server.context_length).or_else(|| {
+                server
+                    .quant
+                    .as_ref()
+                    .and_then(|q| server.quants.get(q).and_then(|qe| qe.context_length))
+            });
+
+            if let Some(ctx) = ctx {
+                let already_has_c = grouped.iter().any(|e| {
+                    matches!(crate::config::flag_name(e), Some("-c") | Some("--ctx-size"))
+                });
+                if !already_has_c {
+                    let slots = server.num_parallel.unwrap_or(1).max(1); // 0 = auto, treat as 1 for ctx calc
+                    let total_ctx = if is_llama_cpp_backend && server.kv_unified {
+                        // Unified KV: all slots share one pool, -c = per-slot context
+                        ctx
+                    } else {
+                        // Non-unified: each slot gets dedicated region, -c = per_slot * slots
+                        ctx.saturating_mul(slots)
+                    };
+                    grouped.push(format!("-c {}", total_ctx));
+                }
             }
         }
 
-        // Inject -np (number of parallel slots) if set and >= 1.
+        // Inject -np (number of parallel slots) if set, >= 1, and not transformers.
         // 0 means auto (don't set the flag).
-        if let Some(slots) = server.num_parallel {
-            if slots >= 1 {
-                let already_has_np = grouped.iter().any(|e| {
-                    matches!(
-                        crate::config::flag_name(e),
-                        Some("-np") | Some("--parallel")
-                    )
-                });
-                if !already_has_np {
-                    grouped.push(format!("-np {}", slots));
+        if !is_transformers {
+            if let Some(slots) = server.num_parallel {
+                if slots >= 1 {
+                    let already_has_np = grouped.iter().any(|e| {
+                        matches!(
+                            crate::config::flag_name(e),
+                            Some("-np") | Some("--parallel")
+                        )
+                    });
+                    if !already_has_np {
+                        grouped.push(format!("-np {}", slots));
+                    }
                 }
             }
         }
 
         // Inject -b (batch size). Typed field wins over any leftover
-        // `-b`/`--batch-size` in args via merge_args dedup.
-        if let Some(b) = server.n_batch {
-            grouped = crate::config::merge_args(&grouped, &[format!("-b {}", b)]);
+        // `-b`/`--batch-size` in args via merge_args dedup. Not for transformers.
+        if !is_transformers {
+            if let Some(b) = server.n_batch {
+                grouped = crate::config::merge_args(&grouped, &[format!("-b {}", b)]);
+            }
         }
 
         // Inject -ub (ubatch size). Typed field wins over any leftover
-        // `-ub`/`--ubatch-size` in args via merge_args dedup.
-        if let Some(ub) = server.n_ubatch {
-            grouped = crate::config::merge_args(&grouped, &[format!("-ub {}", ub)]);
+        // `-ub`/`--ubatch-size` in args via merge_args dedup. Not for transformers.
+        if !is_transformers {
+            if let Some(ub) = server.n_ubatch {
+                grouped = crate::config::merge_args(&grouped, &[format!("-ub {}", ub)]);
+            }
         }
 
-        // Inject -ngl only if not already present.
-        if let Some(ngl) = server.gpu_layers {
-            let already_has_ngl = grouped.iter().any(|e| {
-                matches!(
-                    crate::config::flag_name(e),
-                    Some("-ngl") | Some("--n-gpu-layers")
-                )
-            });
-            if !already_has_ngl {
-                grouped.push(format!("-ngl {}", ngl));
+        // Inject -ngl only if not transformers format and not already present.
+        if !is_transformers {
+            if let Some(ngl) = server.gpu_layers {
+                let already_has_ngl = grouped.iter().any(|e| {
+                    matches!(
+                        crate::config::flag_name(e),
+                        Some("-ngl") | Some("--n-gpu-layers")
+                    )
+                });
+                if !already_has_ngl {
+                    grouped.push(format!("-ngl {}", ngl));
+                }
             }
         }
 

@@ -10,6 +10,7 @@ mod path_resolution;
 mod server_resolution;
 mod spec_decoding;
 mod test_helpers;
+mod transformers_format;
 mod unified_slots;
 
 fn make_test_config(llama_cpp_path: Option<&str>) -> crate::config::Config {

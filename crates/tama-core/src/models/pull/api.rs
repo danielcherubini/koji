@@ -160,8 +160,21 @@ pub async fn lookup_hf_metadata(repo_id: &str) -> Result<HfModelMetadata> {
         .await
         .with_context(|| format!("Failed to parse model metadata response for '{}'", repo_id))?;
 
+    // ── Detect format from siblings filenames ───────────────────────────────
+    let filenames: Vec<String> = response
+        .get("siblings")
+        .and_then(|s| s.as_array())
+        .map(|siblings| {
+            siblings
+                .iter()
+                .filter_map(|s| s.get("rfilename").and_then(|f| f.as_str()))
+                .map(|s| s.to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+
     let mut meta = HfModelMetadata {
-        hf_format: Some("gguf".to_string()),
+        hf_format: Some(detect_hf_format(&filenames).to_string()),
         ..Default::default()
     };
 
@@ -256,6 +269,36 @@ pub async fn lookup_model_pipeline_tag(repo_id: &str) -> Result<Option<String>> 
         .get("pipeline_tag")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string()))
+}
+
+/// Detect the HuggingFace model format (GGUF vs safetensors/transformers)
+/// from a list of filenames.
+///
+/// Rules:
+/// - If any filename ends with `.gguf` (case-insensitive) → `"gguf"`
+///   (GGUF wins if both present)
+/// - Else if any filename ends with `.safetensors` (case-insensitive)
+///   → `"transformers"`
+/// - Else if any filename ends with `.bin` (case-insensitive) →
+///   `"transformers"` (PyTorch weights without safetensors)
+/// - Else → `"gguf"` (backward-compatible fallback)
+pub fn detect_hf_format(filenames: &[String]) -> &'static str {
+    let has_gguf = filenames
+        .iter()
+        .any(|f| f.to_lowercase().ends_with(".gguf"));
+    let has_safetensors = filenames
+        .iter()
+        .any(|f| f.to_lowercase().ends_with(".safetensors"));
+    let has_bin = filenames.iter().any(|f| f.to_lowercase().ends_with(".bin"));
+
+    if has_gguf {
+        "gguf"
+    } else if has_safetensors || has_bin {
+        "transformers"
+    } else {
+        // Backward-compatible default
+        "gguf"
+    }
 }
 
 /// Try to infer modalities from a HuggingFace pipeline tag.
@@ -656,6 +699,73 @@ mod tests {
         assert_eq!(entry.quant.as_deref(), Some("Q4_K_M"));
         assert_eq!(entry.shards.len(), 1);
         assert_eq!(entry.size_bytes, Some(400));
+    }
+
+    // ── detect_hf_format tests ─────────────────────────────────────────────
+
+    /// Safetensors-only filenames → "transformers"
+    #[test]
+    fn test_detect_hf_format_safetensors_only() {
+        let files = vec![
+            "model.safetensors".to_string(),
+            "model.safetensors.index.json".to_string(),
+        ];
+        assert_eq!(detect_hf_format(&files), "transformers");
+    }
+
+    /// GGUF-only filenames → "gguf"
+    #[test]
+    fn test_detect_hf_format_gguf_only() {
+        let files = vec!["model-Q4_K_M.gguf".to_string()];
+        assert_eq!(detect_hf_format(&files), "gguf");
+    }
+
+    /// Both GGUF and safetensors present → "gguf" (GGUF wins)
+    #[test]
+    fn test_detect_hf_format_gguf_wins() {
+        let files = vec![
+            "model-Q4_K_M.gguf".to_string(),
+            "model.safetensors".to_string(),
+            "model.safetensors.index.json".to_string(),
+        ];
+        assert_eq!(detect_hf_format(&files), "gguf");
+    }
+
+    /// No recognizable extension → "gguf" (backward-compatible fallback)
+    #[test]
+    fn test_detect_hf_format_fallback() {
+        let files = vec!["README.md".to_string(), "config.json".to_string()];
+        assert_eq!(detect_hf_format(&files), "gguf");
+    }
+
+    /// Empty filenames list → "gguf" (backward-compatible fallback)
+    #[test]
+    fn test_detect_hf_format_empty() {
+        let files: Vec<String> = vec![];
+        assert_eq!(detect_hf_format(&files), "gguf");
+    }
+
+    /// Extract rfilenames from a `siblings` JSON array for use with detect_hf_format.
+    #[test]
+    fn test_extract_rfilenames_from_siblings() {
+        let json = serde_json::json!({
+            "siblings": [
+                {"rfilename": "model-Q4_K_M.gguf"},
+                {"rfilename": "model.safetensors"},
+                {"rfilename": "README.md"}
+            ]
+        });
+
+        let siblings = json.get("siblings").and_then(|s| s.as_array()).unwrap();
+        let filenames: Vec<String> = siblings
+            .iter()
+            .filter_map(|s| s.get("rfilename").and_then(|f| f.as_str()))
+            .map(|s| s.to_string())
+            .collect();
+
+        assert_eq!(filenames.len(), 3);
+        // detect_hf_format should return "gguf" since both are present (GGUF wins)
+        assert_eq!(detect_hf_format(&filenames), "gguf");
     }
 
     /// Deeply nested paths (a/b/c/file.gguf) should group by the full

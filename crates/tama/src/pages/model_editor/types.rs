@@ -107,6 +107,10 @@ pub struct ModelDetail {
     /// None = backend default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub n_ubatch: Option<u32>,
+    /// HuggingFace model format (e.g. "transformers", "gguf"). Used by the UI to
+    /// render the correct form for a given model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hf_format: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,6 +181,10 @@ pub struct ModelForm {
     /// None = backend default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub n_ubatch: Option<u32>,
+    /// HuggingFace model format (e.g. "transformers", "gguf"). Used by the UI to
+    /// render the correct form for a given model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hf_format: Option<String>,
 }
 
 fn default_kv_unified() -> bool {
@@ -239,4 +247,164 @@ pub struct GpuDeviceInfo {
     #[serde(default)]
     #[allow(dead_code)] // Deserialized from API but not displayed
     pub vram_free_mib: Option<u64>,
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+/// Returns a human-readable format label for display in the model editor.
+pub fn format_label(hf_format: Option<&str>) -> String {
+    match hf_format {
+        Some("transformers") => "Safetensors".to_string(),
+        Some("gguf") => "GGUF".to_string(),
+        _ => "Format unknown".to_string(),
+    }
+}
+
+/// Returns true when the model uses the transformers (safetensors) format.
+pub fn is_transformers(hf_format: Option<&str>) -> bool {
+    hf_format == Some("transformers")
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── format_label tests ───────────────────────────────────────────────
+
+    #[test]
+    fn test_format_label_transformers() {
+        assert_eq!(format_label(Some("transformers")), "Safetensors");
+    }
+
+    #[test]
+    fn test_format_label_gguf() {
+        assert_eq!(format_label(Some("gguf")), "GGUF");
+    }
+
+    #[test]
+    fn test_format_label_none() {
+        assert_eq!(format_label(None), "Format unknown");
+    }
+
+    #[test]
+    fn test_format_label_unknown_value() {
+        assert_eq!(format_label(Some("some_other_format")), "Format unknown");
+    }
+
+    // ── is_transformers tests ────────────────────────────────────────────
+
+    #[test]
+    fn test_is_transformers_true() {
+        assert!(is_transformers(Some("transformers")));
+    }
+
+    #[test]
+    fn test_is_transformers_false_gguf() {
+        assert!(!is_transformers(Some("gguf")));
+    }
+
+    #[test]
+    fn test_is_transformers_false_none() {
+        assert!(!is_transformers(None));
+    }
+
+    #[test]
+    fn test_is_transformers_false_unknown() {
+        assert!(!is_transformers(Some("unknown")));
+    }
+
+    // ── ModelDetail round-trip tests ─────────────────────────────────────
+
+    /// Round-trip: `ModelDetail` with `hf_format: Some(...)` serializes and
+    /// deserializes back to the same value.
+    #[test]
+    fn test_model_detail_hf_format_round_trip() {
+        let detail = ModelDetail {
+            id: 1,
+            backend: "llama-cpp".to_string(),
+            gpu_variant: None,
+            gpu_device: None,
+            model: Some("test/model".to_string()),
+            quant: None,
+            args: vec![],
+            sampling: None,
+            enabled: true,
+            context_length: None,
+            num_parallel: None,
+            port: None,
+            api_name: None,
+            display_name: None,
+            kv_unified: true,
+            gpu_layers: None,
+            cache_type_k: None,
+            cache_type_v: None,
+            hf_context_length: None,
+            quants: std::collections::BTreeMap::new(),
+            backends: vec![],
+            mmproj: None,
+            mtp_model: None,
+            repo_commit_sha: None,
+            repo_pulled_at: None,
+            modalities: None,
+            spec_decoding: None,
+            n_batch: None,
+            n_ubatch: None,
+            hf_format: Some("transformers".to_string()),
+        };
+
+        let serialized = serde_json::to_value(&detail).unwrap();
+        assert_eq!(
+            serialized["hf_format"].as_str(),
+            Some("transformers"),
+            "serialized JSON should contain hf_format"
+        );
+
+        let deserialized: ModelDetail = serde_json::from_value(serialized).unwrap();
+        assert_eq!(
+            deserialized.hf_format,
+            Some("transformers".to_string()),
+            "deserialized hf_format should match original"
+        );
+    }
+
+    /// Missing `hf_format` in the JSON payload deserializes to `None`.
+    #[test]
+    fn test_model_detail_hf_format_missing_defaults_to_none() {
+        let json = serde_json::json!({
+            "id": 42,
+            "backend": "llama-cpp",
+            "gpu_variant": null,
+            "gpu_device": null,
+            "model": null,
+            "quant": null,
+            "args": [],
+            "sampling": null,
+            "enabled": true,
+            "context_length": null,
+            "num_parallel": null,
+            "port": null,
+            "api_name": null,
+            "display_name": null,
+            "kv_unified": true,
+            "gpu_layers": null,
+            "cache_type_k": null,
+            "cache_type_v": null,
+            "hf_context_length": null,
+            "quants": {},
+            "backends": [],
+            "mmproj": null,
+            "mtp_model": null,
+            "repo_commit_sha": null,
+            "repo_pulled_at": null,
+            "modalities": null,
+            "spec_decoding": null,
+            "n_batch": null,
+            "n_ubatch": null
+        });
+
+        let detail: ModelDetail = serde_json::from_value(json).unwrap();
+        assert_eq!(detail.hf_format, None);
+    }
 }

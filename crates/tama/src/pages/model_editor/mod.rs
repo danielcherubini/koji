@@ -6,6 +6,8 @@ mod sampling_form;
 mod sections;
 mod settings_form;
 mod types;
+mod vllm_form;
+mod vllm_settings_form;
 
 use leptos::prelude::*;
 use leptos_router::components::A;
@@ -22,6 +24,8 @@ use self::hardware_form::ModelEditorHardwareForm;
 use self::sampling_form::ModelEditorSamplingForm;
 use self::settings_form::ModelEditorSettingsForm;
 use self::types::*;
+use self::vllm_form::{args_to_vllm_form, vllm_form_to_args, VllmSettings};
+use self::vllm_settings_form::ModelEditorVllmForm;
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
@@ -75,6 +79,9 @@ pub fn ModelEditor() -> impl IntoView {
 
     // Active preset name (tracks which preset was last loaded)
     let active_preset = RwSignal::new(String::new());
+
+    // vLLM settings derived form args for transformers-format models
+    let vllm_settings = RwSignal::new(VllmSettings::default());
 
     // Dirty tracking via snapshot comparison
     let last_saved_form = RwSignal::new(Option::<String>::None);
@@ -226,12 +233,30 @@ pub fn ModelEditor() -> impl IntoView {
                         spec_decoding,
                         n_batch: d.n_batch,
                         n_ubatch: d.n_ubatch,
+                        hf_format: d.hf_format.clone(),
                     }));
 
                     repo_commit_sha.set(d.repo_commit_sha.clone());
                     repo_pulled_at.set(d.repo_pulled_at.clone());
+                    // For transformers-format models: normalize vLLM-managed args eagerly
+                    // (without waiting for the vLLM component to mount). This ensures
+                    // last_saved_form is seeded from the normalized args so is_dirty
+                    // correctly starts as false and becomes true on user edits.
+                    if is_transformers(d.hf_format.as_deref()) {
+                        let settings = args_to_vllm_form(&form.get().as_ref().unwrap().args);
+                        let normalized_args =
+                            vllm_form_to_args(&settings, &form.get().as_ref().unwrap().args);
+                        vllm_settings.set(settings);
+                        form.update(|f| {
+                            if let Some(f) = f {
+                                f.args = normalized_args;
+                            }
+                        });
+                    }
+
                     // Seed last_saved_form so is_dirty starts as false (not "unsaved" on load)
                     last_saved_form.set(serde_json::to_string(&form.get()).ok());
+
                     form_ready.set(true);
                     populated_id.set_value(Some(id_str));
                 }
@@ -454,6 +479,7 @@ pub fn ModelEditor() -> impl IntoView {
                 spec_decoding: initial_form.spec_decoding.clone(),
                 n_batch: initial_form.n_batch,
                 n_ubatch: initial_form.n_ubatch,
+                hf_format: initial_form.hf_format.clone(),
             };
 
             let new_id = form_data.id.clone();
@@ -719,6 +745,30 @@ pub fn ModelEditor() -> impl IntoView {
                         <div class="model-editor-layout">
                             // Pill-style tab navigation
                             <div class="model-editor-pills">
+                                // Format pill (non-interactive, shows model format)
+                                <Show when=move || form.get().is_some()>
+                                    {move || form.get().map(|f| {
+                                        let label = format_label(f.hf_format.as_deref());
+                                        view! {
+                                            <span class="model-editor-pill model-editor-pill--format">
+                                                "Format: "<span>{label}</span>
+                                            </span>
+                                        }.into_any()
+                                    })}
+                                </Show>
+                                // vLLM tab (only for transformers-format models)
+                                <Show when=move || {
+                                    form.get().map(|f| is_transformers(f.hf_format.as_deref())).unwrap_or(false)
+                                }>
+                                    <button
+                                        class="model-editor-pill"
+                                        class:model-editor-pill--active=move || active_section.get() == Section::Vllm
+                                        on:click=move |_| { active_section.set(Section::Vllm); }
+                                    >
+                                        <span>{Section::Vllm.icon()}</span>
+                                        <span>{Section::Vllm.name()}</span>
+                                    </button>
+                                </Show>
                                 <button
                                     class="model-editor-pill"
                                     class:model-editor-pill--active=move || active_section.get() == Section::Settings
@@ -727,14 +777,25 @@ pub fn ModelEditor() -> impl IntoView {
                                     <span>{Section::Settings.icon()}</span>
                                     <span>{Section::Settings.name()}</span>
                                 </button>
-                                <button
-                                    class="model-editor-pill"
-                                    class:model-editor-pill--active=move || active_section.get() == Section::Context
-                                    on:click=move |_| { active_section.set(Section::Context); }
+                                // Context tab (hidden for transformers-format models)
+                                <Show
+                                    when=move || {
+                                        !is_transformers(
+                                            form.get()
+                                                .and_then(|f| f.hf_format.clone())
+                                                .as_deref(),
+                                        )
+                                    }
                                 >
-                                    <span>{Section::Context.icon()}</span>
-                                    <span>{Section::Context.name()}</span>
-                                </button>
+                                    <button
+                                        class="model-editor-pill"
+                                        class:model-editor-pill--active=move || active_section.get() == Section::Context
+                                        on:click=move |_| { active_section.set(Section::Context); }
+                                    >
+                                        <span>{Section::Context.icon()}</span>
+                                        <span>{Section::Context.name()}</span>
+                                    </button>
+                                </Show>
                                 <button
                                     class="model-editor-pill"
                                     class:model-editor-pill--active=move || active_section.get() == Section::Sampling
@@ -773,13 +834,24 @@ pub fn ModelEditor() -> impl IntoView {
                                             />
                                         </div>
                                     }.into_any(),
-                                    Section::Context => view! {
+                                    Section::Vllm => view! {
                                         <div class="card">
-                                            <h2 class="card__title">"Context"</h2>
-                                            <ModelEditorHardwareForm
+                                            <h2 class="card__title">"vLLM Settings"</h2>
+                                            <ModelEditorVllmForm
                                                 form=form
+                                                vllm_settings=vllm_settings
                                             />
                                         </div>
+                                    }.into_any(),
+                                    Section::Context => view! {
+                                        <Show when=move || !is_transformers(form.get().and_then(|f| f.hf_format.clone()).as_deref())>
+                                            <div class="card">
+                                                <h2 class="card__title">"Context"</h2>
+                                                <ModelEditorHardwareForm
+                                                    form=form
+                                                />
+                                            </div>
+                                        </Show>
                                     }.into_any(),
                                     Section::Sampling => view! {
                                         <div class="card mt-2">

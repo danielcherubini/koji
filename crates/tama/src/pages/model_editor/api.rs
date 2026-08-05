@@ -59,6 +59,7 @@ pub async fn fetch_model(id: String) -> Option<ModelDetail> {
             spec_decoding: None,
             n_batch: None,
             n_ubatch: None,
+            hf_format: None,
         });
     }
     let encoded_id = urlencoding::encode(&id);

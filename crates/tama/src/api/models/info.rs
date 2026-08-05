@@ -175,6 +175,7 @@ fn model_entry_json(
         "cache_type_k": record.cache_type_k,
         "cache_type_v": record.cache_type_v,
         "hf_context_length": record.hf_context_length,
+        "hf_format": record.hf_format,
         "hf_architecture_type": record.hf_architecture_type,
         "hf_base_model": record.hf_base_model,
         "quants": quants_json,
@@ -423,6 +424,7 @@ mod tests {
         let mut record = make_record();
         record.hf_architecture_type = Some("text-generation".to_string());
         record.hf_base_model = Some("meta-llama/Llama-3.1-8B".to_string());
+        record.hf_format = Some("gguf".to_string());
         let config = make_config(None);
         let tmp = std::path::Path::new("/tmp");
 
@@ -438,8 +440,13 @@ mod tests {
             Some("meta-llama/Llama-3.1-8B"),
             "hf_base_model should be included in API JSON when set"
         );
+        assert_eq!(
+            result.get("hf_format").and_then(|v| v.as_str()),
+            Some("gguf"),
+            "hf_format should be included in API JSON when set"
+        );
 
-        // None case: both should be null when not set
+        // None case: all should be null when not set
         let record_none = make_record();
         let config_none = make_config(None);
         let result_none = model_entry_json(1, &record_none, &config_none, tmp, None);
@@ -450,6 +457,10 @@ mod tests {
         assert!(
             result_none["hf_base_model"].is_null(),
             "hf_base_model should be null when not set"
+        );
+        assert!(
+            result_none["hf_format"].is_null(),
+            "hf_format should be null when not set"
         );
     }
 

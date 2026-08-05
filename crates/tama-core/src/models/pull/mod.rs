@@ -553,9 +553,9 @@ pub struct HfModelMetadata {
 
 pub use super::gguf::GgufMetadata;
 pub use api::{
-    directory_prefix, group_sharded_quants, infer_modalities_from_pipeline, list_gguf_files,
-    lookup_blob_metadata, lookup_hf_metadata, lookup_model_pipeline_tag, parse_blob_siblings,
-    GroupedQuant,
+    detect_hf_format, directory_prefix, group_sharded_quants, infer_modalities_from_pipeline,
+    list_gguf_files, lookup_blob_metadata, lookup_hf_metadata, lookup_model_pipeline_tag,
+    parse_blob_siblings, GroupedQuant,
 };
 pub use metadata::{lookup_community_toml, parse_readme_metadata};
 pub use quant::infer_quant_from_filename;
