@@ -32,6 +32,8 @@ struct ModelEntry {
     hf_architecture_type: Option<String>,
     #[serde(default)]
     hf_base_model: Option<String>,
+    #[serde(default)]
+    hf_format: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -283,6 +285,7 @@ pub fn Models() -> impl IntoView {
                                                 enabled=Some(m.enabled)
                                                 hf_architecture_type=m.hf_architecture_type.clone()
                                                 hf_base_model=m.hf_base_model.clone()
+                                                hf_format=m.hf_format.clone()
                                                 on_load=on_load_cb
                                                 on_unload=on_unload_cb
                                                 on_cancel=on_cancel_cb

@@ -139,6 +139,7 @@ impl ProxyState {
                 context_length: model_cfg.context_length,
                 hf_architecture_type: model_cfg.hf_architecture_type.clone(),
                 hf_base_model: model_cfg.hf_base_model.clone(),
+                hf_format: model_cfg.hf_format.clone(),
                 gpu_variant: model_cfg
                     .gpu_variant
                     .as_ref()

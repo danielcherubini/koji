@@ -131,6 +131,8 @@ pub struct ModelStateSnapshot {
     #[serde(default)]
     pub hf_base_model: Option<String>,
     #[serde(default)]
+    pub hf_format: Option<String>,
+    #[serde(default)]
     pub gpu_variant: Option<String>,
     #[serde(default)]
     pub cache_type_k: Option<String>,

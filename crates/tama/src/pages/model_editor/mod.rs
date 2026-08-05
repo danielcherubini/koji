@@ -745,17 +745,6 @@ pub fn ModelEditor() -> impl IntoView {
                         <div class="model-editor-layout">
                             // Pill-style tab navigation
                             <div class="model-editor-pills">
-                                // Format pill (non-interactive, shows model format)
-                                <Show when=move || form.get().is_some()>
-                                    {move || form.get().map(|f| {
-                                        let label = format_label(f.hf_format.as_deref());
-                                        view! {
-                                            <span class="model-editor-pill model-editor-pill--format">
-                                                "Format: "<span>{label}</span>
-                                            </span>
-                                        }.into_any()
-                                    })}
-                                </Show>
                                 // vLLM tab (only for transformers-format models)
                                 <Show when=move || {
                                     form.get().map(|f| is_transformers(f.hf_format.as_deref())).unwrap_or(false)

@@ -251,15 +251,6 @@ pub struct GpuDeviceInfo {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-/// Returns a human-readable format label for display in the model editor.
-pub fn format_label(hf_format: Option<&str>) -> String {
-    match hf_format {
-        Some("transformers") => "Safetensors".to_string(),
-        Some("gguf") => "GGUF".to_string(),
-        _ => "Format unknown".to_string(),
-    }
-}
-
 /// Returns true when the model uses the transformers (safetensors) format.
 pub fn is_transformers(hf_format: Option<&str>) -> bool {
     hf_format == Some("transformers")
@@ -270,28 +261,6 @@ pub fn is_transformers(hf_format: Option<&str>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ── format_label tests ───────────────────────────────────────────────
-
-    #[test]
-    fn test_format_label_transformers() {
-        assert_eq!(format_label(Some("transformers")), "Safetensors");
-    }
-
-    #[test]
-    fn test_format_label_gguf() {
-        assert_eq!(format_label(Some("gguf")), "GGUF");
-    }
-
-    #[test]
-    fn test_format_label_none() {
-        assert_eq!(format_label(None), "Format unknown");
-    }
-
-    #[test]
-    fn test_format_label_unknown_value() {
-        assert_eq!(format_label(Some("some_other_format")), "Format unknown");
-    }
 
     // ── is_transformers tests ────────────────────────────────────────────
 

@@ -30,6 +30,9 @@ pub struct ModelStateSnapshot {
     /// Base model from HF metadata (e.g. "Qwen/Qwen3.6-27B"). Display-only on dashboard.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hf_base_model: Option<String>,
+    /// Model format from HF metadata ("gguf" / "transformers"). Display-only on dashboard.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hf_format: Option<String>,
     /// GPU variant for the backend (e.g. "cpu", "cuda", "vulkan"). Display-only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu_variant: Option<String>,

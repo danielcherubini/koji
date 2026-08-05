@@ -158,6 +158,16 @@ pub(crate) fn format_kv_cache(k: Option<&str>, v: Option<&str>) -> Option<String
     }
 }
 
+/// Human-readable label for a model's HF format.
+/// "transformers" → "Safetensors", "gguf" → "GGUF", anything else → "Format unknown".
+pub(crate) fn format_label(hf_format: Option<&str>) -> String {
+    match hf_format {
+        Some("transformers") => "Safetensors".to_string(),
+        Some("gguf") => "GGUF".to_string(),
+        _ => "Format unknown".to_string(),
+    }
+}
+
 /// Format speculative decoding display: "MTP", "Ngram", or "MTP+Ngram".
 /// Returns None if spec_types is empty.
 pub(crate) fn format_spec_decoding(spec_types: &[String]) -> Option<String> {
@@ -190,6 +200,7 @@ pub fn ModelCard(
     context_length: Option<u32>,
     #[prop(default = None)] hf_architecture_type: Option<String>,
     #[prop(default = None)] hf_base_model: Option<String>,
+    #[prop(default = None)] hf_format: Option<String>,
     #[prop(default = ModelPips::default())] pips: ModelPips,
     backend: String,
     log_source: Option<String>,
@@ -244,6 +255,7 @@ pub fn ModelCard(
     let backend_clone = backend.clone();
     let hf_architecture_type_clone = hf_architecture_type.clone();
     let hf_base_model_clone = hf_base_model.clone();
+    let hf_format_clone = hf_format.clone();
     let gpu_variant_clone = pips.gpu_variant.clone();
     let cache_type_k_clone = pips.cache_type_k.clone();
     let cache_type_v_clone = pips.cache_type_v.clone();
@@ -350,6 +362,15 @@ pub fn ModelCard(
                 {if let Some(base) = hf_base_model_clone {
                     view! {
                         <span class="badge-pill badge-pill--base-model">{base}</span>
+                    }.into_any()
+                } else {
+                    view! { <span/> }.into_any()
+                }}
+                // Format badge (GGUF / Safetensors)
+                {if let Some(fmt) = hf_format_clone {
+                    let label = format_label(Some(fmt.as_str()));
+                    view! {
+                        <span class="badge-pill badge-pill--format">{label}</span>
                     }.into_any()
                 } else {
                     view! { <span/> }.into_any()
@@ -647,6 +668,22 @@ mod tests {
     #[test]
     fn test_format_spec_decoding_unknown_types() {
         assert_eq!(format_spec_decoding(&["unknown-type".to_string()]), None);
+    }
+
+    #[test]
+    fn test_format_label_transformers() {
+        assert_eq!(format_label(Some("transformers")), "Safetensors");
+    }
+
+    #[test]
+    fn test_format_label_gguf() {
+        assert_eq!(format_label(Some("gguf")), "GGUF");
+    }
+
+    #[test]
+    fn test_format_label_none_and_unknown() {
+        assert_eq!(format_label(None), "Format unknown");
+        assert_eq!(format_label(Some("some_other_format")), "Format unknown");
     }
 
     #[test]

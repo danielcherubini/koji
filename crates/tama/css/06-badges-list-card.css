@@ -90,6 +90,11 @@
   color: #fff;
 }
 
+.badge-pill--format {
+  background: rgba(57, 210, 192, 0.12);
+  color: var(--accent-cyan);
+}
+
 .badge-pill--danger {
   background: rgba(248, 81, 73, 0.12);
   color: var(--accent-red);

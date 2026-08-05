@@ -28,6 +28,14 @@
   margin-top: 0.25rem;
 }
 
+/* Hints placed as direct children of the 2-column .form-grid must span the
+   full row, otherwise they occupy the label column and shift every following
+   label/field pair one column to the right. */
+.form-grid > .form-hint {
+  grid-column: 1 / -1;
+  margin-top: 0;
+}
+
 .form-check {
   display: flex;
   align-items: center;

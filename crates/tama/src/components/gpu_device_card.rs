@@ -385,6 +385,7 @@ mod tests {
             context_length: None,
             hf_architecture_type: None,
             hf_base_model: None,
+            hf_format: None,
             gpu_variant: None,
             cache_type_k: None,
             cache_type_v: None,
