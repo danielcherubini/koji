@@ -12,8 +12,8 @@ Plans for features, refactors, and bug fixes in the Tama project.
 
 ## Quick Stats
 
-- **Total Plans**: 81
-- **Backlog**: 0
+- **Total Plans**: 82
+- **Backlog**: 1
 - **Completed**: 81 ✅
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan.
@@ -22,7 +22,9 @@ Plans for features, refactors, and bug fixes in the Tama project.
 
 ## Backlog
 
-No plans in the backlog. All plans are complete!
+| Plan | Description |
+|------|-------------|
+| [plan-184](plan-184-vllm-config-columns.md) | Structured vLLM config: `vllm_config` JSON column (spec_decoding-style), typed flag emission in `build_full_args`, startup backfill from args, editor binds to typed config, backup/restore support |
 
 **All completed plans**: [done.md](done.md)
 
