@@ -269,6 +269,17 @@ impl Config {
                     }
                 }
             }
+
+            // vLLM serves the model under the positional path by default, so
+            // OpenAI clients addressing it by repo/api name get a 404 from the
+            // backend (the proxy only rewrites the model field in responses,
+            // not requests). Name the served model after the Tama api_name
+            // (falling back to the repo id) so both sides agree.
+            let served_name = server.api_name.as_deref().or(server.model.as_deref());
+            if let Some(name) = served_name {
+                grouped =
+                    crate::config::merge_args(&grouped, &[format!("--served-model-name {}", name)]);
+            }
         }
 
         // ── llama.cpp-only flags — gate on non-transformers format ─────

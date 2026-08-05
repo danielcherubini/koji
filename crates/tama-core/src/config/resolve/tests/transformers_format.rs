@@ -342,3 +342,66 @@ fn test_build_full_args_transformers_no_duplicate_with_model_flag() {
         count, args
     );
 }
+
+/// Transformers models get `--served-model-name` from api_name (or repo id) so
+/// OpenAI clients can address the model by name — vLLM would otherwise only
+/// answer to the positional container path.
+#[test]
+fn test_build_full_args_transformers_served_model_name() {
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let models_dir = temp_dir.path().join("models");
+    std::fs::create_dir_all(models_dir.join("org").join("repo"))
+        .expect("Failed to create model dir");
+
+    let config = h::sample_config(models_dir);
+
+    // api_name set → used as served name
+    let server = h::sample_server(|s| {
+        s.backend = "vllm".to_string();
+        s.hf_format = Some("transformers".to_string());
+        s.model = Some("org/repo".to_string());
+        s.api_name = Some("org/repo".to_string());
+        s.quant = None;
+    });
+    let args = config
+        .build_full_args(&server, &h::sample_backend(), None, &[])
+        .expect("build_full_args failed");
+    assert!(
+        args.windows(2)
+            .any(|w| w[0] == "--served-model-name" && w[1] == "org/repo"),
+        "expected --served-model-name org/repo in {:?}",
+        args
+    );
+
+    // api_name absent → falls back to the repo id (server.model)
+    let server_no_api = h::sample_server(|s| {
+        s.backend = "vllm".to_string();
+        s.hf_format = Some("transformers".to_string());
+        s.model = Some("org/repo".to_string());
+        s.api_name = None;
+        s.quant = None;
+    });
+    let args = config
+        .build_full_args(&server_no_api, &h::sample_backend(), None, &[])
+        .expect("build_full_args failed");
+    assert!(
+        args.windows(2)
+            .any(|w| w[0] == "--served-model-name" && w[1] == "org/repo"),
+        "expected --served-model-name fallback to repo id in {:?}",
+        args
+    );
+
+    // GGUF models must NOT get a served-model-name
+    let gguf_server = h::sample_server(|s| {
+        s.hf_format = Some("gguf".to_string());
+        s.api_name = Some("org/repo".to_string());
+    });
+    let args = config
+        .build_full_args(&gguf_server, &h::sample_backend(), None, &[])
+        .expect("build_full_args failed");
+    assert!(
+        !args.iter().any(|a| a == "--served-model-name"),
+        "GGUF model should not get --served-model-name: {:?}",
+        args
+    );
+}
