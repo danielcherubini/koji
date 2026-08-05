@@ -27,43 +27,51 @@ const MANAGED_FLAGS: &[&str] = &[
 
 /// Parse newline-joined args into a `VllmSettings` form.
 ///
-/// Extracts known vLLM flags (both `--flag value` and `--flag=value` forms),
-/// ignoring unknown/unmanaged flags. Boolean flags are detected when the line
-/// exactly matches the flag name.
+/// Extracts known vLLM flags in all three stored forms, ignoring
+/// unknown/unmanaged flags:
+///   - grouped:  `--flag value` on one line
+///   - inline:   `--flag=value`
+///   - flattened: `--flag` and its value on separate lines (one token per line)
 pub fn args_to_vllm_form(args: &str) -> VllmSettings {
     let mut form = VllmSettings::default();
-
-    for line in args.lines() {
-        let trimmed = line.trim();
+    let lines: Vec<&str> = args.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
+        i += 1;
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
 
-        // Check for boolean flags (line exactly matches flag name)
-        for &flag in MANAGED_FLAGS {
-            if trimmed == flag && is_boolean_flag(flag) {
-                parse_managed_flag(flag, "", &mut form);
+        // --flag=value (single line)
+        if let Some((flag, value)) = trimmed.split_once('=') {
+            if MANAGED_FLAGS.contains(&flag) && !is_boolean_flag(flag) {
+                parse_managed_flag(flag, value, &mut form);
                 continue;
             }
         }
 
-        // Try --flag=value first
-        for &flag in MANAGED_FLAGS {
-            let prefix = format!("{flag}=");
-            if trimmed.starts_with(&prefix) {
-                let value = &trimmed[prefix.len()..];
-                parse_managed_flag(flag, value, &mut form);
-                continue;
+        // Exact flag match: boolean flag, or value on the next line (flattened).
+        if MANAGED_FLAGS.contains(&trimmed) {
+            if is_boolean_flag(trimmed) {
+                parse_managed_flag(trimmed, "", &mut form);
+            } else if let Some(next) = lines.get(i) {
+                let value = next.trim();
+                if !value.is_empty() && !value.starts_with("--") {
+                    parse_managed_flag(trimmed, value, &mut form);
+                    i += 1; // consume the value line
+                }
             }
+            continue;
+        }
 
-            // Try --flag value (space-separated)
-            let flag_prefix = format!("{flag} ");
-            if trimmed.starts_with(&flag_prefix) {
-                let value = trimmed[flag_prefix.len()..]
-                    .split_whitespace()
-                    .next()
-                    .unwrap_or("");
-                parse_managed_flag(flag, value, &mut form);
+        // --flag value (same line)
+        for &flag in MANAGED_FLAGS {
+            if let Some(rest) = trimmed.strip_prefix(flag) {
+                if rest.starts_with(' ') {
+                    parse_managed_flag(flag, rest.trim(), &mut form);
+                    break;
+                }
             }
         }
     }
@@ -71,39 +79,51 @@ pub fn args_to_vllm_form(args: &str) -> VllmSettings {
     form
 }
 
-/// Check if a line matches a managed flag and its value parses successfully.
-/// Returns `true` only if the flag's value can be parsed (for numeric flags),
-/// ensuring that unparseable values are preserved rather than silently dropped.
-fn is_managed_flag_line(line: &str) -> bool {
-    let trimmed = line.trim();
+/// Classify a line as a managed vLLM flag for stripping.
+///
+/// Returns `Some(consumes_next_line)` when the line is a managed flag whose
+/// value parses successfully — unparseable values return `None` so they are
+/// preserved rather than silently dropped. `consumes_next_line` is true when
+/// the value lives on the following line (flattened one-token-per-line format).
+fn classify_managed_line(lines: &[&str], idx: usize) -> Option<bool> {
+    let trimmed = lines[idx].trim();
     if trimmed.is_empty() || trimmed.starts_with('#') {
-        return false;
+        return None;
     }
 
+    // --flag=value (single line)
+    if let Some((flag, value)) = trimmed.split_once('=') {
+        if MANAGED_FLAGS.contains(&flag) && !is_boolean_flag(flag) {
+            return can_parse_managed_value(flag, value).then_some(false);
+        }
+    }
+
+    // Exact flag match: boolean flag, or value on the next line (flattened).
+    if MANAGED_FLAGS.contains(&trimmed) {
+        if is_boolean_flag(trimmed) {
+            return Some(false);
+        }
+        if let Some(next) = lines.get(idx + 1) {
+            let value = next.trim();
+            if !value.is_empty()
+                && !value.starts_with("--")
+                && can_parse_managed_value(trimmed, value)
+            {
+                return Some(true);
+            }
+        }
+        return None;
+    }
+
+    // --flag value (same line)
     for &flag in MANAGED_FLAGS {
-        // Boolean flags (always parseable)
-        if trimmed == flag && is_boolean_flag(flag) {
-            return true;
-        }
-
-        // --flag=value form
-        let prefix = format!("{flag}=");
-        if trimmed.starts_with(&prefix) {
-            let value = &trimmed[prefix.len()..];
-            return can_parse_managed_value(flag, value);
-        }
-
-        // --flag value (space-separated)
-        let flag_prefix = format!("{flag} ");
-        if trimmed.starts_with(&flag_prefix) {
-            let value = trimmed[flag_prefix.len()..]
-                .split_whitespace()
-                .next()
-                .unwrap_or("");
-            return can_parse_managed_value(flag, value);
+        if let Some(rest) = trimmed.strip_prefix(flag) {
+            if rest.starts_with(' ') {
+                return can_parse_managed_value(flag, rest.trim()).then_some(false);
+            }
         }
     }
-    false
+    None
 }
 
 /// Check if a value for a given managed flag can be parsed successfully.
@@ -121,11 +141,23 @@ fn can_parse_managed_value(flag: &str, value: &str) -> bool {
 /// Remove vLLM-managed flag lines from existing args, then append current
 /// `VllmSettings` as flags. Preserves user free-form args.
 pub fn vllm_form_to_args(form: &VllmSettings, existing: &str) -> String {
-    // Step 1: Remove managed flag lines from existing (only if they parse correctly)
-    let kept_lines: Vec<&str> = existing
-        .lines()
-        .filter(|line| !is_managed_flag_line(line))
-        .collect();
+    // Step 1: Remove managed flags from existing args (grouped, inline, and
+    // flattened forms), but only when their values parse — unparseable lines
+    // are preserved rather than silently dropped.
+    let lines: Vec<&str> = existing.lines().collect();
+    let mut kept_lines: Vec<&str> = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        match classify_managed_line(&lines, i) {
+            Some(consumes_next) => {
+                i += if consumes_next { 2 } else { 1 };
+            }
+            None => {
+                kept_lines.push(lines[i]);
+                i += 1;
+            }
+        }
+    }
 
     // Step 2: Build args from kept lines + current form values
     let mut result = kept_lines.join("\n");
@@ -512,5 +544,76 @@ mod tests {
         assert!(result.contains("--max-model-len 8192")); // replaced
         assert!(!result.contains("4096")); // old value gone
         assert!(result.contains("--tensor-parallel-size abc")); // preserved (unparseable)
+    }
+
+    // ── Flattened format (one token per line, as stored in the DB) ───────
+
+    #[test]
+    fn test_args_to_vllm_form_flattened() {
+        // DB stores args as Vec<String> with one token per entry; the editor
+        // joins with newlines, so flag and value land on separate lines.
+        let args = "/mnt/models/Qwen/Qwen3.6-27B-FP8\n\
+                    --quantization\nfp8\n\
+                    --kv-cache-dtype\nbf16\n\
+                    --tensor-parallel-size\n2\n\
+                    --gpu-memory-utilization\n0.92\n\
+                    --max-num-batched-tokens\n2560\n\
+                    --attention-backend\nROCM_AITER_UNIFIED_ATTN\n\
+                    --enable-prefix-caching";
+        let form = args_to_vllm_form(args);
+        assert_eq!(form.quantization, Some("fp8".to_string()));
+        assert_eq!(form.kv_cache_dtype, Some("bf16".to_string()));
+        assert_eq!(form.tensor_parallel_size, Some(2));
+        assert_eq!(form.gpu_memory_utilization, Some(0.92));
+        assert_eq!(form.max_num_batched_tokens, Some(2560));
+        assert!(form.enable_prefix_caching);
+        assert!(!form.trust_remote_code);
+    }
+
+    #[test]
+    fn test_args_to_vllm_form_flattened_flag_without_value() {
+        // A managed flag followed by another flag must not eat the next flag
+        let args = "--quantization\n--enable-prefix-caching";
+        let form = args_to_vllm_form(args);
+        assert_eq!(form.quantization, None);
+        assert!(form.enable_prefix_caching);
+    }
+
+    #[test]
+    fn test_vllm_form_to_args_strips_flattened_flags() {
+        let existing = "/mnt/models/org/repo\n--quantization\nfp8\n--attention-backend\nROCM_AITER_UNIFIED_ATTN\n--enable-prefix-caching";
+        let form = VllmSettings {
+            quantization: Some("awq".to_string()),
+            ..Default::default()
+        };
+        let result = vllm_form_to_args(&form, existing);
+        // Old flattened flag+value pair is gone; canonical grouped form appended
+        assert!(!result.contains("fp8"));
+        assert!(result.contains("--quantization awq"));
+        // Unmanaged lines (positional path + free-form flag) preserved
+        assert!(result.contains("/mnt/models/org/repo"));
+        assert!(result.contains("--attention-backend\nROCM_AITER_UNIFIED_ATTN"));
+        // Boolean flag stripped (form has it false)
+        assert!(!result.contains("--enable-prefix-caching"));
+    }
+
+    #[test]
+    fn test_vllm_form_to_args_preserves_unparseable_flattened() {
+        let existing = "--max-model-len\nabc";
+        let form = VllmSettings::default();
+        let result = vllm_form_to_args(&form, existing);
+        assert!(result.contains("--max-model-len\nabc"));
+    }
+
+    #[test]
+    fn test_flattened_round_trip_is_canonical() {
+        // Flattened input parses → re-emits as canonical grouped lines → re-parses identically
+        let flattened = "--kv-cache-dtype\nfp8\n--tensor-parallel-size\n2";
+        let form = args_to_vllm_form(flattened);
+        let canonical = vllm_form_to_args(&form, "");
+        assert!(canonical.contains("--kv-cache-dtype fp8"));
+        assert!(canonical.contains("--tensor-parallel-size 2"));
+        let form2 = args_to_vllm_form(&canonical);
+        assert_eq!(form, form2);
     }
 }
