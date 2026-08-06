@@ -34,6 +34,17 @@ struct ModelEntry {
     hf_base_model: Option<String>,
     #[serde(default)]
     hf_format: Option<String>,
+    #[serde(default)]
+    context_length: Option<u32>,
+    #[serde(default)]
+    cache_type_k: Option<String>,
+    #[serde(default)]
+    cache_type_v: Option<String>,
+    #[serde(default)]
+    spec_types: Vec<String>,
+    /// vLLM-specific config (quantization, kv_cache_dtype, max_model_len, etc.)
+    #[serde(default)]
+    vllm: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,6 +92,45 @@ fn gpu_group_label(gpu_device: &Option<String>) -> String {
         }
         None => "No GPU".to_string(),
     }
+}
+
+// ── Helper functions for vLLM config fallbacks ─────────────────────────────
+
+/// Extract a string value from a JSON value.
+fn json_str(v: &serde_json::Value) -> Option<String> {
+    v.as_str().map(String::from)
+}
+
+/// Extract a u32 value from a JSON value.
+fn json_u32(v: &serde_json::Value) -> Option<u32> {
+    v.as_u64().and_then(|n| u32::try_from(n).ok())
+}
+
+/// Resolve effective context length: top-level `context_length` or vLLM `max_model_len`.
+fn resolve_context_length(m: &ModelEntry) -> Option<u32> {
+    m.context_length
+        .or_else(|| m.vllm.get("max_model_len").and_then(json_u32))
+}
+
+/// Resolve effective quant: top-level `quant` or vLLM `quantization`.
+fn resolve_quant(m: &ModelEntry) -> Option<String> {
+    m.quant
+        .clone()
+        .or_else(|| m.vllm.get("quantization").and_then(json_str))
+}
+
+/// Resolve effective KV cache dtype: top-level `cache_type_k` or vLLM `kv_cache_dtype`.
+fn resolve_cache_k(m: &ModelEntry) -> Option<String> {
+    m.cache_type_k
+        .clone()
+        .or_else(|| m.vllm.get("kv_cache_dtype").and_then(json_str))
+}
+
+/// Resolve effective KV cache dtype: top-level `cache_type_v` or vLLM `kv_cache_dtype`.
+fn resolve_cache_v(m: &ModelEntry) -> Option<String> {
+    m.cache_type_v
+        .clone()
+        .or_else(|| m.vllm.get("kv_cache_dtype").and_then(json_str))
 }
 
 // ── Component ────────────────────────────────────────────────────────────────
@@ -267,17 +317,23 @@ pub fn Models() -> impl IntoView {
                                         let on_cancel_cb = Callback::new(move |id: String| {
                                             cancel_action.dispatch(id);
                                         });
+                                        let effective_quant = resolve_quant(&m);
+                                        let effective_ctx = resolve_context_length(&m);
+                                        let effective_cache_k = resolve_cache_k(&m);
+                                        let effective_cache_v = resolve_cache_v(&m);
                                         view! {
                                             <ModelCard
                                                 id=m.id.to_string()
                                                 db_id=Some(m.id)
                                                 display_name=model_display_name(&m)
-                                                quant=m.quant.clone()
-                                                context_length=None
+                                                quant=effective_quant
+                                                context_length=effective_ctx
                                                 pips=ModelPips {
                                                     gpu_variant: m.gpu_variant.clone(),
                                                     gpu_label: Some(gpu_group_label(&m.gpu_device)),
-                                                    ..Default::default()
+                                                    cache_type_k: effective_cache_k,
+                                                    cache_type_v: effective_cache_v,
+                                                    spec_types: m.spec_types.clone(),
                                                 }
                                                 backend=m.backend.clone()
                                                 log_source=Some(m.backend.clone())
