@@ -558,7 +558,9 @@ fn test_migration_v23_creates_backend_configs() {
         assert_eq!(exists, 1, "column '{}' must exist", col);
     }
 
-    // Test UNIQUE(name, gpu_variant) constraint
+    // Since v45 the table is keyed by the stable logical_id, not the editable
+    // name. Verify: same name + same variant is now allowed (name is no longer
+    // the key), but duplicate (logical_id, gpu_variant) must fail.
     conn.execute(
         "INSERT INTO backend_configs (name, gpu_variant, default_args, health_check_url) \
          VALUES ('llama_cpp', 'cpu', '[\"-fa 1\"]', 'http://localhost:8080/health')",
@@ -566,15 +568,15 @@ fn test_migration_v23_creates_backend_configs() {
     )
     .unwrap();
 
-    // Duplicate (name, gpu_variant) must fail
-    let err = conn.execute(
+    // Duplicate (name, gpu_variant) is permitted (name is not the key).
+    conn.execute(
         "INSERT INTO backend_configs (name, gpu_variant, default_args) \
          VALUES ('llama_cpp', 'cpu', '[]')",
         [],
-    );
-    assert!(err.is_err(), "duplicate (name, gpu_variant) must fail");
+    )
+    .unwrap();
 
-    // Same name, different variant must succeed
+    // Same name, different variant must succeed.
     conn.execute(
         "INSERT INTO backend_configs (name, gpu_variant, default_args) \
          VALUES ('llama_cpp', 'vulkan', '[]')",
@@ -582,7 +584,24 @@ fn test_migration_v23_creates_backend_configs() {
     )
     .unwrap();
 
-    // Verify both rows exist
+    // Duplicate (logical_id, gpu_variant) must fail — this is the new stable key.
+    conn.execute(
+        "INSERT INTO backend_configs (logical_id, name, gpu_variant, default_args) \
+         VALUES ('uuid-1', 'a', 'cpu', '[]')",
+        [],
+    )
+    .unwrap();
+    let err = conn.execute(
+        "INSERT INTO backend_configs (logical_id, name, gpu_variant, default_args) \
+         VALUES ('uuid-1', 'b', 'cpu', '[]')",
+        [],
+    );
+    assert!(
+        err.is_err(),
+        "duplicate (logical_id, gpu_variant) must fail"
+    );
+
+    // Verify rows exist
     let count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM backend_configs WHERE name='llama_cpp'",
@@ -590,7 +609,7 @@ fn test_migration_v23_creates_backend_configs() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(count, 2);
+    assert_eq!(count, 3);
 }
 
 /// Regression test: migration v24 must add spec_decoding column to model_configs.

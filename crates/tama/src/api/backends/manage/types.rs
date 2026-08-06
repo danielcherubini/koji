@@ -68,3 +68,11 @@ pub struct BackendPatchBody {
     pub default_env: Option<Vec<String>>,
     pub health_check_url: Option<String>, // None=preserve, Some(value)=set (clear via existing POST endpoints)
 }
+
+/// POST /tama/v1/backends/:name/rename
+/// Rename a backend across every table that carries its display name, preserving
+/// its stable logical_id so config (default args/env) and models survive intact.
+#[derive(Deserialize)]
+pub struct RenameBackendRequest {
+    pub name: String,
+}

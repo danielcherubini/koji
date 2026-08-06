@@ -149,6 +149,7 @@ pub fn migrate_backend_registry_toml(
             source: source_json,
             is_active: true,
             docker_config: None,
+            logical_id: String::new(),
         };
 
         // INSERT OR REPLACE handles duplicate (name, version) by replacing the row
@@ -410,6 +411,7 @@ installed_at = 1700000000
                 source: None,
                 is_active: true,
                 docker_config: None,
+                logical_id: String::new(),
             },
         )
         .unwrap();

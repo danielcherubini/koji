@@ -106,6 +106,9 @@ pub fn open(config_dir: &Path) -> anyhow::Result<OpenResult> {
     let needs_backfill = current_version == 0;
 
     migrations::run(&conn)?;
+    // Idempotent post-migration backfill: assign stable per-backend logical ids
+    // and populate the new stable-key columns (rename-safe backend identity).
+    backfill_backend_logical_ids(&conn)?;
 
     Ok(OpenResult {
         conn,
@@ -159,11 +162,125 @@ pub fn open_in_memory() -> anyhow::Result<OpenResult> {
     let needs_backfill = current_version == 0;
 
     migrations::run(&conn)?;
+    backfill_backend_logical_ids(&conn)?;
 
     Ok(OpenResult {
         conn,
         needs_backfill,
     })
+}
+
+/// Assign each logical backend a stable `logical_id` (a UUID preserved across
+/// renames and version upgrades) and populates the stable-key columns on
+/// `backend_configs`, `model_configs`, and `active_models`.
+///
+/// Idempotent: rows that already carry a non-empty logical id are left alone,
+/// so it is safe to run on every DB open. Existing backends get a fresh UUID;
+/// rows sharing a `name` share the same `logical_id` (the name is the logical
+/// backend's slug; gpu_variant remains a dimension within it).
+pub(crate) fn backfill_backend_logical_ids(conn: &Connection) -> anyhow::Result<()> {
+    use std::collections::HashMap;
+
+    // Collect distinct backend names that are missing a logical_id.
+    let mut names: Vec<String> = Vec::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT name FROM backend_installations WHERE logical_id IS NULL OR logical_id = ''",
+        )?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        for row in rows {
+            names.push(row?);
+        }
+    }
+
+    // Rust cannot mutate while iterating over prepared statements on the same
+    // connection; materialize the name -> logical_id map first, then apply.
+    let mut assignments: HashMap<String, String> = HashMap::new();
+    for name in &names {
+        // Reuse an existing non-empty logical_id for this name if any row has one.
+        let existing: Option<String> = conn
+            .query_row(
+                "SELECT logical_id FROM backend_installations WHERE name = ?1 AND logical_id IS NOT NULL AND logical_id != '' LIMIT 1",
+                [name],
+                |r| r.get(0),
+            )
+            .ok();
+        let logical_id = existing.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        assignments.insert(name.clone(), logical_id);
+    }
+
+    let tx = conn.unchecked_transaction()?;
+    for (name, logical_id) in &assignments {
+        tx.execute(
+            "UPDATE backend_installations SET logical_id = ?1 WHERE name = ?2 AND (logical_id IS NULL OR logical_id = '')",
+            (logical_id, name),
+        )?;
+    }
+
+    // Conflict-tolerant: drop any NULL-logical_id backend_configs row whose
+    // computed target (logical_id, gpu_variant) would duplicate an existing row
+    // once stamped below. This can happen when a rename merged a stable-key row
+    // and a legacy NULL row under the same name; leaving both would violate the
+    // UNIQUE(logical_id, gpu_variant) constraint and break db open.
+    tx.execute(
+        "DELETE FROM backend_configs
+         WHERE (logical_id IS NULL OR logical_id = '')
+           AND EXISTS (
+             SELECT 1 FROM backend_configs bc2
+             WHERE bc2.logical_id = (
+                 SELECT bi.logical_id FROM backend_installations bi
+                 WHERE bi.name = backend_configs.name
+                   AND bi.gpu_variant = backend_configs.gpu_variant
+                   AND bi.logical_id IS NOT NULL AND bi.logical_id != ''
+                 LIMIT 1
+             )
+               AND bc2.gpu_variant = backend_configs.gpu_variant
+               AND bc2.id != backend_configs.id
+           )",
+        [],
+    )?;
+
+    // Backfill backend_configs.logical_id from the matching installation name+variant.
+    tx.execute(
+        "UPDATE backend_configs
+         SET logical_id = (
+             SELECT bi.logical_id FROM backend_installations bi
+             WHERE bi.name = backend_configs.name AND bi.gpu_variant = backend_configs.gpu_variant
+               AND bi.logical_id IS NOT NULL AND bi.logical_id != ''
+             LIMIT 1
+         )
+         WHERE logical_id IS NULL OR logical_id = ''",
+        [],
+    )?;
+
+    // Backfill model_configs.backend_id from the matching installation name.
+    tx.execute(
+        "UPDATE model_configs
+         SET backend_id = (
+             SELECT bi.logical_id FROM backend_installations bi
+             WHERE bi.name = model_configs.backend
+               AND bi.logical_id IS NOT NULL AND bi.logical_id != ''
+             LIMIT 1
+         )
+         WHERE backend_id IS NULL OR backend_id = ''",
+        [],
+    )?;
+
+    // Backfill active_models.backend_id from the matching installation name.
+    tx.execute(
+        "UPDATE active_models
+         SET backend_id = (
+             SELECT bi.logical_id FROM backend_installations bi
+             WHERE bi.name = active_models.backend
+               AND bi.logical_id IS NOT NULL AND bi.logical_id != ''
+             LIMIT 1
+         )
+         WHERE backend_id IS NULL OR backend_id = ''",
+        [],
+    )?;
+
+    tx.commit()?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -267,6 +384,151 @@ mod tests {
         let OpenResult { conn, .. } = open_in_memory().unwrap();
         let configs = load_model_configs(&conn).unwrap();
         assert!(configs.is_empty());
+    }
+
+    /// Backfill assigns a stable, per-name logical_id and populates the stable-key
+    /// columns on backend_configs / model_configs / active_models.
+    #[test]
+    fn test_backfill_backend_logical_ids_assigns_and_propagates() {
+        use crate::db::queries::{insert_backend_installation, BackendInstallationRecord};
+
+        let OpenResult { conn, .. } = open_in_memory().unwrap();
+        // open_in_memory already ran backfill on an empty DB; insert real data now.
+        insert_backend_installation(
+            &conn,
+            &BackendInstallationRecord {
+                id: 0,
+                name: "radiance".to_string(),
+                backend_type: "docker".to_string(),
+                version: "0.5.8".to_string(),
+                path: "n/a".to_string(),
+                installed_at: 0,
+                gpu_variant: "rocm".to_string(),
+                source: None,
+                is_active: true,
+                docker_config: None,
+                logical_id: String::new(),
+            },
+        )
+        .unwrap();
+
+        // Seed a config row referenced by the old (now also current) name.
+        queries::upsert_backend_config(
+            &conn,
+            "",
+            "radiance",
+            "rocm",
+            &["--flag".into()],
+            &["A=1".into()],
+            None,
+        )
+        .unwrap();
+
+        // Grant backend_id keys to model_configs and active_models manually so
+        // the backfill has something to populate.
+        conn.execute(
+            "INSERT INTO model_configs (repo_id, backend) VALUES ('qwen/qwen', 'radiance')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO active_models (server_name, model_name, backend, pid, port, backend_url, loaded_at, last_accessed)
+             VALUES ('m1', 'qwen', 'radiance', 1, 8000, 'http://x', 't', 't')",
+            [],
+        )
+        .unwrap();
+
+        // Run the idempotent backfill.
+        backfill_backend_logical_ids(&conn).unwrap();
+
+        // Every backend_installations row now carries the same logical_id.
+        let installs = crate::db::queries::list_active_backends(&conn).unwrap();
+        assert_eq!(installs.len(), 1);
+        let lid = &installs[0].logical_id;
+        assert!(!lid.is_empty(), "logical_id should be assigned");
+
+        // The config row got the same logical_id (rename-safe linkage).
+        let cfg = crate::db::queries::get_backend_config(&conn, lid, "rocm")
+            .unwrap()
+            .expect("backend config should exist");
+        assert_eq!(cfg.logical_id.as_deref(), Some(lid.as_str()));
+
+        // model_configs.backend_id and active_models.backend_id are populated.
+        let m_backend_id: Option<String> = conn
+            .query_row(
+                "SELECT backend_id FROM model_configs WHERE repo_id='qwen/qwen'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(m_backend_id.as_deref(), Some(lid.as_str()));
+        let a_backend_id: Option<String> = conn
+            .query_row(
+                "SELECT backend_id FROM active_models WHERE server_name='m1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(a_backend_id.as_deref(), Some(lid.as_str()));
+
+        // Re-running is a no-op (idempotent) and preserves the existing id.
+        backfill_backend_logical_ids(&conn).unwrap();
+        let installs2 = crate::db::queries::list_active_backends(&conn).unwrap();
+        assert_eq!(installs2[0].logical_id, *lid);
+    }
+
+    /// Backfill is conflict-tolerant: a legacy NULL-logical_id backend_configs
+    /// row whose computed target (logical_id, gpu_variant) duplicates an existing
+    /// row is dropped instead of tripping the UNIQUE constraint on db open.
+    #[test]
+    fn test_backfill_backend_logical_ids_conflict_tolerant() {
+        use crate::db::queries::{insert_backend_installation, BackendInstallationRecord};
+
+        let OpenResult { conn, .. } = open_in_memory().unwrap();
+
+        // Install a backend; it gets a fresh logical_id.
+        insert_backend_installation(
+            &conn,
+            &BackendInstallationRecord {
+                id: 0,
+                name: "vllm".to_string(),
+                backend_type: "docker".to_string(),
+                version: "v1".to_string(),
+                path: "n/a".to_string(),
+                installed_at: 0,
+                gpu_variant: "cpu".to_string(),
+                source: None,
+                is_active: true,
+                docker_config: None,
+                logical_id: String::new(),
+            },
+        )
+        .unwrap();
+        let lid = crate::db::queries::get_backend_logical_id(&conn, "vllm")
+            .unwrap()
+            .unwrap();
+
+        // A stable-key config row already tagged with the logical_id.
+        queries::upsert_backend_config(&conn, &lid, "vllm", "cpu", &["--a".into()], &[], None)
+            .unwrap();
+
+        // A second, legacy config row for the same name+variant with a NULL
+        // logical_id — its target (lid, "cpu") duplicates the stable-key row.
+        conn.execute(
+            r#"INSERT INTO backend_configs (logical_id, name, gpu_variant, default_args, default_env, health_check_url)
+               VALUES (NULL, 'vllm', 'cpu', '["--c"]', NULL, NULL)"#,
+            [],
+        )
+        .unwrap();
+
+        // Backfill must not error / panic on the duplicate computed logical id.
+        backfill_backend_logical_ids(&conn).unwrap();
+
+        // The duplicate NULL row is dropped; only the stable-key row remains.
+        let cfgs = queries::list_backend_configs(&conn).unwrap();
+        assert_eq!(cfgs.len(), 1);
+        assert_eq!(cfgs[0].logical_id.as_deref(), Some(lid.as_str()));
+        assert_eq!(cfgs[0].default_args, vec!["--a"]);
     }
 
     /// Test saving and then loading a model config.

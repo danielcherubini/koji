@@ -142,7 +142,7 @@ fn migrate_backends_section(
             .map(|v| v.variant_folder().to_string())
             .unwrap_or_else(|| "cpu".to_string());
 
-        queries::upsert_backend_config(conn, name, &gpu_variant, &[], &[], None)
+        queries::upsert_backend_config(conn, "", name, &gpu_variant, &[], &[], None)
             .with_context(|| format!("Failed to migrate backend config '{}'", name))?;
         count += 1;
     }

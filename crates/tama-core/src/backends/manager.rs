@@ -53,7 +53,8 @@ impl BackendManager {
         crate::db::queries::get_backend_config(&self.conn, name, gpu_variant)
     }
 
-    /// Insert or update config. Returns the row's integer id.
+    /// Insert or update config keyed by the backend's stable logical_id.
+    /// Returns the row's integer id.
     pub fn save_config(
         &self,
         name: &str,
@@ -62,8 +63,10 @@ impl BackendManager {
         default_env: &[String],
         health_check_url: Option<&str>,
     ) -> Result<i64> {
+        let logical_id = self.resolve_logical_id(name)?;
         crate::db::queries::upsert_backend_config(
             &self.conn,
+            &logical_id,
             name,
             gpu_variant,
             default_args,
@@ -156,6 +159,14 @@ impl BackendManager {
     pub fn list_active(&self) -> Result<Vec<BackendInfo>> {
         let records = crate::db::queries::list_active_backends(&self.conn)?;
         records.into_iter().map(Self::record_to_info).collect()
+    }
+
+    /// Atomically rename a backend across every table that carries its display
+    /// name. The stable `logical_id` join keys are preserved, so `backend_configs`
+    /// (keyed on `logical_id`) survives the rename intact. Returns `false` if
+    /// `old_name` has no installation (backend not found).
+    pub fn rename(&self, old_name: &str, new_name: &str) -> Result<bool> {
+        crate::db::queries::rename_backend(&self.conn, old_name, new_name)
     }
 
     /// List all versions of a backend.
@@ -311,6 +322,14 @@ impl BackendManager {
 
     // ── Private helpers ──────────────────────────────────────
 
+    /// Resolve the stable `logical_id` for a backend `name` from the active
+    /// installation, falling back to the empty string if no matching installation
+    /// exists (legacy rows that only carry a name). Propagates DB errors so
+    /// callers don't silently save config under an empty key.
+    fn resolve_logical_id(&self, name: &str) -> Result<String> {
+        Ok(crate::db::queries::get_backend_logical_id(&self.conn, name)?.unwrap_or_default())
+    }
+
     fn info_to_record(info: &BackendInfo) -> Result<crate::db::queries::BackendInstallationRecord> {
         let source_json = info
             .source
@@ -335,6 +354,7 @@ impl BackendManager {
             source: source_json,
             is_active: true,
             docker_config: docker_config_json,
+            logical_id: String::new(),
         })
     }
 
@@ -397,6 +417,7 @@ mod tests {
                 source: None,
                 is_active: true,
                 docker_config: None,
+                logical_id: String::new(),
             },
         )
     }
@@ -923,6 +944,7 @@ mod tests {
                 source: source_json,
                 is_active: true,
                 docker_config: None,
+                logical_id: String::new(),
             },
         )
     }

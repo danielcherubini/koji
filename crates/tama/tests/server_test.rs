@@ -366,6 +366,7 @@ mod tests {
             let open_result = tama_core::db::open(&config_dir).unwrap();
             tama_core::db::queries::upsert_backend_config(
                 &open_result.conn,
+                "",
                 "llama_cpp",
                 "cpu",
                 &["--threads".to_string(), "4".to_string()],
@@ -375,6 +376,7 @@ mod tests {
             .unwrap();
             tama_core::db::queries::upsert_backend_config(
                 &open_result.conn,
+                "",
                 "llama_cpp",
                 "vulkan",
                 &["--flash-attn".to_string()],

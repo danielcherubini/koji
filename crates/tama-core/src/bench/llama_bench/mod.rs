@@ -383,6 +383,7 @@ mod tests {
         // 1. Insert a backend config (llama_cpp, cpu)
         upsert_backend_config(
             &conn,
+            "",
             "llama_cpp",
             "cpu",
             &[],
@@ -417,6 +418,7 @@ mod tests {
                 source: None,
                 is_active: true,
                 docker_config: None,
+                logical_id: String::new(),
             },
         )?;
 

@@ -279,6 +279,34 @@ Update backend config fields (default_args, default_env, health_check_url) with 
 - `404 Not Found` — Backend not found
 - `422 Unprocessable Entity` — Validation failure
 
+## POST /tama/v1/backends/:name/rename
+
+Rename a backend across every table that carries its display name —
+`backend_installations`, `backend_configs`, `model_configs.backend`, and
+`active_models.backend` — in a single transaction.
+
+The backend's stable `logical_id` is **preserved**, so its default args/env in
+`backend_configs` (keyed by that logical id) and any models on the backend
+survive the rename intact. Use this endpoint instead of editing the name by hand.
+
+**Request body:**
+
+```json
+{ "name": "radiance" }
+```
+
+**Response (200 OK):**
+
+```json
+{ "success": true, "name": "radiance" }
+```
+
+**Errors:**
+- `400 Bad Request` — Invalid new name (missing/empty, whitespace, or contains path separators/traversal sequences such as `/`, `\`, or `..`)
+- `404 Not Found` — The backend to rename does not exist
+- `409 Conflict` — Rename failed: renaming onto an existing, distinct backend or onto a name with overlapping `backend_configs` (merge/overlap conflict), or another rename error
+- `500 Internal Server Error` — Internal/server error
+
 ## DELETE /tama/v1/backends/:name/versions/:version
 
 Remove a specific version. If multiple variants share the same version, `gpu_variant` is required.
