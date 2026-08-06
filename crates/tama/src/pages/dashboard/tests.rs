@@ -1,7 +1,7 @@
 use super::*;
 use crate::components::gpu_device_card::{
     derive_device_state, device_display_label, find_device_index, format_vram_short,
-    loaded_model_display, model_gpu_label, GpuDeviceState,
+    model_gpu_label, GpuDeviceState,
 };
 use crate::core_mirrors::{GpuVendor, ModelState};
 
@@ -472,6 +472,7 @@ fn make_test_model(id: &str, state: &str, gpu_device: Option<&str>) -> ModelStat
         tps: None,
         prompt_tps: None,
         error_message: None,
+        is_docker: false,
     }
 }
 
@@ -564,32 +565,6 @@ fn test_model_gpu_label_resolves_to_position() {
 }
 
 #[test]
-fn test_loaded_model_display_transferring() {
-    let models = vec![make_test_model("m1", "loading", Some("GPU0"))];
-    let display = loaded_model_display(&models, "GPU0");
-    assert!(display.is_some());
-    let d = display.unwrap();
-    assert_eq!(d.name, "m1");
-    assert!(d.transferring);
-}
-
-#[test]
-fn test_loaded_model_display_active() {
-    let models = vec![make_test_model("m1", "ready", Some("GPU0"))];
-    let display = loaded_model_display(&models, "GPU0");
-    assert!(display.is_some());
-    let d = display.unwrap();
-    assert_eq!(d.name, "m1");
-    assert!(!d.transferring);
-}
-
-#[test]
-fn test_loaded_model_display_none_when_idle() {
-    let models: Vec<ModelStateSnapshot> = vec![];
-    assert_eq!(loaded_model_display(&models, "GPU0"), None);
-}
-
-#[test]
 fn test_format_vram_short() {
     let vram = VramInfo {
         used_mib: 22937,
@@ -635,6 +610,7 @@ fn make_sort_model(
         tps: None,
         prompt_tps: None,
         error_message: None,
+        is_docker: false,
     }
 }
 

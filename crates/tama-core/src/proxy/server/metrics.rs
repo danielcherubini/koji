@@ -37,6 +37,14 @@ struct BucketAccumulator {
     /// appear in `MetricSample.gpus`. Resized as new GPUs appear; a missing
     /// index is treated as 0.0 utilization.
     gpu_util_sums: Vec<f64>,
+    /// Running sum of generation tok/s from samples that reported values.
+    tps_sum: f64,
+    /// Count of samples that reported a non-None tps value.
+    tps_count: usize,
+    /// Running sum of prompt tok/s from samples that reported values.
+    prompt_tps_sum: f64,
+    /// Count of samples that reported a non-None prompt_tps value.
+    prompt_tps_count: usize,
     count: usize,
 }
 
@@ -51,6 +59,10 @@ impl BucketAccumulator {
             network_ul_sum: 0.0,
             has_network: false,
             gpu_util_sums: Vec::new(),
+            tps_sum: 0.0,
+            tps_count: 0,
+            prompt_tps_sum: 0.0,
+            prompt_tps_count: 0,
             count: 0,
         }
     }
@@ -72,6 +84,15 @@ impl BucketAccumulator {
                 self.gpu_util_sums.resize(i + 1, 0.0);
             }
             self.gpu_util_sums[i] += gpu.utilization_pct.unwrap_or(0) as f64;
+        }
+        // Accumulate inference stats (only from samples that reported values)
+        if let Some(tps) = sample.tps {
+            self.tps_sum += tps as f64;
+            self.tps_count += 1;
+        }
+        if let Some(prompt_tps) = sample.prompt_tps {
+            self.prompt_tps_sum += prompt_tps as f64;
+            self.prompt_tps_count += 1;
         }
         self.count += 1;
     }
@@ -95,6 +116,16 @@ impl BucketAccumulator {
                 None
             },
             gpu_utils: self.gpu_util_sums.iter().map(|s| (s / n) as f32).collect(),
+            tps: if self.tps_count > 0 {
+                (self.tps_sum / self.tps_count as f64) as f32
+            } else {
+                0.0
+            },
+            prompt_tps: if self.prompt_tps_count > 0 {
+                (self.prompt_tps_sum / self.prompt_tps_count as f64) as f32
+            } else {
+                0.0
+            },
             complete,
         }
     }
@@ -218,8 +249,24 @@ pub fn start_metrics_collector(
             // for numeric fields; OR the spec_decoding_active flag across all servers.
             let inference_map = metrics_state.metrics.inference_stats_snapshot();
             let latest_server = inference_map.values().max_by_key(|s| s.last_updated_ms);
-            let tps = latest_server.and_then(|s| s.tps);
-            let prompt_tps = latest_server.and_then(|s| s.prompt_tps);
+
+            // Gate tps/prompt_tps on freshness — if no inference update within the
+            // bucket window (30s), treat values as stale so buckets show 0 tok/s.
+            let stale_threshold_ms = BUCKET_MS;
+            let now_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+
+            let (tps, prompt_tps) = if let Some(server) = latest_server {
+                if now_ms - server.last_updated_ms <= stale_threshold_ms {
+                    (server.tps, server.prompt_tps)
+                } else {
+                    (None, None)
+                }
+            } else {
+                (None, None)
+            };
             let cache_hit_pct = latest_server.and_then(|s| s.cache_hit_pct);
             let spec_accept_pct = latest_server.and_then(|s| s.spec_accept_pct);
             let spec_decoding_active = inference_map.values().any(|s| s.spec_decoding_active);
@@ -348,5 +395,82 @@ fn row_into_sample(row: &crate::db::queries::SystemMetricsRow) -> crate::gpu::Me
         spec_decoding_active: false,     // Transient — not in DB
         inference_last_updated_ms: None, // Transient — not in DB
         network: None,                   // Throughput not reconstructable from single row
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a minimal `MetricSample` with only the fields needed for
+    /// `BucketAccumulator` tests. All non-inference fields use defaults.
+    fn sample(tps: Option<f32>, prompt_tps: Option<f32>) -> crate::gpu::MetricSample {
+        crate::gpu::MetricSample {
+            ts_unix_ms: 0,
+            cpu_usage_pct: 0.0,
+            ram_used_mib: 0,
+            ram_total_mib: 0,
+            gpu_utilization_pct: None,
+            vram: None,
+            gpus: vec![],
+            models_loaded: 0,
+            models: vec![],
+            tps,
+            prompt_tps,
+            cache_hit_pct: None,
+            spec_accept_pct: None,
+            spec_decoding_active: false,
+            inference_last_updated_ms: None,
+            network: None,
+        }
+    }
+
+    /// Mixed Some/None samples average only over Some values.
+    ///
+    /// Three samples are added: two with Some(tps) and one with None.
+    /// The bucket tps must be the mean of the two Some values, not diluted
+    /// by the None sample. The same logic applies to prompt_tps.
+    #[test]
+    fn test_mixed_some_none_averages_only_some() {
+        let mut acc = BucketAccumulator::new(0);
+
+        acc.add(&sample(Some(10.0), Some(20.0)));
+        acc.add(&sample(None, None));
+        acc.add(&sample(Some(30.0), Some(40.0)));
+
+        let bucket = acc.to_bucket(true);
+
+        // tps: mean of 10.0 and 30.0 = 20.0 (None sample excluded)
+        assert_eq!(bucket.tps, 20.0);
+        // prompt_tps: mean of 20.0 and 40.0 = 30.0 (None sample excluded)
+        assert_eq!(bucket.prompt_tps, 30.0);
+    }
+
+    /// All None produces 0.0 for both tps and prompt_tps.
+    #[test]
+    fn test_all_none_produces_zero() {
+        let mut acc = BucketAccumulator::new(0);
+
+        acc.add(&sample(None, None));
+        acc.add(&sample(None, None));
+        acc.add(&sample(None, None));
+
+        let bucket = acc.to_bucket(true);
+
+        assert_eq!(bucket.tps, 0.0);
+        assert_eq!(bucket.prompt_tps, 0.0);
+    }
+
+    /// A single sample passes its tps/prompt_tps values through unchanged.
+    #[test]
+    fn test_single_sample_passes_through() {
+        let mut acc = BucketAccumulator::new(0);
+
+        acc.add(&sample(Some(55.5), Some(123.0)));
+
+        let bucket = acc.to_bucket(true);
+
+        assert_eq!(bucket.tps, 55.5);
+        assert_eq!(bucket.prompt_tps, 123.0);
     }
 }

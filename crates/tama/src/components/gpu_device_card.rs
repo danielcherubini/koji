@@ -21,15 +21,6 @@ pub enum GpuDeviceState {
     Idle,
 }
 
-/// Display information for a loaded model.
-#[derive(Debug, PartialEq)]
-pub struct LoadedModelDisplay {
-    /// Model display name (or synthetic "TRANSFERRING…" prefix).
-    pub name: String,
-    /// True when the model is in `loading` state.
-    pub transferring: bool,
-}
-
 /// Derive the device state from a list of models targeting this device.
 /// Matches `model.gpu_device` (e.g. "GPU0") against `device_id` (e.g. "GPU0").
 /// Priority: Loading > Active > Failed > Idle.
@@ -98,63 +89,6 @@ pub fn model_gpu_label(gpus: &[GpuDeviceStats], model: &ModelStateSnapshot) -> O
     }
 }
 
-/// Find the first loaded model targeting `device_id` (e.g. "GPU0").
-/// Only considers models in `ready`, `loading`, or `unloading` state.
-/// Models without `gpu_device` set fall back to the first GPU ("GPU0").
-pub fn model_for_device<'a>(
-    loaded_models: &'a [ModelStateSnapshot],
-    device_id: &str,
-) -> Option<&'a ModelStateSnapshot> {
-    loaded_models.iter().find(|m| {
-        let targets_device = match &m.gpu_device {
-            Some(g) if g == device_id => true,
-            None if device_id == "GPU0" => true,
-            _ => false,
-        };
-        targets_device
-            && matches!(
-                m.state,
-                ModelState::Ready | ModelState::Starting | ModelState::Unloading
-            )
-    })
-}
-
-/// Returns the first model targeting `device_id` (e.g. "GPU0") that is
-/// in `ready`, `loading`, or `unloading` state, with a synthetic "TRANSFERRING…"
-/// prefix when state is `loading`. Returns None if no such model exists.
-/// Models without `gpu_device` set fall back to the first GPU ("GPU0").
-pub fn loaded_model_display(
-    loaded_models: &[ModelStateSnapshot],
-    device_id: &str,
-) -> Option<LoadedModelDisplay> {
-    for model in loaded_models {
-        let targets_device = match &model.gpu_device {
-            Some(gpu_device) if gpu_device == device_id => true,
-            // Fallback: models without gpu_device target the first GPU.
-            None if device_id == "GPU0" => true,
-            _ => false,
-        };
-
-        if !targets_device {
-            continue;
-        }
-
-        match model.state {
-            ModelState::Ready | ModelState::Starting | ModelState::Unloading => {
-                let name = model
-                    .display_name
-                    .clone()
-                    .or_else(|| model.api_name.clone())
-                    .unwrap_or_else(|| model.id.clone());
-                let transferring = matches!(model.state, ModelState::Starting);
-                return Some(LoadedModelDisplay { name, transferring });
-            }
-            ModelState::Failed | ModelState::Idle => {}
-        }
-    }
-    None
-}
-
 /// Format GPU card subtitle as "Name · 32 GB".
 /// Total VRAM is rounded to the nearest integer GB.
 pub fn format_card_subtitle(name: &str, vram: &VramInfo) -> String {
@@ -173,24 +107,17 @@ pub fn format_vram_short(vram: &VramInfo) -> String {
 // ── Component ────────────────────────────────────────────────────────────────
 
 /// GpuDeviceCard — renders one card per detected GPU showing utilization,
-/// VRAM, the loaded model, inference stats, and telemetry.
+/// VRAM, and telemetry (temp/power/fan).
 #[component]
 pub fn GpuDeviceCard(
     /// The GPU device statistics.
     device: GpuDeviceStats,
     /// Display label, e.g. "GPU 0".
     display_label: String,
-    /// All loaded models (used to derive state and loaded model).
+    /// All loaded models (used to derive device state badge).
     loaded_models: Vec<ModelStateSnapshot>,
-    /// Prompt throughput (tokens per second during prompt processing).
-    #[prop(default = None)]
-    prompt_tps: Option<f32>,
-    /// Generation throughput (tokens per second during generation).
-    #[prop(default = None)]
-    tps: Option<f32>,
 ) -> impl IntoView {
     let state = derive_device_state(&loaded_models, &device.device_id);
-    let loaded = loaded_model_display(&loaded_models, &device.device_id);
 
     let badge_class = match state {
         GpuDeviceState::Active => "badge badge-success",
@@ -211,12 +138,6 @@ pub fn GpuDeviceCard(
         "VRAM"
     };
 
-    let model_section_header = if state == GpuDeviceState::Loading {
-        "TRANSFERRING…"
-    } else {
-        "LOADED MODEL"
-    };
-
     view! {
         <div class="card gpu-device-card">
             <div class="gpu-device-card__internal">
@@ -233,36 +154,6 @@ pub fn GpuDeviceCard(
                             } else {
                                 device.name.clone()
                             }}
-                        </div>
-                    </div>
-                    <div class="gpu-device-card__identity-bottom">
-                        <div class="gpu-device-card__model-section">
-                            <div class="gpu-device-card__model-header">{model_section_header}</div>
-                            <div class="gpu-device-card__model-body">
-                                {match state {
-                                    GpuDeviceState::Idle => {
-                                        view! { <span class="text-muted">"No model loaded"</span> }.into_any()
-                                    }
-                                    GpuDeviceState::Failed => {
-                                        view! { <span></span> }.into_any()
-                                    }
-                                    _ => {
-                                        if let Some(model) = loaded.as_ref() {
-                                            if model.transferring {
-                                                view! {
-                                                    <span title={model.name.clone()}>"TRANSFERRING… " {model.name.clone()}</span>
-                                                }.into_any()
-                                            } else {
-                                                view! {
-                                                    <span title={model.name.clone()}>{model.name.clone()}</span>
-                                                }.into_any()
-                                            }
-                                        } else {
-                                            view! { <span class="text-muted">"No model loaded"</span> }.into_any()
-                                        }
-                                    }
-                                }}
-                            </div>
                         </div>
                     </div>
                 </div>
@@ -314,46 +205,25 @@ pub fn GpuDeviceCard(
                     </div>
                 </div>
 
-                // Column 3: Combined Throughput + Telemetry (2 sub-columns)
-                <div class="gpu-device-card__combined">
-                    <div class="gpu-device-card__combined-top">
-                        <div class="gpu-device-card__throughput">
-                            <div class="gpu-device-card__inference-cell">
-                                <div class="gpu-device-card__inference-value">
-                                    {prompt_tps.map(|v| format!("{v:.0} tok/s")).unwrap_or_else(|| "0 tok/s".to_string())}
-                                </div>
-                                <div class="gpu-device-card__inference-label">"Processing"</div>
-                            </div>
-                            <div class="gpu-device-card__inference-cell">
-                                <div class="gpu-device-card__inference-value">
-                                    {tps.map(|v| format!("{v:.0} tok/s")).unwrap_or_else(|| "0 tok/s".to_string())}
-                                </div>
-                                <div class="gpu-device-card__inference-label">"Generation"</div>
-                            </div>
+                // Column 3: Telemetry
+                <div class="gpu-device-card__telemetry">
+                    <div class="gpu-device-card__telemetry-cell">
+                        <div class="gpu-device-card__telemetry-value">
+                            {device.temperature_c.map(|t| format!("{t}°C")).unwrap_or_else(|| "—".to_string())}
                         </div>
+                        <div class="gpu-device-card__telemetry-label">"Temp"</div>
                     </div>
-
-                    <div class="gpu-device-card__combined-bottom">
-                        <div class="gpu-device-card__telemetry">
-                            <div class="gpu-device-card__telemetry-cell">
-                                <div class="gpu-device-card__telemetry-value">
-                                    {device.temperature_c.map(|t| format!("{t}°C")).unwrap_or_else(|| "—".to_string())}
-                                </div>
-                                <div class="gpu-device-card__telemetry-label">"Temp"</div>
-                            </div>
-                            <div class="gpu-device-card__telemetry-cell">
-                                <div class="gpu-device-card__telemetry-value">
-                                    {device.power_w.map(|p| format!("{p}W")).unwrap_or_else(|| "—".to_string())}
-                                </div>
-                                <div class="gpu-device-card__telemetry-label">"Power"</div>
-                            </div>
-                            <div class="gpu-device-card__telemetry-cell">
-                                <div class="gpu-device-card__telemetry-value">
-                                    {device.fan_pct.map(|f| format!("{f}%")).unwrap_or_else(|| "—".to_string())}
-                                </div>
-                                <div class="gpu-device-card__telemetry-label">"Fan"</div>
-                            </div>
+                    <div class="gpu-device-card__telemetry-cell">
+                        <div class="gpu-device-card__telemetry-value">
+                            {device.power_w.map(|p| format!("{p}W")).unwrap_or_else(|| "—".to_string())}
                         </div>
+                        <div class="gpu-device-card__telemetry-label">"Power"</div>
+                    </div>
+                    <div class="gpu-device-card__telemetry-cell">
+                        <div class="gpu-device-card__telemetry-value">
+                            {device.fan_pct.map(|f| format!("{f}%")).unwrap_or_else(|| "—".to_string())}
+                        </div>
+                        <div class="gpu-device-card__telemetry-label">"Fan"</div>
                     </div>
                 </div>
             </div>
@@ -394,6 +264,7 @@ mod tests {
             tps: None,
             prompt_tps: None,
             error_message: None,
+            is_docker: false,
         }
     }
 
@@ -500,71 +371,12 @@ mod tests {
     }
 
     #[test]
-    fn test_loaded_model_display_transferring() {
-        let models = vec![make_model("m1", "loading", Some("GPU0"))];
-        let display = loaded_model_display(&models, "GPU0");
-        assert!(display.is_some());
-        let d = display.unwrap();
-        assert_eq!(d.name, "m1");
-        assert!(d.transferring);
-    }
-
-    #[test]
-    fn test_loaded_model_display_active() {
-        let models = vec![make_model("m1", "ready", Some("GPU0"))];
-        let display = loaded_model_display(&models, "GPU0");
-        assert!(display.is_some());
-        let d = display.unwrap();
-        assert_eq!(d.name, "m1");
-        assert!(!d.transferring);
-    }
-
-    #[test]
-    fn test_loaded_model_display_none_when_idle() {
-        let models: Vec<ModelStateSnapshot> = vec![];
-        assert_eq!(loaded_model_display(&models, "GPU0"), None);
-    }
-
-    #[test]
-    fn test_loaded_model_display_fallback_no_gpu_device_to_gpu0() {
-        let models = vec![make_model("m1", "ready", None)];
-        assert!(loaded_model_display(&models, "GPU0").is_some());
-        assert!(loaded_model_display(&models, "GPU1").is_none());
-    }
-
-    #[test]
     fn test_format_vram_short() {
         let vram = VramInfo {
             used_mib: 22937,
             total_mib: 24576,
         };
         assert_eq!(format_vram_short(&vram), "22.4 / 24.0 GB");
-    }
-
-    #[test]
-    fn test_model_for_device_direct_match() {
-        let models = vec![
-            make_model("m1", "ready", Some("GPU0")),
-            make_model("m2", "ready", Some("GPU1")),
-        ];
-        assert!(model_for_device(&models, "GPU0").is_some());
-        assert!(model_for_device(&models, "GPU1").is_some());
-        assert_eq!(model_for_device(&models, "GPU0").unwrap().id, "m1");
-        assert_eq!(model_for_device(&models, "GPU1").unwrap().id, "m2");
-    }
-
-    #[test]
-    fn test_model_for_device_fallback_no_gpu_device() {
-        let models = vec![make_model("m1", "ready", None)];
-        assert!(model_for_device(&models, "GPU0").is_some());
-        assert!(model_for_device(&models, "GPU1").is_none());
-        assert_eq!(model_for_device(&models, "GPU0").unwrap().id, "m1");
-    }
-
-    #[test]
-    fn test_model_for_device_empty_models() {
-        let models: Vec<ModelStateSnapshot> = vec![];
-        assert!(model_for_device(&models, "GPU0").is_none());
     }
 
     #[test]
@@ -589,14 +401,5 @@ mod tests {
             format_card_subtitle("Radeon AI PRO R9700", &vram),
             "Radeon AI PRO R9700 \u{00B7} 32 GB"
         );
-    }
-
-    #[test]
-    fn test_model_for_device_returns_first_match() {
-        let models = vec![
-            make_model("m1", "ready", Some("GPU0")),
-            make_model("m2", "ready", Some("GPU0")),
-        ];
-        assert_eq!(model_for_device(&models, "GPU0").unwrap().id, "m1");
     }
 }

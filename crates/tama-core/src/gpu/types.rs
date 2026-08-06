@@ -132,6 +132,20 @@ pub struct MetricBucket {
     /// are detected (CPU-only servers, laptops).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub gpu_utils: Vec<f32>,
+    /// Average token generation speed (tok/s) over samples in this bucket.
+    /// Non-zero only when fresh inference data was observed within the 30s
+    /// bucket window; stale values (older than the bucket width) are treated
+    /// as zero so the chart does not show permanent non-zero tok/s after
+    /// inference stops.
+    #[serde(default)]
+    pub tps: f32,
+    /// Average prompt processing speed (tok/s) over samples in this bucket.
+    /// Non-zero only when fresh inference data was observed within the 30s
+    /// bucket window; stale values (older than the bucket width) are treated
+    /// as zero so the chart does not show permanent non-zero tok/s after
+    /// inference stops.
+    #[serde(default)]
+    pub prompt_tps: f32,
     /// Whether this 30s window has elapsed (frozen) or is still accumulating.
     /// The last bucket in the array is typically `false` (in-progress).
     #[serde(default)]

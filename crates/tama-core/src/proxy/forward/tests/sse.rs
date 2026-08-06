@@ -130,3 +130,31 @@ fn test_process_sse_line_extracts_inference_stats() {
     assert_eq!(stats.tps, Some(42.5f32));
     assert_eq!(stats.cache_hit_pct, Some(50.0f32)); // 50/100 * 100
 }
+
+#[test]
+fn test_process_sse_line_extracts_vllm_stats() {
+    let metrics_state = MetricsState::new();
+    let mut out = String::new();
+
+    // Simulate a vLLM streaming final chunk with metrics + usage
+    process_sse_line(
+        "data: {\"model\": \"vllm-model\", \"choices\": [], \"metrics\": {\"tokens_per_second\": 69.38, \"generation_time_ms\": 3271.95, \"time_to_first_token_ms\": 273.68, \"queue_time_ms\": 0.008}, \"usage\": {\"prompt_tokens\": 11, \"completion_tokens\": 246, \"total_tokens\": 257}}",
+        Some("user-model"),
+        "vllm-server",
+        &mut out,
+        Some(&metrics_state),
+    );
+
+    // Verify the SSE output was rewritten
+    assert!(out.contains("user-model"), "output: {}", out);
+    // Verify vLLM inference stats were extracted and stored
+    let map = metrics_state.inference_stats_snapshot();
+    assert_eq!(map.len(), 1);
+    let stats = map.get("vllm-server").unwrap();
+    assert!((stats.tps.unwrap() - 69.38f32).abs() < 0.01);
+    // prompt_tps = 11 / (273.68 / 1000) ≈ 40.19
+    let expected_prompt_tps = 11.0f32 / (273.68f32 / 1000.0);
+    assert!((stats.prompt_tps.unwrap() - expected_prompt_tps).abs() < 0.1);
+    assert_eq!(stats.cache_hit_pct, None);
+    assert_eq!(stats.spec_accept_pct, None);
+}

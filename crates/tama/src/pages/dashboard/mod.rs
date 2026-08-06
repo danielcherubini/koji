@@ -6,9 +6,7 @@ use wasm_bindgen::JsCast;
 use web_sys::window;
 
 use crate::components::alert_banner::{AlertBanner, AlertVariant};
-use crate::components::gpu_device_card::{
-    device_display_label, model_for_device, model_gpu_label, GpuDeviceCard,
-};
+use crate::components::gpu_device_card::{device_display_label, model_gpu_label, GpuDeviceCard};
 use crate::components::modal::Modal;
 use crate::components::model_card::{ModelCard, ModelPips};
 use crate::components::pull_quant_wizard::{CompletedQuant, PullQuantWizard};
@@ -411,22 +409,30 @@ pub fn Dashboard() -> impl IntoView {
             let timestamps: Vec<i64> = buf.iter().map(|s| s.ts_unix_ms).collect();
             let mem_max = cur.ram_total_mib as f32;
 
-            // GPU series: one ChartSeries per GPU device, drawing the per-bucket
-            // averaged utilization from the backend's pre-aggregated gpu_utils.
-            // BarChart renders N paired bars per bucket. Hidden entirely when
-            // there are no GPUs (CPU-only servers/laptops).
-            let gpus = cur.gpus.clone();
-            let num_gpus = gpus.len();
-            let gpu_series: Vec<ChartSeries> = (0..num_gpus)
-                .map(|i| ChartSeries {
-                    label: format!("GPU {}", i),
-                    color: gpu_series_color(i).to_string(),
-                    data: buf.iter().map(|b| b.gpu_utils.get(i).copied().unwrap_or(0.0)).collect(),
-                })
-                .collect();
+            // Inference stats series: Prompt Processing (blue) and Token Generation (green).
+            // Built from per-bucket averaged tps/prompt_tps values.
+            let pp_data: Vec<f32> = buf.iter().map(|b| b.prompt_tps).collect();
+            let tg_data: Vec<f32> = buf.iter().map(|b| b.tps).collect();
+            let inference_series: Vec<ChartSeries> = vec![
+                ChartSeries {
+                    label: "PP".to_string(),
+                    color: "var(--accent-blue)".to_string(),
+                    data: pp_data,
+                },
+                ChartSeries {
+                    label: "TG".to_string(),
+                    color: "var(--accent-green)".to_string(),
+                    data: tg_data,
+                },
+            ];
+            // Compute max tok/s for chart scaling (across both series).
+            let max_tok_s = buf
+                .iter()
+                .map(|b| b.prompt_tps.max(b.tps))
+                .fold(0.0f32, f32::max);
 
             let all_models: Vec<ModelStateSnapshot> = cur.models.clone();
-            let gpus_for_labels = gpus.clone();
+            let gpus_for_labels = cur.gpus.clone();
             let has_data = !buf.is_empty();
 
             view! {
@@ -489,43 +495,33 @@ pub fn Dashboard() -> impl IntoView {
                         </div>
                     </div>
 
-                    // GPU Usage card — hidden entirely when no GPUs are detected
-                    // (CPU-only servers, laptops). One series per GPU device,
-                    // color-coded from the accent palette.
-                    {if !gpus.is_empty() {
-                        view! {
-                            <div class="stat-card">
-                                <div class="stat-card-head">
-                                    <div class="card-header">"GPU Usage"</div>
-                                    <div class="stat-card-value-group">
-                                        <div class="network-rates">
-                                            {gpus.iter().enumerate().map(|(i, gpu)| {
-                                                let color = gpu_series_color(i).to_string();
-                                                let util = gpu.utilization_pct.unwrap_or(0);
-                                                view! {
-                                                    <span class="network-rate" style=format!("color: {}", color)>
-                                                        {format!("GPU {}  {:.0}%", i, util)}
-                                                    </span>
-                                                }
-                                            }).collect::<Vec<_>>()}
-                                        </div>
-                                    </div>
-                                </div>
-                                <div class="sparkline-container">
-                                    <BarChart
-                                        series=gpu_series.clone()
-                                        max_value=100.0
-                                        color=String::new()
-                                        height=60.0
-                                        timestamps=timestamps.clone()
-                                        unit_label="%".to_string()
-                                    />
+                    // Inference Stats card — shows Prompt Processing and Token Generation
+                    // as two series in the bar chart. Always shown (even on CPU-only systems).
+                    <div class="stat-card">
+                        <div class="stat-card-head">
+                            <div class="card-header">"Inference Stats"</div>
+                            <div class="stat-card-value-group">
+                                <div class="network-rates">
+                                    <span class="network-rate" style="color: var(--accent-blue)">
+                                        {format!("PP  {:.0} tok/s", cur.prompt_tps.unwrap_or(0.0))}
+                                    </span>
+                                    <span class="network-rate" style="color: var(--accent-green)">
+                                        {format!("TG  {:.0} tok/s", cur.tps.unwrap_or(0.0))}
+                                    </span>
                                 </div>
                             </div>
-                        }.into_any()
-                    } else {
-                        ().into_any()
-                    }}
+                        </div>
+                        <div class="sparkline-container">
+                            <BarChart
+                                series=inference_series.clone()
+                                max_value=max_tok_s.max(1.0)
+                                color=String::new()
+                                height=60.0
+                                timestamps=timestamps.clone()
+                                unit_label="tok/s".to_string()
+                            />
+                        </div>
+                    </div>
                 </div>
 
                 // GPU Devices section — only rendered if any GPU data is present
@@ -545,16 +541,11 @@ pub fn Dashboard() -> impl IntoView {
                                         {gpus.into_iter().enumerate().map(|(idx, gpu)| {
                                             let label = device_display_label(idx);
                                             let models = loaded_models.clone();
-                                            let loaded_for_gpu = model_for_device(&models, &gpu.device_id);
-                                            let gpu_prompt_tps = loaded_for_gpu.and_then(|m| m.prompt_tps);
-                                            let gpu_tps = loaded_for_gpu.and_then(|m| m.tps);
                                             view! {
                                                 <GpuDeviceCard
                                                     device=gpu
                                                     display_label=label
                                                     loaded_models=models
-                                                    prompt_tps=gpu_prompt_tps
-                                                    tps=gpu_tps
                                                 />
                                             }
                                         }).collect::<Vec<_>>()}

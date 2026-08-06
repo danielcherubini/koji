@@ -114,12 +114,26 @@ impl ProxyState {
             }
 
             let (model_state, error_message, is_docker) = match best_state {
-                Some(BackendState::Ready { .. }) => (crate::gpu::ModelState::Ready, None, best_state.unwrap().is_docker()),
-                Some(BackendState::Starting { .. }) => (crate::gpu::ModelState::Starting, None, best_state.unwrap().is_docker()),
-                Some(BackendState::Unloading { .. }) => (crate::gpu::ModelState::Unloading, None, best_state.unwrap().is_docker()),
-                Some(BackendState::Failed { error, .. }) => {
-                    (crate::gpu::ModelState::Failed, Some(error.clone()), best_state.unwrap().is_docker())
-                }
+                Some(BackendState::Ready { .. }) => (
+                    crate::gpu::ModelState::Ready,
+                    None,
+                    best_state.unwrap().is_docker(),
+                ),
+                Some(BackendState::Starting { .. }) => (
+                    crate::gpu::ModelState::Starting,
+                    None,
+                    best_state.unwrap().is_docker(),
+                ),
+                Some(BackendState::Unloading { .. }) => (
+                    crate::gpu::ModelState::Unloading,
+                    None,
+                    best_state.unwrap().is_docker(),
+                ),
+                Some(BackendState::Failed { error, .. }) => (
+                    crate::gpu::ModelState::Failed,
+                    Some(error.clone()),
+                    best_state.unwrap().is_docker(),
+                ),
                 None => (crate::gpu::ModelState::Idle, None, false),
             };
 
