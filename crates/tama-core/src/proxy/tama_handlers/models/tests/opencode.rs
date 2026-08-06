@@ -282,6 +282,316 @@ async fn test_alias_name_derived_from_slug() {
     );
 }
 
+/// vLLM backend: max_model_len from /v1/models populates context_length.
+#[tokio::test]
+async fn test_vllm_context_length_from_backend_models() {
+    let mock_server = MockServer::start().await;
+
+    // Mock /props (llama.cpp endpoint, vLLM may not have it)
+    Mock::given(method("GET"))
+        .and(path("/props"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "chat_template_caps": {
+                "supports_tool_calls": true,
+                "supports_preserve_reasoning": false
+            }
+        })))
+        .mount(&mock_server)
+        .await;
+
+    // Mock /v1/models with vLLM-style max_model_len
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "object": "list",
+            "data": [
+                {
+                    "id": "test/model-a",
+                    "object": "model",
+                    "owned_by": "",
+                    "ready": true,
+                    "max_model_len": 32768
+                }
+            ]
+        })))
+        .mount(&mock_server)
+        .await;
+
+    let backend_url = mock_server.uri();
+    let state =
+        crate::proxy::handlers::tests::create_state_with_two_backends(&backend_url, &backend_url)
+            .await;
+
+    let result = call_list_models(state).await;
+    let models = result.get("models").unwrap().as_array().unwrap();
+
+    // Find model-a entry
+    let model_a = models
+        .iter()
+        .find(|m| m.get("id").unwrap().as_str().unwrap() == "api-model-a")
+        .expect("model-a entry should exist");
+
+    assert_eq!(
+        model_a.get("context_length").unwrap().as_u64(),
+        Some(32768),
+        "context_length should be 32768 from vLLM max_model_len"
+    );
+}
+
+/// llama.cpp backend: meta.n_ctx from /v1/models populates context_length.
+#[tokio::test]
+async fn test_llamacpp_context_length_from_backend_models() {
+    let mock_server = MockServer::start().await;
+
+    // Mock /props
+    Mock::given(method("GET"))
+        .and(path("/props"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "chat_template_caps": {
+                "supports_tool_calls": true,
+                "supports_preserve_reasoning": false
+            }
+        })))
+        .mount(&mock_server)
+        .await;
+
+    // Mock /v1/models with llama.cpp-style meta.n_ctx
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "object": "list",
+            "data": [
+                {
+                    "id": "test/model-a",
+                    "object": "model",
+                    "owned_by": "",
+                    "ready": true,
+                    "meta": {
+                        "n_ctx": 16384
+                    }
+                }
+            ]
+        })))
+        .mount(&mock_server)
+        .await;
+
+    let backend_url = mock_server.uri();
+    let state =
+        crate::proxy::handlers::tests::create_state_with_two_backends(&backend_url, &backend_url)
+            .await;
+
+    let result = call_list_models(state).await;
+    let models = result.get("models").unwrap().as_array().unwrap();
+
+    let model_a = models
+        .iter()
+        .find(|m| m.get("id").unwrap().as_str().unwrap() == "api-model-a")
+        .expect("model-a entry should exist");
+
+    assert_eq!(
+        model_a.get("context_length").unwrap().as_u64(),
+        Some(16384),
+        "context_length should be 16384 from llama.cpp meta.n_ctx"
+    );
+}
+
+/// Config-level context_length takes precedence over backend value.
+#[tokio::test]
+async fn test_config_context_length_overrides_backend() {
+    let mock_server = MockServer::start().await;
+
+    // Mock /props
+    Mock::given(method("GET"))
+        .and(path("/props"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "chat_template_caps": {
+                "supports_tool_calls": true,
+                "supports_preserve_reasoning": false
+            }
+        })))
+        .mount(&mock_server)
+        .await;
+
+    // Mock /v1/models with max_model_len: 32768
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "object": "list",
+            "data": [
+                {
+                    "id": "test/model-a",
+                    "object": "model",
+                    "owned_by": "",
+                    "ready": true,
+                    "max_model_len": 32768
+                }
+            ]
+        })))
+        .mount(&mock_server)
+        .await;
+
+    let backend_url = mock_server.uri();
+    let state =
+        crate::proxy::handlers::tests::create_state_with_two_backends(&backend_url, &backend_url)
+            .await;
+
+    // Override model-a config with explicit context_length
+    {
+        let mut mc = state.registry.model_configs.write().await;
+        if let Some(cfg) = mc.get_mut("model-a") {
+            cfg.context_length = Some(8192);
+        }
+    }
+
+    let result = call_list_models(state).await;
+    let models = result.get("models").unwrap().as_array().unwrap();
+
+    let model_a = models
+        .iter()
+        .find(|m| m.get("id").unwrap().as_str().unwrap() == "api-model-a")
+        .expect("model-a entry should exist");
+
+    assert_eq!(
+        model_a.get("context_length").unwrap().as_u64(),
+        Some(8192),
+        "config-level context_length should override backend value"
+    );
+}
+
+/// Alias entries inherit backend-derived context_length from target model.
+#[tokio::test]
+async fn test_alias_inherits_backend_context_length() {
+    let mock_server = MockServer::start().await;
+
+    // Mock /props
+    Mock::given(method("GET"))
+        .and(path("/props"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "chat_template_caps": {
+                "supports_tool_calls": true,
+                "supports_preserve_reasoning": false
+            }
+        })))
+        .mount(&mock_server)
+        .await;
+
+    // Mock /v1/models with max_model_len: 32768
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "object": "list",
+            "data": [
+                {
+                    "id": "test/model-a",
+                    "object": "model",
+                    "owned_by": "",
+                    "ready": true,
+                    "max_model_len": 32768
+                }
+            ]
+        })))
+        .mount(&mock_server)
+        .await;
+
+    let backend_url = mock_server.uri();
+    let state =
+        crate::proxy::handlers::tests::create_state_with_two_backends(&backend_url, &backend_url)
+            .await;
+
+    // Add an alias pointing to model-a
+    {
+        let mut aliases = state.registry.aliases.write().await;
+        aliases.insert("my-alias".to_string(), "api-model-a".to_string());
+    }
+
+    let result = call_list_models(state).await;
+    let models = result.get("models").unwrap().as_array().unwrap();
+
+    let alias_entry = models
+        .iter()
+        .find(|m| m.get("id").unwrap().as_str().unwrap() == "my-alias")
+        .expect("alias entry should exist");
+
+    assert_eq!(
+        alias_entry.get("context_length").unwrap().as_u64(),
+        Some(32768),
+        "alias should inherit context_length from target model's backend"
+    );
+}
+
+/// Model ID preserves original casing from api_name (not lowercased).
+#[tokio::test]
+async fn test_model_id_preserves_original_casing() {
+    let state = create_state_with_model(ModelConfig {
+        backend: "llama_cpp".to_string(),
+        api_name: Some("Unsloth/Qwen3.5-35B-A3B-GGUF".to_string()),
+        model: Some("Unsloth/Qwen3.5-35B-A3B-GGUF".to_string()),
+        enabled: true,
+        ..Default::default()
+    })
+    .await;
+
+    let result = call_list_models(state).await;
+    let models = result.get("models").unwrap().as_array().unwrap();
+    assert_eq!(models.len(), 1);
+
+    let model = &models[0];
+    assert_eq!(
+        model.get("id").unwrap().as_str().unwrap(),
+        "Unsloth/Qwen3.5-35B-A3B-GGUF",
+        "model id should preserve original casing from api_name"
+    );
+}
+
+/// Alias ID preserves original casing from alias name (not lowercased).
+#[tokio::test]
+async fn test_alias_id_preserves_original_casing() {
+    let state = create_state_with_model(ModelConfig {
+        backend: "llama_cpp".to_string(),
+        api_name: Some("Unsloth/Qwen3.5-35B".to_string()),
+        model: Some("Unsloth/Qwen3.5-35B".to_string()),
+        enabled: true,
+        ..Default::default()
+    })
+    .await;
+
+    // Add an alias with mixed case
+    {
+        let mut aliases = state.registry.aliases.write().await;
+        aliases.insert(
+            "My-Custom-Alias".to_string(),
+            "Unsloth/Qwen3.5-35B".to_string(),
+        );
+    }
+
+    let result = call_list_models(state).await;
+    let models = result.get("models").unwrap().as_array().unwrap();
+
+    // Find the alias entry
+    let alias_entry = models
+        .iter()
+        .find(|m| m.get("id").unwrap().as_str().unwrap() == "My-Custom-Alias")
+        .expect("alias entry should exist with original casing");
+
+    assert_eq!(
+        alias_entry.get("id").unwrap().as_str().unwrap(),
+        "My-Custom-Alias",
+        "alias id should preserve original casing"
+    );
+
+    // Also verify the model entry preserves its casing
+    let model_entry = models
+        .iter()
+        .find(|m| m.get("id").unwrap().as_str().unwrap() == "Unsloth/Qwen3.5-35B")
+        .expect("model entry should exist with original casing");
+
+    assert_eq!(
+        model_entry.get("id").unwrap().as_str().unwrap(),
+        "Unsloth/Qwen3.5-35B",
+        "model id should preserve original casing"
+    );
+}
+
 // ── Drift-guard: opencode response round-trip ───────────────────────────────
 
 /// The OpencodeModelsResponse struct must faithfully represent the full wire

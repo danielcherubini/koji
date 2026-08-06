@@ -154,10 +154,10 @@ fn test_build_full_args_no_duplicate_batch_flag() {
     // The value should be 4096 (typed field wins over leftover in args)
     let b_pos = args.iter().position(|a| *a == "-b").expect("no -b found");
     assert_eq!(
-        &args[b_pos + 1],
+        args[b_pos + 1],
         "4096",
         "Expected value 4096 (typed field), got {}: {:?}",
-        &args[b_pos + 1],
+        args[b_pos + 1],
         args
     );
 }
@@ -190,10 +190,10 @@ fn test_build_full_args_no_duplicate_ubatch_flag() {
 
     let ub_pos = args.iter().position(|a| *a == "-ub").expect("no -ub found");
     assert_eq!(
-        &args[ub_pos + 1],
+        args[ub_pos + 1],
         "512",
         "Expected value 512 (typed field), got {}: {:?}",
-        &args[ub_pos + 1],
+        args[ub_pos + 1],
         args
     );
 }

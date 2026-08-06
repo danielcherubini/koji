@@ -101,11 +101,18 @@ pub(super) async fn build_model_entry(
     id: &str,
     cfg: &crate::config::ModelConfig,
     capabilities: Option<&ModelCapabilities>,
+    backend_context_length: Option<u32>,
 ) -> Option<ModelEntry> {
     // Use model field first, fall back to api_name.
     let hf_repo = cfg.model.as_deref().or(cfg.api_name.as_deref())?;
 
+    // Context length resolution order:
+    // 1. cfg.context_length (highest priority — explicit config override)
+    // 2. backend_context_length (from /v1/models response)
+    // 3. model_toml (lowest priority — existing fallback)
     let context_length = if let Some(ctx) = cfg.context_length {
+        Some(ctx)
+    } else if let Some(ctx) = backend_context_length {
         Some(ctx)
     } else {
         let model_toml = state.get_model_toml(id).await;
@@ -122,12 +129,8 @@ pub(super) async fn build_model_entry(
     // Output limit: 1/8 of context window, floored at 16K and capped at 32K.
     let output_limit = context_length.map(|ctx| (ctx / 8).clamp(16384, 32768));
 
-    // API id: prefer api_name (lowercased), fall back to model (lowercased).
-    let api_id = cfg
-        .api_name
-        .as_ref()
-        .map(|s| s.to_lowercase())
-        .or_else(|| cfg.model.as_ref().map(|s| s.to_lowercase()));
+    // API id: prefer api_name, fall back to model — preserve original casing.
+    let api_id = cfg.api_name.clone().or_else(|| cfg.model.clone());
 
     // Generate a pretty display name with org prefix.
     let parts: Vec<&str> = hf_repo.split('/').collect();

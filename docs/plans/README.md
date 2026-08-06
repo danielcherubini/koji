@@ -12,14 +12,20 @@ Plans for features, refactors, and bug fixes in the Tama project.
 
 ## Quick Stats
 
-- **Total Plans**: 82
-- **Backlog**: 0
+- **Total Plans**: 83
+- **Backlog**: 1
 - **Completed**: 82 ✅
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan.
 
 ---
 
+
+## Backlog
+
+| Plan | Description | Status |
+|------|-------------|--------|
+| [plan-185](plan-185-fix-opencode-endpoint.md) | Fix /v1/opencode endpoint (context_length + ID casing) | Backlog |
 **All completed plans**: [done.md](done.md)
 
 ---
