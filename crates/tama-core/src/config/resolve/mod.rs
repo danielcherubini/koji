@@ -193,7 +193,13 @@ impl Config {
         #[allow(dead_code)] _backend: &BackendConfig,
         default_args: &[String],
     ) -> Vec<String> {
-        let mut grouped = crate::config::merge_args(default_args, &server.args);
+        // Normalize the backend's `default_args` (which may be stored as flat
+        // tokens, e.g. `["--mamba-cache-mode", "align"]`) into grouped form.
+        // `merge_args` dedupes by flag name across layers; if the base were left
+        // flat, a model override would drop the flag token but leave its value
+        // token behind as an orphaned positional (e.g. a stray `align`).
+        let base = crate::config::group_legacy_flat_args(default_args).0;
+        let mut grouped = crate::config::merge_args(&base, &server.args);
         if let Some(sampling) = &server.sampling {
             if !sampling.is_empty() {
                 grouped = crate::config::merge_args(&grouped, &sampling.to_args());
@@ -226,7 +232,13 @@ impl Config {
         ctx_override: Option<u32>,
         default_args: &[String],
     ) -> Result<Vec<String>> {
-        let mut grouped = crate::config::merge_args(default_args, &server.args);
+        // Normalize the backend's `default_args` (which may be stored as flat
+        // tokens, e.g. `["--mamba-cache-mode", "align"]`) into grouped form.
+        // `merge_args` dedupes by flag name across layers; if the base were left
+        // flat, a model override would drop the flag token but leave its value
+        // token behind as an orphaned positional (e.g. a stray `align`).
+        let base = crate::config::group_legacy_flat_args(default_args).0;
+        let mut grouped = crate::config::merge_args(&base, &server.args);
 
         // Determine the HuggingFace format for format-aware arg injection.
         let is_transformers = server.hf_format.as_deref() == Some("transformers");

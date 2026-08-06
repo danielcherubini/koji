@@ -1,5 +1,58 @@
 use crate::config::resolve::tests::test_helpers as h;
 
+/// Reproduces the production bug where a flat backend `default_args` entry
+/// (e.g. `["--mamba-cache-mode", "align"]` stored as separate tokens) is
+/// overridden by a grouped model arg (`"--mamba-cache-mode align"`). The
+/// override drops the base token `--mamba-cache-mode` but leaves the orphaned
+/// value token `align` behind, which vLLM rejects as an unrecognized positional
+/// argument.
+#[test]
+fn test_build_full_args_flat_default_args_no_orphan_value_token() {
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let models_dir = temp_dir.path().join("models");
+    let org_dir = models_dir.join("org").join("repo");
+    std::fs::create_dir_all(&org_dir).expect("Failed to create model dir");
+
+    let config = h::sample_config(models_dir);
+
+    let server = h::sample_server(|s| {
+        s.backend = "vllm".to_string();
+        s.hf_format = Some("transformers".to_string());
+        s.model = Some("org/repo".to_string());
+        // Grouped model arg that overrides the backend flat default.
+        s.args = vec![
+            "--reasoning-parser qwen3".to_string(),
+            "--mamba-cache-mode align".to_string(),
+        ];
+    });
+
+    let backend = h::sample_backend();
+
+    // Flat backend default_args like the production vllm backend:
+    // `--mamba-cache-mode` and `align` are SEPARATE entries.
+    let default_args = vec![
+        "--max-num-seqs".to_string(),
+        "4".to_string(),
+        "--mamba-cache-mode".to_string(),
+        "align".to_string(),
+        "--enable-per-request-metrics".to_string(),
+    ];
+
+    let args = config
+        .build_full_args(&server, &backend, None, &default_args)
+        .expect("build_full_args failed");
+
+    // The orphaned base value `align` must NOT appear as a positional token.
+    // Only the grouped override `--mamba-cache-mode align` (flag + value together)
+    // is allowed, so exactly one `align` token is expected.
+    let align_count = args.iter().filter(|a| a.as_str() == "align").count();
+    assert_eq!(
+        align_count, 1,
+        "expected exactly one 'align' token (from grouped override), got: {:?}",
+        args
+    );
+}
+
 /// When hf_format is "transformers", build_full_args emits the model path
 /// as a positional arg (first token) and does NOT emit llama.cpp-only flags.
 #[test]
