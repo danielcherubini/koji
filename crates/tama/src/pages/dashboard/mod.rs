@@ -529,7 +529,6 @@ pub fn Dashboard() -> impl IntoView {
                 {move || {
                     let cur = current.get();
                     if !cur.gpus.is_empty() {
-                            let loaded_models = cur.models.clone();
                             let gpus = cur.gpus.clone();
                             view! {
                                 <section class="dashboard-gpus">
@@ -540,12 +539,10 @@ pub fn Dashboard() -> impl IntoView {
                                     <div class="gpu-device-grid">
                                         {gpus.into_iter().enumerate().map(|(idx, gpu)| {
                                             let label = device_display_label(idx);
-                                            let models = loaded_models.clone();
                                             view! {
                                                 <GpuDeviceCard
                                                     device=gpu
                                                     display_label=label
-                                                    loaded_models=models
                                                 />
                                             }
                                         }).collect::<Vec<_>>()}

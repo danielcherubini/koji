@@ -1,7 +1,6 @@
 use super::*;
 use crate::components::gpu_device_card::{
-    derive_device_state, device_display_label, find_device_index, format_vram_short,
-    model_gpu_label, GpuDeviceState,
+    device_display_label, find_device_index, format_vram_short, model_gpu_label,
 };
 use crate::core_mirrors::{GpuVendor, ModelState};
 
@@ -491,45 +490,6 @@ fn make_test_gpu(device_id: &str, vendor: &str) -> GpuDeviceStats {
         power_w: None,
         fan_pct: None,
     }
-}
-
-#[test]
-fn test_derive_state_active_when_ready_model() {
-    let models = vec![make_test_model("m1", "ready", Some("GPU0"))];
-    assert_eq!(derive_device_state(&models, "GPU0"), GpuDeviceState::Active);
-}
-
-#[test]
-fn test_derive_state_loading_when_loading_model() {
-    let models = vec![make_test_model("m1", "loading", Some("GPU0"))];
-    assert_eq!(
-        derive_device_state(&models, "GPU0"),
-        GpuDeviceState::Loading
-    );
-}
-
-#[test]
-fn test_derive_state_failed_when_only_failed() {
-    let models = vec![make_test_model("m1", "failed", Some("GPU0"))];
-    assert_eq!(derive_device_state(&models, "GPU0"), GpuDeviceState::Failed);
-}
-
-#[test]
-fn test_derive_state_idle_when_no_models() {
-    let models: Vec<ModelStateSnapshot> = vec![];
-    assert_eq!(derive_device_state(&models, "GPU0"), GpuDeviceState::Idle);
-}
-
-#[test]
-fn test_derive_state_loading_overrides_ready() {
-    let models = vec![
-        make_test_model("m1", "ready", Some("GPU0")),
-        make_test_model("m2", "loading", Some("GPU0")),
-    ];
-    assert_eq!(
-        derive_device_state(&models, "GPU0"),
-        GpuDeviceState::Loading
-    );
 }
 
 #[test]

@@ -2,68 +2,7 @@
 
 use leptos::prelude::*;
 
-use crate::core_mirrors::ModelState;
-
-#[cfg(test)]
-use crate::core_mirrors::GpuVendor;
 use crate::pages::dashboard::{GpuDeviceStats, ModelStateSnapshot, VramInfo};
-
-/// Lifecycle state of a GPU device, derived from loaded model states.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GpuDeviceState {
-    /// At least one ready model targeting this device.
-    Active,
-    /// A model is currently loading (transferring VRAM).
-    Loading,
-    /// A model targeting this device is in failed state.
-    Failed,
-    /// No model loaded, device healthy.
-    Idle,
-}
-
-/// Derive the device state from a list of models targeting this device.
-/// Matches `model.gpu_device` (e.g. "GPU0") against `device_id` (e.g. "GPU0").
-/// Priority: Loading > Active > Failed > Idle.
-pub fn derive_device_state(
-    loaded_models: &[ModelStateSnapshot],
-    device_id: &str,
-) -> GpuDeviceState {
-    let mut has_loading = false;
-    let mut has_active = false;
-    let mut has_failed = false;
-
-    for model in loaded_models {
-        let targets_device = match &model.gpu_device {
-            Some(gpu_device) if gpu_device == device_id => true,
-            // Fallback: models without gpu_device target the first GPU.
-            None if device_id == "GPU0" => true,
-            _ => false,
-        };
-
-        if !targets_device {
-            continue;
-        }
-
-        // Model matches this device — track its state.
-        match model.state {
-            ModelState::Starting => has_loading = true,
-            ModelState::Ready | ModelState::Unloading => has_active = true,
-            ModelState::Failed => has_failed = true,
-            ModelState::Idle => {}
-        }
-    }
-
-    // Priority: Loading > Active > Failed > Idle
-    if has_loading {
-        GpuDeviceState::Loading
-    } else if has_active {
-        GpuDeviceState::Active
-    } else if has_failed {
-        GpuDeviceState::Failed
-    } else {
-        GpuDeviceState::Idle
-    }
-}
 
 /// Returns the display label for a GPU device, e.g. "GPU 0", "GPU 1".
 pub fn device_display_label(index: usize) -> String {
@@ -114,47 +53,21 @@ pub fn GpuDeviceCard(
     device: GpuDeviceStats,
     /// Display label, e.g. "GPU 0".
     display_label: String,
-    /// All loaded models (used to derive device state badge).
-    loaded_models: Vec<ModelStateSnapshot>,
 ) -> impl IntoView {
-    let state = derive_device_state(&loaded_models, &device.device_id);
-
-    let badge_class = match state {
-        GpuDeviceState::Active => "badge badge-success",
-        GpuDeviceState::Loading => "badge badge-warning",
-        GpuDeviceState::Failed => "badge badge-error",
-        GpuDeviceState::Idle => "badge badge-muted",
-    };
-    let badge_text = match state {
-        GpuDeviceState::Active => "ACTIVE",
-        GpuDeviceState::Loading => "LOADING",
-        GpuDeviceState::Failed => "FAILED",
-        GpuDeviceState::Idle => "IDLE",
-    };
-
-    let vram_label = if state == GpuDeviceState::Loading {
-        "VRAM Allocation"
-    } else {
-        "VRAM"
-    };
-
     view! {
         <div class="card gpu-device-card">
             <div class="gpu-device-card__internal">
                 // Column 1: Identity
                 <div class="gpu-device-card__identity">
-                    <div class="gpu-device-card__identity-top">
-                        <div class="gpu-device-card__header">
-                            <span class="gpu-device-card__title">{display_label}</span>
-                            <span class={badge_class}>{badge_text}</span>
-                        </div>
-                        <div class="gpu-device-card__subtitle">
-                            {if let Some(vram) = &device.vram {
-                                format_card_subtitle(&device.name, vram)
-                            } else {
-                                device.name.clone()
-                            }}
-                        </div>
+                    <div class="gpu-device-card__header">
+                        <span class="gpu-device-card__title">{display_label}</span>
+                    </div>
+                    <div class="gpu-device-card__subtitle">
+                        {if let Some(vram) = &device.vram {
+                            format_card_subtitle(&device.name, vram)
+                        } else {
+                            device.name.clone()
+                        }}
                     </div>
                 </div>
 
@@ -179,7 +92,7 @@ pub fn GpuDeviceCard(
                     <div class="gpu-device-card__bars-bottom">
                         <div class="gpu-device-card__row">
                             <div class="gpu-device-card__row-header">
-                                <span class="gpu-device-card__label">{vram_label}</span>
+                                <span class="gpu-device-card__label">"VRAM"</span>
                                 <span class="gpu-device-card__value">
                                     {device.vram.as_ref().map(format_vram_short).unwrap_or_else(|| "—".to_string())}
                                 </span>
@@ -235,139 +148,10 @@ pub fn GpuDeviceCard(
 mod tests {
     use super::*;
 
-    fn make_model(id: &str, state: &str, gpu_device: Option<&str>) -> ModelStateSnapshot {
-        let model_state = match state {
-            "idle" => ModelState::Idle,
-            "loading" | "starting" => ModelState::Starting,
-            "ready" => ModelState::Ready,
-            "unloading" => ModelState::Unloading,
-            "failed" => ModelState::Failed,
-            _ => ModelState::Idle,
-        };
-        ModelStateSnapshot {
-            id: id.to_string(),
-            db_id: None,
-            api_name: None,
-            display_name: None,
-            backend: "llama_cpp".to_string(),
-            state: model_state,
-            quant: None,
-            context_length: None,
-            hf_architecture_type: None,
-            hf_base_model: None,
-            hf_format: None,
-            gpu_variant: None,
-            cache_type_k: None,
-            cache_type_v: None,
-            spec_types: vec![],
-            gpu_device: gpu_device.map(|s| s.to_string()),
-            tps: None,
-            prompt_tps: None,
-            error_message: None,
-            is_docker: false,
-        }
-    }
-
-    fn make_gpu(device_id: &str, vendor: &str) -> GpuDeviceStats {
-        let gpu_vendor = match vendor {
-            "amd" => GpuVendor::Amd,
-            _ => GpuVendor::Nvidia,
-        };
-        GpuDeviceStats {
-            device_id: device_id.to_string(),
-            name: "Test GPU".to_string(),
-            vendor: gpu_vendor,
-            utilization_pct: None,
-            vram: None,
-            temperature_c: None,
-            power_w: None,
-            fan_pct: None,
-        }
-    }
-
-    #[test]
-    fn test_derive_state_active_when_ready_model() {
-        let models = vec![make_model("m1", "ready", Some("GPU0"))];
-        assert_eq!(derive_device_state(&models, "GPU0"), GpuDeviceState::Active);
-    }
-
-    #[test]
-    fn test_derive_state_loading_when_loading_model() {
-        let models = vec![make_model("m1", "loading", Some("GPU0"))];
-        assert_eq!(
-            derive_device_state(&models, "GPU0"),
-            GpuDeviceState::Loading
-        );
-    }
-
-    #[test]
-    fn test_derive_state_failed_when_only_failed() {
-        let models = vec![make_model("m1", "failed", Some("GPU0"))];
-        assert_eq!(derive_device_state(&models, "GPU0"), GpuDeviceState::Failed);
-    }
-
-    #[test]
-    fn test_derive_state_idle_when_no_models() {
-        let models: Vec<ModelStateSnapshot> = vec![];
-        assert_eq!(derive_device_state(&models, "GPU0"), GpuDeviceState::Idle);
-    }
-
-    #[test]
-    fn test_derive_state_loading_overrides_ready() {
-        let models = vec![
-            make_model("m1", "ready", Some("GPU0")),
-            make_model("m2", "loading", Some("GPU0")),
-        ];
-        assert_eq!(
-            derive_device_state(&models, "GPU0"),
-            GpuDeviceState::Loading
-        );
-    }
-
-    #[test]
-    fn test_derive_state_idle_when_model_on_different_gpu() {
-        let models = vec![make_model("m1", "ready", Some("GPU1"))];
-        assert_eq!(derive_device_state(&models, "GPU0"), GpuDeviceState::Idle);
-    }
-
-    #[test]
-    fn test_derive_state_fallback_no_gpu_device_to_gpu0() {
-        let models = vec![make_model("m1", "ready", None)];
-        assert_eq!(derive_device_state(&models, "GPU0"), GpuDeviceState::Active);
-        assert_eq!(derive_device_state(&models, "GPU1"), GpuDeviceState::Idle);
-    }
-
     #[test]
     fn test_device_display_label_format() {
         assert_eq!(device_display_label(0), "GPU 0");
         assert_eq!(device_display_label(3), "GPU 3");
-    }
-
-    #[test]
-    fn test_find_device_index_direct_match() {
-        let gpus = vec![make_gpu("GPU0", "nvidia"), make_gpu("GPU1", "nvidia")];
-        assert_eq!(find_device_index(&gpus, "GPU0"), Some(0));
-        assert_eq!(find_device_index(&gpus, "GPU1"), Some(1));
-    }
-
-    #[test]
-    fn test_find_device_index_no_match() {
-        let gpus = vec![make_gpu("GPU0", "nvidia"), make_gpu("GPU1", "nvidia")];
-        assert_eq!(find_device_index(&gpus, "GPU2"), None);
-    }
-
-    #[test]
-    fn test_model_gpu_label_resolves_to_position() {
-        let gpus = vec![make_gpu("GPU0", "nvidia"), make_gpu("GPU1", "nvidia")];
-        let model = make_model("m1", "ready", Some("GPU0"));
-        assert_eq!(model_gpu_label(&gpus, &model), Some("GPU 0".to_string()));
-    }
-
-    #[test]
-    fn test_model_gpu_label_fallback_no_gpu_device() {
-        let gpus = vec![make_gpu("GPU0", "nvidia")];
-        let model = make_model("m1", "ready", None);
-        assert_eq!(model_gpu_label(&gpus, &model), Some("GPU 0".to_string()));
     }
 
     #[test]
@@ -385,18 +169,6 @@ mod tests {
             used_mib: 0,
             total_mib: 32768,
         }; // 32 GB
-        assert_eq!(
-            format_card_subtitle("Radeon AI PRO R9700", &vram),
-            "Radeon AI PRO R9700 \u{00B7} 32 GB"
-        );
-    }
-
-    #[test]
-    fn test_format_card_subtitle_rounds_31_9_to_32() {
-        let vram = VramInfo {
-            used_mib: 0,
-            total_mib: 32760,
-        }; // ~31.9 GB
         assert_eq!(
             format_card_subtitle("Radeon AI PRO R9700", &vram),
             "Radeon AI PRO R9700 \u{00B7} 32 GB"
