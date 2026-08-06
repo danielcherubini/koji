@@ -100,7 +100,7 @@ pub async fn handle_opencode_list_models(
 
         if let Some(entry) = build_model_entry(&state, id, cfg, caps, backend_ctx).await {
             if let Some(api_id) = entry.id.as_deref() {
-                seen_ids.insert(api_id.to_lowercase());
+                seen_ids.insert(api_id.to_string());
             }
             models.push(entry);
         }
@@ -109,7 +109,7 @@ pub async fn handle_opencode_list_models(
     // 4. Add alias entries — inherit capabilities and context_length from target model
     let aliases = state.registry.aliases.read().await;
     for (alias_name, resolved_model) in aliases.iter() {
-        if seen_ids.contains(&alias_name.to_lowercase()) {
+        if seen_ids.contains(alias_name.as_str()) {
             continue;
         }
 
@@ -131,7 +131,7 @@ pub async fn handle_opencode_list_models(
                 .and_then(extract_context_length_from_backend_entry);
 
             if let Some(mut entry) = build_model_entry(&state, key, cfg, caps, backend_ctx).await {
-                entry.id = Some(alias_name.to_lowercase());
+                entry.id = Some(alias_name.clone());
                 // Derive a display name from the alias slug (not from the target model).
                 let alias_display = alias_name
                     .replace(['-', '_'], " ")
@@ -141,7 +141,7 @@ pub async fn handle_opencode_list_models(
                     .join(" ");
                 entry.name = alias_display;
                 models.push(entry);
-                seen_ids.insert(alias_name.to_lowercase());
+                seen_ids.insert(alias_name.clone());
             }
         }
     }

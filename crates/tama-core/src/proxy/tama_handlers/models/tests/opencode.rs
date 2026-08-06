@@ -519,6 +519,79 @@ async fn test_alias_inherits_backend_context_length() {
     );
 }
 
+/// Model ID preserves original casing from api_name (not lowercased).
+#[tokio::test]
+async fn test_model_id_preserves_original_casing() {
+    let state = create_state_with_model(ModelConfig {
+        backend: "llama_cpp".to_string(),
+        api_name: Some("Unsloth/Qwen3.5-35B-A3B-GGUF".to_string()),
+        model: Some("Unsloth/Qwen3.5-35B-A3B-GGUF".to_string()),
+        enabled: true,
+        ..Default::default()
+    })
+    .await;
+
+    let result = call_list_models(state).await;
+    let models = result.get("models").unwrap().as_array().unwrap();
+    assert_eq!(models.len(), 1);
+
+    let model = &models[0];
+    assert_eq!(
+        model.get("id").unwrap().as_str().unwrap(),
+        "Unsloth/Qwen3.5-35B-A3B-GGUF",
+        "model id should preserve original casing from api_name"
+    );
+}
+
+/// Alias ID preserves original casing from alias name (not lowercased).
+#[tokio::test]
+async fn test_alias_id_preserves_original_casing() {
+    let state = create_state_with_model(ModelConfig {
+        backend: "llama_cpp".to_string(),
+        api_name: Some("Unsloth/Qwen3.5-35B".to_string()),
+        model: Some("Unsloth/Qwen3.5-35B".to_string()),
+        enabled: true,
+        ..Default::default()
+    })
+    .await;
+
+    // Add an alias with mixed case
+    {
+        let mut aliases = state.registry.aliases.write().await;
+        aliases.insert(
+            "My-Custom-Alias".to_string(),
+            "Unsloth/Qwen3.5-35B".to_string(),
+        );
+    }
+
+    let result = call_list_models(state).await;
+    let models = result.get("models").unwrap().as_array().unwrap();
+
+    // Find the alias entry
+    let alias_entry = models
+        .iter()
+        .find(|m| m.get("id").unwrap().as_str().unwrap() == "My-Custom-Alias")
+        .expect("alias entry should exist with original casing");
+
+    assert_eq!(
+        alias_entry.get("id").unwrap().as_str().unwrap(),
+        "My-Custom-Alias",
+        "alias id should preserve original casing"
+    );
+
+    // Also verify the model entry preserves its casing
+    let model_entry = models
+        .iter()
+        .find(|m| m.get("id").unwrap().as_str().unwrap() == "Unsloth/Qwen3.5-35B")
+        .expect("model entry should exist with original casing");
+
+    assert_eq!(
+        model_entry.get("id").unwrap().as_str().unwrap(),
+        "Unsloth/Qwen3.5-35B",
+        "model id should preserve original casing"
+    );
+}
+
 // ── Drift-guard: opencode response round-trip ───────────────────────────────
 
 /// The OpencodeModelsResponse struct must faithfully represent the full wire

@@ -129,12 +129,8 @@ pub(super) async fn build_model_entry(
     // Output limit: 1/8 of context window, floored at 16K and capped at 32K.
     let output_limit = context_length.map(|ctx| (ctx / 8).clamp(16384, 32768));
 
-    // API id: prefer api_name (lowercased), fall back to model (lowercased).
-    let api_id = cfg
-        .api_name
-        .as_ref()
-        .map(|s| s.to_lowercase())
-        .or_else(|| cfg.model.as_ref().map(|s| s.to_lowercase()));
+    // API id: prefer api_name, fall back to model — preserve original casing.
+    let api_id = cfg.api_name.clone().or_else(|| cfg.model.clone());
 
     // Generate a pretty display name with org prefix.
     let parts: Vec<&str> = hf_repo.split('/').collect();
