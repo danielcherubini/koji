@@ -12,6 +12,34 @@ use crate::components::install_modal::{CapabilitiesDto, InstallModal, InstallReq
 use crate::components::job_log_panel::JobLogPanel;
 use crate::utils::{delete_request, extract_and_store_csrf_token, get_request, post_request};
 
+/// Construct a URL path for updating a backend, properly encoding the backend name.
+fn backend_update_url(backend_name: &str, gpu_variant: &str) -> String {
+    let encoded_name = url_encode(backend_name);
+    let encoded_variant = url_encode(gpu_variant);
+    format!("/tama/v1/backends/{encoded_name}/update?gpu_variant={encoded_variant}")
+}
+
+/// Construct a check-updates URL for a backend, properly encoding the backend name.
+fn backend_check_updates_url(backend_name: &str, gpu_variant: &str) -> String {
+    let encoded_name = url_encode(backend_name);
+    let encoded_variant = url_encode(gpu_variant);
+    format!("/tama/v1/updates/check/backend/{encoded_name}?gpu_variant={encoded_variant}")
+}
+
+/// Construct a build-method source URL for a backend, properly encoding the backend name.
+fn backend_source_url(backend_name: &str, gpu_variant: &str) -> String {
+    let encoded_name = url_encode(backend_name);
+    let encoded_variant = url_encode(gpu_variant);
+    format!("/tama/v1/backends/{encoded_name}/source?gpu_variant={encoded_variant}")
+}
+
+/// Construct a URL path for backend delete, properly encoding the backend name.
+fn backend_delete_url(backend_name: &str, gpu_variant: &str) -> String {
+    let encoded_name = url_encode(backend_name);
+    let encoded_variant = url_encode(gpu_variant);
+    format!("/tama/v1/backends/{encoded_name}?gpu_variant={encoded_variant}")
+}
+
 /// Parse newline-separated text into a Vec<String>, trimming whitespace and filtering empty lines.
 pub fn parse_newline_separated(text: &str) -> Vec<String> {
     text.lines()
@@ -20,6 +48,60 @@ pub fn parse_newline_separated(text: &str) -> Vec<String> {
             (!t.is_empty()).then(|| t.to_string())
         })
         .collect()
+}
+
+#[cfg(test)]
+mod backend_url_tests {
+    use super::{
+        backend_check_updates_url, backend_delete_url, backend_source_url, backend_update_url,
+    };
+
+    #[test]
+    fn test_backend_update_url_encodes_name() {
+        // Native backend: name == type, no special chars
+        let url = backend_update_url("llama_cpp", "cpu");
+        assert_eq!(url, "/tama/v1/backends/llama_cpp/update?gpu_variant=cpu");
+    }
+
+    #[test]
+    fn test_backend_update_url_encodes_special_chars() {
+        // Docker backend with special characters in name
+        let url = backend_update_url("my-vllm:latest", "cpu");
+        assert_eq!(
+            url,
+            "/tama/v1/backends/my-vllm%3Alatest/update?gpu_variant=cpu"
+        );
+    }
+
+    #[test]
+    fn test_backend_check_updates_url_encodes_name() {
+        let url = backend_check_updates_url("vllm", "cuda_12");
+        assert_eq!(
+            url,
+            "/tama/v1/updates/check/backend/vllm?gpu_variant=cuda_12"
+        );
+    }
+
+    #[test]
+    fn test_backend_source_url_encodes_name() {
+        let url = backend_source_url("docker_vllm", "cpu");
+        assert_eq!(url, "/tama/v1/backends/docker_vllm/source?gpu_variant=cpu");
+    }
+
+    #[test]
+    fn test_backend_delete_url() {
+        let url = backend_delete_url("vllm", "cpu");
+        assert_eq!(url, "/tama/v1/backends/vllm?gpu_variant=cpu");
+    }
+
+    #[test]
+    fn test_backend_delete_url_encodes_name() {
+        let url = backend_delete_url("my-vllm:latest", "cuda_12");
+        assert_eq!(
+            url,
+            "/tama/v1/backends/my-vllm%3Alatest?gpu_variant=cuda_12"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -193,10 +275,10 @@ pub fn Backends() -> impl IntoView {
         install_modal_for.set(Some(backend_type));
     });
 
-    let on_update_click = Callback::new(move |(backend_type, gpu_variant): (String, String)| {
+    let on_update_click = Callback::new(move |(backend_name, gpu_variant): (String, String)| {
         action_error.set(None);
         wasm_bindgen_futures::spawn_local(async move {
-            let url = format!("/tama/v1/backends/{backend_type}/update?gpu_variant={gpu_variant}");
+            let url = backend_update_url(&backend_name, &gpu_variant);
             match post_request(&url).send().await {
                 Ok(resp) => {
                     if resp.ok() {
@@ -214,14 +296,11 @@ pub fn Backends() -> impl IntoView {
     });
 
     let on_check_updates_click =
-        Callback::new(move |(backend_type, gpu_variant): (String, String)| {
+        Callback::new(move |(backend_name, gpu_variant): (String, String)| {
             action_error.set(None);
             wasm_bindgen_futures::spawn_local(async move {
                 // Check a single backend variant via the updates API
-                let url = format!(
-                    "/tama/v1/updates/check/backend/{}?gpu_variant={}",
-                    backend_type, gpu_variant
-                );
+                let url = backend_check_updates_url(&backend_name, &gpu_variant);
                 match post_request(&url).send().await {
                     Ok(resp) => {
                         if resp.ok() {
@@ -245,10 +324,10 @@ pub fn Backends() -> impl IntoView {
             });
         });
 
-    let on_delete_click = Callback::new(move |(backend_type, gpu_variant): (String, String)| {
+    let on_delete_click = Callback::new(move |(backend_name, gpu_variant): (String, String)| {
         action_error.set(None);
         wasm_bindgen_futures::spawn_local(async move {
-            let url = format!("/tama/v1/backends/{backend_type}?gpu_variant={gpu_variant}");
+            let url = backend_delete_url(&backend_name, &gpu_variant);
             match delete_request(&url).send().await {
                 Ok(resp) => {
                     if resp.ok() {
@@ -264,13 +343,10 @@ pub fn Backends() -> impl IntoView {
     });
 
     let on_build_method_change = Callback::new(
-        move |(backend_type, gpu_variant, build_from_source): (String, String, bool)| {
+        move |(backend_name, gpu_variant, build_from_source): (String, String, bool)| {
             action_error.set(None);
             wasm_bindgen_futures::spawn_local(async move {
-                let url = format!(
-                    "/tama/v1/backends/{}/source?gpu_variant={}",
-                    backend_type, gpu_variant
-                );
+                let url = backend_source_url(&backend_name, &gpu_variant);
                 let body = serde_json::json!({ "build_from_source": build_from_source });
                 match post_request(&url).json(&body).unwrap().send().await {
                     Ok(resp) if resp.ok() => {

@@ -133,13 +133,13 @@ pub fn BackendCard(
     /// Called with the backend type when "Install" is clicked.
     #[prop(optional)]
     on_install: Option<Callback<String>>,
-    /// Called with (backend_type, gpu_variant) when "Update" is clicked.
+    /// Called with (backend_name, gpu_variant) when "Update" is clicked.
     #[prop(optional)]
     on_update: Option<Callback<(String, String)>>,
-    /// Called with (backend_type, gpu_variant) when "Check for updates" is clicked.
+    /// Called with (backend_name, gpu_variant) when "Check for updates" is clicked.
     #[prop(optional)]
     on_check_updates: Option<Callback<(String, String)>>,
-    /// Called with (backend_type, gpu_variant) when "Uninstall" is clicked.
+    /// Called with (backend_name, gpu_variant) when "Uninstall" is clicked.
     #[prop(optional)]
     on_delete: Option<Callback<(String, String)>>,
     /// Called when default_args input changes with (backend_name, gpu_variant, value)
@@ -151,17 +151,11 @@ pub fn BackendCard(
     /// Called with (backend_name, version, gpu_variant) when version dropdown changes.
     #[prop(optional)]
     on_version_change: Option<Callback<(String, String, String)>>,
-    /// Called with (backend_type, gpu_variant, build_from_source) when toggle changes.
+    /// Called with (backend_name, gpu_variant, build_from_source) when toggle changes.
     #[prop(optional)]
     on_build_method_change: Option<Callback<(String, String, bool)>>,
 ) -> impl IntoView {
     let type_install = backend.r#type.clone();
-    let type_update = backend.r#type.clone();
-    let variant_update = backend.gpu_variant.clone();
-    let type_check = backend.r#type.clone();
-    let variant_check = backend.gpu_variant.clone();
-    let type_delete = backend.r#type.clone();
-    let variant_delete = backend.gpu_variant.clone();
 
     let installed = backend.installed;
     let display_name = backend.display_name.clone();
@@ -176,8 +170,16 @@ pub fn BackendCard(
     // Clone for use in multiple event closures below
     let backend_name_for_args = backend_name.clone();
     let backend_name_for_env = backend_name.clone();
+    let backend_name_for_update = backend_name.clone();
+    let backend_name_for_check = backend_name.clone();
+    let backend_name_for_delete = backend_name.clone();
+    let backend_name_for_build = backend_name.clone();
     let gpu_variant_for_args = gpu_variant.clone();
     let gpu_variant_for_env = gpu_variant.clone();
+    let gpu_variant_for_update = gpu_variant.clone();
+    let gpu_variant_for_check = gpu_variant.clone();
+    let gpu_variant_for_delete = gpu_variant.clone();
+    let gpu_variant_for_build = gpu_variant.clone();
 
     let update_available = backend.update.update_available.unwrap_or(false);
     let latest_version = backend.update.latest_version.clone();
@@ -386,8 +388,8 @@ pub fn BackendCard(
 
             {/* Build method toggle */}
             {if show_toggle {
-                let bt = backend.r#type.clone();
-                let gv = gpu_variant.clone();
+                let bn = backend_name_for_build.clone();
+                let gv = gpu_variant_for_build.clone();
                 let cb = on_build_method_change;
                 let force = force_source;
                 view! {
@@ -405,7 +407,7 @@ pub fn BackendCard(
                                         .unwrap_or(false);
                                     current_build_from_source.set(checked);
                                     if let Some(c) = &cb {
-                                        c.run((bt.clone(), gv.clone(), checked));
+                                        c.run((bn.clone(), gv.clone(), checked));
                                     }
                                 }
                             />
@@ -453,14 +455,14 @@ pub fn BackendCard(
                 {/* Check for updates — always when installed */}
                 {if installed {
                     if let Some(cb) = on_check_updates {
-                        let bt = type_check.clone();
-                        let gv = variant_check.clone();
+                        let bn = backend_name_for_check.clone();
+                        let gv = gpu_variant_for_check.clone();
                         view! {
                             <button
                                 type="button"
                                 class="btn btn-secondary"
                                 on:click=move |_| {
-                                    cb.run((bt.clone(), gv.clone()));
+                                    cb.run((bn.clone(), gv.clone()));
                                 }
                             >
                                 "Check for updates"
@@ -476,15 +478,15 @@ pub fn BackendCard(
                 {/* Update button — only when update available */}
                 {if installed && update_available {
                     let cb = on_update;
-                    let bt = type_update.clone();
-                    let gv = variant_update.clone();
+                    let bn = backend_name_for_update.clone();
+                    let gv = gpu_variant_for_update.clone();
                     view! {
                         <button
                             type="button"
                             class="btn btn-primary"
                             on:click=move |_| {
                                 if let Some(c) = cb {
-                                    c.run((bt.clone(), gv.clone()));
+                                    c.run((bn.clone(), gv.clone()));
                                 }
                             }
                         >
@@ -499,8 +501,8 @@ pub fn BackendCard(
                 {move || {
                     if installed && is_selected_active() {
                         let cb = on_delete;
-                        let bt = type_delete.clone();
-                        let gv = variant_delete.clone();
+                        let bn = backend_name_for_delete.clone();
+                        let gv = gpu_variant_for_delete.clone();
                         view! {
                             <button
                                 type="button"
@@ -508,7 +510,7 @@ pub fn BackendCard(
                                 style="color:#dc2626;"
                                 on:click=move |_| {
                                     if let Some(c) = cb {
-                                        c.run((bt.clone(), gv.clone()));
+                                        c.run((bn.clone(), gv.clone()));
                                     }
                                 }
                             >
