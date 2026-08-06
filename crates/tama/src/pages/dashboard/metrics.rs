@@ -148,6 +148,8 @@ pub struct ModelStateSnapshot {
     pub prompt_tps: Option<f32>,
     #[serde(default)]
     pub error_message: Option<String>,
+    #[serde(default)]
+    pub is_docker: bool,
 }
 
 /// Format a number with comma separators (e.g. `8460` → `"8,460"`).

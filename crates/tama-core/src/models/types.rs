@@ -61,4 +61,7 @@ pub struct ModelStateSnapshot {
     /// None if the model is not actively generating or no stats observed yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_tps: Option<f32>,
+    /// Whether this backend is running inside a Docker container.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_docker: bool,
 }

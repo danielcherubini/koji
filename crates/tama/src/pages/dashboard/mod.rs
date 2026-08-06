@@ -681,7 +681,7 @@ pub fn Dashboard() -> impl IntoView {
                                                         gpu_label,
                                                     }
                                                     backend=m.backend.clone()
-                                                    log_source=Some(format!("{}_{}", m.backend, m.id))
+                                                    log_source=Some(if m.is_docker { format!("docker_{}", m.id) } else { format!("{}_{}", m.backend, m.id) })
                                                     state=m.state.clone()
                                                     enabled=None
                                                     error_message=m.error_message.clone()

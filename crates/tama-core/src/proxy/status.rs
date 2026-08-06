@@ -113,14 +113,14 @@ impl ProxyState {
                 }
             }
 
-            let (model_state, error_message) = match best_state {
-                Some(BackendState::Ready { .. }) => (crate::gpu::ModelState::Ready, None),
-                Some(BackendState::Starting { .. }) => (crate::gpu::ModelState::Starting, None),
-                Some(BackendState::Unloading { .. }) => (crate::gpu::ModelState::Unloading, None),
+            let (model_state, error_message, is_docker) = match best_state {
+                Some(BackendState::Ready { .. }) => (crate::gpu::ModelState::Ready, None, best_state.unwrap().is_docker()),
+                Some(BackendState::Starting { .. }) => (crate::gpu::ModelState::Starting, None, best_state.unwrap().is_docker()),
+                Some(BackendState::Unloading { .. }) => (crate::gpu::ModelState::Unloading, None, best_state.unwrap().is_docker()),
                 Some(BackendState::Failed { error, .. }) => {
-                    (crate::gpu::ModelState::Failed, Some(error.clone()))
+                    (crate::gpu::ModelState::Failed, Some(error.clone()), best_state.unwrap().is_docker())
                 }
-                None => (crate::gpu::ModelState::Idle, None),
+                None => (crate::gpu::ModelState::Idle, None, false),
             };
 
             // Look up the first matching backend's inference stats.
@@ -151,6 +151,7 @@ impl ProxyState {
                 error_message,
                 tps: server_stats.and_then(|s| s.tps),
                 prompt_tps: server_stats.and_then(|s| s.prompt_tps),
+                is_docker,
             };
             out.push(status);
         }
