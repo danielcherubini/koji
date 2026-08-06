@@ -2,6 +2,7 @@
 
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
+use urlencoding::encode as url_encode;
 use wasm_bindgen::JsCast;
 
 use crate::components::alert_banner::{AlertBanner, AlertVariant};
@@ -10,6 +11,86 @@ use crate::components::docker_register_modal::DockerRegisterModal;
 use crate::components::install_modal::{CapabilitiesDto, InstallModal, InstallRequest};
 use crate::components::job_log_panel::JobLogPanel;
 use crate::utils::{delete_request, extract_and_store_csrf_token, get_request, post_request};
+
+/// Parse newline-separated text into a Vec<String>, trimming whitespace and filtering empty lines.
+pub fn parse_newline_separated(text: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|l| {
+            let t = l.trim();
+            (!t.is_empty()).then(|| t.to_string())
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod newline_parsing_tests {
+    use super::parse_newline_separated;
+
+    #[test]
+    fn test_parse_single_line() {
+        assert_eq!(parse_newline_separated("--threads 4"), vec!["--threads 4"]);
+    }
+
+    #[test]
+    fn test_parse_multiple_lines() {
+        let input = "--max-num-seqs 4\n--enable-prefix-caching\n--gpu-layers 32";
+        assert_eq!(
+            parse_newline_separated(input),
+            vec![
+                "--max-num-seqs 4",
+                "--enable-prefix-caching",
+                "--gpu-layers 32"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_empty_string() {
+        assert!(parse_newline_separated("").is_empty());
+    }
+
+    #[test]
+    fn test_parse_whitespace_only_lines() {
+        let input = "   \n\n  \t  ";
+        assert!(parse_newline_separated(input).is_empty());
+    }
+
+    #[test]
+    fn test_parse_mixed_empty_and_content() {
+        let input = "--threads 4\n\n--gpu-layers 32\n   \n";
+        assert_eq!(
+            parse_newline_separated(input),
+            vec!["--threads 4", "--gpu-layers 32"]
+        );
+    }
+
+    #[test]
+    fn test_parse_trims_whitespace() {
+        let input = "  --threads 4  \n  --gpu-layers 32  ";
+        assert_eq!(
+            parse_newline_separated(input),
+            vec!["--threads 4", "--gpu-layers 32"]
+        );
+    }
+
+    #[test]
+    fn test_parse_env_vars() {
+        let input = "RADV_PERFTEST=nogttspill\nFOO=bar\nOTHER_VAR=123";
+        assert_eq!(
+            parse_newline_separated(input),
+            vec!["RADV_PERFTEST=nogttspill", "FOO=bar", "OTHER_VAR=123"]
+        );
+    }
+
+    #[test]
+    fn test_parse_env_vars_with_empty_lines() {
+        let input = "RADV_PERFTEST=nogttspill\n\nFOO=bar\n";
+        assert_eq!(
+            parse_newline_separated(input),
+            vec!["RADV_PERFTEST=nogttspill", "FOO=bar"]
+        );
+    }
+}
 
 /// Compaction backend card DTO (mirrors the SSR-side type).
 /// Defined here because `crate::api` is gated behind `ssr` feature.
@@ -241,32 +322,37 @@ pub fn Backends() -> impl IntoView {
         refresh_tick.update(|n| *n += 1);
     });
 
-    // Key by "backend_type:gpu_variant" so each variant has its own args.
-    // e.g. "llama_cpp:vulkan" vs "llama_cpp:rocm"
-    let on_default_args_change =
-        Callback::new(move |(backend_key, new_value): (String, String)| {
+    // Key by "backend_name:gpu_variant" so each variant has its own args.
+    // e.g. "llama_cpp:vulkan" vs "vllm:cpu"
+    let on_default_args_change = Callback::new(
+        move |(backend_name, gpu_variant, new_value): (String, String, String)| {
+            let key = format!("{}:{}", backend_name, gpu_variant);
             default_args_edits.update(|edits| {
-                edits.insert(backend_key, new_value);
+                edits.insert(key, new_value);
             });
             save_status.set(None); // Clear status when user makes new edits
-        });
+        },
+    );
 
-    let on_default_env_change = Callback::new(move |(backend_key, new_value): (String, String)| {
-        default_env_edits.update(|edits| {
-            edits.insert(backend_key, new_value);
-        });
-        save_status.set(None);
-    });
+    let on_default_env_change = Callback::new(
+        move |(backend_name, gpu_variant, new_value): (String, String, String)| {
+            let key = format!("{}:{}", backend_name, gpu_variant);
+            default_env_edits.update(|edits| {
+                edits.insert(key, new_value);
+            });
+            save_status.set(None);
+        },
+    );
 
-    // Track version selection changes: key = "backend_type:gpu_variant", value = (type, version, variant)
+    // Track version selection changes: key = "backend_name:gpu_variant", value = (name, version, variant)
     let version_edits: RwSignal<std::collections::HashMap<String, (String, String, String)>> =
         RwSignal::new(std::collections::HashMap::new());
 
     let on_version_change = Callback::new(
-        move |(backend_type, version, gpu_variant): (String, String, String)| {
-            let key = format!("{}:{}", backend_type, gpu_variant);
+        move |(backend_name, version, gpu_variant): (String, String, String)| {
+            let key = format!("{}:{}", backend_name, gpu_variant);
             version_edits.update(|edits| {
-                edits.insert(key, (backend_type, version, gpu_variant));
+                edits.insert(key, (backend_name, version, gpu_variant));
             });
             save_status.set(None);
         },
@@ -288,31 +374,39 @@ pub fn Backends() -> impl IntoView {
             let mut errors = Vec::new();
 
             // Apply version changes first
-            for (bt, ver, gv) in ver_edits.values() {
-                let url = format!("/tama/v1/backends/{}/activate?gpu_variant={}", bt, gv);
+            for (backend_name, ver, gv) in ver_edits.values() {
+                let encoded = url_encode(backend_name);
+                let url = format!("/tama/v1/backends/{}/activate?gpu_variant={}", encoded, gv);
                 let body = serde_json::json!({ "version": ver });
                 match post_request(&url).json(&body).unwrap().send().await {
                     Ok(resp) if resp.ok() => {}
                     Ok(resp) => {
                         let status = resp.status();
                         let text = resp.text().await.unwrap_or_default();
-                        errors.push(format!("Activate {}: HTTP {} - {}", bt, status, text));
+                        errors.push(format!(
+                            "Activate {}: HTTP {} - {}",
+                            backend_name, status, text
+                        ));
                     }
-                    Err(e) => errors.push(format!("Activate {}: {}", bt, e)),
+                    Err(e) => errors.push(format!("Activate {}: {}", backend_name, e)),
                 }
             }
 
-            // Apply default args changes — key is "backend_type:gpu_variant"
+            // Apply default args changes — key is "backend_name:gpu_variant"
             let edit_keys: Vec<String> = args_edits.keys().cloned().collect();
             for key in edit_keys {
                 let args_str = args_edits.get(&key).cloned().unwrap_or_default();
-                let parts: Vec<String> = args_str.split_whitespace().map(String::from).collect();
-                // Parse "backend_type:gpu_variant" from key
+                let parts: Vec<String> = parse_newline_separated(&args_str);
+                // Parse "backend_name:gpu_variant" from key
                 let parts_key: Vec<&str> = key.splitn(2, ':').collect();
                 let bt = parts_key[0];
                 let gv = parts_key.get(1).copied().unwrap_or("cpu");
                 let body = serde_json::json!({ "default_args": parts });
-                let url = format!("/tama/v1/backends/{}/default-args?gpu_variant={}", bt, gv);
+                let encoded = url_encode(bt);
+                let url = format!(
+                    "/tama/v1/backends/{}/default-args?gpu_variant={}",
+                    encoded, gv
+                );
                 let res = post_request(&url).json(&body).unwrap().send().await;
                 match res {
                     Ok(response) if response.ok() => {}
@@ -325,17 +419,21 @@ pub fn Backends() -> impl IntoView {
                 }
             }
 
-            // Apply default env changes — key is "backend_type:gpu_variant"
+            // Apply default env changes — key is "backend_name:gpu_variant"
             let env_edit_keys: Vec<String> = env_edits.keys().cloned().collect();
             for key in env_edit_keys {
                 let env_str = env_edits.get(&key).cloned().unwrap_or_default();
-                let parts: Vec<String> = serde_json::from_str(&env_str).unwrap_or_default();
-                // Parse "backend_type:gpu_variant" from key
+                let parts: Vec<String> = parse_newline_separated(&env_str);
+                // Parse "backend_name:gpu_variant" from key
                 let parts_key: Vec<&str> = key.splitn(2, ':').collect();
                 let bt = parts_key[0];
                 let gv = parts_key.get(1).copied().unwrap_or("cpu");
                 let body = serde_json::json!({ "default_env": parts });
-                let url = format!("/tama/v1/backends/{}/default-env?gpu_variant={}", bt, gv);
+                let encoded = url_encode(bt);
+                let url = format!(
+                    "/tama/v1/backends/{}/default-env?gpu_variant={}",
+                    encoded, gv
+                );
                 let res = post_request(&url).json(&body).unwrap().send().await;
                 match res {
                     Ok(response) if response.ok() => {}

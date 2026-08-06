@@ -95,6 +95,10 @@ pub struct BackendVersionDto {
 #[serde(rename_all = "snake_case")]
 pub struct BackendCardDto {
     pub r#type: String,
+    /// Actual DB key for the backend (used in save URLs). For native backends this equals `r#type`;
+    /// for docker/custom backends it carries the actual name (e.g. "vllm").
+    #[serde(default)]
+    pub backend_name: String,
     pub display_name: String,
     pub installed: bool,
     /// GPU variant folder for this card (e.g. "cpu", "cuda_12", "vulkan").
@@ -138,13 +142,13 @@ pub fn BackendCard(
     /// Called with (backend_type, gpu_variant) when "Uninstall" is clicked.
     #[prop(optional)]
     on_delete: Option<Callback<(String, String)>>,
-    /// Called when default_args input changes with ("backend_type:gpu_variant", new_value)
+    /// Called when default_args input changes with (backend_name, gpu_variant, value)
     #[prop(optional)]
-    on_default_args_change: Option<Callback<(String, String)>>,
-    /// Called when default_env input changes with ("backend_type:gpu_variant", new_value)
+    on_default_args_change: Option<Callback<(String, String, String)>>,
+    /// Called when default_env input changes with (backend_name, gpu_variant, value)
     #[prop(optional)]
-    on_default_env_change: Option<Callback<(String, String)>>,
-    /// Called with (backend_type, version, gpu_variant) when version dropdown changes.
+    on_default_env_change: Option<Callback<(String, String, String)>>,
+    /// Called with (backend_name, version, gpu_variant) when version dropdown changes.
     #[prop(optional)]
     on_version_change: Option<Callback<(String, String, String)>>,
     /// Called with (backend_type, gpu_variant, build_from_source) when toggle changes.
@@ -163,19 +167,31 @@ pub fn BackendCard(
     let display_name = backend.display_name.clone();
     let gpu_variant = backend.gpu_variant.clone();
     let release_notes_url = backend.release_notes_url.clone();
-    let backend_type = backend.r#type.clone();
-    // Unique key for this backend variant: "llama_cpp:vulkan"
-    let backend_key = format!("{}:{}", backend_type, gpu_variant);
-    let bk_input = backend_key.clone();
+    // Actual DB key for this backend (falls back to r#type for native backends)
+    let backend_name = if backend.backend_name.is_empty() {
+        backend.r#type.clone()
+    } else {
+        backend.backend_name.clone()
+    };
+    // Clone for use in multiple event closures below
+    let backend_name_for_args = backend_name.clone();
+    let backend_name_for_env = backend_name.clone();
+    let gpu_variant_for_args = gpu_variant.clone();
+    let gpu_variant_for_env = gpu_variant.clone();
 
     let update_available = backend.update.update_available.unwrap_or(false);
     let latest_version = backend.update.latest_version.clone();
 
-    let default_args_initial = backend.default_args.join(" ");
+    let default_args_initial = backend.default_args.join("\n");
     let default_args_signal = RwSignal::new(default_args_initial.clone());
-    let default_env_initial = serde_json::to_string(&backend.default_env).unwrap_or_default();
+    let default_env_initial = backend
+        .default_env
+        .iter()
+        .filter(|s| !s.is_empty())
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n");
     let default_env_signal = RwSignal::new(default_env_initial.clone());
-    let bk_env = backend_key.clone();
 
     // All installed versions (sorted by installed_at DESC)
     let versions = backend.versions.clone();
@@ -257,7 +273,6 @@ pub fn BackendCard(
             {/* Version selector dropdown */}
             {if installed && version_count > 1 {
                 let version_cb = on_version_change;
-                let vts = backend.r#type.clone();
                 view! {
                     <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.75rem;">
                         <label style="font-size:0.8125rem;font-weight:600;">"Version:"</label>
@@ -266,16 +281,15 @@ pub fn BackendCard(
                             style="font-size:0.8125rem;padding:0.25rem 0.5rem;min-width:180px;"
                             prop:value=move || selected_version_idx.get().to_string()
                             on:change=move |ev| {
-                                if let Some(input) = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok()) {
-                                    if let Ok(idx) = input.value().parse::<usize>() {
-                                        selected_version_idx.set(idx);
-                                        // Track version change as a pending edit
-                                        if let Some(cb) = &version_cb {
-                                            if idx < version_count {
-                                                let ver = versions[idx].version.clone();
-                                                let gv = versions[idx].gpu_variant.clone();
-                                                cb.run((vts.clone(), ver, gv.clone()));
-                                            }
+                                let value = crate::utils::target_value(&ev);
+                                if let Ok(idx) = value.parse::<usize>() {
+                                    selected_version_idx.set(idx);
+                                    // Track version change as a pending edit
+                                    if let Some(cb) = &version_cb {
+                                        if idx < version_count {
+                                            let ver = versions[idx].version.clone();
+                                            let gv = versions[idx].gpu_variant.clone();
+                                            cb.run((backend_name.clone(), ver, gv));
                                         }
                                     }
                                 }
@@ -324,40 +338,39 @@ pub fn BackendCard(
                     }
                 }}
 
-                 <div style="display:flex;flex-direction:column;gap:0.25rem;">
-                     <label style="font-size:0.875rem;font-weight:600;">"Default Args"</label>
-                     <input
-                         type="text"
-                         placeholder="No default args set"
-                         style="font-size:0.875rem;padding:0.375rem;border:1px solid var(--border,#ccc);border-radius:4px;font-family:monospace;"
-                         prop:value=move || default_args_signal.get()
-                         on:input=move |ev| {
-                             if let Some(input) = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok()) {
-                                 default_args_signal.set(input.value());
-                                 if let Some(cb) = &on_default_args_change {
-                                     cb.run((bk_input.clone(), input.value()));
-                                 }
-                             }
-                         }
-                     />
-                </div>
-
-                <div style="display:flex;flex-direction:column;gap:0.25rem;">
-                     <label style="font-size:0.875rem;font-weight:600;">"Environment Variables"</label>
-                     <input
-                         type="text"
-                         placeholder=r#"["RADV_PERFTEST=nogttspill", "FOO=bar"]"#
-                         style="font-size:0.875rem;padding:0.375rem;border:1px solid var(--border,#ccc);border-radius:4px;font-family:monospace;"
-                         prop:value=move || default_env_signal.get()
-                         on:input=move |ev| {
-                             if let Some(input) = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok()) {
-                                 default_env_signal.set(input.value());
-                                 if let Some(cb) = &on_default_env_change {
-                                     cb.run((bk_env.clone(), input.value()));
-                                 }
-                             }
-                         }
-                     />
+                <div style="display:flex;gap:1rem;">
+                    <div style="flex:1;min-width:0;">
+                        <label style="font-size:0.875rem;font-weight:600;">"Default Args"</label>
+                        <textarea
+                            rows=4
+                            placeholder="One arg per line\n--max-num-seqs 4\n--enable-prefix-caching"
+                            style="font-size:0.875rem;padding:0.375rem;border:1px solid var(--border,#ccc);border-radius:4px;font-family:monospace;width:100%;resize:vertical;box-sizing:border-box;"
+                            prop:value=move || default_args_signal.get()
+                            on:input=move |ev| {
+                                let value = crate::utils::target_value(&ev);
+                                default_args_signal.set(value.clone());
+                                if let Some(cb) = &on_default_args_change {
+                                    cb.run((backend_name_for_args.clone(), gpu_variant_for_args.clone(), value));
+                                }
+                            }
+                        ></textarea>
+                    </div>
+                    <div style="flex:1;min-width:0;">
+                        <label style="font-size:0.875rem;font-weight:600;">"Environment Variables"</label>
+                        <textarea
+                            rows=4
+                            placeholder="One variable per line\nKEY=value\nOTHER_VAR=123"
+                            style="font-size:0.875rem;padding:0.375rem;border:1px solid var(--border,#ccc);border-radius:4px;font-family:monospace;width:100%;resize:vertical;box-sizing:border-box;"
+                            prop:value=move || default_env_signal.get()
+                            on:input=move |ev| {
+                                let value = crate::utils::target_value(&ev);
+                                default_env_signal.set(value.clone());
+                                if let Some(cb) = &on_default_env_change {
+                                    cb.run((backend_name_for_env.clone(), gpu_variant_for_env.clone(), value));
+                                }
+                            }
+                        ></textarea>
+                    </div>
                 </div>
 
                 {if update_available {
@@ -571,6 +584,7 @@ mod tests {
     fn test_backend_card_dto_serialization() {
         let dto = BackendCardDto {
             r#type: "llama_cpp".to_string(),
+            backend_name: "llama_cpp".to_string(),
             display_name: "llama.cpp".to_string(),
             installed: false,
             gpu_variant: String::new(),
@@ -591,6 +605,7 @@ mod tests {
     fn test_backend_card_dto_is_active_field() {
         let dto_active = BackendCardDto {
             r#type: "llama_cpp".to_string(),
+            backend_name: "llama_cpp".to_string(),
             display_name: "llama.cpp".to_string(),
             installed: true,
             gpu_variant: "cpu".to_string(),
@@ -607,6 +622,7 @@ mod tests {
 
         let dto_inactive = BackendCardDto {
             r#type: "llama_cpp".to_string(),
+            backend_name: "llama_cpp".to_string(),
             display_name: "llama.cpp".to_string(),
             installed: true,
             gpu_variant: "cpu".to_string(),
@@ -641,6 +657,7 @@ mod tests {
     fn test_backend_card_dto_with_versions() {
         let dto = BackendCardDto {
             r#type: "llama_cpp".to_string(),
+            backend_name: "llama_cpp".to_string(),
             display_name: "llama.cpp".to_string(),
             installed: true,
             gpu_variant: "cuda_12".to_string(),
@@ -686,6 +703,7 @@ mod tests {
     fn test_backend_card_dto_ik_llama_type() {
         let dto = BackendCardDto {
             r#type: "ik_llama".to_string(),
+            backend_name: "ik_llama".to_string(),
             display_name: "ik_llama".to_string(),
             installed: false,
             gpu_variant: String::new(),
@@ -706,6 +724,7 @@ mod tests {
     fn test_backend_card_dto_custom_type() {
         let dto = BackendCardDto {
             r#type: "custom".to_string(),
+            backend_name: "custom".to_string(),
             display_name: "Custom Backend".to_string(),
             installed: true,
             gpu_variant: String::new(),
@@ -738,6 +757,7 @@ mod tests {
     fn test_backend_card_dto_roundtrip() {
         let original = BackendCardDto {
             r#type: "llama_cpp".to_string(),
+            backend_name: "llama_cpp".to_string(),
             display_name: "llama.cpp".to_string(),
             installed: true,
             gpu_variant: "cuda_12".to_string(),

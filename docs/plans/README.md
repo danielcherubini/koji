@@ -12,11 +12,19 @@ Plans for features, refactors, and bug fixes in the Tama project.
 
 ## Quick Stats
 
-- **Total Plans**: 83
-- **Backlog**: 0
+- **Total Plans**: 84
+- **Backlog**: 1
 - **Completed**: 83 ✅
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan.
+
+---
+
+## Backlog
+
+| # | Plan | Status |
+|---|------|--------|
+| [186](plan-186-backend-args-env-fix.md) | Backend Args/Env Fix | Backlog |
 
 ---
 

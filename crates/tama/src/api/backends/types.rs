@@ -48,6 +48,10 @@ pub struct BackendListResponse {
 #[serde(rename_all = "snake_case")]
 pub struct BackendCardDto {
     pub r#type: String,
+    /// Actual DB key for the backend (used in save URLs). For native backends this equals `r#type`;
+    /// for docker/custom backends it carries the actual name (e.g. "vllm").
+    #[serde(default)]
+    pub backend_name: String,
     pub display_name: String,
     pub installed: bool,
     /// GPU variant folder for this card (e.g. "cpu", "cuda_12", "vulkan").
@@ -81,6 +85,7 @@ impl BackendCardDto {
     ) -> Self {
         Self {
             r#type: type_.to_string(),
+            backend_name: type_.to_string(),
             display_name: display_name.to_string(),
             installed: false,
             gpu_variant: String::new(),
@@ -681,5 +686,29 @@ mod tests {
             req.gpu_variant,
             tama_core::gpu::GpuVariant::Cuda { .. }
         ));
+    }
+
+    // ── BackendCardDto tests ────────────────────────────────────────────────
+
+    #[test]
+    fn test_default_uninstalled_sets_backend_name() {
+        let card = BackendCardDto::default_uninstalled(
+            "llama_cpp",
+            "llama.cpp",
+            Some("https://example.com"),
+            vec!["--threads 4".to_string()],
+        );
+        assert_eq!(card.backend_name, "llama_cpp");
+        assert_eq!(card.r#type, "llama_cpp");
+        assert!(!card.installed);
+    }
+
+    #[test]
+    fn test_backend_card_dto_deserialize_without_backend_name() {
+        // backend_name has `#[serde(default)]`, so omitting it should succeed
+        let json = r#"{"type":"llama_cpp","display_name":"llama.cpp","installed":true,"update":{"checked":false},"default_args":["--threads 4"]}"#;
+        let card: BackendCardDto = serde_json::from_str(json).unwrap();
+        assert_eq!(card.backend_name, "");
+        assert_eq!(card.r#type, "llama_cpp");
     }
 }

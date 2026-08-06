@@ -149,6 +149,7 @@ pub async fn list_backends(
 
                         backends.push(BackendCardDto {
                             r#type: type_.to_string(),
+                            backend_name: type_.to_string(),
                             display_name: display_name.to_string(),
                             installed: true,
                             gpu_variant: variant,
@@ -247,6 +248,7 @@ pub async fn list_backends(
 
                         custom.push(BackendCardDto {
                             r#type: bt.clone(),
+                            backend_name: name.clone(),
                             display_name: format!("Custom ({})", name),
                             installed: true,
                             gpu_variant: variant,
@@ -326,6 +328,7 @@ pub async fn list_backends(
 
                         docker.push(BackendCardDto {
                             r#type: bt.clone(),
+                            backend_name: name.clone(),
                             display_name: format!("Docker ({})", name),
                             installed: true,
                             gpu_variant: variant,
@@ -495,6 +498,7 @@ pub async fn check_backend_updates(
 
                         backends.push(BackendCardDto {
                             r#type: type_.to_string(),
+                            backend_name: type_.to_string(),
                             display_name: display_name.to_string(),
                             installed: true,
                             gpu_variant: variant,
@@ -586,6 +590,7 @@ pub async fn check_backend_updates(
 
                         custom.push(BackendCardDto {
                             r#type: bt.clone(),
+                            backend_name: name.clone(),
                             display_name: format!("Custom ({})", name),
                             installed: true,
                             gpu_variant: variant,
@@ -650,6 +655,7 @@ pub async fn check_backend_updates(
 
                         docker.push(BackendCardDto {
                             r#type: bt.clone(),
+                            backend_name: name.clone(),
                             display_name: format!("Docker ({})", name),
                             installed: true,
                             gpu_variant: variant,
