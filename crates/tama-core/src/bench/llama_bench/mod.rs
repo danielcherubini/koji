@@ -469,6 +469,7 @@ mod tests {
             spec_decoding: Default::default(),
             n_batch: None,
             n_ubatch: None,
+            vllm: Default::default(),
         };
 
         let config_key = "test--test-model";

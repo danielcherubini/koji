@@ -23,7 +23,7 @@ use self::hardware_form::ModelEditorHardwareForm;
 use self::sampling_form::ModelEditorSamplingForm;
 use self::settings_form::ModelEditorSettingsForm;
 use self::types::*;
-use self::vllm_form::{args_to_vllm_form, vllm_form_to_args, VllmSettings};
+use self::vllm_form::{args_to_vllm_form, merge_vllm_settings, strip_managed_flags};
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
@@ -77,43 +77,6 @@ pub fn ModelEditor() -> impl IntoView {
 
     // Active preset name (tracks which preset was last loaded)
     let active_preset = RwSignal::new(String::new());
-
-    // vLLM settings derived form args for transformers-format models
-    let vllm_settings = RwSignal::new(VllmSettings::default());
-
-    // Sync vLLM settings from form args (user edits in the Advanced textarea).
-    // Guard: only update when settings actually differ (prevents reactive loops).
-    Effect::new(move |_| {
-        if let Some(f) = form.get() {
-            if is_transformers(f.hf_format.as_deref()) {
-                let settings = args_to_vllm_form(&f.args);
-                if vllm_settings.with_untracked(|s| *s != settings) {
-                    vllm_settings.set(settings);
-                }
-            }
-        }
-    });
-
-    // Sync args back to the form when vLLM settings change (field edits).
-    // Guard: only write when args would actually change (prevents reactive loops).
-    Effect::new(move |_| {
-        let settings = vllm_settings.get();
-        let needs_write = form.with_untracked(|f| {
-            f.as_ref()
-                .map(|f| {
-                    is_transformers(f.hf_format.as_deref())
-                        && vllm_form_to_args(&settings, &f.args) != f.args
-                })
-                .unwrap_or(false)
-        });
-        if needs_write {
-            form.update(|f| {
-                if let Some(f) = f {
-                    f.args = vllm_form_to_args(&settings, &f.args);
-                }
-            });
-        }
-    });
 
     // GGUF-only tabs (Sampling, Files) are hidden for transformers models —
     // fall back to Settings if one of them is active when the format changes.
@@ -251,6 +214,13 @@ pub fn ModelEditor() -> impl IntoView {
                         SpecDecodingForm::default()
                     };
 
+                    // Parse vllm from ModelDetail
+                    let vllm = if let Some(v_json) = &d.vllm {
+                        serde_json::from_value(v_json.clone()).unwrap_or_default()
+                    } else {
+                        VllmSettings::default()
+                    };
+
                     form.set(Some(ModelForm {
                         id: d.id.to_string(),
                         backend: d.backend.clone(),
@@ -276,6 +246,7 @@ pub fn ModelEditor() -> impl IntoView {
                         quants: d.quants.clone(),
                         modalities,
                         spec_decoding,
+                        vllm,
                         n_batch: d.n_batch,
                         n_ubatch: d.n_ubatch,
                         hf_format: d.hf_format.clone(),
@@ -283,18 +254,18 @@ pub fn ModelEditor() -> impl IntoView {
 
                     repo_commit_sha.set(d.repo_commit_sha.clone());
                     repo_pulled_at.set(d.repo_pulled_at.clone());
-                    // For transformers-format models: normalize vLLM-managed args eagerly
-                    // (without waiting for the vLLM component to mount). This ensures
-                    // last_saved_form is seeded from the normalized args so is_dirty
-                    // correctly starts as false and becomes true on user edits.
+                    // For transformers-format models: strip managed vLLM flags
+                    // from args so the Extra Args textarea only shows user flags.
+                    // The typed vLLM settings are stored in form.vllm.
                     if is_transformers(d.hf_format.as_deref()) {
-                        let settings = args_to_vllm_form(&form.get().as_ref().unwrap().args);
-                        let normalized_args =
-                            vllm_form_to_args(&settings, &form.get().as_ref().unwrap().args);
-                        vllm_settings.set(settings);
+                        let extracted = args_to_vllm_form(&form.get().as_ref().unwrap().args);
                         form.update(|f| {
                             if let Some(f) = f {
-                                f.args = normalized_args;
+                                // Merge typed column values (existing) with args extraction.
+                                // Typed column wins per-field; extracted fills gaps.
+                                let typed = std::mem::take(&mut f.vllm);
+                                f.vllm = merge_vllm_settings(&typed, &extracted);
+                                f.args = strip_managed_flags(&f.args);
                             }
                         });
                     }
@@ -522,6 +493,7 @@ pub fn ModelEditor() -> impl IntoView {
                 quants: initial_form.quants.clone(),
                 modalities: initial_form.modalities.clone(),
                 spec_decoding: initial_form.spec_decoding.clone(),
+                vllm: initial_form.vllm.clone(),
                 n_batch: initial_form.n_batch,
                 n_ubatch: initial_form.n_ubatch,
                 hf_format: initial_form.hf_format.clone(),
@@ -864,7 +836,6 @@ pub fn ModelEditor() -> impl IntoView {
                                             <ModelEditorSettingsForm
                                                 form=form
                                                 backends=backends
-                                                vllm_settings=vllm_settings
                                             />
                                         </div>
                                     }.into_any(),
@@ -873,7 +844,6 @@ pub fn ModelEditor() -> impl IntoView {
                                             <h2 class="card__title">"Context"</h2>
                                             <ModelEditorHardwareForm
                                                 form=form
-                                                vllm_settings=vllm_settings
                                             />
                                         </div>
                                     }.into_any(),
@@ -915,7 +885,7 @@ pub fn ModelEditor() -> impl IntoView {
                                     Section::Advanced => view! {
                                         <div class="card mt-2">
                                             <h2 class="card__title">"Advanced"</h2>
-                                            <ModelEditorAdvancedForm form=form vllm_settings=vllm_settings />
+                                            <ModelEditorAdvancedForm form=form />
                                         </div>
                                     }.into_any(),
                                 }}

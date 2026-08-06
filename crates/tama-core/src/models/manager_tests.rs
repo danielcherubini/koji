@@ -45,6 +45,7 @@ fn make_test_record(repo_id: &str) -> ModelConfigRecord {
         updated_at: now,
         n_batch: None,
         n_ubatch: None,
+        vllm_config: None,
     }
 }
 

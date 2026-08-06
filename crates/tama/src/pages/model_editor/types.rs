@@ -100,6 +100,8 @@ pub struct ModelDetail {
     pub modalities: Option<ModelModalities>,
     #[serde(default)]
     pub spec_decoding: Option<serde_json::Value>,
+    #[serde(default)]
+    pub vllm: Option<serde_json::Value>,
     /// Pre-allocated context KV cache size (llama.cpp --batch). None = backend default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub n_batch: Option<u32>,
@@ -135,6 +137,21 @@ pub struct SpecDecodingForm {
     pub n_max: Option<u32>,
     pub n_min: Option<u32>,
     pub draft_ngl: Option<u32>,
+}
+
+/// vLLM-specific settings for transformers-format models.
+/// Frontend mirror of `tama_core::config::VllmConfig` (WASM cannot use core types).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct VllmSettings {
+    pub quantization: Option<String>, // none/fp8/awq (free-form allowed)
+    pub kv_cache_dtype: Option<String>, // auto/fp8/bf16
+    pub tensor_parallel_size: Option<u32>, // default 1
+    pub gpu_memory_utilization: Option<f64>, // 0.0–1.0
+    pub max_model_len: Option<u32>,
+    pub max_num_batched_tokens: Option<u32>,
+    pub enable_prefix_caching: bool,
+    pub trust_remote_code: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -174,6 +191,8 @@ pub struct ModelForm {
     pub modalities: Option<ModelModalities>,
     #[serde(default)]
     pub spec_decoding: SpecDecodingForm,
+    #[serde(default)]
+    pub vllm: VllmSettings,
     /// Pre-allocated context KV cache size (llama.cpp --batch). None = backend default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub n_batch: Option<u32>,
@@ -318,6 +337,7 @@ mod tests {
             repo_pulled_at: None,
             modalities: None,
             spec_decoding: None,
+            vllm: None,
             n_batch: None,
             n_ubatch: None,
             hf_format: Some("transformers".to_string()),
@@ -370,10 +390,168 @@ mod tests {
             "modalities": null,
             "spec_decoding": null,
             "n_batch": null,
-            "n_ubatch": null
+            "n_ubatch": null,
+            "vllm": null
         });
 
         let detail: ModelDetail = serde_json::from_value(json).unwrap();
         assert_eq!(detail.hf_format, None);
+    }
+
+    // ── ModelForm vllm round-trip tests ──────────────────────────────────
+
+    /// `ModelForm` with `vllm.tensor_parallel_size = Some(2)` serializes and
+    /// deserializes back to the same value.
+    #[test]
+    fn test_model_form_vllm_round_trip() {
+        let form = ModelForm {
+            id: "1".to_string(),
+            backend: "vllm".to_string(),
+            vllm: VllmSettings {
+                tensor_parallel_size: Some(2),
+                gpu_memory_utilization: Some(0.85),
+                enable_prefix_caching: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let serialized = serde_json::to_value(&form).unwrap();
+        assert_eq!(
+            serialized["vllm"]["tensor_parallel_size"].as_u64(),
+            Some(2),
+            "serialized JSON should contain vllm.tensor_parallel_size"
+        );
+
+        let deserialized: ModelForm = serde_json::from_value(serialized).unwrap();
+        assert_eq!(
+            deserialized.vllm.tensor_parallel_size,
+            Some(2),
+            "deserialized tensor_parallel_size should match original"
+        );
+        assert_eq!(
+            deserialized.vllm.gpu_memory_utilization,
+            Some(0.85),
+            "deserialized gpu_memory_utilization should match original"
+        );
+        assert!(
+            deserialized.vllm.enable_prefix_caching,
+            "deserialized enable_prefix_caching should be true"
+        );
+    }
+
+    /// `ModelDetail` JSON without `vllm` field parses to `None`.
+    #[test]
+    fn test_model_detail_vllm_missing_defaults_to_none() {
+        let json = serde_json::json!({
+            "id": 42,
+            "backend": "vllm",
+            "gpu_variant": null,
+            "gpu_device": null,
+            "model": null,
+            "quant": null,
+            "args": [],
+            "sampling": null,
+            "enabled": true,
+            "context_length": null,
+            "num_parallel": null,
+            "port": null,
+            "api_name": null,
+            "display_name": null,
+            "kv_unified": true,
+            "gpu_layers": null,
+            "cache_type_k": null,
+            "cache_type_v": null,
+            "hf_context_length": null,
+            "quants": {},
+            "backends": [],
+            "mmproj": null,
+            "mtp_model": null,
+            "repo_commit_sha": null,
+            "repo_pulled_at": null,
+            "modalities": null,
+            "spec_decoding": null,
+            "n_batch": null,
+            "n_ubatch": null,
+            "hf_format": null
+        });
+
+        let detail: ModelDetail = serde_json::from_value(json).unwrap();
+        assert_eq!(detail.vllm, None);
+    }
+
+    /// `ModelDetail` JSON with `vllm: {"tensor_parallel_size": 2}` parses correctly.
+    #[test]
+    fn test_model_detail_vllm_present_parses_correctly() {
+        let json = serde_json::json!({
+            "id": 42,
+            "backend": "vllm",
+            "gpu_variant": null,
+            "gpu_device": null,
+            "model": null,
+            "quant": null,
+            "args": [],
+            "sampling": null,
+            "enabled": true,
+            "context_length": null,
+            "num_parallel": null,
+            "port": null,
+            "api_name": null,
+            "display_name": null,
+            "kv_unified": true,
+            "gpu_layers": null,
+            "cache_type_k": null,
+            "cache_type_v": null,
+            "hf_context_length": null,
+            "quants": {},
+            "backends": [],
+            "mmproj": null,
+            "mtp_model": null,
+            "repo_commit_sha": null,
+            "repo_pulled_at": null,
+            "modalities": null,
+            "spec_decoding": null,
+            "n_batch": null,
+            "n_ubatch": null,
+            "hf_format": null,
+            "vllm": {
+                "tensor_parallel_size": 2,
+                "gpu_memory_utilization": 0.9
+            }
+        });
+
+        let detail: ModelDetail = serde_json::from_value(json).unwrap();
+        assert!(detail.vllm.is_some());
+        let vllm = detail.vllm.unwrap();
+        assert_eq!(vllm["tensor_parallel_size"].as_u64(), Some(2));
+        assert_eq!(vllm["gpu_memory_utilization"].as_f64(), Some(0.9));
+    }
+
+    // ── VllmSettings serde(default) tests ───────────────────────────────
+
+    /// Partial JSON with only some fields deserializes correctly,
+    /// filling missing fields with defaults instead of failing.
+    #[test]
+    fn test_vllm_settings_partial_deserialize() {
+        let json = serde_json::json!({
+            "tensor_parallel_size": 2
+        });
+
+        let settings: VllmSettings = serde_json::from_value(json).unwrap();
+        assert_eq!(settings.tensor_parallel_size, Some(2));
+        // Missing fields get defaults
+        assert_eq!(settings.quantization, None);
+        assert_eq!(settings.kv_cache_dtype, None);
+        assert_eq!(settings.gpu_memory_utilization, None);
+        assert!(!settings.enable_prefix_caching);
+        assert!(!settings.trust_remote_code);
+    }
+
+    /// Empty object deserializes to all-default VllmSettings.
+    #[test]
+    fn test_vllm_settings_empty_object_deserialize() {
+        let json = serde_json::json!({});
+        let settings: VllmSettings = serde_json::from_value(json).unwrap();
+        assert_eq!(settings, VllmSettings::default());
     }
 }

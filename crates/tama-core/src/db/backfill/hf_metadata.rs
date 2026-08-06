@@ -154,6 +154,7 @@ mod tests {
                 updated_at: now,
                 n_batch: None,
                 n_ubatch: None,
+                vllm_config: None,
             };
             upsert_model_config(&conn, &record).unwrap();
 
@@ -243,6 +244,7 @@ mod tests {
                 updated_at: now,
                 n_batch: None,
                 n_ubatch: None,
+                vllm_config: None,
             };
             upsert_model_config(&conn, &record).unwrap();
         }

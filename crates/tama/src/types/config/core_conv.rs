@@ -463,6 +463,7 @@ impl From<ModelConfig> for tama_core::config::ModelConfig {
             hf_last_modified: None,
             db_id: None,                       // Auto-generated primary key
             spec_decoding: Default::default(), // Managed through model CRUD endpoints
+            vllm: Default::default(),          // Managed through model CRUD endpoints
             n_batch: m.n_batch,
             n_ubatch: m.n_ubatch,
         }

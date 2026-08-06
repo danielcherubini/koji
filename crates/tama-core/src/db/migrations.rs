@@ -46,6 +46,7 @@ mod _0040_rename_app_supervisor_to_app_lifecycle;
 mod _0041_add_model_batch_sizes;
 mod _0042_add_benchmark_suite_id;
 mod _0043_add_docker_config;
+mod _0044_add_vllm_config;
 
 #[cfg(test)]
 mod migrations_tests;
@@ -81,7 +82,7 @@ impl Drop for FkGuard<'_> {
 type Migration = (i32, bool, &'static str);
 
 /// Version number for the latest migration
-pub const LATEST_VERSION: i32 = 43;
+pub const LATEST_VERSION: i32 = 44;
 
 /// All migrations collected from individual files, sorted by version.
 const MIGRATIONS: &[Migration] = &[
@@ -128,6 +129,7 @@ const MIGRATIONS: &[Migration] = &[
     _0041_add_model_batch_sizes::MIGRATION,
     _0042_add_benchmark_suite_id::MIGRATION,
     _0043_add_docker_config::MIGRATION,
+    _0044_add_vllm_config::MIGRATION,
 ];
 
 /// Run all applicable migrations on the database

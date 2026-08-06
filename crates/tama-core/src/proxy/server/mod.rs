@@ -83,6 +83,38 @@ impl ProxyServer {
                     }
                 });
             }
+
+            // Check if any models need vLLM config backfill (args → vllm_config migration).
+            // Intentionally NOT in run_initial_backfill because that is first-run-only
+            // and would never fire on existing databases.
+            // Gate: args contains at least one managed vLLM flag.
+            let needs_vllm_backfill = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM model_configs WHERE \
+                     args LIKE '%--quantization%' OR \
+                     args LIKE '%--kv-cache-dtype%' OR \
+                     args LIKE '%--tensor-parallel-size%' OR \
+                     args LIKE '%--gpu-memory-utilization%' OR \
+                     args LIKE '%--max-model-len%' OR \
+                     args LIKE '%--max-num-batched-tokens%' OR \
+                     args LIKE '%--enable-prefix-caching%' OR \
+                     args LIKE '%--trust-remote-code%'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap_or(0);
+            if needs_vllm_backfill > 0 {
+                let db_dir = state.db_dir.clone();
+                // Fire-and-forget background task — doesn't block startup.
+                // JoinHandle is intentionally dropped; backfill errors are logged internally.
+                let _handle = tokio::task::spawn_blocking(move || {
+                    if let Some(dir) = db_dir {
+                        if let Err(e) = crate::db::backfill::backfill_vllm_config(&dir) {
+                            tracing::warn!("vLLM config backfill failed: {}", e);
+                        }
+                    }
+                });
+            }
         }
 
         // Reap any managed Docker containers left behind from crashed Tama instances.

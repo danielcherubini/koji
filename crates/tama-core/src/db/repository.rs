@@ -418,6 +418,7 @@ mod tests {
             updated_at: "2024-01-01T00:00:00Z".to_string(),
             n_batch: None,
             n_ubatch: None,
+            vllm_config: None,
         };
         queries::upsert_model_config(conn, &record).unwrap()
     }

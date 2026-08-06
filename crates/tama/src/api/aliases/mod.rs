@@ -408,6 +408,7 @@ mod tests {
                 updated_at: "2024-01-01".into(),
                 n_batch: None,
                 n_ubatch: None,
+                vllm_config: None,
             },
         )
         .unwrap();
@@ -533,6 +534,7 @@ mod tests {
                 updated_at: "2024-01-01".into(),
                 n_batch: None,
                 n_ubatch: None,
+                vllm_config: None,
             },
         )
         .unwrap();

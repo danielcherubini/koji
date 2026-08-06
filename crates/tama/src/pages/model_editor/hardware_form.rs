@@ -2,7 +2,6 @@ use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
 use super::types::{is_transformers, ModelForm};
-use super::vllm_form::VllmSettings;
 use crate::components::context_length_selector::ContextLengthSelector;
 use crate::utils::{set_checked, set_input_value, target_value};
 
@@ -70,10 +69,7 @@ fn KvQuantCustomInput(form: RwSignal<Option<ModelForm>>, field: KvQuantField) ->
 }
 
 #[component]
-pub fn ModelEditorHardwareForm(
-    form: RwSignal<Option<ModelForm>>,
-    vllm_settings: RwSignal<VllmSettings>,
-) -> impl IntoView {
+pub fn ModelEditorHardwareForm(form: RwSignal<Option<ModelForm>>) -> impl IntoView {
     // Populate input values when the form data loads (or model changes).
     let last_init_id = StoredValue::new(None::<String>);
     Effect::new(move |_| {
@@ -81,18 +77,18 @@ pub fn ModelEditorHardwareForm(
             if last_init_id.get_value() != Some(f.id.clone()) {
                 // Transformers-format (vLLM) fields
                 if is_transformers(f.hf_format.as_deref()) {
-                    let s = vllm_settings.get();
+                    let v = &f.vllm;
                     set_input_value(
                         "field-max-model-len",
-                        &s.max_model_len.map(|v| v.to_string()).unwrap_or_default(),
+                        &v.max_model_len.map(|v| v.to_string()).unwrap_or_default(),
                     );
                     set_input_value(
                         "field-kv-cache-dtype",
-                        s.kv_cache_dtype.as_deref().unwrap_or_default(),
+                        v.kv_cache_dtype.as_deref().unwrap_or_default(),
                     );
                     set_input_value(
                         "field-max-num-batched-tokens",
-                        &s.max_num_batched_tokens
+                        &v.max_num_batched_tokens
                             .map(|v| v.to_string())
                             .unwrap_or_default(),
                     );
@@ -348,8 +344,10 @@ pub fn ModelEditorHardwareForm(
                 placeholder="e.g. 32768"
                 on:input=move |ev| {
                     let val = target_value(&ev);
-                    vllm_settings.update(|s| {
-                        s.max_model_len = if val.is_empty() { None } else { val.parse::<u32>().ok() };
+                    form.update(|f| {
+                        if let Some(form) = f {
+                            form.vllm.max_model_len = if val.is_empty() { None } else { val.parse::<u32>().ok() };
+                        }
                     });
                 }
             />
@@ -363,8 +361,10 @@ pub fn ModelEditorHardwareForm(
                 class="form-select"
                 on:change=move |e| {
                     let val = target_value(&e);
-                    vllm_settings.update(|s| {
-                        s.kv_cache_dtype = if val.is_empty() { None } else { Some(val) };
+                    form.update(|f| {
+                        if let Some(form) = f {
+                            form.vllm.kv_cache_dtype = if val.is_empty() { None } else { Some(val) };
+                        }
                     });
                 }
             >
@@ -387,8 +387,10 @@ pub fn ModelEditorHardwareForm(
                 placeholder="e.g. 8192"
                 on:input=move |ev| {
                     let val = target_value(&ev);
-                    vllm_settings.update(|s| {
-                        s.max_num_batched_tokens = if val.is_empty() { None } else { val.parse::<u32>().ok() };
+                    form.update(|f| {
+                        if let Some(form) = f {
+                            form.vllm.max_num_batched_tokens = if val.is_empty() { None } else { val.parse::<u32>().ok() };
+                        }
                     });
                 }
             />

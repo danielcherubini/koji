@@ -51,6 +51,7 @@ List all model configs plus available backends and sampling templates.
       },
       "modalities": null,
       "spec_decoding": {},
+      "vllm": {},
       "repo_commit_sha": null,
       "repo_pulled_at": null,
       "capabilities": {
@@ -113,6 +114,7 @@ Create a new model config.
   "cache_type_k": null,
   "cache_type_v": null,
   "spec_decoding": null,
+  "vllm": null,
   "metadata": null,
   "capabilities": {
     "supports_mtp": true,
@@ -149,6 +151,7 @@ Create a new model config.
 | `cache_type_k` | string | No | KV cache type for keys (e.g. `"f8"`, `"q4"`) |
 | `cache_type_v` | string | No | KV cache type for values |
 | `spec_decoding` | object | No | Speculative decoding config |
+| `vllm` | object | No | vLLM-specific launch settings for transformers-format models |
 | `metadata` | object | No | `HfModelMetadata` to pre-populate HF fields |
 
 **Response (201 Created):**

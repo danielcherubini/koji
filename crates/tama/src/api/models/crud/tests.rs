@@ -32,6 +32,7 @@ fn body_with_quants(quants: BTreeMap<String, QuantEntry>) -> ModelBody {
         cache_type_k: None,
         cache_type_v: None,
         spec_decoding: None,
+        vllm: None,
 
         n_batch: None,
 
@@ -85,6 +86,7 @@ fn existing_with_size(name: &str, file: &str, size: Option<u64>) -> ModelConfig 
         hf_last_modified: None,
         db_id: None,
         spec_decoding: Default::default(),
+        vllm: Default::default(),
 
         n_batch: None,
 
@@ -215,6 +217,7 @@ fn body_minimal() -> ModelBody {
         cache_type_k: None,
         cache_type_v: None,
         spec_decoding: None,
+        vllm: None,
 
         n_batch: None,
 
@@ -272,6 +275,7 @@ fn test_apply_model_body_enabled_override() {
         cache_type_k: None,
         cache_type_v: None,
         spec_decoding: None,
+        vllm: None,
 
         n_batch: None,
 
@@ -307,6 +311,7 @@ fn test_apply_model_body_enabled_default() {
         cache_type_k: None,
         cache_type_v: None,
         spec_decoding: None,
+        vllm: None,
 
         n_batch: None,
 
@@ -343,6 +348,7 @@ fn test_apply_model_body_with_api_name() {
         cache_type_k: None,
         cache_type_v: None,
         spec_decoding: None,
+        vllm: None,
 
         n_batch: None,
 
@@ -378,6 +384,7 @@ fn test_apply_model_body_with_gpu_layers() {
         cache_type_k: None,
         cache_type_v: None,
         spec_decoding: None,
+        vllm: None,
 
         n_batch: None,
 
@@ -413,6 +420,7 @@ fn test_apply_model_body_with_display_name() {
         cache_type_k: None,
         cache_type_v: None,
         spec_decoding: None,
+        vllm: None,
 
         n_batch: None,
 
@@ -449,6 +457,7 @@ fn test_apply_model_body_gpu_device_override() {
         cache_type_k: None,
         cache_type_v: None,
         spec_decoding: None,
+        vllm: None,
 
         n_batch: None,
 
@@ -490,6 +499,7 @@ fn test_apply_model_body_gpu_device_override() {
         hf_last_modified: None,
         db_id: None,
         spec_decoding: Default::default(),
+        vllm: Default::default(),
 
         n_batch: None,
 
@@ -526,6 +536,7 @@ fn test_apply_model_body_gpu_device_preserves_base_when_omitted() {
         cache_type_k: None,
         cache_type_v: None,
         spec_decoding: None,
+        vllm: None,
 
         n_batch: None,
 
@@ -567,6 +578,7 @@ fn test_apply_model_body_gpu_device_preserves_base_when_omitted() {
         hf_last_modified: None,
         db_id: None,
         spec_decoding: Default::default(),
+        vllm: Default::default(),
 
         n_batch: None,
 
@@ -604,6 +616,7 @@ fn test_apply_model_body_gpu_device_clear_sentinel() {
         cache_type_k: None,
         cache_type_v: None,
         spec_decoding: None,
+        vllm: None,
 
         n_batch: None,
 
@@ -645,6 +658,7 @@ fn test_apply_model_body_gpu_device_clear_sentinel() {
         hf_last_modified: None,
         db_id: None,
         spec_decoding: Default::default(),
+        vllm: Default::default(),
 
         n_batch: None,
 
@@ -680,6 +694,7 @@ fn test_apply_model_body_context_length() {
         cache_type_k: None,
         cache_type_v: None,
         spec_decoding: None,
+        vllm: None,
 
         n_batch: None,
 
@@ -716,6 +731,7 @@ fn test_apply_model_body_num_parallel_passthrough() {
         cache_type_k: None,
         cache_type_v: None,
         spec_decoding: None,
+        vllm: None,
 
         n_batch: None,
 
@@ -751,6 +767,7 @@ fn test_apply_model_body_num_parallel_default() {
         cache_type_k: None,
         cache_type_v: None,
         spec_decoding: None,
+        vllm: None,
 
         n_batch: None,
 
@@ -786,6 +803,7 @@ fn test_apply_model_body_empty_quants() {
         cache_type_k: None,
         cache_type_v: None,
         spec_decoding: None,
+        vllm: None,
 
         n_batch: None,
 
@@ -826,6 +844,7 @@ fn test_apply_model_body_kv_unified_passthrough() {
         cache_type_k: None,
         cache_type_v: None,
         spec_decoding: None,
+        vllm: None,
 
         n_batch: None,
 
@@ -866,6 +885,7 @@ fn test_apply_model_body_kv_unified_default_true_for_new() {
         cache_type_k: None,
         cache_type_v: None,
         spec_decoding: None,
+        vllm: None,
 
         n_batch: None,
 
@@ -905,6 +925,7 @@ fn test_apply_model_body_cache_type_passthrough() {
         cache_type_k: Some("q4_0".to_string()),
         cache_type_v: Some("q8_0".to_string()),
         spec_decoding: None,
+        vllm: None,
 
         n_batch: None,
 
@@ -942,6 +963,7 @@ fn test_validate_cache_type_k_too_long() {
         cache_type_k: Some("a".repeat(MAX_CACHE_TYPE + 1)),
         cache_type_v: None,
         spec_decoding: None,
+        vllm: None,
 
         n_batch: None,
 
@@ -978,6 +1000,7 @@ fn test_validate_cache_type_v_too_long() {
         cache_type_k: None,
         cache_type_v: Some("a".repeat(MAX_CACHE_TYPE + 1)),
         spec_decoding: None,
+        vllm: None,
 
         n_batch: None,
 
@@ -1014,6 +1037,7 @@ fn test_validate_cache_type_at_limit() {
         cache_type_k: Some("a".repeat(MAX_CACHE_TYPE)),
         cache_type_v: Some("b".repeat(MAX_CACHE_TYPE)),
         spec_decoding: None,
+        vllm: None,
 
         n_batch: None,
 
@@ -1048,6 +1072,7 @@ fn test_apply_model_body_cache_type_defaults_none() {
         cache_type_k: None,
         cache_type_v: None,
         spec_decoding: None,
+        vllm: None,
 
         n_batch: None,
 
@@ -1085,6 +1110,7 @@ fn test_apply_model_body_cache_type_whitespace_only_becomes_none() {
         cache_type_k: Some("   ".to_string()),
         cache_type_v: Some("\t\n".to_string()),
         spec_decoding: None,
+        vllm: None,
 
         n_batch: None,
 
@@ -1128,6 +1154,7 @@ fn test_apply_model_body_cache_type_trims_whitespace() {
         cache_type_k: Some("  q4_0  ".to_string()),
         cache_type_v: Some(" q8_0 ".to_string()),
         spec_decoding: None,
+        vllm: None,
 
         n_batch: None,
 
@@ -1327,6 +1354,7 @@ fn patch_body_all_none() -> ModelPatchBody {
         cache_type_k: None,
         cache_type_v: None,
         spec_decoding: None,
+        vllm: None,
 
         n_batch: None,
 
@@ -1359,6 +1387,7 @@ fn patch_body_single_context_length(val: u32) -> ModelPatchBody {
         cache_type_k: None,
         cache_type_v: None,
         spec_decoding: None,
+        vllm: None,
 
         n_batch: None,
 
@@ -1418,6 +1447,7 @@ fn existing_config_rich() -> ModelConfig {
         hf_last_modified: None,
         db_id: Some(42),
         spec_decoding: Default::default(),
+        vllm: Default::default(),
 
         n_batch: None,
 
@@ -2090,6 +2120,7 @@ async fn test_delete_model_removes_db_row() {
             n_batch: None,
 
             n_ubatch: None,
+            vllm_config: None,
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-01-01T00:00:00Z".to_string(),
         },
@@ -2202,6 +2233,7 @@ async fn test_create_model_response_deserializes_into_mutation_response() {
                 n_batch: None,
 
                 n_ubatch: None,
+                vllm_config: None,
                 created_at: "2024-01-01T00:00:00Z".to_string(),
                 updated_at: "2024-01-01T00:00:00Z".to_string(),
             },
@@ -2320,6 +2352,7 @@ async fn test_delete_model_response_deserializes_into_ok_response() {
                 n_batch: None,
 
                 n_ubatch: None,
+                vllm_config: None,
                 created_at: "2024-01-01T00:00:00Z".to_string(),
                 updated_at: "2024-01-01T00:00:00Z".to_string(),
             },

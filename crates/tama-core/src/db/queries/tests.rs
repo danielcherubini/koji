@@ -345,6 +345,7 @@ fn test_upsert_and_get_model_config() {
         updated_at: "2024-04-15T12:00:00Z".to_string(),
         n_batch: None,
         n_ubatch: None,
+        vllm_config: None,
     };
 
     upsert_model_config(&conn, &record).unwrap();
@@ -467,6 +468,7 @@ fn test_get_all_model_configs() {
         updated_at: "2024-01-01T00:00:00Z".to_string(),
         n_batch: None,
         n_ubatch: None,
+        vllm_config: None,
     };
     let rec2 = ModelConfigRecord {
         id: 0,
@@ -506,6 +508,7 @@ fn test_get_all_model_configs() {
         updated_at: "2024-01-01T00:00:00Z".to_string(),
         n_batch: None,
         n_ubatch: None,
+        vllm_config: None,
     };
 
     upsert_model_config(&conn, &rec1).unwrap();
@@ -556,6 +559,7 @@ fn test_delete_model_config() {
         updated_at: "2024-01-01T00:00:00Z".to_string(),
         n_batch: None,
         n_ubatch: None,
+        vllm_config: None,
     };
 
     upsert_model_config(&conn, &record).unwrap();

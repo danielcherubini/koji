@@ -145,6 +145,10 @@ pub struct ModelConfig {
     /// (llama.cpp --ubatch). None = backend default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub n_ubatch: Option<u32>,
+    /// vLLM-specific launch settings for transformers-format (safetensors) models.
+    /// Persisted as JSON in the `vllm_config` column; mirrors `spec_decoding`.
+    #[serde(default)]
+    pub vllm: VllmConfig,
 }
 
 /// Normalize legacy `-b`/`--batch-size` and `-ub`/`--ubatch-size` args into
@@ -287,6 +291,7 @@ impl ModelConfig {
             updated_at: now,
             n_batch: self.n_batch.map(|v| v as i32),
             n_ubatch: self.n_ubatch.map(|v| v as i32),
+            vllm_config: serde_json::to_string(&self.vllm).ok(),
         }
     }
 
@@ -378,6 +383,11 @@ impl ModelConfig {
                 .unwrap_or_default(),
             n_batch,
             n_ubatch,
+            vllm: record
+                .vllm_config
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_default(),
         }
     }
 }
@@ -399,6 +409,79 @@ pub struct SpecDecodingConfig {
     /// Draft model GPU layers (--spec-draft-ngl). MTP-only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub draft_ngl: Option<u32>,
+}
+
+/// vLLM-specific launch settings for transformers-format (safetensors) models.
+/// Persisted as JSON in the `vllm_config` column; mirrors `spec_decoding`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct VllmConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quantization: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kv_cache_dtype: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tensor_parallel_size: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_memory_utilization: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_model_len: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_num_batched_tokens: Option<u32>,
+    #[serde(default)]
+    pub enable_prefix_caching: bool,
+    #[serde(default)]
+    pub trust_remote_code: bool,
+}
+
+impl VllmConfig {
+    /// Returns true when all Options are None and both bools are false.
+    pub fn is_empty(&self) -> bool {
+        self.quantization.is_none()
+            && self.kv_cache_dtype.is_none()
+            && self.tensor_parallel_size.is_none()
+            && self.gpu_memory_utilization.is_none()
+            && self.max_model_len.is_none()
+            && self.max_num_batched_tokens.is_none()
+            && !self.enable_prefix_caching
+            && !self.trust_remote_code
+    }
+
+    /// Returns CLI argument entries in fixed order.
+    /// Skips None options and false bools.
+    pub fn to_args(&self) -> Vec<String> {
+        let mut args = Vec::new();
+        if let Some(ref v) = self.quantization {
+            args.push("--quantization".to_string());
+            args.push(v.clone());
+        }
+        if let Some(ref v) = self.kv_cache_dtype {
+            args.push("--kv-cache-dtype".to_string());
+            args.push(v.clone());
+        }
+        if let Some(v) = self.tensor_parallel_size {
+            args.push("--tensor-parallel-size".to_string());
+            args.push(v.to_string());
+        }
+        if let Some(v) = self.gpu_memory_utilization {
+            args.push("--gpu-memory-utilization".to_string());
+            args.push(v.to_string());
+        }
+        if let Some(v) = self.max_model_len {
+            args.push("--max-model-len".to_string());
+            args.push(v.to_string());
+        }
+        if let Some(v) = self.max_num_batched_tokens {
+            args.push("--max-num-batched-tokens".to_string());
+            args.push(v.to_string());
+        }
+        if self.enable_prefix_caching {
+            args.push("--enable-prefix-caching".to_string());
+        }
+        if self.trust_remote_code {
+            args.push("--trust-remote-code".to_string());
+        }
+        args
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]

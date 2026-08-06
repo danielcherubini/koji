@@ -2,7 +2,7 @@ use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
 use super::types::{is_transformers, ModelForm};
-use super::vllm_form::VllmSettings;
+use super::vllm_form::strip_managed_flags;
 use crate::utils::{set_checked, set_input_value, target_value};
 
 const SPEC_TYPE_DRAFT_MTP: &str = "draft-mtp";
@@ -10,10 +10,7 @@ const SPEC_TYPE_NGRAM_SIMPLE: &str = "ngram-simple";
 
 /// Advanced form section combining Speculative Decoding and Extra Args.
 #[component]
-pub fn ModelEditorAdvancedForm(
-    form: RwSignal<Option<ModelForm>>,
-    vllm_settings: RwSignal<VllmSettings>,
-) -> impl IntoView {
+pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoView {
     // Checkboxes for spec types
     let toggle_spec_type = move |e: web_sys::Event, spec_type: String| {
         let checked = e
@@ -70,7 +67,14 @@ pub fn ModelEditorAdvancedForm(
                         .spec_types
                         .contains(&SPEC_TYPE_NGRAM_SIMPLE.to_string()),
                 );
-                set_input_value("field-args", &f.args);
+                set_input_value(
+                    "field-args",
+                    &if is_transformers(f.hf_format.as_deref()) {
+                        strip_managed_flags(&f.args)
+                    } else {
+                        f.args.clone()
+                    },
+                );
                 // Spec decoding selects and input
                 set_input_value(
                     "field-spec-n-max",
@@ -228,13 +232,17 @@ pub fn ModelEditorAdvancedForm(
                 <input
                     id="field-vllm-prefix-caching"
                     type="checkbox"
-                    prop:checked=move || vllm_settings.get().enable_prefix_caching
+                    prop:checked=move || form.get().as_ref().map(|f| f.vllm.enable_prefix_caching).unwrap_or(false)
                     on:change=move |e| {
                         let checked = e.target()
                             .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
                             .map(|el| el.checked())
                             .unwrap_or(false);
-                        vllm_settings.update(|s| s.enable_prefix_caching = checked);
+                        form.update(|f| {
+                            if let Some(form) = f {
+                                form.vllm.enable_prefix_caching = checked;
+                            }
+                        });
                     }
                 />
                 <label class="form-check-label" for="field-vllm-prefix-caching">
@@ -248,13 +256,17 @@ pub fn ModelEditorAdvancedForm(
                 <input
                     id="field-vllm-trust-remote-code"
                     type="checkbox"
-                    prop:checked=move || vllm_settings.get().trust_remote_code
+                    prop:checked=move || form.get().as_ref().map(|f| f.vllm.trust_remote_code).unwrap_or(false)
                     on:change=move |e| {
                         let checked = e.target()
                             .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
                             .map(|el| el.checked())
                             .unwrap_or(false);
-                        vllm_settings.update(|s| s.trust_remote_code = checked);
+                        form.update(|f| {
+                            if let Some(form) = f {
+                                form.vllm.trust_remote_code = checked;
+                            }
+                        });
                     }
                 />
                 <label class="form-check-label" for="field-vllm-trust-remote-code">
@@ -273,9 +285,15 @@ pub fn ModelEditorAdvancedForm(
             rows="6"
             placeholder="One flag per line, e.g. -fa 1, -b 4096, --mlock"
             on:input=move |e| {
+                let val = target_value(&e);
                 form.update(|f| {
                     if let Some(form) = f {
-                        form.args = target_value(&e);
+                        // For transformers models, strip managed vLLM flags from Extra Args
+                        form.args = if is_transformers(form.hf_format.as_deref()) {
+                            strip_managed_flags(&val)
+                        } else {
+                            val
+                        };
                     }
                 });
             }

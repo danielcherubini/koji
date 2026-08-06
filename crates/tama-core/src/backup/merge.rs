@@ -151,21 +151,78 @@ pub fn merge_database(
     // added the `id`/model_id FK column — without a full copy, INSERT OR IGNORE
     // on model_pulls could not resolve the FK. Copying all columns (except id,
     // created_at, updated_at) ensures defaults apply and data is preserved.
+    //
+    // The column list is computed as the intersection of the hard-coded list
+    // (which includes all columns known to the current schema, including
+    // vllm_config added by migration _0044) and the backup DB's actual columns.
+    // This ensures pre-44 backups (lacking vllm_config) still restore correctly
+    // while post-44 backups preserve the new column.
+    //
+    // NOTE: created_at and updated_at are excluded — restored rows get fresh
+    // timestamps from the DEFAULT expression rather than carrying stale values
+    // from the backup.
+    let model_configs_columns: &[&str] = &[
+        "repo_id",
+        "display_name",
+        "backend",
+        "gpu_variant",
+        "gpu_device",
+        "enabled",
+        "selected_quant",
+        "selected_mmproj",
+        "selected_mtp_model",
+        "context_length",
+        "num_parallel",
+        "kv_unified",
+        "gpu_layers",
+        "cache_type_k",
+        "cache_type_v",
+        "port",
+        "args",
+        "sampling",
+        "modalities",
+        "profile",
+        "api_name",
+        "health_check",
+        "hf_format",
+        "hf_base_model",
+        "hf_pipeline_tag",
+        "hf_total_params",
+        "hf_active_params",
+        "hf_architecture_type",
+        "hf_context_length",
+        "hf_num_layers",
+        "hf_last_modified",
+        "spec_decoding",
+        "n_batch",
+        "n_ubatch",
+        "vllm_config",
+    ];
+
+    // Get the backup DB's column list via PRAGMA table_info on the attached DB.
+    // This is more robust than parsing CREATE TABLE text (which can false-positive
+    // on substring matches like "args" appearing inside other identifiers).
+    let backup_columns: Vec<String> = local_db
+        .prepare("PRAGMA backup_db.table_info(model_configs)")
+        .context("Failed to prepare PRAGMA table_info on backup_db")?
+        .query_map([], |row| row.get::<_, String>(1)) // name column (index 1)
+        .context("Failed to query PRAGMA table_info")?
+        .collect::<Result<_, _>>()
+        .context("Failed to read backup column names")?;
+
+    // Filter to columns that exist in the backup's model_configs table
+    let common_columns: Vec<&str> = model_configs_columns
+        .iter()
+        .filter(|&&col| backup_columns.iter().any(|c| c == col))
+        .copied()
+        .collect();
+
+    let cols = common_columns.join(", ");
+    let merge_sql = format!(
+        "INSERT OR IGNORE INTO model_configs ({cols}) SELECT {cols} FROM backup_db.model_configs"
+    );
     local_db
-        .execute_batch(
-            "INSERT OR IGNORE INTO model_configs \
-             (repo_id, display_name, backend, gpu_variant, enabled, selected_quant, selected_mmproj, \
-              context_length, num_parallel, kv_unified, gpu_layers, cache_type_k, cache_type_v, port, \
-              args, sampling, modalities, profile, api_name, health_check, hf_format, hf_base_model, \
-              hf_pipeline_tag, hf_total_params, hf_active_params, hf_architecture_type, \
-              hf_context_length, hf_num_layers, hf_last_modified, spec_decoding, selected_mtp_model, gpu_device) \
-             SELECT repo_id, display_name, backend, gpu_variant, enabled, selected_quant, selected_mmproj, \
-              context_length, num_parallel, kv_unified, gpu_layers, cache_type_k, cache_type_v, port, \
-              args, sampling, modalities, profile, api_name, health_check, hf_format, hf_base_model, \
-              hf_pipeline_tag, hf_total_params, hf_active_params, hf_architecture_type, \
-              hf_context_length, hf_num_layers, hf_last_modified, spec_decoding, selected_mtp_model, gpu_device \
-             FROM backup_db.model_configs",
-        )
+        .execute_batch(&merge_sql)
         .context("Failed to merge model_configs")?;
 
     // Merge model_pulls — resolve local model_id via repo_id LOWER join.
@@ -263,6 +320,130 @@ fn count_backend_installations(conn: &rusqlite::Connection) -> Result<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::Connection;
+
+    // Full model_configs column list (as of migration _0044, includes vllm_config).
+    // Used for creating local DB schema in tests.
+    const MODEL_CONFIGS_FULL_SCHEMA: &str = "
+        CREATE TABLE model_configs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            repo_id TEXT NOT NULL,
+            display_name TEXT,
+            backend TEXT NOT NULL,
+            gpu_variant TEXT NOT NULL DEFAULT 'cpu',
+            gpu_device TEXT,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            selected_quant TEXT,
+            selected_mmproj TEXT,
+            selected_mtp_model TEXT,
+            context_length INTEGER,
+            num_parallel INTEGER,
+            kv_unified INTEGER,
+            gpu_layers INTEGER,
+            cache_type_k TEXT,
+            cache_type_v TEXT,
+            port INTEGER,
+            args TEXT,
+            sampling TEXT,
+            modalities TEXT,
+            profile TEXT,
+            api_name TEXT,
+            health_check INTEGER NOT NULL DEFAULT 0,
+            hf_format TEXT,
+            hf_base_model TEXT,
+            hf_pipeline_tag TEXT,
+            hf_total_params TEXT,
+            hf_active_params TEXT,
+            hf_architecture_type TEXT,
+            hf_context_length INTEGER,
+            hf_num_layers INTEGER,
+            hf_last_modified TEXT,
+            spec_decoding TEXT,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            n_batch INTEGER,
+            n_ubatch INTEGER,
+            vllm_config TEXT
+        )
+    ";
+
+    // Pre-44 model_configs schema (without vllm_config, n_batch, n_ubatch).
+    const MODEL_CONFIGS_PRE44_SCHEMA: &str = "
+        CREATE TABLE model_configs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            repo_id TEXT NOT NULL,
+            display_name TEXT,
+            backend TEXT NOT NULL,
+            gpu_variant TEXT NOT NULL DEFAULT 'cpu',
+            gpu_device TEXT,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            selected_quant TEXT,
+            selected_mmproj TEXT,
+            selected_mtp_model TEXT,
+            context_length INTEGER,
+            num_parallel INTEGER,
+            kv_unified INTEGER,
+            gpu_layers INTEGER,
+            cache_type_k TEXT,
+            cache_type_v TEXT,
+            port INTEGER,
+            args TEXT,
+            sampling TEXT,
+            modalities TEXT,
+            profile TEXT,
+            api_name TEXT,
+            health_check INTEGER NOT NULL DEFAULT 0,
+            hf_format TEXT,
+            hf_base_model TEXT,
+            hf_pipeline_tag TEXT,
+            hf_total_params TEXT,
+            hf_active_params TEXT,
+            hf_architecture_type TEXT,
+            hf_context_length INTEGER,
+            hf_num_layers INTEGER,
+            hf_last_modified TEXT,
+            spec_decoding TEXT,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        )
+    ";
+
+    // Minimal tables needed for merge_database to succeed.
+    const MINIMAL_EXTRA_TABLES: &str = "
+        CREATE TABLE model_pulls (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            model_id INTEGER,
+            repo_id TEXT NOT NULL,
+            commit_sha TEXT NOT NULL,
+            pulled_at TEXT NOT NULL
+        );
+        CREATE TABLE model_files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            model_id INTEGER,
+            repo_id TEXT NOT NULL,
+            filename TEXT NOT NULL,
+            quant TEXT,
+            lfs_oid TEXT,
+            size_bytes INTEGER NOT NULL,
+            pulled_at TEXT NOT NULL,
+            last_verified_at TEXT,
+            verified_ok INTEGER,
+            verify_error TEXT
+        );
+        CREATE TABLE backend_installations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            backend_type TEXT NOT NULL,
+            version TEXT NOT NULL,
+            path TEXT NOT NULL,
+            installed_at INTEGER NOT NULL,
+            gpu_variant TEXT NOT NULL DEFAULT 'cpu',
+            source TEXT,
+            is_active INTEGER NOT NULL DEFAULT 0,
+            docker_config TEXT DEFAULT NULL,
+            UNIQUE(name, gpu_variant, version)
+        )
+    ";
 
     #[test]
     fn test_merge_config_adds_new_backends() {
@@ -522,5 +703,156 @@ mod tests {
         let debug_str = format!("{:?}", stats);
         assert!(debug_str.contains("new_backends"));
         assert!(debug_str.contains("skipped_backends"));
+    }
+
+    /// Restore from a pre-44 backup (no vllm_config column) succeeds.
+    /// The vllm_config column in the local DB should default to NULL.
+    #[test]
+    fn test_merge_database_pre44_backup_without_vllm_config() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+
+        // Create local DB with full schema (includes vllm_config)
+        let local_path = temp_dir.path().join("local.db");
+        let local_conn = Connection::open(&local_path).expect("open local db");
+        local_conn
+            .execute_batch(MODEL_CONFIGS_FULL_SCHEMA)
+            .expect("create local tables");
+        local_conn
+            .execute_batch(MINIMAL_EXTRA_TABLES)
+            .expect("create extra tables");
+
+        // Create backup DB with pre-44 schema (no vllm_config)
+        let backup_path = temp_dir.path().join("backup.db");
+        let backup_conn = Connection::open(&backup_path).expect("open backup db");
+        backup_conn
+            .execute_batch(MODEL_CONFIGS_PRE44_SCHEMA)
+            .expect("create backup tables");
+        backup_conn
+            .execute_batch(MINIMAL_EXTRA_TABLES)
+            .expect("create extra tables");
+
+        // Insert a model config into backup
+        backup_conn
+            .execute(
+                "INSERT INTO model_configs (repo_id, display_name, backend, spec_decoding) 
+             VALUES ('test/repo', 'Test Model', 'llama_cpp', '{\"model\": \"test\"}')",
+                [],
+            )
+            .expect("insert backup model");
+
+        // Verify backup DB schema before merge
+        let backup_cols: Vec<String> = backup_conn
+            .prepare("SELECT name FROM pragma_table_info('model_configs')")
+            .expect("prepare pragma")
+            .query_map([], |row| row.get(0))
+            .expect("query pragma")
+            .collect::<Result<_, _>>()
+            .expect("read column names");
+        assert!(
+            !backup_cols.contains(&"vllm_config".to_string()),
+            "backup should not have vllm_config"
+        );
+        assert!(
+            !backup_cols.contains(&"n_batch".to_string()),
+            "backup should not have n_batch"
+        );
+
+        // Merge should succeed despite missing vllm_config in backup
+        let result = merge_database(&local_conn, &backup_path);
+        assert!(
+            result.is_ok(),
+            "merge_database should succeed with pre-44 backup: {:?}",
+            result.err()
+        );
+
+        // Verify the model was merged and vllm_config is NULL
+        let vllm: Option<String> = local_conn
+            .query_row(
+                "SELECT vllm_config FROM model_configs WHERE repo_id = 'test/repo'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("query vllm_config");
+        assert!(
+            vllm.is_none(),
+            "vllm_config should be NULL for pre-44 backup restore, got: {:?}",
+            vllm
+        );
+
+        // Verify other columns were preserved
+        let spec: Option<String> = local_conn
+            .query_row(
+                "SELECT spec_decoding FROM model_configs WHERE repo_id = 'test/repo'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("query spec_decoding");
+        assert_eq!(spec, Some("{\"model\": \"test\"}".to_string()));
+    }
+
+    /// Restore from a post-44 backup (with vllm_config) preserves the value.
+    #[test]
+    fn test_merge_database_post44_backup_with_vllm_config() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+
+        // Create local DB with full schema (includes vllm_config)
+        let local_path = temp_dir.path().join("local.db");
+        let local_conn = Connection::open(&local_path).expect("open local db");
+        local_conn
+            .execute_batch(MODEL_CONFIGS_FULL_SCHEMA)
+            .expect("create local tables");
+        local_conn
+            .execute_batch(MINIMAL_EXTRA_TABLES)
+            .expect("create extra tables");
+
+        // Create backup DB with full schema (includes vllm_config)
+        let backup_path = temp_dir.path().join("backup.db");
+        let backup_conn = Connection::open(&backup_path).expect("open backup db");
+        backup_conn
+            .execute_batch(MODEL_CONFIGS_FULL_SCHEMA)
+            .expect("create backup tables");
+        backup_conn
+            .execute_batch(MINIMAL_EXTRA_TABLES)
+            .expect("create extra tables");
+
+        // Insert a model config with vllm_config into backup
+        let vllm_value = r#"{"quantization":"fp8","tensor_parallel_size":2}"#;
+        backup_conn.execute(
+            "INSERT INTO model_configs (repo_id, display_name, backend, spec_decoding, vllm_config) 
+             VALUES ('test/repo', 'Test Model', 'vllm', '{\"model\": \"spec\"}', ?1)",
+            [vllm_value],
+        ).expect("insert backup model");
+
+        // Merge should succeed and preserve vllm_config
+        let result = merge_database(&local_conn, &backup_path);
+        assert!(
+            result.is_ok(),
+            "merge_database should succeed with post-44 backup: {:?}",
+            result.err()
+        );
+
+        // Verify vllm_config was preserved
+        let vllm: Option<String> = local_conn
+            .query_row(
+                "SELECT vllm_config FROM model_configs WHERE repo_id = 'test/repo'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("query vllm_config");
+        assert_eq!(
+            vllm,
+            Some(vllm_value.to_string()),
+            "vllm_config should be preserved from post-44 backup"
+        );
+
+        // Verify other columns were also preserved
+        let spec: Option<String> = local_conn
+            .query_row(
+                "SELECT spec_decoding FROM model_configs WHERE repo_id = 'test/repo'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("query spec_decoding");
+        assert_eq!(spec, Some("{\"model\": \"spec\"}".to_string()));
     }
 }

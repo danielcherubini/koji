@@ -68,6 +68,7 @@ pub struct ModelBody {
     #[serde(default)]
     pub cache_type_v: Option<String>,
     pub spec_decoding: Option<tama_core::config::SpecDecodingConfig>,
+    pub vllm: Option<tama_core::config::VllmConfig>,
     /// Pre-allocated context KV cache size (llama.cpp --batch).
     #[serde(default)]
     pub n_batch: Option<u32>,
@@ -103,6 +104,7 @@ pub struct ModelPatchBody {
     pub cache_type_k: Option<String>,
     pub cache_type_v: Option<String>,
     pub spec_decoding: Option<tama_core::config::SpecDecodingConfig>,
+    pub vllm: Option<tama_core::config::VllmConfig>,
     pub n_batch: Option<u32>,
     pub n_ubatch: Option<u32>,
 }
@@ -114,6 +116,7 @@ pub fn apply_model_patch(
     // Extract spec_decoding before consuming existing to avoid cloning the
     // entire ModelConfig. Only the small SpecDecodingConfig is cloned if needed.
     let existing_spec_decoding = existing.spec_decoding.clone();
+    let existing_vllm = existing.vllm.clone();
 
     tama_core::config::ModelConfig {
         backend: body.backend.unwrap_or_else(|| existing.backend.clone()),
@@ -181,6 +184,7 @@ pub fn apply_model_patch(
         spec_decoding: body.spec_decoding.unwrap_or(existing_spec_decoding),
         n_batch: body.n_batch,
         n_ubatch: body.n_ubatch,
+        vllm: body.vllm.unwrap_or(existing_vllm),
     }
 }
 
@@ -191,6 +195,7 @@ fn apply_model_body(
     // Extract spec_decoding before consuming existing to avoid cloning the
     // entire ModelConfig. Only the small SpecDecodingConfig is cloned if needed.
     let existing_spec_decoding = existing.as_ref().map(|m| m.spec_decoding.clone());
+    let existing_vllm = existing.as_ref().map(|m| m.vllm.clone());
 
     let base = existing.unwrap_or_else(|| tama_core::config::ModelConfig {
         n_batch: None,
@@ -229,6 +234,7 @@ fn apply_model_body(
         hf_last_modified: None,
         db_id: None,
         spec_decoding: Default::default(),
+        vllm: Default::default(),
     });
 
     // Handle sampling from body
@@ -306,6 +312,9 @@ fn apply_model_body(
         spec_decoding: body
             .spec_decoding
             .unwrap_or_else(|| existing_spec_decoding.unwrap_or_default()),
+        vllm: body
+            .vllm
+            .unwrap_or_else(|| existing_vllm.unwrap_or_default()),
         n_batch: body.n_batch,
         n_ubatch: body.n_ubatch,
     }

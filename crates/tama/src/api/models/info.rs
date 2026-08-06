@@ -181,6 +181,7 @@ fn model_entry_json(
         "quants": quants_json,
         "modalities": m.modalities,
         "spec_decoding": serde_json::to_value(&m.spec_decoding).unwrap_or_default(),
+        "vllm": serde_json::to_value(&m.vllm).unwrap_or_default(),
         "n_batch": m.n_batch,
         "n_ubatch": m.n_ubatch,
         "capabilities": serde_json::to_value(tama_core::models::model_capabilities(
@@ -409,6 +410,7 @@ mod tests {
             updated_at: "2025-01-01T00:00:00Z".to_string(),
             n_batch: None,
             n_ubatch: None,
+            vllm_config: None,
         }
     }
 

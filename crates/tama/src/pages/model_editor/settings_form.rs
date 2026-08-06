@@ -4,7 +4,6 @@ use wasm_bindgen_futures::spawn_local;
 
 use super::api::{fetch_gpu_devices, refresh_gpu_devices};
 use super::types::{is_transformers, BackendOption, GpuDeviceInfo, ModelForm};
-use super::vllm_form::VllmSettings;
 use crate::utils::{set_checked, set_input_value, target_value};
 
 const MODALITY_OPTIONS: &[(&str, &str)] = &[
@@ -19,7 +18,6 @@ const MODALITY_OPTIONS: &[(&str, &str)] = &[
 pub fn ModelEditorSettingsForm(
     form: RwSignal<Option<ModelForm>>,
     backends: RwSignal<Vec<BackendOption>>,
-    vllm_settings: RwSignal<VllmSettings>,
 ) -> impl IntoView {
     // GPU devices discovered for the current backend
     let gpu_devices: RwSignal<Vec<GpuDeviceInfo>> = RwSignal::new(Vec::new());
@@ -120,16 +118,16 @@ pub fn ModelEditorSettingsForm(
                 );
                 // Transformers-format (vLLM) numeric inputs (text fields use reactive bindings)
                 if is_transformers(f.hf_format.as_deref()) {
-                    let s = vllm_settings.get();
+                    let v = &f.vllm;
                     set_input_value(
                         "field-tensor-parallel-size",
-                        &s.tensor_parallel_size
+                        &v.tensor_parallel_size
                             .map(|v| v.to_string())
                             .unwrap_or_default(),
                     );
                     set_input_value(
                         "field-gpu-memory-utilization",
-                        &s.gpu_memory_utilization
+                        &v.gpu_memory_utilization
                             .map(|v| v.to_string())
                             .unwrap_or_default(),
                     );
@@ -315,11 +313,13 @@ pub fn ModelEditorSettingsForm(
                     class="form-input"
                     type="text"
                     placeholder="e.g. fp8, awq"
-                    prop:value=move || vllm_settings.get().quantization.clone().unwrap_or_default()
+                    prop:value=move || form.get().as_ref().map(|f| f.vllm.quantization.clone()).unwrap_or_default().unwrap_or_default()
                     on:input=move |ev| {
                         let val = target_value(&ev);
-                        vllm_settings.update(|s| {
-                            s.quantization = if val.is_empty() { None } else { Some(val) };
+                        form.update(|f| {
+                            if let Some(form) = f {
+                                form.vllm.quantization = if val.is_empty() { None } else { Some(val) };
+                            }
                         });
                     }
                 />
@@ -336,8 +336,10 @@ pub fn ModelEditorSettingsForm(
                     placeholder="1"
                     on:input=move |ev| {
                         let val = target_value(&ev);
-                        vllm_settings.update(|s| {
-                            s.tensor_parallel_size = if val.is_empty() { None } else { val.parse::<u32>().ok() };
+                        form.update(|f| {
+                            if let Some(form) = f {
+                                form.vllm.tensor_parallel_size = if val.is_empty() { None } else { val.parse::<u32>().ok() };
+                            }
                         });
                     }
                 />
@@ -356,8 +358,10 @@ pub fn ModelEditorSettingsForm(
                     placeholder="0.9"
                     on:input=move |ev| {
                         let val = target_value(&ev);
-                        vllm_settings.update(|s| {
-                            s.gpu_memory_utilization = if val.is_empty() { None } else { val.parse::<f64>().ok() };
+                        form.update(|f| {
+                            if let Some(form) = f {
+                                form.vllm.gpu_memory_utilization = if val.is_empty() { None } else { val.parse::<f64>().ok() };
+                            }
                         });
                     }
                 />

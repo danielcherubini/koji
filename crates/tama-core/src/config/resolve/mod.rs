@@ -210,7 +210,8 @@ impl Config {
     /// 1. Pre-resolved `default_args`
     /// 2. `server.args`     (replaces same-flag entries from #1)
     /// 3. Injected `-m`/`-c`/`-ngl` (only if not already present after #1+#2)
-    /// 4. `server.sampling.to_args()` (replaces same-flag entries from #1+#2+#3)
+    /// 4. `server.vllm.to_args()` (transformers only, replaces same-flag entries)
+    /// 5. `server.sampling.to_args()` (replaces same-flag entries from #1-#4)
     ///
     /// **Invariant:** the returned `Vec<String>` is always flat (one token
     /// per element). Callers like `proxy/lifecycle.rs::override_arg` and
@@ -300,6 +301,12 @@ impl Config {
                     &grouped,
                     &[format!("--served-model-name {}", joined)],
                 );
+            }
+
+            // Emit vLLM-specific flags from typed config.
+            // Uses merge_args so typed config wins over user args on collision.
+            if !server.vllm.is_empty() {
+                grouped = crate::config::merge_args(&grouped, &server.vllm.to_args());
             }
         }
 

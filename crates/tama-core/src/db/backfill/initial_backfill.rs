@@ -483,6 +483,7 @@ installed_at = 1700000000
             updated_at: now,
             n_batch: None,
             n_ubatch: None,
+            vllm_config: None,
         };
         let model_id = upsert_model_config(&conn, &record).unwrap();
 
@@ -575,6 +576,7 @@ installed_at = 1700000000
             updated_at: now,
             n_batch: None,
             n_ubatch: None,
+            vllm_config: None,
         };
         let id = upsert_model_config(&conn, &record).unwrap();
 

@@ -132,6 +132,214 @@ fn test_build_full_args_transformers_no_llama_cpp_flags() {
     );
 }
 
+/// Transformers models with vllm config emit typed vLLM flags via merge_args.
+/// Typed config wins over user args on collision (convention b).
+#[test]
+fn test_build_full_args_transformers_vllm_flags_emitted() {
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let models_dir = temp_dir.path().join("models");
+    std::fs::create_dir_all(models_dir.join("org").join("repo"))
+        .expect("Failed to create model dir");
+
+    let config = h::sample_config(models_dir);
+
+    let server = h::sample_server(|s| {
+        s.backend = "vllm".to_string();
+        s.hf_format = Some("transformers".to_string());
+        s.model = Some("org/repo".to_string());
+        s.quant = None;
+        s.vllm = crate::config::types::VllmConfig {
+            quantization: Some("fp8".to_string()),
+            max_model_len: Some(32768),
+            enable_prefix_caching: true,
+            ..Default::default()
+        };
+    });
+
+    let backend = h::sample_backend();
+
+    let args = config
+        .build_full_args(&server, &backend, None, &[])
+        .expect("build_full_args failed");
+
+    // Typed vLLM flags must be present
+    assert!(
+        args.windows(2)
+            .any(|w| w[0] == "--quantization" && w[1] == "fp8"),
+        "expected --quantization fp8 in {:?}",
+        args
+    );
+    assert!(
+        args.windows(2)
+            .any(|w| w[0] == "--max-model-len" && w[1] == "32768"),
+        "expected --max-model-len 32768 in {:?}",
+        args
+    );
+    assert!(
+        args.contains(&"--enable-prefix-caching".to_string()),
+        "expected --enable-prefix-caching in {:?}",
+        args
+    );
+
+    // Unset fields must NOT appear
+    assert!(
+        !args.contains(&"--trust-remote-code".to_string()),
+        "trust_remote_code is false (default), should not appear: {:?}",
+        args
+    );
+}
+
+/// Transformers + empty vllm config → no vLLM flags beyond positional model path.
+#[test]
+fn test_build_full_args_transformers_empty_vllm_no_flags() {
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let models_dir = temp_dir.path().join("models");
+    std::fs::create_dir_all(models_dir.join("org").join("repo"))
+        .expect("Failed to create model dir");
+
+    let config = h::sample_config(models_dir);
+
+    let server = h::sample_server(|s| {
+        s.backend = "vllm".to_string();
+        s.hf_format = Some("transformers".to_string());
+        s.model = Some("org/repo".to_string());
+        s.quant = None;
+        // vllm is Default (empty)
+    });
+
+    let backend = h::sample_backend();
+
+    let args = config
+        .build_full_args(&server, &backend, None, &[])
+        .expect("build_full_args failed");
+
+    // No vLLM-specific flags should appear
+    assert!(
+        !args.iter().any(|a| a == "--quantization"),
+        "empty vllm config should not emit --quantization: {:?}",
+        args
+    );
+    assert!(
+        !args.iter().any(|a| a == "--max-model-len"),
+        "empty vllm config should not emit --max-model-len: {:?}",
+        args
+    );
+    assert!(
+        !args.iter().any(|a| a == "--enable-prefix-caching"),
+        "empty vllm config should not emit --enable-prefix-caching: {:?}",
+        args
+    );
+
+    // Positional model path should still be present
+    assert!(
+        args.iter().any(|a| a.contains("org/repo")),
+        "positional model path should still be present: {:?}",
+        args
+    );
+}
+
+/// GGUF model with non-empty vllm config → NO vLLM flags (gated on transformers).
+#[test]
+fn test_build_full_args_gguf_with_vllm_config_no_flags() {
+    let (_temp_dir, models_dir) = h::temp_model_dir();
+    let config = h::sample_config(models_dir);
+
+    let server = h::sample_server(|s| {
+        s.hf_format = Some("gguf".to_string());
+        s.vllm = crate::config::types::VllmConfig {
+            quantization: Some("fp8".to_string()),
+            max_model_len: Some(32768),
+            enable_prefix_caching: true,
+            ..Default::default()
+        };
+    });
+
+    let backend = h::sample_backend();
+
+    let args = config
+        .build_full_args(&server, &backend, None, &[])
+        .expect("build_full_args failed");
+
+    // vLLM flags must NOT appear for GGUF
+    assert!(
+        !args.iter().any(|a| a == "--quantization"),
+        "GGUF should not emit vLLM --quantization: {:?}",
+        args
+    );
+    assert!(
+        !args.iter().any(|a| a == "--max-model-len"),
+        "GGUF should not emit vLLM --max-model-len: {:?}",
+        args
+    );
+    assert!(
+        !args.iter().any(|a| a == "--enable-prefix-caching"),
+        "GGUF should not emit vLLM --enable-prefix-caching: {:?}",
+        args
+    );
+
+    // GGUF should still have -m
+    assert!(
+        args.contains(&"-m".to_string()),
+        "GGUF should still have -m flag: {:?}",
+        args
+    );
+}
+
+/// User args --quantization awq + column quantization: Some("fp8") → only ONE
+/// --quantization in output and it is "fp8" (typed config wins via merge_args).
+#[test]
+fn test_build_full_args_transformers_vllm_typed_config_wins_over_user_args() {
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let models_dir = temp_dir.path().join("models");
+    std::fs::create_dir_all(models_dir.join("org").join("repo"))
+        .expect("Failed to create model dir");
+
+    let config = h::sample_config(models_dir);
+
+    let server = h::sample_server(|s| {
+        s.backend = "vllm".to_string();
+        s.hf_format = Some("transformers".to_string());
+        s.model = Some("org/repo".to_string());
+        s.quant = None;
+        // User provided --quantization awq in args
+        s.args = vec!["--quantization".to_string(), "awq".to_string()];
+        // Typed config says fp8 — this must win
+        s.vllm = crate::config::types::VllmConfig {
+            quantization: Some("fp8".to_string()),
+            ..Default::default()
+        };
+    });
+
+    let backend = h::sample_backend();
+
+    let args = config
+        .build_full_args(&server, &backend, None, &[])
+        .expect("build_full_args failed");
+
+    // Exactly one --quantization must appear
+    let quant_count = args.iter().filter(|a| *a == "--quantization").count();
+    assert_eq!(
+        quant_count, 1,
+        "expected exactly one --quantization, got {}: {:?}",
+        quant_count, args
+    );
+
+    // It must be fp8 (typed config wins)
+    assert!(
+        args.windows(2)
+            .any(|w| w[0] == "--quantization" && w[1] == "fp8"),
+        "expected --quantization fp8 (typed config wins), got: {:?}",
+        args
+    );
+    assert!(
+        !args
+            .windows(2)
+            .any(|w| w[0] == "--quantization" && w[1] == "awq"),
+        "user args --quantization awq must be replaced by typed fp8: {:?}",
+        args
+    );
+}
+
 /// GGUF models should continue to work unchanged — -m <quant_file> is emitted.
 #[test]
 fn test_build_full_args_gguf_unchanged() {
