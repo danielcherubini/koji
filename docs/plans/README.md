@@ -12,11 +12,19 @@ Plans for features, refactors, and bug fixes in the Tama project.
 
 ## Quick Stats
 
-- **Total Plans**: 84
-- **Backlog**: 0
+- **Total Plans**: 85
+- **Backlog**: 1
 - **Completed**: 84 ✅
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan.
+
+---
+
+## Backlog
+
+| # | Plan | Status |
+|---|------|--------|
+| [187](plan-187-docker-backend-callbacks.md) | Docker Backend Callbacks Fix | Backlog |
 
 ---
 
