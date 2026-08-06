@@ -34,6 +34,9 @@ pub struct BackendListResponse {
     pub active_job: Option<ActiveJobDto>,
     pub backends: Vec<BackendCardDto>,
     pub custom: Vec<BackendCardDto>,
+    /// Docker-based backends (e.g. vLLM), kept separate from native `custom` backends.
+    #[serde(default)]
+    pub docker: Vec<BackendCardDto>,
     /// Backend type identifiers that are known but not currently installed.
     #[serde(default)]
     pub available: Vec<String>,
@@ -408,6 +411,9 @@ pub struct CheckUpdatesResponse {
     pub active_job: Option<ActiveJobDto>,
     pub backends: Vec<BackendCardDto>,
     pub custom: Vec<BackendCardDto>,
+    /// Docker-based backends (e.g. vLLM), kept separate from native `custom` backends.
+    #[serde(default)]
+    pub docker: Vec<BackendCardDto>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

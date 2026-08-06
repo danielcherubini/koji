@@ -80,6 +80,7 @@ pub async fn list_backends(
     // Build the response including available backend types
     let mut backends: Vec<BackendCardDto> = Vec::new();
     let mut custom: Vec<BackendCardDto> = Vec::new();
+    let mut docker: Vec<BackendCardDto> = Vec::new();
     let mut available: Vec<String> = Vec::new();
 
     match mgr_result {
@@ -171,9 +172,13 @@ pub async fn list_backends(
             let active_backends = mgr.list_active().unwrap_or_default();
             let mut custom_names: std::collections::HashSet<String> =
                 std::collections::HashSet::new();
+            let mut docker_names: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
             for active in &active_backends {
                 let bt = active.backend_type.to_string();
-                if !matches!(bt.as_str(), "llama_cpp" | "ik_llama" | "tts_kokoro") {
+                if bt == "docker" {
+                    docker_names.insert(active.name.clone());
+                } else if !matches!(bt.as_str(), "llama_cpp" | "ik_llama" | "tts_kokoro") {
                     custom_names.insert(active.name.clone());
                 }
             }
@@ -200,7 +205,7 @@ pub async fn list_backends(
                     for (variant, variant_versions) in variant_groups {
                         let active_version = mgr.get_active(name, &variant).ok().flatten();
                         let (default_args, default_env) = backend_configs_map
-                            .get(&(bt.clone(), variant.clone()))
+                            .get(&(name.clone(), variant.clone()))
                             .cloned()
                             .unwrap_or_default();
 
@@ -256,6 +261,85 @@ pub async fn list_backends(
                     }
                 }
             }
+
+            for name in &docker_names {
+                let versions_opt = mgr.list_versions(name, None).unwrap_or(None);
+
+                if let Some(versions) = versions_opt {
+                    let bt = versions
+                        .first()
+                        .map(|v| v.backend_type.to_string())
+                        .unwrap_or_default();
+
+                    // Group versions by gpu_variant
+                    let mut variant_groups: std::collections::HashMap<String, Vec<_>> =
+                        std::collections::HashMap::new();
+                    for info in &versions {
+                        variant_groups
+                            .entry(info.gpu_variant.clone())
+                            .or_default()
+                            .push(info.clone());
+                    }
+
+                    for (variant, variant_versions) in variant_groups {
+                        let active_version = mgr.get_active(name, &variant).ok().flatten();
+                        let (default_args, default_env) = backend_configs_map
+                            .get(&(name.clone(), variant.clone()))
+                            .cloned()
+                            .unwrap_or_default();
+
+                        let mut sorted_versions = variant_versions;
+                        sorted_versions.sort_by_key(|b| std::cmp::Reverse(b.installed_at));
+
+                        let version_dtos: Vec<BackendVersionDto> = sorted_versions
+                            .iter()
+                            .map(|info| BackendVersionDto {
+                                name: info.name.clone(),
+                                version: info.version.clone(),
+                                path: info.path.to_string_lossy().to_string(),
+                                installed_at: info.installed_at,
+                                gpu_variant: info.gpu_variant.clone(),
+                                source: info.source.as_ref().map(|s| s.into()),
+                                is_active: active_version
+                                    .as_ref()
+                                    .map(|a| a.version == info.version)
+                                    .unwrap_or(false),
+                            })
+                            .collect();
+
+                        let active_info = active_version.map(BackendInfoDto::from);
+
+                        // Load cached update status from DB (keyed by "name:variant")
+                        let update_key = format!("{}:{}", name, variant);
+                        let update_status = update_checks
+                            .get(&update_key)
+                            .map(|r| UpdateStatusDto {
+                                checked: true,
+                                latest_version: r.latest_version.clone(),
+                                update_available: if r.update_available {
+                                    Some(true)
+                                } else {
+                                    None
+                                },
+                            })
+                            .unwrap_or_default();
+
+                        docker.push(BackendCardDto {
+                            r#type: bt.clone(),
+                            display_name: format!("Docker ({})", name),
+                            installed: true,
+                            gpu_variant: variant,
+                            info: active_info,
+                            versions: version_dtos,
+                            update: update_status,
+                            release_notes_url: None,
+                            default_args,
+                            default_env,
+                            is_active: true,
+                        });
+                    }
+                }
+            }
         }
         Err(e) => {
             tracing::warn!("Failed to open backend manager: {:?}", e.status());
@@ -284,6 +368,7 @@ pub async fn list_backends(
         active_job,
         backends,
         custom,
+        docker,
         available,
         compaction: compaction_card,
     })
@@ -341,6 +426,7 @@ pub async fn check_backend_updates(
 
     let mut backends: Vec<BackendCardDto> = Vec::new();
     let mut custom: Vec<BackendCardDto> = Vec::new();
+    let mut docker: Vec<BackendCardDto> = Vec::new();
 
     match mgr_result {
         Ok(mgr) => {
@@ -440,9 +526,13 @@ pub async fn check_backend_updates(
             let active_backends = mgr.list_active().unwrap_or_default();
             let mut custom_names: std::collections::HashSet<String> =
                 std::collections::HashSet::new();
+            let mut docker_names: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
             for active in &active_backends {
                 let bt = active.backend_type.to_string();
-                if !matches!(bt.as_str(), "llama_cpp" | "ik_llama" | "tts_kokoro") {
+                if bt == "docker" {
+                    docker_names.insert(active.name.clone());
+                } else if !matches!(bt.as_str(), "llama_cpp" | "ik_llama" | "tts_kokoro") {
                     custom_names.insert(active.name.clone());
                 }
             }
@@ -469,7 +559,7 @@ pub async fn check_backend_updates(
                     for (variant, variant_versions) in variant_groups {
                         let active_version = mgr.get_active(name, &variant).ok().flatten();
                         let (default_args, default_env) = backend_configs_map
-                            .get(&(bt.clone(), variant.clone()))
+                            .get(&(name.clone(), variant.clone()))
                             .cloned()
                             .unwrap_or_default();
 
@@ -510,6 +600,70 @@ pub async fn check_backend_updates(
                     }
                 }
             }
+
+            for name in &docker_names {
+                let versions_opt = mgr.list_versions(name, None).unwrap_or(None);
+
+                if let Some(versions) = versions_opt {
+                    let bt = versions
+                        .first()
+                        .map(|v| v.backend_type.to_string())
+                        .unwrap_or_default();
+
+                    // Group versions by gpu_variant
+                    let mut variant_groups: std::collections::HashMap<String, Vec<_>> =
+                        std::collections::HashMap::new();
+                    for info in &versions {
+                        variant_groups
+                            .entry(info.gpu_variant.clone())
+                            .or_default()
+                            .push(info.clone());
+                    }
+
+                    for (variant, variant_versions) in variant_groups {
+                        let active_version = mgr.get_active(name, &variant).ok().flatten();
+                        let (default_args, default_env) = backend_configs_map
+                            .get(&(name.clone(), variant.clone()))
+                            .cloned()
+                            .unwrap_or_default();
+
+                        let mut sorted_versions = variant_versions;
+                        sorted_versions.sort_by_key(|b| std::cmp::Reverse(b.installed_at));
+
+                        let version_dtos: Vec<BackendVersionDto> = sorted_versions
+                            .iter()
+                            .map(|info| BackendVersionDto {
+                                name: info.name.clone(),
+                                version: info.version.clone(),
+                                path: info.path.to_string_lossy().to_string(),
+                                installed_at: info.installed_at,
+                                gpu_variant: info.gpu_variant.clone(),
+                                source: info.source.as_ref().map(|s| s.into()),
+                                is_active: active_version
+                                    .as_ref()
+                                    .map(|a| a.version == info.version)
+                                    .unwrap_or(false),
+                            })
+                            .collect();
+
+                        let active_info = active_version.map(BackendInfoDto::from);
+
+                        docker.push(BackendCardDto {
+                            r#type: bt.clone(),
+                            display_name: format!("Docker ({})", name),
+                            installed: true,
+                            gpu_variant: variant,
+                            info: active_info,
+                            versions: version_dtos,
+                            update: UpdateStatusDto::default(),
+                            release_notes_url: None,
+                            default_args,
+                            default_env,
+                            is_active: true,
+                        });
+                    }
+                }
+            }
         }
         Err(e) => {
             tracing::warn!("Failed to open backend manager: {:?}", e.status());
@@ -529,6 +683,7 @@ pub async fn check_backend_updates(
         active_job,
         backends,
         custom,
+        docker,
     })
     .into_response()
 }

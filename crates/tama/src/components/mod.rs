@@ -8,6 +8,7 @@ pub mod model_card;
 
 pub mod bar_chart;
 pub mod context_length_selector;
+pub mod docker_register_modal;
 pub mod form_validation;
 pub mod install_modal;
 pub mod job_log_panel;

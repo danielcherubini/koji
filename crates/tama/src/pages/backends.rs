@@ -6,6 +6,7 @@ use wasm_bindgen::JsCast;
 
 use crate::components::alert_banner::{AlertBanner, AlertVariant};
 use crate::components::backend_card::{BackendCard, BackendCardDto};
+use crate::components::docker_register_modal::DockerRegisterModal;
 use crate::components::install_modal::{CapabilitiesDto, InstallModal, InstallRequest};
 use crate::components::job_log_panel::JobLogPanel;
 use crate::utils::{delete_request, extract_and_store_csrf_token, get_request, post_request};
@@ -34,6 +35,8 @@ struct BackendListResponse {
     #[serde(default)]
     custom: Vec<BackendCardDto>,
     #[serde(default)]
+    docker: Vec<BackendCardDto>,
+    #[serde(default)]
     #[allow(dead_code)] // Deserialized from API but not used by page
     available: Vec<String>,
     #[serde(default)]
@@ -57,6 +60,7 @@ pub fn Backends() -> impl IntoView {
     let backends_list = RwSignal::new(BackendListResponse::default());
     let capabilities = RwSignal::new(CapabilitiesDto::default());
     let install_modal_for = RwSignal::new(Option::<String>::None);
+    let docker_register_open = RwSignal::new(false);
     let active_job_id = RwSignal::new(Option::<String>::None);
     let action_error = RwSignal::new(Option::<String>::None);
     let refresh_tick = RwSignal::new(0u32);
@@ -387,6 +391,7 @@ pub fn Backends() -> impl IntoView {
                             ("llama_cpp", "llama.cpp"),
                             ("ik_llama", "ik_llama.cpp"),
                             ("tts_kokoro", "Kokoro TTS"),
+                            ("docker", "Docker (vLLM)"),
                         ];
                         let mut items = all;
                         items.sort_by_key(|(_, d)| *d);
@@ -395,12 +400,17 @@ pub fn Backends() -> impl IntoView {
                             <div style="position:absolute;right:0;top:100%;margin-top:4px;background:#1e293b;border:1px solid #334155;border-radius:6px;padding:0.5rem 0;z-index:100;width:200px;box-shadow:0 4px 12px rgba(0,0,0,0.3);">
                                 {items.into_iter().map(|(backend_type, display_name): (&str, &str)| {
                                     let bt = backend_type.to_string();
+                                    let is_docker = bt == "docker";
                                     view! {
                                         <button
                                             style="width:100%;text-align:left;padding:0.5rem 0.75rem;background:none;border:none;color:#e2e8f0;cursor:pointer;font-size:0.875rem;"
                                             on:click=move |_| {
                                                 action_error.set(None);
-                                                install_modal_for.set(Some(bt.clone()));
+                                                if is_docker {
+                                                    docker_register_open.set(true);
+                                                } else {
+                                                    install_modal_for.set(Some(bt.clone()));
+                                                }
                                                 show_backend_dropdown.set(false);
                                             }
                                         >
@@ -524,8 +534,9 @@ pub fn Backends() -> impl IntoView {
                     let combined: Vec<_> = list.backends.into_iter()
                         .chain(list.custom.into_iter())
                         .collect();
+                    let docker_cards = list.docker;
 
-                    if combined.is_empty() {
+                    if combined.is_empty() && docker_cards.is_empty() {
                         return view! {
                             <div style="text-align:center;padding:2.5rem 2rem;color:#64748b;">
                                 <div style="font-size:1.125rem;font-weight:500;margin-bottom:0.5rem;">
@@ -538,9 +549,11 @@ pub fn Backends() -> impl IntoView {
                         }.into_any();
                     }
 
-                    let mut cards = Vec::new();
+                    let mut rows = Vec::new();
+
+                    // Main section: native backends + custom
                     for backend in combined {
-                        cards.push(view! {
+                        rows.push(view! {
                             <BackendCard
                                 backend=backend
                                 on_install=on_install_click
@@ -554,9 +567,52 @@ pub fn Backends() -> impl IntoView {
                             />
                         }.into_any());
                     }
-                    view! { <>{cards}</> }.into_any()
+
+                    // Dedicated Docker backends section
+                    if !docker_cards.is_empty() {
+                        let mut docker_rows = Vec::new();
+                        for backend in docker_cards {
+                            docker_rows.push(view! {
+                                <BackendCard
+                                    backend=backend
+                                    on_install=on_install_click
+                                    on_update=on_update_click
+                                    on_check_updates=on_check_updates_click
+                                    on_delete=on_delete_click
+                                    on_default_args_change=on_default_args_change
+                                    on_default_env_change=on_default_env_change
+                                    on_version_change=on_version_change
+                                    on_build_method_change=on_build_method_change
+                                />
+                            }.into_any());
+                        }
+                        rows.push(view! {
+                            <div style="margin-top:0.25rem;">
+                                <h3 style="margin:0 0 0.5rem 0;font-size:1rem;color:#e2e8f0;">"Docker Backends"</h3>
+                                <div style="display:flex;flex-direction:column;gap:1rem;">{docker_rows}</div>
+                            </div>
+                        }.into_any());
+                    }
+
+                    view! { <>{rows}</> }.into_any()
                 }}
             </div>
+
+            {/* Docker registration modal */}
+            {move || {
+                if docker_register_open.get() {
+                    view! {
+                        <DockerRegisterModal
+                            on_close=Callback::new(move |_: ()| {
+                                docker_register_open.set(false);
+                                refresh_tick.update(|n| *n += 1);
+                            })
+                        />
+                    }.into_any()
+                } else {
+                    view! { <span/> }.into_any()
+                }
+            }}
 
             {/* Install modal */}
             {move || {
