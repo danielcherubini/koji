@@ -284,35 +284,14 @@ impl Config {
             }
 
             // vLLM serves the model under the positional path by default, so
-            // OpenAI clients addressing it by repo/api name get a 404 from the
+            // OpenAI clients addressing it by name get a 404 from the
             // backend (the proxy only rewrites the model field in responses,
             // not requests). Name the served model after the Tama api_name
             // (falling back to the repo id) so both sides agree.
-            //
-            // vLLM's --served-model-name is case-sensitive and accepts multiple
-            // space-separated aliases. Clients (claude, OpenWebUI, etc.) often
-            // send the model in lowercase (e.g. "qwen/qwen3.6-27b-fp8") or via
-            // a Tama alias, so register several spellings: the canonical
-            // api_name, its lowercase form, and the lowercase repo id. This
-            // avoids 404s from case mismatch without touching request bodies.
             let served_name = server.api_name.as_deref().or(server.model.as_deref());
             if let Some(name) = served_name {
-                let mut names = vec![name.to_string()];
-                let lower = name.to_lowercase();
-                if lower != name {
-                    names.push(lower);
-                }
-                if let Some(model_id) = server.model.as_deref() {
-                    let model_lower = model_id.to_lowercase();
-                    if !names.contains(&model_lower) {
-                        names.push(model_lower);
-                    }
-                }
-                let joined = names.join(" ");
-                grouped = crate::config::merge_args(
-                    &grouped,
-                    &[format!("--served-model-name {}", joined)],
-                );
+                grouped =
+                    crate::config::merge_args(&grouped, &[format!("--served-model-name {}", name)]);
             }
 
             // Emit vLLM-specific flags from typed config.

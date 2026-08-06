@@ -353,7 +353,7 @@ impl ProxyState {
 
         // Start log streaming (capture timestamp immediately before docker run)
         let _spawn_timestamp = UNIX_EPOCH.elapsed().unwrap_or_default().as_secs();
-        self.start_docker_log_stream(&container_name, backend_name)
+        self.start_docker_log_stream(&container_name, &model_config.backend, backend_name)
             .await;
 
         // ── Step D — Health check ──────────────────────────────────────
@@ -444,13 +444,18 @@ impl ProxyState {
     }
 
     /// Start log streaming from a docker container using `docker logs -f --since`.
-    async fn start_docker_log_stream(&self, container_name: &str, backend_name: &str) {
-        let log_key = format!("docker_{}", backend_name);
+    async fn start_docker_log_stream(
+        &self,
+        container_name: &str,
+        backend_type: &str,
+        backend_name: &str,
+    ) {
+        let log_key = format!("{}_{}", backend_type, backend_name);
         let log_stream = self.backend_logs.get_or_create(&log_key).await;
 
         // Open log file for this backend instance
         let logs_dir = self.config.read().await.logs_dir().ok();
-        let log_name = format!("docker_{}", backend_name);
+        let log_name = format!("{}_{}", backend_type, backend_name);
         let log_file = logs_dir
             .as_ref()
             .and_then(|dir| logging::open_log(dir, &log_name).ok());
