@@ -101,11 +101,18 @@ pub(super) async fn build_model_entry(
     id: &str,
     cfg: &crate::config::ModelConfig,
     capabilities: Option<&ModelCapabilities>,
+    backend_context_length: Option<u32>,
 ) -> Option<ModelEntry> {
     // Use model field first, fall back to api_name.
     let hf_repo = cfg.model.as_deref().or(cfg.api_name.as_deref())?;
 
+    // Context length resolution order:
+    // 1. cfg.context_length (highest priority — explicit config override)
+    // 2. backend_context_length (from /v1/models response)
+    // 3. model_toml (lowest priority — existing fallback)
     let context_length = if let Some(ctx) = cfg.context_length {
+        Some(ctx)
+    } else if let Some(ctx) = backend_context_length {
         Some(ctx)
     } else {
         let model_toml = state.get_model_toml(id).await;
