@@ -152,9 +152,8 @@ fn test_process_sse_line_extracts_vllm_stats() {
     assert_eq!(map.len(), 1);
     let stats = map.get("vllm-server").unwrap();
     assert!((stats.tps.unwrap() - 69.38f32).abs() < 0.01);
-    // prompt_tps = 11 / (273.68 / 1000) ≈ 40.19
-    let expected_prompt_tps = 11.0f32 / (273.68f32 / 1000.0);
-    assert!((stats.prompt_tps.unwrap() - expected_prompt_tps).abs() < 0.1);
+    // prompt_tps is None for vLLM — no cache hit details to compute it accurately
+    assert_eq!(stats.prompt_tps, None);
     assert_eq!(stats.cache_hit_pct, None);
     assert_eq!(stats.spec_accept_pct, None);
 }

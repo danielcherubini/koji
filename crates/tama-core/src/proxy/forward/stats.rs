@@ -81,23 +81,18 @@ fn extract_llama_cpp_stats(
 
 /// Extract stats from vLLM `metrics` object.
 ///
-/// vLLM provides `metrics.tokens_per_second` (generation speed),
-/// `metrics.time_to_first_token_ms` (prefill + first token time),
-/// and `metrics.generation_time_ms`. Combined with `usage.prompt_tokens`
-/// and `usage.completion_tokens`, we derive both generation and prompt tok/s.
+/// vLLM provides `metrics.tokens_per_second` (generation speed). We use that
+/// directly for TPS. Prompt tok/s is not derived — vLLM doesn't expose a
+/// breakdown of cached vs. non-cached prompt tokens, so dividing
+/// `usage.prompt_tokens` by `time_to_first_token_ms` inflates the number
+/// dramatically when the KV cache is warm.
 fn extract_vllm_stats(
     backend_name: &str,
     json: &serde_json::Value,
     metrics_state: &MetricsState,
 ) -> Option<LatestInferenceStats> {
     let metrics = json.get("metrics")?;
-
     let tokens_per_second = metrics.get("tokens_per_second")?.as_f64()?;
-    let time_to_first_token_ms = metrics.get("time_to_first_token_ms")?.as_f64()?;
-
-    // Read token counts from usage (vLLM always includes this)
-    let usage = json.get("usage")?;
-    let prompt_tokens = usage.get("prompt_tokens").and_then(|v| v.as_u64())?;
 
     let now_ms = SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -113,18 +108,10 @@ fn extract_vllm_stats(
         .map(|s| s.spec_decoding_active)
         .unwrap_or(false);
 
-    // Compute prompt_tps: prompt_tokens / (time_to_first_token_ms / 1000)
-    // time_to_first_token_ms includes prefill + first token generation
-    let prompt_tps = if time_to_first_token_ms > 0.0 {
-        Some(prompt_tokens as f32 / (time_to_first_token_ms as f32 / 1000.0))
-    } else {
-        None
-    };
-
     let stats = LatestInferenceStats {
         tps: Some(tokens_per_second as f32),
-        prompt_tps,
-        cache_hit_pct: None,   // vLLM doesn't expose cache hit breakdown
+        prompt_tps: None, // vLLM doesn't expose cache hit details to compute this accurately
+        cache_hit_pct: None, // vLLM doesn't expose cache hit breakdown
         spec_accept_pct: None, // vLLM doesn't expose spec decoding stats
         spec_decoding_active: prev_active,
         last_updated_ms: now_ms,

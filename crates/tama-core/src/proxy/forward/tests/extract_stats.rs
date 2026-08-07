@@ -185,10 +185,10 @@ fn test_extract_inference_stats_vllm_full_metrics() {
     let stats = result.unwrap();
     // tokens_per_second from metrics
     assert!((stats.tps.unwrap() - 69.38f32).abs() < 0.01);
-    // prompt_tps = prompt_tokens / (time_to_first_token_ms / 1000)
-    // = 11 / (273.68 / 1000) = 11 / 0.27368 ≈ 40.19
-    let expected_prompt_tps = 11.0f32 / (273.68f32 / 1000.0);
-    assert!((stats.prompt_tps.unwrap() - expected_prompt_tps).abs() < 0.1);
+    // prompt_tps is None for vLLM — it doesn't expose cache hit details,
+    // so dividing prompt_tokens by time_to_first_token_ms inflates the number
+    // when KV cache is warm
+    assert_eq!(stats.prompt_tps, None);
     // vLLM doesn't expose cache or spec decoding stats
     assert_eq!(stats.cache_hit_pct, None);
     assert_eq!(stats.spec_accept_pct, None);
@@ -214,8 +214,9 @@ fn test_extract_inference_stats_vllm_missing_usage() {
     });
 
     let result = extract_inference_stats("vllm-server", &json, &metrics_state);
-    // No usage field — should return None
-    assert!(result.is_none());
+    // No usage field — still succeeds now that we don't derive prompt_tps from it
+    assert!(result.is_some());
+    assert_eq!(result.unwrap().tps, Some(50.0f32));
 }
 
 #[test]
@@ -242,11 +243,6 @@ fn test_extract_inference_stats_vllm_zero_time_to_first_token() {
             "tokens_per_second": 100.0,
             "generation_time_ms": 500.0,
             "time_to_first_token_ms": 0.0
-        },
-        "usage": {
-            "prompt_tokens": 5,
-            "completion_tokens": 50,
-            "total_tokens": 55
         }
     });
 
@@ -255,7 +251,7 @@ fn test_extract_inference_stats_vllm_zero_time_to_first_token() {
     assert!(result.is_some());
     let stats = result.unwrap();
     assert_eq!(stats.tps, Some(100.0f32));
-    // time_to_first_token_ms == 0 → prompt_tps is None (division by zero guard)
+    // prompt_tps is always None for vLLM
     assert_eq!(stats.prompt_tps, None);
 }
 
