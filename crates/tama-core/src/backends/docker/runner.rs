@@ -57,7 +57,9 @@ pub struct InspectNetwork {
 /// - Split form `"--flag /abs/path"` → if value is under `models_dir`, rewrite to `{container_model_path}/{relative}`
 /// - Joined form `"--flag=/abs/path"` → split on first `=`, rewrite value if under `models_dir`
 /// - Strip surrounding quotes (from shlex quoting) before matching paths
-/// - Absolute paths outside `models_dir` → Error (only models dir paths are supported)
+/// - Absolute paths outside `models_dir` that are already container paths (under
+///   `container_model_path`, e.g. `--chat-template '/models/...'`) → pass through unchanged
+/// - Absolute paths outside both `models_dir` and any container mount → Error
 /// - Non-path args (flags without path values) → pass through unchanged
 pub fn rewrite_args_for_container(
     args: &[String],
@@ -132,7 +134,9 @@ pub fn rewrite_args_for_container(
 }
 
 /// Try to rewrite a path: if it's under `models_dir`, return `{container_path}/{relative}`.
-/// Returns an error if the path starts with `/` but is not under models_dir.
+/// If it's already a container path (under `container_model_path`) or a relative path,
+/// return `Ok(None)` to pass it through unchanged. Returns an error if the path starts
+/// with `/` but is neither under `models_dir` nor an existing container mount path.
 fn maybe_rewrite_path(
     path: &str,
     models_dir: &Path,
@@ -150,7 +154,15 @@ fn maybe_rewrite_path(
         return Ok(Some(rewritten));
     }
 
-    // Path starts with '/' but is not under models_dir — error
+    // Already a container path — it lives under the model mount's container path
+    // (e.g. `--chat-template '/models/templates/chat.jinja'`). The file is mounted
+    // there, so pass it through unchanged instead of rejecting it as a host path.
+    let container_prefix = container_model_path.trim_end_matches('/');
+    if p.starts_with(container_prefix) {
+        return Ok(None);
+    }
+
+    // Path starts with '/' but is not under models_dir or a container path — error
     if path.starts_with('/') {
         return Err(anyhow!(
             "Path '{}' is outside the models directory '{}' and cannot be mounted",
@@ -523,6 +535,27 @@ mod tests {
         assert_eq!(result[2], "4");
         assert_eq!(result[3], "--model");
         assert_eq!(result[4], "/container-models/gguf/model.gguf");
+    }
+
+    #[test]
+    fn test_rewrite_container_path_passthrough() {
+        // A path that already lives inside the container (under container_model_path)
+        // is a valid container path and must be passed through unchanged rather
+        // than rejected as "outside the models directory".
+        // e.g. --chat-template '/models/templates/...' where /models is the mount.
+        let models_dir = Path::new("/mnt/models");
+        let args = vec![
+            "--chat-template".to_string(),
+            "/models/templates/froggeric/Qwen-Fixed-Chat-Templates/chat_template.jinja".to_string(),
+        ];
+        let result = rewrite_args_for_container(&args, models_dir, "/models").unwrap();
+        assert_eq!(
+            result,
+            vec![
+                "--chat-template",
+                "/models/templates/froggeric/Qwen-Fixed-Chat-Templates/chat_template.jinja"
+            ]
+        );
     }
 
     #[test]
