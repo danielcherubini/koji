@@ -185,11 +185,8 @@ fn test_extract_inference_stats_vllm_full_metrics() {
     let stats = result.unwrap();
     // tokens_per_second from metrics
     assert!((stats.tps.unwrap() - 69.38f32).abs() < 0.01);
-    // prompt_tps is None for vLLM — it doesn't expose cache hit details,
-    // so dividing prompt_tokens by time_to_first_token_ms inflates the number
-    // when KV cache is warm
+    // No prompt_tokens_details.cached_tokens → prompt_tps is None
     assert_eq!(stats.prompt_tps, None);
-    // vLLM doesn't expose cache or spec decoding stats
     assert_eq!(stats.cache_hit_pct, None);
     assert_eq!(stats.spec_accept_pct, None);
     assert!(!stats.spec_decoding_active);
@@ -200,6 +197,64 @@ fn test_extract_inference_stats_vllm_full_metrics() {
     assert!(map.contains_key("vllm-server"));
     let stored = map.get("vllm-server").unwrap();
     assert!((stored.tps.unwrap() - 69.38f32).abs() < 0.01);
+}
+
+#[test]
+fn test_extract_inference_stats_vllm_with_cached_tokens() {
+    let metrics_state = make_metrics_state();
+    let json = serde_json::json!({
+        "metrics": {
+            "tokens_per_second": 80.0,
+            "generation_time_ms": 2000.0,
+            "time_to_first_token_ms": 150.0,
+            "queue_time_ms": 0.01
+        },
+        "usage": {
+            "prompt_tokens": 10000,
+            "completion_tokens": 200,
+            "total_tokens": 10200,
+            "prompt_tokens_details": {
+                "cached_tokens": 9500
+            }
+        }
+    });
+
+    let result = extract_inference_stats("vllm-server", &json, &metrics_state);
+
+    assert!(result.is_some());
+    let stats = result.unwrap();
+    assert!((stats.tps.unwrap() - 80.0f32).abs() < 0.01);
+    // computed = 10000 - 9500 = 500, prompt_tps = 500 / 0.15 = 3333.33
+    let expected_pp = 500.0f32 / 0.15f32;
+    assert!((stats.prompt_tps.unwrap() - expected_pp).abs() < 1.0);
+    // cache_hit_pct = 9500 / 10000 * 100 = 95%
+    assert!((stats.cache_hit_pct.unwrap() - 95.0f32).abs() < 0.1);
+}
+
+#[test]
+fn test_extract_inference_stats_vllm_cached_tokens_all_cached() {
+    // Edge case: all tokens cached, computed = 0 → prompt_tps is None
+    let metrics_state = make_metrics_state();
+    let json = serde_json::json!({
+        "metrics": {
+            "tokens_per_second": 100.0,
+            "time_to_first_token_ms": 5.0
+        },
+        "usage": {
+            "prompt_tokens": 500,
+            "prompt_tokens_details": {
+                "cached_tokens": 500
+            }
+        }
+    });
+
+    let result = extract_inference_stats("vllm-server", &json, &metrics_state);
+    assert!(result.is_some());
+    let stats = result.unwrap();
+    // All cached → computed = 0 → prompt_tps is None
+    assert_eq!(stats.prompt_tps, None);
+    // cache_hit_pct = 100%
+    assert!((stats.cache_hit_pct.unwrap() - 100.0f32).abs() < 0.1);
 }
 
 #[test]

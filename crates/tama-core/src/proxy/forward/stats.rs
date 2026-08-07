@@ -81,11 +81,19 @@ fn extract_llama_cpp_stats(
 
 /// Extract stats from vLLM `metrics` object.
 ///
-/// vLLM provides `metrics.tokens_per_second` (generation speed). We use that
-/// directly for TPS. Prompt tok/s is not derived — vLLM doesn't expose a
-/// breakdown of cached vs. non-cached prompt tokens, so dividing
-/// `usage.prompt_tokens` by `time_to_first_token_ms` inflates the number
-/// dramatically when the KV cache is warm.
+/// vLLM provides `metrics.tokens_per_second` (generation speed) and
+/// `metrics.time_to_first_token_ms` (prefill + first token latency). When
+/// `--enable-prompt-tokens-details` is set on the vLLM side (v0.26.0+, PR
+/// #44887), `usage.prompt_tokens_details.cached_tokens` is populated and we
+/// can compute a cache-aware prompt tok/s:
+///
+/// ```text
+/// computed_tokens = prompt_tokens - cached_tokens
+/// prompt_tps      = computed_tokens / (time_to_first_token_ms / 1000)
+/// ```
+///
+/// Without the flag (cached_tokens absent), prompt_tps is None — dividing
+/// total prompt_tokens by TTF inflates the number when the KV cache is warm.
 fn extract_vllm_stats(
     backend_name: &str,
     json: &serde_json::Value,
@@ -93,6 +101,36 @@ fn extract_vllm_stats(
 ) -> Option<LatestInferenceStats> {
     let metrics = json.get("metrics")?;
     let tokens_per_second = metrics.get("tokens_per_second")?.as_f64()?;
+    let time_to_first_token_ms = metrics.get("time_to_first_token_ms")?.as_f64()?;
+
+    // Try to get cache-aware prompt stats from usage.prompt_tokens_details
+    // (populated when --enable-prompt-tokens-details is set, vLLM v0.26.0+)
+    let (prompt_tps, cache_hit_pct) = json
+        .get("usage")
+        .and_then(|u| u.get("prompt_tokens_details"))
+        .and_then(|d| d.get("cached_tokens"))
+        .and_then(|c| c.as_u64())
+        .map(|cached_tokens| {
+            let prompt_tokens = json
+                .get("usage")
+                .and_then(|u| u.get("prompt_tokens"))
+                .and_then(|p| p.as_u64())
+                .unwrap_or(0);
+            let computed = prompt_tokens.saturating_sub(cached_tokens) as f32;
+            let ttft_secs = time_to_first_token_ms as f32 / 1000.0;
+            let pps = if ttft_secs > 0.0 && computed > 0.0 {
+                Some(computed / ttft_secs)
+            } else {
+                None
+            };
+            let hit_pct = if prompt_tokens > 0 {
+                Some((cached_tokens as f32 / prompt_tokens as f32 * 100.0).clamp(0.0, 100.0))
+            } else {
+                None
+            };
+            (pps, hit_pct)
+        })
+        .unwrap_or((None, None));
 
     let now_ms = SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -110,8 +148,8 @@ fn extract_vllm_stats(
 
     let stats = LatestInferenceStats {
         tps: Some(tokens_per_second as f32),
-        prompt_tps: None, // vLLM doesn't expose cache hit details to compute this accurately
-        cache_hit_pct: None, // vLLM doesn't expose cache hit breakdown
+        prompt_tps,
+        cache_hit_pct,
         spec_accept_pct: None, // vLLM doesn't expose spec decoding stats
         spec_decoding_active: prev_active,
         last_updated_ms: now_ms,
