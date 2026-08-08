@@ -12,13 +12,19 @@ Plans for features, refactors, and bug fixes in the Tama project.
 
 ## Quick Stats
 
-- **Total Plans**: 85
-- **Backlog**: 0
+- **Total Plans**: 86
+- **Backlog**: 1
 - **Completed**: 85 ✅
 
 > **Note**: The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan.
 
 ---
+
+## Backlog
+
+| # | Plan | Status |
+|---|------|--------|
+| [086](plan-086-unified-model-metadata.md) | Unified Model Metadata | Backlog |
 
 ---
 
@@ -60,4 +66,4 @@ When implementing a new feature:
 
 ---
 
-**Last Updated**: 2026-07-28
+**Last Updated**: 2026-07-29
