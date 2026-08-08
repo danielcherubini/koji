@@ -46,9 +46,9 @@ impl ResolvedModelMetadata {
     /// `cfg.context_length` → `cfg.vllm.max_model_len` → `backend_context_length`
     /// → `cfg.hf_context_length` → `model_toml`. That method resolves
     /// `context_length` inline rather than using `meta.context_length` so it
-    /// can factor in the runtime backend-reported value. The `quant` and
-    /// `kv_cache_*` fields from this `resolve()` are used directly by
-    /// `build_model_entry()` and `collect_model_state_snapshots()`.
+    /// can factor in the runtime backend-reported value. `build_model_entry()`
+    /// uses `meta.quant` from this `resolve()`. `collect_model_state_snapshots()`
+    /// uses all fields.
     pub fn resolve(cfg: &crate::config::ModelConfig) -> Self {
         Self {
             quant: cfg.quant.clone().or_else(|| cfg.vllm.quantization.clone()),

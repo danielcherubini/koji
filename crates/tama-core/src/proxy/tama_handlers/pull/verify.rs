@@ -448,8 +448,8 @@ pub(crate) async fn _setup_model_after_pull_with_config(
             // GGUF takes priority; transformers fills in fields not set by GGUF.
             if let Some(meta) = gguf_metadata {
                 entry.hf_architecture_type = meta.architecture.clone();
-                entry.hf_context_length = meta.context_length.map(|v| v as u32);
-                entry.hf_num_layers = meta.block_count.map(|v| v as u32);
+                entry.hf_context_length = meta.context_length.and_then(|v| u32::try_from(v).ok());
+                entry.hf_num_layers = meta.block_count.and_then(|v| u32::try_from(v).ok());
             }
             // Transformers metadata fills gaps when GGUF metadata is absent
             if let Some(meta) = transformers_metadata {
