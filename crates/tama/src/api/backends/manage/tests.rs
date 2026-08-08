@@ -147,7 +147,11 @@ async fn test_update_backend_source_path_traversal_rejected() {
 #[tokio::test]
 async fn test_update_backend_source_missing_backend() {
     let config = tama_core::config::Config::default();
-    let state = Arc::new(tama_core::proxy::ProxyState::new(config, None));
+    let db_dir = tempfile::tempdir().unwrap();
+    let state = Arc::new(tama_core::proxy::ProxyState::new(
+        config,
+        Some(db_dir.path().to_path_buf()),
+    ));
 
     let web_state_for_test = Arc::new(test_web_state());
     let router = crate::router::build_web_routes(web_state_for_test.clone())

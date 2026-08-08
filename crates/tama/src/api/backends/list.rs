@@ -833,7 +833,8 @@ mod tests {
     #[tokio::test]
     async fn test_list_backend_versions_unknown_404() {
         let config = Config::default();
-        let state = Arc::new(ProxyState::new(config, None));
+        let db_dir = tempfile::tempdir().unwrap();
+        let state = Arc::new(ProxyState::new(config, Some(db_dir.path().to_path_buf())));
 
         let web_state = Arc::new(test_web_state());
         let router = crate::router::build_web_routes(web_state.clone())
