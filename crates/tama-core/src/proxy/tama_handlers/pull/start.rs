@@ -435,23 +435,33 @@ pub async fn start_pull_from_queue(
     // Only attempt if GGUF parsing failed — GGUF succeeds on .gguf files
     // and fails on .safetensors, so this targets Safetensors/transformers models.
     let transformers_metadata = if outcome.passed && !skip_gguf_parse && gguf_metadata.is_none() {
-        match crate::models::transformers::parse_transformers_metadata(&dest_dir) {
-            Ok(meta) => {
-                tracing::info!(
-                    job_id = %job_id_clone,
-                    architectures = ?meta.architectures,
-                    hidden_size = ?meta.hidden_size,
-                    "Transformers metadata parsed"
-                );
-                Some(meta)
-            }
-            Err(e) => {
-                tracing::debug!(
-                    job_id = %job_id_clone,
-                    error = %e,
-                    "Transformers metadata parsing skipped — no config.json or parse failed"
-                );
-                None
+        let config_path = dest_dir.join("config.json");
+        if !config_path.exists() {
+            tracing::debug!(
+                job_id = %job_id_clone,
+                path = %config_path.display(),
+                "Transformers metadata skipped — config.json not found"
+            );
+            None
+        } else {
+            match crate::models::transformers::parse_transformers_metadata(&dest_dir) {
+                Ok(meta) => {
+                    tracing::info!(
+                        job_id = %job_id_clone,
+                        architectures = ?meta.architectures,
+                        hidden_size = ?meta.hidden_size,
+                        "Transformers metadata parsed"
+                    );
+                    Some(meta)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        job_id = %job_id_clone,
+                        error = %e,
+                        "Transformers metadata parse failed — config.json exists but is invalid"
+                    );
+                    None
+                }
             }
         }
     } else {

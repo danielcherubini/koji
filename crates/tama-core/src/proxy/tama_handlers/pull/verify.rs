@@ -462,6 +462,12 @@ pub(crate) async fn _setup_model_after_pull_with_config(
                 if entry.hf_num_layers.is_none() {
                     entry.hf_num_layers = meta.num_hidden_layers;
                 }
+                // Use quantization_method as the quant source when no other
+                // quant is set — this is the only source of quant info for
+                // safetensors models, closing the gap left by filename inference.
+                if entry.quant.is_none() {
+                    entry.quant = meta.quantization_method.clone();
+                }
             }
 
             // Save model TOML (best-effort — pull is already marked Completed)

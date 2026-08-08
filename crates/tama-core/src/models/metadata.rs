@@ -1,9 +1,17 @@
 use serde::{Deserialize, Serialize};
 
-/// Unified model metadata — common fields that apply regardless of backend type.
-/// Resolved from whichever source is populated: GGUF columns, vLLM config, or file parsing.
+/// Unified model metadata — resolved from whichever source is populated.
+///
+/// Per-field resolution:
+///
+/// * **quant**: GGUF `quant` → vLLM `quantization`
+/// * **kv_cache_k**: GGUF `cache_type_k` → vLLM `kv_cache_dtype`
+/// * **kv_cache_v**: GGUF `cache_type_v` → vLLM `kv_cache_dtype`
+/// * **context_length**: GGUF `context_length` → vLLM `max_model_len` → HF `hf_context_length`
+/// * **architecture**: HF `hf_architecture_type` only (populated at pull time from GGUF or config.json)
+/// * **num_layers**: HF `hf_num_layers` only (populated at pull time from GGUF or config.json)
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct ModelMetadata {
+pub struct ResolvedModelMetadata {
     /// Quantization name (e.g. "Q4_K_M", "fp8").
     pub quant: Option<String>,
     /// KV cache data type for K head (e.g. "f16", "q4_0", "fp8").
@@ -16,16 +24,11 @@ pub struct ModelMetadata {
     pub architecture: Option<String>,
     /// Number of layers.
     pub num_layers: Option<u32>,
-    /// Embedding/hidden dimension.
-    pub embedding_length: Option<u32>,
-    /// Number of attention heads.
-    pub head_count: Option<u32>,
-    /// Number of transformer blocks (same as num_layers for most architectures).
-    pub block_count: Option<u32>,
 }
 
-impl ModelMetadata {
+impl ResolvedModelMetadata {
     /// Resolve unified metadata from a ModelConfig.
+    ///
     /// Picks values from whichever source is populated:
     /// 1. GGUF columns (highest priority — explicit config)
     /// 2. vLLM config (fallback for transformers models)
@@ -47,9 +50,6 @@ impl ModelMetadata {
                 .or(cfg.hf_context_length),
             architecture: cfg.hf_architecture_type.clone(),
             num_layers: cfg.hf_num_layers,
-            embedding_length: None,
-            head_count: None,
-            block_count: None,
         }
     }
 }
@@ -109,7 +109,7 @@ mod tests {
             None,
             None,
         );
-        let meta = ModelMetadata::resolve(&cfg);
+        let meta = ResolvedModelMetadata::resolve(&cfg);
         assert_eq!(meta.quant, Some("Q4_K_M".to_string()));
     }
 
@@ -127,14 +127,14 @@ mod tests {
             None,
             None,
         );
-        let meta = ModelMetadata::resolve(&cfg);
+        let meta = ResolvedModelMetadata::resolve(&cfg);
         assert_eq!(meta.quant, Some("fp8".to_string()));
     }
 
     #[test]
     fn test_quant_both_none() {
         let cfg = make_config(None, None, None, None, None, None, None, None, None, None);
-        let meta = ModelMetadata::resolve(&cfg);
+        let meta = ResolvedModelMetadata::resolve(&cfg);
         assert_eq!(meta.quant, None);
     }
 
@@ -154,7 +154,7 @@ mod tests {
             None,
             None,
         );
-        let meta = ModelMetadata::resolve(&cfg);
+        let meta = ResolvedModelMetadata::resolve(&cfg);
         assert_eq!(meta.context_length, Some(4096));
     }
 
@@ -172,7 +172,7 @@ mod tests {
             None,
             None,
         );
-        let meta = ModelMetadata::resolve(&cfg);
+        let meta = ResolvedModelMetadata::resolve(&cfg);
         assert_eq!(meta.context_length, Some(8192));
     }
 
@@ -190,14 +190,14 @@ mod tests {
             None,
             None,
         );
-        let meta = ModelMetadata::resolve(&cfg);
+        let meta = ResolvedModelMetadata::resolve(&cfg);
         assert_eq!(meta.context_length, Some(16384));
     }
 
     #[test]
     fn test_context_length_all_none() {
         let cfg = make_config(None, None, None, None, None, None, None, None, None, None);
-        let meta = ModelMetadata::resolve(&cfg);
+        let meta = ResolvedModelMetadata::resolve(&cfg);
         assert_eq!(meta.context_length, None);
     }
 
@@ -217,7 +217,7 @@ mod tests {
             None,
             None,
         );
-        let meta = ModelMetadata::resolve(&cfg);
+        let meta = ResolvedModelMetadata::resolve(&cfg);
         assert_eq!(meta.kv_cache_k, Some("q4_0".to_string()));
     }
 
@@ -235,7 +235,7 @@ mod tests {
             None,
             None,
         );
-        let meta = ModelMetadata::resolve(&cfg);
+        let meta = ResolvedModelMetadata::resolve(&cfg);
         assert_eq!(meta.kv_cache_k, Some("fp8".to_string()));
     }
 
@@ -253,7 +253,7 @@ mod tests {
             None,
             None,
         );
-        let meta = ModelMetadata::resolve(&cfg);
+        let meta = ResolvedModelMetadata::resolve(&cfg);
         assert_eq!(meta.kv_cache_v, Some("q8_0".to_string()));
     }
 
@@ -271,7 +271,7 @@ mod tests {
             None,
             None,
         );
-        let meta = ModelMetadata::resolve(&cfg);
+        let meta = ResolvedModelMetadata::resolve(&cfg);
         assert_eq!(meta.kv_cache_v, Some("fp8".to_string()));
     }
 
@@ -290,7 +290,7 @@ mod tests {
             None,
             None,
         );
-        let meta = ModelMetadata::resolve(&cfg);
+        let meta = ResolvedModelMetadata::resolve(&cfg);
         assert_eq!(meta.kv_cache_k, Some("q4_0".to_string()));
         assert_eq!(meta.kv_cache_v, Some("fp8".to_string()));
     }
@@ -311,7 +311,7 @@ mod tests {
             Some("MoE".to_string()),
             None,
         );
-        let meta = ModelMetadata::resolve(&cfg);
+        let meta = ResolvedModelMetadata::resolve(&cfg);
         assert_eq!(meta.architecture, Some("MoE".to_string()));
     }
 
@@ -329,7 +329,7 @@ mod tests {
             None,
             Some(42),
         );
-        let meta = ModelMetadata::resolve(&cfg);
+        let meta = ResolvedModelMetadata::resolve(&cfg);
         assert_eq!(meta.num_layers, Some(42));
     }
 
@@ -338,15 +338,12 @@ mod tests {
     #[test]
     fn test_all_none_when_no_sources() {
         let cfg = make_config(None, None, None, None, None, None, None, None, None, None);
-        let meta = ModelMetadata::resolve(&cfg);
+        let meta = ResolvedModelMetadata::resolve(&cfg);
         assert_eq!(meta.quant, None);
         assert_eq!(meta.kv_cache_k, None);
         assert_eq!(meta.kv_cache_v, None);
         assert_eq!(meta.context_length, None);
         assert_eq!(meta.architecture, None);
         assert_eq!(meta.num_layers, None);
-        assert_eq!(meta.embedding_length, None);
-        assert_eq!(meta.head_count, None);
-        assert_eq!(meta.block_count, None);
     }
 }

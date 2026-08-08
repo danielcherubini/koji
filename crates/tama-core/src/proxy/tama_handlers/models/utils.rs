@@ -107,16 +107,22 @@ pub(super) async fn build_model_entry(
     let hf_repo = cfg.model.as_deref().or(cfg.api_name.as_deref())?;
 
     // Resolve unified metadata from whichever source is populated.
-    let meta = crate::models::ModelMetadata::resolve(cfg);
+    let meta = crate::models::ResolvedModelMetadata::resolve(cfg);
 
-    // Context length resolution order:
-    // 1. meta.context_length (GGUF → vLLM → HF fallback, highest priority)
-    // 2. backend_context_length (from /v1/models response)
-    // 3. model_toml (lowest priority — existing fallback)
-    let context_length = if let Some(ctx) = meta.context_length {
-        Some(ctx)
-    } else if let Some(ctx) = backend_context_length {
-        Some(ctx)
+    // Context length resolution order (highest to lowest priority):
+    // 1. cfg.context_length — explicit user override (GGUF column)
+    // 2. cfg.vllm.max_model_len — vLLM config
+    // 3. backend_context_length — live backend-reported value
+    // 4. cfg.hf_context_length — pull-time HF parse
+    // 5. model_toml — lowest priority fallback
+    let context_length = cfg
+        .context_length
+        .or(cfg.vllm.max_model_len)
+        .or(backend_context_length)
+        .or(cfg.hf_context_length);
+    // If no context_length found yet, fall back to model_toml (async)
+    let context_length = if context_length.is_some() {
+        context_length
     } else {
         let model_toml = state.get_model_toml(id).await;
         model_toml.and_then(|m| {

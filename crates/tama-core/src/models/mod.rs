@@ -16,10 +16,11 @@ pub mod verify;
 pub use card::{card_slug, ModelMeta, ModelToml, QuantInfo};
 pub use config_key::ConfigKey;
 pub use manager::ModelManager;
-pub use metadata::ModelMetadata;
+pub use metadata::ResolvedModelMetadata;
 pub use pull::infer_quant_from_filename;
 pub use registry::{InstalledModel, ModelRegistry};
 pub use search::{search_models, SearchResult, SortBy};
+pub use transformers::TransformersMetadata;
 pub use types::ModelStateSnapshot;
 
 #[cfg(test)]

@@ -9,10 +9,12 @@ pub struct TransformersMetadata {
     /// Model architectures (e.g. `["Qwen2ForCausalLM"]`).
     pub architectures: Vec<String>,
     /// Embedding/hidden dimension.
+    /// Parsed but not yet wired into the dashboard — kept for future use.
     pub hidden_size: Option<u32>,
     /// Number of hidden layers (block_count / num_layers).
     pub num_hidden_layers: Option<u32>,
     /// Number of attention heads.
+    /// Parsed but not yet wired into the dashboard — kept for future use.
     pub num_attention_heads: Option<u32>,
     /// Maximum context length in tokens.
     pub max_position_embeddings: Option<u32>,
@@ -45,19 +47,19 @@ pub fn parse_transformers_metadata(model_dir: &Path) -> Result<TransformersMetad
         hidden_size: config
             .get("hidden_size")
             .and_then(|v| v.as_u64())
-            .map(|v| v as u32),
+            .and_then(|v| u32::try_from(v).ok()),
         num_hidden_layers: config
             .get("num_hidden_layers")
             .and_then(|v| v.as_u64())
-            .map(|v| v as u32),
+            .and_then(|v| u32::try_from(v).ok()),
         num_attention_heads: config
             .get("num_attention_heads")
             .and_then(|v| v.as_u64())
-            .map(|v| v as u32),
+            .and_then(|v| u32::try_from(v).ok()),
         max_position_embeddings: config
             .get("max_position_embeddings")
             .and_then(|v| v.as_u64())
-            .map(|v| v as u32),
+            .and_then(|v| u32::try_from(v).ok()),
         quantization_method: config
             .get("quantization_config")
             .and_then(|qc| qc.get("quant_method"))

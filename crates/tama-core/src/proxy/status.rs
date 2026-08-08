@@ -143,7 +143,7 @@ impl ProxyState {
                 .iter()
                 .find_map(|(sn, _, _)| inference_stats.get(sn));
             // Resolve unified metadata from whichever source is populated.
-            let meta = crate::models::ModelMetadata::resolve(model_cfg);
+            let meta = crate::models::ResolvedModelMetadata::resolve(model_cfg);
             let status = crate::models::ModelStateSnapshot {
                 id: model_id.clone(),
                 db_id: model_cfg.db_id,
