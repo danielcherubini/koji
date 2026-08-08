@@ -106,18 +106,21 @@ pub(super) async fn build_model_entry(
     // Use model field first, fall back to api_name.
     let hf_repo = cfg.model.as_deref().or(cfg.api_name.as_deref())?;
 
+    // Resolve unified metadata from whichever source is populated.
+    let meta = crate::models::ModelMetadata::resolve(cfg);
+
     // Context length resolution order:
-    // 1. cfg.context_length (highest priority — explicit config override)
+    // 1. meta.context_length (GGUF → vLLM → HF fallback, highest priority)
     // 2. backend_context_length (from /v1/models response)
     // 3. model_toml (lowest priority — existing fallback)
-    let context_length = if let Some(ctx) = cfg.context_length {
+    let context_length = if let Some(ctx) = meta.context_length {
         Some(ctx)
     } else if let Some(ctx) = backend_context_length {
         Some(ctx)
     } else {
         let model_toml = state.get_model_toml(id).await;
         model_toml.and_then(|m| {
-            let quant_key = cfg.quant.as_deref().unwrap_or_default();
+            let quant_key = meta.quant.as_deref().unwrap_or_default();
             m.quants
                 .get(quant_key)
                 .and_then(|q| q.context_length)
@@ -171,7 +174,7 @@ pub(super) async fn build_model_entry(
             context: context_length,
             output: output_limit,
         },
-        quant: cfg.quant.clone(),
+        quant: meta.quant,
         gpu_layers: cfg.gpu_layers.map(|n| n.to_string()),
         modalities,
         tool_call,

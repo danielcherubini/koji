@@ -142,6 +142,8 @@ impl ProxyState {
             let server_stats = servers
                 .iter()
                 .find_map(|(sn, _, _)| inference_stats.get(sn));
+            // Resolve unified metadata from whichever source is populated.
+            let meta = crate::models::ModelMetadata::resolve(model_cfg);
             let status = crate::models::ModelStateSnapshot {
                 id: model_id.clone(),
                 db_id: model_cfg.db_id,
@@ -149,13 +151,8 @@ impl ProxyState {
                 display_name: model_cfg.display_name.clone(),
                 backend: model_cfg.backend.clone(),
                 state: model_state,
-                quant: model_cfg
-                    .quant
-                    .clone()
-                    .or_else(|| model_cfg.vllm.quantization.clone()),
-                context_length: model_cfg
-                    .context_length
-                    .or(model_cfg.vllm.max_model_len),
+                quant: meta.quant,
+                context_length: meta.context_length,
                 hf_architecture_type: model_cfg.hf_architecture_type.clone(),
                 hf_base_model: model_cfg.hf_base_model.clone(),
                 hf_format: model_cfg.hf_format.clone(),
@@ -163,14 +160,8 @@ impl ProxyState {
                     .gpu_variant
                     .as_ref()
                     .map(|v| v.variant_folder().to_string()),
-                cache_type_k: model_cfg
-                    .cache_type_k
-                    .clone()
-                    .or_else(|| model_cfg.vllm.kv_cache_dtype.clone()),
-                cache_type_v: model_cfg
-                    .cache_type_v
-                    .clone()
-                    .or_else(|| model_cfg.vllm.kv_cache_dtype.clone()),
+                cache_type_k: meta.kv_cache_k,
+                cache_type_v: meta.kv_cache_v,
                 spec_types: model_cfg.spec_decoding.spec_types.clone(),
                 gpu_device: model_cfg.gpu_device.clone(),
                 error_message,
