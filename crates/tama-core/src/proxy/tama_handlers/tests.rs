@@ -1,6 +1,8 @@
 use super::pull::_setup_model_after_pull_with_config;
 use super::types::QuantEntry;
+use crate::models::pull::GgufMetadata;
 use crate::models::ConfigKey;
+use crate::models::TransformersMetadata;
 use crate::proxy::pull_jobs::{PullJob, PullJobStatus};
 
 /// Verifies that `setup_model_after_pull` creates a model card and config entry.
@@ -43,6 +45,7 @@ async fn test_setup_model_creates_card() {
         &spec,
         &dest_dir,
         None,
+        None, // transformers_metadata
         true,
     )
     .await;
@@ -115,6 +118,7 @@ async fn test_mmproj_pull_auto_enables_vision_on_parent() {
         &parent_spec,
         &dest_dir,
         None,
+        None, // transformers_metadata
         true,
     )
     .await;
@@ -136,6 +140,7 @@ async fn test_mmproj_pull_auto_enables_vision_on_parent() {
         &mmproj_spec,
         &dest_dir,
         None,
+        None, // transformers_metadata
         true,
     )
     .await;
@@ -191,6 +196,7 @@ async fn test_mmproj_pull_before_parent_creates_stub_then_promotes() {
         &mmproj_spec,
         &dest_dir,
         None,
+        None, // transformers_metadata
         true,
     )
     .await;
@@ -218,6 +224,7 @@ async fn test_mmproj_pull_before_parent_creates_stub_then_promotes() {
         &parent_spec,
         &dest_dir,
         None,
+        None, // transformers_metadata
         true,
     )
     .await;
@@ -281,6 +288,7 @@ async fn test_non_primary_shard_does_not_create_model_config() {
         &spec,
         &dest_dir,
         None,
+        None, // transformers_metadata
         false,
     )
     .await;
@@ -432,4 +440,252 @@ fn test_system_health_response_serializes() {
         "missing gpu_utilization_pct"
     );
     assert!(value.get("vram").is_some(), "missing vram");
+}
+
+/// Transformers metadata quantization_method replaces junk filename-derived
+/// quant values. Safetensors filenames produce garbage like "00002.safetensors"
+/// as quant keys — the authoritative value comes from config.json.
+#[tokio::test]
+async fn test_transformers_metadata_replaces_junk_quant() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config_dir = tmp.path().to_path_buf();
+    let configs_dir = config_dir.join("configs");
+    let models_dir = config_dir.join("models");
+    std::fs::create_dir_all(&configs_dir).unwrap();
+
+    let repo_id = "owner/AWQ-Model";
+    let dest_dir = models_dir.join(repo_id);
+    std::fs::create_dir_all(&dest_dir).unwrap();
+
+    // Write a dummy file with a safetensors-style filename
+    let filename = "model-00002-of-00003.safetensors";
+    std::fs::write(dest_dir.join(filename), b"dummy content").unwrap();
+
+    let spec = super::types::QuantPullSpec {
+        filename: filename.to_string(),
+        quant: Some("00002.safetensors".to_string()), // junk filename-derived value
+        context_length: None,
+    };
+
+    let transformers_meta = TransformersMetadata {
+        architectures: vec!["Qwen2ForCausalLM".to_string()],
+        quantization_method: Some("awq".to_string()),
+        max_position_embeddings: Some(32768),
+        num_hidden_layers: Some(28),
+        hidden_size: None,
+        num_attention_heads: None,
+    };
+
+    let mut models = std::collections::HashMap::new();
+    _setup_model_after_pull_with_config(
+        &configs_dir,
+        &mut models,
+        repo_id,
+        &spec,
+        &dest_dir,
+        None, // gguf_metadata
+        Some(&transformers_meta),
+        true,
+    )
+    .await;
+
+    let model_key = crate::models::card_slug(repo_id).to_lowercase();
+    let entry = models.get(&model_key).expect("model entry should exist");
+    assert_eq!(
+        entry.quant.as_deref(),
+        Some("awq"),
+        "transformers quantization_method should replace junk filename-derived quant"
+    );
+}
+
+/// When GGUF metadata is None, transformers metadata fills in hf_* fields.
+#[tokio::test]
+async fn test_transformers_metadata_gap_fills_hf_fields() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config_dir = tmp.path().to_path_buf();
+    let configs_dir = config_dir.join("configs");
+    let models_dir = config_dir.join("models");
+    std::fs::create_dir_all(&configs_dir).unwrap();
+
+    let repo_id = "owner/TransformersOnly-Model";
+    let dest_dir = models_dir.join(repo_id);
+    std::fs::create_dir_all(&dest_dir).unwrap();
+
+    let filename = "model.safetensors";
+    std::fs::write(dest_dir.join(filename), b"dummy content").unwrap();
+
+    let spec = super::types::QuantPullSpec {
+        filename: filename.to_string(),
+        quant: Some("fp16".to_string()),
+        context_length: None,
+    };
+
+    let transformers_meta = TransformersMetadata {
+        architectures: vec!["MistralForCausalLM".to_string()],
+        quantization_method: None,
+        max_position_embeddings: Some(32768),
+        num_hidden_layers: Some(40),
+        hidden_size: None,
+        num_attention_heads: None,
+    };
+
+    let mut models = std::collections::HashMap::new();
+    _setup_model_after_pull_with_config(
+        &configs_dir,
+        &mut models,
+        repo_id,
+        &spec,
+        &dest_dir,
+        None, // gguf_metadata is None
+        Some(&transformers_meta),
+        true,
+    )
+    .await;
+
+    let model_key = crate::models::card_slug(repo_id).to_lowercase();
+    let entry = models.get(&model_key).expect("model entry should exist");
+    assert_eq!(
+        entry.hf_architecture_type.as_deref(),
+        Some("MistralForCausalLM"),
+        "hf_architecture_type should come from transformers architectures[0]"
+    );
+    assert_eq!(
+        entry.hf_context_length,
+        Some(32768),
+        "hf_context_length should come from transformers max_position_embeddings"
+    );
+    assert_eq!(
+        entry.hf_num_layers,
+        Some(40),
+        "hf_num_layers should come from transformers num_hidden_layers"
+    );
+}
+
+/// When both GGUF and transformers metadata are present, GGUF values win
+/// and transformers does NOT overwrite them.
+#[tokio::test]
+async fn test_gguf_metadata_takes_priority_over_transformers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config_dir = tmp.path().to_path_buf();
+    let configs_dir = config_dir.join("configs");
+    let models_dir = config_dir.join("models");
+    std::fs::create_dir_all(&configs_dir).unwrap();
+
+    let repo_id = "owner/BothMetadata-Model";
+    let dest_dir = models_dir.join(repo_id);
+    std::fs::create_dir_all(&dest_dir).unwrap();
+
+    let filename = "model-Q4_K_M.gguf";
+    std::fs::write(dest_dir.join(filename), b"dummy content").unwrap();
+
+    let spec = super::types::QuantPullSpec {
+        filename: filename.to_string(),
+        quant: Some("Q4_K_M".to_string()),
+        context_length: None,
+    };
+
+    let gguf_meta = GgufMetadata {
+        architecture: Some("llama".to_string()),
+        context_length: Some(131072),
+        block_count: Some(32),
+        embedding_length: None,
+        head_count: None,
+        quantization: None,
+        name: None,
+        nextn_predict_count: None,
+    };
+
+    let transformers_meta = TransformersMetadata {
+        architectures: vec!["MistralForCausalLM".to_string()],
+        quantization_method: None,
+        max_position_embeddings: Some(32768),
+        num_hidden_layers: Some(40),
+        hidden_size: None,
+        num_attention_heads: None,
+    };
+
+    let mut models = std::collections::HashMap::new();
+    _setup_model_after_pull_with_config(
+        &configs_dir,
+        &mut models,
+        repo_id,
+        &spec,
+        &dest_dir,
+        Some(&gguf_meta),
+        Some(&transformers_meta),
+        true,
+    )
+    .await;
+
+    let model_key = crate::models::card_slug(repo_id).to_lowercase();
+    let entry = models.get(&model_key).expect("model entry should exist");
+    assert_eq!(
+        entry.hf_architecture_type.as_deref(),
+        Some("llama"),
+        "GGUF architecture should win over transformers"
+    );
+    assert_eq!(
+        entry.hf_context_length,
+        Some(131072),
+        "GGUF context_length should win over transformers max_position_embeddings"
+    );
+    assert_eq!(
+        entry.hf_num_layers,
+        Some(32),
+        "GGUF block_count should win over transformers num_hidden_layers"
+    );
+}
+
+/// When GGUF is None, transformers max_position_embeddings beats spec
+/// context_length in the priority chain.
+#[tokio::test]
+async fn test_transformers_context_beats_spec_context_length() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config_dir = tmp.path().to_path_buf();
+    let configs_dir = config_dir.join("configs");
+    let models_dir = config_dir.join("models");
+    std::fs::create_dir_all(&configs_dir).unwrap();
+
+    let repo_id = "owner/ContextChain-Model";
+    let dest_dir = models_dir.join(repo_id);
+    std::fs::create_dir_all(&dest_dir).unwrap();
+
+    let filename = "model.safetensors";
+    std::fs::write(dest_dir.join(filename), b"dummy content").unwrap();
+
+    let spec = super::types::QuantPullSpec {
+        filename: filename.to_string(),
+        quant: Some("fp16".to_string()),
+        context_length: Some(4096), // spec value — should be overridden
+    };
+
+    let transformers_meta = TransformersMetadata {
+        architectures: vec!["Qwen2ForCausalLM".to_string()],
+        quantization_method: None,
+        max_position_embeddings: Some(32768), // transformers value — should win
+        num_hidden_layers: None,
+        hidden_size: None,
+        num_attention_heads: None,
+    };
+
+    let mut models = std::collections::HashMap::new();
+    _setup_model_after_pull_with_config(
+        &configs_dir,
+        &mut models,
+        repo_id,
+        &spec,
+        &dest_dir,
+        None, // gguf_metadata is None
+        Some(&transformers_meta),
+        true,
+    )
+    .await;
+
+    let model_key = crate::models::card_slug(repo_id).to_lowercase();
+    let entry = models.get(&model_key).expect("model entry should exist");
+    assert_eq!(
+        entry.context_length,
+        Some(32768),
+        "transformers max_position_embeddings should beat spec context_length"
+    );
 }

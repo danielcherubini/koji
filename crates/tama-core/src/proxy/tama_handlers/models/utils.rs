@@ -106,18 +106,31 @@ pub(super) async fn build_model_entry(
     // Use model field first, fall back to api_name.
     let hf_repo = cfg.model.as_deref().or(cfg.api_name.as_deref())?;
 
-    // Context length resolution order:
-    // 1. cfg.context_length (highest priority — explicit config override)
-    // 2. backend_context_length (from /v1/models response)
-    // 3. model_toml (lowest priority — existing fallback)
-    let context_length = if let Some(ctx) = cfg.context_length {
-        Some(ctx)
-    } else if let Some(ctx) = backend_context_length {
-        Some(ctx)
+    // Resolve unified metadata from whichever source is populated.
+    let meta = crate::models::ResolvedModelMetadata::resolve(cfg);
+    // Note: meta.context_length is intentionally NOT used here — the chain
+    // below interleaves the live backend-reported value between vLLM and HF
+    // tiers, which resolve() cannot do (see metadata.rs resolve() docs).
+    // Only meta.quant is consumed from the resolved metadata.
+
+    // Context length resolution order (highest to lowest priority):
+    // 1. cfg.context_length — explicit user override (GGUF column)
+    // 2. cfg.vllm.max_model_len — vLLM config
+    // 3. backend_context_length — live backend-reported value
+    // 4. cfg.hf_context_length — pull-time HF parse
+    // 5. model_toml — lowest priority fallback
+    let context_length = cfg
+        .context_length
+        .or(cfg.vllm.max_model_len)
+        .or(backend_context_length)
+        .or(cfg.hf_context_length);
+    // If no context_length found yet, fall back to model_toml (async)
+    let context_length = if context_length.is_some() {
+        context_length
     } else {
         let model_toml = state.get_model_toml(id).await;
         model_toml.and_then(|m| {
-            let quant_key = cfg.quant.as_deref().unwrap_or_default();
+            let quant_key = meta.quant.as_deref().unwrap_or_default();
             m.quants
                 .get(quant_key)
                 .and_then(|q| q.context_length)
@@ -171,7 +184,7 @@ pub(super) async fn build_model_entry(
             context: context_length,
             output: output_limit,
         },
-        quant: cfg.quant.clone(),
+        quant: meta.quant,
         gpu_layers: cfg.gpu_layers.map(|n| n.to_string()),
         modalities,
         tool_call,

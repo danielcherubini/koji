@@ -4,9 +4,11 @@ pub mod card;
 pub mod config_key;
 pub mod gguf;
 pub mod manager;
+pub mod metadata;
 pub mod pull;
 pub mod registry;
 pub mod search;
+pub mod transformers;
 pub mod types;
 pub mod update;
 pub mod verify;
@@ -14,9 +16,11 @@ pub mod verify;
 pub use card::{card_slug, ModelMeta, ModelToml, QuantInfo};
 pub use config_key::ConfigKey;
 pub use manager::ModelManager;
+pub use metadata::ResolvedModelMetadata;
 pub use pull::infer_quant_from_filename;
 pub use registry::{InstalledModel, ModelRegistry};
 pub use search::{search_models, SearchResult, SortBy};
+pub use transformers::TransformersMetadata;
 pub use types::ModelStateSnapshot;
 
 #[cfg(test)]

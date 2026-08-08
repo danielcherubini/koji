@@ -142,6 +142,8 @@ impl ProxyState {
             let server_stats = servers
                 .iter()
                 .find_map(|(sn, _, _)| inference_stats.get(sn));
+            // Resolve unified metadata from whichever source is populated.
+            let meta = crate::models::ResolvedModelMetadata::resolve(model_cfg);
             let status = crate::models::ModelStateSnapshot {
                 id: model_id.clone(),
                 db_id: model_cfg.db_id,
@@ -149,8 +151,8 @@ impl ProxyState {
                 display_name: model_cfg.display_name.clone(),
                 backend: model_cfg.backend.clone(),
                 state: model_state,
-                quant: model_cfg.quant.clone(),
-                context_length: model_cfg.context_length,
+                quant: meta.quant,
+                context_length: meta.context_length,
                 hf_architecture_type: model_cfg.hf_architecture_type.clone(),
                 hf_base_model: model_cfg.hf_base_model.clone(),
                 hf_format: model_cfg.hf_format.clone(),
@@ -158,8 +160,8 @@ impl ProxyState {
                     .gpu_variant
                     .as_ref()
                     .map(|v| v.variant_folder().to_string()),
-                cache_type_k: model_cfg.cache_type_k.clone(),
-                cache_type_v: model_cfg.cache_type_v.clone(),
+                cache_type_k: meta.kv_cache_k,
+                cache_type_v: meta.kv_cache_v,
                 spec_types: model_cfg.spec_decoding.spec_types.clone(),
                 gpu_device: model_cfg.gpu_device.clone(),
                 error_message,
@@ -379,6 +381,49 @@ mod tests {
             modalities: None,
             display_name: None,
             db_id: None,
+            ..Default::default()
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn make_model_config_with_vllm(
+        backend: &str,
+        quant: Option<String>,
+        context_length: Option<u32>,
+        cache_type_k: Option<String>,
+        cache_type_v: Option<String>,
+        vllm_quantization: Option<String>,
+        vllm_max_model_len: Option<u32>,
+        vllm_kv_cache_dtype: Option<String>,
+    ) -> ModelConfig {
+        ModelConfig {
+            backend: backend.to_string(),
+            args: vec![],
+            sampling: None,
+            model: None,
+            quant,
+            mmproj: None,
+            port: None,
+            health_check: None,
+            enabled: true,
+            context_length,
+            num_parallel: Some(1),
+            kv_unified: false,
+            profile: None,
+            api_name: None,
+            gpu_layers: None,
+            cache_type_k,
+            cache_type_v,
+            quants: BTreeMap::new(),
+            modalities: None,
+            display_name: None,
+            db_id: None,
+            vllm: crate::config::VllmConfig {
+                quantization: vllm_quantization,
+                kv_cache_dtype: vllm_kv_cache_dtype,
+                max_model_len: vllm_max_model_len,
+                ..Default::default()
+            },
             ..Default::default()
         }
     }
@@ -709,6 +754,388 @@ mod tests {
             serde_json::to_value(&parsed).expect("parsed must serialize"),
             raw_value,
             "StatusResponse round-trip must be lossless — struct fields must match wire shape exactly"
+        );
+    }
+
+    // ── vLLM field resolution in ModelStateSnapshot ──────────────────────────
+
+    /// When GGUF `quant` is `Some`, it takes priority over `vllm.quantization`.
+    #[tokio::test]
+    async fn test_vllm_quant_fallback_gguf_wins() {
+        let config = Config::default();
+        let state = ProxyState::new(config, None);
+
+        {
+            let mut mc = state.registry.model_configs.write().await;
+            mc.insert(
+                "safetensors-model".to_string(),
+                make_model_config_with_vllm(
+                    "vllm",
+                    Some("Q4_K_M".to_string()), // GGUF quant
+                    None,
+                    None,
+                    None,
+                    Some("fp8".to_string()), // vLLM quantization
+                    None,
+                    None,
+                ),
+            );
+        }
+
+        let statuses = state.collect_model_state_snapshots().await;
+        let snap = statuses
+            .iter()
+            .find(|s| s.id == "safetensors-model")
+            .unwrap();
+        assert_eq!(
+            snap.quant,
+            Some("Q4_K_M".to_string()),
+            "GGUF quant should take priority over vLLM quantization"
+        );
+    }
+
+    /// When GGUF `quant` is `None`, falls back to `vllm.quantization`.
+    #[tokio::test]
+    async fn test_vllm_quant_fallback_uses_vllm() {
+        let config = Config::default();
+        let state = ProxyState::new(config, None);
+
+        {
+            let mut mc = state.registry.model_configs.write().await;
+            mc.insert(
+                "safetensors-model".to_string(),
+                make_model_config_with_vllm(
+                    "vllm",
+                    None, // GGUF quant is None
+                    None,
+                    None,
+                    None,
+                    Some("fp8".to_string()), // vLLM quantization
+                    None,
+                    None,
+                ),
+            );
+        }
+
+        let statuses = state.collect_model_state_snapshots().await;
+        let snap = statuses
+            .iter()
+            .find(|s| s.id == "safetensors-model")
+            .unwrap();
+        assert_eq!(
+            snap.quant,
+            Some("fp8".to_string()),
+            "Should fall back to vLLM quantization when GGUF quant is None"
+        );
+    }
+
+    /// When both GGUF `quant` and `vllm.quantization` are `None`, returns `None`.
+    #[tokio::test]
+    async fn test_vllm_quant_fallback_both_none() {
+        let config = Config::default();
+        let state = ProxyState::new(config, None);
+
+        {
+            let mut mc = state.registry.model_configs.write().await;
+            mc.insert(
+                "safetensors-model".to_string(),
+                make_model_config_with_vllm(
+                    "vllm", None, // GGUF quant
+                    None, None, None, None, // vLLM quantization
+                    None, None,
+                ),
+            );
+        }
+
+        let statuses = state.collect_model_state_snapshots().await;
+        let snap = statuses
+            .iter()
+            .find(|s| s.id == "safetensors-model")
+            .unwrap();
+        assert_eq!(
+            snap.quant, None,
+            "Should be None when both GGUF quant and vLLM quantization are None"
+        );
+    }
+
+    /// When GGUF `context_length` is `Some`, it takes priority over `vllm.max_model_len`.
+    #[tokio::test]
+    async fn test_vllm_context_length_fallback_gguf_wins() {
+        let config = Config::default();
+        let state = ProxyState::new(config, None);
+
+        {
+            let mut mc = state.registry.model_configs.write().await;
+            mc.insert(
+                "safetensors-model".to_string(),
+                make_model_config_with_vllm(
+                    "vllm",
+                    None,
+                    Some(4096), // GGUF context_length
+                    None,
+                    None,
+                    None,
+                    Some(8192), // vLLM max_model_len
+                    None,
+                ),
+            );
+        }
+
+        let statuses = state.collect_model_state_snapshots().await;
+        let snap = statuses
+            .iter()
+            .find(|s| s.id == "safetensors-model")
+            .unwrap();
+        assert_eq!(
+            snap.context_length,
+            Some(4096),
+            "GGUF context_length should take priority over vLLM max_model_len"
+        );
+    }
+
+    /// When GGUF `context_length` is `None`, falls back to `vllm.max_model_len`.
+    #[tokio::test]
+    async fn test_vllm_context_length_fallback_uses_vllm() {
+        let config = Config::default();
+        let state = ProxyState::new(config, None);
+
+        {
+            let mut mc = state.registry.model_configs.write().await;
+            mc.insert(
+                "safetensors-model".to_string(),
+                make_model_config_with_vllm(
+                    "vllm",
+                    None,
+                    None, // GGUF context_length is None
+                    None,
+                    None,
+                    None,
+                    Some(8192), // vLLM max_model_len
+                    None,
+                ),
+            );
+        }
+
+        let statuses = state.collect_model_state_snapshots().await;
+        let snap = statuses
+            .iter()
+            .find(|s| s.id == "safetensors-model")
+            .unwrap();
+        assert_eq!(
+            snap.context_length,
+            Some(8192),
+            "Should fall back to vLLM max_model_len when GGUF context_length is None"
+        );
+    }
+
+    /// When both GGUF `context_length` and `vllm.max_model_len` are `None`, returns `None`.
+    #[tokio::test]
+    async fn test_vllm_context_length_fallback_both_none() {
+        let config = Config::default();
+        let state = ProxyState::new(config, None);
+
+        {
+            let mut mc = state.registry.model_configs.write().await;
+            mc.insert(
+                "safetensors-model".to_string(),
+                make_model_config_with_vllm(
+                    "vllm", None, None, // GGUF context_length
+                    None, None, None, None, // vLLM max_model_len
+                    None,
+                ),
+            );
+        }
+
+        let statuses = state.collect_model_state_snapshots().await;
+        let snap = statuses
+            .iter()
+            .find(|s| s.id == "safetensors-model")
+            .unwrap();
+        assert_eq!(
+            snap.context_length, None,
+            "Should be None when both GGUF context_length and vLLM max_model_len are None"
+        );
+    }
+
+    /// When GGUF `cache_type_k` is `Some`, it takes priority over `vllm.kv_cache_dtype`.
+    #[tokio::test]
+    async fn test_vllm_cache_type_k_fallback_gguf_wins() {
+        let config = Config::default();
+        let state = ProxyState::new(config, None);
+
+        {
+            let mut mc = state.registry.model_configs.write().await;
+            mc.insert(
+                "safetensors-model".to_string(),
+                make_model_config_with_vllm(
+                    "vllm",
+                    None,
+                    None,
+                    Some("q4_0".to_string()), // GGUF cache_type_k
+                    None,
+                    None,
+                    None,
+                    Some("fp8".to_string()), // vLLM kv_cache_dtype
+                ),
+            );
+        }
+
+        let statuses = state.collect_model_state_snapshots().await;
+        let snap = statuses
+            .iter()
+            .find(|s| s.id == "safetensors-model")
+            .unwrap();
+        assert_eq!(
+            snap.cache_type_k,
+            Some("q4_0".to_string()),
+            "GGUF cache_type_k should take priority over vLLM kv_cache_dtype"
+        );
+    }
+
+    /// When GGUF `cache_type_k` is `None`, falls back to `vllm.kv_cache_dtype`.
+    #[tokio::test]
+    async fn test_vllm_cache_type_k_fallback_uses_vllm() {
+        let config = Config::default();
+        let state = ProxyState::new(config, None);
+
+        {
+            let mut mc = state.registry.model_configs.write().await;
+            mc.insert(
+                "safetensors-model".to_string(),
+                make_model_config_with_vllm(
+                    "vllm",
+                    None,
+                    None,
+                    None, // GGUF cache_type_k is None
+                    None,
+                    None,
+                    None,
+                    Some("fp8".to_string()), // vLLM kv_cache_dtype
+                ),
+            );
+        }
+
+        let statuses = state.collect_model_state_snapshots().await;
+        let snap = statuses
+            .iter()
+            .find(|s| s.id == "safetensors-model")
+            .unwrap();
+        assert_eq!(
+            snap.cache_type_k,
+            Some("fp8".to_string()),
+            "Should fall back to vLLM kv_cache_dtype when GGUF cache_type_k is None"
+        );
+    }
+
+    /// When GGUF `cache_type_v` is `Some`, it takes priority over `vllm.kv_cache_dtype`.
+    #[tokio::test]
+    async fn test_vllm_cache_type_v_fallback_gguf_wins() {
+        let config = Config::default();
+        let state = ProxyState::new(config, None);
+
+        {
+            let mut mc = state.registry.model_configs.write().await;
+            mc.insert(
+                "safetensors-model".to_string(),
+                make_model_config_with_vllm(
+                    "vllm",
+                    None,
+                    None,
+                    None,
+                    Some("q8_0".to_string()), // GGUF cache_type_v
+                    None,
+                    None,
+                    Some("fp8".to_string()), // vLLM kv_cache_dtype
+                ),
+            );
+        }
+
+        let statuses = state.collect_model_state_snapshots().await;
+        let snap = statuses
+            .iter()
+            .find(|s| s.id == "safetensors-model")
+            .unwrap();
+        assert_eq!(
+            snap.cache_type_v,
+            Some("q8_0".to_string()),
+            "GGUF cache_type_v should take priority over vLLM kv_cache_dtype"
+        );
+    }
+
+    /// When GGUF `cache_type_v` is `None`, falls back to `vllm.kv_cache_dtype`.
+    #[tokio::test]
+    async fn test_vllm_cache_type_v_fallback_uses_vllm() {
+        let config = Config::default();
+        let state = ProxyState::new(config, None);
+
+        {
+            let mut mc = state.registry.model_configs.write().await;
+            mc.insert(
+                "safetensors-model".to_string(),
+                make_model_config_with_vllm(
+                    "vllm",
+                    None,
+                    None,
+                    None,
+                    None, // GGUF cache_type_v is None
+                    None,
+                    None,
+                    Some("fp8".to_string()), // vLLM kv_cache_dtype
+                ),
+            );
+        }
+
+        let statuses = state.collect_model_state_snapshots().await;
+        let snap = statuses
+            .iter()
+            .find(|s| s.id == "safetensors-model")
+            .unwrap();
+        assert_eq!(
+            snap.cache_type_v,
+            Some("fp8".to_string()),
+            "Should fall back to vLLM kv_cache_dtype when GGUF cache_type_v is None"
+        );
+    }
+
+    /// `cache_type_k` and `cache_type_v` resolve independently — each falls back
+    /// to `vllm.kv_cache_dtype` only when its own column is `None`.
+    #[tokio::test]
+    async fn test_vllm_cache_types_resolve_independently() {
+        let config = Config::default();
+        let state = ProxyState::new(config, None);
+
+        // cache_type_k is Some, cache_type_v is None — only V should fall back
+        {
+            let mut mc = state.registry.model_configs.write().await;
+            mc.insert(
+                "safetensors-model".to_string(),
+                make_model_config_with_vllm(
+                    "vllm",
+                    None,
+                    None,
+                    Some("q4_0".to_string()), // GGUF cache_type_k
+                    None,                     // GGUF cache_type_v is None
+                    None,
+                    None,
+                    Some("fp8".to_string()), // vLLM kv_cache_dtype
+                ),
+            );
+        }
+
+        let statuses = state.collect_model_state_snapshots().await;
+        let snap = statuses
+            .iter()
+            .find(|s| s.id == "safetensors-model")
+            .unwrap();
+        assert_eq!(
+            snap.cache_type_k,
+            Some("q4_0".to_string()),
+            "cache_type_k should use GGUF value"
+        );
+        assert_eq!(
+            snap.cache_type_v,
+            Some("fp8".to_string()),
+            "cache_type_v should fall back to vLLM kv_cache_dtype"
         );
     }
 }
