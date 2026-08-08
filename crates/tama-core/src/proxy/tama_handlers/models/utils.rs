@@ -108,6 +108,10 @@ pub(super) async fn build_model_entry(
 
     // Resolve unified metadata from whichever source is populated.
     let meta = crate::models::ResolvedModelMetadata::resolve(cfg);
+    // Note: meta.context_length is intentionally NOT used here — the chain
+    // below interleaves the live backend-reported value between vLLM and HF
+    // tiers, which resolve() cannot do (see metadata.rs resolve() docs).
+    // Only meta.quant is consumed from the resolved metadata.
 
     // Context length resolution order (highest to lowest priority):
     // 1. cfg.context_length — explicit user override (GGUF column)

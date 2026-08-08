@@ -21,8 +21,14 @@ pub struct ResolvedModelMetadata {
     /// Context length in tokens.
     pub context_length: Option<u32>,
     /// Architecture type (e.g. "llama", "Qwen2ForCausalLM", "MoE", "Dense").
+    /// Resolved from `hf_architecture_type` — populated at pull time from
+    /// GGUF headers or config.json. Not yet surfaced on the dashboard;
+    /// reserved for future pills.
     pub architecture: Option<String>,
     /// Number of layers.
+    /// Resolved from `hf_num_layers` — populated at pull time from GGUF
+    /// block_count or config.json num_hidden_layers. Not yet surfaced on
+    /// the dashboard; reserved for future pills.
     pub num_layers: Option<u32>,
 }
 
@@ -33,6 +39,16 @@ impl ResolvedModelMetadata {
     /// 1. GGUF columns (highest priority — explicit config)
     /// 2. vLLM config (fallback for transformers models)
     /// 3. HF metadata (fallback for architecture, context, layers)
+    ///
+    /// **Note:** `build_model_entry()` in `proxy/tama_handlers/models/utils.rs`
+    /// uses a divergent context-length chain that interleaves the live backend
+    /// value between vLLM and HF tiers:
+    /// `cfg.context_length` → `cfg.vllm.max_model_len` → `backend_context_length`
+    /// → `cfg.hf_context_length` → `model_toml`. That method resolves
+    /// `context_length` inline rather than using `meta.context_length` so it
+    /// can factor in the runtime backend-reported value. The `quant` and
+    /// `kv_cache_*` fields from this `resolve()` are used directly by
+    /// `build_model_entry()` and `collect_model_state_snapshots()`.
     pub fn resolve(cfg: &crate::config::ModelConfig) -> Self {
         Self {
             quant: cfg.quant.clone().or_else(|| cfg.vllm.quantization.clone()),

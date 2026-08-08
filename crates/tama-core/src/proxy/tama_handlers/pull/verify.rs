@@ -462,11 +462,11 @@ pub(crate) async fn _setup_model_after_pull_with_config(
                 if entry.hf_num_layers.is_none() {
                     entry.hf_num_layers = meta.num_hidden_layers;
                 }
-                // Use quantization_method as the quant source when no other
-                // quant is set — this is the only source of quant info for
-                // safetensors models, closing the gap left by filename inference.
-                if entry.quant.is_none() {
-                    entry.quant = meta.quantization_method.clone();
+                // Transformers config.json has authoritative quant info.
+                // Filename inference produces junk for safetensors (e.g. "00002.safetensors"),
+                // so replace unconditionally rather than fill-if-None.
+                if let Some(qm) = &meta.quantization_method {
+                    entry.quant = Some(qm.clone());
                 }
             }
 
