@@ -12,6 +12,7 @@ use crate::models::pull::infer_quant_from_filename;
 use crate::models::pull::metadata::lookup_community_toml;
 use crate::models::pull::BlobInfo;
 use crate::models::pull::GgufMetadata;
+use crate::models::transformers::TransformersMetadata;
 use crate::models::QuantInfo;
 use crate::proxy::pull_jobs::{PullJob, PullJobStatus};
 use crate::proxy::pull_queue::PullQueueService;
@@ -257,6 +258,7 @@ pub(super) async fn run_verification(
 
 /// Inner implementation of post-pull setup, accepting an explicit config.
 /// Separated for testability — `setup_model_after_pull` delegates to this.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn _setup_model_after_pull_with_config(
     configs_dir: &std::path::Path,
     model_configs: &mut std::collections::HashMap<String, ModelConfig>,
@@ -264,6 +266,7 @@ pub(crate) async fn _setup_model_after_pull_with_config(
     spec: &QuantPullSpec,
     dest_dir: &std::path::Path,
     gguf_metadata: Option<&GgufMetadata>,
+    transformers_metadata: Option<&TransformersMetadata>,
     is_primary_shard: bool,
 ) -> Option<String> {
     let repo_slug = crate::models::card_slug(repo_id);
@@ -311,9 +314,10 @@ pub(crate) async fn _setup_model_after_pull_with_config(
         })
     });
 
-    // Determine context_length: GGUF parsed value > spec value > None
+    // Determine context_length: GGUF parsed value > transformers config > spec value > None
     let context_length = gguf_metadata
         .and_then(|m| m.context_length.map(|v| v as u32))
+        .or(transformers_metadata.and_then(|m| m.max_position_embeddings))
         .or(spec.context_length);
 
     // Get actual file size from disk
@@ -440,11 +444,24 @@ pub(crate) async fn _setup_model_after_pull_with_config(
                 entry.display_name = Some(display_name);
             }
 
-            // Populate hf_* informational fields from GGUF metadata
+            // Populate hf_* informational fields from GGUF or transformers metadata.
+            // GGUF takes priority; transformers fills in fields not set by GGUF.
             if let Some(meta) = gguf_metadata {
                 entry.hf_architecture_type = meta.architecture.clone();
                 entry.hf_context_length = meta.context_length.map(|v| v as u32);
                 entry.hf_num_layers = meta.block_count.map(|v| v as u32);
+            }
+            // Transformers metadata fills gaps when GGUF metadata is absent
+            if let Some(meta) = transformers_metadata {
+                if entry.hf_architecture_type.is_none() {
+                    entry.hf_architecture_type = meta.architectures.first().cloned();
+                }
+                if entry.hf_context_length.is_none() {
+                    entry.hf_context_length = meta.max_position_embeddings;
+                }
+                if entry.hf_num_layers.is_none() {
+                    entry.hf_num_layers = meta.num_hidden_layers;
+                }
             }
 
             // Save model TOML (best-effort — pull is already marked Completed)
@@ -574,6 +591,7 @@ pub(crate) async fn setup_model_after_pull(
     spec: &QuantPullSpec,
     dest_dir: &std::path::Path,
     gguf_metadata: Option<GgufMetadata>,
+    transformers_metadata: Option<TransformersMetadata>,
     is_primary_shard: bool,
 ) -> Option<i64> {
     let _permit = state.config_write_semaphore.acquire().await.ok()?;
@@ -593,6 +611,7 @@ pub(crate) async fn setup_model_after_pull(
         spec,
         dest_dir,
         gguf_metadata.as_ref(),
+        transformers_metadata.as_ref(),
         is_primary_shard,
     )
     .await;

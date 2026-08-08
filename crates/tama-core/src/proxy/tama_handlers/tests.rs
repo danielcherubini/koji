@@ -43,6 +43,7 @@ async fn test_setup_model_creates_card() {
         &spec,
         &dest_dir,
         None,
+        None, // transformers_metadata
         true,
     )
     .await;
@@ -115,6 +116,7 @@ async fn test_mmproj_pull_auto_enables_vision_on_parent() {
         &parent_spec,
         &dest_dir,
         None,
+        None, // transformers_metadata
         true,
     )
     .await;
@@ -136,6 +138,7 @@ async fn test_mmproj_pull_auto_enables_vision_on_parent() {
         &mmproj_spec,
         &dest_dir,
         None,
+        None, // transformers_metadata
         true,
     )
     .await;
@@ -191,6 +194,7 @@ async fn test_mmproj_pull_before_parent_creates_stub_then_promotes() {
         &mmproj_spec,
         &dest_dir,
         None,
+        None, // transformers_metadata
         true,
     )
     .await;
@@ -218,6 +222,7 @@ async fn test_mmproj_pull_before_parent_creates_stub_then_promotes() {
         &parent_spec,
         &dest_dir,
         None,
+        None, // transformers_metadata
         true,
     )
     .await;
@@ -281,6 +286,7 @@ async fn test_non_primary_shard_does_not_create_model_config() {
         &spec,
         &dest_dir,
         None,
+        None, // transformers_metadata
         false,
     )
     .await;

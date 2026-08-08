@@ -8,6 +8,7 @@ pub mod metadata;
 pub mod pull;
 pub mod registry;
 pub mod search;
+pub mod transformers;
 pub mod types;
 pub mod update;
 pub mod verify;
