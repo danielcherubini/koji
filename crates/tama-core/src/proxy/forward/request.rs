@@ -209,39 +209,22 @@ pub async fn forward_request(
         query_string = format!("?{}", query_string);
     }
 
-    // Rewrite the model field in the request body to the resolved model name.
-    // This is needed when the client sends an alias — the backend only knows
-    // the resolved (actual) model name, not the alias.
-    let body_with_resolved_model = if let Some(name) = model_name {
-        if !name.is_empty() {
-            if let Ok(mut body) = serde_json::from_slice::<serde_json::Value>(body_bytes) {
-                if let Some(obj) = body.as_object_mut() {
+    // Rewrite model name (alias → resolved) and optionally inject langfuse
+    // stream_options — single parse-and-serialize to avoid corrupting large bodies.
+    let body_to_send = if let Ok(mut body) = serde_json::from_slice::<serde_json::Value>(body_bytes)
+    {
+        if let Some(obj) = body.as_object_mut() {
+            // Rewrite model field to resolved name (for alias support)
+            if let Some(name) = model_name {
+                if !name.is_empty() {
                     obj.insert("model".to_string(), serde_json::json!(name.to_string()));
                 }
-                serde_json::to_vec(&body).unwrap_or_else(|_| body_bytes.to_vec())
-            } else {
-                body_bytes.to_vec()
             }
-        } else {
-            body_bytes.to_vec()
-        }
-    } else {
-        body_bytes.to_vec()
-    };
-
-    // Inject stream_options.include_usage: true for streaming chat completions
-    // ONLY when Langfuse telemetry is enabled (zero impact when disabled).
-    // Parse body once and reuse for both injection detection and field extraction.
-    let body_to_send = if langfuse_cfg.enabled {
-        if let Ok(mut body) = serde_json::from_slice::<serde_json::Value>(&body_with_resolved_model)
-        {
-            let is_streaming_chat = parts.uri.path().ends_with("/chat/completions")
-                && body
-                    .get("stream")
-                    .and_then(|s| s.as_bool())
-                    .unwrap_or(false);
-            if is_streaming_chat {
-                if let Some(obj) = body.as_object_mut() {
+            // Inject stream_options for langfuse (streaming chat only)
+            if langfuse_cfg.enabled {
+                let is_streaming_chat = parts.uri.path().ends_with("/chat/completions")
+                    && obj.get("stream").and_then(|s| s.as_bool()).unwrap_or(false);
+                if is_streaming_chat {
                     let stream_opts = obj
                         .entry("stream_options")
                         .or_insert_with(|| serde_json::json!({}));
@@ -249,15 +232,11 @@ pub async fn forward_request(
                         opts.insert("include_usage".to_string(), serde_json::json!(true));
                     }
                 }
-                serde_json::to_vec(&body).unwrap_or_else(|_| body_with_resolved_model.to_vec())
-            } else {
-                body_with_resolved_model
             }
-        } else {
-            body_with_resolved_model
         }
+        serde_json::to_vec(&body).unwrap_or_else(|_| body_bytes.to_vec())
     } else {
-        body_with_resolved_model
+        body_bytes.to_vec()
     };
 
     match state
