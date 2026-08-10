@@ -101,7 +101,7 @@ pub async fn handle_forward_post(
         &backend_name,
         &parts,
         &body_bytes,
-        model_name.as_deref(),
+        resolved_model.as_deref(),
     )
     .await
 }
