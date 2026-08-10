@@ -3,13 +3,15 @@
 //!    LocalResource users for read-on-mount data.
 //! 2. `spawn_local` + `RwSignal` (loading/error signals managed by hand) — the dominant
 //!    pattern (~18 files). Use the `*_request` helpers below for CSRF injection and
-//!    always call `extract_and_store_csrf_token` on 2xx GET responses.
+//!    always call `handle_response` on every response to handle 401 redirects and CSRF extraction.
 
 pub mod chart_utils;
 pub mod self_update;
 
 #[cfg(not(feature = "ssr"))]
 pub mod sse_stream;
+
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use gloo_net::http::{Request, RequestBuilder, Response};
 use leptos::prelude::{RwSignal, Signal};
@@ -63,6 +65,48 @@ pub fn extract_and_store_csrf_token(resp: &Response) {
         let token_str = token.as_str();
         store_csrf_token(token_str);
     }
+}
+
+/// Check response for auth failure and extract CSRF token on success.
+/// Redirects to `/login` if status is 401.
+/// On non-401 responses, extracts and stores the CSRF token from headers.
+///
+/// Returns `true` if a redirect was triggered (caller should short-circuit).
+/// Returns `false` if the response is valid (caller should continue).
+#[must_use = "handle_response redirects on 401; discarding the result means you won't short-circuit on auth failure"]
+pub fn handle_response(resp: &Response) -> bool {
+    if resp.status() == 401 {
+        if let Some(window) = web_sys::window() {
+            let _ = window.location().set_href("/login");
+        }
+        return true;
+    }
+    extract_and_store_csrf_token(resp);
+    false
+}
+
+/// Lightweight check: fetch a small endpoint to determine if the session has expired.
+/// Returns `true` if the session appears expired (redirect was triggered by `handle_response`).
+/// Returns `false` if the session is still valid or the request failed for non-auth reasons.
+pub async fn check_session_expired() -> bool {
+    match get_request("/tama/v1/system/health").send().await {
+        Ok(resp) => handle_response(&resp), // true = 401 = expired
+        Err(_) => false,                    // network error, not auth
+    }
+}
+
+/// Debounced session expiry check for SSE error handlers.
+/// Prevents firing multiple health checks during a single outage event.
+/// Returns immediately if a check is already in flight.
+pub fn sse_session_check() {
+    static CHECK_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+    if CHECK_IN_FLIGHT.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    wasm_bindgen_futures::spawn_local(async move {
+        let _ = check_session_expired().await;
+        CHECK_IN_FLIGHT.store(false, Ordering::Relaxed);
+    });
 }
 
 /// Build a GET request with X-CSRF-Token header injected.

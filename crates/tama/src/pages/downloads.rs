@@ -4,7 +4,7 @@ use std::sync::LazyLock;
 
 use crate::components::tab_buttons::{TabButton, TabButtons};
 pub use crate::utils::format_size;
-use crate::utils::{extract_and_store_csrf_token, get_request, post_request};
+use crate::utils::{get_request, handle_response, post_request};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct PullQueueItemDto {
@@ -81,7 +81,9 @@ pub fn Downloads() -> impl IntoView {
     let active_downloads_init = active_downloads.clone();
     wasm_bindgen_futures::spawn_local(async move {
         if let Ok(resp) = get_request("/tama/v1/pulls/active").send().await {
-            extract_and_store_csrf_token(&resp);
+            if handle_response(&resp) {
+                return;
+            }
             if let Ok(data) = resp.json::<PullsActiveResponse>().await {
                 active_downloads_init.set(data.items);
             }
@@ -108,7 +110,9 @@ pub fn Downloads() -> impl IntoView {
                 .send()
                 .await
                 {
-                    extract_and_store_csrf_token(&resp);
+                    if handle_response(&resp) {
+                        return;
+                    }
                     if let Ok(data) = resp.json::<PullsHistoryResponse>().await {
                         items_c.set(data.items);
                         total_c.set(data.total);
@@ -323,10 +327,15 @@ fn render_history_item(item: PullQueueItemDto) -> impl IntoView {
 pub async fn cancel_download(job_id: &str) {
     let url = format!("/tama/v1/pulls/{}/cancel", job_id);
     if let Ok(resp) = post_request(&url).send().await {
+        if handle_response(&resp) {
+            return;
+        }
         if resp.status() >= 200 && resp.status() < 300 {
             // Refresh active list
             if let Ok(resp2) = get_request("/tama/v1/pulls/active").send().await {
-                extract_and_store_csrf_token(&resp2);
+                if handle_response(&resp2) {
+                    return;
+                }
                 if let Ok(data) = resp2.json::<PullsActiveResponse>().await {
                     ACTIVE_DOWNLOADS.set(data.items);
                 }

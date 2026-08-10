@@ -4,7 +4,7 @@ use serde::Deserialize;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
 
-use crate::utils::{extract_and_store_csrf_token, get_request};
+use crate::utils::{get_request, handle_response};
 
 /// Response from GET /tama/v1/logs — grouped by source.
 #[derive(Debug, Clone, Deserialize)]
@@ -70,7 +70,9 @@ pub fn Logs() -> impl IntoView {
 
             match get_request("/tama/v1/logs").send().await {
                 Ok(resp) => {
-                    extract_and_store_csrf_token(&resp);
+                    if handle_response(&resp) {
+                        return;
+                    }
                     let status = resp.status();
                     if (200..300).contains(&status) {
                         match resp.text().await {

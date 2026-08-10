@@ -1,9 +1,11 @@
 use leptos::prelude::*;
 use std::collections::HashSet;
 #[cfg(not(feature = "ssr"))]
+use wasm_bindgen::closure::Closure;
+#[cfg(not(feature = "ssr"))]
 use wasm_bindgen::JsCast;
 
-use crate::utils::{get_request, post_request, put_request};
+use crate::utils::{get_request, handle_response, post_request, put_request};
 
 use crate::components::pull_wizard::*;
 
@@ -153,35 +155,40 @@ pub fn PullQuantWizard(
             wasm_bindgen_futures::spawn_local(async move {
                 let url = format!("/tama/v1/hf/{}", repo);
                 match get_request(&url).send().await {
-                    Ok(resp) => match resp.json::<Vec<QuantEntry>>().await {
-                        Ok(quants) => {
-                            if quants.is_empty() {
-                                error_msg.set(Some(
-                                    "No GGUF files found for this repo. Check the repo ID and try again.".to_string(),
-                                ));
-                                wizard_step.set(WizardStep::RepoInput);
-                            } else {
-                                let mut model_quants: Vec<QuantEntry> = Vec::new();
-                                let mut mmprojs: Vec<QuantEntry> = Vec::new();
-                                let mut mtps: Vec<QuantEntry> = Vec::new();
-                                for q in quants {
-                                    match q.kind {
-                                        QuantKind::Mmproj => mmprojs.push(q),
-                                        QuantKind::Mtp => mtps.push(q),
-                                        _ => model_quants.push(q),
+                    Ok(resp) => {
+                        if handle_response(&resp) {
+                            return;
+                        }
+                        match resp.json::<Vec<QuantEntry>>().await {
+                            Ok(quants) => {
+                                if quants.is_empty() {
+                                    error_msg.set(Some(
+                                        "No GGUF files found for this repo. Check the repo ID and try again.".to_string(),
+                                    ));
+                                    wizard_step.set(WizardStep::RepoInput);
+                                } else {
+                                    let mut model_quants: Vec<QuantEntry> = Vec::new();
+                                    let mut mmprojs: Vec<QuantEntry> = Vec::new();
+                                    let mut mtps: Vec<QuantEntry> = Vec::new();
+                                    for q in quants {
+                                        match q.kind {
+                                            QuantKind::Mmproj => mmprojs.push(q),
+                                            QuantKind::Mtp => mtps.push(q),
+                                            _ => model_quants.push(q),
+                                        }
                                     }
+                                    available_quants.set(model_quants);
+                                    available_mmprojs.set(mmprojs);
+                                    available_mtps.set(mtps);
+                                    wizard_step.set(WizardStep::SelectQuants);
                                 }
-                                available_quants.set(model_quants);
-                                available_mmprojs.set(mmprojs);
-                                available_mtps.set(mtps);
-                                wizard_step.set(WizardStep::SelectQuants);
+                            }
+                            Err(e) => {
+                                error_msg.set(Some(format!("Failed to parse response: {e}")));
+                                wizard_step.set(WizardStep::RepoInput);
                             }
                         }
-                        Err(e) => {
-                            error_msg.set(Some(format!("Failed to parse response: {e}")));
-                            wizard_step.set(WizardStep::RepoInput);
-                        }
-                    },
+                    }
                     Err(e) => {
                         error_msg.set(Some(format!("Request failed: {e}")));
                         wizard_step.set(WizardStep::RepoInput);
@@ -248,16 +255,23 @@ pub fn PullQuantWizard(
 
                                 // Parse metadata (soft failure — stub still created without it)
                                 let metadata = match metadata_resp {
-                                    Ok(r) if (200..300).contains(&r.status()) => {
-                                        match r.json::<HfModelMetadata>().await {
-                                            Ok(m) => Some(m),
-                                            Err(e) => {
-                                                log::warn!("Failed to parse metadata: {}", e);
-                                                None
+                                    Ok(r) => {
+                                        if handle_response(&r) {
+                                            None
+                                        } else if (200..300).contains(&r.status()) {
+                                            match r.json::<HfModelMetadata>().await {
+                                                Ok(m) => Some(m),
+                                                Err(e) => {
+                                                    log::warn!("Failed to parse metadata: {}", e);
+                                                    None
+                                                }
                                             }
+                                        } else {
+                                            log::warn!("Failed to fetch metadata for '{}'", rid);
+                                            None
                                         }
                                     }
-                                    _ => {
+                                    Err(_) => {
                                         log::warn!("Failed to fetch metadata for '{}'", rid);
                                         None
                                     }
@@ -277,14 +291,21 @@ pub fn PullQuantWizard(
 
                                 // Handle stub creation response
                                 match stub_resp {
-                                    Ok(r) if (200..300).contains(&r.status()) => {
-                                        if let Ok(json) = r.json::<serde_json::Value>().await {
-                                            if let Some(id) = json.get("id").and_then(|v| v.as_u64()) {
-                                                model_id.set(Some(id as u32));
+                                    Ok(r) => {
+                                        if handle_response(&r) {
+                                            return;
+                                        }
+                                        if (200..300).contains(&r.status()) {
+                                            if let Ok(json) = r.json::<serde_json::Value>().await {
+                                                if let Some(id) = json.get("id").and_then(|v| v.as_u64()) {
+                                                    model_id.set(Some(id as u32));
+                                                }
                                             }
+                                        } else {
+                                            log::warn!("Failed to create stub model for '{}'", rid);
                                         }
                                     }
-                                    _ => {
+                                    Err(_) => {
                                         log::warn!("Failed to create stub model for '{}'", rid);
                                     }
                                 }
@@ -296,35 +317,40 @@ pub fn PullQuantWizard(
 
                                 // Handle quant list response
                                 match quants_resp {
-                                    Ok(resp) => match resp.json::<Vec<QuantEntry>>().await {
-                                        Ok(quants) => {
-                                            if quants.is_empty() {
-                                                error_msg.set(Some(
-                                                    "No GGUF files found for this repo. Check the repo ID and try again.".to_string(),
-                                                ));
-                                                wizard_step.set(WizardStep::RepoInput);
-                                            } else {
-                                                let mut model_quants: Vec<QuantEntry> = Vec::new();
-                                                let mut mmprojs: Vec<QuantEntry> = Vec::new();
-                                                let mut mtps: Vec<QuantEntry> = Vec::new();
-                                                for q in quants {
-                                                    match q.kind {
-                                                        QuantKind::Mmproj => mmprojs.push(q),
-                                                        QuantKind::Mtp => mtps.push(q),
-                                                        _ => model_quants.push(q),
+                                    Ok(resp) => {
+                                        if handle_response(&resp) {
+                                            return;
+                                        }
+                                        match resp.json::<Vec<QuantEntry>>().await {
+                                            Ok(quants) => {
+                                                if quants.is_empty() {
+                                                    error_msg.set(Some(
+                                                        "No GGUF files found for this repo. Check the repo ID and try again.".to_string(),
+                                                    ));
+                                                    wizard_step.set(WizardStep::RepoInput);
+                                                } else {
+                                                    let mut model_quants: Vec<QuantEntry> = Vec::new();
+                                                    let mut mmprojs: Vec<QuantEntry> = Vec::new();
+                                                    let mut mtps: Vec<QuantEntry> = Vec::new();
+                                                    for q in quants {
+                                                        match q.kind {
+                                                            QuantKind::Mmproj => mmprojs.push(q),
+                                                            QuantKind::Mtp => mtps.push(q),
+                                                            _ => model_quants.push(q),
+                                                        }
                                                     }
+                                                    available_quants.set(model_quants);
+                                                    available_mmprojs.set(mmprojs);
+                                                    available_mtps.set(mtps);
+                                                    wizard_step.set(WizardStep::SelectQuants);
                                                 }
-                                                available_quants.set(model_quants);
-                                                available_mmprojs.set(mmprojs);
-                                                available_mtps.set(mtps);
-                                                wizard_step.set(WizardStep::SelectQuants);
+                                            }
+                                            Err(e) => {
+                                                error_msg.set(Some(format!("Failed to parse response: {e}")));
+                                                wizard_step.set(WizardStep::RepoInput);
                                             }
                                         }
-                                        Err(e) => {
-                                            error_msg.set(Some(format!("Failed to parse response: {e}")));
-                                            wizard_step.set(WizardStep::RepoInput);
-                                        }
-                                    },
+                                    }
                                     Err(e) => {
                                         error_msg.set(Some(format!("Request failed: {e}")));
                                         wizard_step.set(WizardStep::RepoInput);
@@ -382,6 +408,9 @@ pub fn PullQuantWizard(
                                 };
                                 match resp {
                                     Ok(r) => {
+                                        if handle_response(&r) {
+                                            return;
+                                        }
                                         match r.json::<Vec<PullJobEntry>>().await {
                                             Ok(entries) => {
                                                 let jobs: Vec<JobProgress> = entries
@@ -453,6 +482,9 @@ pub fn PullQuantWizard(
                                     Ok(req) => {
                                         match req.send().await {
                                             Ok(resp) => {
+                                                if handle_response(&resp) {
+                                                    return;
+                                                }
                                                 if resp.status() < 400 {
                                                     wizard_step.set(WizardStep::Done);
                                                 } else {
@@ -637,6 +669,13 @@ fn spawn_pull_events_listener(
         );
         closure.forget(); // Keep the closure alive
     }
+
+    // Error handler — detect auth failures on the EventSource.
+    let on_error = Closure::<dyn Fn(web_sys::Event)>::new(move |_: web_sys::Event| {
+        crate::utils::sse_session_check();
+    });
+    es.set_onerror(Some(on_error.as_ref().unchecked_ref()));
+    on_error.forget();
 
     // Store EventSource handle so on_cleanup can close it on unmount.
     es_ref.set(Some(es.clone()));

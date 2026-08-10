@@ -1,7 +1,5 @@
 use super::types::{Alias, ModelOption};
-use crate::utils::{
-    delete_request, extract_and_store_csrf_token, get_request, post_request, put_request,
-};
+use crate::utils::{delete_request, get_request, handle_response, post_request, put_request};
 
 /// Fetch all aliases from the backend.
 pub async fn fetch_aliases() -> Result<Vec<Alias>, String> {
@@ -9,7 +7,9 @@ pub async fn fetch_aliases() -> Result<Vec<Alias>, String> {
         .send()
         .await
         .map_err(|e| e.to_string())?;
-    extract_and_store_csrf_token(&resp);
+    if handle_response(&resp) {
+        return Err("unauthorized".into());
+    }
     resp.json().await.map_err(|e| e.to_string())
 }
 
@@ -20,7 +20,9 @@ pub async fn fetch_models() -> Result<Vec<ModelOption>, String> {
         .send()
         .await
         .map_err(|e| e.to_string())?;
-    extract_and_store_csrf_token(&resp);
+    if handle_response(&resp) {
+        return Err("unauthorized".into());
+    }
 
     // The models endpoint returns a JSON object with a "models" array
     let data: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
@@ -63,6 +65,9 @@ pub async fn create_alias(name: &str, model_id: i64, description: &str) -> Resul
         .send()
         .await
         .map_err(|e| e.to_string())?;
+    if handle_response(&resp) {
+        return Err("unauthorized".into());
+    }
     resp.json().await.map_err(|e| e.to_string())
 }
 
@@ -101,14 +106,20 @@ pub async fn update_alias(
         .send()
         .await
         .map_err(|e| e.to_string())?;
+    if handle_response(&resp) {
+        return Err("unauthorized".into());
+    }
     resp.json().await.map_err(|e| e.to_string())
 }
 
 /// Delete an alias by id.
 pub async fn delete_alias(id: i64) -> Result<(), String> {
-    delete_request(&format!("/tama/v1/aliases/{}", id))
+    let resp = delete_request(&format!("/tama/v1/aliases/{}", id))
         .send()
         .await
         .map_err(|e| e.to_string())?;
+    if handle_response(&resp) {
+        return Err("unauthorized".into());
+    }
     Ok(())
 }

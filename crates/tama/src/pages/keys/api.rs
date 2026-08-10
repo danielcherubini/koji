@@ -1,7 +1,5 @@
 use super::types::{ApiKey, CreateKeyResponse};
-use crate::utils::{
-    delete_request, extract_and_store_csrf_token, get_request, patch_request, post_request,
-};
+use crate::utils::{delete_request, get_request, handle_response, patch_request, post_request};
 
 /// Fetch all API keys from the backend.
 pub async fn fetch_keys() -> Result<Vec<ApiKey>, String> {
@@ -9,7 +7,9 @@ pub async fn fetch_keys() -> Result<Vec<ApiKey>, String> {
         .send()
         .await
         .map_err(|e| e.to_string())?;
-    extract_and_store_csrf_token(&resp);
+    if handle_response(&resp) {
+        return Err("unauthorized".into());
+    }
     resp.json().await.map_err(|e| e.to_string())
 }
 
@@ -31,6 +31,9 @@ pub async fn create_key(
         .send()
         .await
         .map_err(|e| e.to_string())?;
+    if handle_response(&resp) {
+        return Err("unauthorized".into());
+    }
     resp.json().await.map_err(|e| e.to_string())
 }
 
@@ -47,7 +50,9 @@ pub async fn update_key_scopes(id: i64, scopes: &[String]) -> Result<ApiKey, Str
         .send()
         .await
         .map_err(|e| e.to_string())?;
-    extract_and_store_csrf_token(&resp);
+    if handle_response(&resp) {
+        return Err("unauthorized".into());
+    }
     resp.json().await.map_err(|e| e.to_string())
 }
 
@@ -57,6 +62,9 @@ pub async fn revoke_key(id: i64) -> Result<(), String> {
         .send()
         .await
         .map_err(|e| e.to_string())?;
+    if handle_response(&resp) {
+        return Err("unauthorized".into());
+    }
     // Check HTTP status — 204 No Content is expected success.
     // 404 means key not found, 4xx/5xx means server error.
     let status = resp.status();

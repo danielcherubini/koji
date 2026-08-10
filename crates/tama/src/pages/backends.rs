@@ -10,7 +10,7 @@ use crate::components::backend_card::{BackendCard, BackendCardDto};
 use crate::components::docker_register_modal::DockerRegisterModal;
 use crate::components::install_modal::{CapabilitiesDto, InstallModal, InstallRequest};
 use crate::components::job_log_panel::JobLogPanel;
-use crate::utils::{delete_request, extract_and_store_csrf_token, get_request, post_request};
+use crate::utils::{delete_request, get_request, handle_response, post_request};
 
 /// Construct a URL path for updating a backend, properly encoding the backend name.
 fn backend_update_url(backend_name: &str, gpu_variant: &str) -> String {
@@ -241,8 +241,9 @@ pub fn Backends() -> impl IntoView {
         wasm_bindgen_futures::spawn_local(async move {
             match get_request("/tama/v1/backends").send().await {
                 Ok(resp) => {
-                    // Store CSRF token from response header (fallback when cookie unavailable)
-                    extract_and_store_csrf_token(&resp);
+                    if handle_response(&resp) {
+                        return;
+                    }
                     if let Ok(list) = resp.json::<BackendListResponse>().await {
                         backends_list.set(list);
                     }
@@ -260,6 +261,9 @@ pub fn Backends() -> impl IntoView {
         wasm_bindgen_futures::spawn_local(async move {
             match get_request("/tama/v1/system/capabilities").send().await {
                 Ok(resp) => {
+                    if handle_response(&resp) {
+                        return;
+                    }
                     if let Ok(caps) = resp.json::<CapabilitiesDto>().await {
                         capabilities.set(caps);
                     }
@@ -281,6 +285,9 @@ pub fn Backends() -> impl IntoView {
             let url = backend_update_url(&backend_name, &gpu_variant);
             match post_request(&url).send().await {
                 Ok(resp) => {
+                    if handle_response(&resp) {
+                        return;
+                    }
                     if resp.ok() {
                         if let Ok(r) = resp.json::<InstallResponse>().await {
                             active_job_id.set(Some(r.job_id));
@@ -303,10 +310,16 @@ pub fn Backends() -> impl IntoView {
                 let url = backend_check_updates_url(&backend_name, &gpu_variant);
                 match post_request(&url).send().await {
                     Ok(resp) => {
+                        if handle_response(&resp) {
+                            return;
+                        }
                         if resp.ok() {
                             // After checking, refresh the full backend list to get updated status
                             match get_request("/tama/v1/backends").send().await {
                                 Ok(resp2) => {
+                                    if handle_response(&resp2) {
+                                        return;
+                                    }
                                     if let Ok(list) = resp2.json::<BackendListResponse>().await {
                                         backends_list.set(list);
                                     }
@@ -330,6 +343,9 @@ pub fn Backends() -> impl IntoView {
             let url = backend_delete_url(&backend_name, &gpu_variant);
             match delete_request(&url).send().await {
                 Ok(resp) => {
+                    if handle_response(&resp) {
+                        return;
+                    }
                     if resp.ok() {
                         refresh_tick.update(|n| *n += 1);
                     } else {
@@ -349,12 +365,17 @@ pub fn Backends() -> impl IntoView {
                 let url = backend_source_url(&backend_name, &gpu_variant);
                 let body = serde_json::json!({ "build_from_source": build_from_source });
                 match post_request(&url).json(&body).unwrap().send().await {
-                    Ok(resp) if resp.ok() => {
-                        // Success — no need to refresh, toggle already reflects the change
-                    }
                     Ok(resp) => {
-                        let text = resp.text().await.unwrap_or_default();
-                        action_error.set(Some(format!("Failed to update build method: {text}")));
+                        if handle_response(&resp) {
+                            return;
+                        }
+                        if resp.ok() {
+                            // Success — no need to refresh, toggle already reflects the change
+                        } else {
+                            let text = resp.text().await.unwrap_or_default();
+                            action_error
+                                .set(Some(format!("Failed to update build method: {text}")));
+                        }
                     }
                     Err(e) => action_error.set(Some(format!("Request failed: {e}"))),
                 }
@@ -375,6 +396,9 @@ pub fn Backends() -> impl IntoView {
             };
             match request.send().await {
                 Ok(resp) => {
+                    if handle_response(&resp) {
+                        return;
+                    }
                     if resp.ok() {
                         if let Ok(r) = resp.json::<InstallResponse>().await {
                             active_job_id.set(Some(r.job_id));
@@ -455,14 +479,19 @@ pub fn Backends() -> impl IntoView {
                 let url = format!("/tama/v1/backends/{}/activate?gpu_variant={}", encoded, gv);
                 let body = serde_json::json!({ "version": ver });
                 match post_request(&url).json(&body).unwrap().send().await {
-                    Ok(resp) if resp.ok() => {}
                     Ok(resp) => {
-                        let status = resp.status();
-                        let text = resp.text().await.unwrap_or_default();
-                        errors.push(format!(
-                            "Activate {}: HTTP {} - {}",
-                            backend_name, status, text
-                        ));
+                        if handle_response(&resp) {
+                            return;
+                        }
+                        if resp.ok() {
+                        } else {
+                            let status = resp.status();
+                            let text = resp.text().await.unwrap_or_default();
+                            errors.push(format!(
+                                "Activate {}: HTTP {} - {}",
+                                backend_name, status, text
+                            ));
+                        }
                     }
                     Err(e) => errors.push(format!("Activate {}: {}", backend_name, e)),
                 }
@@ -485,11 +514,16 @@ pub fn Backends() -> impl IntoView {
                 );
                 let res = post_request(&url).json(&body).unwrap().send().await;
                 match res {
-                    Ok(response) if response.ok() => {}
                     Ok(response) => {
-                        let status = response.status();
-                        let text = response.text().await.unwrap_or_default();
-                        errors.push(format!("{}: HTTP {} - {}", key, status, text));
+                        if handle_response(&response) {
+                            return;
+                        }
+                        if response.ok() {
+                        } else {
+                            let status = response.status();
+                            let text = response.text().await.unwrap_or_default();
+                            errors.push(format!("{}: HTTP {} - {}", key, status, text));
+                        }
                     }
                     Err(e) => errors.push(format!("{}: {}", key, e)),
                 }
@@ -512,11 +546,16 @@ pub fn Backends() -> impl IntoView {
                 );
                 let res = post_request(&url).json(&body).unwrap().send().await;
                 match res {
-                    Ok(response) if response.ok() => {}
                     Ok(response) => {
-                        let status = response.status();
-                        let text = response.text().await.unwrap_or_default();
-                        errors.push(format!("{}: HTTP {} - {}", key, status, text));
+                        if handle_response(&response) {
+                            return;
+                        }
+                        if response.ok() {
+                        } else {
+                            let status = response.status();
+                            let text = response.text().await.unwrap_or_default();
+                            errors.push(format!("{}: HTTP {} - {}", key, status, text));
+                        }
                     }
                     Err(e) => errors.push(format!("{}: {}", key, e)),
                 }
@@ -675,12 +714,16 @@ pub fn Backends() -> impl IntoView {
                                                 .send()
                                                 .await
                                             {
-                                                Ok(resp) if resp.ok() => {
-                                                    leptos::logging::log!("Compaction toggle succeeded");
-                                                }
                                                 Ok(resp) => {
-                                                    let text = resp.text().await.unwrap_or_default();
-                                                    leptos::logging::error!("Toggle failed: {}", text);
+                                                    if handle_response(&resp) {
+                                                        return;
+                                                    }
+                                                    if resp.ok() {
+                                                        leptos::logging::log!("Compaction toggle succeeded");
+                                                    } else {
+                                                        let text = resp.text().await.unwrap_or_default();
+                                                        leptos::logging::error!("Toggle failed: {}", text);
+                                                    }
                                                 }
                                                 Err(e) => {
                                                     leptos::logging::error!("Toggle request failed: {}", e);

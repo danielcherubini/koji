@@ -11,7 +11,7 @@ use crate::components::modal::Modal;
 use crate::components::model_card::{ModelCard, ModelPips};
 use crate::components::pull_quant_wizard::{CompletedQuant, PullQuantWizard};
 use crate::components::{bar_chart::nice_max, BarChart, ChartSeries};
-use crate::utils::{post_request, rw_signal_to_signal};
+use crate::utils::{handle_response, post_request, rw_signal_to_signal};
 
 mod metrics;
 pub use metrics::*;
@@ -252,9 +252,10 @@ pub fn Dashboard() -> impl IntoView {
             es.add_event_listener_with_callback("snapshot", on_snapshot.as_ref().unchecked_ref());
         on_snapshot.forget();
 
-        // Error handler — flag for the empty-history retry UI.
+        // Error handler — flag for the empty-history retry UI, and detect auth failures.
         let on_error = Closure::<dyn Fn(web_sys::Event)>::new(move |_: web_sys::Event| {
             fetch_failed.set(true);
+            crate::utils::sse_session_check();
         });
         es.set_onerror(Some(on_error.as_ref().unchecked_ref()));
         on_error.forget();
@@ -272,7 +273,9 @@ pub fn Dashboard() -> impl IntoView {
     };
 
     let restart: Action<(), (), LocalStorage> = Action::new_unsync(|_: &()| async move {
-        let _ = post_request("/tama/v1/system/restart").send().await;
+        if let Ok(resp) = post_request("/tama/v1/system/restart").send().await {
+            let _ = handle_response(&resp);
+        }
     });
 
     // Per-model load/unload actions wired to the same REST endpoints used by
@@ -297,9 +300,12 @@ pub fn Dashboard() -> impl IntoView {
             // Ignore errors — the SSE stream will push updated model state.
             // Even if the request fails (e.g. no backend configured), we set
             // load_busy to false below so the button becomes clickable again.
-            let _ = post_request(&format!("/tama/v1/models/{}/load", id))
+            if let Ok(resp) = post_request(&format!("/tama/v1/models/{}/load", id))
                 .send()
-                .await;
+                .await
+            {
+                let _ = handle_response(&resp);
+            }
             load_busy.set(false);
         }
     });
@@ -308,9 +314,12 @@ pub fn Dashboard() -> impl IntoView {
         async move {
             unload_busy.set(true);
             // Same as load — ignore errors, SSE will push the updated state.
-            let _ = post_request(&format!("/tama/v1/models/{}/unload", id))
+            if let Ok(resp) = post_request(&format!("/tama/v1/models/{}/unload", id))
                 .send()
-                .await;
+                .await
+            {
+                let _ = handle_response(&resp);
+            }
             unload_busy.set(false);
         }
     });
@@ -319,9 +328,12 @@ pub fn Dashboard() -> impl IntoView {
         async move {
             cancel_busy.set(true);
             // Ignore errors — SSE will push updated model state.
-            let _ = post_request(&format!("/tama/v1/models/{}/cancel", id))
+            if let Ok(resp) = post_request(&format!("/tama/v1/models/{}/cancel", id))
                 .send()
-                .await;
+                .await
+            {
+                let _ = handle_response(&resp);
+            }
             cancel_busy.set(false);
         }
     });

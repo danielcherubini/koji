@@ -2,7 +2,7 @@ use leptos::prelude::*;
 use leptos_router::components::A;
 use web_sys::window;
 
-use crate::utils::get_request;
+use crate::utils::{get_request, handle_response};
 
 #[component]
 pub fn Sidebar() -> impl IntoView {
@@ -14,6 +14,9 @@ pub fn Sidebar() -> impl IntoView {
     Effect::new(move |_| {
         wasm_bindgen_futures::spawn_local(async move {
             if let Ok(resp) = get_request("/tama/v1/updates").send().await {
+                if handle_response(&resp) {
+                    return;
+                }
                 if let Ok(data) = resp.json::<serde_json::Value>().await {
                     let has_updates = data
                         .get("backends")

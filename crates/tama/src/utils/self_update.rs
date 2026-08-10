@@ -137,6 +137,16 @@ pub async fn poll_for_restart(
             .send()
             .await
         {
+            // Special case: server may be mid-restart, so a 401 here could be transient.
+            // We log a warning but do NOT redirect — the redirect will happen on the
+            // next normal API call.
+            if resp.status() == 401 {
+                log::warn!(
+                    "Self-update check returned 401 during restart polling — server may still be restarting"
+                );
+            } else {
+                super::extract_and_store_csrf_token(&resp);
+            }
             if let Ok(data) = resp.json::<serde_json::Value>().await {
                 if let Some(new_ver) = data["current_version"].as_str() {
                     if new_ver != old_version {

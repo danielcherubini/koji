@@ -24,7 +24,7 @@ use self::utils::{
     format_relative, format_timestamp, use_benchmark_form_state, BenchmarkFormState,
 };
 use crate::components::tab_buttons::{TabButton, TabButtons};
-use crate::utils::{extract_and_store_csrf_token, get_request};
+use crate::utils::{get_request, handle_response};
 
 /// Render a table of per-summary results, adding columns for whichever
 /// per-run knobs actually vary between rows. A column for a constant knob is
@@ -428,7 +428,9 @@ pub fn Benchmarks() -> impl IntoView {
         let _ = history_refresh.get();
         spawn_local(async move {
             if let Ok(resp) = get_request("/tama/v1/benchmarks/history").send().await {
-                extract_and_store_csrf_token(&resp);
+                if handle_response(&resp) {
+                    return;
+                }
                 if let Ok(entries) = resp.json::<Vec<BenchmarkHistoryEntry>>().await {
                     history.set(entries);
                 }

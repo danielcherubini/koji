@@ -6,7 +6,9 @@ use crate::components::modal::Modal;
 use crate::components::model_card::{ModelCard, ModelPips};
 use crate::components::pull_quant_wizard::{CompletedQuant, PullQuantWizard};
 use crate::core_mirrors::ModelState;
-use crate::utils::{get_request, post_request, rw_signal_to_signal, CheckAllModelsApiResponse};
+use crate::utils::{
+    get_request, handle_response, post_request, rw_signal_to_signal, CheckAllModelsApiResponse,
+};
 
 // ── Data structs ─────────────────────────────────────────────────────────────
 
@@ -148,15 +150,21 @@ pub fn Models() -> impl IntoView {
     let models = LocalResource::new(move || async move {
         let _ = refresh.get(); // track the signal
         let resp = get_request("/tama/v1/models").send().await.ok()?;
+        if handle_response(&resp) {
+            return None;
+        }
         resp.json::<ModelsResponse>().await.ok()
     });
 
     let load_action: Action<String, (), LocalStorage> = Action::new_unsync(move |id: &String| {
         let id = id.clone();
         async move {
-            let _ = post_request(&format!("/tama/v1/models/{}/load", id))
+            if let Ok(resp) = post_request(&format!("/tama/v1/models/{}/load", id))
                 .send()
-                .await;
+                .await
+            {
+                let _ = handle_response(&resp);
+            }
             refresh.update(|n| *n += 1);
         }
     });
@@ -164,9 +172,12 @@ pub fn Models() -> impl IntoView {
     let unload_action: Action<String, (), LocalStorage> = Action::new_unsync(move |id: &String| {
         let id = id.clone();
         async move {
-            let _ = post_request(&format!("/tama/v1/models/{}/unload", id))
+            if let Ok(resp) = post_request(&format!("/tama/v1/models/{}/unload", id))
                 .send()
-                .await;
+                .await
+            {
+                let _ = handle_response(&resp);
+            }
             refresh.update(|n| *n += 1);
         }
     });
@@ -176,9 +187,12 @@ pub fn Models() -> impl IntoView {
         let id = id.clone();
         async move {
             cancel_busy.set(true);
-            let _ = post_request(&format!("/tama/v1/models/{}/cancel", id))
+            if let Ok(resp) = post_request(&format!("/tama/v1/models/{}/cancel", id))
                 .send()
-                .await;
+                .await
+            {
+                let _ = handle_response(&resp);
+            }
             refresh.update(|n| *n += 1);
             cancel_busy.set(false);
         }
@@ -194,7 +208,14 @@ pub fn Models() -> impl IntoView {
             // Fetch the list directly from the backend that exposes `id`s with
             // DB metadata so we iterate over the same set the editor operates on.
             let resp = match get_request("/tama/v1/models").send().await {
-                Ok(r) => r,
+                Ok(r) => {
+                    // NOTE: 401 redirects to /login, which tears down the entire app.
+                    // Skipping check_all_busy.set(false) is safe — the component unmounts.
+                    if handle_response(&r) {
+                        return;
+                    }
+                    r
+                }
                 Err(e) => {
                     check_all_status.set(Some((false, format!("Failed to list models: {}", e))));
                     check_all_busy.set(false);
@@ -234,10 +255,18 @@ pub fn Models() -> impl IntoView {
                 // consistency with the string-based API in models.rs.
                 let url = format!("/tama/v1/models/{}/refresh", id);
                 match post_request(&url).send().await {
-                    Ok(r) if r.status() == 200 => ok_count += 1,
                     Ok(r) => {
-                        let text = r.text().await.unwrap_or_default();
-                        failed.push(format!("{}: {}", id, text));
+                        // NOTE: 401 redirects to /login, which tears down the entire app.
+                        // Skipping check_all_busy.set(false) is safe — the component unmounts.
+                        if handle_response(&r) {
+                            return;
+                        }
+                        if r.status() == 200 {
+                            ok_count += 1;
+                        } else {
+                            let text = r.text().await.unwrap_or_default();
+                            failed.push(format!("{}: {}", id, text));
+                        }
                     }
                     Err(e) => failed.push(format!("{}: {}", id, e)),
                 }

@@ -4,7 +4,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use super::types;
-use crate::utils::{extract_and_store_csrf_token, get_request, post_request};
+use crate::utils::{get_request, handle_response, post_request};
 
 /// Parse a comma-separated string of integers into a Vec<u32>.
 /// Zero is a meaningful value — `-p 0` pins llama-bench to pure-TG mode.
@@ -99,7 +99,9 @@ pub fn use_benchmark_form_state() -> BenchmarkFormState {
     Effect::new(move |_| {
         spawn_local(async move {
             if let Ok(resp) = get_request("/tama/v1/models").send().await {
-                extract_and_store_csrf_token(&resp);
+                if handle_response(&resp) {
+                    return;
+                }
                 if let Ok(root) = resp.json::<serde_json::Value>().await {
                     if let Some(models_arr) = root.get("models").and_then(|v| v.as_array()) {
                         // Flatten parse_model results (one tuple per quant) and deduplicate
@@ -164,7 +166,9 @@ pub fn use_benchmark_form_state() -> BenchmarkFormState {
 pub fn fetch_installed_backend_variants(available_backends: RwSignal<Vec<(String, String)>>) {
     spawn_local(async move {
         if let Ok(resp) = get_request("/tama/v1/backends").send().await {
-            extract_and_store_csrf_token(&resp);
+            if handle_response(&resp) {
+                return;
+            }
             if let Ok(root) = resp.json::<serde_json::Value>().await {
                 // /v1/backends returns { backends: [BackendCardDto], custom: [BackendCardDto] }
                 // BackendCardDto has: type, display_name, gpu_variant, installed
@@ -249,6 +253,9 @@ pub async fn submit_bench_job(url: &str, body: serde_json::Value) -> Result<Stri
         .await
         .map_err(|e| format!("Request failed: {e}"))?;
 
+    if handle_response(&resp) {
+        return Err("unauthorized".into());
+    }
     if resp.status() >= 400 {
         let err_text = resp
             .text()

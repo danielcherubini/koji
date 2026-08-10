@@ -7,7 +7,7 @@ use crate::components::list_card::ListCard;
 use crate::components::self_update_section::SelfUpdateSection;
 #[cfg(not(feature = "ssr"))]
 use crate::utils::sse_stream;
-use crate::utils::{extract_and_store_csrf_token, get_request, post_request};
+use crate::utils::{get_request, handle_response, post_request};
 
 fn short_sha(hash: &Option<String>) -> String {
     match hash {
@@ -314,17 +314,27 @@ pub fn Updates() -> impl IntoView {
     Effect::new(move |_| {
         wasm_bindgen_futures::spawn_local(async move {
             match get_request("/tama/v1/updates").send().await {
-                Ok(resp) if resp.ok() => {
-                    // Store CSRF token from response header (fallback when cookie unavailable)
-                    extract_and_store_csrf_token(&resp);
-                    if let Ok(mut data) = resp.json::<UpdatesListResponse>().await {
-                        // Normalize model item_ids to config_key format for SSE patch_list matching
-                        normalize_model_item_ids(&mut data.models);
-                        updates.set(data.clone());
-                        // Get last checked time from any record
-                        let all_items: Vec<_> =
-                            data.backends.iter().chain(data.models.iter()).collect();
-                        last_checked.set(all_items.iter().map(|r| r.checked_at).max());
+                Ok(resp) => {
+                    // NOTE: 401 redirects to /login, tearing down the component.
+                    // No cleanup needed — the entire app unmounts on navigation.
+                    if handle_response(&resp) {
+                        return;
+                    }
+                    if resp.ok() {
+                        if let Ok(mut data) = resp.json::<UpdatesListResponse>().await {
+                            // Normalize model item_ids to config_key format for SSE patch_list matching
+                            normalize_model_item_ids(&mut data.models);
+                            updates.set(data.clone());
+                            // Get last checked time from any record
+                            let all_items: Vec<_> =
+                                data.backends.iter().chain(data.models.iter()).collect();
+                            last_checked.set(all_items.iter().map(|r| r.checked_at).max());
+                        }
+                    } else {
+                        error.set(Some(format!(
+                            "Failed to load updates: HTTP {}",
+                            resp.status()
+                        )));
                     }
                 }
                 _ => error.set(Some("Failed to load updates".to_string())),
@@ -393,21 +403,36 @@ pub fn Updates() -> impl IntoView {
         outstanding_checks.set(0);
         wasm_bindgen_futures::spawn_local(async move {
             match post_request("/tama/v1/updates/check").send().await {
-                Ok(resp) if resp.ok() => {
-                    // SSE events update cards progressively.
-                    // Fallback: if no events arrive within 30s, poll once.
-                    gloo_timers::future::TimeoutFuture::new(30000).await;
-                    if checking.get() && outstanding_checks.get() == 0 {
-                        if let Ok(resp2) = get_request("/tama/v1/updates").send().await {
-                            if let Ok(mut data) = resp2.json::<UpdatesListResponse>().await {
-                                normalize_model_item_ids(&mut data.models);
-                                updates.set(data);
+                Ok(resp) => {
+                    // NOTE: 401 redirects to /login, tearing down the component.
+                    // Skipping checking.set(false) is safe — the app unmounts.
+                    if handle_response(&resp) {
+                        return;
+                    }
+                    if resp.ok() {
+                        // SSE events update cards progressively.
+                        // Fallback: if no events arrive within 30s, poll once.
+                        gloo_timers::future::TimeoutFuture::new(30000).await;
+                        if checking.get() && outstanding_checks.get() == 0 {
+                            if let Ok(resp2) = get_request("/tama/v1/updates").send().await {
+                                // NOTE: 401 redirects to /login, tearing down the component.
+                                // No cleanup needed — the entire app unmounts on navigation.
+                                if handle_response(&resp2) {
+                                    return;
+                                }
+                                if let Ok(mut data) = resp2.json::<UpdatesListResponse>().await {
+                                    normalize_model_item_ids(&mut data.models);
+                                    updates.set(data);
+                                }
                             }
+                            checking.set(false);
                         }
+                    } else {
+                        error.set(Some("Failed to trigger check".to_string()));
                         checking.set(false);
                     }
                 }
-                _ => {
+                Err(_) => {
                     error.set(Some("Failed to trigger check".to_string()));
                     checking.set(false);
                 }
@@ -437,9 +462,16 @@ pub fn Updates() -> impl IntoView {
                 ),
             };
             match post_request(&url).send().await {
-                Ok(resp) if !resp.ok() => {
-                    let text = resp.text().await.unwrap_or_default();
-                    error.update(|e| *e = Some(format!("Check failed: {}", text)));
+                Ok(resp) => {
+                    // NOTE: 401 redirects to /login, tearing down the component.
+                    // Skipping item_checking cleanup is safe — the app unmounts.
+                    if handle_response(&resp) {
+                        return;
+                    }
+                    if !resp.ok() {
+                        let text = resp.text().await.unwrap_or_default();
+                        error.update(|e| *e = Some(format!("Check failed: {}", text)));
+                    }
                     item_checking.update(|m| {
                         m.remove(&error_key);
                     });
@@ -450,7 +482,6 @@ pub fn Updates() -> impl IntoView {
                         m.remove(&error_key);
                     });
                 }
-                _ => { /* success — SSE clears checking state */ }
             }
         });
     };
@@ -467,6 +498,11 @@ pub fn Updates() -> impl IntoView {
                 None => format!("/tama/v1/backends/{}/update", urlencoding::encode(&name)),
             };
             if let Ok(resp) = post_request(&url).send().await {
+                // NOTE: 401 redirects to /login, tearing down the component.
+                // Skipping backend_update_busy.set(false) is safe — the app unmounts.
+                if handle_response(&resp) {
+                    return;
+                }
                 if resp.ok() {
                     if let Ok(data) = resp.json::<serde_json::Value>().await {
                         if let Some(job_id) = data["job_id"].as_str() {
@@ -491,6 +527,11 @@ pub fn Updates() -> impl IntoView {
         wasm_bindgen_futures::spawn_local(async move {
             gloo_timers::future::TimeoutFuture::new(500).await;
             if let Ok(resp) = get_request("/tama/v1/updates").send().await {
+                // NOTE: 401 redirects to /login, tearing down the component.
+                // No cleanup needed — the entire app unmounts on navigation.
+                if handle_response(&resp) {
+                    return;
+                }
                 if let Ok(mut data) = resp.json::<UpdatesListResponse>().await {
                     normalize_model_item_ids(&mut data.models);
                     let all_items: Vec<_> =
@@ -512,9 +553,16 @@ pub fn Updates() -> impl IntoView {
             // The item_id in the DTO is the config_key (e.g., "model-123" or "owner--repo-name")
             let url = format!("/tama/v1/updates/check/model/{}", urlencoding::encode(&id));
             match post_request(&url).send().await {
-                Ok(resp) if !resp.ok() => {
-                    let text = resp.text().await.unwrap_or_default();
-                    error.update(|e| *e = Some(format!("Check failed: {}", text)));
+                Ok(resp) => {
+                    // NOTE: 401 redirects to /login, tearing down the component.
+                    // Skipping item_checking cleanup is safe — the app unmounts.
+                    if handle_response(&resp) {
+                        return;
+                    }
+                    if !resp.ok() {
+                        let text = resp.text().await.unwrap_or_default();
+                        error.update(|e| *e = Some(format!("Check failed: {}", text)));
+                    }
                     item_checking.update(|m| {
                         m.remove(&error_key);
                     });
@@ -525,7 +573,6 @@ pub fn Updates() -> impl IntoView {
                         m.remove(&error_key);
                     });
                 }
-                _ => { /* success — SSE clears checking state */ }
             }
         });
     };
@@ -558,34 +605,45 @@ pub fn Updates() -> impl IntoView {
                 .send()
                 .await
             {
-                Ok(resp) if resp.ok() => {
-                    // Clear selections for this model immediately
-                    model_selections.update(|map| {
-                        map.remove(&model_id);
-                    });
-                    // Refresh list after delay
-                    wasm_bindgen_futures::spawn_local(async move {
-                        gloo_timers::future::TimeoutFuture::new(2000).await;
-                        if let Ok(r) = get_request("/tama/v1/updates").send().await {
-                            if let Ok(mut data) = r.json::<UpdatesListResponse>().await {
-                                normalize_model_item_ids(&mut data.models);
-                                updates.set(data);
-                            }
-                        }
-                    });
-                }
                 Ok(resp) => {
-                    let status = resp.status();
-                    let text = resp
-                        .text()
-                        .await
-                        .unwrap_or_else(|_| "unknown error".to_string());
-                    if status == 409 {
-                        error.set(Some(format!("Download already in progress: {}", text)));
-                    } else if status == 422 {
-                        error.set(Some(format!("Invalid quant keys: {}", text)));
+                    // NOTE: 401 redirects to /login, tearing down the component.
+                    // Skipping model_update_busy.set(None) is safe — the app unmounts.
+                    if handle_response(&resp) {
+                        return;
+                    }
+                    if resp.ok() {
+                        // Clear selections for this model immediately
+                        model_selections.update(|map| {
+                            map.remove(&model_id);
+                        });
+                        // Refresh list after delay
+                        wasm_bindgen_futures::spawn_local(async move {
+                            gloo_timers::future::TimeoutFuture::new(2000).await;
+                            if let Ok(r) = get_request("/tama/v1/updates").send().await {
+                                // NOTE: 401 redirects to /login, tearing down the component.
+                                // No cleanup needed — the entire app unmounts on navigation.
+                                if handle_response(&r) {
+                                    return;
+                                }
+                                if let Ok(mut data) = r.json::<UpdatesListResponse>().await {
+                                    normalize_model_item_ids(&mut data.models);
+                                    updates.set(data);
+                                }
+                            }
+                        });
                     } else {
-                        error.set(Some(format!("Update failed: {}", text)));
+                        let status = resp.status();
+                        let text = resp
+                            .text()
+                            .await
+                            .unwrap_or_else(|_| "unknown error".to_string());
+                        if status == 409 {
+                            error.set(Some(format!("Download already in progress: {}", text)));
+                        } else if status == 422 {
+                            error.set(Some(format!("Invalid quant keys: {}", text)));
+                        } else {
+                            error.set(Some(format!("Update failed: {}", text)));
+                        }
                     }
                 }
                 Err(e) => error.set(Some(format!("Request failed: {}", e))),

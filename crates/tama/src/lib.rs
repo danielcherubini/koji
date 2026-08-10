@@ -143,6 +143,16 @@ pub fn App() -> impl IntoView {
                                 handler.forget();
                             }
 
+                            // Error handler — detect auth failures on the reconnected EventSource.
+                            let sse_connected_for_error = sse_connected;
+                            let on_error =
+                                Closure::<dyn Fn(web_sys::Event)>::new(move |_: web_sys::Event| {
+                                    sse_connected_for_error.set(false);
+                                    crate::utils::sse_session_check();
+                                });
+                            new_es.set_onerror(Some(on_error.as_ref().unchecked_ref()));
+                            on_error.forget();
+
                             break;
                         }
                         Err(e) => {
@@ -162,6 +172,15 @@ pub fn App() -> impl IntoView {
     };
 
     if let Some(es) = es {
+        // Error handler — detect auth failures on the initial EventSource.
+        let sse_connected_for_error = sse_connected;
+        let on_error = Closure::<dyn Fn(web_sys::Event)>::new(move |_: web_sys::Event| {
+            sse_connected_for_error.set(false);
+            crate::utils::sse_session_check();
+        });
+        es.set_onerror(Some(on_error.as_ref().unchecked_ref()));
+        on_error.forget();
+
         for event_name in [
             "Started",
             "Progress",
@@ -229,6 +248,9 @@ pub fn App() -> impl IntoView {
                                 if let Ok(resp) =
                                     utils::get_request("/tama/v1/pulls/active").send().await
                                 {
+                                    if utils::handle_response(&resp) {
+                                        return;
+                                    }
                                     if let Ok(data) =
                                         resp.json::<pages::downloads::PullsActiveResponse>().await
                                     {
@@ -262,6 +284,9 @@ pub fn App() -> impl IntoView {
                                 .send()
                                 .await
                                 {
+                                    if utils::handle_response(&resp) {
+                                        return;
+                                    }
                                     if let Ok(data) =
                                         resp.json::<pages::downloads::PullsHistoryResponse>().await
                                     {

@@ -2,9 +2,7 @@ use leptos::prelude::*;
 use wasm_bindgen_futures::spawn_local;
 
 use crate::components::list_card::ListCard;
-use crate::utils::{
-    extract_and_store_csrf_token, get_request, post_request, self_update::stream_update_events,
-};
+use crate::utils::{get_request, handle_response, post_request, self_update::stream_update_events};
 
 /// Self-update section component for the /updates page.
 ///
@@ -37,30 +35,33 @@ pub fn SelfUpdateSection() -> impl IntoView {
         checking.set(true);
         spawn_local(async move {
             match get_request("/tama/v1/self-update/check").send().await {
-                Ok(resp) if resp.ok() => {
-                    extract_and_store_csrf_token(&resp);
-                    if let Ok(data) = resp.json::<serde_json::Value>().await {
-                        if let Some(v) = data["current_version"].as_str() {
-                            current_version.set(v.to_string());
-                        }
-                        let has_update = data["update_available"].as_bool() == Some(true);
-                        update_available.set(has_update);
-                        if has_update {
-                            if let Some(v) = data["latest_version"].as_str() {
-                                latest_version.set(v.to_string());
-                            }
-                        }
-                        check_error.set(None);
-                    } else {
-                        check_error.set(Some("Unable to parse update response".to_string()));
-                    }
-                }
                 Ok(resp) => {
-                    let msg = resp
-                        .text()
-                        .await
-                        .unwrap_or_else(|_| "Unknown error".to_string());
-                    check_error.set(Some(format!("Unable to check for updates: {}", msg)));
+                    if handle_response(&resp) {
+                        return;
+                    }
+                    if resp.ok() {
+                        if let Ok(data) = resp.json::<serde_json::Value>().await {
+                            if let Some(v) = data["current_version"].as_str() {
+                                current_version.set(v.to_string());
+                            }
+                            let has_update = data["update_available"].as_bool() == Some(true);
+                            update_available.set(has_update);
+                            if has_update {
+                                if let Some(v) = data["latest_version"].as_str() {
+                                    latest_version.set(v.to_string());
+                                }
+                            }
+                            check_error.set(None);
+                        } else {
+                            check_error.set(Some("Unable to parse update response".to_string()));
+                        }
+                    } else {
+                        let msg = resp
+                            .text()
+                            .await
+                            .unwrap_or_else(|_| "Unknown error".to_string());
+                        check_error.set(Some(format!("Unable to check for updates: {}", msg)));
+                    }
                 }
                 Err(e) => {
                     check_error.set(Some(format!("Unable to check for updates: {}", e)));
@@ -83,29 +84,33 @@ pub fn SelfUpdateSection() -> impl IntoView {
         spawn_local(async move {
             // Step 1: POST to trigger the update
             match post_request("/tama/v1/self-update/update").send().await {
-                Ok(resp) if resp.ok() => {
-                    // Step 2: Open SSE to stream progress
-                    stream_update_events(
-                        update_status,
-                        update_in_progress,
-                        update_available,
-                        current_version,
-                        latest_version,
-                    )
-                    .await;
-                }
                 Ok(resp) => {
-                    // Check for 409 conflict (already in progress)
-                    if resp.status() == 409 {
-                        check_error.set(Some("An update is already in progress.".to_string()));
-                        update_in_progress.set(false);
+                    if handle_response(&resp) {
+                        return;
+                    }
+                    if resp.ok() {
+                        // Step 2: Open SSE to stream progress
+                        stream_update_events(
+                            update_status,
+                            update_in_progress,
+                            update_available,
+                            current_version,
+                            latest_version,
+                        )
+                        .await;
                     } else {
-                        let msg = resp
-                            .text()
-                            .await
-                            .unwrap_or_else(|_| "Unknown error".to_string());
-                        check_error.set(Some(format!("Failed to start update: {}", msg)));
-                        update_in_progress.set(false);
+                        // Check for 409 conflict (already in progress)
+                        if resp.status() == 409 {
+                            check_error.set(Some("An update is already in progress.".to_string()));
+                            update_in_progress.set(false);
+                        } else {
+                            let msg = resp
+                                .text()
+                                .await
+                                .unwrap_or_else(|_| "Unknown error".to_string());
+                            check_error.set(Some(format!("Failed to start update: {}", msg)));
+                            update_in_progress.set(false);
+                        }
                     }
                 }
                 Err(e) => {

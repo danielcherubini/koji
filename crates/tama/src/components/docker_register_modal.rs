@@ -3,7 +3,7 @@
 
 use leptos::prelude::*;
 
-use crate::utils::{post_request, target_value};
+use crate::utils::{handle_response, post_request, target_value};
 
 /// Modal to register a docker-based backend (e.g. vLLM).
 #[component]
@@ -80,14 +80,18 @@ pub fn DockerRegisterModal(
                 }
             };
             match result {
-                Ok(resp) if resp.ok() => {
-                    submitting.set(false);
-                    on_close.run(());
-                }
                 Ok(resp) => {
-                    let text = resp.text().await.unwrap_or_default();
-                    error.set(Some(format!("Register failed: {text}")));
-                    submitting.set(false);
+                    if handle_response(&resp) {
+                        return;
+                    }
+                    if resp.ok() {
+                        submitting.set(false);
+                        on_close.run(());
+                    } else {
+                        let text = resp.text().await.unwrap_or_default();
+                        error.set(Some(format!("Register failed: {text}")));
+                        submitting.set(false);
+                    }
                 }
                 Err(e) => {
                     error.set(Some(format!("Register request failed: {e}")));

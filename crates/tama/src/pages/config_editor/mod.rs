@@ -45,9 +45,7 @@ impl Section {
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::utils::extract_and_store_csrf_token;
-use crate::utils::get_request;
-use crate::utils::post_request;
+use crate::utils::{get_request, handle_response, post_request};
 
 use crate::components::section_card::SectionCard;
 use crate::pages::config_editor::forms::{
@@ -71,7 +69,9 @@ pub fn ConfigEditor() -> impl IntoView {
             match get_request("/tama/v1/config/structured").send().await {
                 Ok(resp) => {
                     // Store CSRF token from response header (fallback when cookie unavailable)
-                    extract_and_store_csrf_token(&resp);
+                    if handle_response(&resp) {
+                        return;
+                    }
                     match resp.json::<Config>().await {
                         Ok(cfg) => config.set(Some(cfg)),
                         Err(e) => error.set(Some(format!("Failed to parse config: {}", e))),
@@ -113,13 +113,17 @@ pub fn ConfigEditor() -> impl IntoView {
                 .send()
                 .await;
             match res {
-                Ok(resp) if resp.ok() => {
-                    save_status.set(Some("✅ Saved".to_string()));
-                }
                 Ok(resp) => {
-                    let status = resp.status();
-                    let text = resp.text().await.unwrap_or_default();
-                    save_status.set(Some(format!("❌ {} — {}", status, text)));
+                    if handle_response(&resp) {
+                        return;
+                    }
+                    if resp.ok() {
+                        save_status.set(Some("✅ Saved".to_string()));
+                    } else {
+                        let status = resp.status();
+                        let text = resp.text().await.unwrap_or_default();
+                        save_status.set(Some(format!("❌ {} — {}", status, text)));
+                    }
                 }
                 Err(e) => {
                     save_status.set(Some(format!("❌ {}", e)));

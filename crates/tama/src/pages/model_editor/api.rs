@@ -16,14 +16,14 @@ async fn expect_status(
     }
 }
 
-use crate::utils::{
-    delete_request, extract_and_store_csrf_token, get_request, post_request, put_request,
-};
+use crate::utils::{delete_request, get_request, handle_response, post_request, put_request};
 
 pub async fn fetch_model(id: String) -> Option<ModelDetail> {
     if id == "new" {
         let resp = get_request("/tama/v1/models").send().await.ok()?;
-        extract_and_store_csrf_token(&resp);
+        if handle_response(&resp) {
+            return None;
+        }
         let list: ModelListResponse = resp.json().await.ok()?;
         return Some(ModelDetail {
             id: 0,
@@ -68,11 +68,17 @@ pub async fn fetch_model(id: String) -> Option<ModelDetail> {
         .send()
         .await;
     match resp {
-        Ok(r) if r.status() == 200 => {
-            extract_and_store_csrf_token(&r);
-            r.json::<ModelDetail>().await.ok()
+        Ok(r) => {
+            if handle_response(&r) {
+                return None;
+            }
+            if r.status() == 200 {
+                r.json::<ModelDetail>().await.ok()
+            } else {
+                None
+            }
         }
-        _ => None,
+        Err(_) => None,
     }
 }
 
@@ -175,6 +181,9 @@ pub async fn save_model(args: Vec<String>, form: ModelForm, is_new: bool) -> Res
         .await
         .map_err(|e| e.to_string())?;
 
+    if handle_response(&resp) {
+        return Err("unauthorized".into());
+    }
     expect_status(resp, &[200, 201]).await?;
     Ok(())
 }
@@ -189,6 +198,9 @@ pub async fn rename_model(old_id: &str, new_id: &str) -> Result<(), String> {
         .await
         .map_err(|e| e.to_string())?;
 
+    if handle_response(&resp) {
+        return Err("unauthorized".into());
+    }
     expect_status(resp, &[200]).await?;
     Ok(())
 }
@@ -199,6 +211,9 @@ pub async fn delete_model_api(id: String) -> Result<(), String> {
         .send()
         .await
         .map_err(|e| e.to_string())?;
+    if handle_response(&resp) {
+        return Err("unauthorized".into());
+    }
     expect_status(resp, &[200]).await?;
     Ok(())
 }
@@ -213,6 +228,9 @@ pub async fn delete_quant_api(id: String, quant_key: String) -> Result<(), Strin
     .send()
     .await
     .map_err(|e| e.to_string())?;
+    if handle_response(&resp) {
+        return Err("unauthorized".into());
+    }
     expect_status(resp, &[200]).await?;
     Ok(())
 }
@@ -225,6 +243,9 @@ pub async fn refresh_model_api(id: String) -> Result<RefreshResponse, String> {
         .send()
         .await
         .map_err(|e| e.to_string())?;
+    if handle_response(&resp) {
+        return Err("unauthorized".into());
+    }
     let resp = expect_status(resp, &[200]).await?;
     resp.json::<RefreshResponse>()
         .await
@@ -237,6 +258,9 @@ pub async fn verify_model_api(id: String) -> Result<VerifyResponse, String> {
         .send()
         .await
         .map_err(|e| e.to_string())?;
+    if handle_response(&resp) {
+        return Err("unauthorized".into());
+    }
     let resp = expect_status(resp, &[200]).await?;
     resp.json::<VerifyResponse>()
         .await
@@ -246,7 +270,9 @@ pub async fn verify_model_api(id: String) -> Result<VerifyResponse, String> {
 pub async fn fetch_sampling_templates(
 ) -> Option<std::collections::HashMap<String, serde_json::Value>> {
     let resp = get_request("/tama/v1/models").send().await.ok()?;
-    extract_and_store_csrf_token(&resp);
+    if handle_response(&resp) {
+        return None;
+    }
     let list: ModelListResponse = resp.json().await.ok()?;
     let templates = list.sampling_templates?;
     Some(templates)
@@ -264,11 +290,19 @@ pub async fn fetch_gpu_devices(
     );
     let resp = get_request(&url).send().await;
     match resp {
-        Ok(r) if r.status() == 200 => r
-            .json::<Vec<super::types::GpuDeviceInfo>>()
-            .await
-            .unwrap_or_default(),
-        _ => Vec::new(),
+        Ok(r) => {
+            if handle_response(&r) {
+                return Vec::new();
+            }
+            if r.status() == 200 {
+                r.json::<Vec<super::types::GpuDeviceInfo>>()
+                    .await
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            }
+        }
+        Err(_) => Vec::new(),
     }
 }
 
@@ -284,11 +318,19 @@ pub async fn refresh_gpu_devices(
     );
     let resp = post_request(&url).send().await;
     match resp {
-        Ok(r) if r.status() == 200 => r
-            .json::<Vec<super::types::GpuDeviceInfo>>()
-            .await
-            .unwrap_or_default(),
-        _ => Vec::new(),
+        Ok(r) => {
+            if handle_response(&r) {
+                return Vec::new();
+            }
+            if r.status() == 200 {
+                r.json::<Vec<super::types::GpuDeviceInfo>>()
+                    .await
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            }
+        }
+        Err(_) => Vec::new(),
     }
 }
 
@@ -302,6 +344,9 @@ pub async fn save_sampling_template(name: &str, params: &serde_json::Value) -> R
         .await
         .map_err(|e| e.to_string())?;
 
+    if handle_response(&get_resp) {
+        return Err("unauthorized".into());
+    }
     if get_resp.status() != 200 {
         let text = get_resp
             .text()
@@ -343,6 +388,9 @@ pub async fn save_sampling_template(name: &str, params: &serde_json::Value) -> R
         .await
         .map_err(|e| e.to_string())?;
 
+    if handle_response(&post_resp) {
+        return Err("unauthorized".into());
+    }
     if post_resp.status() == 200 {
         Ok(())
     } else {
