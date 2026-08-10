@@ -27,6 +27,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install system dependencies (mold linker)
+        run: sudo apt-get update && sudo apt-get install -y mold
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
