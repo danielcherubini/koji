@@ -16,10 +16,14 @@ fn test_filter_request_headers_strips_dangerous_headers() {
     );
     headers.insert("te", HeaderValue::from_static("trailers"));
     headers.insert("trailer", HeaderValue::from_static("X-Signature"));
+    headers.insert("content-length", HeaderValue::from_static("1234"));
 
     let filtered = filter_request_headers(&headers);
 
     assert!(!filtered.contains_key("host"));
+    // content-length MUST be stripped: the proxy rewrites the body
+    // (alias model-name resolution, langfuse injection), changing its size.
+    assert!(!filtered.contains_key("content-length"));
     assert!(!filtered.contains_key("connection"));
     assert!(!filtered.contains_key("keep-alive"));
     assert!(!filtered.contains_key("transfer-encoding"));

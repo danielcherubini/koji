@@ -577,3 +577,64 @@ async fn test_forward_request_backend_500_increments_failures_and_sets_timestamp
         .get("test-model")
         .is_some());
 }
+
+/// Alias rewrite: the request body's `model` field is replaced with the resolved
+/// name before forwarding, and the backend receives the complete, valid JSON body.
+///
+/// Regression test for the content-length truncation bug: the rewritten body is a
+/// different size than the original, so a stale forwarded content-length header
+/// would truncate the body mid-string ("Unterminated string" errors on the backend).
+#[tokio::test]
+async fn test_forward_request_rewrites_model_in_request_body() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": "cmpl-1",
+            "model": "resolved-model",
+            "choices": [{"message": {"role": "assistant", "content": "hi"}}]
+        })))
+        .mount(&server)
+        .await;
+
+    let state = test_state();
+
+    state.registry.models.write().await.insert(
+        "resolved-model".to_string(),
+        make_ready_state(server.uri(), std::process::id(), 0, None),
+    );
+
+    // Body padded large enough that a stale (smaller) content-length header
+    // would visibly truncate it. "org/alias" is shorter than "resolved-model"
+    // so the rewritten body grows.
+    let long_content = "x".repeat(10_000);
+    let original_body = serde_json::json!({
+        "model": "org/alias",
+        "messages": [{"role": "user", "content": long_content}]
+    });
+    let body_bytes = serde_json::to_vec(&original_body).unwrap();
+
+    let resp = forward_request(
+        &state,
+        "resolved-model",
+        &make_post_parts("/v1/chat/completions"),
+        &body_bytes,
+        Some("resolved-model"),
+    )
+    .await;
+
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // The backend must have received exactly one request whose body is complete,
+    // valid JSON with the model field rewritten to the resolved name.
+    let received = server.received_requests().await.unwrap();
+    assert_eq!(received.len(), 1);
+    let sent_body: serde_json::Value =
+        serde_json::from_slice(&received[0].body).expect("forwarded body must be valid JSON");
+    assert_eq!(sent_body["model"].as_str().unwrap(), "resolved-model");
+    assert_eq!(
+        sent_body["messages"][0]["content"].as_str().unwrap(),
+        long_content
+    );
+}

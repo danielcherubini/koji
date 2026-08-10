@@ -1,6 +1,9 @@
 use axum::http::HeaderMap;
 
 /// Hop-by-hop headers that should be stripped from forwarded requests.
+/// content-length MUST be stripped because the proxy may rewrite the JSON body
+/// (model-name alias resolution, langfuse injection), changing its size —
+/// reqwest re-computes the correct length from the actual body.
 const REQUEST_SKIP_HEADERS: &[&str] = &[
     "connection",
     "keep-alive",
@@ -11,6 +14,7 @@ const REQUEST_SKIP_HEADERS: &[&str] = &[
     "upgrade",
     "trailer",
     "host",
+    "content-length",
 ];
 
 /// Hop-by-hop headers (plus content-length) that should be stripped from forwarded responses.
