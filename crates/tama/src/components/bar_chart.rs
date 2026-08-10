@@ -14,6 +14,11 @@ pub struct ChartSeries {
     /// One value per bucket. Must match `timestamps.len()` when timestamps are
     /// provided; otherwise one bar per value.
     pub data: Vec<f32>,
+    /// Optional per-series Y-axis ceiling. When `Some`, this series scales
+    /// independently against its own max instead of the chart-wide `safe_max`.
+    /// Use this when series have vastly different ranges (e.g. PP vs TG tok/s)
+    /// so smaller values remain visible.
+    pub max_value: Option<f32>,
 }
 
 /// Compute the CSS fill-opacity for a bar based on its value relative to max.
@@ -31,7 +36,7 @@ fn compute_opacity(value: f32, safe_max: f32) -> f32 {
 /// noise so the scale only steps to a new clean value when the data genuinely
 /// moves past a nice boundary (preventing jitter near boundaries like 9.5 vs 10.5
 /// both rounding to 10).
-fn nice_max(observed: f32) -> f32 {
+pub(crate) fn nice_max(observed: f32) -> f32 {
     const NICE: [f32; 15] = [
         1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10000.0,
         20000.0, 50000.0,
@@ -118,12 +123,14 @@ pub fn BarChart(
             label: String::new(),
             color: color.clone(),
             data: data.clone(),
+            max_value: None,
         });
         if !data2.is_empty() {
             v.push(ChartSeries {
                 label: String::new(),
                 color: color2.clone(),
                 data: data2.clone(),
+                max_value: None,
             });
         }
         v
@@ -234,9 +241,14 @@ pub fn BarChart(
             .flat_map(|(s_idx, s)| {
                 let color = s.color.clone();
                 s.data.iter().enumerate().map(move |(i, &val)| {
-                    let bar_height = (val / safe_max * height).max(1.0).clamp(1.0, height);
+                    // Use per-series max when available, otherwise fall back to
+                    // the chart-wide safe_max. Per-series max enables independent
+                    // scaling so series with vastly different ranges (e.g. PP vs TG)
+                    // both remain visible.
+                    let series_max = s.max_value.unwrap_or(safe_max);
+                    let bar_height = (val / series_max * height).max(1.0).clamp(1.0, height);
                     let bar_y = (height - bar_height).clamp(0.0, height);
-                    let base_opacity = compute_opacity(val, safe_max);
+                    let base_opacity = compute_opacity(val, series_max);
 
                     let (bar_width, bar_x) = if num_series == 1 {
                         let gap = slot_width * 0.15;
@@ -252,7 +264,7 @@ pub fn BarChart(
 
                     let is_hovered = hover.get().map(|idx| idx == i).unwrap_or(false);
                     let opacity = if is_hovered {
-                        compute_hover_opacity(val, safe_max)
+                        compute_hover_opacity(val, series_max)
                     } else {
                         base_opacity
                     };

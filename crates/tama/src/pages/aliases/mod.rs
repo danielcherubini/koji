@@ -12,7 +12,7 @@ use self::api::*;
 use self::types::{Alias, ModelOption};
 
 /// Validates an alias name against the allowed pattern.
-/// Pattern: ^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$
+/// Pattern: ^[a-zA-Z0-9][a-zA-Z0-9_.-/]{0,127}$
 /// Returns None if valid, or an error message if invalid.
 fn validate_alias_name(name: &str) -> Option<String> {
     let bytes = name.as_bytes();
@@ -28,9 +28,9 @@ fn validate_alias_name(name: &str) -> Option<String> {
         return Some("Alias name must start with a letter or number.".to_string());
     }
     for &b in &bytes[1..] {
-        if !b.is_ascii_alphanumeric() && b != b'_' && b != b'-' && b != b'.' {
+        if !b.is_ascii_alphanumeric() && b != b'_' && b != b'-' && b != b'.' && b != b'/' {
             return Some(
-                "Alias name can only contain letters, numbers, hyphens, underscores, and periods."
+                "Alias name can only contain letters, numbers, hyphens, underscores, periods, and forward slashes."
                     .to_string(),
             );
         }

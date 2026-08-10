@@ -10,7 +10,7 @@ use crate::components::gpu_device_card::{device_display_label, model_gpu_label, 
 use crate::components::modal::Modal;
 use crate::components::model_card::{ModelCard, ModelPips};
 use crate::components::pull_quant_wizard::{CompletedQuant, PullQuantWizard};
-use crate::components::{BarChart, ChartSeries};
+use crate::components::{bar_chart::nice_max, BarChart, ChartSeries};
 use crate::utils::{post_request, rw_signal_to_signal};
 
 mod metrics;
@@ -411,25 +411,26 @@ pub fn Dashboard() -> impl IntoView {
 
             // Inference stats series: Prompt Processing (blue) and Token Generation (green).
             // Built from per-bucket averaged tps/prompt_tps values.
+            // Each series gets its own independent scale so both remain visible
+            // even when one metric is orders of magnitude larger than the other.
             let pp_data: Vec<f32> = buf.iter().map(|b| b.prompt_tps).collect();
             let tg_data: Vec<f32> = buf.iter().map(|b| b.tps).collect();
+            let max_pp = buf.iter().map(|b| b.prompt_tps).fold(0.0f32, f32::max);
+            let max_tg = buf.iter().map(|b| b.tps).fold(0.0f32, f32::max);
             let inference_series: Vec<ChartSeries> = vec![
                 ChartSeries {
                     label: "PP".to_string(),
                     color: "var(--accent-blue)".to_string(),
                     data: pp_data,
+                    max_value: Some(nice_max(max_pp)),
                 },
                 ChartSeries {
                     label: "TG".to_string(),
                     color: "var(--accent-green)".to_string(),
                     data: tg_data,
+                    max_value: Some(nice_max(max_tg)),
                 },
             ];
-            // Compute max tok/s for chart scaling (across both series).
-            let max_tok_s = buf
-                .iter()
-                .map(|b| b.prompt_tps.max(b.tps))
-                .fold(0.0f32, f32::max);
 
             let all_models: Vec<ModelStateSnapshot> = cur.models.clone();
             let gpus_for_labels = cur.gpus.clone();
@@ -514,7 +515,7 @@ pub fn Dashboard() -> impl IntoView {
                         <div class="sparkline-container">
                             <BarChart
                                 series=inference_series.clone()
-                                max_value=max_tok_s.max(1.0)
+                                max_value=0.0
                                 color=String::new()
                                 height=60.0
                                 timestamps=timestamps.clone()

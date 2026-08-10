@@ -15,12 +15,12 @@ use crate::api::helpers::shared_repository;
 use crate::web_types::WebState;
 use tama_core::proxy::ProxyState;
 
-/// Regex for valid alias names: starts with alphanumeric, then alphanumeric/underscore/hyphen/period,
+/// Regex for valid alias names: starts with alphanumeric, then alphanumeric/underscore/hyphen/period/slash,
 /// max 128 characters total.
 fn alias_name_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"^[a-zA-Z0-9][a-zA-Z0-9_.\-]{0,127}$").expect("invalid alias name regex")
+        Regex::new(r"^[a-zA-Z0-9][a-zA-Z0-9_.\-/]{0,127}$").expect("invalid alias name regex")
     })
 }
 
@@ -32,7 +32,7 @@ fn validate_alias_name(name: &str) -> Option<String> {
     if !alias_name_re().is_match(name) {
         return Some(format!(
             "Invalid alias name '{}': must start with a letter or digit, \
-            contain only letters, digits, underscores, hyphens, and periods, and be at most 128 characters",
+            contain only letters, digits, underscores, hyphens, periods, and forward slashes, and be at most 128 characters",
             name
         ));
     }
@@ -557,6 +557,79 @@ mod tests {
             resp.status(),
             axum::http::StatusCode::UNPROCESSABLE_ENTITY,
             "invalid alias name should return 422"
+        );
+    }
+
+    /// POST with a slash-containing alias name like "org/model" returns 201.
+    #[tokio::test]
+    async fn test_create_alias_accepts_slash_name() {
+        let tmp_dir = tempfile::tempdir().expect("tempdir");
+
+        // Seed a model in the DB so alias creation can validate model_id.
+        let conn = tama_core::db::open(tmp_dir.path()).unwrap();
+        tama_core::db::queries::upsert_model_config(
+            &conn.conn,
+            &tama_core::db::queries::ModelConfigRecord {
+                id: 0,
+                repo_id: "test-org/test-model".to_string(),
+                display_name: None,
+                backend: "llama_cpp".to_string(),
+                gpu_variant: None,
+                gpu_device: None,
+                enabled: true,
+                selected_quant: None,
+                selected_mmproj: None,
+                selected_mtp_model: None,
+                context_length: None,
+                num_parallel: None,
+                kv_unified: false,
+                gpu_layers: None,
+                cache_type_k: None,
+                cache_type_v: None,
+                port: None,
+                args: None,
+                sampling: None,
+                modalities: None,
+                profile: None,
+                api_name: Some("test-model".to_string()),
+                health_check: None,
+                hf_format: None,
+                hf_base_model: None,
+                hf_pipeline_tag: None,
+                hf_total_params: None,
+                hf_active_params: None,
+                hf_architecture_type: None,
+                hf_context_length: None,
+                hf_num_layers: None,
+                hf_last_modified: None,
+                spec_decoding: None,
+                created_at: "2024-01-01".into(),
+                updated_at: "2024-01-01".into(),
+                n_batch: None,
+                n_ubatch: None,
+                vllm_config: None,
+            },
+        )
+        .unwrap();
+
+        let (state, web_state) = build_test_state(tmp_dir.path());
+        let router = crate::router::build_web_routes(web_state.clone())
+            .with_state(state)
+            .layer(axum::extract::Extension(web_state.as_ref().clone()));
+
+        // POST with slash-containing name — should be accepted
+        let body = serde_json::json!({"name": "org/model", "model_id": 1}).to_string();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/tama/v1/aliases")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::CREATED,
+            "slash-containing alias name should return 201"
         );
     }
 }

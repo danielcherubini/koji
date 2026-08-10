@@ -76,6 +76,10 @@ fn proxy_routes() -> Vec<ProxyRoute> {
         ),
         // Model listing (GET /v1/models is proxy-owned; GET /tama/v1/models is tama router)
         ("GET", "/v1/models", get(handle_list_models)),
+        // NOTE: `:model_id` captures only a single path segment, so aliases that
+        // contain slashes (e.g., "org/model") will not match this route.
+        // Chat completions are unaffected (model name arrives in the JSON body),
+        // but `GET /v1/models/{id}` lookups require the alias without slashes.
         ("GET", "/v1/models/:model_id", get(handle_get_model)),
         // OpenCode plugin discovery
         (
