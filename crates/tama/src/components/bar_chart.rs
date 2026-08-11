@@ -109,7 +109,7 @@ pub fn BarChart(
     #[prop(default = String::new())] color2: String,
     #[prop(default = Vec::new())] series: Vec<ChartSeries>,
 ) -> impl IntoView {
-    let hover = RwSignal::new(None::<usize>);
+    let hover = RwSignal::new(None::<(usize, f64, f64)>);
 
     // Normalize to an internal series representation so the rest of the
     // component has a single code path. The `series` prop wins when non-empty;
@@ -217,7 +217,15 @@ pub fn BarChart(
 
         let mouse_x = ev.client_x() as f64 - rect.left();
         let x_pct = (((mouse_x / svg_width) * 100.0) as f32).clamp(0.0, 100.0);
-        hover.set(Some(find_nearest_bucket(x_pct)));
+        let bucket = find_nearest_bucket(x_pct);
+
+        // Compute fixed-position coordinates for the tooltip.
+        // Centers the tooltip on the hovered bucket within the SVG's viewport rect.
+        let bucket_x_pct = bucket_x_pct(bucket, num_buckets);
+        let tooltip_left = rect.left() + (bucket_x_pct as f64 / 100.0) * rect.width();
+        // Position above the SVG (rect.top is the top edge of the SVG).
+        let tooltip_top = rect.top();
+        hover.set(Some((bucket, tooltip_left, tooltip_top)));
     };
 
     let on_mouse_leave = move |_ev: leptos::ev::MouseEvent| {
@@ -262,7 +270,7 @@ pub fn BarChart(
                         (w, x)
                     };
 
-                    let is_hovered = hover.get().map(|idx| idx == i).unwrap_or(false);
+                    let is_hovered = hover.get().map(|(idx, _, _)| idx == i).unwrap_or(false);
                     let opacity = if is_hovered {
                         compute_hover_opacity(val, series_max)
                     } else {
@@ -293,11 +301,10 @@ pub fn BarChart(
     // Tooltip HTML element. Lists every series' value at the hovered bucket,
     // color-coded. When a series has a label, it's shown before the value.
     let tooltip_html = move || {
-        hover.get().map(|idx| {
+        hover.get().map(|(idx, left, top)| {
             let series = series_signal.get();
             let unit = unit_label_signal.get();
-            let x_pct = bucket_x_pct(idx, num_buckets);
-            let left_style = format!("left: {}%;", x_pct);
+            let style = format!("left: {}px; top: {}px;", left, top);
 
             // Get timestamp for this bucket
             let ts = if timestamps_valid && idx < timestamps.len() {
@@ -337,7 +344,7 @@ pub fn BarChart(
                 .collect();
 
             view! {
-                <div class="sparkline-tooltip" style=left_style>
+                <div class="sparkline-tooltip" style=style>
                     {value_spans}
                     {if time_str.is_empty() {
                         ().into_any()

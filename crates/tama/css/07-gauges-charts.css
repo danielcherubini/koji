@@ -50,7 +50,7 @@
 }
 
 .sparkline-tooltip {
-  position: absolute;
+  position: fixed;
   background-color: var(--bg-tertiary);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
@@ -59,7 +59,7 @@
   font-family: var(--font-mono);
   color: var(--text-primary);
   pointer-events: none;
-  z-index: 10;
+  z-index: 1000;
   white-space: nowrap;
   transform: translate(-50%, -100%);
   margin-top: -0.5rem;
