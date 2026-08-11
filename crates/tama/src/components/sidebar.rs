@@ -148,7 +148,6 @@ pub fn Sidebar() -> impl IntoView {
 
                 <button class="sidebar-toggle" on:click=move |_| collapsed.update(|c| *c = !*c)>
                     <span class="sidebar-toggle__icon">"↔"</span>
-                    <span class="sidebar-toggle__text">"Collapse"</span>
                 </button>
             </div>
         </aside>
