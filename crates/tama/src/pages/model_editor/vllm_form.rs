@@ -289,6 +289,65 @@ fn merge_vllm_spec_settings(existing: &VllmSpecForm, extracted: &VllmSpecForm) -
     }
 }
 
+/// Normalize and validate vLLM speculative decoding settings before saving.
+///
+/// - **None / empty method**: clears the entire `spec_decoding` to default.
+/// - **mtp / ngram**: clears `model` (no drafter needed).
+/// - **dflash / eagle3 / draft_model**: requires `model` to be set — returns `Err` if missing.
+/// - **unknown method**: passthrough (no changes).
+/// - **num_speculative_tokens**: defaults to 5 if method is set and tokens not specified;
+///   treats 0 as unset (also defaults to 5).
+/// - **draft_tensor_parallel_size**: treats 0 as unset (clears to None).
+pub fn normalize_vllm_spec(vllm: &mut VllmSettings) -> Result<(), String> {
+    let spec = &vllm.spec_decoding;
+    let method = spec.method.as_deref();
+
+    match method {
+        None | Some("") => {
+            // Disabled: clear entire spec_decoding
+            vllm.spec_decoding = VllmSpecForm::default();
+        }
+        Some("mtp") | Some("ngram") => {
+            // No drafter needed: clear model field
+            vllm.spec_decoding.model = None;
+        }
+        Some("dflash") | Some("eagle3") | Some("draft_model")
+            if spec.model.as_deref().is_none_or(|m| m.is_empty()) => {
+            // Drafter required but model not set
+            return Err(
+                "Drafter model required for this speculative decoding method.".into(),
+            );
+        }
+        Some("dflash") | Some("eagle3") | Some("draft_model") => {
+            // Drafter required and model is set — OK
+        }
+        _ => {}
+    }
+
+    // Default num_speculative_tokens to 5 if method is set and tokens not specified
+    // Also treat 0 as unset (vLLM rejects num_speculative_tokens: 0)
+    if vllm
+        .spec_decoding
+        .method
+        .as_deref()
+        .is_some_and(|m| !m.is_empty())
+    {
+        match vllm.spec_decoding.num_speculative_tokens {
+            None | Some(0) => {
+                vllm.spec_decoding.num_speculative_tokens = Some(5);
+            }
+            _ => {}
+        }
+    }
+
+    // Treat draft_tensor_parallel_size 0 as unset
+    if vllm.spec_decoding.draft_tensor_parallel_size == Some(0) {
+        vllm.spec_decoding.draft_tensor_parallel_size = None;
+    }
+
+    Ok(())
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1039,5 +1098,183 @@ mod tests {
         let stripped = strip_managed_flags(original);
         assert!(stripped.contains("--speculative-config"));
         assert!(stripped.contains("bad"));
+    }
+
+    // ── VllmSpecForm: deny_unknown_fields ──────────────────────────────
+
+    /// Unknown keys in `--speculative-config` JSON cause parse failure,
+    /// so the flag is preserved in args (not silently stripped).
+    #[test]
+    fn test_unknown_keys_in_speculative_config_preserved() {
+        let original = r#"--speculative-config {"method":"mtp","unknown_key":1}"#;
+
+        // Parse fails because VllmSpecForm denies unknown fields
+        let form = args_to_vllm_form(original);
+        assert_eq!(form.spec_decoding.method, None);
+
+        // Flag is preserved in args (not stripped)
+        let stripped = strip_managed_flags(original);
+        assert!(stripped.contains("--speculative-config"));
+        assert!(stripped.contains("unknown_key"));
+    }
+
+    // ── normalize_vllm_spec tests ──────────────────────────────────────
+
+    /// None method: clears entire spec_decoding to default.
+    #[test]
+    fn test_normalize_vllm_spec_none_clears_all() {
+        let mut vllm = VllmSettings {
+            spec_decoding: VllmSpecForm {
+                method: None,
+                num_speculative_tokens: Some(8),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let result = normalize_vllm_spec(&mut vllm);
+        assert!(result.is_ok());
+        assert_eq!(vllm.spec_decoding, VllmSpecForm::default());
+    }
+
+    /// Empty string method: clears entire spec_decoding to default.
+    #[test]
+    fn test_normalize_vllm_spec_empty_string_clears_all() {
+        let mut vllm = VllmSettings {
+            spec_decoding: VllmSpecForm {
+                method: Some("".to_string()),
+                num_speculative_tokens: Some(8),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let result = normalize_vllm_spec(&mut vllm);
+        assert!(result.is_ok());
+        assert_eq!(vllm.spec_decoding, VllmSpecForm::default());
+    }
+
+    /// mtp method: clears model field, defaults num_speculative_tokens to 5.
+    #[test]
+    fn test_normalize_vllm_spec_mtp_clears_model() {
+        let mut vllm = VllmSettings {
+            spec_decoding: VllmSpecForm {
+                method: Some("mtp".to_string()),
+                model: Some("should-be-cleared.gguf".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let result = normalize_vllm_spec(&mut vllm);
+        assert!(result.is_ok());
+        assert_eq!(vllm.spec_decoding.model, None);
+        assert_eq!(vllm.spec_decoding.num_speculative_tokens, Some(5));
+    }
+
+    /// ngram method: clears model field, defaults num_speculative_tokens to 5.
+    #[test]
+    fn test_normalize_vllm_spec_ngram_clears_model() {
+        let mut vllm = VllmSettings {
+            spec_decoding: VllmSpecForm {
+                method: Some("ngram".to_string()),
+                model: Some("should-be-cleared.gguf".to_string()),
+                num_speculative_tokens: Some(3),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let result = normalize_vllm_spec(&mut vllm);
+        assert!(result.is_ok());
+        assert_eq!(vllm.spec_decoding.model, None);
+        // Existing num_speculative_tokens preserved
+        assert_eq!(vllm.spec_decoding.num_speculative_tokens, Some(3));
+    }
+
+    /// eagle3 without model: returns Err.
+    #[test]
+    fn test_normalize_vllm_spec_eagle3_no_model_error() {
+        let mut vllm = VllmSettings {
+            spec_decoding: VllmSpecForm {
+                method: Some("eagle3".to_string()),
+                model: None,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let result = normalize_vllm_spec(&mut vllm);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Drafter model required"));
+    }
+
+    /// eagle3 with model: OK, defaults num_speculative_tokens to 5.
+    #[test]
+    fn test_normalize_vllm_spec_eagle3_with_model_ok() {
+        let mut vllm = VllmSettings {
+            spec_decoding: VllmSpecForm {
+                method: Some("eagle3".to_string()),
+                model: Some("draft-model.gguf".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let result = normalize_vllm_spec(&mut vllm);
+        assert!(result.is_ok());
+        assert_eq!(
+            vllm.spec_decoding.model,
+            Some("draft-model.gguf".to_string())
+        );
+        assert_eq!(vllm.spec_decoding.num_speculative_tokens, Some(5));
+    }
+
+    /// Unknown method: passthrough, no changes.
+    #[test]
+    fn test_normalize_vllm_spec_unknown_method_passthrough() {
+        let mut vllm = VllmSettings {
+            spec_decoding: VllmSpecForm {
+                method: Some("unknown_method".to_string()),
+                model: Some("some-model".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let result = normalize_vllm_spec(&mut vllm);
+        assert!(result.is_ok());
+        // No changes made
+        assert_eq!(
+            vllm.spec_decoding.method,
+            Some("unknown_method".to_string())
+        );
+        assert_eq!(vllm.spec_decoding.model, Some("some-model".to_string()));
+    }
+
+    /// num_speculative_tokens = 0 treated as unset, defaults to 5.
+    #[test]
+    fn test_normalize_vllm_spec_zero_tokens_defaults_to_5() {
+        let mut vllm = VllmSettings {
+            spec_decoding: VllmSpecForm {
+                method: Some("mtp".to_string()),
+                num_speculative_tokens: Some(0),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let result = normalize_vllm_spec(&mut vllm);
+        assert!(result.is_ok());
+        assert_eq!(vllm.spec_decoding.num_speculative_tokens, Some(5));
+    }
+
+    /// draft_tensor_parallel_size = 0 treated as unset, cleared to None.
+    #[test]
+    fn test_normalize_vllm_spec_zero_draft_tp_cleared() {
+        let mut vllm = VllmSettings {
+            spec_decoding: VllmSpecForm {
+                method: Some("eagle3".to_string()),
+                model: Some("draft.gguf".to_string()),
+                draft_tensor_parallel_size: Some(0),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let result = normalize_vllm_spec(&mut vllm);
+        assert!(result.is_ok());
+        assert_eq!(vllm.spec_decoding.draft_tensor_parallel_size, None);
     }
 }

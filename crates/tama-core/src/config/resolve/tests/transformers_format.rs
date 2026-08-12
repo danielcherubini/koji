@@ -729,8 +729,7 @@ fn test_build_full_args_vllm_spec_decoding() {
         json_str
     );
     assert!(
-        json_str.contains("\"numSpeculativeTokens\"")
-            || json_str.contains("\"num_speculative_tokens\""),
+        json_str.contains("\"num_speculative_tokens\""),
         "expected num_speculative_tokens in JSON token {:?}",
         json_str
     );

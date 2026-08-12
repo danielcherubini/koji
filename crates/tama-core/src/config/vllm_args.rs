@@ -4,6 +4,10 @@
 //! shell-like form (e.g. `"--quantization fp8"`, `"--enable-prefix-caching"`).
 //! This module extracts the 8 managed vLLM flags into a [`VllmConfig`] and
 //! returns the remaining entries as the stripped args list.
+//!
+//! The frontend manages two additional flags (`--attention-backend`,
+//! `--speculative-config`) that are UI-only and not represented in the core
+//! `VllmConfig`. See `tama/src/pages/model_editor/vllm_form.rs` for those.
 
 use crate::config::types::VllmConfig;
 

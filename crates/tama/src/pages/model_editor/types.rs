@@ -141,7 +141,7 @@ pub struct SpecDecodingForm {
 
 /// Speculative decoding configuration for vLLM.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct VllmSpecForm {
     pub method: Option<String>,
     pub model: Option<String>,

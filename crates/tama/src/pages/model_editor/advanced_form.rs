@@ -379,7 +379,7 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
             <h3 class="form-section-title mt-2">"Speculative Decoding"</h3>
             <div class="form-grid">
                 // Method dropdown
-                <label class="form-label">"Method"</label>
+                <label class="form-label" for="field-vllm-spec-method">"Method"</label>
                 <select
                     id="field-vllm-spec-method"
                     class="form-select"
@@ -458,7 +458,7 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                     <details>
                         <summary>"Advanced"</summary>
                         // rejection_sample_method
-                        <label class="form-label">"Rejection method"</label>
+                        <label class="form-label" for="field-vllm-spec-rejection-method">"Rejection method"</label>
                         <select
                             id="field-vllm-spec-rejection-method"
                             class="form-select"
@@ -482,7 +482,7 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                         </select>
 
                         // draft_sample_method
-                        <label class="form-label">"Draft sample method"</label>
+                        <label class="form-label" for="field-vllm-spec-draft-sample-method">"Draft sample method"</label>
                         <select
                             id="field-vllm-spec-draft-sample-method"
                             class="form-select"
@@ -505,7 +505,7 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                         </select>
 
                         // draft_tensor_parallel_size
-                        <label class="form-label">"Draft TP size"</label>
+                        <label class="form-label" for="field-vllm-spec-draft-tp-size">"Draft TP size"</label>
                         <input
                             id="field-vllm-spec-draft-tp-size"
                             class="form-input"
@@ -539,7 +539,12 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                                         .unwrap_or(false);
                                     form.update(|f| {
                                         if let Some(form) = f {
-                                            form.vllm.spec_decoding.disable_padded_drafter_batch = Some(checked);
+                                            form.vllm.spec_decoding.disable_padded_drafter_batch =
+                                                if checked {
+                                                    Some(true)
+                                                } else {
+                                                    None
+                                                };
                                         }
                                     });
                                 }

@@ -23,7 +23,9 @@ use self::hardware_form::ModelEditorHardwareForm;
 use self::sampling_form::ModelEditorSamplingForm;
 use self::settings_form::ModelEditorSettingsForm;
 use self::types::*;
-use self::vllm_form::{args_to_vllm_form, merge_vllm_settings, strip_managed_flags};
+use self::vllm_form::{
+    args_to_vllm_form, merge_vllm_settings, normalize_vllm_spec, strip_managed_flags,
+};
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
@@ -470,43 +472,9 @@ pub fn ModelEditor() -> impl IntoView {
 
             // Normalize and validate vLLM speculative decoding settings
             let mut vllm = initial_form.vllm.clone();
-            let spec = &vllm.spec_decoding;
-            let method = spec.method.as_deref();
-
-            match method {
-                None | Some("") => {
-                    // Disabled: clear entire spec_decoding
-                    vllm.spec_decoding = VllmSpecForm::default();
-                }
-                Some("mtp") | Some("ngram") => {
-                    // No drafter needed: clear model field
-                    vllm.spec_decoding.model = None;
-                }
-                Some("dflash") | Some("eagle3") | Some("draft_model") => {
-                    // Drafter required: validate model is set
-                    if spec.model.as_deref().is_some_and(|m| !m.is_empty()) {
-                        // Model is set, OK
-                    } else {
-                        save_status.set(Some((
-                            false,
-                            "❌ Drafter model required for this speculative decoding method."
-                                .into(),
-                        )));
-                        return;
-                    }
-                }
-                _ => {}
-            }
-
-            // Default num_speculative_tokens to 5 if method is set and tokens not specified
-            if vllm
-                .spec_decoding
-                .method
-                .as_deref()
-                .is_some_and(|m| !m.is_empty())
-                && vllm.spec_decoding.num_speculative_tokens.is_none()
-            {
-                vllm.spec_decoding.num_speculative_tokens = Some(5);
+            if let Err(e) = normalize_vllm_spec(&mut vllm) {
+                save_status.set(Some((false, format!("❌ {}", e))));
+                return;
             }
 
             let form_data = ModelForm {
