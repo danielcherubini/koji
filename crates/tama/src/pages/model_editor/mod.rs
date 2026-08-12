@@ -218,7 +218,10 @@ pub fn ModelEditor() -> impl IntoView {
 
                     // Parse vllm from ModelDetail
                     let vllm = if let Some(v_json) = &d.vllm {
-                        serde_json::from_value(v_json.clone()).unwrap_or_default()
+                        serde_json::from_value(v_json.clone()).unwrap_or_else(|e| {
+                            leptos::logging::warn!("Failed to parse vllm settings: {}", e);
+                            VllmSettings::default()
+                        })
                     } else {
                         VllmSettings::default()
                     };

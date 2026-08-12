@@ -312,15 +312,11 @@ pub fn normalize_vllm_spec(vllm: &mut VllmSettings) -> Result<(), String> {
             vllm.spec_decoding.model = None;
         }
         Some("dflash") | Some("eagle3") | Some("draft_model")
-            if spec.model.as_deref().is_none_or(|m| m.is_empty()) => {
-            // Drafter required but model not set
-            return Err(
-                "Drafter model required for this speculative decoding method.".into(),
-            );
+            if spec.model.as_deref().is_none_or(|m| m.is_empty()) =>
+        {
+            return Err("Drafter model required for this speculative decoding method.".into());
         }
-        Some("dflash") | Some("eagle3") | Some("draft_model") => {
-            // Drafter required and model is set — OK
-        }
+        Some("dflash") | Some("eagle3") | Some("draft_model") => {}
         _ => {}
     }
 
