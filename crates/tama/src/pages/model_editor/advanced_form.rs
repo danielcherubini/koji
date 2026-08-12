@@ -182,7 +182,9 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
 
     view! {
         // ── Speculative Decoding subsection (llama.cpp-only) ─────────────
-        <Show when=move || !is_transformers(form.get().and_then(|f| f.hf_format.clone()).as_deref())>
+        <Show when=move || {
+            !is_transformers(form.get().and_then(|f| f.hf_format.clone()).as_deref())
+        }>
         <h3 class="form-section-title">"Speculative Decoding"</h3>
         <div class="form-grid">
             // Spec type checkboxes
@@ -199,7 +201,9 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                     />
                     <label class="form-check-label" for="field-spec-draft-mtp">
                         "draft-mtp"
-                        <div class="form-hint">"Multi-Token Prediction — uses a draft model for speculative decoding"</div>
+                        <div class="form-hint">
+                            "Multi-Token Prediction — uses a draft model for speculative decoding"
+                        </div>
                     </label>
                 </div>
 
@@ -214,7 +218,9 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                     />
                     <label class="form-check-label" for="field-spec-ngram-simple">
                         "ngram-simple"
-                        <div class="form-hint">"Simple n-gram speculative decoding — lightweight, no extra model needed"</div>
+                        <div class="form-hint">
+                            "Simple n-gram speculative decoding — lightweight, no extra model"
+                        </div>
                     </label>
                 </div>
             </div>
@@ -310,7 +316,12 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                 <input
                     id="field-vllm-prefix-caching"
                     type="checkbox"
-                    prop:checked=move || form.get().as_ref().map(|f| f.vllm.enable_prefix_caching).unwrap_or(false)
+                    prop:checked=move || {
+                        form.get()
+                            .as_ref()
+                            .map(|f| f.vllm.enable_prefix_caching)
+                            .unwrap_or(false)
+                    }
                     on:change=move |e| {
                         let checked = e.target()
                             .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
@@ -325,7 +336,9 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                 />
                 <label class="form-check-label" for="field-vllm-prefix-caching">
                     "Enable prefix caching"
-                    <div class="form-hint">"vLLM --enable-prefix-caching — reuse KV blocks across requests with shared prefixes"</div>
+                    <div class="form-hint">
+                        "vLLM --enable-prefix-caching — reuse KV blocks for shared prefixes"
+                    </div>
                 </label>
             </div>
 
@@ -334,7 +347,12 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                 <input
                     id="field-vllm-trust-remote-code"
                     type="checkbox"
-                    prop:checked=move || form.get().as_ref().map(|f| f.vllm.trust_remote_code).unwrap_or(false)
+                    prop:checked=move || {
+                        form.get()
+                            .as_ref()
+                            .map(|f| f.vllm.trust_remote_code)
+                            .unwrap_or(false)
+                    }
                     on:change=move |e| {
                         let checked = e.target()
                             .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
@@ -349,7 +367,9 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                 />
                 <label class="form-check-label" for="field-vllm-trust-remote-code">
                     "Trust remote code"
-                    <div class="form-hint">"vLLM --trust-remote-code — required for repos with custom modeling code"</div>
+                    <div class="form-hint">
+                        "vLLM --trust-remote-code — required for repos with custom modeling code"
+                    </div>
                 </label>
             </div>
 
@@ -373,7 +393,9 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                     });
                 }
             />
-            <div class="form-hint">"vLLM --attention-backend — overrides the default attention kernel"</div>
+            <div class="form-hint">
+                "vLLM --attention-backend — overrides the default attention kernel"
+            </div>
 
             // ── Speculative Decoding subsection ──────────────────────
             <h3 class="form-section-title mt-2">"Speculative Decoding"</h3>
@@ -399,16 +421,26 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                     <option value="">"(disabled)"</option>
                     <option value="mtp">"mtp — Multi-Token Prediction (no drafter needed)"</option>
                     <option value="ngram">"ngram — N-gram matching (no drafter needed)"</option>
-                    <option value="dflash">"dflash — Diffusion block prediction (needs drafter)"</option>
-                    <option value="eagle3">"eagle3 — EAGLE-3 autoregressive (needs drafter)"</option>
-                    <option value="draft_model">"draft_model — Any smaller model (needs drafter)"</option>
+                    <option value="dflash">
+                        "dflash — Diffusion block prediction (needs drafter)"
+                    </option>
+                    <option value="eagle3">
+                        "eagle3 — EAGLE-3 autoregressive (needs drafter)"
+                    </option>
+                    <option value="draft_model">
+                        "draft_model — Any smaller model (needs drafter)"
+                    </option>
                 </select>
-                <div class="form-hint">"MTP requires model family support (DeepSeek, Qwen3, Gemma 4, etc.)"</div>
+                <div class="form-hint">
+                    "MTP requires model family support (DeepSeek, Qwen3, Gemma 4, etc.)"
+                </div>
 
                 // Fields shown when a method is selected
                 <Show when=move || has_method.get()>
                     // num_speculative_tokens
-                    <label class="form-label" for="field-vllm-spec-tokens">"Speculative tokens"</label>
+                    <label class="form-label" for="field-vllm-spec-tokens">
+                        "Speculative tokens"
+                    </label>
                     <input
                         id="field-vllm-spec-tokens"
                         class="form-input"
@@ -419,7 +451,8 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                             let val = target_value(&e);
                             form.update(|f| {
                                 if let Some(form) = f {
-                                    form.vllm.spec_decoding.num_speculative_tokens = if val.is_empty() {
+                                    form.vllm.spec_decoding
+                                        .num_speculative_tokens = if val.is_empty() {
                                         None
                                     } else {
                                         val.parse::<u32>().ok()
@@ -428,16 +461,26 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                             });
                         }
                     />
-                    <div class="form-hint">"Tokens to propose per step. Default: 5. Values above 8 may reduce quality."</div>
+                    <div class="form-hint">
+                        "Tokens to propose per step. Default: 5. Values above 8 may reduce quality."
+                    </div>
 
                     // Drafter model — shown only for dflash, eagle3, draft_model
                     <Show when=move || needs_drafter.get()>
-                        <label class="form-label" for="field-vllm-spec-model">"Drafter model"</label>
+                        <label class="form-label" for="field-vllm-spec-model">
+                            "Drafter model"
+                        </label>
                         <input
                             id="field-vllm-spec-model"
                             class="form-input"
                             type="text"
                             placeholder="owner/repo or /path/to/model"
+                            prop:value=move || {
+                                form.get()
+                                    .as_ref()
+                                    .and_then(|f| f.vllm.spec_decoding.model.clone())
+                                    .unwrap_or_default()
+                            }
                             on:input=move |e| {
                                 let val = target_value(&e);
                                 form.update(|f| {
@@ -451,14 +494,18 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                                 });
                             }
                         />
-                        <div class="form-hint">"HF repo ID or local path to the drafter/speculator model"</div>
+                        <div class="form-hint">
+                            "HF repo ID or local path to the drafter/speculator model"
+                        </div>
                     </Show>
 
                     // Advanced — collapsible
                     <details>
                         <summary>"Advanced"</summary>
                         // rejection_sample_method
-                        <label class="form-label" for="field-vllm-spec-rejection-method">"Rejection method"</label>
+                        <label class="form-label" for="field-vllm-spec-rejection-method">
+                            "Rejection method"
+                        </label>
                         <select
                             id="field-vllm-spec-rejection-method"
                             class="form-select"
@@ -466,7 +513,8 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                                 let val = target_value(&e);
                                 form.update(|f| {
                                     if let Some(form) = f {
-                                        form.vllm.spec_decoding.rejection_sample_method = if val.is_empty() {
+                                        form.vllm.spec_decoding
+                                            .rejection_sample_method = if val.is_empty() {
                                             None
                                         } else {
                                             Some(val)
@@ -482,7 +530,9 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                         </select>
 
                         // draft_sample_method
-                        <label class="form-label" for="field-vllm-spec-draft-sample-method">"Draft sample method"</label>
+                        <label class="form-label" for="field-vllm-spec-draft-sample-method">
+                            "Draft sample method"
+                        </label>
                         <select
                             id="field-vllm-spec-draft-sample-method"
                             class="form-select"
@@ -490,7 +540,8 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                                 let val = target_value(&e);
                                 form.update(|f| {
                                     if let Some(form) = f {
-                                        form.vllm.spec_decoding.draft_sample_method = if val.is_empty() {
+                                        form.vllm.spec_decoding
+                                            .draft_sample_method = if val.is_empty() {
                                             None
                                         } else {
                                             Some(val)
@@ -505,7 +556,9 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                         </select>
 
                         // draft_tensor_parallel_size
-                        <label class="form-label" for="field-vllm-spec-draft-tp-size">"Draft TP size"</label>
+                        <label class="form-label" for="field-vllm-spec-draft-tp-size">
+                            "Draft TP size"
+                        </label>
                         <input
                             id="field-vllm-spec-draft-tp-size"
                             class="form-input"
@@ -516,7 +569,8 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                                 let val = target_value(&e);
                                 form.update(|f| {
                                     if let Some(form) = f {
-                                        form.vllm.spec_decoding.draft_tensor_parallel_size = if val.is_empty() {
+                                        form.vllm.spec_decoding
+                                            .draft_tensor_parallel_size = if val.is_empty() {
                                             None
                                         } else {
                                             val.parse::<u32>().ok()
@@ -531,10 +585,20 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                             <input
                                 id="field-vllm-spec-disable-padded"
                                 type="checkbox"
-                                prop:checked=move || form.get().as_ref().and_then(|f| f.vllm.spec_decoding.disable_padded_drafter_batch).unwrap_or(false)
+                                prop:checked=move || {
+                                    form.get()
+                                        .as_ref()
+                                        .and_then(|f| {
+                                            f.vllm.spec_decoding
+                                                .disable_padded_drafter_batch
+                                        })
+                                        .unwrap_or(false)
+                                }
                                 on:change=move |e| {
                                     let checked = e.target()
-                                        .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
+                                        .and_then(|t| {
+                                            t.dyn_into::<web_sys::HtmlInputElement>().ok()
+                                        })
                                         .map(|el| el.checked())
                                         .unwrap_or(false);
                                     form.update(|f| {
@@ -551,7 +615,9 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                             />
                             <label class="form-check-label" for="field-vllm-spec-disable-padded">
                                 "Disable padded drafter batch"
-                                <div class="form-hint">"Use unpadded draft batches (EAGLE only)"</div>
+                                <div class="form-hint">
+                                    "Use unpadded draft batches (EAGLE only)"
+                                </div>
                             </label>
                         </div>
                     </details>
@@ -581,6 +647,8 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                 });
             }
         />
-        <span class="form-hint">"One flag per line, e.g. -fa 1, --mlock, or -b 4096. Quote values containing spaces"</span>
+        <span class="form-hint">
+            "One flag per line, e.g. -fa 1, --mlock, or -b 4096. Quote values containing spaces"
+        </span>
     }
 }
