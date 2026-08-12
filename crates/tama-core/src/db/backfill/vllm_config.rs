@@ -189,6 +189,41 @@ fn merge_vllm_config(
             .or(extracted.max_num_batched_tokens),
         enable_prefix_caching: existing.enable_prefix_caching || extracted.enable_prefix_caching,
         trust_remote_code: existing.trust_remote_code || extracted.trust_remote_code,
+        attention_backend: existing
+            .attention_backend
+            .clone()
+            .or_else(|| extracted.attention_backend.clone()),
+        spec_decoding: merge_vllm_spec_decoding(&existing.spec_decoding, &extracted.spec_decoding),
+    }
+}
+
+/// Merge two VllmSpecConfigs: `existing` non-default values win per-field.
+fn merge_vllm_spec_decoding(
+    existing: &crate::config::types::VllmSpecConfig,
+    extracted: &crate::config::types::VllmSpecConfig,
+) -> crate::config::types::VllmSpecConfig {
+    use crate::config::types::VllmSpecConfig;
+
+    VllmSpecConfig {
+        method: existing.method.clone().or_else(|| extracted.method.clone()),
+        model: existing.model.clone().or_else(|| extracted.model.clone()),
+        num_speculative_tokens: existing
+            .num_speculative_tokens
+            .or(extracted.num_speculative_tokens),
+        rejection_sample_method: existing
+            .rejection_sample_method
+            .clone()
+            .or_else(|| extracted.rejection_sample_method.clone()),
+        draft_tensor_parallel_size: existing
+            .draft_tensor_parallel_size
+            .or(extracted.draft_tensor_parallel_size),
+        draft_sample_method: existing
+            .draft_sample_method
+            .clone()
+            .or_else(|| extracted.draft_sample_method.clone()),
+        disable_padded_drafter_batch: existing
+            .disable_padded_drafter_batch
+            .or(extracted.disable_padded_drafter_batch),
     }
 }
 
@@ -368,6 +403,7 @@ mod tests {
                 max_num_batched_tokens: None,
                 enable_prefix_caching: false,
                 trust_remote_code: false,
+                ..Default::default()
             };
             let record = make_record(1, "test/model3", Some(args), Some(existing));
             upsert_model_config(&conn, &record).unwrap();
@@ -420,6 +456,7 @@ mod tests {
                 max_num_batched_tokens: None,
                 enable_prefix_caching: false,
                 trust_remote_code: false,
+                ..Default::default()
             };
             let record = make_record(1, "test/model4", Some(args), Some(existing));
             upsert_model_config(&conn, &record).unwrap();

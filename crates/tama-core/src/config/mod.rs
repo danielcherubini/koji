@@ -12,6 +12,6 @@ pub use types::{
     default_num_parallel, BackendConfig, CompactionConfig, CompactionDevice, Config, General,
     HealthCheck, LangfuseConfig, Lifecycle, LogLevel, ModelConfig, ModelModalities, OAuth2Config,
     ProxyConfig, QuantEntry, QuantKind, RestartPolicy, SpecDecodingConfig, VllmConfig,
-    DEFAULT_PROXY_PORT, MAX_REQUEST_BODY_SIZE,
+    VllmSpecConfig, DEFAULT_PROXY_PORT, MAX_REQUEST_BODY_SIZE,
 };
 pub use vllm_args::extract_vllm_args;

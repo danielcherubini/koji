@@ -23,7 +23,9 @@ use self::hardware_form::ModelEditorHardwareForm;
 use self::sampling_form::ModelEditorSamplingForm;
 use self::settings_form::ModelEditorSettingsForm;
 use self::types::*;
-use self::vllm_form::{args_to_vllm_form, merge_vllm_settings, strip_managed_flags};
+use self::vllm_form::{
+    args_to_vllm_form, merge_vllm_settings, normalize_vllm_spec, strip_managed_flags,
+};
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
@@ -216,7 +218,10 @@ pub fn ModelEditor() -> impl IntoView {
 
                     // Parse vllm from ModelDetail
                     let vllm = if let Some(v_json) = &d.vllm {
-                        serde_json::from_value(v_json.clone()).unwrap_or_default()
+                        serde_json::from_value(v_json.clone()).unwrap_or_else(|e| {
+                            leptos::logging::warn!("Failed to parse vllm settings: {}", e);
+                            VllmSettings::default()
+                        })
                     } else {
                         VllmSettings::default()
                     };
@@ -468,6 +473,13 @@ pub fn ModelEditor() -> impl IntoView {
                 .filter(|l: &String| !l.is_empty())
                 .collect();
 
+            // Normalize and validate vLLM speculative decoding settings
+            let mut vllm = initial_form.vllm.clone();
+            if let Err(e) = normalize_vllm_spec(&mut vllm) {
+                save_status.set(Some((false, format!("❌ {}", e))));
+                return;
+            }
+
             let form_data = ModelForm {
                 id: save_id,
                 backend: initial_form.backend.clone(),
@@ -493,7 +505,7 @@ pub fn ModelEditor() -> impl IntoView {
                 quants: initial_form.quants.clone(),
                 modalities: initial_form.modalities.clone(),
                 spec_decoding: initial_form.spec_decoding.clone(),
-                vllm: initial_form.vllm.clone(),
+                vllm,
                 n_batch: initial_form.n_batch,
                 n_ubatch: initial_form.n_ubatch,
                 hf_format: initial_form.hf_format.clone(),

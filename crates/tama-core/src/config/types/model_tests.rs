@@ -362,3 +362,230 @@ fn test_no_legacy_flags_unchanged() {
     assert_eq!(config.n_ubatch, None);
     assert_eq!(config.args, vec!["-ngl", "99", "--log-tokens"]);
 }
+
+// ── VllmSpecConfig tests ──────────────────────────────────────────────────
+
+/// VllmSpecConfig::is_empty() returns true for default/empty config.
+#[test]
+fn test_vllm_spec_config_is_empty_default() {
+    let spec = crate::config::types::VllmSpecConfig::default();
+    assert!(spec.is_empty());
+}
+
+/// VllmSpecConfig::is_empty() returns false when any field is set.
+#[test]
+fn test_vllm_spec_config_is_empty_non_empty() {
+    let spec = crate::config::types::VllmSpecConfig {
+        method: Some("mtp".to_string()),
+        ..Default::default()
+    };
+    assert!(!spec.is_empty());
+
+    let spec2 = crate::config::types::VllmSpecConfig {
+        num_speculative_tokens: Some(4),
+        ..Default::default()
+    };
+    assert!(!spec2.is_empty());
+
+    let spec3 = crate::config::types::VllmSpecConfig {
+        disable_padded_drafter_batch: Some(true),
+        ..Default::default()
+    };
+    assert!(!spec3.is_empty());
+}
+
+/// VllmSpecConfig serializes to JSON with only set fields (no nulls).
+#[test]
+fn test_vllm_spec_config_serializes_only_set_fields() {
+    let spec = crate::config::types::VllmSpecConfig {
+        method: Some("mtp".to_string()),
+        num_speculative_tokens: Some(4),
+        ..Default::default()
+    };
+    let json = serde_json::to_string(&spec).unwrap();
+    // Should contain set fields
+    assert!(json.contains("\"method\""));
+    assert!(json.contains("\"num_speculative_tokens\""));
+    // Should NOT contain unset fields (skip_serializing_if = Option::is_none)
+    assert!(!json.contains("\"model\""));
+    assert!(!json.contains("\"rejection_sample_method\""));
+    assert!(!json.contains("\"draft_tensor_parallel_size\""));
+    assert!(!json.contains("\"draft_sample_method\""));
+    assert!(!json.contains("\"disable_padded_drafter_batch\""));
+}
+
+/// VllmConfig::is_empty() accounts for spec_decoding and attention_backend.
+#[test]
+fn test_vllm_config_is_empty_with_spec_decoding() {
+    let config = VllmConfig::default();
+    assert!(config.is_empty());
+
+    // Setting spec_decoding to non-empty makes is_empty false
+    let config = VllmConfig {
+        spec_decoding: crate::config::types::VllmSpecConfig {
+            method: Some("mtp".to_string()),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    assert!(!config.is_empty());
+}
+
+/// VllmConfig::is_empty() accounts for attention_backend.
+#[test]
+fn test_vllm_config_is_empty_with_attention_backend() {
+    let config = VllmConfig {
+        attention_backend: Some("ROCM_AITER_UNIFIED_ATTN".to_string()),
+        ..Default::default()
+    };
+    assert!(!config.is_empty());
+}
+
+/// VllmConfig::to_args() emits --speculative-config as a single grouped entry.
+#[test]
+fn test_vllm_config_to_args_emits_speculative_config() {
+    use crate::config::split_arg_entry;
+
+    let spec = crate::config::types::VllmSpecConfig {
+        method: Some("mtp".to_string()),
+        num_speculative_tokens: Some(4),
+        ..Default::default()
+    };
+    let config = VllmConfig {
+        spec_decoding: spec,
+        ..Default::default()
+    };
+    let args = config.to_args();
+    // Should contain a --speculative-config entry
+    let spec_arg = args.iter().find(|a| a.starts_with("--speculative-config "));
+    assert!(
+        spec_arg.is_some(),
+        "Expected --speculative-config in args: {:?}",
+        args
+    );
+    // Split the grouped entry to get the actual JSON value
+    let tokens = split_arg_entry(spec_arg.unwrap());
+    assert_eq!(tokens[0], "--speculative-config");
+    let json_str = &tokens[1];
+    // Should deserialize back to valid JSON
+    let parsed: serde_json::Value = serde_json::from_str(json_str).unwrap();
+    assert_eq!(parsed["method"], "mtp");
+    assert_eq!(parsed["num_speculative_tokens"], 4);
+}
+
+/// VllmConfig::to_args() emits --speculative-config as last arg.
+#[test]
+fn test_vllm_config_to_args_speculative_config_is_last() {
+    let spec = crate::config::types::VllmSpecConfig {
+        method: Some("mtp".to_string()),
+        ..Default::default()
+    };
+    let config = VllmConfig {
+        quantization: Some("fp8".to_string()),
+        spec_decoding: spec,
+        trust_remote_code: true,
+        ..Default::default()
+    };
+    let args = config.to_args();
+    // Last entry should be --speculative-config
+    let last = args.last().expect("args should not be empty");
+    assert!(
+        last.starts_with("--speculative-config "),
+        "Last arg should be --speculative-config, got: {}",
+        last
+    );
+}
+
+/// VllmConfig::to_args() emits nothing for spec_decoding when empty.
+#[test]
+fn test_vllm_config_to_args_no_speculative_when_empty() {
+    let config = VllmConfig::default();
+    let args = config.to_args();
+    let has_spec = args.iter().any(|a| a.starts_with("--speculative-config"));
+    assert!(
+        !has_spec,
+        "Should not emit --speculative-config when empty: {:?}",
+        args
+    );
+}
+
+/// VllmConfig::to_args() emits --attention-backend when set.
+#[test]
+fn test_vllm_config_to_args_emits_attention_backend() {
+    let config = VllmConfig {
+        attention_backend: Some("ROCM_AITER_UNIFIED_ATTN".to_string()),
+        ..Default::default()
+    };
+    let args = config.to_args();
+    assert!(args.contains(&"--attention-backend".to_string()));
+    assert!(args.contains(&"ROCM_AITER_UNIFIED_ATTN".to_string()));
+}
+
+/// VllmConfig::to_args() emits --attention-backend before --enable-prefix-caching.
+#[test]
+fn test_vllm_config_to_args_attention_backend_order() {
+    let config = VllmConfig {
+        attention_backend: Some("FLASH_ATTN".to_string()),
+        enable_prefix_caching: true,
+        ..Default::default()
+    };
+    let args = config.to_args();
+    let attn_idx = args
+        .iter()
+        .position(|a| a == "--attention-backend")
+        .unwrap();
+    let prefix_idx = args
+        .iter()
+        .position(|a| a == "--enable-prefix-caching")
+        .unwrap();
+    assert!(
+        attn_idx < prefix_idx,
+        "--attention-backend (idx {}) should come before --enable-prefix-caching (idx {})",
+        attn_idx,
+        prefix_idx
+    );
+}
+
+/// Legacy vllm_config JSON without spec_decoding key deserializes correctly.
+#[test]
+fn test_vllm_config_legacy_json_deserializes() {
+    let json = r#"{"quantization":"fp8","tensor_parallel_size":2}"#;
+    let config: VllmConfig = serde_json::from_str(json).unwrap();
+    assert_eq!(config.quantization, Some("fp8".to_string()));
+    assert_eq!(config.tensor_parallel_size, Some(2));
+    // spec_decoding should default to empty
+    assert!(config.spec_decoding.is_empty());
+    // attention_backend should default to None
+    assert!(config.attention_backend.is_none());
+}
+
+/// VllmConfig::to_args() --speculative-config survives flatten_args round-trip.
+#[test]
+fn test_vllm_config_speculative_config_survives_flatten() {
+    use crate::config::flatten_args;
+
+    let spec = crate::config::types::VllmSpecConfig {
+        method: Some("mtp".to_string()),
+        num_speculative_tokens: Some(4),
+        ..Default::default()
+    };
+    let config = VllmConfig {
+        spec_decoding: spec,
+        ..Default::default()
+    };
+    let args = config.to_args();
+    // Flatten and verify --speculative-config flag is present
+    let flat = flatten_args(&args);
+    let spec_idx = flat.iter().position(|a| a == "--speculative-config");
+    assert!(
+        spec_idx.is_some(),
+        "--speculative-config flag should be in flattened args"
+    );
+    let spec_idx = spec_idx.unwrap();
+    // The next element should be valid JSON
+    let json_str = &flat[spec_idx + 1];
+    let parsed: serde_json::Value =
+        serde_json::from_str(json_str).expect("speculative config JSON should parse");
+    assert_eq!(parsed["method"], "mtp");
+    assert_eq!(parsed["num_speculative_tokens"], 4);
+}

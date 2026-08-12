@@ -12,9 +12,9 @@ Plans for features, refactors, and bug fixes in the Tama project.
 
 ## Quick Stats
 
-- **Total Plans**: 88
-- **Backlog**: 0
-- **Completed**: 87 ✅
+- **Total Plans**: 90
+- **Backlog**: 1
+- **Completed**: 88 ✅
 
 ---
 

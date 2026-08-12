@@ -667,3 +667,106 @@ fn test_build_full_args_transformers_served_model_name() {
         args
     );
 }
+
+/// Transformers models with vllm spec_decoding emit `--speculative-config` with
+/// intact JSON that survives `flatten_args` (shlex preserves quoted JSON as one token).
+#[test]
+fn test_build_full_args_vllm_spec_decoding() {
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let models_dir = temp_dir.path().join("models");
+    std::fs::create_dir_all(models_dir.join("org").join("repo"))
+        .expect("Failed to create model dir");
+
+    let config = h::sample_config(models_dir);
+
+    let server = h::sample_server(|s| {
+        s.backend = "vllm".to_string();
+        s.hf_format = Some("transformers".to_string());
+        s.model = Some("org/repo".to_string());
+        s.quant = None;
+        s.vllm = crate::config::types::VllmConfig {
+            spec_decoding: crate::config::types::VllmSpecConfig {
+                method: Some("mtp".to_string()),
+                num_speculative_tokens: Some(8),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+    });
+
+    let backend = h::sample_backend();
+
+    let args = config
+        .build_full_args(&server, &backend, None, &[])
+        .expect("build_full_args failed");
+
+    // --speculative-config flag must be present
+    assert!(
+        args.contains(&"--speculative-config".to_string()),
+        "expected --speculative-config flag in {:?}",
+        args
+    );
+
+    // The JSON value must appear as an intact token after flatten_args
+    // shlex preserves the quoted JSON as a single token
+    let json_token = args.iter().enumerate().find_map(|(i, a)| {
+        if a == "--speculative-config" {
+            args.get(i + 1)
+        } else {
+            None
+        }
+    });
+    assert!(
+        json_token.is_some(),
+        "expected JSON value after --speculative-config in {:?}",
+        args
+    );
+    let json_str = json_token.unwrap();
+    // JSON must contain the serialized fields
+    assert!(
+        json_str.contains("\"method\"") && json_str.contains("\"mtp\""),
+        "expected method=mtp in JSON token {:?}",
+        json_str
+    );
+    assert!(
+        json_str.contains("\"num_speculative_tokens\""),
+        "expected num_speculative_tokens in JSON token {:?}",
+        json_str
+    );
+}
+
+/// Transformers models with vllm attention_backend emit `--attention-backend` flag.
+#[test]
+fn test_build_full_args_vllm_attention_backend() {
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let models_dir = temp_dir.path().join("models");
+    std::fs::create_dir_all(models_dir.join("org").join("repo"))
+        .expect("Failed to create model dir");
+
+    let config = h::sample_config(models_dir);
+
+    let server = h::sample_server(|s| {
+        s.backend = "vllm".to_string();
+        s.hf_format = Some("transformers".to_string());
+        s.model = Some("org/repo".to_string());
+        s.quant = None;
+        s.vllm = crate::config::types::VllmConfig {
+            attention_backend: Some("ROCM_AITER_UNIFIED_ATTN".to_string()),
+            ..Default::default()
+        };
+    });
+
+    let backend = h::sample_backend();
+
+    let args = config
+        .build_full_args(&server, &backend, None, &[])
+        .expect("build_full_args failed");
+
+    // --attention-backend flag must be present with correct value
+    assert!(
+        args.windows(2)
+            .any(|w| w[0] == "--attention-backend" && w[1] == "ROCM_AITER_UNIFIED_ATTN"),
+        "expected --attention-backend ROCM_AITER_UNIFIED_ATTN in {:?}",
+        args
+    );
+}

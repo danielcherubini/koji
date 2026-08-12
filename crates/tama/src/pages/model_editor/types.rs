@@ -139,6 +139,19 @@ pub struct SpecDecodingForm {
     pub draft_ngl: Option<u32>,
 }
 
+/// Speculative decoding configuration for vLLM.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct VllmSpecForm {
+    pub method: Option<String>,
+    pub model: Option<String>,
+    pub num_speculative_tokens: Option<u32>,
+    pub rejection_sample_method: Option<String>,
+    pub draft_tensor_parallel_size: Option<u32>,
+    pub draft_sample_method: Option<String>,
+    pub disable_padded_drafter_batch: Option<bool>,
+}
+
 /// vLLM-specific settings for transformers-format models.
 /// Frontend mirror of `tama_core::config::VllmConfig` (WASM cannot use core types).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -152,6 +165,8 @@ pub struct VllmSettings {
     pub max_num_batched_tokens: Option<u32>,
     pub enable_prefix_caching: bool,
     pub trust_remote_code: bool,
+    pub attention_backend: Option<String>,
+    pub spec_decoding: VllmSpecForm,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
