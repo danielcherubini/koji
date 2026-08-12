@@ -125,6 +125,10 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                 );
                 // vLLM spec decoding fields
                 set_input_value(
+                    "field-vllm-attention-backend",
+                    &f.vllm.attention_backend.clone().unwrap_or_default(),
+                );
+                set_input_value(
                     "field-vllm-spec-method",
                     &f.vllm.spec_decoding.method.clone().unwrap_or_default(),
                 );
@@ -349,7 +353,29 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                 </label>
             </div>
 
-            // ── Speculative Decoding subsection ─────────────────────
+            // ── Attention backend ─────────────────────────────────────
+            <label class="form-label" for="field-vllm-attention-backend">"Attention backend"</label>
+            <input
+                id="field-vllm-attention-backend"
+                class="form-input"
+                type="text"
+                placeholder="e.g. ROCM_AITER_UNIFIED_ATTN"
+                on:input=move |e| {
+                    let val = target_value(&e);
+                    form.update(|f| {
+                        if let Some(form) = f {
+                            form.vllm.attention_backend = if val.is_empty() {
+                                None
+                            } else {
+                                Some(val)
+                            };
+                        }
+                    });
+                }
+            />
+            <div class="form-hint">"vLLM --attention-backend — overrides the default attention kernel"</div>
+
+            // ── Speculative Decoding subsection ──────────────────────
             <h3 class="form-section-title mt-2">"Speculative Decoding"</h3>
             <div class="form-grid">
                 // Method dropdown
