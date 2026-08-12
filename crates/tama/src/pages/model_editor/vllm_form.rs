@@ -952,4 +952,92 @@ mod tests {
         assert_eq!(merged.gpu_memory_utilization, Some(0.92));
         assert!(merged.enable_prefix_caching);
     }
+
+    // ── Integration: round-trip tests ──────────────────────────────────
+
+    /// Round-trip: args with `--speculative-config` → form → strip → reparse stable.
+    /// The JSON must be parsed into the form, stripped from args, and not reappear.
+    #[test]
+    fn test_roundtrip_speculative_config() {
+        let original = r#"--speculative-config {"method":"mtp","num_speculative_tokens":8}"#;
+
+        // Parse args into form
+        let form = args_to_vllm_form(original);
+        assert_eq!(form.spec_decoding.method, Some("mtp".to_string()));
+        assert_eq!(form.spec_decoding.num_speculative_tokens, Some(8));
+
+        // Strip managed flags from args
+        let stripped = strip_managed_flags(original);
+
+        // After stripping, the speculative-config should be gone
+        assert!(!stripped.contains("--speculative-config"));
+        assert!(!stripped.contains("\"method\""));
+
+        // Reparsing the stripped args should yield defaults for spec_decoding
+        let re_form = args_to_vllm_form(&stripped);
+        assert_eq!(re_form.spec_decoding.method, None);
+        assert_eq!(re_form.spec_decoding.num_speculative_tokens, None);
+    }
+
+    /// Mixed args: `--quantization fp8` + `--speculative-config {...}` → both parsed correctly.
+    #[test]
+    fn test_parse_mixed_quantization_and_speculative_config() {
+        let original = r#"--quantization fp8
+--speculative-config {"method":"eagle","model":"draft.gguf","num_speculative_tokens":4}"#;
+
+        let form = args_to_vllm_form(original);
+
+        // Both flags parsed correctly
+        assert_eq!(form.quantization, Some("fp8".to_string()));
+        assert_eq!(form.spec_decoding.method, Some("eagle".to_string()));
+        assert_eq!(form.spec_decoding.model, Some("draft.gguf".to_string()));
+        assert_eq!(form.spec_decoding.num_speculative_tokens, Some(4));
+
+        // Both stripped from args
+        let stripped = strip_managed_flags(original);
+        assert!(!stripped.contains("--quantization"));
+        assert!(!stripped.contains("--speculative-config"));
+        assert!(!stripped.contains("fp8"));
+        assert!(!stripped.contains("\"method\""));
+    }
+
+    /// `--attention-backend` round-trip: args → form → strip → reparse stable.
+    #[test]
+    fn test_roundtrip_attention_backend() {
+        let original = "--attention-backend ROCM_AITER_UNIFIED_ATTN";
+
+        // Parse args into form
+        let form = args_to_vllm_form(original);
+        assert_eq!(
+            form.attention_backend,
+            Some("ROCM_AITER_UNIFIED_ATTN".to_string())
+        );
+
+        // Strip managed flags from args
+        let stripped = strip_managed_flags(original);
+
+        // After stripping, the attention-backend should be gone
+        assert!(!stripped.contains("--attention-backend"));
+        assert!(!stripped.contains("ROCM_AITER_UNIFIED_ATTN"));
+
+        // Reparsing the stripped args should yield defaults for attention_backend
+        let re_form = args_to_vllm_form(&stripped);
+        assert_eq!(re_form.attention_backend, None);
+    }
+
+    /// Malformed JSON: `--speculative-config '{bad'` → preserved in args (not stripped).
+    /// Unparseable managed flag values are preserved rather than silently dropped.
+    #[test]
+    fn test_malformed_speculative_config_preserved_in_args() {
+        let original = "--speculative-config '{bad'";
+
+        // Parse args — malformed JSON should leave spec_decoding at defaults
+        let form = args_to_vllm_form(original);
+        assert_eq!(form.spec_decoding.method, None);
+
+        // Strip managed flags — malformed JSON should NOT be stripped
+        let stripped = strip_managed_flags(original);
+        assert!(stripped.contains("--speculative-config"));
+        assert!(stripped.contains("bad"));
+    }
 }
