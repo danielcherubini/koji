@@ -12,8 +12,8 @@ Plans for features, refactors, and bug fixes in the Tama project.
 
 ## Quick Stats
 
-- **Total Plans**: 88
-- **Backlog**: 0
+- **Total Plans**: 89
+- **Backlog**: 1
 - **Completed**: 87 ✅
 
 ---
@@ -23,6 +23,7 @@ Plans for features, refactors, and bug fixes in the Tama project.
 | Plan | Description | Status |
 |------|-------------|--------|
 | [plan-088](plan-088-provider-abstraction.md) | Provider abstraction + tamad daemon split | Backlog |
+| [plan-089](plan-089-vllm-spec-decoding.md) | vLLM speculative decoding settings in model editor | Backlog |
 
 > **Note:** The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan.
 

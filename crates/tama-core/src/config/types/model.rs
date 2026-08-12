@@ -411,6 +411,39 @@ pub struct SpecDecodingConfig {
     pub draft_ngl: Option<u32>,
 }
 
+/// vLLM speculative decoding configuration.
+/// Serialized as JSON and passed as `--speculative-config <json>` to vLLM.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct VllmSpecConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_speculative_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejection_sample_method: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft_tensor_parallel_size: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft_sample_method: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disable_padded_drafter_batch: Option<bool>,
+}
+
+impl VllmSpecConfig {
+    /// Returns true when all fields are None.
+    pub fn is_empty(&self) -> bool {
+        self.method.is_none()
+            && self.model.is_none()
+            && self.num_speculative_tokens.is_none()
+            && self.rejection_sample_method.is_none()
+            && self.draft_tensor_parallel_size.is_none()
+            && self.draft_sample_method.is_none()
+            && self.disable_padded_drafter_batch.is_none()
+    }
+}
+
 /// vLLM-specific launch settings for transformers-format (safetensors) models.
 /// Persisted as JSON in the `vllm_config` column; mirrors `spec_decoding`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -431,6 +464,10 @@ pub struct VllmConfig {
     pub enable_prefix_caching: bool,
     #[serde(default)]
     pub trust_remote_code: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attention_backend: Option<String>,
+    #[serde(default)]
+    pub spec_decoding: VllmSpecConfig,
 }
 
 impl VllmConfig {
@@ -444,6 +481,8 @@ impl VllmConfig {
             && self.max_num_batched_tokens.is_none()
             && !self.enable_prefix_caching
             && !self.trust_remote_code
+            && self.attention_backend.is_none()
+            && self.spec_decoding.is_empty()
     }
 
     /// Returns CLI argument entries in fixed order.
@@ -474,11 +513,23 @@ impl VllmConfig {
             args.push("--max-num-batched-tokens".to_string());
             args.push(v.to_string());
         }
+        if let Some(ref v) = self.attention_backend {
+            args.push("--attention-backend".to_string());
+            args.push(v.clone());
+        }
         if self.enable_prefix_caching {
             args.push("--enable-prefix-caching".to_string());
         }
         if self.trust_remote_code {
             args.push("--trust-remote-code".to_string());
+        }
+        if !self.spec_decoding.is_empty() {
+            if let Ok(json) = serde_json::to_string(&self.spec_decoding) {
+                args.push(format!(
+                    "--speculative-config {}",
+                    crate::config::quote_value(&json)
+                ));
+            }
         }
         args
     }
