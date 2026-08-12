@@ -468,6 +468,47 @@ pub fn ModelEditor() -> impl IntoView {
                 .filter(|l: &String| !l.is_empty())
                 .collect();
 
+            // Normalize and validate vLLM speculative decoding settings
+            let mut vllm = initial_form.vllm.clone();
+            let spec = &vllm.spec_decoding;
+            let method = spec.method.as_deref();
+
+            match method {
+                None | Some("") => {
+                    // Disabled: clear entire spec_decoding
+                    vllm.spec_decoding = VllmSpecForm::default();
+                }
+                Some("mtp") | Some("ngram") => {
+                    // No drafter needed: clear model field
+                    vllm.spec_decoding.model = None;
+                }
+                Some("dflash") | Some("eagle3") | Some("draft_model") => {
+                    // Drafter required: validate model is set
+                    if spec.model.as_deref().is_some_and(|m| !m.is_empty()) {
+                        // Model is set, OK
+                    } else {
+                        save_status.set(Some((
+                            false,
+                            "❌ Drafter model required for this speculative decoding method."
+                                .into(),
+                        )));
+                        return;
+                    }
+                }
+                _ => {}
+            }
+
+            // Default num_speculative_tokens to 5 if method is set and tokens not specified
+            if vllm
+                .spec_decoding
+                .method
+                .as_deref()
+                .is_some_and(|m| !m.is_empty())
+                && vllm.spec_decoding.num_speculative_tokens.is_none()
+            {
+                vllm.spec_decoding.num_speculative_tokens = Some(5);
+            }
+
             let form_data = ModelForm {
                 id: save_id,
                 backend: initial_form.backend.clone(),
@@ -493,7 +534,7 @@ pub fn ModelEditor() -> impl IntoView {
                 quants: initial_form.quants.clone(),
                 modalities: initial_form.modalities.clone(),
                 spec_decoding: initial_form.spec_decoding.clone(),
-                vllm: initial_form.vllm.clone(),
+                vllm,
                 n_batch: initial_form.n_batch,
                 n_ubatch: initial_form.n_ubatch,
                 hf_format: initial_form.hf_format.clone(),

@@ -49,6 +49,32 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
             .unwrap_or(false)
     });
 
+    // Derived signals for vLLM spec decoding UI
+    let has_method = Signal::derive(move || {
+        form.get()
+            .as_ref()
+            .map(|f| {
+                f.vllm
+                    .spec_decoding
+                    .method
+                    .as_deref()
+                    .is_some_and(|m| !m.is_empty())
+            })
+            .unwrap_or(false)
+    });
+
+    let needs_drafter = Signal::derive(move || {
+        form.get()
+            .as_ref()
+            .map(|f| {
+                matches!(
+                    f.vllm.spec_decoding.method.as_deref(),
+                    Some("dflash") | Some("eagle3") | Some("draft_model")
+                )
+            })
+            .unwrap_or(false)
+    });
+
     // Populate input values when the form data loads (or model changes).
     // Only runs when the model ID changes, not on every keystroke.
     let last_init_id = StoredValue::new(None::<String>);
@@ -96,6 +122,54 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                         .draft_ngl
                         .map(|v| v.to_string())
                         .unwrap_or_default(),
+                );
+                // vLLM spec decoding fields
+                set_input_value(
+                    "field-vllm-spec-method",
+                    &f.vllm.spec_decoding.method.clone().unwrap_or_default(),
+                );
+                set_input_value(
+                    "field-vllm-spec-tokens",
+                    &f.vllm
+                        .spec_decoding
+                        .num_speculative_tokens
+                        .map(|v| v.to_string())
+                        .unwrap_or_default(),
+                );
+                set_input_value(
+                    "field-vllm-spec-model",
+                    &f.vllm.spec_decoding.model.clone().unwrap_or_default(),
+                );
+                set_input_value(
+                    "field-vllm-spec-rejection-method",
+                    &f.vllm
+                        .spec_decoding
+                        .rejection_sample_method
+                        .clone()
+                        .unwrap_or_default(),
+                );
+                set_input_value(
+                    "field-vllm-spec-draft-sample-method",
+                    &f.vllm
+                        .spec_decoding
+                        .draft_sample_method
+                        .clone()
+                        .unwrap_or_default(),
+                );
+                set_input_value(
+                    "field-vllm-spec-draft-tp-size",
+                    &f.vllm
+                        .spec_decoding
+                        .draft_tensor_parallel_size
+                        .map(|v| v.to_string())
+                        .unwrap_or_default(),
+                );
+                set_checked(
+                    "field-vllm-spec-disable-padded",
+                    f.vllm
+                        .spec_decoding
+                        .disable_padded_drafter_batch
+                        .unwrap_or(false),
                 );
                 last_init_id.set_value(Some(f.id.clone()));
             }
@@ -273,6 +347,184 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                     "Trust remote code"
                     <div class="form-hint">"vLLM --trust-remote-code — required for repos with custom modeling code"</div>
                 </label>
+            </div>
+
+            // ── Speculative Decoding subsection ─────────────────────
+            <h3 class="form-section-title mt-2">"Speculative Decoding"</h3>
+            <div class="form-grid">
+                // Method dropdown
+                <label class="form-label">"Method"</label>
+                <select
+                    id="field-vllm-spec-method"
+                    class="form-select"
+                    on:change=move |e| {
+                        let val = target_value(&e);
+                        form.update(|f| {
+                            if let Some(form) = f {
+                                form.vllm.spec_decoding.method = if val.is_empty() {
+                                    None
+                                } else {
+                                    Some(val)
+                                };
+                            }
+                        });
+                    }
+                >
+                    <option value="">"(disabled)"</option>
+                    <option value="mtp">"mtp — Multi-Token Prediction (no drafter needed)"</option>
+                    <option value="ngram">"ngram — N-gram matching (no drafter needed)"</option>
+                    <option value="dflash">"dflash — Diffusion block prediction (needs drafter)"</option>
+                    <option value="eagle3">"eagle3 — EAGLE-3 autoregressive (needs drafter)"</option>
+                    <option value="draft_model">"draft_model — Any smaller model (needs drafter)"</option>
+                </select>
+                <div class="form-hint">"MTP requires model family support (DeepSeek, Qwen3, Gemma 4, etc.)"</div>
+
+                // Fields shown when a method is selected
+                <Show when=move || has_method.get()>
+                    // num_speculative_tokens
+                    <label class="form-label" for="field-vllm-spec-tokens">"Speculative tokens"</label>
+                    <input
+                        id="field-vllm-spec-tokens"
+                        class="form-input"
+                        type="number"
+                        min="1"
+                        placeholder="5"
+                        on:input=move |e| {
+                            let val = target_value(&e);
+                            form.update(|f| {
+                                if let Some(form) = f {
+                                    form.vllm.spec_decoding.num_speculative_tokens = if val.is_empty() {
+                                        None
+                                    } else {
+                                        val.parse::<u32>().ok()
+                                    };
+                                }
+                            });
+                        }
+                    />
+                    <div class="form-hint">"Tokens to propose per step. Default: 5. Values above 8 may reduce quality."</div>
+
+                    // Drafter model — shown only for dflash, eagle3, draft_model
+                    <Show when=move || needs_drafter.get()>
+                        <label class="form-label" for="field-vllm-spec-model">"Drafter model"</label>
+                        <input
+                            id="field-vllm-spec-model"
+                            class="form-input"
+                            type="text"
+                            placeholder="owner/repo or /path/to/model"
+                            on:input=move |e| {
+                                let val = target_value(&e);
+                                form.update(|f| {
+                                    if let Some(form) = f {
+                                        form.vllm.spec_decoding.model = if val.is_empty() {
+                                            None
+                                        } else {
+                                            Some(val)
+                                        };
+                                    }
+                                });
+                            }
+                        />
+                        <div class="form-hint">"HF repo ID or local path to the drafter/speculator model"</div>
+                    </Show>
+
+                    // Advanced — collapsible
+                    <details>
+                        <summary>"Advanced"</summary>
+                        // rejection_sample_method
+                        <label class="form-label">"Rejection method"</label>
+                        <select
+                            id="field-vllm-spec-rejection-method"
+                            class="form-select"
+                            on:change=move |e| {
+                                let val = target_value(&e);
+                                form.update(|f| {
+                                    if let Some(form) = f {
+                                        form.vllm.spec_decoding.rejection_sample_method = if val.is_empty() {
+                                            None
+                                        } else {
+                                            Some(val)
+                                        };
+                                    }
+                                });
+                            }
+                        >
+                            <option value="">"(default)"</option>
+                            <option value="standard">"standard"</option>
+                            <option value="synthetic">"synthetic"</option>
+                            <option value="block">"block"</option>
+                        </select>
+
+                        // draft_sample_method
+                        <label class="form-label">"Draft sample method"</label>
+                        <select
+                            id="field-vllm-spec-draft-sample-method"
+                            class="form-select"
+                            on:change=move |e| {
+                                let val = target_value(&e);
+                                form.update(|f| {
+                                    if let Some(form) = f {
+                                        form.vllm.spec_decoding.draft_sample_method = if val.is_empty() {
+                                            None
+                                        } else {
+                                            Some(val)
+                                        };
+                                    }
+                                });
+                            }
+                        >
+                            <option value="">"(default)"</option>
+                            <option value="greedy">"greedy"</option>
+                            <option value="probabilistic">"probabilistic"</option>
+                        </select>
+
+                        // draft_tensor_parallel_size
+                        <label class="form-label">"Draft TP size"</label>
+                        <input
+                            id="field-vllm-spec-draft-tp-size"
+                            class="form-input"
+                            type="number"
+                            min="1"
+                            placeholder="1"
+                            on:input=move |e| {
+                                let val = target_value(&e);
+                                form.update(|f| {
+                                    if let Some(form) = f {
+                                        form.vllm.spec_decoding.draft_tensor_parallel_size = if val.is_empty() {
+                                            None
+                                        } else {
+                                            val.parse::<u32>().ok()
+                                        };
+                                    }
+                                });
+                            }
+                        />
+
+                        // disable_padded_drafter_batch
+                        <div class="form-check">
+                            <input
+                                id="field-vllm-spec-disable-padded"
+                                type="checkbox"
+                                prop:checked=move || form.get().as_ref().and_then(|f| f.vllm.spec_decoding.disable_padded_drafter_batch).unwrap_or(false)
+                                on:change=move |e| {
+                                    let checked = e.target()
+                                        .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
+                                        .map(|el| el.checked())
+                                        .unwrap_or(false);
+                                    form.update(|f| {
+                                        if let Some(form) = f {
+                                            form.vllm.spec_decoding.disable_padded_drafter_batch = Some(checked);
+                                        }
+                                    });
+                                }
+                            />
+                            <label class="form-check-label" for="field-vllm-spec-disable-padded">
+                                "Disable padded drafter batch"
+                                <div class="form-hint">"Use unpadded draft batches (EAGLE only)"</div>
+                            </label>
+                        </div>
+                    </details>
+                </Show>
             </div>
         </div>
         </Show>
