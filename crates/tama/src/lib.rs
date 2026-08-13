@@ -323,7 +323,7 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("/tama") view=pages::dashboard::Dashboard />
                     <Route path=path!("/tama/models") view=pages::models::Models />
                     <Route path=path!("/tama/model/:id/edit") view=pages::model_editor::ModelEditor />
-                    <Route path=path!("/tama/backends") view=pages::backends::Backends />
+                    <Route path=path!("/tama/installations") view=pages::installations::Backends />
                     <Route path=path!("/tama/benchmarks") view=pages::benchmarks::Benchmarks />
                     <Route path=path!("/tama/aliases") view=pages::aliases::AliasesPage />
                     <Route path=path!("/tama/keys") view=pages::keys::KeysPage />

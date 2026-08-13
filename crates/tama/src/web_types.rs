@@ -8,8 +8,8 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use tama_core::backends::BackendType;
 use tama_core::gpu::BuildPrerequisites;
+use tama_core::installations::InstallationType;
 use tama_core::updates::UpdateChecker;
 use tokio::sync::{broadcast, Mutex, RwLock};
 
@@ -64,7 +64,7 @@ pub struct Job {
     pub id: JobId,
     pub kind: JobKind,
     /// Backend type as a string (e.g., "llama_cpp", "llama_server").
-    /// Converted to BackendType when needed by tama-core.
+    /// Converted to InstallationType when needed by tama-core.
     pub backend_type: Option<String>,
     pub state: RwLock<JobState>,
     pub log_head: RwLock<VecDeque<String>>,
@@ -131,7 +131,7 @@ impl JobManager {
     pub async fn submit(
         &self,
         kind: JobKind,
-        backend_type: Option<BackendType>,
+        backend_type: Option<InstallationType>,
     ) -> Result<Arc<Job>, JobError> {
         let job_id = format!("j_{}", uuid::Uuid::new_v4().simple());
 

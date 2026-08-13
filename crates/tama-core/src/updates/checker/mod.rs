@@ -1,11 +1,11 @@
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use crate::backends::{BackendManager, BackendType};
 use crate::config::Config;
 use crate::db;
 use crate::db::queries::UpdateCheckRecord;
 use crate::db::queries::{get_all_model_configs, get_oldest_check_time};
+use crate::installations::{InstallationManager, InstallationType};
 
 mod backend;
 mod cache;
@@ -90,7 +90,7 @@ impl std::fmt::Debug for UpdateChecker {
 
 /// Results from an initial sync of backends and models to check for updates.
 pub type UpdateSyncResults = (
-    Vec<(String, BackendType, String)>,
+    Vec<(String, InstallationType, String)>,
     Vec<(i64, Option<String>)>,
 );
 
@@ -144,7 +144,7 @@ impl UpdateChecker {
         let (backends, models) = tokio::task::spawn_blocking({
             let config_dir = config_dir.to_path_buf();
             move || -> anyhow::Result<UpdateSyncResults> {
-                let mgr = BackendManager::open(&config_dir)?;
+                let mgr = InstallationManager::open(&config_dir)?;
 
                 // Collect all unique (name, backend_type) pairs from all installed backends
                 let all_backends = mgr.list_active().unwrap_or_default();
@@ -152,7 +152,7 @@ impl UpdateChecker {
                     all_backends.iter().map(|b| b.name.clone()).collect();
 
                 // For each backend name, get ALL versions and group by variant
-                let mut backend_entries: Vec<(String, BackendType, String)> = Vec::new();
+                let mut backend_entries: Vec<(String, InstallationType, String)> = Vec::new();
                 for name in &backend_names {
                     if let Ok(Some(versions)) = mgr.list_versions(name, None) {
                         // Collect unique variants for this backend

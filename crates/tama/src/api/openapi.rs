@@ -22,7 +22,7 @@ pub fn spec() -> serde_json::Value {
         ),
         // ── Backends ────────────────────────────────────────────────────────────
         (
-            "/tama/v1/backends",
+            "/tama/v1/installations",
             post_op(
                 "registerBackend",
                 "Register a backend",
@@ -33,7 +33,7 @@ pub fn spec() -> serde_json::Value {
             ),
         ),
         (
-            "/tama/v1/backends",
+            "/tama/v1/installations",
             op(
                 "get",
                 "listBackends",
@@ -45,7 +45,7 @@ pub fn spec() -> serde_json::Value {
             ),
         ),
         (
-            "/tama/v1/backends/install",
+            "/tama/v1/installations/install",
             post_op(
                 "installBackend",
                 "Install a backend",
@@ -56,7 +56,7 @@ pub fn spec() -> serde_json::Value {
             ),
         ),
         (
-            "/tama/v1/backends/{name}/update",
+            "/tama/v1/installations/{name}/update",
             post_op_p(
                 "updateBackend",
                 "Update a backend",
@@ -68,7 +68,7 @@ pub fn spec() -> serde_json::Value {
             ),
         ),
         (
-            "/tama/v1/backends/{name}",
+            "/tama/v1/installations/{name}",
             delete_op_p(
                 "removeBackend",
                 "Remove a backend",
@@ -79,7 +79,7 @@ pub fn spec() -> serde_json::Value {
             ),
         ),
         (
-            "/tama/v1/backends/{name}",
+            "/tama/v1/installations/{name}",
             patch_op_p(
                 "patchBackend",
                 "Update backend config (partial)",
@@ -91,7 +91,7 @@ pub fn spec() -> serde_json::Value {
             ),
         ),
         (
-            "/tama/v1/backends/{name}/default-args",
+            "/tama/v1/installations/{name}/default-args",
             post_op_p(
                 "updateBackendDefaultArgs",
                 "Update default args",
@@ -103,7 +103,7 @@ pub fn spec() -> serde_json::Value {
             ),
         ),
         (
-            "/tama/v1/backends/{name}/versions/{version}",
+            "/tama/v1/installations/{name}/versions/{version}",
             delete_op_pp(
                 "removeBackendVersion",
                 "Remove a backend version",
@@ -114,7 +114,7 @@ pub fn spec() -> serde_json::Value {
             ),
         ),
         (
-            "/tama/v1/backends/check-updates",
+            "/tama/v1/installations/check-updates",
             post_op(
                 "checkBackendUpdates",
                 "Check for backend updates",
@@ -125,7 +125,7 @@ pub fn spec() -> serde_json::Value {
             ),
         ),
         (
-            "/tama/v1/backends/{name}/versions",
+            "/tama/v1/installations/{name}/versions",
             op_p(
                 "get",
                 "listBackendVersions",
@@ -137,7 +137,7 @@ pub fn spec() -> serde_json::Value {
             ),
         ),
         (
-            "/tama/v1/backends/{name}/activate",
+            "/tama/v1/installations/{name}/activate",
             post_op_p(
                 "activateBackendVersion",
                 "Activate a backend version",
@@ -150,7 +150,7 @@ pub fn spec() -> serde_json::Value {
         ),
         // ── Jobs ────────────────────────────────────────────────────────────────
         (
-            "/tama/v1/backends/jobs/{id}",
+            "/tama/v1/installations/jobs/{id}",
             op_p(
                 "get",
                 "getJob",
@@ -162,7 +162,7 @@ pub fn spec() -> serde_json::Value {
             ),
         ),
         (
-            "/tama/v1/backends/jobs/{id}/events",
+            "/tama/v1/installations/jobs/{id}/events",
             op_p(
                 "get",
                 "jobEventsSse",
@@ -601,6 +601,136 @@ pub fn spec() -> serde_json::Value {
                 None,
             ),
         ),
+        // ── Providers ─────────────────────────────────────────────────────────
+        (
+            "/tama/v1/providers",
+            op(
+                "get",
+                "listProviders",
+                "List all providers",
+                "Returns all registered inference providers (local and remote).",
+                &["providers"],
+                None,
+                Some("Provider"),
+            ),
+        ),
+        (
+            "/tama/v1/providers",
+            post_op(
+                "createProvider",
+                "Create a provider",
+                "Registers a new inference provider. Local providers require tamad_id; remote providers require base_url.",
+                &["providers"],
+                Some(("CreateProviderRequest", "application/json")),
+                Some("Provider"),
+            ),
+        ),
+        (
+            "/tama/v1/providers/{name}",
+            op_p(
+                "get",
+                "getProvider",
+                "Get a provider",
+                "Returns a single provider by name.",
+                &["providers"],
+                &[("name", "path")],
+                Some("Provider"),
+            ),
+        ),
+        (
+            "/tama/v1/providers/{name}",
+            patch_op_p(
+                "updateProvider",
+                "Update a provider",
+                "Updates a provider's base_url and/or api_key.",
+                &["providers"],
+                &[("name", "path")],
+                Some(("UpdateProviderRequest", "application/json")),
+                Some("Provider"),
+            ),
+        ),
+        (
+            "/tama/v1/providers/{name}",
+            delete_op_p(
+                "deleteProvider",
+                "Delete a provider",
+                "Removes a provider by name.",
+                &["providers"],
+                &[("name", "path")],
+                Some("OkResponse"),
+            ),
+        ),
+        // ── Tamads ─────────────────────────────────────────────────────────
+        (
+            "/tama/v1/tamads",
+            op(
+                "get",
+                "listTamads",
+                "List all tamads",
+                "Returns all registered tamad (tamad daemon) connections.",
+                &["tamads"],
+                None,
+                Some("TamadConnection"),
+            ),
+        ),
+        (
+            "/tama/v1/tamads",
+            post_op(
+                "createTamad",
+                "Create a tamad",
+                "Registers a new tamad connection. Auto-generates a UUID for the tamad id.",
+                &["tamads"],
+                Some(("CreateTamadRequest", "application/json")),
+                Some("TamadConnection"),
+            ),
+        ),
+        (
+            "/tama/v1/tamads/{id}",
+            op_p(
+                "get",
+                "getTamad",
+                "Get a tamad",
+                "Returns a single tamad connection by id.",
+                &["tamads"],
+                &[("id", "path")],
+                Some("TamadConnection"),
+            ),
+        ),
+        (
+            "/tama/v1/tamads/{id}",
+            patch_op_p(
+                "updateTamad",
+                "Update a tamad",
+                "Updates a tamad's url and/or token.",
+                &["tamads"],
+                &[("id", "path")],
+                Some(("UpdateTamadRequest", "application/json")),
+                Some("TamadConnection"),
+            ),
+        ),
+        (
+            "/tama/v1/tamads/{id}",
+            delete_op_p(
+                "deleteTamad",
+                "Delete a tamad",
+                "Unregisters a tamad connection.",
+                &["tamads"],
+                &[("id", "path")],
+                Some("OkResponse"),
+            ),
+        ),
+        (
+            "/tama/v1/tamads/{id}/health",
+            post_op_p(
+                "triggerHealthCheck",
+                "Trigger tamad health check",
+                "Stub endpoint — returns {\"status\": \"unknown\"} until tamad client is wired.",
+                &["tamads"],
+                &[("id", "path")],
+                None,
+                Some("HealthCheckResponse"),
+            ),
+        ),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), v))
@@ -625,7 +755,9 @@ pub fn spec() -> serde_json::Value {
             {"name": "restore", "description": "Backup/restore archive preview and restoration"},
             {"name": "models", "description": "Model config CRUD — create, read, update, delete, rename, verify"},
             {"name": "benchmarks", "description": "Benchmark runs, results, and history"},
-            {"name": "web-api", "description": "Log viewing, config editing, and backup download"}
+            {"name": "web-api", "description": "Log viewing, config editing, and backup download"},
+            {"name": "providers", "description": "Provider registry — create, list, update, delete inference providers"},
+            {"name": "tamads", "description": "Tamad daemon connections — register, list, update, delete tamad instances"}
         ],
         "paths": paths,
         "components": {
@@ -712,7 +844,7 @@ fn schemas() -> serde_json::Value {
     );
     map.insert(
         "RegisterBackendResponse".into(),
-        serde_json::json!({"type": "object", "required": ["name", "backend_type", "version", "path", "installedAt"], "properties": {"name": {"type": "string"}, "backend_type": {"type": "string"}, "version": {"type": "string"}, "path": {"type": "string"}, "installed_at": {"type": "integer", "format": "int64"}, "gpu_variant": {"type": "string"}, "source": {"$ref": "#/components/schemas/BackendSourceDto"}, "docker_config": {"$ref": "#/components/schemas/DockerConfigDto"}}}),
+        serde_json::json!({"type": "object", "required": ["name", "backend_type", "version", "path", "installedAt"], "properties": {"name": {"type": "string"}, "backend_type": {"type": "string"}, "version": {"type": "string"}, "path": {"type": "string"}, "installed_at": {"type": "integer", "format": "int64"}, "gpu_variant": {"type": "string"}, "source": {"$ref": "#/components/schemas/InstallationSourceDto"}, "docker_config": {"$ref": "#/components/schemas/DockerConfigDto"}}}),
     );
     map.insert(
         "DockerConfig".into(),
@@ -731,7 +863,7 @@ fn schemas() -> serde_json::Value {
         serde_json::json!({"type": "object", "properties": {"host_path": {"type": "string"}, "container_path": {"type": "string"}, "read_only": {"type": "boolean"}}}),
     );
     map.insert(
-        "BackendSourceDto".into(),
+        "InstallationSourceDto".into(),
         serde_json::json!({"type": "object", "properties": {"kind": {"type": "string"}, "version": {"type": "string"}, "git_url": {"type": ["string", "null"]}, "commit": {"type": ["string", "null"]}}}),
     );
 
@@ -841,6 +973,38 @@ fn schemas() -> serde_json::Value {
     map.insert(
         "BackendPatchBody".into(),
         serde_json::json!({"type": "object", "properties": {"default_args": {"type": ["array", "null"], "items": {"type": "string"}}, "default_env": {"type": ["array", "null"], "items": {"type": "string"}}, "health_check_url": {"type": ["string", "null"]}}}),
+    );
+
+    // Provider schemas
+    map.insert(
+        "Provider".into(),
+        serde_json::json!({"type": "object", "required": ["id", "name", "provider_type", "engine", "created_at"], "properties": {"id": {"type": "integer", "format": "int64"}, "name": {"type": "string"}, "provider_type": {"type": "string", "enum": ["local", "remote"]}, "engine": {"type": "string"}, "tamad_id": {"type": ["string", "null"]}, "base_url": {"type": ["string", "null"]}, "api_key": {"type": ["string", "null"]}, "created_at": {"type": "integer", "format": "int64"}}}),
+    );
+    map.insert(
+        "CreateProviderRequest".into(),
+        serde_json::json!({"type": "object", "required": ["name", "provider_type", "engine"], "properties": {"name": {"type": "string"}, "provider_type": {"type": "string", "enum": ["local", "remote"]}, "engine": {"type": "string"}, "tamad_id": {"type": ["string", "null"]}, "base_url": {"type": ["string", "null"]}, "api_key": {"type": ["string", "null"]}}}),
+    );
+    map.insert(
+        "UpdateProviderRequest".into(),
+        serde_json::json!({"type": "object", "properties": {"base_url": {"type": ["string", "null"]}, "api_key": {"type": ["string", "null"]}}}),
+    );
+
+    // Tamad schemas
+    map.insert(
+        "TamadConnection".into(),
+        serde_json::json!({"type": "object", "required": ["id", "name", "url", "protocol", "status"], "properties": {"id": {"type": "string"}, "name": {"type": "string"}, "url": {"type": "string"}, "protocol": {"type": "string", "enum": ["grpc", "http"]}, "token": {"type": ["string", "null"]}, "status": {"type": "string", "enum": ["unknown", "connected", "disconnected"]}}}),
+    );
+    map.insert(
+        "CreateTamadRequest".into(),
+        serde_json::json!({"type": "object", "required": ["name", "url", "protocol"], "properties": {"name": {"type": "string"}, "url": {"type": "string"}, "protocol": {"type": "string", "enum": ["grpc", "http"]}, "token": {"type": ["string", "null"]}}}),
+    );
+    map.insert(
+        "UpdateTamadRequest".into(),
+        serde_json::json!({"type": "object", "properties": {"url": {"type": ["string", "null"]}, "token": {"type": ["string", "null"]}}}),
+    );
+    map.insert(
+        "HealthCheckResponse".into(),
+        serde_json::json!({"type": "object", "required": ["status"], "properties": {"status": {"type": "string"}, "message": {"type": ["string", "null"]}}}),
     );
 
     serde_json::Value::Object(map)

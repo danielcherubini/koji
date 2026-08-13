@@ -1,3 +1,4 @@
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -256,6 +257,8 @@ impl Clone for ProxyState {
             model_tasks: tokio::sync::RwLock::new(std::collections::HashMap::new()),
             cookie_key: self.cookie_key.clone(),
             langfuse_client: Arc::clone(&self.langfuse_client),
+            remote_forwarder: self.remote_forwarder.clone(),
+            tamad_clients: Arc::clone(&self.tamad_clients),
         }
     }
 }
@@ -275,7 +278,7 @@ pub struct ProxyState {
     /// parallelism (default capacity=4) instead of full serialization.
     pub(crate) config_write_semaphore: Arc<tokio::sync::Semaphore>,
     /// Backend log stream manager — broadcasts backend stdout/stderr via SSE.
-    pub(crate) backend_logs: crate::backends::log_stream::BackendLogManager,
+    pub(crate) backend_logs: crate::installations::log_stream::BackendLogManager,
     /// Cache for discovered GPU devices, keyed by backend name.
     /// Value is (discovered_at_instant, list_of_devices).
     #[allow(clippy::type_complexity)]
@@ -289,6 +292,12 @@ pub struct ProxyState {
     /// Wrapped in RwLock so it can be refreshed when config is updated via PATCH.
     pub(crate) langfuse_client:
         Arc<tokio::sync::RwLock<Option<Arc<crate::proxy::forward::langfuse::LangfuseClient>>>>,
+    /// HTTP forwarder for remote OpenAI-compatible providers.
+    pub(crate) remote_forwarder: crate::proxy::remote::RemoteForwarder,
+    /// Pool of tamad clients, keyed by tamad ID.
+    /// Uses Arc<RwLock> so mutable access (lazy client creation) works across clones.
+    pub(crate) tamad_clients:
+        Arc<tokio::sync::RwLock<HashMap<String, crate::tamad::client::TamadClient>>>,
 }
 
 impl ProxyState {
@@ -358,8 +367,39 @@ impl ProxyState {
     }
 
     /// Returns a reference to the backend log stream manager.
-    pub fn backend_logs(&self) -> &crate::backends::log_stream::BackendLogManager {
+    pub fn backend_logs(&self) -> &crate::installations::log_stream::BackendLogManager {
         &self.backend_logs
+    }
+
+    /// Perform a health check against a tamad instance.
+    ///
+    /// Looks up the tamad in the client pool, creating it lazily from the DB
+    /// if not yet cached. Returns `true` if the tamad reports status "ok".
+    /// Connection errors (network unreachable, refused, etc.) propagate as `Err`.
+    pub async fn tamad_health_check(&self, tamad_id: &str) -> anyhow::Result<bool> {
+        let mut clients = self.tamad_clients.write().await;
+
+        // Fast path: client already cached
+        if let Some(client) = clients.get_mut(tamad_id) {
+            return client.health_check().await;
+        }
+
+        // Slow path: load from DB and create client
+        let conn = self
+            .open_db()
+            .with_context(|| "Database not available for tamad lookup")?;
+        let tamad_record = crate::db::queries::get_tamad(&conn, tamad_id)
+            .with_context(|| "Failed to look up tamad in database")?
+            .ok_or_else(|| anyhow::anyhow!("tamad '{}' not found in registry", tamad_id))?;
+
+        let client = crate::tamad::client::TamadClient::new(&tamad_record);
+        clients.insert(tamad_id.to_string(), client);
+
+        clients
+            .get_mut(tamad_id)
+            .ok_or_else(|| anyhow::anyhow!("Failed to get newly inserted tamad client"))?
+            .health_check()
+            .await
     }
 }
 
@@ -375,7 +415,7 @@ mod tests {
         let _: &reqwest::Client = state.client();
         let _: &Option<std::path::PathBuf> = state.db_dir();
         let _: &Option<Arc<PullQueueService>> = state.pull_queue();
-        let _: &crate::backends::log_stream::BackendLogManager = state.backend_logs();
+        let _: &crate::installations::log_stream::BackendLogManager = state.backend_logs();
         // Sub-structs are composed and independently cloneable.
         let _registry = state.registry.clone();
         let _metrics = state.metrics.clone();

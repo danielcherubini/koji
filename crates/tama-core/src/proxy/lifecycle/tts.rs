@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
 use super::traits::{HealthChecker, PortAllocator, ProcessSpawner};
-use crate::backends::BackendManager;
+use crate::installations::InstallationManager;
 use crate::process::{force_kill_process, is_process_alive, kill_process};
 use crate::proxy::types::{BackendState, ProxyState};
 use anyhow::{Context, Result};
@@ -31,8 +31,8 @@ impl ProxyState {
             None => crate::config::Config::base_dir()
                 .with_context(|| "Failed to get config directory")?,
         };
-        let mgr =
-            BackendManager::open(&base_dir).with_context(|| "Failed to open backend manager")?;
+        let mgr = InstallationManager::open(&base_dir)
+            .with_context(|| "Failed to open backend manager")?;
 
         // Discover variant dynamically - TTS backends typically only have one variant
         let variants = mgr
@@ -50,7 +50,7 @@ impl ProxyState {
             .with_context(|| format!("Backend '{}' not found in manager", backend_name))?
             .ok_or_else(|| anyhow::anyhow!("Backend '{}' not installed", backend_name))?;
 
-        // Derive paths from BackendInfo.path (base_dir = backends/tts_kokoro/).
+        // Derive paths from InstallationInfo.path (base_dir = backends/tts_kokoro/).
         // The repo root is the kokoro-fastapi subdirectory, and venv is a sibling.
         let base_path = info.path.as_path();
         let repo_root = base_path.join("kokoro-fastapi");

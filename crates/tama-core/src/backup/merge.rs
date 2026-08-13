@@ -124,13 +124,13 @@ pub fn merge_model_cards(
 pub struct DbMergeStats {
     pub new_model_pulls: u32,
     pub new_model_files: u32,
-    pub new_backend_installations: u32,
+    pub new_provider_installations: u32,
 }
 
 /// Merge database records from backup to local.
 ///
 /// Uses `INSERT OR IGNORE` to skip existing records.
-/// Only merges essential tables (model_pulls, model_files, backend_installations).
+/// Only merges essential tables (model_pulls, model_files, provider_installations).
 /// Ephemeral tables (active_models, pull_log, system_metrics_history) are skipped.
 pub fn merge_database(
     local_db: &rusqlite::Connection,
@@ -268,34 +268,65 @@ pub fn merge_database(
     let after = count_model_files(local_db)?;
     stats.new_model_files = after.saturating_sub(before);
 
-    // Merge backend_installations (explicit column list, no id).
+    // Merge provider_installations (explicit column list, no id).
     // The live table has docker_config (migration v43). Old backups (pre-v43)
-    // don't have it. Detect whether the backup DB has the column.
-    let has_docker_config = local_db
+    // don't have it. Pre-v48 backups also use the old table name
+    // `backend_installations` — detect and handle both.
+    let backup_installation_table = if local_db
         .query_row(
-            "SELECT name FROM backup_db.pragma_table_info('backend_installations') WHERE name = 'docker_config'",
+            "SELECT name FROM backup_db.sqlite_master WHERE type='table' AND name='provider_installations'",
             [],
             |row| row.get::<_, String>(0),
         )
-        .is_ok();
-
-    let dc_select = if has_docker_config {
-        "bf.docker_config"
+        .is_ok()
+    {
+        "provider_installations".to_string()
+    } else if local_db
+        .query_row(
+            "SELECT name FROM backup_db.sqlite_master WHERE type='table' AND name='backend_installations'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .is_ok()
+    {
+        // Pre-v48 backup: table was named `backend_installations`
+        "backend_installations".to_string()
     } else {
-        "NULL"
+        // No installation table in backup — skip merge
+        "".to_string()
     };
 
-    let before = count_backend_installations(local_db)?;
-    local_db
-        .execute_batch(&format!(
-            "INSERT OR IGNORE INTO backend_installations \
-         (name, backend_type, version, path, installed_at, gpu_variant, source, is_active, docker_config) \
-         SELECT name, backend_type, version, path, installed_at, gpu_variant, source, is_active, {dc_select} \
-         FROM backup_db.backend_installations bf",
-        ))
-        .context("Failed to merge backend_installations")?;
-    let after = count_backend_installations(local_db)?;
-    stats.new_backend_installations = after.saturating_sub(before);
+    if !backup_installation_table.is_empty() {
+        let has_docker_config = local_db
+            .query_row(
+                &format!(
+                    "SELECT name FROM backup_db.pragma_table_info('{}') WHERE name = 'docker_config'",
+                    backup_installation_table
+                ),
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .is_ok();
+
+        let dc_select = if has_docker_config {
+            "bf.docker_config"
+        } else {
+            "NULL"
+        };
+
+        let before = count_provider_installations(local_db)?;
+        local_db
+            .execute_batch(&format!(
+                "INSERT OR IGNORE INTO provider_installations \
+             (name, backend_type, version, path, installed_at, gpu_variant, source, is_active, docker_config) \
+             SELECT name, backend_type, version, path, installed_at, gpu_variant, source, is_active, {dc_select} \
+             FROM backup_db.{table} bf",
+                table = backup_installation_table,
+            ))
+            .context("Failed to merge provider_installations")?;
+        let after = count_provider_installations(local_db)?;
+        stats.new_provider_installations = after.saturating_sub(before);
+    }
 
     // Guard will detach on drop
     Ok(stats)
@@ -309,9 +340,9 @@ fn count_model_files(conn: &rusqlite::Connection) -> Result<u32> {
     Ok(conn.query_row("SELECT COUNT(*) FROM model_files", [], |row| row.get(0))?)
 }
 
-fn count_backend_installations(conn: &rusqlite::Connection) -> Result<u32> {
+fn count_provider_installations(conn: &rusqlite::Connection) -> Result<u32> {
     Ok(
-        conn.query_row("SELECT COUNT(*) FROM backend_installations", [], |row| {
+        conn.query_row("SELECT COUNT(*) FROM provider_installations", [], |row| {
             row.get(0)
         })?,
     )
@@ -430,7 +461,7 @@ mod tests {
             verified_ok INTEGER,
             verify_error TEXT
         );
-        CREATE TABLE backend_installations (
+        CREATE TABLE provider_installations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
             backend_type TEXT NOT NULL,

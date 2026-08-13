@@ -5,8 +5,8 @@ use serde::Serialize;
 use std::sync::Arc;
 
 use crate::api::error::{error_response, error_response_simple};
-use tama_core::backends::BackendManager;
 use tama_core::db::repository::Repository;
+use tama_core::installations::InstallationManager;
 use tama_core::proxy::ProxyState;
 
 /// Resolve the config directory from ProxyState (`db_dir`, set at startup),
@@ -51,13 +51,13 @@ pub async fn open_repository(state: &ProxyState) -> Result<Repository, axum::res
 /// Default status code for successful CRUD operations.
 pub const DEFAULT_CRUD_STATUS: StatusCode = StatusCode::OK;
 
-/// Open a BackendManager from Arc<ProxyState>, returning an error response on failure.
+/// Open a InstallationManager from Arc<ProxyState>, returning an error response on failure.
 pub async fn open_backend_manager(
     proxy_state: &Arc<ProxyState>,
-) -> Result<BackendManager, axum::response::Response> {
+) -> Result<InstallationManager, axum::response::Response> {
     let config_dir = resolve_config_dir(proxy_state)?;
     let config_dir_clone = config_dir.clone();
-    tokio::task::spawn_blocking(move || BackendManager::open(&config_dir_clone))
+    tokio::task::spawn_blocking(move || InstallationManager::open(&config_dir_clone))
         .await
         .map_err(|e| {
             error_response_simple(

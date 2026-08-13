@@ -226,8 +226,8 @@ pub async fn check_item_for_update(
             let item_id_clone = item_id.clone();
             let requested_variant = query.gpu_variant.clone();
             let bt_result = tokio::task::spawn_blocking(
-                move || -> anyhow::Result<Option<(tama_core::backends::BackendType, String, bool)>> {
-                    let mgr = tama_core::backends::BackendManager::open(&config_dir_clone)?;
+                move || -> anyhow::Result<Option<(tama_core::installations::InstallationType, String, bool)>> {
+                    let mgr = tama_core::installations::InstallationManager::open(&config_dir_clone)?;
                     let versions = mgr.list_versions(&item_id_clone, None)?;
 
                     // If a specific variant is requested, find that variant
@@ -240,7 +240,7 @@ pub async fn check_item_for_update(
                     let record = if let Some(ref variant) = requested_variant {
                         versions.iter().find(|v| v.gpu_variant == *variant)
                     } else {
-                        // No is_active field on BackendInfo; use first as fallback
+                        // No is_active field on InstallationInfo; use first as fallback
                         versions.first()
                     };
 
@@ -248,13 +248,13 @@ pub async fn check_item_for_update(
                         let is_docker = r.docker_config.is_some();
                         (
                             match r.backend_type {
-                                tama_core::backends::BackendType::LlamaCpp => {
-                                    tama_core::backends::BackendType::LlamaCpp
+                                tama_core::installations::InstallationType::LlamaCpp => {
+                                    tama_core::installations::InstallationType::LlamaCpp
                                 }
-                                tama_core::backends::BackendType::IkLlama => {
-                                    tama_core::backends::BackendType::IkLlama
+                                tama_core::installations::InstallationType::IkLlama => {
+                                    tama_core::installations::InstallationType::IkLlama
                                 }
-                                _ => tama_core::backends::BackendType::Custom,
+                                _ => tama_core::installations::InstallationType::Custom,
                             },
                             r.gpu_variant.clone(),
                             is_docker,

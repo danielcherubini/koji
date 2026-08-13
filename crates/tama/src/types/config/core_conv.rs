@@ -400,6 +400,7 @@ impl From<tama_core::config::ModelConfig> for ModelConfig {
             cache_type_v: m.cache_type_v,
             n_batch: m.n_batch,
             n_ubatch: m.n_ubatch,
+            provider_name: m.provider_name,
             extra: None, // Forward-compat field - preserve unknown fields on POST
         }
     }
@@ -466,6 +467,7 @@ impl From<ModelConfig> for tama_core::config::ModelConfig {
             vllm: Default::default(),          // Managed through model CRUD endpoints
             n_batch: m.n_batch,
             n_ubatch: m.n_ubatch,
+            provider_name: m.provider_name,
         }
     }
 }

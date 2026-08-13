@@ -10,21 +10,23 @@
 //! and are automatically discovered when models are installed.
 #![allow(deprecated)]
 
-pub mod backends;
 pub mod backup;
 pub mod bench;
 pub mod compaction_server;
 pub mod config;
 pub mod db;
 pub mod gpu;
+pub mod installations;
 pub mod logging;
 pub mod models;
 pub mod network;
 pub mod platform;
 pub mod process;
 pub mod profiles;
+pub mod providers;
 pub mod proxy;
 pub mod self_update;
+pub mod tamad;
 pub mod types;
 pub mod updates;
 

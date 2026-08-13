@@ -3,9 +3,9 @@ pub mod auth;
 pub mod forward;
 mod handlers;
 mod lifecycle;
-
 pub mod pull_jobs;
 pub mod pull_queue;
+mod remote;
 mod rename;
 pub mod scope_middleware;
 pub mod server;

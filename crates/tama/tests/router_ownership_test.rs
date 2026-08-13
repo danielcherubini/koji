@@ -9,6 +9,22 @@ use std::sync::Arc;
 /// router and this crate's management router disjoint (audit F33).
 const TAMA_MANAGED_PATHS: &[&str] = &[
     "/tama/v1/system/capabilities",
+    "/tama/v1/installations",
+    "/tama/v1/installations/install",
+    "/tama/v1/installations/:name/update",
+    "/tama/v1/installations/:name",
+    "/tama/v1/installations/:name/default-args",
+    "/tama/v1/installations/:name/default-env",
+    "/tama/v1/installations/:name/versions/:version",
+    "/tama/v1/installations/check-updates",
+    "/tama/v1/installations/:name/versions",
+    "/tama/v1/installations/:name/activate",
+    "/tama/v1/installations/:name/source",
+    "/tama/v1/installations/:name/rename",
+    "/tama/v1/installations/jobs/:id",
+    "/tama/v1/installations/jobs/:id/events",
+    "/tama/v1/installations/compaction",
+    // Deprecated aliases for old /tama/v1/backends/* paths
     "/tama/v1/backends",
     "/tama/v1/backends/install",
     "/tama/v1/backends/:name/update",
@@ -20,6 +36,7 @@ const TAMA_MANAGED_PATHS: &[&str] = &[
     "/tama/v1/backends/:name/versions",
     "/tama/v1/backends/:name/activate",
     "/tama/v1/backends/:name/source",
+    "/tama/v1/backends/:name/rename",
     "/tama/v1/backends/jobs/:id",
     "/tama/v1/backends/jobs/:id/events",
     "/tama/v1/backends/compaction",
@@ -62,13 +79,18 @@ const TAMA_MANAGED_PATHS: &[&str] = &[
     "/tama/v1/logs/:backend",
     "/tama/v1/logs/:backend/events",
     "/tama/v1/system/health",
+    "/tama/v1/providers",
+    "/tama/v1/providers/:name",
+    "/tama/v1/tamads",
+    "/tama/v1/tamads/:id",
+    "/tama/v1/tamads/:id/health",
 ];
 
 /// Core's proxy table and tama's management table must be disjoint —
 /// a path in both is a shadow-route bug (audit F33).
 #[test]
 fn test_proxy_and_management_tables_are_disjoint() {
-    const EXPECTED_TAMA_PATH_COUNT: usize = 54;
+    const EXPECTED_TAMA_PATH_COUNT: usize = 75;
     assert_eq!(
         TAMA_MANAGED_PATHS.len(),
         EXPECTED_TAMA_PATH_COUNT,

@@ -9,7 +9,7 @@ All endpoints are prefixed with `/tama/v1/`. The API uses JSON request/response 
 | Section | File | Description |
 |---------|------|-------------|
 | [Models](models.md) | `models.md` | CRUD operations for model configurations |
-| [Backends](backends.md) | `backends.md` | Install, manage, and update inference backends |
+| [Installations](installations.md) | `installations.md` | Install, manage, and update inference backends |
 | [Aliases](aliases.md) | `aliases.md` | Short names that resolve to model configs |
 | [Pulls](pulls.md) | `pulls.md` | Monitor file pull progress |
 | [HuggingFace](huggingface.md) | `huggingface.md` | Fetch model metadata and quant listings |

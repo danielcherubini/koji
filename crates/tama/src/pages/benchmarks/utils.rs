@@ -170,8 +170,8 @@ pub fn fetch_installed_backend_variants(available_backends: RwSignal<Vec<(String
                 return;
             }
             if let Ok(root) = resp.json::<serde_json::Value>().await {
-                // /v1/backends returns { backends: [BackendCardDto], custom: [BackendCardDto] }
-                // BackendCardDto has: type, display_name, gpu_variant, installed
+                // /v1/backends returns { backends: [InstallationCardDto], custom: [InstallationCardDto] }
+                // InstallationCardDto has: type, display_name, gpu_variant, installed
                 let mut backend_list: Vec<(String, String)> = Vec::new();
                 for arr_key in ["backends", "custom"] {
                     if let Some(arr) = root.get(arr_key).and_then(|v| v.as_array()) {

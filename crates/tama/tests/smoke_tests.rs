@@ -148,7 +148,7 @@
 //!
 //! **Steps:**
 //! 1. Open browser dev tools (Network tab)
-//! 2. Try to POST to /tama/v1/backends/install with Origin: http://evil.example
+//! 2. Try to POST to /tama/v1/installations/install with Origin: http://evil.example
 //! 3. Observe:
 //!    - Request is rejected with 403 Forbidden
 //! 4. Verify:
@@ -157,7 +157,7 @@
 //! # Smoke Test #44: Advanced disclosure for custom backends
 //!
 //! **Steps:**
-//! 1. Add a custom backend to config (backend_type: "custom")
+//! 1. Add a custom backend to config (installation_type: "custom")
 //! 2. Open http://127.0.0.1:8080/config
 //! 3. Click "Backends" tab
 //! 4. For custom backend card, click "Advanced" disclosure

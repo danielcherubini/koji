@@ -1,18 +1,18 @@
-use crate::backends::{BackendInfo, BackendManager, BackendType};
 use crate::config::BackendConfig;
+use crate::installations::{InstallationInfo, InstallationManager, InstallationType};
 
 use super::make_test_config;
 
 fn insert_active_backend(
-    manager: &BackendManager,
+    manager: &InstallationManager,
     name: &str,
     gpu_variant: &str,
     version: &str,
     path: &str,
 ) {
-    let info = BackendInfo {
+    let info = InstallationInfo {
         name: name.to_string(),
-        backend_type: BackendType::LlamaCpp,
+        backend_type: InstallationType::LlamaCpp,
         version: version.to_string(),
         path: std::path::PathBuf::from(path),
         installed_at: 0,
@@ -25,7 +25,7 @@ fn insert_active_backend(
 
 #[test]
 fn test_resolve_backend_path_from_db() {
-    let manager = BackendManager::open_in_memory().unwrap();
+    let manager = InstallationManager::open_in_memory().unwrap();
     insert_active_backend(
         &manager,
         "llama_cpp",
@@ -46,7 +46,7 @@ fn test_resolve_backend_path_from_db() {
 
 #[test]
 fn test_resolve_backend_path_fallback() {
-    let manager = BackendManager::open_in_memory().unwrap();
+    let manager = InstallationManager::open_in_memory().unwrap();
     // Empty DB — no installed backend
 
     let config = make_test_config(Some("/fallback/llama-server"));
@@ -58,7 +58,7 @@ fn test_resolve_backend_path_fallback() {
 
 #[test]
 fn test_resolve_backend_path_error() {
-    let manager = BackendManager::open_in_memory().unwrap();
+    let manager = InstallationManager::open_in_memory().unwrap();
     // Empty DB, path = None
 
     let config = make_test_config(None);
@@ -78,7 +78,7 @@ fn test_resolve_backend_path_error() {
 
 #[test]
 fn test_resolve_backend_path_version_pin() {
-    let manager = BackendManager::open_in_memory().unwrap();
+    let manager = InstallationManager::open_in_memory().unwrap();
 
     // Insert v1.0.0 and v2.0.0 (v2.0.0 will be active since added last)
     insert_active_backend(&manager, "llama_cpp", "cpu", "v1.0.0", "/v1/llama-server");
@@ -104,7 +104,7 @@ fn test_resolve_backend_path_version_pin() {
 
 #[test]
 fn test_resolve_backend_path_version_pin_not_found() {
-    let manager = BackendManager::open_in_memory().unwrap();
+    let manager = InstallationManager::open_in_memory().unwrap();
     // Empty DB — version pin won't find anything
 
     let mut config = make_test_config(None);

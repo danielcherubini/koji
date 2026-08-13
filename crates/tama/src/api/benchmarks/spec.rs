@@ -189,7 +189,7 @@ pub async fn run_spec_benchmark_inner(
     let target_backend_for_pm = target_backend.clone();
     let gpu_variant_for_pm = gpu_variant.clone();
     let backend_path = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
-        let manager = tama_core::backends::BackendManager::open(&db_dir_for_pm)?;
+        let manager = tama_core::installations::InstallationManager::open(&db_dir_for_pm)?;
         config.resolve_backend_path(
             &target_backend_for_pm,
             gpu_variant_for_pm.as_ref(),

@@ -409,6 +409,7 @@ mod tests {
                 n_batch: None,
                 n_ubatch: None,
                 vllm_config: None,
+                provider_name: None,
             },
         )
         .unwrap();
@@ -535,6 +536,7 @@ mod tests {
                 n_batch: None,
                 n_ubatch: None,
                 vllm_config: None,
+                provider_name: None,
             },
         )
         .unwrap();
@@ -608,6 +610,7 @@ mod tests {
                 n_batch: None,
                 n_ubatch: None,
                 vllm_config: None,
+                provider_name: None,
             },
         )
         .unwrap();

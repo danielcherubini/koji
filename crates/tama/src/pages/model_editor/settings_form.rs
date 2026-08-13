@@ -3,7 +3,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
 
 use super::api::{fetch_gpu_devices, refresh_gpu_devices};
-use super::types::{is_transformers, BackendOption, GpuDeviceInfo, ModelForm};
+use super::types::{is_transformers, GpuDeviceInfo, InstallationOption, ModelForm};
 use crate::utils::{set_checked, set_input_value, target_value};
 
 const MODALITY_OPTIONS: &[(&str, &str)] = &[
@@ -17,7 +17,7 @@ const MODALITY_OPTIONS: &[(&str, &str)] = &[
 #[component]
 pub fn ModelEditorSettingsForm(
     form: RwSignal<Option<ModelForm>>,
-    backends: RwSignal<Vec<BackendOption>>,
+    backends: RwSignal<Vec<InstallationOption>>,
 ) -> impl IntoView {
     // GPU devices discovered for the current backend
     let gpu_devices: RwSignal<Vec<GpuDeviceInfo>> = RwSignal::new(Vec::new());

@@ -185,6 +185,7 @@ pub fn apply_model_patch(
         n_batch: body.n_batch,
         n_ubatch: body.n_ubatch,
         vllm: body.vllm.unwrap_or(existing_vllm),
+        provider_name: existing.provider_name.clone(),
     }
 }
 
@@ -235,6 +236,7 @@ fn apply_model_body(
         db_id: None,
         spec_decoding: Default::default(),
         vllm: Default::default(),
+        provider_name: None,
     });
 
     // Handle sampling from body
@@ -317,6 +319,7 @@ fn apply_model_body(
             .unwrap_or_else(|| existing_vllm.unwrap_or_default()),
         n_batch: body.n_batch,
         n_ubatch: body.n_ubatch,
+        provider_name: base.provider_name,
     }
 }
 

@@ -101,7 +101,7 @@ pub async fn run_initial_backfill(conn: &Connection, config: &Config) -> Result<
     Ok(())
 }
 
-/// Migrate existing `backend_registry.toml` into the `backend_installations` SQLite table.
+/// Migrate existing `backend_registry.toml` into the `provider_installations` SQLite table.
 ///
 /// If the file does not exist, returns `Ok(())` immediately.
 /// After migrating all entries, renames the file to `backend_registry.toml.migrated`
@@ -113,7 +113,7 @@ pub fn migrate_backend_registry_toml(
     conn: &Connection,
     config_dir: &std::path::Path,
 ) -> Result<()> {
-    use crate::db::queries::{insert_backend_installation, BackendInstallationRecord};
+    use crate::db::queries::{insert_installation, InstallationRecord};
 
     let registry_path = config_dir.join("backend_registry.toml");
 
@@ -138,7 +138,7 @@ pub fn migrate_backend_registry_toml(
                 None => None,
             };
 
-        let record = BackendInstallationRecord {
+        let record = InstallationRecord {
             id: 0,
             name: name.clone(),
             backend_type: info.backend_type.to_string(),
@@ -153,7 +153,7 @@ pub fn migrate_backend_registry_toml(
         };
 
         // INSERT OR REPLACE handles duplicate (name, version) by replacing the row
-        insert_backend_installation(conn, &record)
+        insert_installation(conn, &record)
             .with_context(|| format!("Failed to insert backend '{}' during migration", name))?;
         count += 1;
     }
@@ -350,7 +350,7 @@ installed_at = 1700000000
         migrate_backend_registry_toml(&conn, tmp.path()).unwrap();
 
         // Assert that the backend was inserted correctly
-        let record = crate::db::queries::get_active_backend(&conn, "llama_cpp", "cpu")
+        let record = crate::db::queries::get_active_installation(&conn, "llama_cpp", "cpu")
             .unwrap()
             .expect("llama_cpp should exist in DB after migration");
         assert_eq!(record.version, "b3456");
@@ -398,9 +398,9 @@ installed_at = 1700000000
         let OpenResult { conn, .. } = open_in_memory().unwrap();
 
         // Pre-insert the same record (same name + version)
-        crate::db::queries::insert_backend_installation(
+        crate::db::queries::insert_installation(
             &conn,
-            &crate::db::queries::BackendInstallationRecord {
+            &crate::db::queries::InstallationRecord {
                 id: 0,
                 name: "llama_cpp".to_string(),
                 backend_type: "llama_cpp".to_string(),
@@ -486,6 +486,7 @@ installed_at = 1700000000
             n_batch: None,
             n_ubatch: None,
             vllm_config: None,
+            provider_name: None,
         };
         let model_id = upsert_model_config(&conn, &record).unwrap();
 
@@ -579,6 +580,7 @@ installed_at = 1700000000
             n_batch: None,
             n_ubatch: None,
             vllm_config: None,
+            provider_name: None,
         };
         let id = upsert_model_config(&conn, &record).unwrap();
 

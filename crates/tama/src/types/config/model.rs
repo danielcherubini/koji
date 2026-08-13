@@ -75,6 +75,10 @@ pub struct ModelConfig {
     /// (llama.cpp --ubatch). None = backend default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub n_ubatch: Option<u32>,
+    /// Name of the remote provider that serves this model.
+    /// When set, overrides the `backend` field for routing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_name: Option<String>,
     /// Forward-compatibility: preserve unknown fields
     #[serde(flatten, skip_serializing_if = "Option::is_none")]
     pub extra: Option<serde_json::Map<String, serde_json::Value>>,

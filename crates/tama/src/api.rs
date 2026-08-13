@@ -7,20 +7,22 @@ use tama_core::proxy::tama_handlers::OkResponse;
 use tama_core::proxy::ProxyState;
 
 pub mod aliases;
-pub mod backends;
 pub mod backup;
 pub mod benchmarks;
 pub mod error;
 pub mod field_update;
 pub mod helpers;
 pub mod hf;
+pub mod installations;
 pub mod logs;
 pub mod middleware;
 pub mod models;
 pub mod openapi;
+pub mod providers;
 pub mod pulls;
 pub mod self_update;
 pub mod sse;
+pub mod tamads;
 pub mod updates;
 
 // Re-export for backward compatibility

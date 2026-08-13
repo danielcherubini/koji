@@ -2,6 +2,7 @@
 name = "tama-core"
 version = "2.1.0"
 edition.workspace = true
+build = "build.rs"
 
 [dependencies]
 indicatif.workspace = true
@@ -53,9 +54,15 @@ nix = { workspace = true, optional = true }
 oauth2.workspace = true
 cookie.workspace = true
 percent-encoding = "2"
+tonic.workspace = true
+prost.workspace = true
 
 [features]
 web-ui = ["dep:nix"]
+
+[build-dependencies]
+tonic-build = "0.12"
+protoc-bin-vendored = "3"
 
 [dev-dependencies]
 serde_json = "1.0.149"

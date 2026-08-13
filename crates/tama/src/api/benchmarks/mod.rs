@@ -27,8 +27,8 @@ use crate::api::error::error_response;
 use crate::api::helpers::shared_repository;
 use crate::gpu::query_vram;
 use crate::web_types::{JobEvent, JobKind, JobManager, JobStatus, WebState};
-use tama_core::backends::ProgressSink;
 use tama_core::bench::llama_cli_spec::{SpecBenchConfig, SpecType};
+use tama_core::installations::ProgressSink;
 use tama_core::proxy::ProxyState;
 
 // ── Request/Response DTOs ─────────────────────────────────────────────

@@ -424,6 +424,7 @@ pub(crate) async fn _setup_model_after_pull_with_config(
                     n_batch: None,
                     n_ubatch: None,
                     vllm: Default::default(),
+                    provider_name: None,
                 });
 
             // Promote a stub entry (created by a prior mmproj-first pull) into a
@@ -541,6 +542,7 @@ pub(crate) async fn _setup_model_after_pull_with_config(
                     n_batch: None,
                     n_ubatch: None,
                     vllm: Default::default(),
+                    provider_name: None,
                 });
             stub_key
         }

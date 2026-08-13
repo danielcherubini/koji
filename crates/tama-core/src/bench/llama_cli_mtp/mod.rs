@@ -11,9 +11,9 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
 
-use crate::backends::ProgressSink;
 use crate::bench::llama_cli_spec::server::{self, ServerArgs, ServerHandle};
 use crate::bench::llama_cli_spec::SpecType;
+use crate::installations::ProgressSink;
 
 pub use crate::bench::llama_cli_spec::find_llama_server;
 

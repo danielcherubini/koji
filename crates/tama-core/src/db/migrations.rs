@@ -48,6 +48,9 @@ mod _0042_add_benchmark_suite_id;
 mod _0043_add_docker_config;
 mod _0044_add_vllm_config;
 mod _0045_add_backend_logical_id;
+mod _0046_create_provider_registry;
+mod _0047_add_model_provider_name;
+mod _0048_rename_backend_to_provider;
 
 #[cfg(test)]
 mod migrations_tests;
@@ -83,7 +86,7 @@ impl Drop for FkGuard<'_> {
 type Migration = (i32, bool, &'static str);
 
 /// Version number for the latest migration
-pub const LATEST_VERSION: i32 = 45;
+pub const LATEST_VERSION: i32 = 48;
 
 /// All migrations collected from individual files, sorted by version.
 const MIGRATIONS: &[Migration] = &[
@@ -132,6 +135,9 @@ const MIGRATIONS: &[Migration] = &[
     _0043_add_docker_config::MIGRATION,
     _0044_add_vllm_config::MIGRATION,
     _0045_add_backend_logical_id::MIGRATION,
+    _0046_create_provider_registry::MIGRATION,
+    _0047_add_model_provider_name::MIGRATION,
+    _0048_rename_backend_to_provider::MIGRATION,
 ];
 
 /// Run all applicable migrations on the database

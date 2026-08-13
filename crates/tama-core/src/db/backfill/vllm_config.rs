@@ -284,6 +284,7 @@ mod tests {
             n_batch: None,
             n_ubatch: None,
             vllm_config: vllm_json,
+            provider_name: None,
         }
     }
 

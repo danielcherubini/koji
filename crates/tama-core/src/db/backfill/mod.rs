@@ -19,12 +19,12 @@ pub use vllm_config::*;
 #[derive(serde::Deserialize)]
 struct LegacyRegistryData {
     #[serde(default)]
-    backends: std::collections::HashMap<String, LegacyBackendInfo>,
+    backends: std::collections::HashMap<String, LegacyInstallationInfo>,
 }
 
 #[derive(serde::Deserialize)]
-struct LegacyBackendInfo {
-    backend_type: crate::backends::BackendType,
+struct LegacyInstallationInfo {
+    backend_type: crate::installations::InstallationType,
     version: String,
     path: std::path::PathBuf,
     installed_at: i64,
@@ -32,5 +32,5 @@ struct LegacyBackendInfo {
     #[allow(dead_code)]
     gpu_variant: Option<toml::Value>,
     #[serde(default)]
-    source: Option<crate::backends::BackendSource>,
+    source: Option<crate::installations::InstallationSource>,
 }

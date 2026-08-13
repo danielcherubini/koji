@@ -11,9 +11,9 @@ use super::check::CheckSingleQuery;
 use crate::api::error::{error_body, error_response};
 use crate::api::helpers::shared_repository;
 use crate::web_types::WebState;
-use tama_core::backends::{
-    check_latest_version, get_backend_install_path, BackendManager, BackendSource, BackendType,
-    InstallOptions,
+use tama_core::installations::{
+    check_latest_version, get_backend_install_path, InstallOptions, InstallationManager,
+    InstallationSource, InstallationType,
 };
 use tama_core::proxy::ProxyState;
 
@@ -51,8 +51,8 @@ pub async fn apply_backend_update(
         let config_dir = config_dir.clone();
         let name = name.clone();
         let requested_variant = requested_variant.clone();
-        move || -> anyhow::Result<(Option<BackendType>, Option<String>)> {
-            let mgr = tama_core::backends::BackendManager::open(&config_dir)?;
+        move || -> anyhow::Result<(Option<InstallationType>, Option<String>)> {
+            let mgr = tama_core::installations::InstallationManager::open(&config_dir)?;
             let versions = mgr.list_versions(&name, None)?;
 
             // If a specific variant is requested, find that variant
@@ -65,16 +65,16 @@ pub async fn apply_backend_update(
             let record = if let Some(ref variant) = requested_variant {
                 versions.iter().find(|v| v.gpu_variant == *variant)
             } else {
-                // No is_active field on BackendInfo; use first as fallback
+                // No is_active field on InstallationInfo; use first as fallback
                 versions.first()
             };
 
             Ok(record
                 .map(|r| {
                     let bt = match r.backend_type {
-                        BackendType::LlamaCpp => BackendType::LlamaCpp,
-                        BackendType::IkLlama => BackendType::IkLlama,
-                        _ => BackendType::Custom,
+                        InstallationType::LlamaCpp => InstallationType::LlamaCpp,
+                        InstallationType::IkLlama => InstallationType::IkLlama,
+                        _ => InstallationType::Custom,
                     };
                     (Some(bt), Some(r.gpu_variant.clone()))
                 })
@@ -154,8 +154,8 @@ pub async fn apply_backend_update(
         let config_dir = config_dir_clone;
         let name_for_prep = name_clone.clone();
         let prep = tokio::task::spawn_blocking(
-            move || -> Result<(BackendManager, Option<Vec<_>>), String> {
-                let mgr = match BackendManager::open(&config_dir) {
+            move || -> Result<(InstallationManager, Option<Vec<_>>), String> {
+                let mgr = match InstallationManager::open(&config_dir) {
                     Ok(m) => m,
                     Err(e) => return Err(format!("Failed to open backend manager: {}", e)),
                 };
@@ -192,7 +192,7 @@ pub async fn apply_backend_update(
             }
         };
         // Use versioned path structure for the update target
-        let target_dir = match tama_core::backends::backends_dir() {
+        let target_dir = match tama_core::installations::backends_dir() {
             Ok(d) => get_backend_install_path(
                 &d,
                 &backend_type,
@@ -209,7 +209,7 @@ pub async fn apply_backend_update(
             source: backend_info
                 .source
                 .clone()
-                .unwrap_or_else(|| BackendSource::SourceCode {
+                .unwrap_or_else(|| InstallationSource::SourceCode {
                     version: "main".to_string(),
                     git_url: "https://github.com/ggml-org/llama.cpp.git".to_string(),
                     commit: None,
@@ -226,7 +226,7 @@ pub async fn apply_backend_update(
             .build()
             .expect("failed to build HTTP client");
 
-        match tama_core::backends::update_backend_with_progress(
+        match tama_core::installations::update_installation_with_progress(
             mgr,
             &client,
             &name_clone,

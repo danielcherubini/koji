@@ -3,6 +3,7 @@ members = [
     "crates/tama-core",
     "crates/tama-mock",
     "crates/tama",
+    "crates/tamad",
 ]
 resolver = "2"
 
@@ -54,6 +55,8 @@ log = "0.4"
 rand = "0.9"
 oauth2 = { version = "5", features = ["reqwest"] }
 cookie = { version = "0.18", features = ["secure", "percent-encode", "signed"] }
+tonic = "0.12"
+prost = "0.13"
 
 # Build performance: line-tables-only for workspace crates (backtraces work),
 # no debug info for dependencies. Use --profile debugging for full debug info.

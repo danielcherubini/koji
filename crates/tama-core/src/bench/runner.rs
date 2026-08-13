@@ -101,8 +101,8 @@ async fn _start_backend(
 
     let spawn_start = Instant::now();
 
-    // Open BackendManager for resolution
-    let manager = crate::backends::BackendManager::open(&db_dir)?;
+    // Open InstallationManager for resolution
+    let manager = crate::installations::InstallationManager::open(&db_dir)?;
     let gpu_variant = model_config
         .gpu_variant
         .clone()

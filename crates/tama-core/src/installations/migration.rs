@@ -1,0 +1,378 @@
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use anyhow::Context;
+use rusqlite::Connection;
+
+use crate::installations::get_backend_install_path;
+use crate::installations::types::InstallationType;
+
+const MIGRATION_MARKER: &str = ".tama-migration-v2-done";
+
+/// Migrate legacy backend installations from flat structure to variant structure.
+/// Idempotent: safe to call multiple times, already-migrated records are skipped.
+pub fn migrate_legacy_backends(conn: &Connection, backends_dir: &Path) -> anyhow::Result<()> {
+    // Check marker file - if migration already completed, skip
+    let marker_path = backends_dir.join(MIGRATION_MARKER);
+    if marker_path.exists() {
+        tracing::debug!("Migration marker found, skipping legacy migration");
+        return Ok(());
+    }
+
+    // Ensure backends_dir exists
+    fs::create_dir_all(backends_dir).context("Failed to create backends_dir")?;
+
+    // Get all backend records from DB
+    let all_versions = list_all_backend_records(conn)?;
+
+    if all_versions.is_empty() {
+        // No backends to migrate, still write marker
+        fs::write(&marker_path, "").context("Failed to write migration marker")?;
+        return Ok(());
+    }
+
+    let mut migrated_count = 0;
+
+    for record in &all_versions {
+        let backend_type = parse_backend_type(&record.backend_type);
+        let old_path = PathBuf::from(&record.path);
+
+        // Derive gpu_variant from binary path heuristic
+        let gpu_variant = derive_gpu_variant(&old_path);
+
+        // Compute new path
+        let new_path_dir =
+            get_backend_install_path(backends_dir, &backend_type, &gpu_variant, &record.version);
+
+        // Compute the new binary path
+        let new_binary_path = compute_new_binary_path(&old_path, &new_path_dir, &backend_type);
+
+        // Check if already migrated (path matches new pattern)
+        if is_new_pattern_path(&old_path, backends_dir, &backend_type) {
+            tracing::debug!(
+                "Backend {} {} already in new pattern, skipping",
+                record.name,
+                record.version
+            );
+            continue;
+        }
+
+        tracing::info!(
+            "Migrating backend {} {} to variant '{}' ({} -> {})",
+            record.name,
+            record.version,
+            gpu_variant,
+            old_path.display(),
+            new_binary_path.display()
+        );
+
+        // Try to move files
+        if migrate_files(
+            &old_path,
+            &new_path_dir,
+            &new_binary_path,
+            &backend_type,
+            backends_dir,
+        )? {
+            // Update DB record
+            update_backend_path_and_variant(
+                conn,
+                record.id,
+                &gpu_variant,
+                &new_binary_path.to_string_lossy(),
+            )
+            .context("Failed to update DB record")?;
+            migrated_count += 1;
+        }
+    }
+
+    // Write marker file
+    fs::write(&marker_path, "").context("Failed to write migration marker")?;
+
+    tracing::info!(
+        "Legacy migration complete: {} backends migrated, marker written",
+        migrated_count
+    );
+    Ok(())
+}
+
+fn list_all_backend_records(conn: &Connection) -> anyhow::Result<Vec<BackendRecord>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, backend_type, version, path, installed_at, \
+         COALESCE(gpu_variant, 'cpu'), \
+         COALESCE(source, ''), is_active \
+         FROM provider_installations",
+    )?;
+
+    let rows = stmt.query_map([], |row| {
+        Ok(BackendRecord {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            backend_type: row.get(2)?,
+            version: row.get(3)?,
+            path: row.get(4)?,
+            _installed_at: row.get(5)?,
+            _gpu_variant: row.get(6)?,
+            _source: row.get(7)?,
+            _is_active: row.get::<_, i64>(8)? != 0,
+        })
+    })?;
+
+    let records: Vec<BackendRecord> = rows
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| anyhow::anyhow!(e))?;
+    Ok(records)
+}
+
+fn update_backend_path_and_variant(
+    conn: &Connection,
+    id: i64,
+    gpu_variant: &str,
+    new_path: &str,
+) -> anyhow::Result<()> {
+    conn.execute(
+        "UPDATE provider_installations \
+         SET path = ?, gpu_variant = ? \
+         WHERE id = ?",
+        (new_path, gpu_variant, id),
+    )?;
+    Ok(())
+}
+
+fn derive_gpu_variant(binary_path: &Path) -> String {
+    // Heuristic: check binary name for GPU hints
+    if let Some(stem) = binary_path.file_stem().and_then(|s| s.to_str()) {
+        let lower = stem.to_lowercase();
+        if lower.contains("cuda") {
+            tracing::info!("Heuristic: detected 'cuda' in binary name {}", stem);
+            return "cuda".to_string();
+        }
+        if lower.contains("rocm") || lower.contains("hip") {
+            tracing::info!("Heuristic: detected 'rocm' in binary name {}", stem);
+            return "rocm".to_string();
+        }
+        if lower.contains("vulkan") {
+            tracing::info!("Heuristic: detected 'vulkan' in binary name {}", stem);
+            return "vulkan".to_string();
+        }
+    }
+
+    tracing::debug!(
+        "No GPU hints in binary name {}, defaulting to 'cpu'",
+        binary_path.display()
+    );
+    "cpu".to_string()
+}
+
+fn is_new_pattern_path(path: &Path, backends_dir: &Path, backend_type: &InstallationType) -> bool {
+    // New pattern: backends/<type>/<variant>/<version>/binary
+    // Check if path starts with backends_dir/<type>/ and has at least 2 more components after type
+    if let Ok(relative) = path.strip_prefix(backends_dir) {
+        let components: Vec<_> = relative
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().to_string())
+            .collect();
+        if components.first() == Some(&backend_type.to_string()) && components.len() >= 4 {
+            return true;
+        }
+    }
+    false
+}
+
+fn compute_new_binary_path(
+    old_path: &Path,
+    new_path_dir: &Path,
+    backend_type: &InstallationType,
+) -> PathBuf {
+    let binary_name = old_path
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_else(|| "llama-server".into());
+
+    match backend_type {
+        InstallationType::TtsKokoro => {
+            // TTS is a directory, not a binary; preserve the original dir name
+            old_path
+                .file_name()
+                .map(|name| new_path_dir.join(name))
+                .unwrap_or_else(|| new_path_dir.to_path_buf())
+        }
+        _ => new_path_dir.join(binary_name),
+    }
+}
+
+fn migrate_files(
+    old_path: &Path,
+    new_path_dir: &Path,
+    new_binary_path: &Path,
+    backend_type: &InstallationType,
+    backends_dir: &Path,
+) -> anyhow::Result<bool> {
+    match backend_type {
+        InstallationType::TtsKokoro => {
+            // TTS: the old_path is the base_dir itself
+            // Move the entire directory
+            if !old_path.exists() {
+                // Check if new path exists (files moved but DB not updated)
+                if new_binary_path.exists() || new_path_dir.exists() {
+                    tracing::info!("TTS dir already at new location, just updating DB");
+                    return Ok(true);
+                }
+                tracing::warn!(
+                    "TTS path {} not found, skipping migration",
+                    old_path.display()
+                );
+                return Ok(false);
+            }
+
+            // Can't move a dir into its own subdirectory; use a temp first
+            let tmp_dir = backends_dir.join("tmp_migrate_tts");
+            fs::rename(old_path, &tmp_dir).with_context(|| {
+                format!(
+                    "Failed to move TTS dir {} to temp {}",
+                    old_path.display(),
+                    tmp_dir.display()
+                )
+            })?;
+            fs::create_dir_all(new_path_dir).context("Failed to create new path dir")?;
+            fs::rename(&tmp_dir, new_binary_path).with_context(|| {
+                format!(
+                    "Failed to rename TTS temp dir {} to destination {}",
+                    tmp_dir.display(),
+                    new_binary_path.display()
+                )
+            })?;
+            Ok(true)
+        }
+        _ => {
+            // Binary backend: move the binary file
+            if !old_path.exists() {
+                // Check if new path exists (files moved but DB not updated)
+                if new_binary_path.exists() {
+                    tracing::info!(
+                        "Binary already at new location {}, just updating DB",
+                        new_binary_path.display()
+                    );
+                    return Ok(true);
+                }
+                tracing::warn!(
+                    "Binary {} not found, skipping migration",
+                    old_path.display()
+                );
+                return Ok(false);
+            }
+
+            fs::create_dir_all(new_path_dir).context("Failed to create new path dir")?;
+            fs::rename(old_path, new_binary_path).with_context(|| {
+                format!(
+                    "Failed to rename {} to {}",
+                    old_path.display(),
+                    new_binary_path.display()
+                )
+            })?;
+
+            // Also move any .so/.dylib/.dll files in the same directory
+            if let Some(old_dir) = old_path.parent() {
+                if old_dir.is_dir() {
+                    if let Ok(entries) = fs::read_dir(old_dir) {
+                        for entry in entries.flatten() {
+                            let path = entry.path();
+                            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                                if matches!(ext, "so" | "dylib" | "dll") || ext.starts_with("so.") {
+                                    let new_lib_path = new_path_dir.join(path.file_name().unwrap());
+                                    fs::rename(&path, &new_lib_path).with_context(|| {
+                                        format!("Failed to move library {}", path.display())
+                                    })?;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Ok(true)
+        }
+    }
+}
+
+fn parse_backend_type(type_str: &str) -> InstallationType {
+    match type_str {
+        "llama_cpp" => InstallationType::LlamaCpp,
+        "ik_llama" => InstallationType::IkLlama,
+        "tts_kokoro" => InstallationType::TtsKokoro,
+        "docker" => InstallationType::Docker,
+        _ => InstallationType::Custom,
+    }
+}
+
+#[derive(Debug)]
+struct BackendRecord {
+    id: i64,
+    name: String,
+    backend_type: String,
+    version: String,
+    path: String,
+    _installed_at: i64,
+    _gpu_variant: String,
+    _source: String,
+    _is_active: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn test_is_new_pattern_path() {
+        let backends_dir = Path::new("/home/user/.local/share/tama/backends");
+        let backend_type = InstallationType::LlamaCpp;
+
+        // New pattern paths should return true
+        assert!(is_new_pattern_path(
+            Path::new("/home/user/.local/share/tama/backends/llama_cpp/cpu/b8407/llama-server"),
+            backends_dir,
+            &backend_type,
+        ));
+        assert!(is_new_pattern_path(
+            Path::new("/home/user/.local/share/tama/backends/llama_cpp/cuda/b8407/llama-server"),
+            backends_dir,
+            &backend_type,
+        ));
+
+        // Old pattern paths should return false
+        assert!(!is_new_pattern_path(
+            Path::new("/home/user/.local/share/tama/backends/llama_cpp/llama-server"),
+            backends_dir,
+            &backend_type,
+        ));
+    }
+
+    #[test]
+    fn test_derive_gpu_variant_heuristic() {
+        assert_eq!(
+            derive_gpu_variant(Path::new("/tmp/llama-server-cuda")),
+            "cuda"
+        );
+        assert_eq!(
+            derive_gpu_variant(Path::new("/tmp/llama-server-rocm")),
+            "rocm"
+        );
+        assert_eq!(
+            derive_gpu_variant(Path::new("/tmp/llama-server-vulkan")),
+            "vulkan"
+        );
+        assert_eq!(derive_gpu_variant(Path::new("/tmp/llama-server")), "cpu");
+    }
+
+    #[test]
+    fn test_parse_backend_type() {
+        assert_eq!(parse_backend_type("llama_cpp"), InstallationType::LlamaCpp);
+        assert_eq!(parse_backend_type("ik_llama"), InstallationType::IkLlama);
+        assert_eq!(
+            parse_backend_type("tts_kokoro"),
+            InstallationType::TtsKokoro
+        );
+        assert_eq!(parse_backend_type("unknown"), InstallationType::Custom);
+    }
+}

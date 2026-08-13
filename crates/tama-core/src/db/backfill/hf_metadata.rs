@@ -155,6 +155,7 @@ mod tests {
                 n_batch: None,
                 n_ubatch: None,
                 vllm_config: None,
+                provider_name: None,
             };
             upsert_model_config(&conn, &record).unwrap();
 
@@ -245,6 +246,7 @@ mod tests {
                 n_batch: None,
                 n_ubatch: None,
                 vllm_config: None,
+                provider_name: None,
             };
             upsert_model_config(&conn, &record).unwrap();
         }

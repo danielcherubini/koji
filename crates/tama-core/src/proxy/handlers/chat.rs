@@ -50,6 +50,46 @@ async fn resolve_and_load_server(
         }
     };
 
+    // Check if this is a remote provider (sentinel from ensure_model_loaded)
+    if let Some(provider_id_str) = backend_name.strip_prefix("remote:") {
+        if let Ok(provider_id) = provider_id_str.parse::<i64>() {
+            // Fetch provider from DB and forward
+            let provider = state.open_db().and_then(|conn| {
+                crate::db::queries::get_provider_by_id(&conn, provider_id)
+                    .ok()
+                    .flatten()
+            });
+            if let Some(provider) = provider {
+                // Get body bytes
+                let body = bytes::Bytes::copy_from_slice(body_bytes);
+                match state
+                    .remote_forwarder
+                    .forward(&provider, &parts, body)
+                    .await
+                {
+                    Ok(response) => return response.into_response(),
+                    Err(e) => {
+                        tracing::error!(
+                            "Failed to forward request to remote provider '{}': {}",
+                            provider.name,
+                            e
+                        );
+                        return (
+                            StatusCode::BAD_GATEWAY,
+                            Json(serde_json::json!({
+                                "error": {
+                                    "message": format!("Remote provider error: {}", e),
+                                    "type": "RemoteForwardError"
+                                }
+                            })),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+        }
+    }
+
     forward_request(
         state,
         &backend_name,

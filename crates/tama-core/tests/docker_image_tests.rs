@@ -58,7 +58,7 @@ async fn test_docker_available_with_fake_docker() {
     let (_tmpdir, _docker_dir, original_path) = set_fake_docker_path();
 
     // Import the function under test.
-    use tama_core::backends::docker::image::docker_available;
+    use tama_core::installations::docker::image::docker_available;
 
     let result = docker_available().await;
     assert!(
@@ -76,7 +76,7 @@ async fn test_docker_available_with_fake_docker() {
 async fn test_is_image_present_absent() {
     let (_tmpdir, _docker_dir, original_path) = set_fake_docker_path();
 
-    use tama_core::backends::docker::image::is_image_present;
+    use tama_core::installations::docker::image::is_image_present;
 
     // Image not yet pulled — should return false.
     let result = is_image_present("myrepo/myimage:latest").await;
@@ -90,7 +90,7 @@ async fn test_is_image_present_absent() {
 async fn test_is_image_present_present() {
     let (_tmpdir, _docker_dir, original_path) = set_fake_docker_path();
 
-    use tama_core::backends::docker::image::is_image_present;
+    use tama_core::installations::docker::image::is_image_present;
 
     // Pre-create the image state file so fake-docker thinks it exists.
     // The fake docker replaces `/` with `_` but keeps `:` → "myrepo_myimage:latest"
@@ -114,7 +114,7 @@ async fn test_is_image_present_present() {
 async fn test_pull_image_success() {
     let (_tmpdir, _docker_dir, original_path) = set_fake_docker_path();
 
-    use tama_core::backends::docker::image::pull_image;
+    use tama_core::installations::docker::image::pull_image;
 
     let progress_lines: Arc<std::sync::Mutex<Vec<String>>> =
         Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -158,7 +158,7 @@ async fn test_pull_image_success() {
 async fn test_pull_image_cancelled() {
     let (_tmpdir, _docker_dir, _original_path) = set_fake_docker_path();
 
-    use tama_core::backends::docker::image::pull_image;
+    use tama_core::installations::docker::image::pull_image;
 
     // Note: fake-docker.sh pull is fast (~0.6s), so we need to cancel quickly.
     // We'll create a custom slow fake docker for this test instead.
@@ -256,7 +256,7 @@ esac
     );
     std::env::set_var("FAKE_DOCKER_STATE_DIR", state_dir.to_str().unwrap());
 
-    use tama_core::backends::docker::image::pull_image;
+    use tama_core::installations::docker::image::pull_image;
 
     let cancel = CancellationToken::new();
 

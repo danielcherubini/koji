@@ -275,7 +275,7 @@ fn run_restore(
         copied_cards.len(),
         db_stats.new_model_pulls,
         db_stats.new_model_files,
-        db_stats.new_backend_installations,
+        db_stats.new_provider_installations,
         cfg_stats.new_backends.len(),
         cfg_stats.skipped_backends.len(),
         extracted.manifest.models.len(),
@@ -1023,7 +1023,7 @@ mod tests {
         // Insert a backend_configs row for 'llama_cpp'/'cpu'.
         open.conn
             .execute(
-                "INSERT INTO backend_configs (name, gpu_variant, default_args, default_env, \
+                "INSERT INTO provider_configs (name, gpu_variant, default_args, default_env, \
                  health_check_url) VALUES ('llama_cpp', 'cpu', '[]', '[]', NULL)",
                 [],
             )
@@ -1032,7 +1032,7 @@ mod tests {
         // Insert a backend_installations row.
         open.conn
             .execute(
-                "INSERT INTO backend_installations (name, backend_type, version, path, \
+                "INSERT INTO provider_installations (name, backend_type, version, path, \
                  installed_at, gpu_variant, source, is_active) VALUES ('llama_cpp', 'llama_cpp', \
                  'v1.0', '/tmp/llama', 1234567890, 'cpu', 'prebuilt', 1)",
                 [],

@@ -91,6 +91,7 @@ fn existing_with_size(name: &str, file: &str, size: Option<u64>) -> ModelConfig 
         n_batch: None,
 
         n_ubatch: None,
+        provider_name: None,
     }
 }
 
@@ -504,6 +505,7 @@ fn test_apply_model_body_gpu_device_override() {
         n_batch: None,
 
         n_ubatch: None,
+        provider_name: None,
     };
 
     let result = apply_model_body(body, Some(existing));
@@ -583,6 +585,7 @@ fn test_apply_model_body_gpu_device_preserves_base_when_omitted() {
         n_batch: None,
 
         n_ubatch: None,
+        provider_name: None,
     };
 
     let result = apply_model_body(body, Some(existing));
@@ -663,6 +666,7 @@ fn test_apply_model_body_gpu_device_clear_sentinel() {
         n_batch: None,
 
         n_ubatch: None,
+        provider_name: None,
     };
 
     let result = apply_model_body(body, Some(existing));
@@ -1452,6 +1456,7 @@ fn existing_config_rich() -> ModelConfig {
         n_batch: None,
 
         n_ubatch: None,
+        provider_name: None,
     }
 }
 
@@ -2123,6 +2128,7 @@ async fn test_delete_model_removes_db_row() {
             vllm_config: None,
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-01-01T00:00:00Z".to_string(),
+            provider_name: None,
         },
     )
     .unwrap();
@@ -2236,6 +2242,7 @@ async fn test_create_model_response_deserializes_into_mutation_response() {
                 vllm_config: None,
                 created_at: "2024-01-01T00:00:00Z".to_string(),
                 updated_at: "2024-01-01T00:00:00Z".to_string(),
+                provider_name: None,
             },
         )
         .unwrap();
@@ -2355,6 +2362,7 @@ async fn test_delete_model_response_deserializes_into_ok_response() {
                 vllm_config: None,
                 created_at: "2024-01-01T00:00:00Z".to_string(),
                 updated_at: "2024-01-01T00:00:00Z".to_string(),
+                provider_name: None,
             },
         )
         .unwrap();

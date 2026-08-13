@@ -46,11 +46,11 @@ pub struct ModelModalities {
 }
 
 #[cfg(feature = "ssr")]
-pub use tama_core::backends::BackendOption;
+pub use tama_core::installations::InstallationOption;
 
 #[cfg(not(feature = "ssr"))]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct BackendOption {
+pub struct InstallationOption {
     pub name: String,
     #[serde(default)]
     pub variant: Option<String>,
@@ -91,7 +91,7 @@ pub struct ModelDetail {
     #[serde(default)]
     pub hf_context_length: Option<u32>,
     pub quants: BTreeMap<String, QuantInfo>,
-    pub backends: Vec<BackendOption>,
+    pub backends: Vec<InstallationOption>,
     #[serde(default)]
     pub repo_commit_sha: Option<String>,
     #[serde(default)]
@@ -118,7 +118,7 @@ pub struct ModelDetail {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelListResponse {
     pub models: Vec<serde_json::Value>,
-    pub backends: Vec<BackendOption>,
+    pub backends: Vec<InstallationOption>,
     pub sampling_templates: Option<std::collections::HashMap<String, serde_json::Value>>,
 }
 

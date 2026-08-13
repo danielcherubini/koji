@@ -1,6 +1,6 @@
 use super::{UpdateChecker, UpdateEvent};
-use crate::backends::{BackendInfo, BackendManager, BackendType};
 use crate::db::{self, queries};
+use crate::installations::{InstallationInfo, InstallationManager, InstallationType};
 use crate::models::pull::RemoteGguf;
 use tempfile::tempdir;
 use wiremock::matchers::{method, path_regex, query_param};
@@ -8,10 +8,10 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// Seed a TtsKokoro backend installation into the config directory's DB.
 fn seed_backend(config_dir: &std::path::Path) {
-    let mgr = BackendManager::open(config_dir).unwrap();
-    mgr.add_installation(&BackendInfo {
+    let mgr = InstallationManager::open(config_dir).unwrap();
+    mgr.add_installation(&InstallationInfo {
         name: "tts_kokoro".into(),
-        backend_type: BackendType::TtsKokoro,
+        backend_type: InstallationType::TtsKokoro,
         version: "1.0.0".into(),
         path: config_dir.join("tts_kokoro"),
         installed_at: 0,
@@ -65,6 +65,7 @@ fn seed_model(config_dir: &std::path::Path, repo_id: &str, commit_sha: &str, lfs
         n_batch: None,
         n_ubatch: None,
         vllm_config: None,
+        provider_name: None,
     };
     let model_id = queries::upsert_model_config(&open.conn, &record).unwrap();
 
@@ -291,6 +292,7 @@ async fn test_run_check_model_without_repo_records_unknown() {
         n_batch: None,
         n_ubatch: None,
         vllm_config: None,
+        provider_name: None,
     };
     let model_id = queries::upsert_model_config(&open.conn, &record).unwrap();
 

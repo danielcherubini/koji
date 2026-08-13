@@ -1225,10 +1225,10 @@ async fn test_load_tts_health_timeout_cleans_up() {
     let backend_dir = base_dir.join("tts_kokoro");
     std::fs::create_dir_all(&backend_dir).unwrap();
 
-    let mgr = crate::backends::BackendManager::open(tempdir.path()).unwrap();
-    mgr.add_installation(&crate::backends::BackendInfo {
+    let mgr = crate::installations::InstallationManager::open(tempdir.path()).unwrap();
+    mgr.add_installation(&crate::installations::InstallationInfo {
         name: "tts_kokoro".into(),
-        backend_type: crate::backends::BackendType::TtsKokoro,
+        backend_type: crate::installations::InstallationType::TtsKokoro,
         version: "1.0.0".into(),
         path: backend_dir.clone(),
         installed_at: 0,
@@ -1294,10 +1294,10 @@ async fn test_load_tts_spawn_failure_cleans_up() {
     let backend_dir = base_dir.join("tts_kokoro");
     std::fs::create_dir_all(&backend_dir).unwrap();
 
-    let mgr = crate::backends::BackendManager::open(tempdir.path()).unwrap();
-    mgr.add_installation(&crate::backends::BackendInfo {
+    let mgr = crate::installations::InstallationManager::open(tempdir.path()).unwrap();
+    mgr.add_installation(&crate::installations::InstallationInfo {
         name: "tts_kokoro".into(),
-        backend_type: crate::backends::BackendType::TtsKokoro,
+        backend_type: crate::installations::InstallationType::TtsKokoro,
         version: "1.0.0".into(),
         path: backend_dir.clone(),
         installed_at: 0,
@@ -1360,10 +1360,10 @@ async fn test_load_tts_success_marks_ready() {
     let backend_dir = base_dir.join("tts_kokoro");
     std::fs::create_dir_all(&backend_dir).unwrap();
 
-    let mgr = crate::backends::BackendManager::open(tempdir.path()).unwrap();
-    mgr.add_installation(&crate::backends::BackendInfo {
+    let mgr = crate::installations::InstallationManager::open(tempdir.path()).unwrap();
+    mgr.add_installation(&crate::installations::InstallationInfo {
         name: "tts_kokoro".into(),
-        backend_type: crate::backends::BackendType::TtsKokoro,
+        backend_type: crate::installations::InstallationType::TtsKokoro,
         version: "1.0.0".into(),
         path: backend_dir.clone(),
         installed_at: 0,

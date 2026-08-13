@@ -103,9 +103,9 @@ pub fn Sidebar() -> impl IntoView {
                     <span class="sidebar-item__icon">"🏠"</span>
                     <span class="sidebar-item__text">"Dashboard"</span>
                 </A>
-                <A href="/tama/backends" attr:class="sidebar-item" attr:data-tooltip="Backends" on:click=move |_| mobile_open.set(false)>
+                <A href="/tama/installations" attr:class="sidebar-item" attr:data-tooltip="Installations" on:click=move |_| mobile_open.set(false)>
                     <span class="sidebar-item__icon">"🔧"</span>
-                    <span class="sidebar-item__text">"Backends"</span>
+                    <span class="sidebar-item__text">"Installations"</span>
                 </A>
                 <A href="/tama/logs" attr:class="sidebar-item" attr:data-tooltip="Logs" on:click=move |_| mobile_open.set(false)>
                     <span class="sidebar-item__icon">"📋"</span>

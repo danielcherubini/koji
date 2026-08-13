@@ -11,19 +11,19 @@ use tama_core::proxy::ProxyState;
 
 use crate::api::load_config_from_state;
 use crate::web_types::WebState;
-use tama_core::backends::BackendOption;
 use tama_core::db::queries::{ModelConfigRecord, ModelFileRecord};
 use tama_core::db::repository::Repository;
+use tama_core::installations::InstallationOption;
 
 /// Build the list of available backend options by querying installed variants from the DB.
 async fn build_backend_options(
     _cfg: &tama_core::config::Config,
     config_dir: &std::path::Path,
-) -> Vec<BackendOption> {
+) -> Vec<InstallationOption> {
     let config_dir = config_dir.to_path_buf();
     tokio::task::spawn_blocking(move || {
-        let mgr = tama_core::backends::BackendManager::open(&config_dir).ok()?;
-        mgr.available_backends().ok()
+        let mgr = tama_core::installations::InstallationManager::open(&config_dir).ok()?;
+        mgr.available_installations().ok()
     })
     .await
     .ok()
@@ -411,6 +411,7 @@ mod tests {
             n_batch: None,
             n_ubatch: None,
             vllm_config: None,
+            provider_name: None,
         }
     }
 

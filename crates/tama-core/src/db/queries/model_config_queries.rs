@@ -13,7 +13,7 @@ pub fn upsert_model_config(conn: &Connection, record: &ModelConfigRecord) -> Res
         &format!(
             "INSERT INTO model_configs ({}) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19,
-                ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37
+                ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38
             )
              ON CONFLICT(repo_id) DO UPDATE SET
                  display_name = excluded.display_name,
@@ -52,6 +52,7 @@ pub fn upsert_model_config(conn: &Connection, record: &ModelConfigRecord) -> Res
                  n_batch = excluded.n_batch,
                  n_ubatch = excluded.n_ubatch,
                  vllm_config = excluded.vllm_config,
+                 provider_name = excluded.provider_name,
                  updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
             ModelConfigRecord::INSERT_COLUMNS,
         ),
@@ -93,6 +94,7 @@ pub fn upsert_model_config(conn: &Connection, record: &ModelConfigRecord) -> Res
             record.n_batch,
             record.n_ubatch,
             record.vllm_config,
+            record.provider_name,
         ],
     )?;
     // Return the id (either existing or newly created)
@@ -164,8 +166,8 @@ mod tests {
             .split(',')
             .map(str::trim)
             .collect();
-        assert_eq!(select.len(), 38);
-        assert_eq!(insert.len(), 37);
+        assert_eq!(select.len(), 39);
+        assert_eq!(insert.len(), 38);
         assert_eq!(select[0], "id");
         assert_eq!(&select[1..], insert.as_slice());
     }

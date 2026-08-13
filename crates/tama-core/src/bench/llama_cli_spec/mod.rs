@@ -20,7 +20,7 @@ pub use discovery::find_llama_server;
 
 use std::sync::Arc;
 
-use crate::backends::ProgressSink;
+use crate::installations::ProgressSink;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};

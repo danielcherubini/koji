@@ -346,6 +346,7 @@ fn test_upsert_and_get_model_config() {
         n_batch: None,
         n_ubatch: None,
         vllm_config: None,
+        provider_name: None,
     };
 
     upsert_model_config(&conn, &record).unwrap();
@@ -469,6 +470,7 @@ fn test_get_all_model_configs() {
         n_batch: None,
         n_ubatch: None,
         vllm_config: None,
+        provider_name: None,
     };
     let rec2 = ModelConfigRecord {
         id: 0,
@@ -509,6 +511,7 @@ fn test_get_all_model_configs() {
         n_batch: None,
         n_ubatch: None,
         vllm_config: None,
+        provider_name: None,
     };
 
     upsert_model_config(&conn, &rec1).unwrap();
@@ -560,6 +563,7 @@ fn test_delete_model_config() {
         n_batch: None,
         n_ubatch: None,
         vllm_config: None,
+        provider_name: None,
     };
 
     upsert_model_config(&conn, &record).unwrap();

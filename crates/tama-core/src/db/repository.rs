@@ -355,6 +355,101 @@ impl Repository {
     ) -> anyhow::Result<()> {
         queries::update_verification(&self.conn, model_id, filename, verified_ok, verify_error)
     }
+
+    // ── Provider CRUD ────────────────────────────────────────────────────
+
+    /// Insert a new provider. Returns the auto-assigned row id.
+    pub fn insert_provider(
+        &self,
+        name: &str,
+        provider_type: &str,
+        engine: &str,
+        tamad_id: Option<&str>,
+        base_url: Option<&str>,
+        api_key: Option<&str>,
+    ) -> anyhow::Result<i64> {
+        queries::insert_provider(
+            &self.conn,
+            name,
+            provider_type,
+            engine,
+            tamad_id,
+            base_url,
+            api_key,
+        )
+        .with_context(|| format!("Failed to insert provider '{}'", name))
+    }
+
+    /// Get a provider by name.
+    pub fn get_provider(&self, name: &str) -> anyhow::Result<Option<crate::providers::Provider>> {
+        queries::get_provider(&self.conn, name)
+            .with_context(|| format!("Failed to get provider '{}'", name))
+    }
+
+    /// List all providers.
+    pub fn list_providers(&self) -> anyhow::Result<Vec<crate::providers::Provider>> {
+        queries::list_providers(&self.conn).with_context(|| "Failed to list providers")
+    }
+
+    /// Update a provider's base_url and/or api_key.
+    pub fn update_provider(
+        &self,
+        name: &str,
+        base_url: Option<&str>,
+        api_key: Option<&str>,
+    ) -> anyhow::Result<()> {
+        queries::update_provider(&self.conn, name, base_url, api_key)
+            .with_context(|| format!("Failed to update provider '{}'", name))
+    }
+
+    /// Delete a provider by name. Returns true if a row was deleted.
+    pub fn delete_provider(&self, name: &str) -> anyhow::Result<bool> {
+        queries::delete_provider(&self.conn, name)
+            .with_context(|| format!("Failed to delete provider '{}'", name))
+    }
+
+    // ── Tamad CRUD ───────────────────────────────────────────────────────
+
+    /// Insert a new tamad connection.
+    pub fn insert_tamad(
+        &self,
+        id: &str,
+        name: &str,
+        url: &str,
+        protocol: &str,
+        token: Option<&str>,
+    ) -> anyhow::Result<()> {
+        queries::insert_tamad(&self.conn, id, name, url, protocol, token)
+            .with_context(|| format!("Failed to insert tamad '{}'", name))
+    }
+
+    /// Get a tamad connection by id.
+    pub fn get_tamad(&self, id: &str) -> anyhow::Result<Option<crate::providers::TamadConnection>> {
+        queries::get_tamad(&self.conn, id).with_context(|| format!("Failed to get tamad '{}'", id))
+    }
+
+    /// List all tamad connections.
+    pub fn list_tamads(&self) -> anyhow::Result<Vec<crate::providers::TamadConnection>> {
+        queries::list_tamads(&self.conn).with_context(|| "Failed to list tamads")
+    }
+
+    /// Update a tamad connection's url and/or token.
+    pub fn update_tamad(&self, id: &str, url: &str, token: Option<&str>) -> anyhow::Result<()> {
+        queries::update_tamad(&self.conn, id, url, token)
+            .with_context(|| format!("Failed to update tamad '{}'", id))
+    }
+
+    /// Delete a tamad connection by id. Returns true if a row was deleted.
+    pub fn delete_tamad(&self, id: &str) -> anyhow::Result<bool> {
+        queries::delete_tamad(&self.conn, id)
+            .with_context(|| format!("Failed to delete tamad '{}'", id))
+    }
+
+    /// Update only the status of a tamad connection.
+    pub fn update_tamad_status(&self, id: &str, status: &str) -> anyhow::Result<()> {
+        queries::update_tamad_status(&self.conn, id, status)
+            .with_context(|| format!("Failed to update tamad status '{}'", id))
+    }
 }
 
 // Re-export internal query types used by the Repository
@@ -419,6 +514,7 @@ mod tests {
             n_batch: None,
             n_ubatch: None,
             vllm_config: None,
+            provider_name: None,
         };
         queries::upsert_model_config(conn, &record).unwrap()
     }

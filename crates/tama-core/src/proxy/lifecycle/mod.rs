@@ -8,8 +8,8 @@ use tracing::{debug, info, warn};
 
 use super::lifecycle::traits::HealthChecker;
 use super::types::{BackendState, ProxyState};
-use crate::backends::docker::runner as docker_runner;
-use crate::backends::docker::{
+use crate::installations::docker::runner as docker_runner;
+use crate::installations::docker::{
     docker_available, is_image_present, pull_image, remove_container, rewrite_args_for_container,
     spawn_container, stop_container,
 };
@@ -36,6 +36,24 @@ pub async fn ensure_model_loaded(
 ) -> Result<String> {
     // Resolve alias before routing
     let resolved_model = state.resolve_alias(model_name).await;
+
+    // Check if model has a provider_name that resolves to a remote provider.
+    // When set, this overrides the `backend` field for routing.
+    let provider_name: Option<String> = {
+        let model_configs = state.registry.model_configs.read().await;
+        model_configs
+            .get(&resolved_model)
+            .and_then(|c| c.provider_name.clone())
+    };
+
+    if let Some(ref name) = provider_name {
+        if let Some(provider) = state.get_provider(name).await {
+            if provider.provider_type.is_remote() {
+                // Return sentinel indicating remote provider
+                return Ok(format!("remote:{}", provider.id));
+            }
+        }
+    }
 
     let backend_name = match state.get_available_backend_for_model(&resolved_model).await {
         Some(name) => name,
@@ -105,14 +123,14 @@ impl ProxyState {
         let mut model_config = model_config.clone();
         model_config.gpu_device = effective_gpu_device;
 
-        // Open BackendManager for path resolution and default args.
+        // Open InstallationManager for path resolution and default args.
         let manager = self
             .db_dir
             .as_ref()
-            .and_then(|dir| crate::backends::BackendManager::open(dir).ok())
+            .and_then(|dir| crate::installations::InstallationManager::open(dir).ok())
             .unwrap_or_else(|| {
-                crate::backends::BackendManager::open_in_memory()
-                    .expect("in-memory BackendManager must always open")
+                crate::installations::InstallationManager::open_in_memory()
+                    .expect("in-memory InstallationManager must always open")
             });
 
         // Resolve the backend binary path: DB takes priority, config.path is fallback.
@@ -130,7 +148,7 @@ impl ProxyState {
 
         // Get active installation to check for docker_config.
         // Note: use the backend *name* (e.g. "vllm"), not the model config key,
-        // since backend_installations rows are keyed by backend name + gpu_variant.
+        // since provider_installations rows are keyed by backend name + gpu_variant.
         let active = manager.get_active(&model_config.backend, gpu_variant.variant_folder())?;
         let docker_config = active.and_then(|a| a.docker_config);
 
@@ -230,7 +248,7 @@ impl ProxyState {
         _gpu_variant: crate::gpu::GpuVariant,
         model_name: &str,
         backend_name: &str,
-        docker_cfg: crate::backends::docker::DockerConfig,
+        docker_cfg: crate::installations::docker::DockerConfig,
         _health_checker: &H,
     ) -> Result<String> {
         // ── Step A — Preflight + Pull (BEFORE Starting reservation) ────
@@ -524,14 +542,14 @@ impl ProxyState {
         gpu_variant: crate::gpu::GpuVariant,
         _health_checker: &H,
     ) -> Result<String> {
-        // Create BackendManager internally (doesn't borrow across await points)
+        // Create InstallationManager internally (doesn't borrow across await points)
         let manager = self
             .db_dir
             .as_ref()
-            .and_then(|dir| crate::backends::BackendManager::open(dir).ok())
+            .and_then(|dir| crate::installations::InstallationManager::open(dir).ok())
             .unwrap_or_else(|| {
-                crate::backends::BackendManager::open_in_memory()
-                    .expect("in-memory BackendManager must always open")
+                crate::installations::InstallationManager::open_in_memory()
+                    .expect("in-memory InstallationManager must always open")
             });
 
         // Find a free port for this backend.

@@ -285,7 +285,7 @@ Always use the environment variables for API access — never hardcode URLs or t
 Full API reference lives in `docs/api/`. Read the relevant file before making API calls:
 
 - `docs/api/models.md` — Model CRUD, refresh, verify
-- `docs/api/backends.md` — Backend install, update, activate, remove
+- `docs/api/installations.md` — Installation install, update, activate, remove
 - `docs/api/aliases.md` — Alias management
 - `docs/api/pulls.md` — Pull progress monitoring
 - `docs/api/huggingface.md` — HF metadata and quant listing

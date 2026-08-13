@@ -3,7 +3,7 @@ use crate::config::Config;
 
 /// Test that resolve_health_url and resolve_backend_url work even when
 /// the backend is NOT present in TOML [backends] section.
-/// After migration to backend_configs DB table, the [backends] section
+/// After migration to provider_configs DB table, the [backends] section
 /// may be empty — these functions should not block on a missing TOML entry.
 #[test]
 fn test_resolve_health_url_without_toml_backend() {

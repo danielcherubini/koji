@@ -56,7 +56,7 @@ pub fn ModelEditor() -> impl IntoView {
     let form = RwSignal::new(Option::<ModelForm>::None);
 
     // UI-only signals (not part of form)
-    let backends = RwSignal::new(Vec::<BackendOption>::new());
+    let backends = RwSignal::new(Vec::<InstallationOption>::new());
     let original_id = RwSignal::new(String::new());
     let pull_modal_open_signal = RwSignal::new(false);
 

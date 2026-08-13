@@ -52,11 +52,13 @@ impl ProxyState {
                 .expect("failed to build HTTP client"),
             db_dir,
             config_write_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
-            backend_logs: crate::backends::log_stream::BackendLogManager::default(),
+            backend_logs: crate::installations::log_stream::BackendLogManager::default(),
             gpu_devices_cache: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             model_tasks: tokio::sync::RwLock::new(std::collections::HashMap::new()),
             cookie_key: cookie::Key::generate(),
             langfuse_client: Arc::new(tokio::sync::RwLock::new(langfuse_client)),
+            remote_forwarder: crate::proxy::remote::RemoteForwarder::new(),
+            tamad_clients: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         };
 
         // Spawn the queue processor background task if pull queue is configured.
@@ -81,14 +83,14 @@ impl ProxyState {
             .with_context(|| format!("Backend '{}' not found", backend_name))?
             .0;
 
-        // Open BackendManager for health_check_url lookup
+        // Open InstallationManager for health_check_url lookup
         let manager = self
             .db_dir
             .as_ref()
-            .and_then(|dir| crate::backends::BackendManager::open(dir).ok())
+            .and_then(|dir| crate::installations::InstallationManager::open(dir).ok())
             .unwrap_or_else(|| {
-                crate::backends::BackendManager::open_in_memory()
-                    .expect("in-memory BackendManager must always open")
+                crate::installations::InstallationManager::open_in_memory()
+                    .expect("in-memory InstallationManager must always open")
             });
         let gpu_variant = backend_config
             .gpu_variant
@@ -283,9 +285,16 @@ impl ProxyState {
         self.registry.tts_backend_names().await
     }
 
+    /// Get a provider by name from the database.
+    /// Returns None if not found or if DB is not configured.
+    pub(crate) async fn get_provider(&self, name: &str) -> Option<crate::providers::Provider> {
+        self.open_db()
+            .and_then(|conn| crate::db::queries::get_provider(&conn, name).ok().flatten())
+    }
+
     /// Resolve the binary path for a backend name using the same logic as `load_model`.
     ///
-    /// Opens the BackendManager, looks up the active installation, and returns the path.
+    /// Opens the InstallationManager, looks up the active installation, and returns the path.
     /// Falls back to config.path if no DB entry exists.
     pub async fn resolve_backend_binary_path(
         &self,
@@ -296,10 +305,10 @@ impl ProxyState {
         let manager = self
             .db_dir
             .as_ref()
-            .and_then(|dir| crate::backends::BackendManager::open(dir).ok())
+            .and_then(|dir| crate::installations::InstallationManager::open(dir).ok())
             .unwrap_or_else(|| {
-                crate::backends::BackendManager::open_in_memory()
-                    .expect("in-memory BackendManager must always open")
+                crate::installations::InstallationManager::open_in_memory()
+                    .expect("in-memory InstallationManager must always open")
             });
 
         config.resolve_backend_path(backend_name, gpu_variant, &manager)

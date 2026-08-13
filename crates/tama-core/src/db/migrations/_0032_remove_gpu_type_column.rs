@@ -21,9 +21,10 @@ mod tests {
         let open_result = open_in_memory().unwrap();
         let conn = &open_result.conn;
 
-        // After running all migrations (including 0032), gpu_type should be gone
+        // After running all migrations (including 0032 and 0048), gpu_type should be gone
+        // Table was renamed from backend_installations to provider_installations by v48
         let mut stmt = conn
-            .prepare("PRAGMA table_info(backend_installations)")
+            .prepare("PRAGMA table_info(provider_installations)")
             .expect("prepare should succeed");
         let columns: Vec<String> = stmt
             .query_map([], |row: &rusqlite::Row| row.get::<_, String>(1))

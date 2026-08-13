@@ -3,7 +3,7 @@ use crate::models::repo_path;
 use anyhow::Result;
 
 /// Empty BackendConfig used as fallback when backend is not in TOML config
-/// (e.g. after migration to backend_configs DB table cleared the [backends] section).
+/// (e.g. after migration to provider_configs DB table cleared the [backends] section).
 static EMPTY_BACKEND_CONFIG: BackendConfig = BackendConfig {
     path: None,
     version: None,
@@ -77,7 +77,7 @@ impl Config {
                 continue;
             }
             // Use TOML backend config if present, otherwise empty default.
-            // After migration to backend_configs table, the [backends] TOML
+            // After migration to provider_configs table, the [backends] TOML
             // section may be empty — backend data (default_args, health URL)
             // now lives in the DB, not TOML.
             let backend = match self.backends.get(&model_config.backend) {
@@ -111,12 +111,12 @@ impl Config {
     }
 
     /// Resolve the health check URL for a model_config, taking into account:
-    /// 1. Pre-resolved health_check_url if available (from DB via BackendManager)
+    /// 1. Pre-resolved health_check_url if available (from DB via InstallationManager)
     /// 2. Server's custom port if set
     /// 3. Fallback to http://localhost:{port}/health
     ///
     /// Does not require the backend to exist in TOML [backends] section.
-    /// After migration to backend_configs DB table, the [backends] section
+    /// After migration to provider_configs DB table, the [backends] section
     /// may be empty — this function resolves purely from the provided URL
     /// parameter and model_config port.
     pub fn resolve_health_url(
@@ -146,7 +146,7 @@ impl Config {
     /// Resolve the backend URL (without /health) for a server.
     ///
     /// Does not require the backend to exist in TOML [backends] section.
-    /// After migration to backend_configs DB table, the [backends] section
+    /// After migration to provider_configs DB table, the [backends] section
     /// may be empty — this function resolves purely from the provided URL
     /// parameter and server port.
     pub fn resolve_backend_url(
@@ -655,19 +655,19 @@ impl Config {
     /// Priority:
     /// 1. Model-level `gpu_variant` (passed as `model_variant`) — most specific
     /// 2. Global config `[backends.<name>].gpu_variant`
-    /// 3. Discover from BackendManager (first active installation, or first variant found)
+    /// 3. Discover from InstallationManager (first active installation, or first variant found)
     /// 4. Default "cpu"
     ///
     /// Then:
     /// 1. If `config.backends[name].version` is pinned, look up that exact version
-    ///    in the BackendManager for the resolved variant.
+    ///    in the InstallationManager for the resolved variant.
     /// 2. Otherwise, use the active (latest) installation for that variant.
     /// 3. Fallback to `path` field in the [backends] section.
     pub fn resolve_backend_path(
         &self,
         name: &str,
         model_variant: Option<&crate::gpu::GpuVariant>,
-        manager: &crate::backends::BackendManager,
+        manager: &crate::installations::InstallationManager,
     ) -> Result<std::path::PathBuf> {
         // Determine the gpu_variant to use (model > config > "cpu")
         let gpu_variant: &str = model_variant

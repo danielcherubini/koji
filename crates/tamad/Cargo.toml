@@ -1,0 +1,18 @@
+[package]
+name = "tamad"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tama-core = { path = "../tama-core" }
+tonic = { workspace = true }
+prost = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+tokio-stream = "0.1"

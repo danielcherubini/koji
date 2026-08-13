@@ -413,7 +413,7 @@ fn test_migration_v19_adds_hf_metadata_columns() {
     }
 }
 
-/// Regression test: migration v20 must add gpu_variant column to backend_installations
+/// Regression test: migration v20 must add gpu_variant column to provider_installations
 /// with UNIQUE(name, gpu_variant, version) constraint.
 #[test]
 fn test_migration_v20_adds_gpu_variant() {
@@ -423,7 +423,7 @@ fn test_migration_v20_adds_gpu_variant() {
     // gpu_variant column must exist
     let variant_exists: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('backend_installations') WHERE name='gpu_variant'",
+            "SELECT COUNT(*) FROM pragma_table_info('provider_installations') WHERE name='gpu_variant'",
             [],
             |row| row.get(0),
         )
@@ -433,19 +433,19 @@ fn test_migration_v20_adds_gpu_variant() {
     // Index on (name, gpu_variant) must exist
     let idx_exists: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_backend_installations_name_variant'",
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_provider_installations_name_variant'",
             [],
             |row| row.get(0),
         )
         .unwrap();
     assert_eq!(
         idx_exists, 1,
-        "idx_backend_installations_name_variant must exist"
+        "idx_provider_installations_name_variant must exist"
     );
 
     // Test that UNIQUE(name, gpu_variant, version) works: same name + variant + version fails
     conn.execute(
-        "INSERT INTO backend_installations (name, backend_type, version, path, installed_at, gpu_variant, is_active) \
+        "INSERT INTO provider_installations (name, backend_type, version, path, installed_at, gpu_variant, is_active) \
          VALUES ('llama_cpp', 'llama_cpp', 'b8407', '/tmp/a', 1, 'cpu', 1)",
         [],
     )
@@ -453,7 +453,7 @@ fn test_migration_v20_adds_gpu_variant() {
 
     // Same name + variant + version should fail
     let err = conn.execute(
-        "INSERT INTO backend_installations (name, backend_type, version, path, installed_at, gpu_variant, is_active) \
+        "INSERT INTO provider_installations (name, backend_type, version, path, installed_at, gpu_variant, is_active) \
          VALUES ('llama_cpp', 'llama_cpp', 'b8407', '/tmp/b', 2, 'cpu', 0)",
         [],
     );
@@ -464,7 +464,7 @@ fn test_migration_v20_adds_gpu_variant() {
 
     // Same name + different variant should succeed
     conn.execute(
-        "INSERT INTO backend_installations (name, backend_type, version, path, installed_at, gpu_variant, is_active) \
+        "INSERT INTO provider_installations (name, backend_type, version, path, installed_at, gpu_variant, is_active) \
          VALUES ('llama_cpp', 'llama_cpp', 'b8407', '/tmp/c', 3, 'vulkan', 0)",
         [],
     )
@@ -473,7 +473,7 @@ fn test_migration_v20_adds_gpu_variant() {
     // Verify both rows exist
     let count: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM backend_installations WHERE name='llama_cpp'",
+            "SELECT COUNT(*) FROM provider_installations WHERE name='llama_cpp'",
             [],
             |row| row.get(0),
         )
@@ -490,7 +490,7 @@ fn test_migration_v20_preserves_existing_data() {
     // Bring DB up to v19 (pre-v20 schema)
     run_up_to(&conn, 19).unwrap();
 
-    // Insert a backend installation (without gpu_variant column)
+    // Insert a backend installation (without gpu_variant column) - table is still named backend_installations at v19
     conn.execute(
         "INSERT INTO backend_installations (name, backend_type, version, path, installed_at, gpu_type, source, is_active) \
          VALUES ('llama_cpp', 'llama_cpp', 'b8407', '/tmp/llama', 1000, NULL, NULL, 1)",
@@ -522,17 +522,17 @@ fn test_migration_v20_preserves_existing_data() {
     assert_eq!(version, "b8407");
 }
 
-/// Regression test: migration v23 must create the backend_configs table
+/// Regression test: migration v23 must create the provider_configs table
 /// with the correct schema and index.
 #[test]
-fn test_migration_v23_creates_backend_configs() {
+fn test_migration_v23_creates_provider_configs() {
     let conn = Connection::open_in_memory().unwrap();
     run(&conn).unwrap();
 
     // Table must exist
     let table_exists: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='backend_configs'",
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='provider_configs'",
             [],
             |row| row.get(0),
         )
@@ -550,7 +550,7 @@ fn test_migration_v23_creates_backend_configs() {
     for col in &columns {
         let exists: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM pragma_table_info('backend_configs') WHERE name=?",
+                "SELECT COUNT(*) FROM pragma_table_info('provider_configs') WHERE name=?",
                 [col],
                 |row| row.get(0),
             )
@@ -562,7 +562,7 @@ fn test_migration_v23_creates_backend_configs() {
     // name. Verify: same name + same variant is now allowed (name is no longer
     // the key), but duplicate (logical_id, gpu_variant) must fail.
     conn.execute(
-        "INSERT INTO backend_configs (name, gpu_variant, default_args, health_check_url) \
+        "INSERT INTO provider_configs (name, gpu_variant, default_args, health_check_url) \
          VALUES ('llama_cpp', 'cpu', '[\"-fa 1\"]', 'http://localhost:8080/health')",
         [],
     )
@@ -570,7 +570,7 @@ fn test_migration_v23_creates_backend_configs() {
 
     // Duplicate (name, gpu_variant) is permitted (name is not the key).
     conn.execute(
-        "INSERT INTO backend_configs (name, gpu_variant, default_args) \
+        "INSERT INTO provider_configs (name, gpu_variant, default_args) \
          VALUES ('llama_cpp', 'cpu', '[]')",
         [],
     )
@@ -578,7 +578,7 @@ fn test_migration_v23_creates_backend_configs() {
 
     // Same name, different variant must succeed.
     conn.execute(
-        "INSERT INTO backend_configs (name, gpu_variant, default_args) \
+        "INSERT INTO provider_configs (name, gpu_variant, default_args) \
          VALUES ('llama_cpp', 'vulkan', '[]')",
         [],
     )
@@ -586,13 +586,13 @@ fn test_migration_v23_creates_backend_configs() {
 
     // Duplicate (logical_id, gpu_variant) must fail — this is the new stable key.
     conn.execute(
-        "INSERT INTO backend_configs (logical_id, name, gpu_variant, default_args) \
+        "INSERT INTO provider_configs (logical_id, name, gpu_variant, default_args) \
          VALUES ('uuid-1', 'a', 'cpu', '[]')",
         [],
     )
     .unwrap();
     let err = conn.execute(
-        "INSERT INTO backend_configs (logical_id, name, gpu_variant, default_args) \
+        "INSERT INTO provider_configs (logical_id, name, gpu_variant, default_args) \
          VALUES ('uuid-1', 'b', 'cpu', '[]')",
         [],
     );
@@ -604,7 +604,7 @@ fn test_migration_v23_creates_backend_configs() {
     // Verify rows exist
     let count: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM backend_configs WHERE name='llama_cpp'",
+            "SELECT COUNT(*) FROM provider_configs WHERE name='llama_cpp'",
             [],
             |row| row.get(0),
         )

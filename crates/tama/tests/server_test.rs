@@ -351,7 +351,7 @@ mod tests {
     /// End-to-end test: POST default_args with gpu_variant saves to DB,
     /// GET backends returns per-variant args.
     #[tokio::test]
-    async fn test_backend_default_args_db_roundtrip() {
+    async fn test_installation_default_args_db_roundtrip() {
         // Create temp dir for DB
         let temp_dir = tempfile::tempdir().unwrap();
         let config_dir = temp_dir.path().to_path_buf();
@@ -361,10 +361,10 @@ mod tests {
             let _open_result = tama_core::db::open(&config_dir).unwrap();
         }
 
-        // Seed backend_configs with test data for llama_cpp:cpu
+        // Seed provider_configs with test data for llama_cpp:cpu
         {
             let open_result = tama_core::db::open(&config_dir).unwrap();
-            tama_core::db::queries::upsert_backend_config(
+            tama_core::db::queries::upsert_installation_config(
                 &open_result.conn,
                 "",
                 "llama_cpp",
@@ -374,7 +374,7 @@ mod tests {
                 None,
             )
             .unwrap();
-            tama_core::db::queries::upsert_backend_config(
+            tama_core::db::queries::upsert_installation_config(
                 &open_result.conn,
                 "",
                 "llama_cpp",
@@ -418,7 +418,7 @@ mod tests {
         // POST default_args for llama_cpp with gpu_variant=vulkan
         let resp = client
             .post(format!(
-                "http://{}/tama/v1/backends/llama_cpp/default-args?gpu_variant=vulkan",
+                "http://{}/tama/v1/installations/llama_cpp/default-args?gpu_variant=vulkan",
                 addr
             ))
             .header("origin", "http://localhost:11435")
@@ -439,7 +439,7 @@ mod tests {
         // Verify the DB was updated
         {
             let open_result = tama_core::db::open(&config_dir).unwrap();
-            let config = tama_core::db::queries::get_backend_config(
+            let config = tama_core::db::queries::get_installation_config(
                 &open_result.conn,
                 "llama_cpp",
                 "vulkan",
@@ -453,10 +453,13 @@ mod tests {
             );
 
             // cpu variant should be unchanged
-            let cpu_config =
-                tama_core::db::queries::get_backend_config(&open_result.conn, "llama_cpp", "cpu")
-                    .unwrap()
-                    .expect("cpu config should exist");
+            let cpu_config = tama_core::db::queries::get_installation_config(
+                &open_result.conn,
+                "llama_cpp",
+                "cpu",
+            )
+            .unwrap()
+            .expect("cpu config should exist");
             assert_eq!(
                 cpu_config.default_args,
                 vec!["--threads".to_string(), "4".to_string()],
@@ -467,7 +470,7 @@ mod tests {
         // POST without gpu_variant should fail (400 or 422)
         let resp = client
             .post(format!(
-                "http://{}/tama/v1/backends/llama_cpp/default-args",
+                "http://{}/tama/v1/installations/llama_cpp/default-args",
                 addr
             ))
             .header("origin", "http://localhost:11435")

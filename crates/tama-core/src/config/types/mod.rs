@@ -198,11 +198,11 @@ impl Config {
             );
         }
 
-        // Read backends from backend_configs table.
+        // Read backends from provider_configs table.
         // Note: BackendConfig (TOML struct) fields `path` and `version` are
         // not stored in the DB — backend resolution is exclusively DB-managed
-        // via backend_configs + backend_installations tables.
-        let backend_rows = crate::db::queries::list_backend_configs(&conn)?;
+        // via provider_configs + provider_installations tables.
+        let backend_rows = crate::db::queries::list_installation_configs(&conn)?;
         let mut backends: HashMap<String, BackendConfig> = HashMap::new();
         for record in &backend_rows {
             backends.insert(
@@ -213,7 +213,7 @@ impl Config {
                     gpu_variant: Some(
                         crate::gpu::GpuVariant::from_str(&record.gpu_variant).unwrap_or_else(|_| {
                             tracing::warn!(
-                                "unknown gpu_variant '{}' in backend_configs row; treating as custom",
+                                "unknown gpu_variant '{}' in provider_configs row; treating as custom",
                                 record.gpu_variant
                             );
                             crate::gpu::GpuVariant::Custom

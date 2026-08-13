@@ -1,0 +1,85 @@
+syntax = "proto3";
+
+package tamad;
+
+service TamadService {
+  rpc ListProviders(Empty) returns (ListProvidersResponse);
+  rpc InstallProvider(InstallProviderRequest) returns (InstallProviderResponse);
+  rpc LoadModel(LoadModelRequest) returns (LoadModelResponse);
+  rpc UnloadModel(UnloadModelRequest) returns (Empty);
+  rpc UpdateProvider(UpdateProviderRequest) returns (UpdateProviderResponse);
+  rpc RemoveProvider(RemoveProviderRequest) returns (Empty);
+  rpc Logs(LogsRequest) returns (stream LogEntry);
+  rpc HealthCheck(Empty) returns (HealthResponse);
+}
+
+message Empty {}
+
+message LoadModelRequest {
+  string provider_name = 1;
+  string model_path = 2;
+  string gpu_variant = 3;
+  map<string, string> params = 4;
+}
+
+message LoadModelResponse {
+  string endpoint_url = 1;
+  int32 pid = 2;
+  string status = 3;
+}
+
+message UnloadModelRequest {
+  string provider_name = 1;
+  string model_name = 2;
+}
+
+message ListProvidersResponse {
+  repeated ProviderInfo providers = 1;
+}
+
+message ProviderInfo {
+  string name = 1;
+  string engine = 2;
+  string version = 3;
+  string status = 4;
+  string gpu_variant = 5;
+}
+
+message InstallProviderRequest {
+  string name = 1;
+  string engine = 2;
+  string version = 3;
+  string gpu_variant = 4;
+}
+
+message InstallProviderResponse {
+  string status = 1;
+}
+
+message UpdateProviderRequest {
+  string name = 1;
+  string version = 2;
+}
+
+message UpdateProviderResponse {
+  string status = 1;
+}
+
+message RemoveProviderRequest {
+  string name = 1;
+}
+
+message LogsRequest {
+  string provider_name = 1;
+}
+
+message LogEntry {
+  string timestamp = 1;
+  string level = 2;
+  string message = 3;
+}
+
+message HealthResponse {
+  string status = 1;
+  string version = 2;
+}

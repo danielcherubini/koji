@@ -149,6 +149,12 @@ pub struct ModelConfig {
     /// Persisted as JSON in the `vllm_config` column; mirrors `spec_decoding`.
     #[serde(default)]
     pub vllm: VllmConfig,
+    /// Name of the remote provider that serves this model. When set, overrides
+    /// the `backend` field for routing — request is forwarded to the provider's
+    /// `base_url` with the provider's `api_key` as Bearer token.
+    /// None means use normal local backend routing (legacy behaviour).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_name: Option<String>,
 }
 
 /// Normalize legacy `-b`/`--batch-size` and `-ub`/`--ubatch-size` args into
@@ -292,6 +298,7 @@ impl ModelConfig {
             n_batch: self.n_batch.map(|v| v as i32),
             n_ubatch: self.n_ubatch.map(|v| v as i32),
             vllm_config: serde_json::to_string(&self.vllm).ok(),
+            provider_name: self.provider_name.clone(),
         }
     }
 
@@ -388,6 +395,7 @@ impl ModelConfig {
                 .as_deref()
                 .and_then(|s| serde_json::from_str(s).ok())
                 .unwrap_or_default(),
+            provider_name: record.provider_name.clone(),
         }
     }
 }

@@ -18,9 +18,9 @@ mod parse;
 
 pub use discovery::find_llama_bench;
 
-use crate::backends::ProgressSink;
 use crate::bench::{BenchConfig, BenchReport, ModelInfo};
 use crate::config::Config;
+use crate::installations::ProgressSink;
 use anyhow::{bail, Context, Result};
 use std::process::Stdio;
 use tokio::process::Command;
@@ -136,7 +136,7 @@ pub(crate) async fn run_llama_bench_with_dir(
     // CRITICAL: gpu_variant from the request takes priority; fall back to the
     // model config's own gpu_variant (preserving Auto behavior when None).
     let variant = gpu_variant.as_ref().or(model_config.gpu_variant.as_ref());
-    let manager = crate::backends::BackendManager::open(db_dir)?;
+    let manager = crate::installations::InstallationManager::open(db_dir)?;
     let backend_path = config.resolve_backend_path(target_backend, variant, &manager)?;
 
     let bench_binary = discovery::find_llama_bench(&backend_path).context(format!(
@@ -317,7 +317,7 @@ fn resolve_model_path(
 mod tests {
     use super::*;
     use crate::config::{Config, LogLevel, ModelConfig};
-    use crate::db::queries::{insert_backend_installation, upsert_backend_config, upsert_general};
+    use crate::db::queries::{insert_installation, upsert_general, upsert_installation_config};
     use std::collections::BTreeMap;
     use std::os::unix::fs::PermissionsExt;
     use std::sync::{Mutex, MutexGuard};
@@ -381,7 +381,7 @@ mod tests {
         )?;
 
         // 1. Insert a backend config (llama_cpp, cpu)
-        upsert_backend_config(
+        upsert_installation_config(
             &conn,
             "",
             "llama_cpp",
@@ -405,9 +405,9 @@ mod tests {
         std::fs::set_permissions(&fake_server, perms)?;
 
         // 3. Insert a backend installation record pointing to the fake binary
-        insert_backend_installation(
+        insert_installation(
             &conn,
-            &crate::db::queries::BackendInstallationRecord {
+            &crate::db::queries::InstallationRecord {
                 id: 0,
                 name: "llama_cpp".to_string(),
                 backend_type: "llama_cpp".to_string(),
@@ -472,6 +472,7 @@ mod tests {
             n_batch: None,
             n_ubatch: None,
             vllm: Default::default(),
+            provider_name: None,
         };
 
         let config_key = "test--test-model";

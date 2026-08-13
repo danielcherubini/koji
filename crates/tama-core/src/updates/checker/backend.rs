@@ -1,9 +1,9 @@
 use super::UpdateChecker;
 #[cfg(feature = "web-ui")]
 use super::UpdateEvent;
-use crate::backends::{check_latest_version, BackendType};
 use crate::db;
-use crate::db::queries::get_active_backend;
+use crate::db::queries::get_active_installation;
+use crate::installations::{check_latest_version, InstallationType};
 
 impl UpdateChecker {
     /// Check a single backend for updates.
@@ -15,7 +15,7 @@ impl UpdateChecker {
         &self,
         config_dir: &std::path::Path,
         backend_name: &str,
-        backend_type: &BackendType,
+        backend_type: &InstallationType,
         gpu_variant: &str,
     ) -> anyhow::Result<()> {
         // Use "name:variant" as the item_id so each variant has its own record
@@ -36,7 +36,7 @@ impl UpdateChecker {
             let gpu_variant = gpu_variant.to_string();
             move || -> anyhow::Result<Option<String>> {
                 let open = db::open(&config_dir)?;
-                let record = get_active_backend(&open.conn, &backend_name, &gpu_variant)?;
+                let record = get_active_installation(&open.conn, &backend_name, &gpu_variant)?;
                 Ok(record.map(|r| r.version))
             }
         })
@@ -44,7 +44,7 @@ impl UpdateChecker {
 
         // Async: Check latest version from network
         let latest_version = match backend_type {
-            BackendType::LlamaCpp | BackendType::IkLlama => {
+            InstallationType::LlamaCpp | InstallationType::IkLlama => {
                 match check_latest_version(backend_type, None, None).await {
                     Ok(v) => Some(v),
                     Err(e) => {
@@ -73,10 +73,10 @@ impl UpdateChecker {
                     }
                 }
             }
-            BackendType::TtsKokoro
-            | BackendType::Compaction
-            | BackendType::Custom
-            | BackendType::Docker => None,
+            InstallationType::TtsKokoro
+            | InstallationType::Compaction
+            | InstallationType::Custom
+            | InstallationType::Docker => None,
         };
 
         let update_available = latest_version

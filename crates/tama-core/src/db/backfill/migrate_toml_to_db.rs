@@ -1,7 +1,7 @@
 //! Unified TOML → SQLite migration.
 //!
 //! Migrates ALL sections from `config.toml` into the SQLite database in a single pass:
-//! - `[backends]` → `backend_configs` table
+//! - `[backends]` → `provider_configs` table
 //! - Global config (general, proxy, supervisor, compaction, sampling_templates) → `app_*` tables
 //! - `[models]` → `model_configs` table (if present in TOML)
 //!
@@ -91,7 +91,7 @@ pub fn migrate_toml_to_db(config_dir: &Path, db_path: &Path) -> Result<Migration
     // ── Step 3: Seed defaults ──────────────────────────────────────────
     queries::seed_defaults(&conn)?;
 
-    // ── Step 4: Migrate [backends] section → backend_configs ────────────
+    // ── Step 4: Migrate [backends] section → provider_configs ────────────
     let backends_migrated = migrate_backends_section(&conn, &config.backends)?;
 
     // ── Step 5: Migrate [models] section → model_configs ───────────────
@@ -124,7 +124,7 @@ pub fn migrate_toml_to_db(config_dir: &Path, db_path: &Path) -> Result<Migration
     })
 }
 
-/// Migrate the `[backends]` section from parsed Config into `backend_configs`.
+/// Migrate the `[backends]` section from parsed Config into `provider_configs`.
 fn migrate_backends_section(
     conn: &Connection,
     backends: &std::collections::HashMap<String, crate::config::BackendConfig>,
@@ -142,7 +142,7 @@ fn migrate_backends_section(
             .map(|v| v.variant_folder().to_string())
             .unwrap_or_else(|| "cpu".to_string());
 
-        queries::upsert_backend_config(conn, "", name, &gpu_variant, &[], &[], None)
+        queries::upsert_installation_config(conn, "", name, &gpu_variant, &[], &[], None)
             .with_context(|| format!("Failed to migrate backend config '{}'", name))?;
         count += 1;
     }
@@ -340,11 +340,11 @@ gpu_variant = "cpu"
 
         // Verify DB has backend configs by opening the file-based DB
         let OpenResult { conn, .. } = crate::db::open(config_dir).unwrap();
-        let llama = queries::get_backend_config(&conn, "llama_cpp", "cpu")
+        let llama = queries::get_installation_config(&conn, "llama_cpp", "cpu")
             .unwrap()
             .expect("llama_cpp should exist in DB after migration");
         assert_eq!(llama.name, "llama_cpp");
-        let ik = queries::get_backend_config(&conn, "ik_llama", "cpu")
+        let ik = queries::get_installation_config(&conn, "ik_llama", "cpu")
             .unwrap()
             .expect("ik_llama should exist in DB after migration");
         assert_eq!(ik.name, "ik_llama");
