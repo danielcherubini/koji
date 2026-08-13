@@ -13,16 +13,14 @@ Plans for features, refactors, and bug fixes in the Tama project.
 ## Quick Stats
 
 - **Total Plans**: 90
-- **Backlog**: 1
-- **Completed**: 88 ✅
+- **Backlog**: 0
+- **Completed**: 89 ✅
 
 ---
 
 ## Backlog
 
-| Plan | Description | Status |
-|------|-------------|--------|
-| [plan-088](plan-088-provider-abstraction.md) | Provider abstraction + tamad daemon split | Backlog |
+No plans in the backlog.
 
 > **Note:** The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan.
 
