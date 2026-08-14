@@ -41,8 +41,16 @@ The state machine for a loaded model: `Starting` → `Ready` → `Unloading` →
 _Avoid_: Model status, model state machine
 
 **Pull**:
-The process of downloading a model from HuggingFace — includes API lookup, parallel chunked download, GGUF metadata parsing, and DB insertion. Tracked in the download queue with real-time SSE progress.
+The process of downloading a model from HuggingFace — includes API lookup, parallel chunked download, GGUF metadata parsing, and DB insertion. Tracked in the download queue with real-time SSE progress. Applies to GGUF files only.
 _Avoid_: Download, fetch
+
+**Repo pull**:
+A whole-repository download of a safetensors (transformers) model, executed by shelling out to the `hf` CLI (`hf download <repo> --local-dir <models_dir>/<org>/<repo>`) as a tracked subprocess. No per-file selection, verification, or `model_files` rows (see ADR-0007). Wizard-scoped, polled for progress.
+_Avoid_: hf pull, CLI download, whole-repo pull
+
+**Transformers model**:
+A model whose weights ship as safetensors (`hf_format = "transformers"`). Has no quants — the whole repo is the model (weight shards + `config.json` + tokenizers). Pulled via repo pull and served by the vLLM backend, which loads the repo directory as a positional path.
+_Avoid_: safetensors model (ambiguous — could mean a single file), HF model, native model
 
 **Spec decoding** (short for "speculative decoding"):
 Technique to accelerate inference by having the main model predict multiple tokens at once using a draft model (MTP or ngram). Configured per-model via checkboxes and parameters in the model editor.

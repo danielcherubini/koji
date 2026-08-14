@@ -12,9 +12,17 @@ Plans for features, refactors, and bug fixes in the Tama project.
 
 ## Quick Stats
 
-- **Total Plans**: 92
-- **Backlog**: 0
+- **Total Plans**: 93
+- **Backlog**: 1
 - **Completed**: 91 ✅
+
+---
+
+## Backlog
+
+| # | Plan | Status |
+|---|------|--------|
+| 188 | [hf CLI Repo Pull (Safetensors Wizard Support)](plan-188-hf-cli-repo-pull.md) | Backlog |
 
 ---
 
