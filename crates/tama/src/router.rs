@@ -362,6 +362,15 @@ pub fn build_web_routes(
             "/tama/v1/pulls/:job_id/cancel",
             post(api::pulls::cancel_pull).layer(json_body_limit),
         )
+        // Whole-repo `hf` CLI pull routes (safetensors / transformers wizard)
+        .route(
+            "/tama/v1/pulls/repo",
+            post(api::repo_pulls::start_repo_pull).layer(json_body_limit),
+        )
+        .route(
+            "/tama/v1/pulls/repo/:job_id",
+            delete(api::repo_pulls::delete_repo_pull),
+        )
         // Alias CRUD routes
         .route(
             "/tama/v1/aliases",
@@ -438,6 +447,10 @@ pub fn build_web_routes(
         .route("/tama/v1/pulls/active", get(api::pulls::get_active_pulls))
         .route("/tama/v1/pulls/history", get(api::pulls::get_pull_history))
         .route("/tama/v1/pulls/events", get(api::pulls::pull_events_sse))
+        .route(
+            "/tama/v1/pulls/repo/:job_id",
+            get(api::repo_pulls::get_repo_pull),
+        )
         // API documentation (OpenAPI 3.1.0 spec)
         .route("/tama/v1/docs", get(api::openapi::serve_spec))
         // System health + backend logs: core proxy handlers mounted explicitly

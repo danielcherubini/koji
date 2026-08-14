@@ -31,9 +31,9 @@ pub fn PullStep(
                 } else if job.status == "failed" {
                     ("badge badge-error", format!("Failed: {}", job.error.clone().unwrap_or_default()))
                 } else if job.status == "running" {
-                    let dl = format_bytes(job.bytes_pulled as i64);
+                    let dl = format_bytes(job.bytes_pulled);
                     let total = job.total_bytes
-                        .map(|b| format_bytes(b as i64))
+                        .map(format_bytes)
                         .unwrap_or_else(|| "?".to_string());
                     ("badge badge-info", format!("{dl} / {total}"))
                 } else {

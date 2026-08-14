@@ -366,7 +366,7 @@ The wizard's `on_search` callback (`crates/tama/src/components/pull_quant_wizard
 
 The branching rule (matches `detect_hf_format`'s GGUF-wins semantics):
 - `hf_format == Some("transformers")` → **Transformers** (by construction this means no GGUF files are present)
-- `hf_format == Some("gguf")` OR (`hf_format == None` AND the quant listing is non-empty) → **Gguf**
+- `hf_format == Some("gguf")` AND the quant listing is non-empty OR (`hf_format == None` AND the quant listing is non-empty) → **Gguf**
 - everything else → **no model files** (error)
 
 The `WizardStep` enum is NOT changed: the transformers flow reuses `SelectQuants` (renders the Confirm component) and `SetContext` (renders the Vllm config component), with the step-header label ("2. Select") made branch-aware. This avoids touching the `step_class` index math.
@@ -396,7 +396,11 @@ pub enum WizardBranch {
 /// - `hf_format == Some("transformers")` → `Some(Transformers)`
 ///   (the server's `detect_hf_format` only reports "transformers" when no
 ///   GGUF files exist, so this implies a safetensors-only repo)
-/// - `hf_format == Some("gguf")` → `Some(Gguf)` (mixed repos report gguf)
+/// - `hf_format == Some("gguf")` → `Some(Gguf)` iff `has_gguf_files`;
+///   `Some("gguf")` with an empty listing → `None` (the server's
+///   `detect_hf_format` falls back to `"gguf"` as a backward-compatible
+///   default for repos with no model files at all, so an empty listing
+///   means no recognizable model files)
 /// - `hf_format == None` (metadata fetch failed) → `Some(Gguf)` iff
 ///   `has_gguf_files`, else `None` (degrade to today's flow when the listing
 ///   says GGUF files exist)
@@ -404,7 +408,8 @@ pub enum WizardBranch {
 pub fn resolve_branch(hf_format: Option<&str>, has_gguf_files: bool) -> Option<WizardBranch> { /* implement per the semantics above — a plain match, no clever arm-punning */ }
 Tests (pure, no DOM):
 - `test_resolve_branch_transformers` — `("transformers", false)` → `Some(Transformers)`
-- `test_resolve_branch_gguf` — `("gguf", true)` → `Some(Gguf)`; `("gguf", false)` → `Some(Gguf)` (a mixed repo: GGUF wins — `detect_hf_format` already reports gguf)
+- `test_resolve_branch_gguf` — `("gguf", true)` → `Some(Gguf)` (a mixed repo: GGUF wins — `detect_hf_format` already reports gguf)
+- `test_resolve_branch_gguf_format_empty_listing` — `("gguf", false)` → `None` (the server's `detect_hf_format` reports "gguf" as a fallback for repos with no model files at all)
 - `test_resolve_branch_none_with_files` — `(None, true)` → `Some(Gguf)` (metadata fetch failed, listing says gguf files exist — degrade to today's flow)
 - `test_resolve_branch_none_empty` — `(None, false)` → `None`; `("transformers", true)` → `Some(Transformers)` (document the GGUF-wins guarantee comes from the server: if GGUF files existed, format would be "gguf")
 

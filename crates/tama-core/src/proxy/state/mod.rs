@@ -3,15 +3,17 @@
 //! `ProxyState` is composed from three domain sub-structs:
 //! - `RegistryState` — models, model_configs, aliases caches
 //! - `MetricsState` — counters, system_metrics, metrics_tx, inference_stats channels
-//! - `PullState` — pull_jobs, in_flight_pulls, pull_queue service
+//! - `PullState` — pull_jobs, in_flight_pulls, pull_queue service, repo_pulls
 
 mod metrics;
 mod pull;
 mod registry;
+pub(crate) mod repo_pull;
 
 pub(crate) use metrics::MetricsState;
 pub(crate) use pull::PullState;
 pub(crate) use registry::RegistryState;
+pub(crate) use repo_pull::*;
 
 use anyhow::Context;
 use std::sync::Arc;

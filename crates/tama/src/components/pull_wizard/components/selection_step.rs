@@ -51,7 +51,7 @@ pub fn SelectionStep(
                     let shards = q.shards.clone();
                     let label = q.quant.clone().unwrap_or_else(|| fname.clone());
                     let size_str = q.size_bytes
-                        .map(format_bytes)
+                        .map(|b| format_bytes(b as u64))
                         .unwrap_or_else(|| "?".to_string());
                     let is_checked = move || selected_filenames.get().contains(&fname_check);
                     view! {
@@ -95,7 +95,7 @@ pub fn SelectionStep(
                         let fname = q.filename.clone();
                         let fname_check = fname.clone();
                         let size_str = q.size_bytes
-                            .map(format_bytes)
+                            .map(|b| format_bytes(b as u64))
                             .unwrap_or_else(|| "?".to_string());
                         let is_checked = move || selected_mmproj_filenames.get().contains(&fname_check);
                         view! {
@@ -141,7 +141,7 @@ pub fn SelectionStep(
                             let fname = q.filename.clone();
                             let fname_check = fname.clone();
                             let size_str = q.size_bytes
-                                .map(format_bytes)
+                                .map(|b| format_bytes(b as u64))
                                 .unwrap_or_else(|| "?".to_string());
                             let is_checked = move || selected_mtp_filenames.get().contains(&fname_check);
                             view! {

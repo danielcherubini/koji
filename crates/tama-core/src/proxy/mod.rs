@@ -33,6 +33,7 @@ pub use handlers::tts::{
 };
 pub use handlers::{json_error, json_error_response};
 pub use server::ProxyServer;
+pub use state::repo_pull::{RepoPullError, RepoPullStart, RepoPullStatusDto};
 pub use types::{BackendState, ProxyMetrics, ProxyState};
 
 #[cfg(test)]

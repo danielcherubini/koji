@@ -356,6 +356,20 @@ pub(crate) fn update_model_config_hf_metadata(
     Ok(())
 }
 
+/// Set the selected_quant column directly (no COALESCE) — used by the repo-pull
+/// completion path where config.json quantization_method is authoritative.
+pub(crate) fn update_model_config_quant(
+    conn: &rusqlite::Connection,
+    model_id: i64,
+    quant: &str,
+) -> anyhow::Result<()> {
+    conn.execute(
+        "UPDATE model_configs SET selected_quant = ?1 WHERE id = ?2",
+        rusqlite::params![quant, model_id],
+    )?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -542,6 +556,44 @@ mod tests {
             .find(|f| f.filename == "no_hash.gguf")
             .unwrap();
         assert!(matches!(unknown.status, FileStatus::Unknown));
+    }
+
+    /// Verifies that `update_model_config_quant` sets `selected_quant`
+    /// directly (no COALESCE): it both fills a NULL column and overwrites
+    /// an existing value.
+    #[test]
+    fn test_update_model_config_quant_direct_set() {
+        let OpenResult { conn, .. } = open_in_memory().unwrap();
+        conn.execute(
+            "INSERT INTO model_configs (repo_id, backend) VALUES ('test/repo', 'llama_cpp')",
+            [],
+        )
+        .unwrap();
+        let model_id: i64 = conn
+            .query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
+            .unwrap();
+
+        // Fills a NULL column.
+        update_model_config_quant(&conn, model_id, "fp8").unwrap();
+        let quant: Option<String> = conn
+            .query_row(
+                "SELECT selected_quant FROM model_configs WHERE id = ?",
+                [model_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(quant.as_deref(), Some("fp8"));
+
+        // Direct set (no COALESCE): overwrites the previous value.
+        update_model_config_quant(&conn, model_id, "awq").unwrap();
+        let quant: Option<String> = conn
+            .query_row(
+                "SELECT selected_quant FROM model_configs WHERE id = ?",
+                [model_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(quant.as_deref(), Some("awq"));
     }
 
     /// Verifies that `check_for_updates` returns `UpdateStatus::NoPriorRecord`

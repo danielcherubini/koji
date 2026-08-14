@@ -9,7 +9,7 @@ const KV_QUANT_OPTIONS: &[&str] = &[
     "f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1",
 ];
 
-const KV_CACHE_DTYPE_OPTIONS: &[&str] = &["auto", "fp8", "bf16"];
+pub(crate) const KV_CACHE_DTYPE_OPTIONS: &[&str] = &["auto", "fp8", "bf16"];
 
 const BATCH_OPTIONS: &[u32] = &[128, 256, 512, 1024, 2048, 4096, 8192];
 const UBATCH_OPTIONS: &[u32] = &[32, 64, 128, 256, 512, 1024, 2048, 4096];

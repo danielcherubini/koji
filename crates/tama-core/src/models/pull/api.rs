@@ -131,6 +131,68 @@ pub async fn lookup_blob_metadata(repo_id: &str) -> Result<HashMap<String, BlobI
     Ok(parse_blob_siblings(&response))
 }
 
+/// Total size (bytes) and file count across ALL files in the repo (any extension).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RepoStats {
+    /// Sum of sibling sizes in bytes (missing `size` counts as 0).
+    pub total_bytes: u64,
+    /// Number of sibling entries in the repo.
+    pub file_count: u32,
+}
+
+/// Pure: sum `size` (default 0 when absent) over `siblings[]` and count entries.
+pub fn parse_siblings_stats(value: &serde_json::Value) -> RepoStats {
+    let siblings = match value.get("siblings").and_then(|s| s.as_array()) {
+        Some(s) => s,
+        None => {
+            return RepoStats {
+                total_bytes: 0,
+                file_count: 0,
+            }
+        }
+    };
+
+    let total_bytes = siblings
+        .iter()
+        .filter_map(|s| s.get("size").and_then(|v| v.as_i64()))
+        .filter(|size| *size > 0)
+        .map(|size| size as u64)
+        .sum::<u64>();
+
+    RepoStats {
+        total_bytes,
+        file_count: siblings.len() as u32,
+    }
+}
+
+/// Hit the same blobs endpoint as lookup_blob_metadata, sum ALL siblings.
+///
+/// Unlike `lookup_blob_metadata` (GGUF-only), this counts and sizes every
+/// file in the repo — used to report whole-repo download progress.
+pub async fn lookup_repo_stats(repo_id: &str) -> Result<RepoStats> {
+    let api = hf_api().await?;
+    let url = super::hf_api_model_blobs_url(repo_id);
+
+    let response = api
+        .client()
+        .get(&url)
+        .send()
+        .await
+        .with_context(|| format!("Failed to fetch repo stats for '{}'", repo_id))?
+        .error_for_status()
+        .with_context(|| {
+            format!(
+                "HuggingFace returned an error for repo stats request for '{}'",
+                repo_id
+            )
+        })?
+        .json::<serde_json::Value>()
+        .await
+        .with_context(|| format!("Failed to parse repo stats response for '{}'", repo_id))?;
+
+    Ok(parse_siblings_stats(&response))
+}
+
 /// Fetch comprehensive metadata for a model from the HuggingFace API and README.
 ///
 /// Calls the HF models API for repo-level info (tags, pipeline_tag, lastModified)
@@ -234,6 +296,19 @@ pub async fn lookup_hf_metadata(repo_id: &str) -> Result<HfModelMetadata> {
         }
         if meta.hf_num_layers.is_none() {
             meta.hf_num_layers = readme_meta.hf_num_layers;
+        }
+    }
+
+    // ── Repo stats (total size + file count) from the blobs API ────────────
+    // Soft-fails: when the blobs endpoint is unavailable the Confirm step
+    // simply renders without a total size.
+    match lookup_repo_stats(repo_id).await {
+        Ok(stats) => {
+            meta.hf_total_size_bytes = Some(stats.total_bytes);
+            meta.hf_file_count = Some(stats.file_count);
+        }
+        Err(e) => {
+            tracing::debug!(repo_id = %repo_id, error = %e, "repo stats lookup failed — leaving size/count unset")
         }
     }
 
@@ -699,6 +774,50 @@ mod tests {
         assert_eq!(entry.quant.as_deref(), Some("Q4_K_M"));
         assert_eq!(entry.shards.len(), 1);
         assert_eq!(entry.size_bytes, Some(400));
+    }
+
+    // ── parse_siblings_stats tests ─────────────────────────────────────────
+
+    /// Verifies that `parse_siblings_stats` sums `size` over all siblings
+    /// and counts every entry, and that a missing `size` counts as 0.
+    #[test]
+    fn test_parse_siblings_stats_basic() {
+        let json = serde_json::json!({
+            "siblings": [
+                { "rfilename": "a.safetensors", "size": 100 },
+                { "rfilename": "b.safetensors", "size": 200 },
+                { "rfilename": "README.md", "size": 300 }
+            ]
+        });
+
+        let stats = parse_siblings_stats(&json);
+        assert_eq!(stats.total_bytes, 600);
+        assert_eq!(stats.file_count, 3);
+
+        // A sibling without `size` counts as 0 bytes but still as a file.
+        let with_missing = serde_json::json!({
+            "siblings": [
+                { "rfilename": "a.safetensors", "size": 100 },
+                { "rfilename": "b.safetensors" },
+                { "rfilename": "README.md", "size": 300 }
+            ]
+        });
+        let stats2 = parse_siblings_stats(&with_missing);
+        assert_eq!(stats2.total_bytes, 400, "missing size must count as 0");
+        assert_eq!(stats2.file_count, 3, "all siblings must be counted");
+    }
+
+    /// Verifies that an empty `siblings` array or a missing `siblings` key
+    /// both produce zeroed stats.
+    #[test]
+    fn test_parse_siblings_stats_empty() {
+        let empty = parse_siblings_stats(&serde_json::json!({ "siblings": [] }));
+        assert_eq!(empty.total_bytes, 0);
+        assert_eq!(empty.file_count, 0);
+
+        let missing = parse_siblings_stats(&serde_json::json!({}));
+        assert_eq!(missing.total_bytes, 0);
+        assert_eq!(missing.file_count, 0);
     }
 
     // ── detect_hf_format tests ─────────────────────────────────────────────

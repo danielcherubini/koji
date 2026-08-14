@@ -547,6 +547,14 @@ pub struct HfModelMetadata {
     pub hf_context_length: Option<u32>,
     pub hf_num_layers: Option<u32>,
     pub hf_last_modified: Option<String>,
+    /// Total size in bytes across ALL repo files, from the HF blobs API.
+    /// Soft-fails to `None` when the blobs endpoint is unavailable.
+    #[serde(default)]
+    pub hf_total_size_bytes: Option<u64>,
+    /// Number of files in the repo, from the HF blobs API.
+    /// Soft-fails to `None` when the blobs endpoint is unavailable.
+    #[serde(default)]
+    pub hf_file_count: Option<u32>,
 }
 
 // ── Re-exports from sub-modules ──────────────────────────────────────────────
@@ -555,7 +563,7 @@ pub use super::gguf::GgufMetadata;
 pub use api::{
     detect_hf_format, directory_prefix, group_sharded_quants, infer_modalities_from_pipeline,
     list_gguf_files, lookup_blob_metadata, lookup_hf_metadata, lookup_model_pipeline_tag,
-    parse_blob_siblings, GroupedQuant,
+    lookup_repo_stats, parse_blob_siblings, parse_siblings_stats, GroupedQuant, RepoStats,
 };
 pub use metadata::{lookup_community_toml, parse_readme_metadata};
 pub use quant::infer_quant_from_filename;

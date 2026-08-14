@@ -20,6 +20,7 @@ pub mod models;
 pub mod openapi;
 pub mod providers;
 pub mod pulls;
+pub mod repo_pulls;
 pub mod self_update;
 pub mod sse;
 pub mod tamads;

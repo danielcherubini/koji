@@ -2427,3 +2427,238 @@ async fn test_delete_model_response_deserializes_into_ok_response() {
         "OkResponse round-trip must be lossless"
     );
 }
+
+// ── PUT /tama/v1/models/:id — vllm whole-replace contract ────────────────
+
+/// Route-level harness for `PUT /tama/v1/models/:id` vllm tests: seeds a
+/// single vllm model row (with an optional stored `vllm_config` JSON) and
+/// returns the web router plus the seeded model id. Mirrors the sibling
+/// route-level tests above.
+fn vllm_put_harness(
+    tmp_dir: &tempfile::TempDir,
+    seed_vllm_config: Option<&str>,
+) -> (axum::Router, i64) {
+    let model_id = tama_core::db::queries::upsert_model_config(
+        &tama_core::db::open(tmp_dir.path()).unwrap().conn,
+        &tama_core::db::queries::ModelConfigRecord {
+            id: 0,
+            repo_id: "test-org/vllm-model".to_string(),
+            display_name: None,
+            backend: "vllm".to_string(),
+            gpu_variant: None,
+            gpu_device: None,
+            enabled: true,
+            selected_quant: None,
+            selected_mmproj: None,
+            selected_mtp_model: None,
+            context_length: None,
+            num_parallel: None,
+            kv_unified: false,
+            gpu_layers: None,
+            cache_type_k: None,
+            cache_type_v: None,
+            port: None,
+            args: None,
+            sampling: None,
+            modalities: None,
+            profile: None,
+            api_name: Some("test-org/vllm-model".to_string()),
+            health_check: None,
+            hf_format: None,
+            hf_base_model: None,
+            hf_pipeline_tag: None,
+            hf_total_params: None,
+            hf_active_params: None,
+            hf_architecture_type: None,
+            hf_context_length: None,
+            hf_num_layers: None,
+            hf_last_modified: None,
+            spec_decoding: None,
+            n_batch: None,
+            n_ubatch: None,
+            vllm_config: seed_vllm_config.map(str::to_string),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+            provider_name: None,
+        },
+    )
+    .unwrap();
+
+    let config = tama_core::config::Config::default();
+    let state = Arc::new(tama_core::proxy::ProxyState::new(
+        config,
+        Some(tmp_dir.path().to_path_buf()),
+    ));
+
+    let web_state = Arc::new(crate::web_types::WebState {
+        jobs: Some(Arc::new(crate::web_types::JobManager::new())),
+        capabilities: None,
+        update_checker: Arc::new(tama_core::updates::UpdateChecker::default()),
+        binary_version: "test".to_string(),
+        update_tx: Arc::new(tokio::sync::Mutex::new(None)),
+        upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        repository: Some(Arc::new(std::sync::Mutex::new(
+            tama_core::db::repository::Repository::open(tmp_dir.path()).unwrap(),
+        ))),
+    });
+
+    let router = crate::router::build_web_routes(web_state.clone())
+        .with_state(state)
+        .layer(axum::extract::Extension(web_state.as_ref().clone()));
+
+    (router, model_id)
+}
+
+/// Read the stored `vllm_config` column of a model row back into a VllmConfig.
+fn read_stored_vllm(tmp_dir: &tempfile::TempDir, model_id: i64) -> tama_core::config::VllmConfig {
+    let conn = tama_core::db::open(tmp_dir.path()).unwrap();
+    let record = tama_core::db::queries::get_model_config(&conn.conn, model_id)
+        .unwrap()
+        .expect("model row must exist");
+    serde_json::from_str(record.vllm_config.as_deref().expect("vllm_config stored"))
+        .expect("vllm_config must be valid JSON")
+}
+
+/// Regression test for the pull wizard's vLLM save (whole-replace contract,
+/// protected half): the server's `apply_model_body` REPLACES the whole `vllm`
+/// struct from the PUT body — a field missing from the body is reset to its
+/// default. The wizard therefore fetches the model's stored vllm config when
+/// entering the SetContext step and overlays its five fields onto it (see
+/// `apply_vllm_wizard_overlays` in `components/pull_wizard/mod.rs`), so the
+/// body INCLUDES the advanced fields — and they must survive the round trip
+/// into the DB row unchanged.
+#[tokio::test]
+async fn test_update_model_vllm_body_with_advanced_fields_preserves_them() {
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
+    let seed_vllm = serde_json::json!({
+        "max_model_len": 32768,
+        "kv_cache_dtype": "fp8",
+        "tensor_parallel_size": 2,
+        "gpu_memory_utilization": 0.85,
+        "trust_remote_code": false,
+        "enable_prefix_caching": true,
+        "attention_backend": "flashinfer",
+        "spec_decoding": {
+            "method": "ngram",
+            "num_speculative_tokens": 3,
+            "draft_tensor_parallel_size": 1
+        },
+    });
+    let (router, model_id) = vllm_put_harness(&tmp_dir, Some(&seed_vllm.to_string()));
+
+    // The wizard's overlay body: the stored vllm object with the five wizard
+    // fields re-applied (the user lowered max_model_len, left the rest as-is).
+    let body = serde_json::json!({
+        "backend": "vllm",
+        "vllm": {
+            "max_model_len": 16384,
+            "kv_cache_dtype": "fp8",
+            "tensor_parallel_size": 2,
+            "gpu_memory_utilization": 0.85,
+            "trust_remote_code": false,
+            "enable_prefix_caching": true,
+            "attention_backend": "flashinfer",
+            "spec_decoding": {
+                "method": "ngram",
+                "num_speculative_tokens": 3,
+                "draft_tensor_parallel_size": 1
+            },
+        },
+    });
+
+    let req = Request::builder()
+        .method("PUT")
+        .uri(format!("/tama/v1/models/{}", model_id))
+        .header("Content-Type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+
+    let resp = router
+        .clone()
+        .oneshot(req)
+        .await
+        .expect("request should complete");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // The wizard edit is applied AND every advanced field survived.
+    let stored = read_stored_vllm(&tmp_dir, model_id);
+    assert_eq!(
+        stored.max_model_len,
+        Some(16384),
+        "wizard's max_model_len edit must be applied"
+    );
+    assert_eq!(
+        stored.attention_backend.as_deref(),
+        Some("flashinfer"),
+        "attention_backend must survive the overlay body"
+    );
+    assert_eq!(
+        stored.spec_decoding.method.as_deref(),
+        Some("ngram"),
+        "spec_decoding must survive the overlay body"
+    );
+    assert_eq!(stored.spec_decoding.num_speculative_tokens, Some(3));
+    assert!(
+        stored.enable_prefix_caching,
+        "enable_prefix_caching must survive"
+    );
+}
+
+/// Documents the server's WHOLE-REPLACE contract for the `vllm` body field:
+/// a PUT whose `vllm` object omits advanced fields RESETS them to their
+/// defaults — that is the documented server behavior (the same semantics as
+/// `spec_decoding`). The pull wizard protects against this data loss by
+/// overlaying its five fields onto the fetched stored config before the PUT
+/// (see `apply_vllm_wizard_overlays`); a bare 5-field body like the one below
+/// would wipe `attention_backend`, `spec_decoding`, and `enable_prefix_caching`.
+#[tokio::test]
+async fn test_update_model_vllm_body_missing_advanced_fields_resets_them() {
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
+    let seed_vllm = serde_json::json!({
+        "max_model_len": 32768,
+        "enable_prefix_caching": true,
+        "attention_backend": "flashinfer",
+        "spec_decoding": { "method": "ngram", "num_speculative_tokens": 3 },
+    });
+    let (router, model_id) = vllm_put_harness(&tmp_dir, Some(&seed_vllm.to_string()));
+
+    // A bare 5-field-style body (what the wizard sent before the overlay
+    // fix): the advanced fields are simply absent.
+    let body = serde_json::json!({
+        "backend": "vllm",
+        "vllm": {
+            "max_model_len": 4096,
+            "trust_remote_code": false,
+        },
+    });
+
+    let req = Request::builder()
+        .method("PUT")
+        .uri(format!("/tama/v1/models/{}", model_id))
+        .header("Content-Type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+
+    let resp = router
+        .clone()
+        .oneshot(req)
+        .await
+        .expect("request should complete");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Whole-replace: the body wins, and omitted fields reset to defaults.
+    let stored = read_stored_vllm(&tmp_dir, model_id);
+    assert_eq!(stored.max_model_len, Some(4096));
+    assert_eq!(
+        stored.attention_backend, None,
+        "omitted field must reset (whole-replace)"
+    );
+    assert!(
+        stored.spec_decoding.is_empty(),
+        "omitted spec_decoding must reset (whole-replace)"
+    );
+    assert!(
+        !stored.enable_prefix_caching,
+        "omitted bool must reset to false (whole-replace)"
+    );
+}

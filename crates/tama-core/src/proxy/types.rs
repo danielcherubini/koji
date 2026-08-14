@@ -6,6 +6,7 @@ use std::time::Instant;
 use tokio::task::JoinSet;
 
 use super::pull_queue::PullQueueService;
+use super::state::repo_pull::{RepoPullError, RepoPullStart, RepoPullStatusDto};
 use super::state::{MetricsState, PullState, RegistryState};
 
 /// Cache entry for discovered GPU devices: (discovered_at, devices).
@@ -314,6 +315,49 @@ impl ProxyState {
             .and_then(|dir| crate::db::open(dir).ok().map(|r| r.conn))
     }
 
+    /// Start a whole-repo `hf` CLI pull.
+    ///
+    /// `model_id` is the pre-created stub row (None = no DB update on
+    /// completion). Takes `&Arc<Self>` so the spawned wait-loop can clone the
+    /// state and outlive the caller.
+    pub async fn start_repo_pull(
+        self: &Arc<Self>,
+        repo_id: &str,
+        model_id: Option<i64>,
+    ) -> Result<RepoPullStart, RepoPullError> {
+        super::state::repo_pull::start_repo_pull(self, repo_id, model_id).await
+    }
+
+    /// Live status snapshot of a whole-repo pull job, or `None` if the job id
+    /// is unknown.
+    ///
+    /// `bytes_done` is computed here (inside tama-core) via `scan_dir_bytes`,
+    /// wrapped in `spawn_blocking` so the recursive fs walk doesn't block a
+    /// web worker thread.
+    pub async fn get_repo_pull_status(&self, job_id: &str) -> Option<RepoPullStatusDto> {
+        let job = self.pull.get_repo_pull(job_id).await?;
+        let dest = job.dest.clone();
+        let bytes_done =
+            tokio::task::spawn_blocking(move || super::state::repo_pull::scan_dir_bytes(&dest))
+                .await
+                .unwrap_or(0);
+        Some(RepoPullStatusDto {
+            job_id: job.job_id.clone(),
+            status: job.status.to_string(),
+            bytes_done,
+            total_bytes: job.total_bytes,
+            error: job.error.clone(),
+            context_length: job.context_length,
+        })
+    }
+
+    /// Cancel + kill a running whole-repo pull job.
+    ///
+    /// Err message is user-facing: "not found" / "already finished".
+    pub async fn cancel_repo_pull(&self, job_id: &str) -> Result<(), String> {
+        self.pull.cancel_repo_pull(job_id).await
+    }
+
     /// Gracefully shut down the proxy state.
     ///
     /// This method is called during a hard restart to clean up resources:
@@ -406,6 +450,114 @@ impl ProxyState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Test that the get_repo_pull_status delegate builds a DTO with a
+    /// computed bytes_done (recursive file sizes under dest) and that an
+    /// unknown job id yields None.
+    #[tokio::test]
+    async fn test_get_repo_pull_status_dto() {
+        let state = Arc::new(ProxyState::new(crate::config::Config::default(), None));
+        let dest = tempfile::tempdir().unwrap();
+        std::fs::write(dest.path().join("a.bin"), vec![0u8; 100]).unwrap();
+        let nested = dest.path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        std::fs::write(nested.join("b.bin"), vec![1u8; 50]).unwrap();
+
+        let child_arc: Arc<tokio::sync::Mutex<Option<tokio::process::Child>>> =
+            Arc::new(tokio::sync::Mutex::new(None));
+        state
+            .pull
+            .upsert_repo_pull(crate::proxy::state::RepoPullJob {
+                job_id: "job-dto".to_string(),
+                repo_id: "owner/repo".to_string(),
+                model_id: Some(7),
+                dest: dest.path().to_path_buf(),
+                total_bytes: Some(300),
+                status: crate::proxy::state::RepoPullStatus::Running,
+                error: None,
+                cancel_requested: false,
+                context_length: None,
+                stderr_tail: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+                child: child_arc,
+            })
+            .await;
+
+        let dto = state
+            .get_repo_pull_status("job-dto")
+            .await
+            .expect("running job should have a DTO");
+        assert_eq!(dto.job_id, "job-dto");
+        assert_eq!(dto.status, "running");
+        assert_eq!(dto.bytes_done, 150);
+        assert_eq!(dto.total_bytes, Some(300));
+        assert!(dto.error.is_none());
+        assert!(dto.context_length.is_none());
+
+        assert!(state.get_repo_pull_status("missing").await.is_none());
+    }
+
+    /// Test that the cancel_repo_pull delegate surfaces user-facing errors
+    /// ("not found" / "already finished") and flags a running job.
+    #[tokio::test]
+    async fn test_cancel_repo_pull_delegate() {
+        let state = Arc::new(ProxyState::new(crate::config::Config::default(), None));
+
+        assert_eq!(
+            state.cancel_repo_pull("missing").await,
+            Err("not found".to_string())
+        );
+
+        let child_arc: Arc<tokio::sync::Mutex<Option<tokio::process::Child>>> =
+            Arc::new(tokio::sync::Mutex::new(None));
+        state
+            .pull
+            .upsert_repo_pull(crate::proxy::state::RepoPullJob {
+                job_id: "job-cancel-dto".to_string(),
+                repo_id: "owner/repo".to_string(),
+                model_id: None,
+                dest: std::path::PathBuf::from("/tmp/models/owner/repo"),
+                total_bytes: None,
+                status: crate::proxy::state::RepoPullStatus::Running,
+                error: None,
+                cancel_requested: false,
+                context_length: None,
+                stderr_tail: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+                child: child_arc,
+            })
+            .await;
+
+        state
+            .cancel_repo_pull("job-cancel-dto")
+            .await
+            .expect("first cancel should succeed");
+        assert_eq!(
+            state.cancel_repo_pull("job-cancel-dto").await,
+            Err("already finished".to_string())
+        );
+
+        // The DTO reflects the cancellation (status is terminal, no error).
+        let dto = state
+            .get_repo_pull_status("job-cancel-dto")
+            .await
+            .expect("job should still be queryable");
+        assert_eq!(dto.status, "cancelled");
+        assert!(dto.error.is_none());
+    }
+
+    /// Test that the start_repo_pull delegate (Arc receiver, public boundary)
+    /// validates the repo id before any other work.
+    #[tokio::test]
+    async fn test_start_repo_pull_delegate_invalid_id() {
+        let state = Arc::new(ProxyState::new(crate::config::Config::default(), None));
+        let err = state
+            .start_repo_pull("a/b\\c", None)
+            .await
+            .expect_err("invalid repo id must be rejected");
+        assert!(
+            matches!(err, crate::proxy::RepoPullError::InvalidRepoId(_)),
+            "expected InvalidRepoId, got: {err:?}"
+        );
+    }
 
     /// Verify the public surface exposes service handles and sub-struct
     /// composition — not lock guards.

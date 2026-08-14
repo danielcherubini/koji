@@ -1,7 +1,7 @@
 mod advanced_form;
 mod api;
 mod files_form;
-mod hardware_form;
+pub(crate) mod hardware_form;
 mod sampling_form;
 mod sections;
 mod settings_form;
