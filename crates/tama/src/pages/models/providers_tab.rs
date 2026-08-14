@@ -10,6 +10,7 @@ use crate::components::docker_register_modal::DockerRegisterModal;
 use crate::components::install_modal::{CapabilitiesDto, InstallModal, InstallRequest};
 use crate::components::installation_card::{InstallationCard, InstallationCardDto};
 use crate::components::job_log_panel::JobLogPanel;
+use crate::pages::models::tab::{Tab, TabPills};
 use crate::utils::{delete_request, get_request, handle_response, post_request};
 
 /// Construct a URL path for updating a backend, properly encoding the backend name.
@@ -218,7 +219,7 @@ struct InstallResponse {
 
 /// Providers tab content, rendered inside the Models page.
 #[component]
-pub fn ProvidersTab() -> impl IntoView {
+pub fn ProvidersTab(active_tab: RwSignal<Tab>) -> impl IntoView {
     // ── State ────────────────────────────────────────────────────────────────
     let backends_list = RwSignal::new(BackendListResponse::default());
     let capabilities = RwSignal::new(CapabilitiesDto::default());
@@ -637,6 +638,8 @@ pub fn ProvidersTab() -> impl IntoView {
                 </div>
             </div>
         </div>
+
+        <TabPills active_tab=active_tab />
 
         <div class="card">
             <p class="text-muted">"Manage inference provider installations."</p>

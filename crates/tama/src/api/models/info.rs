@@ -6,7 +6,9 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use std::collections::HashMap;
 use std::sync::Arc;
+use tama_core::gpu::ModelState;
 use tama_core::proxy::ProxyState;
 
 use crate::api::load_config_from_state;
@@ -129,6 +131,7 @@ fn model_entry_json(
     m: &tama_core::config::ModelConfig,
     _configs_dir: &std::path::Path,
     db_meta: Option<&RepoDbMeta>,
+    state: Option<ModelState>,
 ) -> serde_json::Value {
     // Build a per-quant JSON map, layering DB metadata onto each entry by filename.
     let quants_json: serde_json::Map<String, serde_json::Value> = m
@@ -154,6 +157,7 @@ fn model_entry_json(
 
     let mut val = serde_json::json!({
         "id": id,
+        "state": state.as_ref().map_or("idle", ModelState::as_str),
         "repo_id": record.repo_id,
         "backend": record.backend,
         "gpu_variant": record.gpu_variant,
@@ -209,6 +213,15 @@ pub async fn list_models(
             let configs_dir = config_dir.join("configs");
             let backend_options = build_backend_options(&cfg, &config_dir).await;
 
+            // Collect current runtime state for each model (idle/ready/etc.)
+            // Keyed by db_id so we can look up by the integer ID from the DB record.
+            let model_states: HashMap<i64, ModelState> = state
+                .collect_model_state_snapshots()
+                .await
+                .into_iter()
+                .filter_map(|s| s.db_id.map(|db_id| (db_id, s.state)))
+                .collect();
+
             // Load models from DB using shared Repository
             let repo = match shared_repository(&web_state) {
                 Ok(r) => r,
@@ -236,12 +249,14 @@ pub async fn list_models(
                             },
                         );
                     }
+                    let model_state = model_states.get(&config_record.id).cloned();
                     result.push(model_entry_json(
                         config_record.id,
                         config_record,
                         &model_config,
                         &configs_dir_clone,
                         Some(&meta),
+                        model_state,
                     ));
                 }
                 result
@@ -273,6 +288,15 @@ pub async fn get_model(
         Ok((cfg, config_dir)) => {
             let configs_dir = config_dir.join("configs");
             let backend_options = build_backend_options(&cfg, &config_dir).await;
+
+            // Collect current runtime state for model lookup
+            // Keyed by db_id so we can look up by the integer ID from the DB record.
+            let model_states: HashMap<i64, ModelState> = state
+                .collect_model_state_snapshots()
+                .await
+                .into_iter()
+                .filter_map(|s| s.db_id.map(|db_id| (db_id, s.state)))
+                .collect();
 
             // Resolve model: open repo, resolve id, load config record — all pooled.
             let configs_dir_clone = configs_dir.clone();
@@ -356,8 +380,15 @@ pub async fn get_model(
                     },
                 );
             }
-            let mut val =
-                model_entry_json(record.id, &record, &config, &configs_dir_clone, Some(&meta));
+            let model_state = model_states.get(&record.id).cloned();
+            let mut val = model_entry_json(
+                record.id,
+                &record,
+                &config,
+                &configs_dir_clone,
+                Some(&meta),
+                model_state,
+            );
             val["backends"] = serde_json::json!(backend_options_clone);
             Json(val).into_response()
         }
@@ -431,7 +462,7 @@ mod tests {
         let config = make_config(None);
         let tmp = std::path::Path::new("/tmp");
 
-        let result = model_entry_json(1, &record, &config, tmp, None);
+        let result = model_entry_json(1, &record, &config, tmp, None, None);
 
         assert_eq!(
             result.get("hf_architecture_type").and_then(|v| v.as_str()),
@@ -452,7 +483,7 @@ mod tests {
         // None case: all should be null when not set
         let record_none = make_record();
         let config_none = make_config(None);
-        let result_none = model_entry_json(1, &record_none, &config_none, tmp, None);
+        let result_none = model_entry_json(1, &record_none, &config_none, tmp, None, None);
         assert!(
             result_none["hf_architecture_type"].is_null(),
             "hf_architecture_type should be null when not set"
@@ -473,7 +504,7 @@ mod tests {
         let config = make_config(Some("mtp-test.gguf".to_string()));
         let tmp = std::path::Path::new("/tmp");
 
-        let result = model_entry_json(1, &record, &config, tmp, None);
+        let result = model_entry_json(1, &record, &config, tmp, None, None);
 
         // Some case: mtp_model should be present
         assert_eq!(
@@ -485,7 +516,7 @@ mod tests {
         // None case: mtp_model should be null
         let record_none = make_record();
         let config_none = make_config(None);
-        let result_none = model_entry_json(1, &record_none, &config_none, tmp, None);
+        let result_none = model_entry_json(1, &record_none, &config_none, tmp, None, None);
         assert!(
             result_none["mtp_model"].is_null(),
             "mtp_model should be null in API JSON when not set"
@@ -498,7 +529,7 @@ mod tests {
         let config = make_config(None);
         let tmp = std::path::Path::new("/tmp");
 
-        let result = model_entry_json(1, &record, &config, tmp, None);
+        let result = model_entry_json(1, &record, &config, tmp, None, None);
 
         // capabilities should be present in the JSON
         assert!(
@@ -511,6 +542,30 @@ mod tests {
         assert_eq!(caps["supports_mtp"], false);
         assert_eq!(caps["has_mtp_draft_file"], false);
         assert_eq!(caps["has_mmproj"], false);
+    }
+
+    #[test]
+    fn test_model_entry_json_state_field() {
+        let record = make_record();
+        let config = make_config(None);
+        let tmp = std::path::Path::new("/tmp");
+
+        // None state should produce "idle" (not null)
+        let result_idle = model_entry_json(1, &record, &config, tmp, None, None);
+        assert_eq!(
+            result_idle.get("state").and_then(|v| v.as_str()),
+            Some("idle"),
+            "state should be \"idle\" when no snapshot is available"
+        );
+
+        // Some(Ready) state should produce "ready"
+        let result_ready =
+            model_entry_json(1, &record, &config, tmp, None, Some(ModelState::Ready));
+        assert_eq!(
+            result_ready.get("state").and_then(|v| v.as_str()),
+            Some("ready"),
+            "state should be \"ready\" when ModelState::Ready"
+        );
     }
 
     // ── resolve_model_record integration tests ────────────────────────────────

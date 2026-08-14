@@ -5,6 +5,7 @@ use crate::components::list_card::ListCard;
 use crate::components::modal::Modal;
 use crate::pages::aliases::api::*;
 use crate::pages::aliases::types::{Alias, ModelOption};
+use crate::pages::models::tab::{Tab, TabPills};
 use crate::utils::{rw_signal_to_signal, target_value};
 
 /// Validates an alias name against the allowed pattern.
@@ -37,7 +38,7 @@ fn validate_alias_name(name: &str) -> Option<String> {
 /// Aliases tab content component.
 /// Displays a card-based list of model aliases with create/edit/delete functionality.
 #[component]
-pub fn AliasesTab() -> impl IntoView {
+pub fn AliasesTab(active_tab: RwSignal<Tab>) -> impl IntoView {
     let aliases = RwSignal::new(Vec::<Alias>::new());
     let models = RwSignal::new(Vec::<ModelOption>::new());
     let loading = RwSignal::new(true);
@@ -93,6 +94,7 @@ pub fn AliasesTab() -> impl IntoView {
                 "+ New Alias"
             </button>
         </div>
+        <TabPills active_tab=active_tab />
         <p class="page-header__subtitle">"Custom model aliases - point a friendly name to any loaded model."</p>
 
         // Save status alerts

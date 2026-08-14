@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use self::aliases_tab::AliasesTab;
 use self::providers_tab::ProvidersTab;
-use self::tab::Tab;
+use self::tab::{Tab, TabPills};
 use crate::components::alert_banner::{AlertBanner, AlertVariant};
 use crate::components::modal::Modal;
 use crate::components::model_card::{ModelCard, ModelPips};
@@ -303,21 +303,6 @@ pub fn Models() -> impl IntoView {
         });
 
     view! {
-        <div class="model-editor-pills">
-            {Tab::ALL.map(|tab| {
-                let t = tab;
-                view! {
-                    <button
-                        class="model-editor-pill"
-                        class:model-editor-pill--active=move || active_tab.get() == t
-                        on:click=move |_| active_tab.set(t)
-                    >
-                        <span>{t.icon()}</span>
-                        <span>{t.name()}</span>
-                    </button>
-                }
-            })}
-        </div>
         {move || match active_tab.get() {
             Tab::Models => view! {
                 <div class="page-header">
@@ -336,6 +321,7 @@ pub fn Models() -> impl IntoView {
                         </button>
                     </div>
                 </div>
+                <TabPills active_tab=active_tab />
                 {move || check_all_status.get().map(|(ok, msg)| {
                     let variant = if ok { AlertVariant::Success } else { AlertVariant::Error };
                     view! { <AlertBanner variant=variant>{msg}</AlertBanner> }
@@ -434,10 +420,10 @@ pub fn Models() -> impl IntoView {
                 </Modal>
             }.into_any(),
             Tab::Aliases => view! {
-                <AliasesTab />
+                <AliasesTab active_tab=active_tab />
             }.into_any(),
             Tab::Providers => view! {
-                <ProvidersTab />
+                <ProvidersTab active_tab=active_tab />
             }.into_any(),
         }}
     }
