@@ -103,9 +103,9 @@ pub fn Sidebar() -> impl IntoView {
                     <span class="sidebar-item__icon">"🏠"</span>
                     <span class="sidebar-item__text">"Dashboard"</span>
                 </A>
-                <A href="/tama/installations" attr:class="sidebar-item" attr:data-tooltip="Installations" on:click=move |_| mobile_open.set(false)>
-                    <span class="sidebar-item__icon">"🔧"</span>
-                    <span class="sidebar-item__text">"Installations"</span>
+                <A href="/tama/models" attr:class="sidebar-item" attr:data-tooltip="Models" on:click=move |_| mobile_open.set(false)>
+                    <span class="sidebar-item__icon">"📦"</span>
+                    <span class="sidebar-item__text">"Models"</span>
                 </A>
                 <A href="/tama/logs" attr:class="sidebar-item" attr:data-tooltip="Logs" on:click=move |_| mobile_open.set(false)>
                     <span class="sidebar-item__icon">"📋"</span>
@@ -125,10 +125,6 @@ pub fn Sidebar() -> impl IntoView {
                 <A href="/tama/benchmarks" attr:class="sidebar-item" attr:data-tooltip="Benchmarks" on:click=move |_| mobile_open.set(false)>
                     <span class="sidebar-item__icon">"📊"</span>
                     <span class="sidebar-item__text">"Benchmarks"</span>
-                </A>
-                <A href="/tama/aliases" attr:class="sidebar-item" attr:data-tooltip="Aliases" on:click=move |_| mobile_open.set(false)>
-                    <span class="sidebar-item__icon">"🏷️"</span>
-                    <span class="sidebar-item__text">"Aliases"</span>
                 </A>
                 <A href="/tama/keys" attr:class="sidebar-item" attr:data-tooltip="Keys" on:click=move |_| mobile_open.set(false)>
                     <span class="sidebar-item__icon">"🔑"</span>

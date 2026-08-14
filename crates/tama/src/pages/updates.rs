@@ -839,7 +839,7 @@ pub fn Updates() -> impl IntoView {
                                                 item_checking.with(|m| m.get(&model_key).copied().unwrap_or(false))
                                             });
                                             view! {
-                                                <a href=format!("/tama/model/{}/edit", m_item_id_for_actions) class="btn btn-ghost btn-sm">
+                                                <a href=format!("/tama/models/{}/edit", m_item_id_for_actions) class="btn btn-ghost btn-sm">
                                                     "Edit"
                                                 </a>
                                                 <button

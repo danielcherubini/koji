@@ -322,10 +322,8 @@ pub fn App() -> impl IntoView {
                 <Routes fallback=|| "Page not found">
                     <Route path=path!("/tama") view=pages::dashboard::Dashboard />
                     <Route path=path!("/tama/models") view=pages::models::Models />
-                    <Route path=path!("/tama/model/:id/edit") view=pages::model_editor::ModelEditor />
-                    <Route path=path!("/tama/installations") view=pages::installations::Backends />
+                    <Route path=path!("/tama/models/:id/edit") view=pages::model_editor::ModelEditor />
                     <Route path=path!("/tama/benchmarks") view=pages::benchmarks::Benchmarks />
-                    <Route path=path!("/tama/aliases") view=pages::aliases::AliasesPage />
                     <Route path=path!("/tama/keys") view=pages::keys::KeysPage />
                     <Route path=path!("/tama/logs") view=pages::logs::Logs />
                     <Route path=path!("/tama/config") view=pages::config_editor::ConfigEditor />

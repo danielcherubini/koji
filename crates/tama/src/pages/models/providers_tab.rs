@@ -1,4 +1,4 @@
-//! Backends page – manage inference backend installations.
+//! Providers tab content
 
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -216,9 +216,9 @@ struct InstallResponse {
     job_id: String,
 }
 
-/// Top-level Backends page, reachable via the nav bar.
+/// Providers tab content, rendered inside the Models page.
 #[component]
-pub fn Backends() -> impl IntoView {
+pub fn ProvidersTab() -> impl IntoView {
     // ── State ────────────────────────────────────────────────────────────────
     let backends_list = RwSignal::new(BackendListResponse::default());
     let capabilities = RwSignal::new(CapabilitiesDto::default());
@@ -577,7 +577,7 @@ pub fn Backends() -> impl IntoView {
     // ── View ─────────────────────────────────────────────────────────────────
     view! {
         <div class="page-header">
-            <h1>"Backends"</h1>
+            <h1>"Providers"</h1>
             <div style="display:flex;gap:0.5rem;align-items:center;">
                 {move || save_status.get().map(|s| view! { <span class="text-muted">{s}</span> })}
                 <button
@@ -594,7 +594,7 @@ pub fn Backends() -> impl IntoView {
                             show_backend_dropdown.update(|v| *v = !*v);
                         }
                     >
-                        "+ Add Backend"
+                        "+ Add Provider"
                     </button>
                     {move || {
                         if !show_backend_dropdown.get() {
@@ -639,7 +639,7 @@ pub fn Backends() -> impl IntoView {
         </div>
 
         <div class="card">
-            <p class="text-muted">"Manage inference backend installations."</p>
+            <p class="text-muted">"Manage inference provider installations."</p>
 
             {/* Error banner */}
             {move || action_error.get().map(|err| view! {
@@ -757,10 +757,10 @@ pub fn Backends() -> impl IntoView {
                         return view! {
                             <div style="text-align:center;padding:2.5rem 2rem;color:#64748b;">
                                 <div style="font-size:1.125rem;font-weight:500;margin-bottom:0.5rem;">
-                                    "No backends installed"
+                                    "No providers installed"
                                 </div>
                                 <div style="font-size:0.875rem;margin-bottom:1.5rem;">
-                                    "Click the + Add Backend button to get started."
+                                    "Click the + Add Provider button to get started."
                                 </div>
                             </div>
                         }.into_any();
@@ -805,7 +805,7 @@ pub fn Backends() -> impl IntoView {
                         }
                         rows.push(view! {
                             <div style="margin-top:0.25rem;">
-                                <h3 style="margin:0 0 0.5rem 0;font-size:1rem;color:#e2e8f0;">"Docker Backends"</h3>
+                                <h3 style="margin:0 0 0.5rem 0;font-size:1rem;color:#e2e8f0;">"Docker Providers"</h3>
                                 <div style="display:flex;flex-direction:column;gap:1rem;">{docker_rows}</div>
                             </div>
                         }.into_any());

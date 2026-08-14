@@ -1,6 +1,13 @@
+mod aliases_tab;
+mod providers_tab;
+mod tab;
+
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use self::aliases_tab::AliasesTab;
+use self::providers_tab::ProvidersTab;
+use self::tab::Tab;
 use crate::components::alert_banner::{AlertBanner, AlertVariant};
 use crate::components::modal::Modal;
 use crate::components::model_card::{ModelCard, ModelPips};
@@ -142,6 +149,9 @@ pub fn Models() -> impl IntoView {
     // Refresh trigger signal — increment to force a refetch
     let refresh = RwSignal::new(0u32);
     let pull_modal_open = RwSignal::new(false);
+
+    // Active tab navigation
+    let active_tab = RwSignal::new(Tab::Models);
 
     // Global "Check all for updates" status
     let check_all_busy = RwSignal::new(false);
@@ -293,118 +303,143 @@ pub fn Models() -> impl IntoView {
         });
 
     view! {
-        <div class="page-header">
-            <h1>"Models"</h1>
-            <div class="page-header-actions">
-                <button
-                    class="btn btn-secondary"
-                    prop:disabled=move || check_all_busy.get()
-                    on:click=move |_| { check_all_action.dispatch(()); }
-                    title="Check HuggingFace for updated metadata on every model"
-                >
-                    {move || if check_all_busy.get() { "Checking..." } else { "Check all for updates" }}
-                </button>
-                <button class="btn btn-primary" on:click=move |_| pull_modal_open.set(true)>
-                    "Pull Model"
-                </button>
-            </div>
+        <div class="model-editor-pills">
+            {Tab::ALL.map(|tab| {
+                let t = tab;
+                view! {
+                    <button
+                        class="model-editor-pill"
+                        class:model-editor-pill--active=move || active_tab.get() == t
+                        on:click=move |_| active_tab.set(t)
+                    >
+                        <span>{t.icon()}</span>
+                        <span>{t.name()}</span>
+                    </button>
+                }
+            })}
         </div>
-        {move || check_all_status.get().map(|(ok, msg)| {
-            let variant = if ok { AlertVariant::Success } else { AlertVariant::Error };
-            view! { <AlertBanner variant=variant>{msg}</AlertBanner> }
-        })}
+        {move || match active_tab.get() {
+            Tab::Models => view! {
+                <div class="page-header">
+                    <h1>"Models"</h1>
+                    <div class="page-header-actions">
+                        <button
+                            class="btn btn-secondary"
+                            prop:disabled=move || check_all_busy.get()
+                            on:click=move |_| { check_all_action.dispatch(()); }
+                            title="Check HuggingFace for updated metadata on every model"
+                        >
+                            {move || if check_all_busy.get() { "Checking..." } else { "Check all for updates" }}
+                        </button>
+                        <button class="btn btn-primary" on:click=move |_| pull_modal_open.set(true)>
+                            "Pull Model"
+                        </button>
+                    </div>
+                </div>
+                {move || check_all_status.get().map(|(ok, msg)| {
+                    let variant = if ok { AlertVariant::Success } else { AlertVariant::Error };
+                    view! { <AlertBanner variant=variant>{msg}</AlertBanner> }
+                })}
 
-        <Suspense fallback=|| view! {
-            <div class="card card--centered">
-                <span class="spinner">"Loading models..."</span>
-            </div>
-        }>
-            {move || {
-                models.get().map(|guard| {
-                    let result = guard.take();
-                    match result {
-                        Some(data) if data.models.is_empty() => {
-                            view! {
-                                <div class="card card--centered">
-                                    <p class="text-muted">"No models configured yet."</p>
-                                    <button class="btn btn-primary mt-2" on:click=move |_| pull_modal_open.set(true)>
-                                        "Pull a Model"
-                                    </button>
-                                </div>
-                            }.into_any()
-                        }
-                        Some(data) => {
-                            view! {
-                                <div class="models-list">
-                                    {data.models.into_iter().map(|m| {
-                                        let on_load_cb = Callback::new(move |id: String| {
-                                            load_action.dispatch(id);
-                                        });
-                                        let on_unload_cb = Callback::new(move |id: String| {
-                                            unload_action.dispatch(id);
-                                        });
-                                        let on_cancel_cb = Callback::new(move |id: String| {
-                                            cancel_action.dispatch(id);
-                                        });
-                                        let effective_quant = resolve_quant(&m);
-                                        let effective_ctx = resolve_context_length(&m);
-                                        let effective_cache_k = resolve_cache_k(&m);
-                                        let effective_cache_v = resolve_cache_v(&m);
-                                        view! {
-                                            <ModelCard
-                                                id=m.id.to_string()
-                                                db_id=Some(m.id)
-                                                display_name=model_display_name(&m)
-                                                quant=effective_quant
-                                                context_length=effective_ctx
-                                                pips=ModelPips {
-                                                    gpu_variant: m.gpu_variant.clone(),
-                                                    gpu_label: Some(gpu_group_label(&m.gpu_device)),
-                                                    cache_type_k: effective_cache_k,
-                                                    cache_type_v: effective_cache_v,
-                                                    spec_types: m.spec_types.clone(),
+                <Suspense fallback=|| view! {
+                    <div class="card card--centered">
+                        <span class="spinner">"Loading models..."</span>
+                    </div>
+                }>
+                    {move || {
+                        models.get().map(|guard| {
+                            let result = guard.take();
+                            match result {
+                                Some(data) if data.models.is_empty() => {
+                                    view! {
+                                        <div class="card card--centered">
+                                            <p class="text-muted">"No models configured yet."</p>
+                                            <button class="btn btn-primary mt-2" on:click=move |_| pull_modal_open.set(true)>
+                                                "Pull a Model"
+                                            </button>
+                                        </div>
+                                    }.into_any()
+                                }
+                                Some(data) => {
+                                    view! {
+                                        <div class="models-list">
+                                            {data.models.into_iter().map(|m| {
+                                                let on_load_cb = Callback::new(move |id: String| {
+                                                    load_action.dispatch(id);
+                                                });
+                                                let on_unload_cb = Callback::new(move |id: String| {
+                                                    unload_action.dispatch(id);
+                                                });
+                                                let on_cancel_cb = Callback::new(move |id: String| {
+                                                    cancel_action.dispatch(id);
+                                                });
+                                                let effective_quant = resolve_quant(&m);
+                                                let effective_ctx = resolve_context_length(&m);
+                                                let effective_cache_k = resolve_cache_k(&m);
+                                                let effective_cache_v = resolve_cache_v(&m);
+                                                view! {
+                                                    <ModelCard
+                                                        id=m.id.to_string()
+                                                        db_id=Some(m.id)
+                                                        display_name=model_display_name(&m)
+                                                        quant=effective_quant
+                                                        context_length=effective_ctx
+                                                        pips=ModelPips {
+                                                            gpu_variant: m.gpu_variant.clone(),
+                                                            gpu_label: Some(gpu_group_label(&m.gpu_device)),
+                                                            cache_type_k: effective_cache_k,
+                                                            cache_type_v: effective_cache_v,
+                                                            spec_types: m.spec_types.clone(),
+                                                        }
+                                                        backend=m.backend.clone()
+                                                        log_source=Some(m.backend.clone())
+                                                        state=m.state.clone()
+                                                        enabled=Some(m.enabled)
+                                                        hf_architecture_type=m.hf_architecture_type.clone()
+                                                        hf_base_model=m.hf_base_model.clone()
+                                                        hf_format=m.hf_format.clone()
+                                                        on_load=on_load_cb
+                                                        on_unload=on_unload_cb
+                                                        on_cancel=on_cancel_cb
+                                                        cancel_busy=cancel_busy
+                                                    />
                                                 }
-                                                backend=m.backend.clone()
-                                                log_source=Some(m.backend.clone())
-                                                state=m.state.clone()
-                                                enabled=Some(m.enabled)
-                                                hf_architecture_type=m.hf_architecture_type.clone()
-                                                hf_base_model=m.hf_base_model.clone()
-                                                hf_format=m.hf_format.clone()
-                                                on_load=on_load_cb
-                                                on_unload=on_unload_cb
-                                                on_cancel=on_cancel_cb
-                                                cancel_busy=cancel_busy
-                                            />
-                                        }
-                                    }).collect::<Vec<_>>()}
-                                </div>
-                            }.into_any()
-                        },
-                        None => view! {
-                            <div class="card">
-                                <p class="text-error">"Failed to load models."</p>
-                            </div>
-                        }.into_any(),
-                    }
-                })
-            }}
-        </Suspense>
-        <Modal
-            open=rw_signal_to_signal(pull_modal_open)
-            on_close=Callback::new(move |_| pull_modal_open.set(false))
-            title="Pull Model".to_string()
-        >
-            <PullQuantWizard
-                initial_repo=Signal::derive(String::new)
-                is_open=rw_signal_to_signal(pull_modal_open)
-                on_complete=Callback::new(move |_completed: Vec<CompletedQuant>| {
-                    pull_modal_open.set(false);
-                    refresh.update(|n| *n += 1);
-                })
-                on_close=Callback::new(move |_| pull_modal_open.set(false))
-            />
-        </Modal>
+                                            }).collect::<Vec<_>>()}
+                                        </div>
+                                    }.into_any()
+                                },
+                                None => view! {
+                                    <div class="card">
+                                        <p class="text-error">"Failed to load models."</p>
+                                    </div>
+                                }.into_any(),
+                            }
+                        })
+                    }}
+                </Suspense>
+                <Modal
+                    open=rw_signal_to_signal(pull_modal_open)
+                    on_close=Callback::new(move |_| pull_modal_open.set(false))
+                    title="Pull Model".to_string()
+                >
+                    <PullQuantWizard
+                        initial_repo=Signal::derive(String::new)
+                        is_open=rw_signal_to_signal(pull_modal_open)
+                        on_complete=Callback::new(move |_completed: Vec<CompletedQuant>| {
+                            pull_modal_open.set(false);
+                            refresh.update(|n| *n += 1);
+                        })
+                        on_close=Callback::new(move |_| pull_modal_open.set(false))
+                    />
+                </Modal>
+            }.into_any(),
+            Tab::Aliases => view! {
+                <AliasesTab />
+            }.into_any(),
+            Tab::Providers => view! {
+                <ProvidersTab />
+            }.into_any(),
+        }}
     }
 }
 

@@ -299,7 +299,7 @@ pub fn ModelCard(
                 }}
                 // Edit link — always rendered
                 <A
-                    href=format!("/tama/model/{}/edit", edit_id_clone)
+                    href=format!("/tama/models/{}/edit", edit_id_clone)
                     attr:class="btn-icon"
                     attr:title="Edit model"
                 >
