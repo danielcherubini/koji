@@ -12,9 +12,17 @@ Plans for features, refactors, and bug fixes in the Tama project.
 
 ## Quick Stats
 
-- **Total Plans**: 91
-- **Backlog**: 0
+- **Total Plans**: 92
+- **Backlog**: 1
 - **Completed**: 90 ✅
+
+---
+
+## Backlog
+
+| # | Plan | Status |
+|---|------|--------|
+| 091 | [VLLM Spec Attention Backend](plan-091-vllm-spec-attention-backend.md) | Backlog |
 
 ---
 
