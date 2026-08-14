@@ -286,6 +286,10 @@ fn merge_vllm_spec_settings(existing: &VllmSpecForm, extracted: &VllmSpecForm) -
         disable_padded_drafter_batch: existing
             .disable_padded_drafter_batch
             .or(extracted.disable_padded_drafter_batch),
+        attention_backend: existing
+            .attention_backend
+            .clone()
+            .or_else(|| extracted.attention_backend.clone()),
     }
 }
 
@@ -748,7 +752,7 @@ mod tests {
 
     #[test]
     fn test_args_to_vllm_form_speculative_config_all_fields() {
-        let args = r#"--speculative-config {"method":"eagle","model":"draft.gguf","num_speculative_tokens":8,"rejection_sample_method":"top_k","draft_tensor_parallel_size":2,"draft_sample_method":"greedy","disable_padded_drafter_batch":true}"#;
+        let args = r#"--speculative-config {"method":"eagle","model":"draft.gguf","num_speculative_tokens":8,"rejection_sample_method":"top_k","draft_tensor_parallel_size":2,"draft_sample_method":"greedy","disable_padded_drafter_batch":true,"attention_backend":"ROCM_AITER_UNIFIED_ATTN"}"#;
         let form = args_to_vllm_form(args);
         assert_eq!(form.spec_decoding.method, Some("eagle".to_string()));
         assert_eq!(form.spec_decoding.model, Some("draft.gguf".to_string()));
@@ -763,6 +767,10 @@ mod tests {
             Some("greedy".to_string())
         );
         assert_eq!(form.spec_decoding.disable_padded_drafter_batch, Some(true));
+        assert_eq!(
+            form.spec_decoding.attention_backend,
+            Some("ROCM_AITER_UNIFIED_ATTN".to_string())
+        );
     }
 
     // ── strip_managed_flags: --attention-backend ────────────────────────
@@ -900,6 +908,37 @@ mod tests {
         let extracted = VllmSettings::default();
         let merged = merge_vllm_settings(&existing, &extracted);
         assert_eq!(merged.spec_decoding, VllmSpecForm::default());
+    }
+
+    #[test]
+    fn test_merge_vllm_spec_attention_backend_existing_wins() {
+        let existing = VllmSpecForm {
+            attention_backend: Some("FLASH_ATTN".to_string()),
+            ..Default::default()
+        };
+        let extracted = VllmSpecForm {
+            attention_backend: Some("ROCM_AITER_UNIFIED_ATTN".to_string()),
+            ..Default::default()
+        };
+        let merged = merge_vllm_spec_settings(&existing, &extracted);
+        assert_eq!(merged.attention_backend, Some("FLASH_ATTN".to_string()));
+    }
+
+    #[test]
+    fn test_merge_vllm_spec_attention_backend_extracted_fills() {
+        let existing = VllmSpecForm {
+            attention_backend: None,
+            ..Default::default()
+        };
+        let extracted = VllmSpecForm {
+            attention_backend: Some("ROCM_AITER_UNIFIED_ATTN".to_string()),
+            ..Default::default()
+        };
+        let merged = merge_vllm_spec_settings(&existing, &extracted);
+        assert_eq!(
+            merged.attention_backend,
+            Some("ROCM_AITER_UNIFIED_ATTN".to_string())
+        );
     }
 
     #[test]
@@ -1078,6 +1117,24 @@ mod tests {
         // Reparsing the stripped args should yield defaults for attention_backend
         let re_form = args_to_vllm_form(&stripped);
         assert_eq!(re_form.attention_backend, None);
+    }
+
+    /// `--speculative-config` with `attention_backend` round-trip: args → form → strip → reparse stable.
+    #[test]
+    fn test_speculative_config_with_attention_backend_roundtrip() {
+        let args = r#"--speculative-config {"method":"mtp","attention_backend":"ROCM_AITER_UNIFIED_ATTN"}"#;
+        let form = args_to_vllm_form(args);
+        assert_eq!(form.spec_decoding.method, Some("mtp".to_string()));
+        assert_eq!(
+            form.spec_decoding.attention_backend,
+            Some("ROCM_AITER_UNIFIED_ATTN".to_string())
+        );
+        // Verify it's stripped from args
+        let stripped = strip_managed_flags(args);
+        assert!(!stripped.contains("--speculative-config"));
+        // Re-parse stripped args to assert attention_backend becomes None
+        let re_form = args_to_vllm_form(&stripped);
+        assert_eq!(re_form.spec_decoding.attention_backend, None);
     }
 
     /// Malformed JSON: `--speculative-config '{bad'` → preserved in args (not stripped).
@@ -1272,5 +1329,18 @@ mod tests {
         let result = normalize_vllm_spec(&mut vllm);
         assert!(result.is_ok());
         assert_eq!(vllm.spec_decoding.draft_tensor_parallel_size, None);
+    }
+
+    /// Direct serde serialize→deserialize round-trip for `VllmSpecForm` with `attention_backend`.
+    #[test]
+    fn test_vllm_spec_form_attention_backend_serde_roundtrip() {
+        let spec = VllmSpecForm {
+            method: Some("eagle".to_string()),
+            attention_backend: Some("ROCM_AITER_UNIFIED_ATTN".to_string()),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&spec).unwrap();
+        let parsed: VllmSpecForm = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, spec);
     }
 }

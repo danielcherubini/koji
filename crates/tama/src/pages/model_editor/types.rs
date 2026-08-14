@@ -150,6 +150,7 @@ pub struct VllmSpecForm {
     pub draft_tensor_parallel_size: Option<u32>,
     pub draft_sample_method: Option<String>,
     pub disable_padded_drafter_batch: Option<bool>,
+    pub attention_backend: Option<String>,
 }
 
 /// vLLM-specific settings for transformers-format models.

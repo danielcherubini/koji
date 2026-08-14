@@ -224,6 +224,10 @@ fn merge_vllm_spec_decoding(
         disable_padded_drafter_batch: existing
             .disable_padded_drafter_batch
             .or(extracted.disable_padded_drafter_batch),
+        attention_backend: existing
+            .attention_backend
+            .clone()
+            .or_else(|| extracted.attention_backend.clone()),
     }
 }
 
@@ -709,5 +713,43 @@ mod tests {
             let args: Vec<String> = serde_json::from_str(&row.0).unwrap();
             assert_eq!(args, vec!["--quantization fp8"]); // args unchanged
         }
+    }
+
+    /// Spec-level `attention_backend` in existing config wins over extracted.
+    #[test]
+    fn test_backfill_merge_spec_attention_backend_existing_wins() {
+        let existing = crate::config::types::VllmSpecConfig {
+            method: Some("eagle".to_string()),
+            attention_backend: Some("FLASH_ATTN".to_string()),
+            ..Default::default()
+        };
+        let extracted = crate::config::types::VllmSpecConfig {
+            method: Some("eagle".to_string()),
+            attention_backend: Some("ROCM_AITER_UNIFIED_ATTN".to_string()),
+            ..Default::default()
+        };
+        let merged = merge_vllm_spec_decoding(&existing, &extracted);
+        assert_eq!(merged.method, Some("eagle".to_string()));
+        assert_eq!(merged.attention_backend, Some("FLASH_ATTN".to_string()));
+    }
+
+    /// Spec-level `attention_backend` fills from extracted when existing is `None`.
+    #[test]
+    fn test_backfill_merge_spec_attention_backend_extracted_fills() {
+        let existing = crate::config::types::VllmSpecConfig {
+            method: Some("eagle".to_string()),
+            attention_backend: None,
+            ..Default::default()
+        };
+        let extracted = crate::config::types::VllmSpecConfig {
+            method: Some("eagle".to_string()),
+            attention_backend: Some("ROCM_AITER_UNIFIED_ATTN".to_string()),
+            ..Default::default()
+        };
+        let merged = merge_vllm_spec_decoding(&existing, &extracted);
+        assert_eq!(
+            merged.attention_backend,
+            Some("ROCM_AITER_UNIFIED_ATTN".to_string())
+        );
     }
 }

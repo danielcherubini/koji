@@ -589,3 +589,55 @@ fn test_vllm_config_speculative_config_survives_flatten() {
     assert_eq!(parsed["method"], "mtp");
     assert_eq!(parsed["num_speculative_tokens"], 4);
 }
+
+// ── VllmSpecConfig::attention_backend tests ────────────────────────────────
+
+/// VllmSpecConfig::is_empty() returns false when attention_backend is set.
+#[test]
+fn test_vllm_spec_config_is_empty_with_attention_backend() {
+    let spec = crate::config::types::VllmSpecConfig {
+        attention_backend: Some("FLASH_INFER".to_string()),
+        ..Default::default()
+    };
+    assert!(!spec.is_empty());
+}
+
+/// VllmConfig::to_args() includes attention_backend in --speculative-config JSON.
+#[test]
+fn test_vllm_spec_config_attention_backend_in_to_args() {
+    use crate::config::split_arg_entry;
+
+    let spec = crate::config::types::VllmSpecConfig {
+        method: Some("mtp".to_string()),
+        attention_backend: Some("FLASH_INFER".to_string()),
+        ..Default::default()
+    };
+    let config = VllmConfig {
+        spec_decoding: spec,
+        ..Default::default()
+    };
+    let args = config.to_args();
+    let spec_arg = args
+        .iter()
+        .find(|a| a.starts_with("--speculative-config "))
+        .expect("Expected --speculative-config in args");
+    let tokens = split_arg_entry(spec_arg);
+    let json_str = &tokens[1];
+    let parsed: serde_json::Value = serde_json::from_str(json_str).unwrap();
+    assert_eq!(parsed["attention_backend"], "FLASH_INFER");
+}
+
+/// VllmSpecConfig with attention_backend round-trips through serde JSON.
+#[test]
+fn test_vllm_spec_config_attention_backend_serde_roundtrip() {
+    let spec = crate::config::types::VllmSpecConfig {
+        method: Some("ngram".to_string()),
+        attention_backend: Some("FLASH_ATTN".to_string()),
+        num_speculative_tokens: Some(5),
+        ..Default::default()
+    };
+    let json = serde_json::to_string(&spec).unwrap();
+    let loaded: crate::config::types::VllmSpecConfig = serde_json::from_str(&json).unwrap();
+    assert_eq!(spec, loaded);
+    assert_eq!(loaded.attention_backend, Some("FLASH_ATTN".to_string()));
+}

@@ -168,6 +168,14 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                         .map(|v| v.to_string())
                         .unwrap_or_default(),
                 );
+                set_input_value(
+                    "field-vllm-spec-attention-backend",
+                    &f.vllm
+                        .spec_decoding
+                        .attention_backend
+                        .clone()
+                        .unwrap_or_default(),
+                );
                 set_checked(
                     "field-vllm-spec-disable-padded",
                     f.vllm
@@ -463,6 +471,32 @@ pub fn ModelEditorAdvancedForm(form: RwSignal<Option<ModelForm>>) -> impl IntoVi
                     />
                     <div class="form-hint">
                         "Tokens to propose per step. Default: 5. Values above 8 may reduce quality."
+                    </div>
+
+                    // attention_backend (inside spec config)
+                    <label class="form-label" for="field-vllm-spec-attention-backend">
+                        "Attention backend (spec)"
+                    </label>
+                    <input
+                        id="field-vllm-spec-attention-backend"
+                        class="form-input"
+                        type="text"
+                        placeholder="e.g. ROCM_AITER_UNIFIED_ATTN"
+                        on:input=move |e| {
+                            let val = target_value(&e);
+                            form.update(|f| {
+                                if let Some(form) = f {
+                                    form.vllm.spec_decoding.attention_backend = if val.is_empty() {
+                                        None
+                                    } else {
+                                        Some(val)
+                                    };
+                                }
+                            });
+                        }
+                    />
+                    <div class="form-hint">
+                        "Attention backend inside --speculative-config JSON. Separate from the top-level --attention-backend flag."
                     </div>
 
                     // Drafter model — shown only for dflash, eagle3, draft_model

@@ -437,6 +437,8 @@ pub struct VllmSpecConfig {
     pub draft_sample_method: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disable_padded_drafter_batch: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attention_backend: Option<String>,
 }
 
 impl VllmSpecConfig {
@@ -449,6 +451,7 @@ impl VllmSpecConfig {
             && self.draft_tensor_parallel_size.is_none()
             && self.draft_sample_method.is_none()
             && self.disable_padded_drafter_batch.is_none()
+            && self.attention_backend.is_none()
     }
 }
 
