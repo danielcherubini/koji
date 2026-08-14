@@ -12,15 +12,17 @@ Plans for features, refactors, and bug fixes in the Tama project.
 
 ## Quick Stats
 
-- **Total Plans**: 90
-- **Backlog**: 0
+- **Total Plans**: 91
+- **Backlog**: 1
 - **Completed**: 89 ✅
 
 ---
 
 ## Backlog
 
-No plans in the backlog.
+| # | Plan | Status |
+|---|------|--------|
+| 090 | [Consolidate Models Page](plan-090-consolidate-models-page.md) | Backlog |
 
 > **Note:** The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan.
 
