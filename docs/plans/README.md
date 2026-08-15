@@ -13,8 +13,8 @@ Plans for features, refactors, and bug fixes in the Tama project.
 ## Quick Stats
 
 - **Total Plans**: 94
-- **Backlog**: 1
-- **Completed**: 92 ✅
+- **Backlog**: 0
+- **Completed**: 93 ✅
 
 ---
 
@@ -22,18 +22,11 @@ Plans for features, refactors, and bug fixes in the Tama project.
 
 ---
 
-## Backlog
-
-| # | Plan | Status |
-|---|------|--------|
-| 189 | [Model Reasoning Effort](plan-189-model-reasoning-effort.md) | Backlog |
-
----
-
 ## Completed (Recent)
 
 | # | Plan | Status |
 |---|------|--------|
+| 189 | [Model Reasoning Effort](done/plan-189-model-reasoning-effort.md) | ✅ COMPLETED |
 | 188 | [hf CLI Repo Pull (Safetensors Wizard Support)](done/plan-188-hf-cli-repo-pull.md) | ✅ COMPLETED |
 | 091 | [VLLM Spec Attention Backend](done/plan-091-vllm-spec-attention-backend.md) | ✅ COMPLETED |
 | 090 | [Consolidate Models Page](done/plan-090-consolidate-models-page.md) | ✅ COMPLETED |
