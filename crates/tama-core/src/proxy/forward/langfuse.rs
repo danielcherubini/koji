@@ -50,6 +50,11 @@ use axum::http::HeaderMap;
 /// Extract Langfuse trace context from request headers.
 /// Compatible with LiteLLM Proxy convention (langfuse_* prefixed headers).
 /// Returns (trace_id, user_id, session_id, metadata, tags).
+///
+/// The session ID prefers the explicit `langfuse_session_id` header. When that is
+/// absent it falls back to the OpenRouter-style `x-session-id` session-affinity
+/// header, so clients that only send affinity headers (e.g. pi via
+/// `compat.sendSessionAffinityHeaders`) still get Langfuse session grouping.
 #[allow(clippy::type_complexity)]
 pub fn extract_langfuse_headers(
     headers: &HeaderMap,
@@ -60,15 +65,12 @@ pub fn extract_langfuse_headers(
     Option<serde_json::Value>,
     Option<Vec<String>>,
 ) {
-    let trace_id = headers
-        .get("langfuse_trace_id")
-        .and_then(|v| v.to_str().ok().map(|s| s.to_string()));
-    let user_id = headers
-        .get("langfuse_trace_user_id")
-        .and_then(|v| v.to_str().ok().map(|s| s.to_string()));
-    let session_id = headers
-        .get("langfuse_session_id")
-        .and_then(|v| v.to_str().ok().map(|s| s.to_string()));
+    let trace_id = header_str(headers, "langfuse_trace_id");
+    let user_id = header_str(headers, "langfuse_trace_user_id");
+    // Explicit langfuse session wins; otherwise fall back to the
+    // OpenRouter-style session-affinity header (x-session-id).
+    let session_id =
+        header_str(headers, "langfuse_session_id").or_else(|| header_str(headers, "x-session-id"));
     let metadata = headers
         .get("langfuse_trace_metadata")
         .and_then(|v| v.to_str().ok())
@@ -84,6 +86,16 @@ pub fn extract_langfuse_headers(
         });
 
     (trace_id, user_id, session_id, metadata, tags)
+}
+
+/// Read a single header as an owned string, returning `None` when absent or
+/// not valid UTF-8. Keeps the per-header parsing in `extract_langfuse_headers`
+/// concise.
+fn header_str(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
 }
 
 /// Compute energy cost per inference.
@@ -540,6 +552,45 @@ mod tests {
         let (_, _, _, _, tags) = extract_langfuse_headers(&headers);
         // Empty strings after trim should be filtered out
         assert_eq!(tags, Some(vec![]));
+    }
+
+    #[test]
+    fn test_extract_langfuse_headers_x_session_id_fallback() {
+        // No langfuse_session_id, but an OpenRouter-style x-session-id header.
+        // Tama should fall back to it so clients that only send session-affinity
+        // headers still get Langfuse session grouping.
+        let mut headers = HeaderMap::new();
+        headers.insert("x-session-id", "pi-session-abc".parse().unwrap());
+
+        let (trace_id, user_id, session_id, metadata, tags) = extract_langfuse_headers(&headers);
+
+        assert!(trace_id.is_none());
+        assert!(user_id.is_none());
+        assert_eq!(session_id, Some("pi-session-abc".to_string()));
+        assert!(metadata.is_none());
+        assert!(tags.is_none());
+    }
+
+    #[test]
+    fn test_extract_langfuse_headers_session_id_takes_precedence_over_x_session_id() {
+        // When both are present, the explicit langfuse_session_id wins.
+        let mut headers = HeaderMap::new();
+        headers.insert("langfuse_session_id", "explicit-session".parse().unwrap());
+        headers.insert("x-session-id", "affinity-session".parse().unwrap());
+
+        let (_, _, session_id, _, _) = extract_langfuse_headers(&headers);
+
+        assert_eq!(session_id, Some("explicit-session".to_string()));
+    }
+
+    #[test]
+    fn test_extract_langfuse_headers_no_session_headers() {
+        // Neither langfuse_session_id nor x-session-id → no session.
+        let headers = HeaderMap::new();
+
+        let (_, _, session_id, _, _) = extract_langfuse_headers(&headers);
+
+        assert!(session_id.is_none());
     }
 
     // ── extract_usage ────────────────────────────────────────────────
