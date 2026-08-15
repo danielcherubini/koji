@@ -71,3 +71,15 @@ _Avoid_: Benchmark batch, benchmark pack
 **Scope middleware**:
 The authorization layer that runs after authentication. Checks `AuthSubject` against route requirements — `User` bypasses, `Key` must have matching scopes.
 _Avoid_: Permission middleware, ACL layer, role check
+
+**Reasoning** (model capability):
+A model's ability to produce reasoning/thinking content. On client-facing model info, the effective `reasoning` flag = the backend-computed capability (llama.cpp `/props`: `supports_preserve_reasoning` / `reasoning_format`) OR the derived `supportsReasoningEffort`.
+_Avoid_: thinking (generic), effort (that's supportsReasoningEffort)
+
+**supportsReasoningEffort**:
+Per-model capability exposed on client-facing model info — whether reasoning effort is adjustable per request. Derived, never stored: true iff `reasoningLevels` is non-empty (ADR-0008). The `ModelConfig::supports_reasoning_effort()` helper is the single derivation point.
+_Avoid_: reasoning flag, thinking support, effort flag
+
+**Reasoning levels**:
+The set of effort levels a model accepts, stored per-model as `reasoningLevels` (JSON TEXT column on `model_configs`; editor: comma-separated text input). Stored in pi's 7-level vocabulary: `off, minimal, low, medium, high, xhigh, max`. The wire off-word to backends is `none` — `off`→`none` is translated at the pi plugin, the server forwarder, and the `reasoning_options` serializer (ADR-0009).
+_Avoid_: thinking levels, effort presets, reasoning options (that's the opencode-canonical derived field)

@@ -592,6 +592,207 @@ async fn test_alias_id_preserves_original_casing() {
     );
 }
 
+// ── Reasoning-effort fields (plan 189, Task 3) ────────────────────────────
+
+/// Model with reasoning levels: the entry exposes supportsReasoningEffort,
+/// raw reasoningLevels (pi vocabulary), and derived reasoning_options
+/// (off → none). Effective reasoning is true even without /props.
+#[tokio::test]
+async fn test_model_with_reasoning_levels_exposes_derived_fields() {
+    let state = create_state_with_model(ModelConfig {
+        backend: "llama_cpp".to_string(),
+        api_name: Some("test-leveled".to_string()),
+        model: Some("test/leveled".to_string()),
+        enabled: true,
+        reasoning_levels: Some(vec![
+            "off".to_string(),
+            "low".to_string(),
+            "medium".to_string(),
+            "xhigh".to_string(),
+        ]),
+        ..Default::default()
+    })
+    .await;
+
+    let result = call_list_models(state).await;
+    let models = result.get("models").unwrap().as_array().unwrap();
+    assert_eq!(models.len(), 1);
+
+    let model = &models[0];
+    assert_eq!(
+        model
+            .get("supportsReasoningEffort")
+            .and_then(|v| v.as_bool()),
+        Some(true),
+        "supportsReasoningEffort should be true when levels are configured"
+    );
+    assert_eq!(
+        model.get("reasoningLevels"),
+        Some(&serde_json::json!(["off", "low", "medium", "xhigh"])),
+        "reasoningLevels should keep the raw stored levels"
+    );
+    assert_eq!(
+        model.get("reasoning_options"),
+        Some(&serde_json::json!([
+            { "type": "effort", "values": ["none", "low", "medium", "xhigh"] }
+        ])),
+        "reasoning_options should map off to none"
+    );
+    // No backend loaded → props reasoning defaults to false, but the
+    // derived flag must still make effective reasoning true.
+    assert!(
+        model.get("reasoning").unwrap().as_bool().unwrap(),
+        "reasoning should be true from derived levels when props is false"
+    );
+}
+
+/// Model without reasoning levels: supportsReasoningEffort is emitted as
+/// false; the reasoningLevels and reasoning_options keys are absent, and
+/// effective reasoning stays false (props false + derived false).
+#[tokio::test]
+async fn test_model_without_reasoning_levels_omits_optional_fields() {
+    let state = create_state_with_model(ModelConfig {
+        backend: "llama_cpp".to_string(),
+        api_name: Some("test-plain".to_string()),
+        model: Some("test/plain".to_string()),
+        enabled: true,
+        ..Default::default()
+    })
+    .await;
+
+    let result = call_list_models(state).await;
+    let models = result.get("models").unwrap().as_array().unwrap();
+    assert_eq!(models.len(), 1);
+
+    let model = &models[0];
+    assert_eq!(
+        model
+            .get("supportsReasoningEffort")
+            .and_then(|v| v.as_bool()),
+        Some(false),
+        "supportsReasoningEffort should always be emitted, false when unset"
+    );
+    assert!(
+        model.get("reasoningLevels").is_none(),
+        "reasoningLevels should be absent when no levels are configured"
+    );
+    assert!(
+        model.get("reasoning_options").is_none(),
+        "reasoning_options should be absent when no levels are configured"
+    );
+    assert_eq!(
+        model.get("reasoning").and_then(|v| v.as_bool()),
+        Some(false),
+        "reasoning should be false when props is false and no levels"
+    );
+}
+
+/// Effective reasoning is the OR of props and derived: props reasoning
+/// true with no levels still yields reasoning: true.
+#[tokio::test]
+async fn test_reasoning_props_true_without_levels_still_true() {
+    let mock_server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/props"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "chat_template_caps": {
+                "supports_tool_calls": true,
+                "supports_preserve_reasoning": true
+            }
+        })))
+        .mount(&mock_server)
+        .await;
+
+    let backend_url = mock_server.uri();
+    let state =
+        crate::proxy::handlers::tests::create_state_with_two_backends(&backend_url, &backend_url)
+            .await;
+
+    let result = call_list_models(state).await;
+    let models = result.get("models").unwrap().as_array().unwrap();
+
+    let model_a = models
+        .iter()
+        .find(|m| m.get("id").unwrap().as_str().unwrap() == "api-model-a")
+        .expect("model-a entry should exist");
+    assert!(
+        model_a.get("reasoning").unwrap().as_bool().unwrap(),
+        "reasoning should be true from props when no levels are configured"
+    );
+    assert_eq!(
+        model_a
+            .get("supportsReasoningEffort")
+            .and_then(|v| v.as_bool()),
+        Some(false),
+        "supportsReasoningEffort should be false without levels"
+    );
+    assert!(
+        model_a.get("reasoningLevels").is_none(),
+        "reasoningLevels should be absent without levels"
+    );
+    assert!(
+        model_a.get("reasoning_options").is_none(),
+        "reasoning_options should be absent without levels"
+    );
+}
+
+/// Alias of a leveled model inherits all three reasoning-effort fields
+/// (the alias entry is a whole-entry copy of the target).
+#[tokio::test]
+async fn test_alias_inherits_reasoning_effort_fields() {
+    let state = create_state_with_model(ModelConfig {
+        backend: "llama_cpp".to_string(),
+        api_name: Some("test-leveled".to_string()),
+        model: Some("test/leveled".to_string()),
+        enabled: true,
+        reasoning_levels: Some(vec![
+            "off".to_string(),
+            "low".to_string(),
+            "high".to_string(),
+        ]),
+        ..Default::default()
+    })
+    .await;
+
+    {
+        let mut aliases = state.registry.aliases.write().await;
+        aliases.insert("my-alias".to_string(), "test-leveled".to_string());
+    }
+
+    let result = call_list_models(state).await;
+    let models = result.get("models").unwrap().as_array().unwrap();
+
+    let alias_entry = models
+        .iter()
+        .find(|m| m.get("id").unwrap().as_str().unwrap() == "my-alias")
+        .expect("alias entry should exist");
+
+    assert_eq!(
+        alias_entry
+            .get("supportsReasoningEffort")
+            .and_then(|v| v.as_bool()),
+        Some(true),
+        "alias should inherit supportsReasoningEffort from target"
+    );
+    assert_eq!(
+        alias_entry.get("reasoningLevels"),
+        Some(&serde_json::json!(["off", "low", "high"])),
+        "alias should inherit reasoningLevels from target"
+    );
+    assert_eq!(
+        alias_entry.get("reasoning_options"),
+        Some(&serde_json::json!([
+            { "type": "effort", "values": ["none", "low", "high"] }
+        ])),
+        "alias should inherit derived reasoning_options from target"
+    );
+    assert!(
+        alias_entry.get("reasoning").unwrap().as_bool().unwrap(),
+        "alias should inherit effective reasoning: true"
+    );
+}
+
 // ── Drift-guard: opencode response round-trip ───────────────────────────────
 
 /// The OpencodeModelsResponse struct must faithfully represent the full wire

@@ -51,6 +51,7 @@ mod _0045_add_backend_logical_id;
 mod _0046_create_provider_registry;
 mod _0047_add_model_provider_name;
 mod _0048_rename_backend_to_provider;
+mod _0049_add_reasoning_levels;
 
 #[cfg(test)]
 mod migrations_tests;
@@ -86,7 +87,7 @@ impl Drop for FkGuard<'_> {
 type Migration = (i32, bool, &'static str);
 
 /// Version number for the latest migration
-pub const LATEST_VERSION: i32 = 48;
+pub const LATEST_VERSION: i32 = 49;
 
 /// All migrations collected from individual files, sorted by version.
 const MIGRATIONS: &[Migration] = &[
@@ -138,6 +139,7 @@ const MIGRATIONS: &[Migration] = &[
     _0046_create_provider_registry::MIGRATION,
     _0047_add_model_provider_name::MIGRATION,
     _0048_rename_backend_to_provider::MIGRATION,
+    _0049_add_reasoning_levels::MIGRATION,
 ];
 
 /// Run all applicable migrations on the database

@@ -675,3 +675,275 @@ fn test_find_model_in_entries_single_entry() {
     assert!(result.is_some());
     assert_eq!(result.unwrap().id.as_deref(), Some("only-model.gguf"));
 }
+
+// ── handle_list_models: reasoning-effort fields (plan 189, Task 3) ───────
+
+/// Unloaded model with reasoning levels: the config-fallback entry carries
+/// supportsReasoningEffort, reasoningLevels and derived reasoning_options
+/// (off → none).
+#[tokio::test]
+async fn test_handle_list_models_unloaded_with_reasoning_levels() {
+    let config = Config::default();
+    let state = ProxyState::new(config, None);
+
+    {
+        let mut mc = state.registry.model_configs.write().await;
+        mc.insert(
+            "leveled-model".to_string(),
+            ModelConfig {
+                backend: "llama_cpp".to_string(),
+                api_name: Some("my-leveled-model".to_string()),
+                model: Some("test/leveled".to_string()),
+                enabled: true,
+                reasoning_levels: Some(vec![
+                    "off".to_string(),
+                    "low".to_string(),
+                    "medium".to_string(),
+                    "xhigh".to_string(),
+                ]),
+                ..Default::default()
+            },
+        );
+    }
+
+    let state_arc = Arc::new(state);
+    let state = State(state_arc.clone());
+
+    let response = handle_list_models(state).await;
+    let (_parts, body) = response.into_response().into_parts();
+    let bytes = to_bytes(body, 1024 * 1024).await.unwrap();
+    let json: JsonValue = serde_json::from_slice(&bytes).unwrap();
+
+    let data = json.get("data").unwrap().as_array().unwrap();
+    assert_eq!(data.len(), 1, "Expected 1 entry, got: {}", data.len());
+
+    assert_eq!(data[0]["id"], "my-leveled-model");
+    assert_eq!(data[0]["ready"], false);
+    assert_eq!(data[0]["supportsReasoningEffort"], true);
+    assert_eq!(
+        data[0]["reasoningLevels"],
+        serde_json::json!(["off", "low", "medium", "xhigh"])
+    );
+    assert_eq!(
+        data[0]["reasoning_options"],
+        serde_json::json!([
+            { "type": "effort", "values": ["none", "low", "medium", "xhigh"] }
+        ])
+    );
+}
+
+/// Unloaded model without reasoning levels: entry stays byte-identical to
+/// the pre-change shape (no reasoning-effort keys).
+#[tokio::test]
+async fn test_handle_list_models_unloaded_without_reasoning_levels_unchanged() {
+    let config = Config::default();
+    let state = ProxyState::new(config, None);
+
+    {
+        let mut mc = state.registry.model_configs.write().await;
+        mc.insert(
+            "plain-model".to_string(),
+            ModelConfig {
+                backend: "llama_cpp".to_string(),
+                api_name: Some("my-plain-model".to_string()),
+                model: Some("test/plain".to_string()),
+                enabled: true,
+                ..Default::default()
+            },
+        );
+    }
+
+    let state_arc = Arc::new(state);
+    let state = State(state_arc.clone());
+
+    let response = handle_list_models(state).await;
+    let (_parts, body) = response.into_response().into_parts();
+    let bytes = to_bytes(body, 1024 * 1024).await.unwrap();
+    let json: JsonValue = serde_json::from_slice(&bytes).unwrap();
+
+    let data = json.get("data").unwrap().as_array().unwrap();
+    assert_eq!(data.len(), 1, "Expected 1 entry, got: {}", data.len());
+
+    assert_eq!(
+        data[0],
+        serde_json::json!({
+            "id": "my-plain-model",
+            "object": "model",
+            "created": 0,
+            "owned_by": "llama_cpp",
+            "ready": false
+        }),
+        "entry without levels must be byte-identical to the pre-change shape"
+    );
+}
+
+/// Loaded (Ready backend) model with reasoning levels: the three keys are
+/// merged into the backend entry; a level-less config entry stays
+/// byte-identical.
+///
+/// Uses two separate MockServers (one per backend): handle_list_models
+/// attributes each backend's fetch result to configs positionally (the i-th
+/// Ready backend's result is injected using the i-th ready config, in
+/// `models` HashMap iteration order). Each backend must therefore return
+/// only its own entry, so the attribution is correct regardless of
+/// iteration order.
+#[tokio::test]
+async fn test_handle_list_models_loaded_with_reasoning_levels() {
+    let mock_server1 = MockServer::start().await;
+    let mock_server2 = MockServer::start().await;
+
+    // Mock backend 1 (model-a's backend_url): returns model-a's entry
+    let backend1_response = serde_json::json!({
+        "object": "list",
+        "data": [
+            {
+                "id": "test/model-a",
+                "object": "model",
+                "created": 1700000000,
+                "owned_by": "llamacpp",
+                "meta": {"n_ctx": 8192}
+            }
+        ]
+    });
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&backend1_response))
+        .expect(1)
+        .mount(&mock_server1)
+        .await;
+
+    // Mock backend 2 (model-b's backend_url): returns model-b's entry
+    let backend2_response = serde_json::json!({
+        "object": "list",
+        "data": [
+            {
+                "id": "test/model-b",
+                "object": "model",
+                "created": 1700000001,
+                "owned_by": "llamacpp",
+                "meta": {"n_ctx": 4096}
+            }
+        ]
+    });
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&backend2_response))
+        .expect(1)
+        .mount(&mock_server2)
+        .await;
+
+    let state_arc = create_state_with_two_backends(&mock_server1.uri(), &mock_server2.uri()).await;
+
+    // Give model-a reasoning levels; model-b stays level-less.
+    {
+        let mut mc = state_arc.registry.model_configs.write().await;
+        mc.get_mut("model-a").unwrap().reasoning_levels =
+            Some(vec!["low".to_string(), "high".to_string()]);
+    }
+
+    let state = State(state_arc.clone());
+
+    let response = handle_list_models(state).await;
+    let (_parts, body) = response.into_response().into_parts();
+    let bytes = to_bytes(body, 1024 * 1024).await.unwrap();
+    let json: JsonValue = serde_json::from_slice(&bytes).unwrap();
+
+    let data = json.get("data").unwrap().as_array().unwrap();
+
+    // The loaded entry from the backend gets the three keys from its config.
+    let loaded = data
+        .iter()
+        .find(|e| e["id"] == "test/model-a")
+        .expect("loaded entry should exist");
+    assert_eq!(loaded["ready"], true);
+    assert_eq!(loaded["supportsReasoningEffort"], true);
+    assert_eq!(
+        loaded["reasoningLevels"],
+        serde_json::json!(["low", "high"])
+    );
+    assert_eq!(
+        loaded["reasoning_options"],
+        serde_json::json!([{ "type": "effort", "values": ["low", "high"] }])
+    );
+
+    // Level-less config entry (model-b fallback) stays byte-identical.
+    let plain = data
+        .iter()
+        .find(|e| e["id"] == "api-model-b")
+        .expect("api-model-b fallback should exist");
+    assert_eq!(
+        *plain,
+        serde_json::json!({
+            "id": "api-model-b",
+            "object": "model",
+            "created": 0,
+            "owned_by": "llama_cpp",
+            "ready": false
+        })
+    );
+}
+
+/// Alias of a leveled model: the alias entry inherits the three reasoning-
+/// effort keys from the target config.
+#[tokio::test]
+async fn test_handle_list_models_alias_inherits_reasoning_levels() {
+    let config = Config::default();
+    let state = ProxyState::new(config, None);
+
+    {
+        let mut mc = state.registry.model_configs.write().await;
+        mc.insert(
+            "leveled-model".to_string(),
+            ModelConfig {
+                backend: "llama_cpp".to_string(),
+                api_name: Some("my-leveled-model".to_string()),
+                model: Some("test/leveled".to_string()),
+                enabled: true,
+                reasoning_levels: Some(vec!["off".to_string(), "high".to_string()]),
+                ..Default::default()
+            },
+        );
+    }
+    {
+        let mut aliases = state.registry.aliases.write().await;
+        aliases.insert("my-alias".to_string(), "my-leveled-model".to_string());
+    }
+
+    let state_arc = Arc::new(state);
+    let state = State(state_arc.clone());
+
+    let response = handle_list_models(state).await;
+    let (_parts, body) = response.into_response().into_parts();
+    let bytes = to_bytes(body, 1024 * 1024).await.unwrap();
+    let json: JsonValue = serde_json::from_slice(&bytes).unwrap();
+
+    let data = json.get("data").unwrap().as_array().unwrap();
+
+    // The target model entry itself carries the keys.
+    let target = data
+        .iter()
+        .find(|e| e["id"] == "my-leveled-model")
+        .expect("target entry should exist");
+    assert_eq!(target["supportsReasoningEffort"], true);
+    assert_eq!(
+        target["reasoningLevels"],
+        serde_json::json!(["off", "high"])
+    );
+    assert_eq!(
+        target["reasoning_options"],
+        serde_json::json!([{ "type": "effort", "values": ["none", "high"] }])
+    );
+
+    // The alias entry inherits the same keys from the target config.
+    let alias = data
+        .iter()
+        .find(|e| e["id"] == "my-alias")
+        .expect("alias entry should exist");
+    assert_eq!(alias["alias"], true);
+    assert_eq!(alias["supportsReasoningEffort"], true);
+    assert_eq!(alias["reasoningLevels"], serde_json::json!(["off", "high"]));
+    assert_eq!(
+        alias["reasoning_options"],
+        serde_json::json!([{ "type": "effort", "values": ["none", "high"] }])
+    );
+}

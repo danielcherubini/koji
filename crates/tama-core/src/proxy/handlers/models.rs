@@ -2,6 +2,7 @@
 //!
 //! Handles `/v1/models` (list) and `/v1/models/{id}` (get) endpoints.
 
+use crate::proxy::tama_handlers::models::reasoning_options_from_levels;
 use crate::proxy::ProxyState;
 use axum::{
     extract::{Path, State},
@@ -133,6 +134,9 @@ pub async fn handle_get_model(
             };
             entry.id = Some(response_id.to_string());
             entry.ready = Some(true);
+            // Inject reasoning-effort fields when the config has levels
+            // (entries without levels stay byte-identical).
+            inject_reasoning_effort_fields(&mut entry.extra, &server_cfg);
             return Json(entry).into_response();
         }
     }
@@ -144,14 +148,42 @@ pub async fn handle_get_model(
     } else {
         server_cfg.api_name.as_deref().unwrap_or(&config_name)
     };
-    Json(serde_json::json!({
+    let mut entry = serde_json::json!({
         "id": response_id,
         "object": "model",
         "created": 0,
         "owned_by": server_cfg.backend,
         "ready": false
-    }))
-    .into_response()
+    });
+    // Inject reasoning-effort fields when levels are configured
+    // (entries without levels stay byte-identical).
+    if let Some(obj) = entry.as_object_mut() {
+        inject_reasoning_effort_fields(obj, &server_cfg);
+    }
+    Json(entry).into_response()
+}
+
+/// Insert the three reasoning-effort keys into a model entry when the
+/// config has non-empty reasoning levels. No-op otherwise, keeping entries
+/// for models without levels byte-identical to the pre-change shape.
+fn inject_reasoning_effort_fields(
+    entry: &mut serde_json::Map<String, serde_json::Value>,
+    cfg: &crate::config::ModelConfig,
+) {
+    if !cfg.supports_reasoning_effort() {
+        return;
+    }
+    entry.insert(
+        "supportsReasoningEffort".to_string(),
+        serde_json::json!(true),
+    );
+    entry.insert(
+        "reasoningLevels".to_string(),
+        serde_json::json!(cfg.reasoning_levels),
+    );
+    if let Some(options) = reasoning_options_from_levels(&cfg.reasoning_levels) {
+        entry.insert("reasoning_options".to_string(), options);
+    }
 }
 
 #[axum::debug_handler]
@@ -247,6 +279,11 @@ pub async fn handle_list_models(state: State<Arc<ProxyState>>) -> Json<serde_jso
 
                 // Inject ready
                 entry.ready = Some(true);
+                // Inject reasoning-effort fields when the config has levels
+                // (entries without levels stay byte-identical).
+                if let Some(cfg) = all_configs.get(config_name) {
+                    inject_reasoning_effort_fields(&mut entry.extra, cfg);
+                }
                 match serde_json::to_value(entry) {
                     Ok(v) => data.push(v),
                     Err(e) => {
@@ -267,13 +304,19 @@ pub async fn handle_list_models(state: State<Arc<ProxyState>>) -> Json<serde_jso
         if seen_ids.contains(model_id) {
             continue; // already added from backend
         }
-        data.push(serde_json::json!({
+        let mut entry = serde_json::json!({
             "id": model_id,
             "object": "model",
             "created": 0,
             "owned_by": server_cfg.backend,
             "ready": false
-        }));
+        });
+        // Inject reasoning-effort fields when levels are configured
+        // (entries without levels stay byte-identical).
+        if let Some(obj) = entry.as_object_mut() {
+            inject_reasoning_effort_fields(obj, server_cfg);
+        }
+        data.push(entry);
     }
 
     // Phase 5: Add alias entries from the alias cache.
@@ -313,6 +356,11 @@ pub async fn handle_list_models(state: State<Arc<ProxyState>>) -> Json<serde_jso
                 });
             }
             entry["backend"] = serde_json::json!(cfg.backend);
+            // Inherit reasoning-effort fields when the target has levels
+            // (no-op keeps the entry byte-identical otherwise).
+            if let Some(obj) = entry.as_object_mut() {
+                inject_reasoning_effort_fields(obj, cfg);
+            }
         }
 
         data.push(entry);

@@ -473,6 +473,7 @@ mod tests {
             n_ubatch: None,
             vllm: Default::default(),
             provider_name: None,
+            reasoning_levels: None,
         };
 
         let config_key = "test--test-model";

@@ -126,6 +126,12 @@ pub struct ModelConfig {
     /// Modalities supported by this model (e.g. ["text", "image"] for input, ["text"] for output)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub modalities: Option<ModelModalities>,
+    /// Reasoning effort levels this model accepts (pi vocabulary:
+    /// off, minimal, low, medium, high, xhigh, max). When non-empty,
+    /// the model advertises `supportsReasoningEffort: true` on client
+    /// model-info endpoints. Stored as a JSON array in a TEXT column.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_levels: Option<Vec<String>>,
     /// Pretty display name for UI (e.g., "Unsloth: Gemma 4 26B A4B").
     /// Derived from HF repo name when pulling, but can be overridden.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -243,6 +249,14 @@ fn normalize_flag_name(name: &str) -> Option<&'static str> {
 }
 
 impl ModelConfig {
+    /// True when the model advertises adjustable reasoning effort
+    /// (i.e. at least one reasoning level is configured).
+    pub fn supports_reasoning_effort(&self) -> bool {
+        self.reasoning_levels
+            .as_ref()
+            .is_some_and(|levels| !levels.is_empty())
+    }
+
     /// Serialise to a ModelConfigRecord for DB storage.
     /// `repo_id` is the HF repo id (e.g. "unsloth/gemma-4-31B-it-GGUF").
     pub fn to_db_record(&self, repo_id: &str) -> ModelConfigRecord {
@@ -277,6 +291,10 @@ impl ModelConfig {
                 .modalities
                 .as_ref()
                 .and_then(|s| serde_json::to_string(s).ok()),
+            reasoning_levels: self
+                .reasoning_levels
+                .as_ref()
+                .and_then(|v| serde_json::to_string(v).ok()),
             profile: self.profile.clone(),
             api_name: self.api_name.clone(),
             health_check: self
@@ -364,6 +382,19 @@ impl ModelConfig {
                 .modalities
                 .as_ref()
                 .and_then(|s| serde_json::from_str(s).ok()),
+            reasoning_levels: record.reasoning_levels.as_deref().and_then(|s| {
+                match serde_json::from_str::<Vec<String>>(s) {
+                    Ok(levels) => Some(levels),
+                    Err(err) => {
+                        tracing::warn!(
+                            "malformed reasoning_levels JSON in model_configs row for model '{}': {}; falling back to None",
+                            record.repo_id,
+                            err
+                        );
+                        None
+                    }
+                }
+            }),
             health_check: record
                 .health_check
                 .as_ref()

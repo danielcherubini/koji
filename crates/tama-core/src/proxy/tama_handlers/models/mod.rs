@@ -19,6 +19,10 @@ pub use utils::{
     capitalize_first, generate_display_name, ModelEntry, ModelLimit, OpencodeModelsResponse,
 };
 
+// Re-exported so the /v1/models handler tree (proxy::handlers::models) can
+// build the canonical reasoning_options field without duplicating the logic.
+pub(crate) use utils::reasoning_options_from_levels;
+
 #[cfg(test)]
 mod tests {
     mod cancel;

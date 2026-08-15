@@ -98,6 +98,12 @@ pub struct ModelDetail {
     pub repo_pulled_at: Option<String>,
     #[serde(default)]
     pub modalities: Option<ModelModalities>,
+    /// Reasoning effort levels the model accepts (pi thinking-level
+    /// vocabulary). `None` = none configured. The detail API emits the
+    /// camelCase key `reasoningLevels` — the explicit rename is required
+    /// so serde does not silently drop the key.
+    #[serde(rename = "reasoningLevels", default)]
+    pub reasoning_levels: Option<Vec<String>>,
     #[serde(default)]
     pub spec_decoding: Option<serde_json::Value>,
     #[serde(default)]
@@ -186,6 +192,10 @@ pub struct ModelForm {
     #[serde(default)]
     pub mtp_model: Option<String>,
     pub args: String,
+    /// Raw comma-separated reasoning-levels text (like `args`); parsed
+    /// into `Option<Vec<String>>` at save time via
+    /// [`parse_reasoning_levels_input`].
+    pub reasoning_levels_input: String,
     pub sampling: std::collections::HashMap<String, SamplingField>,
     pub enabled: bool,
     pub context_length: Option<u32>,
@@ -291,6 +301,45 @@ pub fn is_transformers(hf_format: Option<&str>) -> bool {
     hf_format == Some("transformers")
 }
 
+/// Valid reasoning level values (pi thinking-level vocabulary).
+/// Must mirror `VALID_REASONING_LEVELS` in `crate::api::models::crud`.
+const VALID_REASONING_LEVELS: &[&str] =
+    &["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/// Parse the comma-separated reasoning-levels input: split on commas
+/// and whitespace, trim, lowercase, drop empties, dedupe preserving
+/// order. Empty result → `None` (clears levels on save). Error names
+/// the invalid tokens and lists the valid set (mirrors the server rule
+/// in `crate::api::models::crud` exactly).
+pub fn parse_reasoning_levels_input(raw: &str) -> Result<Option<Vec<String>>, String> {
+    let mut seen: Vec<String> = Vec::new();
+    let mut offenders: Vec<String> = Vec::new();
+    for token in raw.split(',').flat_map(|t| t.split_whitespace()) {
+        let normalized = token.to_lowercase();
+        if !VALID_REASONING_LEVELS.contains(&normalized.as_str()) {
+            if !offenders.contains(&normalized) {
+                offenders.push(normalized);
+            }
+            continue;
+        }
+        if !seen.contains(&normalized) {
+            seen.push(normalized);
+        }
+    }
+    if !offenders.is_empty() {
+        return Err(format!(
+            "invalid reasoning level(s): {} — valid values: {}",
+            offenders.join(", "),
+            VALID_REASONING_LEVELS.join(", ")
+        ));
+    }
+    if seen.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(seen))
+    }
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -317,6 +366,70 @@ mod tests {
     #[test]
     fn test_is_transformers_false_unknown() {
         assert!(!is_transformers(Some("unknown")));
+    }
+
+    // ── parse_reasoning_levels_input tests ─────────────────────────────
+
+    /// Empty input → None (clears levels on save).
+    #[test]
+    fn test_parse_reasoning_levels_empty_is_none() {
+        assert_eq!(parse_reasoning_levels_input(""), Ok(None));
+    }
+
+    /// Whitespace/commas only → None (treated as empty).
+    #[test]
+    fn test_parse_reasoning_levels_whitespace_only_is_none() {
+        assert_eq!(parse_reasoning_levels_input(" , , "), Ok(None));
+    }
+
+    /// Basic comma-separated list parses, preserving input order.
+    #[test]
+    fn test_parse_reasoning_levels_basic() {
+        assert_eq!(
+            parse_reasoning_levels_input("off, low, medium, xhigh"),
+            Ok(Some(vec![
+                "off".to_string(),
+                "low".to_string(),
+                "medium".to_string(),
+                "xhigh".to_string()
+            ]))
+        );
+    }
+
+    /// Trims, lowercases, dedupes preserving first occurrence order.
+    #[test]
+    fn test_parse_reasoning_levels_trims_lowercases_dedupes() {
+        assert_eq!(
+            parse_reasoning_levels_input(" Off ,LOW, low "),
+            Ok(Some(vec!["off".to_string(), "low".to_string()]))
+        );
+    }
+
+    /// Input order is preserved — never sorted into canonical order.
+    #[test]
+    fn test_parse_reasoning_levels_preserves_order() {
+        assert_eq!(
+            parse_reasoning_levels_input("xhigh, off, max"),
+            Ok(Some(vec![
+                "xhigh".to_string(),
+                "off".to_string(),
+                "max".to_string()
+            ]))
+        );
+    }
+
+    /// Invalid token → Err naming the offender and listing the valid set.
+    #[test]
+    fn test_parse_reasoning_levels_invalid_names_offender() {
+        let err = parse_reasoning_levels_input("off, bogus").unwrap_err();
+        assert!(
+            err.contains("bogus"),
+            "error should name the invalid token: {err}"
+        );
+        assert!(
+            err.contains("off, minimal, low, medium, high, xhigh, max"),
+            "error should list the valid set: {err}"
+        );
     }
 
     // ── ModelDetail round-trip tests ─────────────────────────────────────
@@ -352,6 +465,7 @@ mod tests {
             repo_commit_sha: None,
             repo_pulled_at: None,
             modalities: None,
+            reasoning_levels: None,
             spec_decoding: None,
             vllm: None,
             n_batch: None,
@@ -412,6 +526,55 @@ mod tests {
 
         let detail: ModelDetail = serde_json::from_value(json).unwrap();
         assert_eq!(detail.hf_format, None);
+    }
+
+    /// `ModelDetail` JSON with the camelCase `reasoningLevels` key parses
+    /// into `reasoning_levels` (guards the explicit serde rename — without
+    /// it serde silently ignores the key and the editor would always see None).
+    #[test]
+    fn test_model_detail_reasoning_levels_camel_case_round_trip() {
+        let json = serde_json::json!({
+            "id": 42,
+            "backend": "llama-cpp",
+            "args": [],
+            "enabled": true,
+            "kv_unified": true,
+            "quants": {},
+            "backends": [],
+            "reasoningLevels": ["off", "low", "medium", "xhigh"]
+        });
+
+        let detail: ModelDetail = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            detail.reasoning_levels,
+            Some(vec![
+                "off".to_string(),
+                "low".to_string(),
+                "medium".to_string(),
+                "xhigh".to_string()
+            ])
+        );
+
+        // Round-trips back out under the camelCase key.
+        let serialized = serde_json::to_value(&detail).unwrap();
+        assert_eq!(serialized["reasoningLevels"].as_array().unwrap().len(), 4);
+    }
+
+    /// Missing `reasoningLevels` in the JSON payload deserializes to `None`.
+    #[test]
+    fn test_model_detail_reasoning_levels_missing_defaults_to_none() {
+        let json = serde_json::json!({
+            "id": 42,
+            "backend": "llama-cpp",
+            "args": [],
+            "enabled": true,
+            "kv_unified": true,
+            "quants": {},
+            "backends": []
+        });
+
+        let detail: ModelDetail = serde_json::from_value(json).unwrap();
+        assert_eq!(detail.reasoning_levels, None);
     }
 
     // ── ModelForm vllm round-trip tests ──────────────────────────────────

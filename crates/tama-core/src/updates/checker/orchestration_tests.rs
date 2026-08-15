@@ -66,6 +66,7 @@ fn seed_model(config_dir: &std::path::Path, repo_id: &str, commit_sha: &str, lfs
         n_ubatch: None,
         vllm_config: None,
         provider_name: None,
+        reasoning_levels: None,
     };
     let model_id = queries::upsert_model_config(&open.conn, &record).unwrap();
 
@@ -293,6 +294,7 @@ async fn test_run_check_model_without_repo_records_unknown() {
         n_ubatch: None,
         vllm_config: None,
         provider_name: None,
+        reasoning_levels: None,
     };
     let model_id = queries::upsert_model_config(&open.conn, &record).unwrap();
 

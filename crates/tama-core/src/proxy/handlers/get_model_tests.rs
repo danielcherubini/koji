@@ -510,3 +510,267 @@ async fn test_handle_get_model_normalizes_id_from_alias() {
     assert_eq!(json["id"], "unsloth/gemma-4-E2B-it-GGUF");
     assert_eq!(json["ready"], true);
 }
+
+// ── handle_get_model: reasoning-effort fields (plan 189, review fix) ──────
+
+/// Loaded (Ready backend) model with reasoning levels: the response carries
+/// supportsReasoningEffort, reasoningLevels and derived reasoning_options
+/// (off → none), matching the list handler's shape.
+#[tokio::test]
+async fn test_handle_get_model_loaded_with_reasoning_levels() {
+    let mock_server = MockServer::start().await;
+
+    let backend_response = serde_json::json!({
+        "object": "list",
+        "data": [
+            {
+                "id": "test/leveled.gguf",
+                "object": "model",
+                "created": 1700000000,
+                "owned_by": "backend1",
+                "meta": {"n_ctx": 8192}
+            }
+        ]
+    });
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&backend_response))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let config = Config::default();
+    let state = ProxyState::new(config, None);
+
+    {
+        let mut mc = state.registry.model_configs.write().await;
+        mc.insert(
+            "leveled-model".to_string(),
+            ModelConfig {
+                backend: "llama_cpp".to_string(),
+                api_name: Some("my-leveled-model".to_string()),
+                model: Some("test/leveled.gguf".to_string()),
+                enabled: true,
+                reasoning_levels: Some(vec![
+                    "off".to_string(),
+                    "low".to_string(),
+                    "medium".to_string(),
+                    "xhigh".to_string(),
+                ]),
+                ..Default::default()
+            },
+        );
+    }
+
+    {
+        let mut models = state.registry.models.write().await;
+        models.insert(
+            "leveled-model".to_string(),
+            crate::proxy::BackendState::Ready {
+                model_name: "leveled-model".to_string(),
+                backend: "llama_cpp".to_string(),
+                backend_pid: 4242,
+                backend_url: mock_server.uri(),
+                load_time: std::time::SystemTime::now(),
+                last_accessed: std::time::Instant::now(),
+                consecutive_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+                failure_timestamp: None,
+                is_docker: false,
+                restart_count: 0,
+            },
+        );
+    }
+
+    let state_arc = Arc::new(state);
+    let state = State(state_arc.clone());
+
+    let response = handle_get_model(state.clone(), Path("leveled-model".to_string())).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let (_parts, body) = response.into_response().into_parts();
+    let bytes = to_bytes(body, 1024 * 1024).await.unwrap();
+    let json: JsonValue = serde_json::from_slice(&bytes).unwrap();
+
+    assert_eq!(json["id"], "my-leveled-model");
+    assert_eq!(json["ready"], true);
+    assert_eq!(json["supportsReasoningEffort"], true);
+    assert_eq!(
+        json["reasoningLevels"],
+        serde_json::json!(["off", "low", "medium", "xhigh"])
+    );
+    assert_eq!(
+        json["reasoning_options"],
+        serde_json::json!([
+            { "type": "effort", "values": ["none", "low", "medium", "xhigh"] }
+        ])
+    );
+}
+
+/// Loaded model without reasoning levels: response stays byte-identical to
+/// the pre-change shape (no reasoning-effort keys).
+#[tokio::test]
+async fn test_handle_get_model_loaded_without_reasoning_levels_unchanged() {
+    let mock_server = MockServer::start().await;
+
+    let backend_response = serde_json::json!({
+        "object": "list",
+        "data": [
+            {
+                "id": "plain.gguf",
+                "object": "model",
+                "created": 1700000000,
+                "owned_by": "backend1"
+            }
+        ]
+    });
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&backend_response))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let config = Config::default();
+    let state = ProxyState::new(config, None);
+
+    {
+        let mut mc = state.registry.model_configs.write().await;
+        mc.insert(
+            "plain-model".to_string(),
+            ModelConfig {
+                backend: "llama_cpp".to_string(),
+                api_name: Some("my-plain-model".to_string()),
+                model: Some("plain.gguf".to_string()),
+                enabled: true,
+                ..Default::default()
+            },
+        );
+    }
+
+    {
+        let mut models = state.registry.models.write().await;
+        models.insert(
+            "plain-model".to_string(),
+            crate::proxy::BackendState::Ready {
+                model_name: "plain-model".to_string(),
+                backend: "llama_cpp".to_string(),
+                backend_pid: 4243,
+                backend_url: mock_server.uri(),
+                load_time: std::time::SystemTime::now(),
+                last_accessed: std::time::Instant::now(),
+                consecutive_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+                failure_timestamp: None,
+                is_docker: false,
+                restart_count: 0,
+            },
+        );
+    }
+
+    let state_arc = Arc::new(state);
+    let state = State(state_arc.clone());
+
+    let response = handle_get_model(state.clone(), Path("plain-model".to_string())).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let (_parts, body) = response.into_response().into_parts();
+    let bytes = to_bytes(body, 1024 * 1024).await.unwrap();
+    let json: JsonValue = serde_json::from_slice(&bytes).unwrap();
+
+    assert_eq!(
+        json,
+        serde_json::json!({
+            "id": "my-plain-model",
+            "object": "model",
+            "created": 1700000000,
+            "owned_by": "backend1",
+            "ready": true
+        }),
+        "loaded entry without levels must be structurally identical to the pre-change shape"
+    );
+}
+
+/// Fallback (unloaded) model with reasoning levels: the config-based entry
+/// carries supportsReasoningEffort, reasoningLevels and reasoning_options.
+#[tokio::test]
+async fn test_handle_get_model_fallback_with_reasoning_levels() {
+    let state_inner = create_test_state();
+    let state_arc = Arc::new(state_inner);
+
+    {
+        let mut mc = state_arc.registry.model_configs.write().await;
+        mc.insert(
+            "leveled-unloaded".to_string(),
+            ModelConfig {
+                backend: "llama_cpp".to_string(),
+                api_name: Some("my-leveled-unloaded".to_string()),
+                model: Some("test/leveled-unloaded".to_string()),
+                enabled: true,
+                reasoning_levels: Some(vec!["off".to_string(), "high".to_string()]),
+                ..Default::default()
+            },
+        );
+    }
+
+    let state = State(state_arc.clone());
+
+    let response = handle_get_model(state.clone(), Path("leveled-unloaded".to_string())).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let (_parts, body) = response.into_response().into_parts();
+    let bytes = to_bytes(body, 1024 * 1024).await.unwrap();
+    let json: JsonValue = serde_json::from_slice(&bytes).unwrap();
+
+    assert_eq!(json["id"], "my-leveled-unloaded");
+    assert_eq!(json["ready"], false);
+    assert_eq!(json["supportsReasoningEffort"], true);
+    assert_eq!(json["reasoningLevels"], serde_json::json!(["off", "high"]));
+    assert_eq!(
+        json["reasoning_options"],
+        serde_json::json!([
+            { "type": "effort", "values": ["none", "high"] }
+        ])
+    );
+}
+
+/// Fallback (unloaded) model without reasoning levels: response stays
+/// byte-identical to the pre-change shape (no reasoning-effort keys).
+#[tokio::test]
+async fn test_handle_get_model_fallback_without_reasoning_levels_unchanged() {
+    let state_inner = create_test_state();
+    let state_arc = Arc::new(state_inner);
+
+    {
+        let mut mc = state_arc.registry.model_configs.write().await;
+        mc.insert(
+            "plain-unloaded".to_string(),
+            ModelConfig {
+                backend: "llama_cpp".to_string(),
+                api_name: Some("my-plain-unloaded".to_string()),
+                model: Some("test/plain-unloaded".to_string()),
+                enabled: true,
+                ..Default::default()
+            },
+        );
+    }
+
+    let state = State(state_arc.clone());
+
+    let response = handle_get_model(state.clone(), Path("plain-unloaded".to_string())).await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let (_parts, body) = response.into_response().into_parts();
+    let bytes = to_bytes(body, 1024 * 1024).await.unwrap();
+    let json: JsonValue = serde_json::from_slice(&bytes).unwrap();
+
+    assert_eq!(
+        json,
+        serde_json::json!({
+            "id": "my-plain-unloaded",
+            "object": "model",
+            "created": 0,
+            "owned_by": "llama_cpp",
+            "ready": false
+        }),
+        "fallback entry without levels must be structurally identical to the pre-change shape"
+    );
+}

@@ -156,6 +156,7 @@ mod tests {
                 n_ubatch: None,
                 vllm_config: None,
                 provider_name: None,
+                reasoning_levels: None,
             };
             upsert_model_config(&conn, &record).unwrap();
 
@@ -247,6 +248,7 @@ mod tests {
                 n_ubatch: None,
                 vllm_config: None,
                 provider_name: None,
+                reasoning_levels: None,
             };
             upsert_model_config(&conn, &record).unwrap();
         }

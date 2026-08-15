@@ -28,6 +28,7 @@ fn body_with_quants(quants: BTreeMap<String, QuantEntry>) -> ModelBody {
         gpu_layers: None,
         quants: Some(quants),
         modalities: None,
+        reasoning_levels: None,
         kv_unified: None,
         cache_type_k: None,
         cache_type_v: None,
@@ -92,6 +93,7 @@ fn existing_with_size(name: &str, file: &str, size: Option<u64>) -> ModelConfig 
 
         n_ubatch: None,
         provider_name: None,
+        reasoning_levels: None,
     }
 }
 
@@ -213,6 +215,7 @@ fn body_minimal() -> ModelBody {
         gpu_layers: None,
         quants: None,
         modalities: None,
+        reasoning_levels: None,
         display_name: None,
         kv_unified: None,
         cache_type_k: None,
@@ -271,6 +274,7 @@ fn test_apply_model_body_enabled_override() {
         gpu_layers: None,
         quants: None,
         modalities: None,
+        reasoning_levels: None,
         display_name: None,
         kv_unified: None,
         cache_type_k: None,
@@ -307,6 +311,7 @@ fn test_apply_model_body_enabled_default() {
         gpu_layers: None,
         quants: None,
         modalities: None,
+        reasoning_levels: None,
         display_name: None,
         kv_unified: None,
         cache_type_k: None,
@@ -344,6 +349,7 @@ fn test_apply_model_body_with_api_name() {
         gpu_layers: None,
         quants: None,
         modalities: None,
+        reasoning_levels: None,
         display_name: None,
         kv_unified: None,
         cache_type_k: None,
@@ -380,6 +386,7 @@ fn test_apply_model_body_with_gpu_layers() {
         gpu_layers: Some(32),
         quants: None,
         modalities: None,
+        reasoning_levels: None,
         display_name: None,
         kv_unified: None,
         cache_type_k: None,
@@ -416,6 +423,7 @@ fn test_apply_model_body_with_display_name() {
         gpu_layers: None,
         quants: None,
         modalities: None,
+        reasoning_levels: None,
         display_name: Some("My Model".to_string()),
         kv_unified: None,
         cache_type_k: None,
@@ -453,6 +461,7 @@ fn test_apply_model_body_gpu_device_override() {
         gpu_layers: None,
         quants: None,
         modalities: None,
+        reasoning_levels: None,
         display_name: None,
         kv_unified: None,
         cache_type_k: None,
@@ -506,6 +515,7 @@ fn test_apply_model_body_gpu_device_override() {
 
         n_ubatch: None,
         provider_name: None,
+        reasoning_levels: None,
     };
 
     let result = apply_model_body(body, Some(existing));
@@ -533,6 +543,7 @@ fn test_apply_model_body_gpu_device_preserves_base_when_omitted() {
         gpu_layers: None,
         quants: None,
         modalities: None,
+        reasoning_levels: None,
         display_name: None,
         kv_unified: None,
         cache_type_k: None,
@@ -586,6 +597,7 @@ fn test_apply_model_body_gpu_device_preserves_base_when_omitted() {
 
         n_ubatch: None,
         provider_name: None,
+        reasoning_levels: None,
     };
 
     let result = apply_model_body(body, Some(existing));
@@ -614,6 +626,7 @@ fn test_apply_model_body_gpu_device_clear_sentinel() {
         gpu_layers: None,
         quants: None,
         modalities: None,
+        reasoning_levels: None,
         display_name: None,
         kv_unified: None,
         cache_type_k: None,
@@ -667,6 +680,7 @@ fn test_apply_model_body_gpu_device_clear_sentinel() {
 
         n_ubatch: None,
         provider_name: None,
+        reasoning_levels: None,
     };
 
     let result = apply_model_body(body, Some(existing));
@@ -693,6 +707,7 @@ fn test_apply_model_body_context_length() {
         gpu_layers: None,
         quants: None,
         modalities: None,
+        reasoning_levels: None,
         display_name: None,
         kv_unified: None,
         cache_type_k: None,
@@ -729,6 +744,7 @@ fn test_apply_model_body_num_parallel_passthrough() {
         gpu_layers: None,
         quants: None,
         modalities: None,
+        reasoning_levels: None,
         display_name: None,
         num_parallel: Some(4),
         kv_unified: None,
@@ -765,6 +781,7 @@ fn test_apply_model_body_num_parallel_default() {
         gpu_layers: None,
         quants: None,
         modalities: None,
+        reasoning_levels: None,
         display_name: None,
         num_parallel: None,
         kv_unified: None,
@@ -802,6 +819,7 @@ fn test_apply_model_body_empty_quants() {
         gpu_layers: None,
         quants: Some(BTreeMap::new()), // empty map
         modalities: None,
+        reasoning_levels: None,
         display_name: None,
         kv_unified: None,
         cache_type_k: None,
@@ -844,6 +862,7 @@ fn test_apply_model_body_kv_unified_passthrough() {
         gpu_layers: None,
         quants: None,
         modalities: None,
+        reasoning_levels: None,
         kv_unified: None, // omitted — should preserve existing
         cache_type_k: None,
         cache_type_v: None,
@@ -885,6 +904,7 @@ fn test_apply_model_body_kv_unified_default_true_for_new() {
         gpu_layers: None,
         quants: None,
         modalities: None,
+        reasoning_levels: None,
         kv_unified: None, // omitted — should default to true
         cache_type_k: None,
         cache_type_v: None,
@@ -924,6 +944,7 @@ fn test_apply_model_body_cache_type_passthrough() {
         gpu_layers: None,
         quants: None,
         modalities: None,
+        reasoning_levels: None,
         display_name: None,
         kv_unified: None,
         cache_type_k: Some("q4_0".to_string()),
@@ -944,7 +965,7 @@ fn test_apply_model_body_cache_type_passthrough() {
 /// cache_type_k that exceeds MAX_CACHE_TYPE must be rejected.
 #[test]
 fn test_validate_cache_type_k_too_long() {
-    let body = ModelBody {
+    let mut body = ModelBody {
         backend: "llama-cpp".to_string(),
         gpu_variant: None,
         gpu_device: None,
@@ -963,6 +984,7 @@ fn test_validate_cache_type_k_too_long() {
         gpu_layers: None,
         quants: None,
         modalities: None,
+        reasoning_levels: None,
         kv_unified: None,
         cache_type_k: Some("a".repeat(MAX_CACHE_TYPE + 1)),
         cache_type_v: None,
@@ -973,7 +995,7 @@ fn test_validate_cache_type_k_too_long() {
 
         n_ubatch: None,
     };
-    let result = validate_model_body(&body);
+    let result = validate_model_body(&mut body);
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("cache_type_k"));
 }
@@ -981,7 +1003,7 @@ fn test_validate_cache_type_k_too_long() {
 /// cache_type_v that exceeds MAX_CACHE_TYPE must be rejected.
 #[test]
 fn test_validate_cache_type_v_too_long() {
-    let body = ModelBody {
+    let mut body = ModelBody {
         backend: "llama-cpp".to_string(),
         gpu_variant: None,
         gpu_device: None,
@@ -1000,6 +1022,7 @@ fn test_validate_cache_type_v_too_long() {
         gpu_layers: None,
         quants: None,
         modalities: None,
+        reasoning_levels: None,
         kv_unified: None,
         cache_type_k: None,
         cache_type_v: Some("a".repeat(MAX_CACHE_TYPE + 1)),
@@ -1010,7 +1033,7 @@ fn test_validate_cache_type_v_too_long() {
 
         n_ubatch: None,
     };
-    let result = validate_model_body(&body);
+    let result = validate_model_body(&mut body);
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("cache_type_v"));
 }
@@ -1018,7 +1041,7 @@ fn test_validate_cache_type_v_too_long() {
 /// cache_type_k/v at exactly MAX_CACHE_TYPE must pass.
 #[test]
 fn test_validate_cache_type_at_limit() {
-    let body = ModelBody {
+    let mut body = ModelBody {
         backend: "llama-cpp".to_string(),
         gpu_variant: None,
         gpu_device: None,
@@ -1037,6 +1060,7 @@ fn test_validate_cache_type_at_limit() {
         gpu_layers: None,
         quants: None,
         modalities: None,
+        reasoning_levels: None,
         kv_unified: None,
         cache_type_k: Some("a".repeat(MAX_CACHE_TYPE)),
         cache_type_v: Some("b".repeat(MAX_CACHE_TYPE)),
@@ -1047,7 +1071,7 @@ fn test_validate_cache_type_at_limit() {
 
         n_ubatch: None,
     };
-    assert!(validate_model_body(&body).is_ok());
+    assert!(validate_model_body(&mut body).is_ok());
 }
 
 /// When cache_type_k/v are omitted in the body, they should be None.
@@ -1071,6 +1095,7 @@ fn test_apply_model_body_cache_type_defaults_none() {
         gpu_layers: None,
         quants: None,
         modalities: None,
+        reasoning_levels: None,
         display_name: None,
         kv_unified: None,
         cache_type_k: None,
@@ -1109,6 +1134,7 @@ fn test_apply_model_body_cache_type_whitespace_only_becomes_none() {
         gpu_layers: None,
         quants: None,
         modalities: None,
+        reasoning_levels: None,
         display_name: None,
         kv_unified: None,
         cache_type_k: Some("   ".to_string()),
@@ -1153,6 +1179,7 @@ fn test_apply_model_body_cache_type_trims_whitespace() {
         gpu_layers: None,
         quants: None,
         modalities: None,
+        reasoning_levels: None,
         display_name: None,
         kv_unified: None,
         cache_type_k: Some("  q4_0  ".to_string()),
@@ -1168,6 +1195,30 @@ fn test_apply_model_body_cache_type_trims_whitespace() {
     let result = apply_model_body(body, None);
     assert_eq!(result.cache_type_k, Some("q4_0".to_string()));
     assert_eq!(result.cache_type_v, Some("q8_0".to_string()));
+}
+
+/// `reasoning_levels: Some([...])` on a new model sets the field.
+#[test]
+fn test_apply_model_body_reasoning_levels_set_on_create() {
+    let mut body = body_minimal();
+    body.reasoning_levels = Some(vec!["off".to_string(), "low".to_string()]);
+
+    let result = apply_model_body(body, None);
+    assert_eq!(
+        result.reasoning_levels,
+        Some(vec!["off".to_string(), "low".to_string()])
+    );
+}
+
+/// Omitted `reasoning_levels` on a PUT preserves the base value.
+#[test]
+fn test_apply_model_body_reasoning_levels_preserves_base_when_omitted() {
+    let mut base = existing_with_size("Q4_K_M", "model-Q4_K_M.gguf", Some(100));
+    base.reasoning_levels = Some(vec!["low".to_string()]);
+
+    let body = body_minimal(); // reasoning_levels: None
+    let result = apply_model_body(body, Some(base));
+    assert_eq!(result.reasoning_levels, Some(vec!["low".to_string()]));
 }
 
 // ── Partial update preservation tests ──────────────────────────────────────
@@ -1354,6 +1405,7 @@ fn patch_body_all_none() -> ModelPatchBody {
         gpu_layers: None,
         quants: None,
         modalities: None,
+        reasoning_levels: None,
         kv_unified: None,
         cache_type_k: None,
         cache_type_v: None,
@@ -1387,6 +1439,7 @@ fn patch_body_single_context_length(val: u32) -> ModelPatchBody {
         gpu_layers: None,
         quants: None,
         modalities: None,
+        reasoning_levels: None,
         kv_unified: None,
         cache_type_k: None,
         cache_type_v: None,
@@ -1457,6 +1510,7 @@ fn existing_config_rich() -> ModelConfig {
 
         n_ubatch: None,
         provider_name: None,
+        reasoning_levels: None,
     }
 }
 
@@ -1675,16 +1729,54 @@ fn test_apply_model_patch_server_side_fields_preserved() {
     assert_eq!(result.hf_last_modified, Some("2024-01-15T10:30:00Z".into()));
 }
 
+/// `reasoning_levels: Some([...])` overrides the existing value.
+#[test]
+fn test_apply_model_patch_reasoning_levels_some_overrides() {
+    let mut existing = existing_config_rich();
+    existing.reasoning_levels = Some(vec!["low".to_string()]);
+    let mut body = patch_body_all_none();
+    body.reasoning_levels = Some(vec!["off".to_string(), "high".to_string()]);
+
+    let result = apply_model_patch(body, &existing);
+    assert_eq!(
+        result.reasoning_levels,
+        Some(vec!["off".to_string(), "high".to_string()])
+    );
+}
+
+/// `reasoning_levels: None` preserves the existing value.
+#[test]
+fn test_apply_model_patch_reasoning_levels_none_preserves() {
+    let mut existing = existing_config_rich();
+    existing.reasoning_levels = Some(vec!["low".to_string()]);
+
+    let result = apply_model_patch(patch_body_all_none(), &existing);
+    assert_eq!(result.reasoning_levels, Some(vec!["low".to_string()]));
+}
+
+/// `reasoning_levels: Some(vec![])` clears the existing value — the
+/// editor sends `[]` (never `null`) when the input is emptied.
+#[test]
+fn test_apply_model_patch_reasoning_levels_empty_clears() {
+    let mut existing = existing_config_rich();
+    existing.reasoning_levels = Some(vec!["low".to_string()]);
+    let mut body = patch_body_all_none();
+    body.reasoning_levels = Some(Vec::new());
+
+    let result = apply_model_patch(body, &existing);
+    assert_eq!(result.reasoning_levels, Some(Vec::<String>::new()));
+}
+
 // ── validate_model_patch unit tests ────────────────────────────────────────
 
 /// `backend: Some("")` must be rejected.
 #[test]
 fn test_validate_model_patch_empty_backend_rejected() {
-    let body = ModelPatchBody {
+    let mut body = ModelPatchBody {
         backend: Some("".to_string()),
         ..patch_body_all_none()
     };
-    let result = validate_model_patch(&body);
+    let result = validate_model_patch(&mut body);
     assert!(result.is_err(), "empty backend must be rejected");
     assert!(result.unwrap_err().contains("backend"));
 }
@@ -1692,19 +1784,19 @@ fn test_validate_model_patch_empty_backend_rejected() {
 /// `backend: Some("valid")` must pass validation.
 #[test]
 fn test_validate_model_patch_valid_backend_accepted() {
-    let body = ModelPatchBody {
+    let mut body = ModelPatchBody {
         backend: Some("llama-cpp".to_string()),
         ..patch_body_all_none()
     };
-    assert!(validate_model_patch(&body).is_ok());
+    assert!(validate_model_patch(&mut body).is_ok());
 }
 
 /// An all-None body must pass validation (no-op).
 #[test]
 fn test_validate_model_patch_all_none_valid() {
-    let body = patch_body_all_none();
+    let mut body = patch_body_all_none();
     assert!(
-        validate_model_patch(&body).is_ok(),
+        validate_model_patch(&mut body).is_ok(),
         "all-None body must be valid (no-op)"
     );
 }
@@ -1712,22 +1804,22 @@ fn test_validate_model_patch_all_none_valid() {
 /// `model: Some("")` must be rejected.
 #[test]
 fn test_validate_model_patch_empty_model_rejected() {
-    let body = ModelPatchBody {
+    let mut body = ModelPatchBody {
         model: Some("".to_string()),
         ..patch_body_all_none()
     };
-    let result = validate_model_patch(&body);
+    let result = validate_model_patch(&mut body);
     assert!(result.is_err(), "empty model must be rejected");
 }
 
 /// `model` exceeding MAX_MODEL must be rejected.
 #[test]
 fn test_validate_model_patch_model_too_long_rejected() {
-    let body = ModelPatchBody {
+    let mut body = ModelPatchBody {
         model: Some("a".repeat(MAX_MODEL + 1)),
         ..patch_body_all_none()
     };
-    let result = validate_model_patch(&body);
+    let result = validate_model_patch(&mut body);
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("model"));
 }
@@ -1735,11 +1827,11 @@ fn test_validate_model_patch_model_too_long_rejected() {
 /// `quant` exceeding MAX_QUANT must be rejected.
 #[test]
 fn test_validate_model_patch_quant_too_long_rejected() {
-    let body = ModelPatchBody {
+    let mut body = ModelPatchBody {
         quant: Some("a".repeat(MAX_QUANT + 1)),
         ..patch_body_all_none()
     };
-    let result = validate_model_patch(&body);
+    let result = validate_model_patch(&mut body);
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("quant"));
 }
@@ -1747,11 +1839,11 @@ fn test_validate_model_patch_quant_too_long_rejected() {
 /// `cache_type_k: Some("__custom")` must be rejected during validation.
 #[test]
 fn test_validate_model_patch_cache_type_k_custom_rejected() {
-    let body = ModelPatchBody {
+    let mut body = ModelPatchBody {
         cache_type_k: Some("__custom".to_string()),
         ..patch_body_all_none()
     };
-    let result = validate_model_patch(&body);
+    let result = validate_model_patch(&mut body);
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("__custom"));
 }
@@ -1759,11 +1851,11 @@ fn test_validate_model_patch_cache_type_k_custom_rejected() {
 /// `cache_type_k` exceeding MAX_CACHE_TYPE must be rejected.
 #[test]
 fn test_validate_model_patch_cache_type_k_too_long() {
-    let body = ModelPatchBody {
+    let mut body = ModelPatchBody {
         cache_type_k: Some("a".repeat(MAX_CACHE_TYPE + 1)),
         ..patch_body_all_none()
     };
-    let result = validate_model_patch(&body);
+    let result = validate_model_patch(&mut body);
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("cache_type_k"));
 }
@@ -1771,11 +1863,11 @@ fn test_validate_model_patch_cache_type_k_too_long() {
 /// `cache_type_v` exceeding MAX_CACHE_TYPE must be rejected.
 #[test]
 fn test_validate_model_patch_cache_type_v_too_long() {
-    let body = ModelPatchBody {
+    let mut body = ModelPatchBody {
         cache_type_v: Some("a".repeat(MAX_CACHE_TYPE + 1)),
         ..patch_body_all_none()
     };
-    let result = validate_model_patch(&body);
+    let result = validate_model_patch(&mut body);
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("cache_type_v"));
 }
@@ -1783,11 +1875,11 @@ fn test_validate_model_patch_cache_type_v_too_long() {
 /// `api_name` exceeding MAX_API_NAME must be rejected.
 #[test]
 fn test_validate_model_patch_api_name_too_long() {
-    let body = ModelPatchBody {
+    let mut body = ModelPatchBody {
         api_name: Some("a".repeat(MAX_API_NAME + 1)),
         ..patch_body_all_none()
     };
-    let result = validate_model_patch(&body);
+    let result = validate_model_patch(&mut body);
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("api_name"));
 }
@@ -1795,11 +1887,11 @@ fn test_validate_model_patch_api_name_too_long() {
 /// `display_name` exceeding MAX_DISPLAY_NAME must be rejected.
 #[test]
 fn test_validate_model_patch_display_name_too_long() {
-    let body = ModelPatchBody {
+    let mut body = ModelPatchBody {
         display_name: Some("a".repeat(MAX_DISPLAY_NAME + 1)),
         ..patch_body_all_none()
     };
-    let result = validate_model_patch(&body);
+    let result = validate_model_patch(&mut body);
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("display_name"));
 }
@@ -1807,11 +1899,11 @@ fn test_validate_model_patch_display_name_too_long() {
 /// `mmproj` exceeding MAX_MMPROJ must be rejected.
 #[test]
 fn test_validate_model_patch_mmproj_too_long() {
-    let body = ModelPatchBody {
+    let mut body = ModelPatchBody {
         mmproj: Some("a".repeat(MAX_MMPROJ + 1)),
         ..patch_body_all_none()
     };
-    let result = validate_model_patch(&body);
+    let result = validate_model_patch(&mut body);
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("mmproj"));
 }
@@ -1819,11 +1911,11 @@ fn test_validate_model_patch_mmproj_too_long() {
 /// `backend` exceeding MAX_BACKEND must be rejected.
 #[test]
 fn test_validate_model_patch_backend_too_long() {
-    let body = ModelPatchBody {
+    let mut body = ModelPatchBody {
         backend: Some("a".repeat(MAX_BACKEND + 1)),
         ..patch_body_all_none()
     };
-    let result = validate_model_patch(&body);
+    let result = validate_model_patch(&mut body);
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("backend"));
 }
@@ -2070,6 +2162,91 @@ fn test_apply_model_patch_mtp_model_override() {
     assert_eq!(result.mtp_model, Some("mtp.gguf".into()));
 }
 
+// ── reasoning-levels validation tests ───────────────────────────────────
+
+/// Some `reasoning_levels` are normalized in place (trim + lowercase +
+/// dedupe) so the cleaned values are what gets persisted.
+#[test]
+fn test_validate_model_body_reasoning_levels_normalized_in_place() {
+    let mut body = body_minimal();
+    body.reasoning_levels = Some(vec![
+        " Off ".to_string(),
+        "LOW".to_string(),
+        "low".to_string(),
+    ]);
+
+    validate_model_body(&mut body).expect("valid levels accepted");
+    assert_eq!(
+        body.reasoning_levels,
+        Some(vec!["off".to_string(), "low".to_string()])
+    );
+}
+
+/// An invalid reasoning level is rejected, naming the offender and
+/// listing the full valid set.
+#[test]
+fn test_validate_model_body_invalid_reasoning_level_rejected() {
+    let mut body = body_minimal();
+    body.reasoning_levels = Some(vec!["bogus".to_string()]);
+
+    let result = validate_model_body(&mut body);
+    assert!(result.is_err(), "invalid level must be rejected");
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("bogus"),
+        "error must name the offender, got: {err}"
+    );
+    assert!(
+        err.contains("off, minimal, low, medium, high, xhigh, max"),
+        "error must list the valid set, got: {err}"
+    );
+}
+
+/// Absent `reasoning_levels` (None) passes validation and stays None.
+#[test]
+fn test_validate_model_body_reasoning_levels_none_skips() {
+    let mut body = body_minimal();
+    assert!(validate_model_body(&mut body).is_ok());
+    assert_eq!(body.reasoning_levels, None);
+}
+
+/// Patch: Some `reasoning_levels` are normalized in place.
+#[test]
+fn test_validate_model_patch_reasoning_levels_normalized_in_place() {
+    let mut body = patch_body_all_none();
+    body.reasoning_levels = Some(vec![
+        " HIGH ".to_string(),
+        "high".to_string(),
+        "max".to_string(),
+    ]);
+
+    validate_model_patch(&mut body).expect("valid levels accepted");
+    assert_eq!(
+        body.reasoning_levels,
+        Some(vec!["high".to_string(), "max".to_string()])
+    );
+}
+
+/// Patch: an invalid reasoning level is rejected, naming the offender
+/// and listing the full valid set.
+#[test]
+fn test_validate_model_patch_invalid_reasoning_level_rejected() {
+    let mut body = patch_body_all_none();
+    body.reasoning_levels = Some(vec!["off".to_string(), "bogus".to_string()]);
+
+    let result = validate_model_patch(&mut body);
+    assert!(result.is_err(), "invalid level must be rejected");
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("bogus"),
+        "error must name the offender, got: {err}"
+    );
+    assert!(
+        err.contains("off, minimal, low, medium, high, xhigh, max"),
+        "error must list the valid set, got: {err}"
+    );
+}
+
 // ── Route-level tests ──────────────────────────────────────────────────────\n
 /// Regression test: DELETE /tama/v1/models/:id removes the DB row via
 /// Repository::delete_config (no raw SQL, no ModelManager).
@@ -2129,6 +2306,7 @@ async fn test_delete_model_removes_db_row() {
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-01-01T00:00:00Z".to_string(),
             provider_name: None,
+            reasoning_levels: None,
         },
     )
     .unwrap();
@@ -2243,6 +2421,7 @@ async fn test_create_model_response_deserializes_into_mutation_response() {
                 created_at: "2024-01-01T00:00:00Z".to_string(),
                 updated_at: "2024-01-01T00:00:00Z".to_string(),
                 provider_name: None,
+                reasoning_levels: None,
             },
         )
         .unwrap();
@@ -2363,6 +2542,7 @@ async fn test_delete_model_response_deserializes_into_ok_response() {
                 created_at: "2024-01-01T00:00:00Z".to_string(),
                 updated_at: "2024-01-01T00:00:00Z".to_string(),
                 provider_name: None,
+                reasoning_levels: None,
             },
         )
         .unwrap();
@@ -2480,6 +2660,7 @@ fn vllm_put_harness(
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-01-01T00:00:00Z".to_string(),
             provider_name: None,
+            reasoning_levels: None,
         },
     )
     .unwrap();
@@ -2660,5 +2841,360 @@ async fn test_update_model_vllm_body_missing_advanced_fields_resets_them() {
     assert!(
         !stored.enable_prefix_caching,
         "omitted bool must reset to false (whole-replace)"
+    );
+}
+
+// ── normalize_reasoning_levels unit tests ─────────────────────────────────
+
+/// Mixed case, whitespace, and duplicates are all normalized: values are
+/// trimmed + lowercased, empties dropped, and duplicates removed while
+/// preserving first-seen order.
+#[test]
+fn test_normalize_reasoning_levels_happy_path() {
+    let levels = vec![
+        " Off ".to_string(),
+        "LOW".to_string(),
+        "low".to_string(),
+        "xhigh".to_string(),
+    ];
+    let result = normalize_reasoning_levels(&levels).expect("valid levels accepted");
+    assert_eq!(
+        result,
+        vec!["off".to_string(), "low".to_string(), "xhigh".to_string()]
+    );
+}
+
+/// Empty input normalizes to an empty vec (the "clear" contract).
+#[test]
+fn test_normalize_reasoning_levels_empty_input() {
+    assert_eq!(
+        normalize_reasoning_levels(&[]).expect("empty input is valid"),
+        Vec::<String>::new()
+    );
+}
+
+/// Whitespace-only entries are dropped, not treated as invalid.
+#[test]
+fn test_normalize_reasoning_levels_whitespace_only_dropped() {
+    let levels = vec![" ".to_string(), "   ".to_string(), "off".to_string()];
+    let result = normalize_reasoning_levels(&levels).expect("whitespace dropped");
+    assert_eq!(result, vec!["off".to_string()]);
+}
+
+/// An invalid token produces an error that names the offender and lists
+/// the full valid set.
+#[test]
+fn test_normalize_reasoning_levels_invalid_token_named() {
+    let levels = vec!["off".to_string(), "xhig".to_string()];
+    let err = normalize_reasoning_levels(&levels).expect_err("bogus level must fail");
+    assert!(
+        err.contains("xhig"),
+        "error must name the offender, got: {err}"
+    );
+    assert!(
+        err.contains("off, minimal, low, medium, high, xhigh, max"),
+        "error must list the valid set, got: {err}"
+    );
+}
+
+/// A single all-valid value passes through unchanged.
+#[test]
+fn test_normalize_reasoning_levels_all_valid_single() {
+    let levels = vec!["max".to_string()];
+    let result = normalize_reasoning_levels(&levels).expect("valid level accepted");
+    assert_eq!(result, vec!["max".to_string()]);
+}
+
+// ── PUT/PATCH /tama/v1/models/:id — reasoningLevels ──────────────────────
+
+/// Route-level harness for reasoning-levels tests: seeds a single model row
+/// (optionally with a pre-set `reasoning_levels` JSON) and returns the web
+/// router plus the seeded model id. Mirrors `vllm_put_harness`.
+fn reasoning_levels_harness(
+    tmp_dir: &tempfile::TempDir,
+    seed_reasoning_levels: Option<&str>,
+) -> (axum::Router, i64) {
+    let model_id = tama_core::db::queries::upsert_model_config(
+        &tama_core::db::open(tmp_dir.path()).unwrap().conn,
+        &tama_core::db::queries::ModelConfigRecord {
+            id: 0,
+            repo_id: "test-org/reasoning-model".to_string(),
+            display_name: None,
+            backend: "llama-cpp".to_string(),
+            gpu_variant: None,
+            gpu_device: None,
+            enabled: true,
+            selected_quant: None,
+            selected_mmproj: None,
+            selected_mtp_model: None,
+            context_length: None,
+            num_parallel: None,
+            kv_unified: false,
+            gpu_layers: None,
+            cache_type_k: None,
+            cache_type_v: None,
+            port: None,
+            args: None,
+            sampling: None,
+            modalities: None,
+            profile: None,
+            api_name: Some("test-org/reasoning-model".to_string()),
+            health_check: None,
+            hf_format: None,
+            hf_base_model: None,
+            hf_pipeline_tag: None,
+            hf_total_params: None,
+            hf_active_params: None,
+            hf_architecture_type: None,
+            hf_context_length: None,
+            hf_num_layers: None,
+            hf_last_modified: None,
+            spec_decoding: None,
+            n_batch: None,
+            n_ubatch: None,
+            vllm_config: None,
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+            provider_name: None,
+            reasoning_levels: seed_reasoning_levels.map(str::to_string),
+        },
+    )
+    .unwrap();
+
+    let config = tama_core::config::Config::default();
+    let state = Arc::new(tama_core::proxy::ProxyState::new(
+        config,
+        Some(tmp_dir.path().to_path_buf()),
+    ));
+
+    let web_state = Arc::new(crate::web_types::WebState {
+        jobs: Some(Arc::new(crate::web_types::JobManager::new())),
+        capabilities: None,
+        update_checker: Arc::new(tama_core::updates::UpdateChecker::default()),
+        binary_version: "test".to_string(),
+        update_tx: Arc::new(tokio::sync::Mutex::new(None)),
+        upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        repository: Some(Arc::new(std::sync::Mutex::new(
+            tama_core::db::repository::Repository::open(tmp_dir.path()).unwrap(),
+        ))),
+    });
+
+    let router = crate::router::build_web_routes(web_state.clone())
+        .with_state(state)
+        .layer(axum::extract::Extension(web_state.as_ref().clone()));
+
+    (router, model_id)
+}
+
+/// Fetch the model's detail JSON via `GET /tama/v1/models/:id`.
+async fn get_model_detail(router: &axum::Router, model_id: i64) -> serde_json::Value {
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!("/tama/v1/models/{model_id}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = router
+        .clone()
+        .oneshot(req)
+        .await
+        .expect("request should complete");
+    assert_eq!(resp.status(), StatusCode::OK, "detail GET must succeed");
+    let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("body must be readable");
+    serde_json::from_slice(&body_bytes).expect("detail must be valid JSON")
+}
+
+/// A PUT sending `reasoningLevels` with mixed case, whitespace, and a
+/// duplicate persists the normalized values (trim + lowercase + dedupe).
+#[tokio::test]
+async fn test_update_model_reasoning_levels_put_persists_normalized() {
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
+    let (router, model_id) = reasoning_levels_harness(&tmp_dir, None);
+
+    let body = serde_json::json!({
+        "backend": "llama-cpp",
+        "reasoningLevels": [" Off ", "low", "LOW"],
+    });
+
+    let req = Request::builder()
+        .method("PUT")
+        .uri(format!("/tama/v1/models/{}", model_id))
+        .header("Content-Type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+
+    let resp = router
+        .clone()
+        .oneshot(req)
+        .await
+        .expect("request should complete");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let detail = get_model_detail(&router, model_id).await;
+    assert_eq!(
+        detail["reasoningLevels"],
+        serde_json::json!(["off", "low"]),
+        "levels must be persisted normalized (trim + lowercase + dedupe)"
+    );
+}
+
+/// A PUT with an invalid level is rejected (422 ValidationError), the
+/// error names the offender and the valid set, and the stored value is
+/// untouched.
+#[tokio::test]
+async fn test_update_model_reasoning_levels_put_invalid_rejected() {
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
+    let (router, model_id) = reasoning_levels_harness(&tmp_dir, Some(r#"["off","low"]"#));
+
+    let body = serde_json::json!({
+        "backend": "llama-cpp",
+        "reasoningLevels": ["bogus"],
+    });
+
+    let req = Request::builder()
+        .method("PUT")
+        .uri(format!("/tama/v1/models/{}", model_id))
+        .header("Content-Type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+
+    let resp = router
+        .clone()
+        .oneshot(req)
+        .await
+        .expect("request should complete");
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("body must be readable");
+    let err: serde_json::Value =
+        serde_json::from_slice(&body_bytes).expect("error must be valid JSON");
+    let message = err["error"]["message"]
+        .as_str()
+        .expect("error message must be a string");
+    assert!(
+        message.contains("bogus"),
+        "error must name the offender: {message}"
+    );
+    assert!(
+        message.contains("off, minimal, low, medium, high, xhigh, max"),
+        "error must list the valid set: {message}"
+    );
+
+    // The rejected PUT must not have modified the stored levels.
+    let detail = get_model_detail(&router, model_id).await;
+    assert_eq!(
+        detail["reasoningLevels"],
+        serde_json::json!(["off", "low"]),
+        "rejected PUT must not modify stored levels"
+    );
+}
+
+/// A PUT sending `reasoningLevels: []` on a model that has levels clears
+/// them: the detail shows `[]` and no `supportsReasoningEffort` (the
+/// derived boolean is a client-endpoint concern, not a management one).
+#[tokio::test]
+async fn test_update_model_reasoning_levels_put_empty_clears() {
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
+    let (router, model_id) = reasoning_levels_harness(&tmp_dir, Some(r#"["off","low"]"#));
+
+    let body = serde_json::json!({
+        "backend": "llama-cpp",
+        "reasoningLevels": [],
+    });
+
+    let req = Request::builder()
+        .method("PUT")
+        .uri(format!("/tama/v1/models/{}", model_id))
+        .header("Content-Type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+
+    let resp = router
+        .clone()
+        .oneshot(req)
+        .await
+        .expect("request should complete");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let detail = get_model_detail(&router, model_id).await;
+    assert_eq!(
+        detail["reasoningLevels"],
+        serde_json::json!([]),
+        "empty array must clear stored levels"
+    );
+    assert!(
+        detail.get("supportsReasoningEffort").is_none(),
+        "management detail must not expose the derived boolean"
+    );
+}
+
+/// A PATCH that omits `reasoningLevels` leaves the stored levels unchanged.
+#[tokio::test]
+async fn test_patch_model_reasoning_levels_absent_preserves() {
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
+    let (router, model_id) = reasoning_levels_harness(&tmp_dir, Some(r#"["off","low"]"#));
+
+    let body = serde_json::json!({
+        "display_name": "Renamed",
+    });
+
+    let req = Request::builder()
+        .method("PATCH")
+        .uri(format!("/tama/v1/models/{}", model_id))
+        .header("Content-Type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+
+    let resp = router
+        .clone()
+        .oneshot(req)
+        .await
+        .expect("request should complete");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let detail = get_model_detail(&router, model_id).await;
+    assert_eq!(
+        detail["reasoningLevels"],
+        serde_json::json!(["off", "low"]),
+        "PATCH without the field must preserve stored levels"
+    );
+}
+
+/// A PATCH sending `reasoningLevels: []` clears the stored levels.
+#[tokio::test]
+async fn test_patch_model_reasoning_levels_empty_clears() {
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
+    let (router, model_id) = reasoning_levels_harness(&tmp_dir, Some(r#"["off","low"]"#));
+
+    let body = serde_json::json!({
+        "reasoningLevels": [],
+    });
+
+    let req = Request::builder()
+        .method("PATCH")
+        .uri(format!("/tama/v1/models/{}", model_id))
+        .header("Content-Type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+
+    let resp = router
+        .clone()
+        .oneshot(req)
+        .await
+        .expect("request should complete");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let detail = get_model_detail(&router, model_id).await;
+    assert_eq!(
+        detail["reasoningLevels"],
+        serde_json::json!([]),
+        "PATCH empty array must clear stored levels"
+    );
+    assert!(
+        detail.get("supportsReasoningEffort").is_none(),
+        "management detail must not expose the derived boolean"
     );
 }

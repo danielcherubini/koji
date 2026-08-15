@@ -47,6 +47,7 @@ fn make_test_record(repo_id: &str) -> ModelConfigRecord {
         n_ubatch: None,
         vllm_config: None,
         provider_name: None,
+        reasoning_levels: None,
     }
 }
 

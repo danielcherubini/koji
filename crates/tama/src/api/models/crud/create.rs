@@ -56,7 +56,8 @@ pub async fn create_model(
     }
 
     // Validate ModelBody fields
-    if let Err(e) = validate_model_body(&body.model) {
+    let mut body = body;
+    if let Err(e) = validate_model_body(&mut body.model) {
         return error_response(StatusCode::UNPROCESSABLE_ENTITY, e, Some("ValidationError"));
     }
 

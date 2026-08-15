@@ -236,6 +236,10 @@ pub fn ModelEditor() -> impl IntoView {
                         mmproj: d.mmproj,
                         mtp_model: d.mtp_model,
                         args: d.args.join("\n"),
+                        reasoning_levels_input: d
+                            .reasoning_levels
+                            .map(|v| v.join(", "))
+                            .unwrap_or_default(),
                         sampling: sampling_fields,
                         enabled: d.enabled,
                         context_length: d.context_length,
@@ -480,6 +484,19 @@ pub fn ModelEditor() -> impl IntoView {
                 return;
             }
 
+            // Parse + validate reasoning levels (client-side mirror of the
+            // server rule) before touching the API. Empty input → [] which
+            // CLEARS levels; the parse is aborted with an inline error.
+            let reasoning_levels =
+                match parse_reasoning_levels_input(&initial_form.reasoning_levels_input) {
+                    Err(e) => {
+                        save_status.set(Some((false, format!("❌ {}", e))));
+                        return;
+                    }
+                    Ok(Some(v)) => v,
+                    Ok(None) => Vec::new(),
+                };
+
             let form_data = ModelForm {
                 id: save_id,
                 backend: initial_form.backend.clone(),
@@ -490,6 +507,7 @@ pub fn ModelEditor() -> impl IntoView {
                 mmproj: initial_form.mmproj.clone(),
                 mtp_model: initial_form.mtp_model.clone(),
                 args: initial_form.args.clone(),
+                reasoning_levels_input: initial_form.reasoning_levels_input.clone(),
                 sampling: initial_form.sampling.clone(),
                 enabled: initial_form.enabled,
                 context_length: initial_form.context_length,
@@ -525,7 +543,7 @@ pub fn ModelEditor() -> impl IntoView {
             }
 
             let form_id = form_data.id.clone();
-            match save_model(args, form_data, is_new_val).await {
+            match save_model(args, form_data, is_new_val, reasoning_levels).await {
                 Ok(()) => {
                     original_id.set(form_id);
                     save_status.set(Some((true, "✅ Saved".into())));

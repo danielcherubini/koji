@@ -197,6 +197,7 @@ pub fn merge_database(
         "n_batch",
         "n_ubatch",
         "vllm_config",
+        "reasoning_levels",
     ];
 
     // Get the backup DB's column list via PRAGMA table_info on the attached DB.
@@ -394,7 +395,8 @@ mod tests {
             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
             n_batch INTEGER,
             n_ubatch INTEGER,
-            vllm_config TEXT
+            vllm_config TEXT,
+            reasoning_levels TEXT
         )
     ";
 

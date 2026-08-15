@@ -50,6 +50,7 @@ List all model configs plus available backends and sampling templates.
         }
       },
       "modalities": null,
+      "reasoningLevels": null,
       "spec_decoding": {},
       "vllm": {},
       "repo_commit_sha": null,
@@ -81,6 +82,8 @@ Get a single model config.
 
 **Response:** Same shape as a single entry from the list endpoint, plus a `"backends"` array with available backend options.
 
+`reasoningLevels` (array or `null`) is the raw stored value only — the client model-info endpoints (`/v1/opencode/models`, `/v1/models`) additionally emit the derived `supportsReasoningEffort` (true when non-empty levels are set) and the opencode-canonical `reasoning_options` (`off`→`none`).
+
 **Errors:** `404 Not Found`
 
 ## POST /tama/v1/models
@@ -110,6 +113,7 @@ Create a new model config.
   "gpu_layers": null,
   "quants": {},
   "modalities": null,
+  "reasoningLevels": null,
   "kv_unified": true,
   "cache_type_k": null,
   "cache_type_v": null,
@@ -147,6 +151,7 @@ Create a new model config.
 | `gpu_layers` | int | No | Number of layers on GPU |
 | `quants` | object | No | Map of quant key → `QuantEntry` |
 | `modalities` | object | No | e.g. `{"text": true, "image": true}` |
+| `reasoning_levels` | string[] \| null | No | Reasoning effort levels the model accepts. Valid values: `off, minimal, low, medium, high, xhigh, max` (also accepted as camelCase `reasoningLevels`). Stored as given (trim/lowercase/dedupe applied). When non-empty, the model advertises `supportsReasoningEffort: true` on the client model-info endpoints. PUT/PATCH: `null`/absent preserves the existing value, `[]` clears |
 | `kv_unified` | bool | No | Use unified KV cache (default `true`) |
 | `cache_type_k` | string | No | KV cache type for keys (e.g. `"f8"`, `"q4"`) |
 | `cache_type_v` | string | No | KV cache type for values |
@@ -162,7 +167,7 @@ Create a new model config.
 
 **Errors:**
 - `409 Conflict` — `repo_id` already exists
-- `422 Unprocessable Entity` — Validation failure
+- `422 Unprocessable Entity` — Validation failure (e.g. a `reasoningLevels` entry outside `off, minimal, low, medium, high, xhigh, max`; error type `ValidationError`, message names the offending values and the valid set)
 
 ## PUT /tama/v1/models/:id
 

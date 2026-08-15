@@ -61,6 +61,11 @@ pub struct ModelBody {
     pub quants: Option<std::collections::BTreeMap<String, tama_core::config::QuantEntry>>,
     #[serde(default)]
     pub modalities: Option<tama_core::config::ModelModalities>,
+    /// Reasoning effort levels the model accepts (pi thinking-level
+    /// vocabulary). `null`/absent = preserve existing; `[]` = clear.
+    /// The editor sends the camelCase key `reasoningLevels`.
+    #[serde(default, alias = "reasoningLevels")]
+    pub reasoning_levels: Option<Vec<String>>,
     #[serde(default)]
     pub kv_unified: Option<bool>,
     #[serde(default)]
@@ -100,6 +105,11 @@ pub struct ModelPatchBody {
     pub gpu_layers: Option<u32>,
     pub quants: Option<std::collections::BTreeMap<String, tama_core::config::QuantEntry>>,
     pub modalities: Option<tama_core::config::ModelModalities>,
+    /// Reasoning effort levels the model accepts (pi thinking-level
+    /// vocabulary). `null`/absent = preserve existing; `[]` = clear.
+    /// The editor sends the camelCase key `reasoningLevels`.
+    #[serde(default, alias = "reasoningLevels")]
+    pub reasoning_levels: Option<Vec<String>>,
     pub kv_unified: Option<bool>,
     pub cache_type_k: Option<String>,
     pub cache_type_v: Option<String>,
@@ -186,6 +196,9 @@ pub fn apply_model_patch(
         n_ubatch: body.n_ubatch,
         vllm: body.vllm.unwrap_or(existing_vllm),
         provider_name: existing.provider_name.clone(),
+        reasoning_levels: body
+            .reasoning_levels
+            .or_else(|| existing.reasoning_levels.clone()),
     }
 }
 
@@ -237,6 +250,7 @@ fn apply_model_body(
         spec_decoding: Default::default(),
         vllm: Default::default(),
         provider_name: None,
+        reasoning_levels: None,
     });
 
     // Handle sampling from body
@@ -320,13 +334,49 @@ fn apply_model_body(
         n_batch: body.n_batch,
         n_ubatch: body.n_ubatch,
         provider_name: base.provider_name,
+        reasoning_levels: body.reasoning_levels.or(base.reasoning_levels),
     }
 }
 
 // ── Validation helpers ──────────────────────────────────────────────────────
 
+/// Valid reasoning level values (pi thinking-level vocabulary).
+pub(crate) const VALID_REASONING_LEVELS: &[&str] =
+    &["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/// Trim + lowercase each value, drop empties, dedupe preserving order.
+/// Returns an error (naming the offenders and the valid set) when any
+/// value is outside `VALID_REASONING_LEVELS`.
+pub(crate) fn normalize_reasoning_levels(levels: &[String]) -> Result<Vec<String>, String> {
+    let mut seen: Vec<String> = Vec::new();
+    let mut offenders: Vec<String> = Vec::new();
+    for raw in levels {
+        let normalized = raw.trim().to_lowercase();
+        if normalized.is_empty() {
+            continue;
+        }
+        if !VALID_REASONING_LEVELS.contains(&normalized.as_str()) {
+            if !offenders.contains(&normalized) {
+                offenders.push(normalized);
+            }
+            continue;
+        }
+        if !seen.contains(&normalized) {
+            seen.push(normalized);
+        }
+    }
+    if !offenders.is_empty() {
+        return Err(format!(
+            "invalid reasoning level(s): {} — valid values: {}",
+            offenders.join(", "),
+            VALID_REASONING_LEVELS.join(", ")
+        ));
+    }
+    Ok(seen)
+}
+
 /// Validate ModelBody field lengths. Returns an error message string if invalid.
-fn validate_model_body(body: &ModelBody) -> Result<(), String> {
+fn validate_model_body(body: &mut ModelBody) -> Result<(), String> {
     if body.backend.is_empty() {
         return Err("backend cannot be empty".to_string());
     }
@@ -387,12 +437,16 @@ fn validate_model_body(body: &ModelBody) -> Result<(), String> {
             ));
         }
     }
+    if let Some(levels) = &body.reasoning_levels {
+        let normalized = normalize_reasoning_levels(levels)?;
+        body.reasoning_levels = Some(normalized);
+    }
     Ok(())
 }
 
 /// Validate ModelPatchBody field lengths. Only validates Some fields.
 /// An all-None body is valid (no-op).
-pub fn validate_model_patch(body: &ModelPatchBody) -> Result<(), String> {
+pub fn validate_model_patch(body: &mut ModelPatchBody) -> Result<(), String> {
     if let Some(ref backend) = body.backend {
         if backend.is_empty() {
             return Err("backend cannot be empty".to_string());
@@ -454,6 +508,10 @@ pub fn validate_model_patch(body: &ModelPatchBody) -> Result<(), String> {
                 "cache_type_v must be at most {MAX_CACHE_TYPE} characters"
             ));
         }
+    }
+    if let Some(levels) = &body.reasoning_levels {
+        let normalized = normalize_reasoning_levels(levels)?;
+        body.reasoning_levels = Some(normalized);
     }
     Ok(())
 }

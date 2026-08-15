@@ -384,6 +384,11 @@ pub(crate) async fn _setup_model_after_pull_with_config(
             // Reuse the existing model key if we found one, otherwise create a
             // new entry keyed by the bare repo slug (no per-quant suffix).
             let model_key = existing_key.unwrap_or_else(|| repo_slug.to_lowercase());
+            // `reasoning_levels: None` in the fresh entry is safe — `or_insert_with` only
+            // runs when no registry entry matches this repo (`existing_key` is None), i.e.
+            // the model is genuinely new (registry loaded from the DB at startup and
+            // reloaded after management CRUD). If registry and DB diverge for an existing
+            // model, the upsert wipes the stored levels — see model_config_queries.rs.
             let entry = model_configs
                 .entry(model_key.clone())
                 .or_insert_with(|| ModelConfig {
@@ -425,6 +430,7 @@ pub(crate) async fn _setup_model_after_pull_with_config(
                     n_ubatch: None,
                     vllm: Default::default(),
                     provider_name: None,
+                    reasoning_levels: None,
                 });
 
             // Promote a stub entry (created by a prior mmproj-first pull) into a
@@ -502,6 +508,11 @@ pub(crate) async fn _setup_model_after_pull_with_config(
             // disk invisible to the editor.
             let display_name = generate_display_name(repo_id);
             let stub_key = repo_slug.to_lowercase();
+            // `reasoning_levels: None` in the fresh stub is safe — `or_insert_with` only
+            // runs when no registry entry matches this repo (`existing_key` is None), i.e.
+            // the model is genuinely new (registry loaded from the DB at startup and
+            // reloaded after management CRUD). If registry and DB diverge for an existing
+            // model, the upsert wipes the stored levels — see model_config_queries.rs.
             model_configs
                 .entry(stub_key.clone())
                 .or_insert_with(|| ModelConfig {
@@ -543,6 +554,7 @@ pub(crate) async fn _setup_model_after_pull_with_config(
                     n_ubatch: None,
                     vllm: Default::default(),
                     provider_name: None,
+                    reasoning_levels: None,
                 });
             stub_key
         }

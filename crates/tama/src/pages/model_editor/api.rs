@@ -56,6 +56,7 @@ pub async fn fetch_model(id: String) -> Option<ModelDetail> {
             repo_commit_sha: None,
             repo_pulled_at: None,
             modalities: None,
+            reasoning_levels: None,
             spec_decoding: None,
             vllm: None,
             n_batch: None,
@@ -129,7 +130,12 @@ pub fn form_to_sampling_json(form: &ModelForm) -> serde_json::Value {
     }
 }
 
-pub async fn save_model(args: Vec<String>, form: ModelForm, is_new: bool) -> Result<(), String> {
+pub async fn save_model(
+    args: Vec<String>,
+    form: ModelForm,
+    is_new: bool,
+    reasoning_levels: Vec<String>,
+) -> Result<(), String> {
     let sampling = form_to_sampling_json(&form);
 
     let body = serde_json::json!({
@@ -142,6 +148,9 @@ pub async fn save_model(args: Vec<String>, form: ModelForm, is_new: bool) -> Res
         "mmproj": form.mmproj,
         "mtp_model": form.mtp_model,
         "args": args,
+        // Always an array — `[]` clears levels on the server; `null` would
+        // preserve them.
+        "reasoningLevels": serde_json::json!(reasoning_levels),
         "sampling": sampling,
         "enabled": form.enabled,
         "context_length": form.context_length,

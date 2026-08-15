@@ -213,6 +213,13 @@ pub async fn forward_request(
     // stream_options — single parse-and-serialize to avoid corrupting large bodies.
     let body_to_send = if let Ok(mut body) = serde_json::from_slice::<serde_json::Value>(body_bytes)
     {
+        // ADR-0009: no backend accepts "off" as reasoning_effort — the
+        // ecosystem off-word is "none" (vLLM 400s on "off"; llama.cpp would
+        // silently leave thinking on). Normalize for all clients.
+        // The modified flag is intentionally discarded — this branch
+        // re-serializes the body unconditionally, so zero-copy pass-through
+        // is not a concern here (unlike the remote path in chat.rs).
+        let _ = normalize_reasoning_effort_body(&mut body);
         if let Some(obj) = body.as_object_mut() {
             // Rewrite model field to resolved name (for alias support)
             if let Some(name) = model_name {
@@ -623,5 +630,62 @@ pub async fn forward_request(
             )
                 .into_response()
         }
+    }
+}
+
+/// Rewrite `reasoning_effort: "off"` → `"none"` (ADR-0009).
+///
+/// No backend accepts `"off"` as `reasoning_effort` — the ecosystem off-word
+/// is `"none"` (vLLM 400s on `"off"`; llama.cpp would silently leave thinking
+/// on). All other values pass through verbatim.
+///
+/// Returns true if the body was modified.
+pub(crate) fn normalize_reasoning_effort_body(body: &mut serde_json::Value) -> bool {
+    if body
+        .get("reasoning_effort")
+        .and_then(serde_json::Value::as_str)
+        == Some("off")
+    {
+        body["reasoning_effort"] = serde_json::json!("none");
+        true
+    } else {
+        false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `reasoning_effort: "off"` is rewritten to `"none"` (ADR-0009).
+    #[test]
+    fn test_normalize_reasoning_effort_off_to_none() {
+        let mut body = serde_json::json!({"model": "x", "reasoning_effort": "off"});
+        assert!(normalize_reasoning_effort_body(&mut body));
+        assert_eq!(body["reasoning_effort"], "none");
+    }
+
+    /// Other string values pass through verbatim.
+    #[test]
+    fn test_normalize_reasoning_effort_low_unchanged() {
+        let mut body = serde_json::json!({"model": "x", "reasoning_effort": "low"});
+        assert!(!normalize_reasoning_effort_body(&mut body));
+        assert_eq!(body["reasoning_effort"], "low");
+    }
+
+    /// Absent field: body is not modified.
+    #[test]
+    fn test_normalize_reasoning_effort_absent_unchanged() {
+        let mut body = serde_json::json!({"model": "x", "stream": true});
+        assert!(!normalize_reasoning_effort_body(&mut body));
+        assert!(body.get("reasoning_effort").is_none());
+    }
+
+    /// Non-string value: body is not modified.
+    #[test]
+    fn test_normalize_reasoning_effort_non_string_unchanged() {
+        let mut body = serde_json::json!({"model": "x", "reasoning_effort": 42});
+        assert!(!normalize_reasoning_effort_body(&mut body));
+        assert_eq!(body["reasoning_effort"], 42);
     }
 }

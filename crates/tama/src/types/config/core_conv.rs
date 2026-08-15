@@ -468,6 +468,7 @@ impl From<ModelConfig> for tama_core::config::ModelConfig {
             n_batch: m.n_batch,
             n_ubatch: m.n_ubatch,
             provider_name: m.provider_name,
+            reasoning_levels: None, // DB-only — not carried through the mirror type
         }
     }
 }

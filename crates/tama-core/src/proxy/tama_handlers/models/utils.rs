@@ -87,6 +87,34 @@ pub struct ModelEntry {
     pub reasoning: bool,
     pub attachment: bool,
     pub temperature: bool,
+    /// Derived at serialization: true when the model has configured
+    /// reasoning levels (see ADR-0008). Wire name is camelCase.
+    #[serde(rename = "supportsReasoningEffort")]
+    pub supports_reasoning_effort: bool,
+    /// Raw stored levels (pi vocabulary). Absent when None.
+    #[serde(rename = "reasoningLevels", skip_serializing_if = "Option::is_none")]
+    pub reasoning_levels: Option<Vec<String>>,
+    /// Opencode-canonical derived field (snake_case on purpose —
+    /// byte-compatible with the models.dev catalog). Absent when None.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_options: Option<serde_json::Value>,
+}
+
+/// Build the opencode-canonical `reasoning_options` value from stored
+/// levels: [{ "type": "effort", "values": [...] }] with `off` mapped to
+/// `none` (ADR-0009). Returns None for empty/absent levels.
+pub(crate) fn reasoning_options_from_levels(
+    levels: &Option<Vec<String>>,
+) -> Option<serde_json::Value> {
+    let levels = levels.as_ref()?;
+    if levels.is_empty() {
+        return None;
+    }
+    let values: Vec<&str> = levels
+        .iter()
+        .map(|l| if l == "off" { "none" } else { l.as_str() })
+        .collect();
+    Some(serde_json::json!([{ "type": "effort", "values": values }]))
 }
 
 /// Response wrapper for `/v1/opencode/models`.
@@ -170,9 +198,13 @@ pub(super) async fn build_model_entry(
         .is_some_and(|m| m.input.iter().any(|s| s == "image"));
 
     // Use provided capabilities or config-derived defaults
-    let (tool_call, reasoning) = capabilities
+    let (tool_call, props_reasoning) = capabilities
         .map(|c| (c.tool_call, c.reasoning))
         .unwrap_or((true, false));
+
+    // Effective reasoning: props-derived OR derived from configured levels
+    // (fixes vLLM-served thinking models, which have no /props).
+    let reasoning = props_reasoning || cfg.supports_reasoning_effort();
 
     Some(ModelEntry {
         id: api_id,
@@ -191,5 +223,8 @@ pub(super) async fn build_model_entry(
         reasoning,
         attachment,
         temperature: true,
+        supports_reasoning_effort: cfg.supports_reasoning_effort(),
+        reasoning_levels: cfg.reasoning_levels.clone(),
+        reasoning_options: reasoning_options_from_levels(&cfg.reasoning_levels),
     })
 }

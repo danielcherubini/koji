@@ -289,6 +289,7 @@ mod tests {
             n_ubatch: None,
             vllm_config: vllm_json,
             provider_name: None,
+            reasoning_levels: None,
         }
     }
 

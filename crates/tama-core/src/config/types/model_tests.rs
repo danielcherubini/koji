@@ -641,3 +641,129 @@ fn test_vllm_spec_config_attention_backend_serde_roundtrip() {
     assert_eq!(spec, loaded);
     assert_eq!(loaded.attention_backend, Some("FLASH_ATTN".to_string()));
 }
+
+// ── Reasoning effort tests ─────────────────────────────────────────────────
+
+/// Test that `supports_reasoning_effort` returns false when no levels are configured.
+#[test]
+fn test_supports_reasoning_effort_none() {
+    let config = ModelConfig {
+        backend: "llama_cpp".to_string(),
+        reasoning_levels: None,
+        ..Default::default()
+    };
+    assert!(!config.supports_reasoning_effort());
+}
+
+/// Test that `supports_reasoning_effort` returns false for an empty array (cleared state).
+#[test]
+fn test_supports_reasoning_effort_empty() {
+    let config = ModelConfig {
+        backend: "llama_cpp".to_string(),
+        reasoning_levels: Some(Vec::new()),
+        ..Default::default()
+    };
+    assert!(!config.supports_reasoning_effort());
+}
+
+/// Test that `supports_reasoning_effort` returns true when at least one level is configured.
+#[test]
+fn test_supports_reasoning_effort_some() {
+    let config = ModelConfig {
+        backend: "llama_cpp".to_string(),
+        reasoning_levels: Some(vec!["low".to_string()]),
+        ..Default::default()
+    };
+    assert!(config.supports_reasoning_effort());
+}
+
+/// Test that `reasoning_levels` survives a round-trip through the DB record (Some).
+#[test]
+fn test_reasoning_levels_db_roundtrip() {
+    let mc = ModelConfig {
+        backend: "llama_cpp".to_string(),
+        reasoning_levels: Some(vec!["off".to_string(), "low".to_string()]),
+        ..Default::default()
+    };
+
+    let record = mc.to_db_record("owner/repo");
+    assert_eq!(record.reasoning_levels.as_deref(), Some(r#"["off","low"]"#));
+
+    let round_trip = ModelConfig::from_db_record(&record);
+    assert_eq!(
+        round_trip.reasoning_levels,
+        Some(vec!["off".to_string(), "low".to_string()])
+    );
+}
+
+/// Test that a `None` `reasoning_levels` round-trips as NULL.
+#[test]
+fn test_reasoning_levels_db_roundtrip_none() {
+    let mc = ModelConfig {
+        backend: "llama_cpp".to_string(),
+        reasoning_levels: None,
+        ..Default::default()
+    };
+
+    let record = mc.to_db_record("owner/repo");
+    assert_eq!(record.reasoning_levels, None);
+
+    let round_trip = ModelConfig::from_db_record(&record);
+    assert_eq!(round_trip.reasoning_levels, None);
+}
+
+/// Test that a malformed `reasoning_levels` JSON column falls back to `None`
+/// and emits a warn log naming the model (mirrors the `gpu_variant` pattern
+/// in `from_db_record` — parse failures must not be silent).
+#[test]
+fn test_malformed_reasoning_levels_json_warns_and_falls_back() {
+    // Writer that captures formatted log output for assertions.
+    struct CaptureWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for CaptureWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CaptureWriter {
+        type Writer = CaptureWriter;
+        fn make_writer(&'a self) -> Self::Writer {
+            CaptureWriter(self.0.clone())
+        }
+    }
+
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .with_ansi(false)
+        .with_writer(CaptureWriter(captured.clone()))
+        .finish();
+
+    let record = ModelConfigRecord {
+        id: 7,
+        repo_id: "test/malformed".to_string(),
+        backend: "llama_cpp".to_string(),
+        reasoning_levels: Some("{not valid json".to_string()),
+        ..Default::default()
+    };
+
+    tracing::subscriber::with_default(subscriber, || {
+        let config = ModelConfig::from_db_record(&record);
+        // Behavior: malformed JSON still falls back to None (no hard failure).
+        assert!(config.reasoning_levels.is_none());
+    });
+
+    let guard = captured.lock().unwrap();
+    let logs = String::from_utf8_lossy(guard.as_slice());
+    assert!(
+        logs.contains("reasoning_levels"),
+        "expected a warn mentioning `reasoning_levels`, got: {logs}"
+    );
+    assert!(
+        logs.contains("test/malformed"),
+        "expected the warn to name the model, got: {logs}"
+    );
+}

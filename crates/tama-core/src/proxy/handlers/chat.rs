@@ -12,7 +12,7 @@ use std::sync::Arc;
 use tracing::info;
 
 use super::json_error_response;
-use crate::proxy::forward::forward_request;
+use crate::proxy::forward::{forward_request, normalize_reasoning_effort_body};
 
 /// Resolve the model, find or load its server, and forward the request.
 ///
@@ -60,8 +60,23 @@ async fn resolve_and_load_server(
                     .flatten()
             });
             if let Some(provider) = provider {
-                // Get body bytes
-                let body = bytes::Bytes::copy_from_slice(body_bytes);
+                // ADR-0009: rewrite reasoning_effort "off" → "none" before the
+                // remote provider. Re-serialize only when the body was actually
+                // modified — otherwise forward the original bytes untouched,
+                // preserving zero-copy behavior.
+                let body = if let Ok(mut value) =
+                    serde_json::from_slice::<serde_json::Value>(body_bytes)
+                {
+                    if normalize_reasoning_effort_body(&mut value) {
+                        bytes::Bytes::from(
+                            serde_json::to_vec(&value).unwrap_or_else(|_| body_bytes.to_vec()),
+                        )
+                    } else {
+                        bytes::Bytes::copy_from_slice(body_bytes)
+                    }
+                } else {
+                    bytes::Bytes::copy_from_slice(body_bytes)
+                };
                 match state
                     .remote_forwarder
                     .forward(&provider, &parts, body)

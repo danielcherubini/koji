@@ -184,6 +184,7 @@ fn model_entry_json(
         "hf_base_model": record.hf_base_model,
         "quants": quants_json,
         "modalities": m.modalities,
+        "reasoningLevels": m.reasoning_levels,
         "spec_decoding": serde_json::to_value(&m.spec_decoding).unwrap_or_default(),
         "vllm": serde_json::to_value(&m.vllm).unwrap_or_default(),
         "n_batch": m.n_batch,
@@ -443,6 +444,7 @@ mod tests {
             n_ubatch: None,
             vllm_config: None,
             provider_name: None,
+            reasoning_levels: None,
         }
     }
 

@@ -107,6 +107,7 @@ pub fn ModelEditorSettingsForm(
                     &f.port.map(|v| v.to_string()).unwrap_or_default(),
                 );
                 set_checked("field-enabled", f.enabled);
+                set_input_value("field-reasoning-levels", &f.reasoning_levels_input);
                 // GPU layers and device
                 set_input_value(
                     "field-gpu-layers",
@@ -517,6 +518,25 @@ pub fn ModelEditorSettingsForm(
                     }
                 />
             </div>
+
+            <label class="form-label" for="field-reasoning-levels">
+                "Reasoning levels"
+                <div class="form-hint">{"off, low, medium, xhigh  — valid: off, minimal, low, medium, high, xhigh, max (empty = none)"}</div>
+            </label>
+            <input
+                id="field-reasoning-levels"
+                class="form-input"
+                type="text"
+                placeholder="off, low, medium, xhigh"
+                on:input=move |ev| {
+                    let val = target_value(&ev);
+                    form.update(|f| {
+                        if let Some(form) = f {
+                            form.reasoning_levels_input = val;
+                        }
+                    });
+                }
+            />
         </div>
     }
 }

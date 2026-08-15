@@ -1,6 +1,6 @@
 pub mod api_keys;
 pub mod backend_logs;
-mod models;
+pub(crate) mod models;
 mod pull;
 mod system;
 mod types;
