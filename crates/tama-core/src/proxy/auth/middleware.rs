@@ -90,65 +90,53 @@ pub async fn auth_middleware(
                     .into_response();
             }
 
-            // Validate against database (spawn_blocking for rusqlite)
-            let raw_token = bearer_token.clone();
-            let raw_token_for_db = raw_token.clone();
-            let db_result = tokio::task::spawn_blocking(move || {
-                let db = proxy_state.open_db();
-                db.map(|conn| {
-                    crate::proxy::api_keys::ApiKeyStore::new(&conn).validate_key(&raw_token_for_db)
-                })
-            })
-            .await;
-
-            match db_result {
-                Ok(Some(Ok(Some((key_id, scopes))))) => {
-                    // Successful validation
-                    let key_prefix = crate::proxy::api_keys::extract_prefix(&raw_token);
-                    info!(
-                        key_id,
-                        key_prefix = %key_prefix,
-                        "API key authenticated"
-                    );
-                    let subject = AuthSubject::Key { key_id, scopes };
-                    let mut req = req;
-                    req.extensions_mut().insert(subject);
-                    return next.run(req).await;
+            // Validate against the database (async Postgres pool)
+            match proxy_state.db_pool() {
+                Some(pool) => {
+                    let store = crate::proxy::api_keys::ApiKeyStore::new(pool);
+                    match store.validate_key(&bearer_token).await {
+                        Ok(Some((key_id, scopes))) => {
+                            // Successful validation
+                            let key_prefix = crate::proxy::api_keys::extract_prefix(&bearer_token);
+                            info!(
+                                key_id,
+                                key_prefix = %key_prefix,
+                                "API key authenticated"
+                            );
+                            let subject = AuthSubject::Key { key_id, scopes };
+                            let mut req = req;
+                            req.extensions_mut().insert(subject);
+                            return next.run(req).await;
+                        }
+                        Ok(None) => {
+                            // Key not found in database
+                            let key_prefix_attempted =
+                                crate::proxy::api_keys::extract_prefix(&bearer_token);
+                            warn!(
+                                key_prefix_attempted = %key_prefix_attempted,
+                                reason = "key not found in database",
+                                "API key validation failed"
+                            );
+                            return (
+                                StatusCode::UNAUTHORIZED,
+                                super::api_key::json_unauthorized_invalid_key(),
+                            )
+                                .into_response();
+                        }
+                        Err(e) => {
+                            warn!(
+                                error = %e,
+                                reason = "database error during key validation",
+                                "API key validation failed"
+                            );
+                            return (StatusCode::UNAUTHORIZED, json_unauthorized()).into_response();
+                        }
+                    }
                 }
-                Ok(Some(Ok(None))) => {
-                    // Key not found in database
-                    let key_prefix_attempted = crate::proxy::api_keys::extract_prefix(&raw_token);
-                    warn!(
-                        key_prefix_attempted = %key_prefix_attempted,
-                        reason = "key not found in database",
-                        "API key validation failed"
-                    );
-                    return (
-                        StatusCode::UNAUTHORIZED,
-                        super::api_key::json_unauthorized_invalid_key(),
-                    )
-                        .into_response();
-                }
-                Ok(Some(Err(e))) => {
-                    warn!(
-                        error = %e,
-                        reason = "database error during key validation",
-                        "API key validation failed"
-                    );
-                    return (StatusCode::UNAUTHORIZED, json_unauthorized()).into_response();
-                }
-                Ok(None) => {
+                None => {
                     // No database connection available
                     warn!(
                         reason = "no database connection",
-                        "API key validation failed"
-                    );
-                    return (StatusCode::UNAUTHORIZED, json_unauthorized()).into_response();
-                }
-                Err(e) => {
-                    warn!(
-                        error = %e,
-                        reason = "spawn_blocking panicked",
                         "API key validation failed"
                     );
                     return (StatusCode::UNAUTHORIZED, json_unauthorized()).into_response();

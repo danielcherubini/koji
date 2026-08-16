@@ -152,38 +152,33 @@ pub async fn handle_tama_api_keys_create(
     let raw_key = api_keys::generate_key();
     let key_prefix = api_keys::extract_prefix(&raw_key);
 
-    // Insert into DB via spawn_blocking
-    let name = body.name.clone();
-    let scopes = body.scopes.clone();
-    let expires_at = body.expires_at.clone();
-    let raw_key_for_db = raw_key.clone();
-    let created_by_for_db = created_by.clone();
-    let state_for_create = state.clone();
+    // Insert into DB
+    let Some(pool) = state.db_pool() else {
+        warn!(
+            reason = "no database connection",
+            "failed to create API key"
+        );
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to create API key",
+            None,
+        );
+    };
+    let store = ApiKeyStore::new(pool);
 
-    let result = tokio::task::spawn_blocking(move || {
-        let conn = state_for_create.open_db().unwrap();
-        ApiKeyStore::new(&conn).create_key(
-            &name,
-            &raw_key_for_db,
-            &scopes,
-            &created_by_for_db,
-            expires_at.as_deref(),
+    let key_id = match store
+        .create_key(
+            &body.name,
+            &raw_key,
+            &body.scopes,
+            &created_by,
+            body.expires_at.as_deref(),
         )
-    })
-    .await;
-
-    let key_id = match result {
-        Ok(Ok(id)) => id,
-        Ok(Err(e)) => {
-            warn!(error = %e, "failed to create API key");
-            return json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "failed to create API key",
-                None,
-            );
-        }
+        .await
+    {
+        Ok(id) => id,
         Err(e) => {
-            warn!(error = %e, "spawn_blocking panicked creating API key");
+            warn!(error = %e, "failed to create API key");
             return json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "failed to create API key",
@@ -198,15 +193,8 @@ pub async fn handle_tama_api_keys_create(
     sync_api_keys_enabled(&state, true).await;
 
     // Fetch the record to get the DB-assigned created_at
-    let state_for_record = state.clone();
-    let record = tokio::task::spawn_blocking(move || {
-        let conn = state_for_record.open_db().unwrap();
-        ApiKeyStore::new(&conn).get_key(key_id)
-    })
-    .await;
-
-    let created_at = match record {
-        Ok(Ok(Some(r))) => r.created_at,
+    let created_at = match store.get_key(key_id).await {
+        Ok(Some(r)) => r.created_at,
         _ => chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
     };
 
@@ -227,24 +215,20 @@ pub async fn handle_tama_api_keys_create(
 ///
 /// Returns 200 with key metadata (no plaintext keys).
 pub async fn handle_tama_api_keys_list(State(state): State<Arc<ProxyState>>) -> impl IntoResponse {
-    let result = tokio::task::spawn_blocking(move || {
-        let conn = state.open_db().unwrap();
-        ApiKeyStore::new(&conn).list_keys()
-    })
-    .await;
+    let Some(pool) = state.db_pool() else {
+        warn!(reason = "no database connection", "failed to list API keys");
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to list API keys",
+            None,
+        );
+    };
+    let store = ApiKeyStore::new(pool);
 
-    let keys = match result {
-        Ok(Ok(keys)) => keys,
-        Ok(Err(e)) => {
-            warn!(error = %e, "failed to list API keys");
-            return json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "failed to list API keys",
-                None,
-            );
-        }
+    let keys = match store.list_keys().await {
+        Ok(keys) => keys,
         Err(e) => {
-            warn!(error = %e, "spawn_blocking panicked listing API keys");
+            warn!(error = %e, "failed to list API keys");
             return json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "failed to list API keys",
@@ -317,15 +301,19 @@ pub async fn handle_tama_api_keys_update(
     }
 
     // Validate key exists
-    let state_for_check = state.clone();
-    let key_exists = tokio::task::spawn_blocking(move || {
-        let conn = state_for_check.open_db().unwrap();
-        ApiKeyStore::new(&conn).get_key(key_id)
-    })
-    .await;
+    let Some(pool) = state.db_pool() else {
+        warn!(reason = "no database connection", "failed to get API key");
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to get API key",
+            None,
+        );
+    };
+    let store = ApiKeyStore::new(pool);
+    let key_exists = store.get_key(key_id).await;
 
     match key_exists {
-        Ok(Ok(Some(record))) => {
+        Ok(Some(record)) => {
             if record.revoked_at.is_some() {
                 return json_error(
                     StatusCode::NOT_FOUND,
@@ -334,23 +322,15 @@ pub async fn handle_tama_api_keys_update(
                 );
             }
         }
-        Ok(Ok(None)) => {
+        Ok(None) => {
             return json_error(
                 StatusCode::NOT_FOUND,
                 "key not found",
                 Some("NotFoundError"),
             );
         }
-        Ok(Err(e)) => {
-            warn!(error = %e, "failed to get API key");
-            return json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "failed to get API key",
-                None,
-            );
-        }
         Err(e) => {
-            warn!(error = %e, "spawn_blocking panicked getting API key");
+            warn!(error = %e, "failed to get API key");
             return json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "failed to get API key",
@@ -360,16 +340,10 @@ pub async fn handle_tama_api_keys_update(
     }
 
     // Update scopes in DB (returns the updated record)
-    let scopes = body.scopes.clone();
-    let state_for_update = state.clone();
-    let update_result = tokio::task::spawn_blocking(move || {
-        let conn = state_for_update.open_db().unwrap();
-        ApiKeyStore::new(&conn).update_key_scopes(key_id, &scopes)
-    })
-    .await;
+    let update_result = store.update_key_scopes(key_id, &body.scopes).await;
 
     match update_result {
-        Ok(Ok(record)) => {
+        Ok(record) => {
             info!(key_id, "API key scopes updated");
             let response = ListApiKeyResponse {
                 id: record.id,
@@ -384,16 +358,8 @@ pub async fn handle_tama_api_keys_update(
             };
             (StatusCode::OK, Json(response)).into_response()
         }
-        Ok(Err(e)) => {
-            warn!(error = %e, "failed to update API key scopes");
-            json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "failed to update API key scopes",
-                None,
-            )
-        }
         Err(e) => {
-            warn!(error = %e, "spawn_blocking panicked updating API key scopes");
+            warn!(error = %e, "failed to update API key scopes");
             json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "failed to update API key scopes",
@@ -423,37 +389,33 @@ pub async fn handle_tama_api_keys_revoke(
     };
 
     // Validate key exists (already-revoked keys are accepted — revoke is idempotent)
-    let state_for_check = state.clone();
-    let key_exists = tokio::task::spawn_blocking(move || {
-        let conn = state_for_check.open_db().unwrap();
-        ApiKeyStore::new(&conn).get_key(key_id)
-    })
-    .await;
+    let Some(pool) = state.db_pool() else {
+        warn!(reason = "no database connection", "failed to get API key");
+        return json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to get API key",
+            None,
+        );
+    };
+    let store = ApiKeyStore::new(pool);
+    let key_exists = store.get_key(key_id).await;
 
     match key_exists {
-        Ok(Ok(Some(record))) => {
+        Ok(Some(record)) => {
             // Already revoked — idempotent, return 204
             if record.revoked_at.is_some() {
                 return StatusCode::NO_CONTENT.into_response();
             }
         }
-        Ok(Ok(None)) => {
+        Ok(None) => {
             return json_error(
                 StatusCode::NOT_FOUND,
                 "key not found",
                 Some("NotFoundError"),
             );
         }
-        Ok(Err(e)) => {
-            warn!(error = %e, "failed to get API key");
-            return json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "failed to get API key",
-                None,
-            );
-        }
         Err(e) => {
-            warn!(error = %e, "spawn_blocking panicked getting API key");
+            warn!(error = %e, "failed to get API key");
             return json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "failed to get API key",
@@ -463,30 +425,17 @@ pub async fn handle_tama_api_keys_revoke(
     }
 
     // Revoke in DB
-    let state_for_revoke = state.clone();
-    let revoke_result = tokio::task::spawn_blocking(move || {
-        let conn = state_for_revoke.open_db().unwrap();
-        ApiKeyStore::new(&conn).revoke_key(key_id)
-    })
-    .await;
+    let revoke_result = store.revoke_key(key_id).await;
 
     match revoke_result {
-        Ok(Ok(enabled)) => {
+        Ok(enabled) => {
             info!(key_id, "API key revoked");
             // Sync in-memory config (revoke may have cleared api_keys_enabled)
             sync_api_keys_enabled(&state, enabled).await;
             StatusCode::NO_CONTENT.into_response()
         }
-        Ok(Err(e)) => {
-            warn!(error = %e, "failed to revoke API key");
-            json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "failed to revoke API key",
-                None,
-            )
-        }
         Err(e) => {
-            warn!(error = %e, "spawn_blocking panicked revoking API key");
+            warn!(error = %e, "failed to revoke API key");
             json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "failed to revoke API key",
@@ -511,19 +460,21 @@ mod tests {
     use std::sync::Arc;
     use tower::util::ServiceExt;
 
-    /// Helper: create a temporary directory with a DB containing an API key.
-    /// Returns the proxy state, the temp dir (kept alive), and the raw key.
-    fn make_test_db(scopes: &[Scope]) -> (Arc<ProxyState>, tempfile::TempDir, String) {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let db_path = temp_dir.path().join("tama.db");
-        let db_dir = temp_dir.path().to_path_buf();
-
-        let conn = rusqlite::Connection::open(&db_path).unwrap();
-        crate::db::migrations::run(&conn).unwrap();
+    /// Helper: create a Postgres schema with a seeded API key.
+    /// Returns the proxy state, the schema guard (kept alive), and the raw key.
+    async fn make_test_db(
+        scopes: &[Scope],
+    ) -> (
+        Arc<ProxyState>,
+        crate::testing::postgres::SchemaGuard,
+        String,
+    ) {
+        let guard = crate::testing::postgres::with_schema().await;
 
         let key = api_keys::generate_key();
-        ApiKeyStore::new(&conn)
+        ApiKeyStore::new(Arc::new(guard.pool.clone()))
             .create_key("test-key", &key, scopes, "admin", None)
+            .await
             .unwrap();
 
         let config = crate::config::Config {
@@ -540,9 +491,13 @@ mod tests {
             },
             ..Default::default()
         };
-        let proxy_state = Arc::new(ProxyState::new(config, Some(db_dir), None));
+        let proxy_state = Arc::new(ProxyState::new(
+            config,
+            None,
+            Some(Arc::new(guard.pool.clone())),
+        ));
 
-        (proxy_state, temp_dir, key)
+        (proxy_state, guard, key)
     }
 
     /// Build an app with auth middleware + API key handlers.
@@ -569,7 +524,7 @@ mod tests {
     /// Test: POST /tama/v1/keys creates key, returns 201 with plaintext key.
     #[tokio::test]
     async fn test_create_key_returns_201_with_plaintext() {
-        let (state, _temp_dir, _admin_key) = make_test_db(&[Scope::ManagementWrite]);
+        let (state, _guard, _admin_key) = make_test_db(&[Scope::ManagementWrite]).await;
 
         let app = make_api_keys_app(state);
 
@@ -613,7 +568,7 @@ mod tests {
     /// Test: GET /tama/v1/keys lists keys with key_prefix, no plaintext.
     #[tokio::test]
     async fn test_list_keys_excludes_plaintext() {
-        let (state, _temp_dir, _admin_key) = make_test_db(&[Scope::ManagementWrite]);
+        let (state, _guard, _admin_key) = make_test_db(&[Scope::ManagementWrite]).await;
 
         // Create another key first
         let app = make_api_keys_app(state.clone());
@@ -674,7 +629,7 @@ mod tests {
     /// Test: PATCH /tama/v1/keys/:id updates scopes.
     #[tokio::test]
     async fn test_update_key_scopes() {
-        let (state, _temp_dir, _admin_key) = make_test_db(&[Scope::ManagementWrite]);
+        let (state, _guard, _admin_key) = make_test_db(&[Scope::ManagementWrite]).await;
 
         // Create a key first
         let app = make_api_keys_app(state.clone());
@@ -742,7 +697,7 @@ mod tests {
     /// Test: PATCH with empty scopes returns 400.
     #[tokio::test]
     async fn test_update_key_invalid_scopes_returns_400() {
-        let (state, _temp_dir, _admin_key) = make_test_db(&[Scope::ManagementWrite]);
+        let (state, _guard, _admin_key) = make_test_db(&[Scope::ManagementWrite]).await;
 
         // Create a key first
         let app = make_api_keys_app(state.clone());
@@ -804,7 +759,7 @@ mod tests {
     /// Test: DELETE /tama/v1/keys/:id revokes key, returns 204.
     #[tokio::test]
     async fn test_revoke_key_returns_204() {
-        let (state, _temp_dir, _admin_key) = make_test_db(&[Scope::ManagementWrite]);
+        let (state, _guard, _admin_key) = make_test_db(&[Scope::ManagementWrite]).await;
 
         // Create a key first
         let app = make_api_keys_app(state.clone());
@@ -854,7 +809,7 @@ mod tests {
     /// Test: DELETE nonexistent key returns 404.
     #[tokio::test]
     async fn test_revoke_nonexistent_key_returns_404() {
-        let (state, _temp_dir, _admin_key) = make_test_db(&[Scope::ManagementWrite]);
+        let (state, _guard, _admin_key) = make_test_db(&[Scope::ManagementWrite]).await;
 
         let app = make_api_keys_app(state);
 
@@ -885,7 +840,7 @@ mod tests {
     /// Test: POST with empty scopes returns 400.
     #[tokio::test]
     async fn test_create_key_empty_scopes_returns_400() {
-        let (state, _temp_dir, _admin_key) = make_test_db(&[Scope::ManagementWrite]);
+        let (state, _guard, _admin_key) = make_test_db(&[Scope::ManagementWrite]).await;
 
         let app = make_api_keys_app(state);
 
@@ -923,7 +878,7 @@ mod tests {
     /// Test: Full CRUD flow — create → list → update → validate scopes → revoke → validate fails.
     #[tokio::test]
     async fn test_key_crud_full_flow() {
-        let (state, _temp_dir, _admin_key) = make_test_db(&[Scope::ManagementWrite]);
+        let (state, _guard, _admin_key) = make_test_db(&[Scope::ManagementWrite]).await;
 
         let app = make_api_keys_app(state);
 

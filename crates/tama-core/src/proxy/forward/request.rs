@@ -6,7 +6,6 @@ use super::langfuse::{
 };
 use super::sse::process_sse_line;
 use super::stats::extract_inference_stats;
-use crate::proxy::api_keys::ApiKeyStore;
 use crate::proxy::{api_keys::AuthSubject, BackendState, ProxyState};
 use axum::{body::Body, http::request::Parts, response::IntoResponse};
 use bytes::{Bytes, BytesMut};
@@ -181,14 +180,15 @@ pub async fn forward_request(
     let auth_user_id: Option<String> = match auth_subject {
         Some(AuthSubject::User { username }) => Some(username),
         Some(AuthSubject::Key { key_id, .. }) => {
-            // DB lookup for key name — spawn_blocking since rusqlite is synchronous.
+            // DB lookup for key name (async Postgres pool).
             // Only done when langfuse is enabled (checked via langfuse_cfg below,
             // but we always resolve here to keep the logic simple).
-            let db = state.open_db();
-            match db {
-                Some(conn) => tokio::task::block_in_place(|| {
-                    ApiKeyStore::new(&conn).get_key_name(key_id).ok().flatten()
-                }),
+            match state.db_pool() {
+                Some(pool) => crate::proxy::api_keys::ApiKeyStore::new(pool)
+                    .get_key_name(key_id)
+                    .await
+                    .ok()
+                    .flatten(),
                 None => None,
             }
         }
