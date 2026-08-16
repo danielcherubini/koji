@@ -12,9 +12,17 @@ Plans for features, refactors, and bug fixes in the Tama project.
 
 ## Quick Stats
 
-- **Total Plans**: 94
-- **Backlog**: 0
+- **Total Plans**: 95
+- **Backlog**: 1
 - **Completed**: 93 ✅
+
+---
+
+## Backlog
+
+| # | Plan | Status |
+|---|------|--------|
+| 190 | [SQLite → Postgres Database Migration](plan-190-sqlite-to-postgres.md) | Backlog |
 
 ---
 
