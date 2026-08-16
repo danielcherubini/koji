@@ -1,7 +1,8 @@
-//! Database module for SQLite
+//! Database module for SQLite + Postgres (transitional, plan-190).
 //!
-//! Provides connection helpers, automatic migration system, and a Repository
-//! layer for domain-level database access.
+//! SQLite machinery (`open`, `open_in_memory`, `backup_db`, migrations,
+//! backfill, `Repository`) remains until Task 9; the model registry
+//! loaders/savers below are now Postgres-based.
 
 pub mod backfill;
 pub mod migrations;
@@ -15,6 +16,7 @@ use std::path::Path;
 
 use anyhow::Context;
 pub(crate) use rusqlite::Connection;
+use sqlx::PgPool;
 
 use crate::config::ModelConfig;
 
@@ -29,28 +31,41 @@ pub struct OpenResult {
 ///
 /// NOTE: this is only used internally by the proxy to build its in-memory registry.
 /// All external API lookups should use the integer `id` column directly.
-pub fn load_model_configs(conn: &Connection) -> anyhow::Result<HashMap<String, ModelConfig>> {
-    let records = queries::get_all_model_configs(conn)?;
-    let mut configs = HashMap::new();
+///
+/// The `model_files` fetch is batched into a single `WHERE model_id = ANY(...)`
+/// query (the v2 code did one query per model — an N+1).
+pub async fn load_model_configs(pool: &PgPool) -> anyhow::Result<HashMap<String, ModelConfig>> {
+    let records = queries::get_all_model_configs(pool).await?;
 
+    // Batch the model_files fetch (single round trip instead of N+1).
+    let model_ids: Vec<i64> = records.iter().map(|r| r.id).collect();
+    let all_files = queries::get_model_files_by_ids(pool, &model_ids).await?;
+    let files_by_model: HashMap<i64, Vec<_>> =
+        all_files.into_iter().fold(HashMap::new(), |mut map, file| {
+            map.entry(file.model_id).or_default().push(file);
+            map
+        });
+
+    let mut configs = HashMap::new();
     for record in records {
         let config_key = crate::models::ConfigKey::from_repo_id(&record.repo_id).to_string();
         let mut config = ModelConfig::from_db_record(&record);
         config.db_id = Some(record.id);
 
         // Populate quants from model_files table to restore them after restart
-        let files = queries::get_model_files(conn, record.id)?;
-        for file in files {
-            let quant_key = file.quant.clone().unwrap_or_else(|| file.filename.clone());
-            config.quants.insert(
-                quant_key,
-                crate::config::QuantEntry {
-                    file: file.filename.clone(),
-                    kind: crate::config::QuantKind::from_filename(&file.filename),
-                    size_bytes: file.size_bytes.map(|s| s as u64),
-                    context_length: None,
-                },
-            );
+        if let Some(files) = files_by_model.get(&record.id) {
+            for file in files {
+                let quant_key = file.quant.clone().unwrap_or_else(|| file.filename.clone());
+                config.quants.insert(
+                    quant_key,
+                    crate::config::QuantEntry {
+                        file: file.filename.clone(),
+                        kind: crate::config::QuantKind::from_filename(&file.filename),
+                        size_bytes: file.size_bytes.map(|s| s as u64),
+                        context_length: None,
+                    },
+                );
+            }
         }
 
         configs.insert(config_key, config);
@@ -65,8 +80,8 @@ pub fn load_model_configs(conn: &Connection) -> anyhow::Result<HashMap<String, M
 /// when present (carries the exact repo_id the user entered), and only
 /// falling back to deriving from `config_key` when `mc.model` is unset.
 /// Returns the integer model id from the database.
-pub fn save_model_config(
-    conn: &Connection,
+pub async fn save_model_config(
+    pool: &PgPool,
     config_key: &str,
     mc: &ModelConfig,
 ) -> anyhow::Result<i64> {
@@ -83,7 +98,7 @@ pub fn save_model_config(
     if record.api_name.as_deref().is_none_or(str::is_empty) {
         record.api_name = Some(repo_id.clone());
     }
-    queries::upsert_model_config(conn, &record)
+    queries::upsert_model_config(pool, &record).await
 }
 
 /// Open (or create) the SQLite database at `config_dir/tama.db`
@@ -380,14 +395,6 @@ mod tests {
         );
     }
 
-    /// Test that loading model configs from an empty DB returns an empty HashMap.
-    #[test]
-    fn test_load_model_configs_empty() {
-        let OpenResult { conn, .. } = open_in_memory().unwrap();
-        let configs = load_model_configs(&conn).unwrap();
-        assert!(configs.is_empty());
-    }
-
     /// Backfill assigns a stable, per-name logical_id and populates the stable-key
     /// columns on provider_configs / model_configs / active_models.
     #[test]
@@ -531,26 +538,5 @@ mod tests {
         assert_eq!(cfgs.len(), 1);
         assert_eq!(cfgs[0].logical_id.as_deref(), Some(lid.as_str()));
         assert_eq!(cfgs[0].default_args, vec!["--a"]);
-    }
-
-    /// Test saving and then loading a model config.
-    #[test]
-    fn test_save_and_load_model_config() {
-        let OpenResult { conn, .. } = open_in_memory().unwrap();
-
-        let mc = ModelConfig {
-            backend: "llama.cpp".to_string(),
-            display_name: Some("Test Model".to_string()),
-            ..Default::default()
-        };
-        let config_key = "owner--repo".to_string();
-
-        save_model_config(&conn, &config_key, &mc).unwrap();
-
-        let configs = load_model_configs(&conn).unwrap();
-        assert!(configs.contains_key(&config_key));
-        let loaded = configs.get(&config_key).unwrap();
-        assert_eq!(loaded.backend, mc.backend);
-        assert_eq!(loaded.display_name, mc.display_name);
     }
 }

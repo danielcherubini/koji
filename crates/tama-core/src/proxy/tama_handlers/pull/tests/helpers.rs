@@ -10,16 +10,28 @@ use crate::proxy::ProxyState;
 #[allow(dead_code)]
 pub(crate) static ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// A Postgres pool that never connects. These validation/SSE tests exercise
+/// the queue + in-memory job paths and never run model-domain Postgres
+/// queries, so a lazy pool satisfies the `db_pool` wiring without a container.
+pub(crate) fn lazy_pool() -> Arc<sqlx::PgPool> {
+    Arc::new(
+        sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgresql://tama:tama@127.0.0.1:1/unused")
+            .expect("lazy pool URL is valid"),
+    )
+}
+
 /// ProxyState on a tempdir DB with a PullQueueService, mirroring
 /// crates/tama/tests/downloads_api.rs create_test_state.
 /// Returns (state, db TempDir — keep alive).
 pub(crate) fn create_test_state() -> (Arc<ProxyState>, tempfile::TempDir) {
     let tmp = tempfile::tempdir().unwrap();
     let db_dir = tmp.path().to_path_buf();
-    let mgr = crate::models::ModelManager::open(&db_dir).unwrap();
+    let pool = lazy_pool();
+    let mgr = crate::models::ModelManager::open(&db_dir, pool.clone()).unwrap();
     let svc = PullQueueService::new(mgr, 2);
     let config = crate::config::Config::default();
-    let mut state = ProxyState::new(config, Some(db_dir), None);
+    let mut state = ProxyState::new(config, Some(db_dir), Some(pool));
     state.pull.pull_queue = Some(Arc::new(svc));
     (Arc::new(state), tmp)
 }

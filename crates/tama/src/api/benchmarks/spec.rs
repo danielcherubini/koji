@@ -102,60 +102,44 @@ pub async fn run_spec_benchmark_inner(
         .ok_or_else(|| anyhow::anyhow!("Postgres pool not available; cannot load config"))?;
     let config = tama_core::config::Config::load_from_pool(pool).await?;
 
-    // Resolve model path — pool the blocking SQLite calls.
+    // Resolve model path — model configs and files come from Postgres.
     let db_dir = db_path.parent().context("db_path has no parent")?;
-    // Clone values before moving into the spawn_blocking closure.
-    let model_id_for_pool = model_id.clone();
-    let quant_for_pool = quant.clone();
-    let config_for_pool = config.clone();
-    let db_dir_for_pool = db_dir.to_path_buf();
-    let repo_handle_for_pool = repo_handle.clone();
-    let (model_path, target_backend, display_name, resolved_id_owned) =
-        tokio::task::spawn_blocking(
-            move || -> anyhow::Result<(std::path::PathBuf, String, Option<String>, String)> {
-                let model_configs = {
-                    let repo = repo_handle_for_pool.lock().unwrap();
-                    repo.load_model_configs_for_benchmarks()
-                }?;
+    let model_configs = tama_core::db::load_model_configs(pool).await?;
 
-                // If model_id is an integer db_id, resolve it to the config key first.
-                let resolved_id = if let Ok(db_id) = model_id_for_pool.parse::<i64>() {
-                    model_configs
-                        .iter()
-                        .find(|(_, mc)| mc.db_id == Some(db_id))
-                        .map(|(key, _)| key.clone())
-                        .unwrap_or(model_id_for_pool.clone())
-                } else {
-                    model_id_for_pool.clone()
-                };
+    // If model_id is an integer db_id, resolve it to the config key first.
+    let resolved_id = if let Ok(db_id) = model_id.parse::<i64>() {
+        model_configs
+            .iter()
+            .find(|(_, mc)| mc.db_id == Some(db_id))
+            .map(|(key, _)| key.clone())
+            .unwrap_or(model_id.clone())
+    } else {
+        model_id.clone()
+    };
 
-                let (model_config, _) = config_for_pool
-                    .resolve_backend(&model_configs, &resolved_id)
-                    .context("Failed to resolve server config for benchmark")?;
-
-                let repo = repo_handle_for_pool.lock().unwrap();
-                let model_path = resolve_model_path(
-                    &config_for_pool,
-                    &db_dir_for_pool,
-                    &repo,
-                    &model_configs,
-                    &resolved_id,
-                    quant_for_pool.as_deref(),
-                )?;
-                let display_name = model_configs.get(&resolved_id).and_then(|mc| {
-                    mc.display_name
-                        .clone()
-                        .or_else(|| mc.api_name.clone())
-                        .or_else(|| mc.model.clone())
-                });
-                let target_backend = backend_name
-                    .as_deref()
-                    .unwrap_or(&model_config.backend)
-                    .to_string();
-                Ok((model_path, target_backend, display_name, resolved_id))
-            },
-        )
-        .await??;
+    let (model_config, _) = config
+        .resolve_backend(&model_configs, &resolved_id)
+        .context("Failed to resolve server config for benchmark")?;
+    let model_path = resolve_model_path(
+        &config,
+        db_dir,
+        pool,
+        &model_configs,
+        &resolved_id,
+        quant.as_deref(),
+    )
+    .await?;
+    let display_name = model_configs.get(&resolved_id).and_then(|mc| {
+        mc.display_name
+            .clone()
+            .or_else(|| mc.api_name.clone())
+            .or_else(|| mc.model.clone())
+    });
+    let target_backend = backend_name
+        .as_deref()
+        .unwrap_or(&model_config.backend)
+        .to_string();
+    let resolved_id_owned = resolved_id;
 
     // Apply minimum guards
     let runs = req.runs.max(1);

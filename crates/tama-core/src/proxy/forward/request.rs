@@ -49,8 +49,8 @@ pub async fn forward_request(
             state.metrics.modify_inference_stats(|map| {
                 map.remove(backend_name);
             });
-            if let Some(mgr) = state.model_mgr() {
-                let _ = mgr.remove_active(backend_name);
+            if let Some(pool) = state.db_pool() {
+                let _ = crate::db::queries::remove_active_model(&pool, backend_name).await;
             }
             return (
                 axum::http::StatusCode::BAD_GATEWAY,
@@ -605,8 +605,8 @@ pub async fn forward_request(
                     map.remove(backend_name);
                 });
                 // Best-effort DB cleanup
-                if let Some(mgr) = state.model_mgr() {
-                    let _ = mgr.remove_active(backend_name);
+                if let Some(pool) = state.db_pool() {
+                    let _ = crate::db::queries::remove_active_model(&pool, backend_name).await;
                 }
             } else {
                 // Process is alive — this is a transient error (timeout, busy, etc.)

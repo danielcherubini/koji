@@ -2,7 +2,6 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::config::Config;
-use crate::db;
 use crate::db::queries::UpdateCheckRecord;
 use crate::db::queries::{get_all_model_configs, get_oldest_check_time};
 use crate::installations::{InstallationManager, InstallationType};
@@ -163,11 +162,18 @@ impl UpdateChecker {
 
         tracing::info!("Starting update check for all items");
 
-        // Phase 1: Sync DB - fetch all items to check
+        // Phase 1a: fetch all models to check from Postgres (plan-190 Task 5).
+        let models: Vec<(i64, Option<String>)> = get_all_model_configs(pool)
+            .await?
+            .into_iter()
+            .map(|r| (r.id, Some(r.repo_id)))
+            .collect();
+
+        // Phase 1b: sync DB - fetch all backends to check.
         // For backends: iterate ALL installed variants (not just active ones)
-        let (backends, models) = tokio::task::spawn_blocking({
+        let backends = tokio::task::spawn_blocking({
             let config_dir = config_dir.to_path_buf();
-            move || -> anyhow::Result<UpdateSyncResults> {
+            move || -> anyhow::Result<Vec<(String, InstallationType, String)>> {
                 let mgr = InstallationManager::open(&config_dir)?;
 
                 // Collect all unique (name, backend_type) pairs from all installed backends
@@ -198,14 +204,7 @@ impl UpdateChecker {
                     }
                 }
 
-                let open = db::open(&config_dir)?;
-                let db_model_records = get_all_model_configs(&open.conn)?;
-                let models: Vec<(i64, Option<String>)> = db_model_records
-                    .into_iter()
-                    .map(|r| (r.id, Some(r.repo_id)))
-                    .collect();
-
-                Ok((backend_entries, models))
+                Ok(backend_entries)
             }
         })
         .await??;

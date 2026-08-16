@@ -17,8 +17,8 @@ fn setup_service() -> PullQueueService {
     PullQueueService::new(mgr, 2)
 }
 
-#[test]
-fn test_enqueue_and_dequeue() {
+#[tokio::test]
+async fn test_enqueue_and_dequeue() {
     let svc = setup_service();
 
     svc.enqueue(
@@ -41,8 +41,8 @@ fn test_enqueue_and_dequeue() {
     assert_eq!(item.kind, "model");
 }
 
-#[test]
-fn test_update_status_emits_event() {
+#[tokio::test]
+async fn test_update_status_emits_event() {
     let svc = setup_service();
 
     svc.enqueue(
@@ -78,8 +78,8 @@ fn test_update_status_emits_event() {
     }
 }
 
-#[test]
-fn test_cancel_emits_event() {
+#[tokio::test]
+async fn test_cancel_emits_event() {
     let svc = setup_service();
 
     svc.enqueue(
@@ -107,8 +107,8 @@ fn test_cancel_emits_event() {
     }
 }
 
-#[test]
-fn test_dequeue_empty_queue_returns_none() {
+#[tokio::test]
+async fn test_dequeue_empty_queue_returns_none() {
     let svc = setup_service();
 
     let result = svc.dequeue().unwrap();
@@ -117,8 +117,8 @@ fn test_dequeue_empty_queue_returns_none() {
 
 /// Integration test: verify that enqueue_pull creates a pull_queue row
 /// with the correct fields including quant and context_length.
-#[test]
-fn test_enqueue_pull_creates_queue_row() {
+#[tokio::test]
+async fn test_enqueue_pull_creates_queue_row() {
     let mgr = ModelManager::open_in_memory().unwrap();
     let svc = PullQueueService::new(mgr, 2);
 
@@ -167,8 +167,8 @@ fn test_enqueue_pull_creates_queue_row() {
 }
 
 /// Integration test: verify full lifecycle status transitions through the DB.
-#[test]
-fn test_status_transitions_through_lifecycle() {
+#[tokio::test]
+async fn test_status_transitions_through_lifecycle() {
     let mgr = ModelManager::open_in_memory().unwrap();
     let svc = PullQueueService::new(mgr, 2);
 
@@ -279,8 +279,8 @@ fn test_status_transitions_through_lifecycle() {
 
 /// Integration test: verify duration_ms is computed via Instant::elapsed()
 /// and not derived from string subtraction of timestamps.
-#[test]
-fn test_duration_ms_computed_via_instant() {
+#[tokio::test]
+async fn test_duration_ms_computed_via_instant() {
     let mgr = ModelManager::open_in_memory().unwrap();
     let svc = PullQueueService::new(mgr, 2);
 
@@ -354,8 +354,8 @@ fn test_duration_ms_computed_via_instant() {
 // ── CAS (try_mark_running) tests ──────────────────────────────────────
 
 /// Test that try_mark_running returns true when the item is queued.
-#[test]
-fn test_try_mark_running_succeeds_for_queued() {
+#[tokio::test]
+async fn test_try_mark_running_succeeds_for_queued() {
     let svc = setup_service();
 
     svc.enqueue(
@@ -384,8 +384,8 @@ fn test_try_mark_running_succeeds_for_queued() {
 }
 
 /// Test that try_mark_running returns false when the item is not queued.
-#[test]
-fn test_try_mark_running_fails_for_non_queued() {
+#[tokio::test]
+async fn test_try_mark_running_fails_for_non_queued() {
     let svc = setup_service();
 
     svc.enqueue(
@@ -427,8 +427,8 @@ fn test_try_mark_running_fails_for_non_queued() {
 }
 
 /// Test that try_mark_running returns false for a non-existent job.
-#[test]
-fn test_try_mark_running_nonexistent_job() {
+#[tokio::test]
+async fn test_try_mark_running_nonexistent_job() {
     let svc = setup_service();
 
     let result = svc.try_mark_running("nonexistent-job").unwrap();
@@ -439,8 +439,8 @@ fn test_try_mark_running_nonexistent_job() {
 
 /// Test that on_startup_recovery marks stale running items as queued.
 /// A running item with started_at > 1 hour ago is considered stale.
-#[test]
-fn test_on_startup_recovery_stale_items() {
+#[tokio::test]
+async fn test_on_startup_recovery_stale_items() {
     let svc = setup_service();
 
     // Enqueue an item
@@ -492,8 +492,8 @@ fn test_on_startup_recovery_stale_items() {
 }
 
 /// Test that on_startup_recovery does NOT affect non-stale running items.
-#[test]
-fn test_on_startup_recovery_non_stale_items() {
+#[tokio::test]
+async fn test_on_startup_recovery_non_stale_items() {
     let svc = setup_service();
 
     // Enqueue an item
@@ -533,8 +533,8 @@ fn test_on_startup_recovery_non_stale_items() {
 }
 
 /// Test that on_startup_recovery does NOT affect completed items.
-#[test]
-fn test_on_startup_recovery_completed_items() {
+#[tokio::test]
+async fn test_on_startup_recovery_completed_items() {
     let svc = setup_service();
 
     svc.enqueue(
@@ -567,8 +567,8 @@ fn test_on_startup_recovery_completed_items() {
 }
 
 /// Test that on_startup_recovery handles items with NULL started_at.
-#[test]
-fn test_on_startup_recovery_null_started_at() {
+#[tokio::test]
+async fn test_on_startup_recovery_null_started_at() {
     let svc = setup_service();
 
     svc.enqueue(
@@ -755,8 +755,8 @@ async fn test_concurrent_status_transitions() {
 }
 
 /// Test that cancel fails for items already in terminal state.
-#[test]
-fn test_cancel_terminal_state_fails() {
+#[tokio::test]
+async fn test_cancel_terminal_state_fails() {
     let svc = setup_service();
 
     svc.enqueue(
@@ -781,8 +781,8 @@ fn test_cancel_terminal_state_fails() {
 }
 
 /// Test that cancel fails for a non-existent job.
-#[test]
-fn test_cancel_nonexistent_job() {
+#[tokio::test]
+async fn test_cancel_nonexistent_job() {
     let svc = setup_service();
 
     let result = svc.cancel("nonexistent-cancel-job");
@@ -803,7 +803,7 @@ async fn test_queue_processor_loop_stale_recovery() {
     let poll_interval = config.proxy.pull_queue_poll_interval_secs;
 
     // Open ModelManager directly (same as ProxyState::new does)
-    let mgr = crate::models::ModelManager::open(temp_dir.path()).unwrap();
+    let mgr = crate::models::ModelManager::open(temp_dir.path(), test_lazy_pool()).unwrap();
     let svc = PullQueueService::new(mgr, poll_interval);
 
     // Insert a stale running item (started > 1 hour ago)
@@ -866,7 +866,7 @@ async fn test_queue_processor_loop_dequeues_items() {
     let config = Config::default();
     let poll_interval = config.proxy.pull_queue_poll_interval_secs;
 
-    let mgr = crate::models::ModelManager::open(temp_dir.path()).unwrap();
+    let mgr = crate::models::ModelManager::open(temp_dir.path(), test_lazy_pool()).unwrap();
     let svc = PullQueueService::new(mgr, poll_interval);
 
     // Insert multiple queued items
@@ -928,17 +928,17 @@ async fn test_queue_processor_loop_dequeues_items() {
 async fn test_queue_processor_loop_dead_task_detection() {
     let temp_dir = tempfile::tempdir().unwrap();
     let config = Config::default();
+    let pool = test_lazy_pool();
 
     let state = Arc::new(ProxyState::new(
         config,
         Some(temp_dir.path().to_path_buf()),
-        None,
+        Some(pool.clone()),
     ));
 
-    // Insert a running item with old started_at (> 10 seconds ago)
-    let mgr = state
-        .model_mgr()
-        .expect("ModelManager should be configured");
+    // The pull queue is still SQLite-backed (Task 7); open a manager with a
+    // live SQLite connection for the queue tables.
+    let mgr = ModelManager::open(temp_dir.path(), pool).unwrap();
     let conn = mgr.conn();
 
     conn.execute(
@@ -983,8 +983,8 @@ async fn test_queue_processor_loop_dead_task_detection() {
 }
 
 /// Test that PullQueueService emits events for all status transitions.
-#[test]
-fn test_all_status_transitions_emit_events() {
+#[tokio::test]
+async fn test_all_status_transitions_emit_events() {
     let svc = setup_service();
 
     // Subscribe BEFORE enqueue so we capture the Queued event
@@ -1037,8 +1037,8 @@ fn test_all_status_transitions_emit_events() {
 }
 
 /// Test that progress updates emit Progress events without changing status.
-#[test]
-fn test_progress_updates_emit_events() {
+#[tokio::test]
+async fn test_progress_updates_emit_events() {
     let svc = setup_service();
 
     svc.enqueue(
@@ -1088,8 +1088,8 @@ fn test_progress_updates_emit_events() {
 }
 
 /// Test that get_active_items returns only queued, running, and verifying items.
-#[test]
-fn test_get_active_items_excludes_terminal() {
+#[tokio::test]
+async fn test_get_active_items_excludes_terminal() {
     let svc = setup_service();
 
     // Enqueue multiple items
@@ -1150,8 +1150,8 @@ fn test_get_active_items_excludes_terminal() {
 }
 
 /// Test that get_history_items returns completed, failed, and cancelled items.
-#[test]
-fn test_get_history_items_excludes_active() {
+#[tokio::test]
+async fn test_get_history_items_excludes_active() {
     let svc = setup_service();
 
     // Enqueue and complete an item
@@ -1238,8 +1238,8 @@ fn test_get_history_items_excludes_active() {
 // ── PullEvent tagged serialization tests ──────────────────────────────
 
 /// Test that all PullEvent variants serialize with the correct `event` tag.
-#[test]
-fn test_pull_event_tagged_serialization_all_variants() {
+#[tokio::test]
+async fn test_pull_event_tagged_serialization_all_variants() {
     let cases: Vec<(PullEvent, &str)> = vec![
         (
             PullEvent::Started {
@@ -1303,4 +1303,13 @@ fn test_pull_event_tagged_serialization_all_variants() {
         assert_eq!(v["event"], expected_name);
         assert!(event.to_sse_event().is_ok());
     }
+}
+/// Queue-only tests don't touch Postgres; a lazy pool that never connects
+/// is sufficient (pool-based methods are not exercised).
+fn test_lazy_pool() -> std::sync::Arc<sqlx::PgPool> {
+    std::sync::Arc::new(
+        sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgresql://tama:tama@127.0.0.1:1/unused")
+            .expect("lazy pool URL is valid"),
+    )
 }

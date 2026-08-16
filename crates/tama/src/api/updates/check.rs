@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::api::error::error_response;
-use crate::api::helpers::shared_repository;
 use crate::web_types::WebState;
 use tama_core::proxy::tama_handlers::OkResponse;
 use tama_core::proxy::ProxyState;
@@ -81,32 +80,22 @@ pub async fn get_updates(
     let checker = &web_state.update_checker;
     match checker.get_results(&pool).await {
         Ok(records) => {
-            // Pooled pre-pass: collect all model IDs and resolve display names
-            // in a single spawn_blocking call instead of opening the repo per-record.
+            // Pre-pass: resolve display names per model from Postgres.
+            // (plan-190 Task 5)
             let model_ids: Vec<i64> = records
                 .iter()
                 .filter(|r| r.item_type == "model")
                 .filter_map(|r| r.item_id.parse::<i64>().ok())
                 .collect();
-            let display_names: std::collections::HashMap<i64, String> =
-                match tokio::task::spawn_blocking(move || {
-                    let repo = shared_repository(&web_state).ok()?;
-                    let repo = repo.lock().unwrap();
-                    let mut map = std::collections::HashMap::new();
-                    for id in model_ids {
-                        if let Ok(Some(m)) = repo.get_model_config(id) {
-                            if let Some(name) = m.display_name {
-                                map.insert(id, name);
-                            }
-                        }
+            let mut display_names: std::collections::HashMap<i64, String> =
+                std::collections::HashMap::new();
+            for id in &model_ids {
+                if let Ok(Some(m)) = tama_core::db::queries::get_model_config(&pool, *id).await {
+                    if let Some(name) = m.display_name {
+                        display_names.insert(*id, name);
                     }
-                    Some(map)
-                })
-                .await
-                {
-                    Ok(Some(m)) => m,
-                    _ => std::collections::HashMap::new(),
-                };
+                }
+            }
 
             let mut backends = Vec::new();
             let mut models = Vec::new();
@@ -327,41 +316,22 @@ pub async fn check_item_for_update(
             }
         }
         "model" => {
-            let item_id_clone = item_id.clone();
-            let repo_handle = match shared_repository(&web_state) {
-                Ok(h) => h,
-                Err(_) => {
-                    return error_response(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "Database not configured",
-                        Some("ServiceUnavailableError"),
-                    )
+            // Convert config_key to repo_id to look up model_id (Postgres, plan-190 Task 5).
+            let repo_id = tama_core::models::config_key_to_repo_id(&item_id);
+            let record = match tama_core::db::queries::get_model_config_by_repo_id(&pool, &repo_id)
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None)
                 }
             };
-            let rid_result = tokio::task::spawn_blocking({
-                let repo_handle = repo_handle.clone();
-                move || -> anyhow::Result<(Option<i64>, Option<String>)> {
-                    let repo = repo_handle.lock().unwrap();
-                    // Convert config_key to repo_id to look up model_id
-                    let repo_id = tama_core::models::config_key_to_repo_id(&item_id_clone);
-                    let record = repo.get_model_config_by_repo_id(&repo_id)?;
-                    Ok(record
-                        .map(|r| (Some(r.id), Some(r.repo_id.clone())))
-                        .unwrap_or((None, None)))
-                }
-            })
-            .await;
-
-            match rid_result {
-                Ok(Ok((Some(model_id), Some(repo_id)))) => checker
-                    .check_model(&config_dir, &pool, model_id, Some(&repo_id))
+            match record {
+                Some(r) => checker
+                    .check_model(&config_dir, &pool, r.id, Some(&r.repo_id))
                     .await
                     .map(|_| ()),
-                Ok(Ok((None, _))) | Ok(Ok((_, None))) => {
-                    Err(anyhow::anyhow!("Model not found in DB"))
-                }
-                Ok(Err(e)) => Err(e),
-                Err(e) => Err(anyhow::anyhow!("Join error: {}", e)),
+                None => Err(anyhow::anyhow!("Model not found in DB")),
             }
         }
         _ => {

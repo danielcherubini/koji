@@ -442,15 +442,17 @@ impl ProxyState {
         }
 
         // Write to DB after model is ready (best-effort)
-        if let Some(mgr) = self.model_mgr() {
-            let _ = mgr.insert_active(
+        if let Some(pool) = self.db_pool() {
+            let _ = crate::db::queries::insert_active_model(
+                &pool,
                 backend_name,
                 model_name,
                 &model_config.backend,
                 container.pid as i64,
                 host_port as i64,
                 &backend_url,
-            );
+            )
+            .await;
         }
 
         info!("Docker backend '{}' loaded successfully", backend_name);
@@ -816,15 +818,17 @@ impl ProxyState {
         }
 
         // Write to DB after model is ready (best-effort)
-        if let Some(mgr) = self.model_mgr() {
-            let _ = mgr.insert_active(
+        if let Some(pool) = self.db_pool() {
+            let _ = crate::db::queries::insert_active_model(
+                &pool,
                 backend_name,
                 model_name,
                 &model_config.backend,
                 pid as i64,
                 port as i64,
                 &backend_url,
-            );
+            )
+            .await;
         }
 
         info!("Backend '{}' loaded successfully", backend_name);
@@ -1070,8 +1074,8 @@ impl ProxyState {
         });
 
         // Write to DB after model is unloaded (best-effort)
-        if let Some(mgr) = self.model_mgr() {
-            let _ = mgr.remove_active(backend_name);
+        if let Some(pool) = self.db_pool() {
+            let _ = crate::db::queries::remove_active_model(&pool, backend_name).await;
         }
 
         info!(gpu = %gpu_info, "Backend '{}' unloaded", backend_name);

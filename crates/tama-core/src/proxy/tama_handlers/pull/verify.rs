@@ -638,21 +638,21 @@ pub(crate) async fn setup_model_after_pull(
 
     let mut saved_id: Option<i64> = None;
     if let Some(key) = model_key {
-        if let Some(mgr) = state.model_mgr() {
-            let save_result = model_configs
+        if let Some(pool) = state.db_pool.clone() {
+            let mc = model_configs
                 .get(&key)
-                .map(|mc| mgr.save_model_config(&key, mc));
-            match save_result {
-                Some(Ok(id)) => {
+                .cloned()
+                .expect("model_key was just created in model_configs");
+            match crate::db::save_model_config(&pool, &key, &mc).await {
+                Ok(id) => {
                     saved_id = Some(id);
                     if let Some(mc_mut) = model_configs.get_mut(&key) {
                         mc_mut.db_id = Some(id);
                     }
                 }
-                Some(Err(e)) => {
+                Err(e) => {
                     tracing::error!(key = %key, error = %e, "Failed to save model config to DB after pull");
                 }
-                None => {}
             }
         }
     }

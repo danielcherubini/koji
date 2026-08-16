@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use rusqlite::Connection;
+use sqlx::PgPool;
 
 use crate::config::Config;
 use crate::models::registry::ModelRegistry;
@@ -13,7 +14,9 @@ use super::LegacyRegistryData;
 /// Prints progress to stdout.
 ///
 /// This function is async because it makes network calls to HuggingFace.
-pub async fn run_initial_backfill(conn: &Connection, config: &Config) -> Result<()> {
+///
+/// Postgres-based (plan-190 Task 5) — the model domain lives in Postgres.
+pub async fn run_initial_backfill(pool: &PgPool, config: &Config) -> Result<()> {
     let models_dir = config.models_dir()?;
     let configs_dir = config.configs_dir()?;
     let registry = ModelRegistry::new(models_dir, configs_dir);
@@ -43,7 +46,9 @@ pub async fn run_initial_backfill(conn: &Connection, config: &Config) -> Result<
         };
 
         // Get or create the model_config entry to get the integer id
-        let model_record = match crate::db::queries::get_model_config_by_repo_id(conn, repo_id)? {
+        let model_record = match crate::db::queries::get_model_config_by_repo_id(pool, repo_id)
+            .await?
+        {
             Some(r) => r,
             None => {
                 // Create a placeholder model_config entry for this repo
@@ -53,19 +58,22 @@ pub async fn run_initial_backfill(conn: &Connection, config: &Config) -> Result<
                     ..Default::default()
                 };
                 let config_key = crate::models::ConfigKey::from_repo_id(repo_id);
-                let model_id = crate::db::save_model_config(conn, config_key.as_str(), &mc)?;
-                crate::db::queries::get_model_config(conn, model_id)?
+                let model_id = crate::db::save_model_config(pool, config_key.as_str(), &mc).await?;
+                crate::db::queries::get_model_config(pool, model_id)
+                    .await?
                     .expect("just-created model config should exist")
             }
         };
 
         // Upsert pull record with commit SHA
         if let Err(e) = crate::db::queries::upsert_model_pull(
-            conn,
+            pool,
             model_record.id,
             repo_id,
             &listing.commit_sha,
-        ) {
+        )
+        .await
+        {
             tracing::warn!("Failed to upsert pull record for {}: {}", repo_id, e);
         }
 
@@ -84,14 +92,16 @@ pub async fn run_initial_backfill(conn: &Connection, config: &Config) -> Result<
         // Upsert file records with LFS hashes (empty map means hashes will be None)
         for (filename, blob_info) in blobs {
             if let Err(e) = crate::db::queries::upsert_model_file(
-                conn,
+                pool,
                 model_record.id,
                 repo_id,
                 &filename,
                 None,
                 blob_info.lfs_sha256.as_deref(),
                 blob_info.size,
-            ) {
+            )
+            .await
+            {
                 tracing::warn!("Failed to upsert file record for {}: {}", filename, e);
             }
         }
@@ -185,19 +195,21 @@ pub fn migrate_backend_registry_toml(
 /// `model_files` set is already populated.
 ///
 /// Returns the number of `model_files` rows inserted.
-pub fn repair_orphaned_model_files(
-    conn: &Connection,
+///
+/// Postgres-based (plan-190 Task 5) — model files live in Postgres.
+pub async fn repair_orphaned_model_files(
+    pool: &PgPool,
     models_dir: &std::path::Path,
 ) -> Result<usize> {
     use crate::config::QuantKind;
     use crate::db::queries::{get_all_model_configs, get_model_files, upsert_model_file};
     use crate::models::{pull::infer_quant_from_filename, repo_path};
 
-    let records = get_all_model_configs(conn)?;
+    let records = get_all_model_configs(pool).await?;
     let mut inserted = 0usize;
 
     for record in records {
-        let existing = get_model_files(conn, record.id)?;
+        let existing = get_model_files(pool, record.id).await?;
         if !existing.is_empty() {
             continue;
         }
@@ -236,14 +248,16 @@ pub fn repair_orphaned_model_files(
             let size = std::fs::metadata(&path).ok().map(|m| m.len() as i64);
 
             if let Err(e) = upsert_model_file(
-                conn,
+                pool,
                 record.id,
                 &record.repo_id,
                 filename,
                 quant.as_deref(),
                 None,
                 size,
-            ) {
+            )
+            .await
+            {
                 tracing::warn!(
                     repo_id = %record.repo_id,
                     filename = %filename,
@@ -267,10 +281,13 @@ pub fn repair_orphaned_model_files(
 
         if record.selected_mmproj.is_none() {
             if let Some(mmproj) = first_mmproj {
-                if let Err(e) = conn.execute(
-                    "UPDATE model_configs SET selected_mmproj = ?1 WHERE id = ?2",
-                    rusqlite::params![mmproj, record.id],
-                ) {
+                if let Err(e) =
+                    sqlx::query("UPDATE model_configs SET selected_mmproj = $1 WHERE id = $2")
+                        .bind(&mmproj)
+                        .bind(record.id)
+                        .execute(pool)
+                        .await
+                {
                     tracing::warn!(
                         id = record.id,
                         error = %e,
@@ -302,12 +319,13 @@ mod tests {
     #[tokio::test]
     async fn test_backfill_with_no_models() {
         let (_tmp, config) = setup_test_config();
+        let guard = crate::testing::postgres::with_schema().await;
 
-        let OpenResult { conn, .. } = open_in_memory().unwrap();
-
-        let result = run_initial_backfill(&conn, &config).await;
+        let result = run_initial_backfill(&guard.pool, &config).await;
 
         assert!(result.is_ok());
+
+        guard.finish().await;
     }
 
     fn setup_test_config() -> (tempfile::TempDir, Config) {
@@ -429,9 +447,11 @@ installed_at = 1700000000
     /// `model_configs` still has the row, the GGUF files are on disk, but
     /// `model_files` is empty. `repair_orphaned_model_files` must rebuild
     /// those rows and wire `selected_mmproj` for vision models.
-    #[test]
-    fn test_repair_orphaned_model_files_rebuilds_from_disk() {
-        use crate::db::queries::{get_model_files, upsert_model_config, ModelConfigRecord};
+    #[tokio::test]
+    async fn test_repair_orphaned_model_files_rebuilds_from_disk() {
+        use crate::db::queries::{
+            get_model_config, get_model_files, upsert_model_config, ModelConfigRecord,
+        };
 
         let tmp = tempfile::tempdir().unwrap();
         let models_dir = tmp.path().join("models");
@@ -445,7 +465,8 @@ installed_at = 1700000000
         .unwrap();
         std::fs::write(repo_dir.join("mmproj-F16.gguf"), b"fake-mmproj").unwrap();
 
-        let OpenResult { conn, .. } = open_in_memory().unwrap();
+        let guard = crate::testing::postgres::with_schema().await;
+        let pool = &guard.pool;
         let now = "2026-04-16T20:00:00Z".to_string();
         let record = ModelConfigRecord {
             id: 0,
@@ -489,15 +510,17 @@ installed_at = 1700000000
             provider_name: None,
             reasoning_levels: None,
         };
-        let model_id = upsert_model_config(&conn, &record).unwrap();
+        let model_id = upsert_model_config(pool, &record).await.unwrap();
 
         // Precondition: no model_files rows (the v9 cascade aftermath).
-        assert!(get_model_files(&conn, model_id).unwrap().is_empty());
+        assert!(get_model_files(pool, model_id).await.unwrap().is_empty());
 
-        let inserted = repair_orphaned_model_files(&conn, &models_dir).unwrap();
+        let inserted = repair_orphaned_model_files(pool, &models_dir)
+            .await
+            .unwrap();
         assert_eq!(inserted, 2, "both gguf files must be reinserted");
 
-        let files = get_model_files(&conn, model_id).unwrap();
+        let files = get_model_files(pool, model_id).await.unwrap();
         let mut filenames: Vec<_> = files.iter().map(|f| f.filename.as_str()).collect();
         filenames.sort();
         assert_eq!(
@@ -514,24 +537,22 @@ installed_at = 1700000000
 
         // selected_mmproj must be set since the row had none and an mmproj
         // file was discovered.
-        let selected_mmproj: Option<String> = conn
-            .query_row(
-                "SELECT selected_mmproj FROM model_configs WHERE id=?1",
-                [model_id],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(selected_mmproj.as_deref(), Some("mmproj-F16.gguf"));
+        let record = get_model_config(pool, model_id).await.unwrap().unwrap();
+        assert_eq!(record.selected_mmproj.as_deref(), Some("mmproj-F16.gguf"));
 
         // Second call is a no-op (rows already present).
-        let again = repair_orphaned_model_files(&conn, &models_dir).unwrap();
+        let again = repair_orphaned_model_files(pool, &models_dir)
+            .await
+            .unwrap();
         assert_eq!(again, 0, "repair must be idempotent");
+
+        guard.finish().await;
     }
 
     /// If `selected_mmproj` is already set, the repair must not overwrite it.
-    #[test]
-    fn test_repair_preserves_existing_selected_mmproj() {
-        use crate::db::queries::{upsert_model_config, ModelConfigRecord};
+    #[tokio::test]
+    async fn test_repair_preserves_existing_selected_mmproj() {
+        use crate::db::queries::{get_model_config, upsert_model_config, ModelConfigRecord};
 
         let tmp = tempfile::tempdir().unwrap();
         let models_dir = tmp.path().join("models");
@@ -540,7 +561,8 @@ installed_at = 1700000000
         std::fs::write(repo_dir.join("mmproj-F16.gguf"), b"x").unwrap();
         std::fs::write(repo_dir.join("model-Q4_K_M.gguf"), b"x").unwrap();
 
-        let OpenResult { conn, .. } = open_in_memory().unwrap();
+        let guard = crate::testing::postgres::with_schema().await;
+        let pool = &guard.pool;
         let now = "2026-04-16T20:00:00Z".to_string();
         let record = ModelConfigRecord {
             id: 0,
@@ -584,17 +606,15 @@ installed_at = 1700000000
             provider_name: None,
             reasoning_levels: None,
         };
-        let id = upsert_model_config(&conn, &record).unwrap();
+        let id = upsert_model_config(pool, &record).await.unwrap();
 
-        repair_orphaned_model_files(&conn, &models_dir).unwrap();
-
-        let selected_mmproj: Option<String> = conn
-            .query_row(
-                "SELECT selected_mmproj FROM model_configs WHERE id=?1",
-                [id],
-                |row| row.get(0),
-            )
+        repair_orphaned_model_files(pool, &models_dir)
+            .await
             .unwrap();
-        assert_eq!(selected_mmproj.as_deref(), Some("user-chosen.gguf"));
+
+        let record = get_model_config(pool, id).await.unwrap().unwrap();
+        assert_eq!(record.selected_mmproj.as_deref(), Some("user-chosen.gguf"));
+
+        guard.finish().await;
     }
 }

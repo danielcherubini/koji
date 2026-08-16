@@ -99,11 +99,13 @@ pub async fn handle_forward_post(
     // Check if this is a remote provider (sentinel from ensure_model_loaded)
     if let Some(provider_id_str) = backend_name.strip_prefix("remote:") {
         if let Ok(provider_id) = provider_id_str.parse::<i64>() {
-            let provider = state.open_db().and_then(|conn| {
-                crate::db::queries::get_provider_by_id(&conn, provider_id)
+            let provider = match state.db_pool.as_deref() {
+                Some(pool) => crate::db::queries::get_provider_by_id(pool, provider_id)
+                    .await
                     .ok()
-                    .flatten()
-            });
+                    .flatten(),
+                None => None,
+            };
             if let Some(provider) = provider {
                 let body = bytes::Bytes::copy_from_slice(&body_bytes);
                 match state

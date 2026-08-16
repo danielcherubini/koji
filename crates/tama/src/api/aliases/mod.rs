@@ -1,7 +1,7 @@
-//! REST API endpoints for managing model aliases.
+//! REST API endpoints for managing model aliases (Postgres, plan-190 Task 5).
 
 use axum::{
-    extract::{Extension, State},
+    extract::{Extension, Path, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
@@ -9,9 +9,8 @@ use axum::{
 use regex::Regex;
 use std::sync::{Arc, OnceLock};
 
-use crate::api::error::{error_body, error_response, error_response_simple};
+use crate::api::error::error_response;
 use crate::api::field_update::FieldUpdate;
-use crate::api::helpers::shared_repository;
 use crate::web_types::WebState;
 use tama_core::proxy::ProxyState;
 
@@ -45,20 +44,16 @@ pub async fn list_aliases(
     State(_state): State<Arc<ProxyState>>,
     Extension(web_state): Extension<WebState>,
 ) -> impl IntoResponse {
-    let repo = match shared_repository(&web_state) {
-        Ok(r) => r,
-        Err(resp) => return resp,
+    let Some(pool) = web_state.db_pool.as_ref() else {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Postgres pool not available",
+            None,
+        );
     };
-    let repo = repo.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let repo = repo.lock().unwrap();
-        repo.get_all_aliases()
-    })
-    .await;
-    match result {
-        Ok(Ok(aliases)) => Json(aliases).into_response(),
-        Ok(Err(e)) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
-        Err(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "Task panicked", None),
+    match tama_core::db::queries::get_all_aliases(pool).await {
+        Ok(aliases) => Json(aliases).into_response(),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     }
 }
 
@@ -66,27 +61,23 @@ pub async fn list_aliases(
 pub async fn get_alias(
     State(_state): State<Arc<ProxyState>>,
     Extension(web_state): Extension<WebState>,
-    axum::extract::Path(id): axum::extract::Path<i64>,
+    Path(id): Path<i64>,
 ) -> impl IntoResponse {
-    let repo = match shared_repository(&web_state) {
-        Ok(r) => r,
-        Err(resp) => return resp,
+    let Some(pool) = web_state.db_pool.as_ref() else {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Postgres pool not available",
+            None,
+        );
     };
-    let repo = repo.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let repo = repo.lock().unwrap();
-        repo.get_alias_by_id(id)
-    })
-    .await;
-    match result {
-        Ok(Ok(Some(alias))) => Json(alias).into_response(),
-        Ok(Ok(None)) => error_response(
+    match tama_core::db::queries::get_alias_by_id(pool, id).await {
+        Ok(Some(alias)) => Json(alias).into_response(),
+        Ok(None) => error_response(
             StatusCode::NOT_FOUND,
             "Alias not found",
             Some("NotFoundError"),
         ),
-        Ok(Err(e)) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
-        Err(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "Task panicked", None),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     }
 }
 
@@ -96,9 +87,15 @@ pub async fn create_alias(
     Extension(web_state): Extension<WebState>,
     Json(payload): Json<CreateAliasRequest>,
 ) -> impl IntoResponse {
-    let repo = match shared_repository(&web_state) {
-        Ok(r) => r,
-        Err(resp) => return resp,
+    let pool = match web_state.db_pool.as_ref() {
+        Some(p) => p.clone(),
+        None => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Postgres pool not available",
+                None,
+            )
+        }
     };
 
     // Validate alias name
@@ -110,61 +107,60 @@ pub async fn create_alias(
         );
     }
 
-    // Capture payload fields for the spawn_blocking closure.
     let model_id = payload.model_id;
-    let name = payload.name.clone();
-    let desc = payload.description.clone();
+    let name = payload.name;
+    let desc = payload.description;
 
-    let result =
-        tokio::task::spawn_blocking(move || -> Result<_, (StatusCode, serde_json::Value)> {
-            let repo = repo.lock().unwrap();
-
-            // Validate model_id exists
-            if !repo.model_exists(model_id).map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    error_body(format!("Failed to check model existence: {}", e), None),
-                )
-            })? {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    error_body("Model not found", Some("ValidationError")),
-                ));
-            }
-
-            let new_id = repo
-                .insert_alias(&name, model_id, desc.as_deref())
-                .map_err(|e| {
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        error_body(format!("Database not configured: {}", e), None),
-                    )
-                })?;
-
-            let alias = repo.get_alias_by_id(new_id).ok().flatten().ok_or_else(|| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    error_body("Failed to retrieve created alias", None),
-                )
-            })?;
-
-            Ok(alias)
-        })
-        .await;
-
-    let alias = match result {
-        Ok(Ok(a)) => a,
-        Ok(Err((s, b))) => return (s, Json(b)).into_response(),
+    // Validate model_id exists (Postgres is the model source of truth)
+    match tama_core::db::queries::get_model_config(&pool, model_id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "Model not found",
+                Some("ValidationError"),
+            )
+        }
         Err(e) => {
-            return error_response_simple(
+            return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("spawn error: {}", e),
+                format!("Failed to check model existence: {}", e),
+                None,
+            )
+        }
+    }
+
+    let new_id =
+        match tama_core::db::queries::insert_alias(&pool, &name, model_id, desc.as_deref()).await {
+            Ok(id) => id,
+            Err(e) => {
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Database not configured: {}", e),
+                    None,
+                )
+            }
+        };
+
+    let alias = match tama_core::db::queries::get_alias_by_id(&pool, new_id).await {
+        Ok(Some(a)) => a,
+        Ok(None) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to retrieve created alias",
+                None,
+            )
+        }
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to retrieve created alias: {}", e),
+                None,
             )
         }
     };
 
-    // Reload alias cache in ProxyState — outside the lock to avoid holding
-    // the MutexGuard across an .await point (which would make the future !Send).
+    // Reload alias cache in ProxyState
     if let Err(e) = state.reload_aliases().await {
         tracing::warn!("Failed to reload aliases after create: {}", e);
     }
@@ -177,12 +173,18 @@ pub async fn create_alias(
 pub async fn update_alias(
     State(state): State<Arc<ProxyState>>,
     Extension(web_state): Extension<WebState>,
-    axum::extract::Path(id): axum::extract::Path<i64>,
+    Path(id): Path<i64>,
     Json(payload): Json<UpdateAliasRequest>,
 ) -> impl IntoResponse {
-    let repo = match shared_repository(&web_state) {
-        Ok(r) => r,
-        Err(resp) => return resp,
+    let pool = match web_state.db_pool.as_ref() {
+        Some(p) => p.clone(),
+        None => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Postgres pool not available",
+                None,
+            )
+        }
     };
 
     // Validate alias name if provided
@@ -196,69 +198,66 @@ pub async fn update_alias(
         }
     }
 
-    // Capture payload fields for the spawn_blocking closure.
-    let name_for_closure = payload.name.clone();
-    let model_id_for_closure = payload.model_id;
-    let desc_for_closure = match &payload.description {
+    // Validate model_id if provided
+    if let Some(model_id) = payload.model_id {
+        match tama_core::db::queries::get_model_config(&pool, model_id).await {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    "Model not found",
+                    Some("ValidationError"),
+                )
+            }
+            Err(e) => {
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Failed to check model existence: {}", e),
+                    None,
+                )
+            }
+        }
+    }
+
+    let desc_owned: Option<Option<String>> = match &payload.description {
         FieldUpdate::Set(v) => Some(Some(v.clone())),
         FieldUpdate::Clear => Some(None),
         FieldUpdate::Unchanged => None,
     };
+    let update = tama_core::db::queries::AliasUpdate {
+        name: payload.name.as_deref(),
+        model_id: payload.model_id,
+        description: desc_owned.as_ref().map(|d| d.as_deref()),
+        enabled: payload.enabled,
+    };
 
-    let result =
-        tokio::task::spawn_blocking(move || -> Result<_, (StatusCode, serde_json::Value)> {
-            let repo = repo.lock().unwrap();
+    if let Err(e) = tama_core::db::queries::update_alias(&pool, id, update).await {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Database not configured: {}", e),
+            None,
+        );
+    }
 
-            // Validate model_id if provided
-            if let Some(ref model_id) = model_id_for_closure {
-                if !repo.model_exists(*model_id).map_err(|e| {
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        error_body(format!("Failed to check model existence: {}", e), None),
-                    )
-                })? {
-                    return Err((
-                        StatusCode::BAD_REQUEST,
-                        error_body("Model not found", Some("ValidationError")),
-                    ));
-                }
-            }
-
-            let update = tama_core::db::queries::AliasUpdate {
-                name: name_for_closure.as_deref(),
-                model_id: model_id_for_closure,
-                description: desc_for_closure.as_ref().map(|d| d.as_deref()),
-                enabled: payload.enabled,
-            };
-            repo.update_alias(id, update).map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    error_body(format!("Database not configured: {}", e), None),
-                )
-            })?;
-
-            repo.get_alias_by_id(id).ok().flatten().ok_or_else(|| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    error_body("Failed to retrieve updated alias", None),
-                )
-            })
-        })
-        .await;
-
-    let alias = match result {
-        Ok(Ok(a)) => a,
-        Ok(Err((s, b))) => return (s, Json(b)).into_response(),
-        Err(e) => {
-            return error_response_simple(
+    let alias = match tama_core::db::queries::get_alias_by_id(&pool, id).await {
+        Ok(Some(a)) => a,
+        Ok(None) => {
+            return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("spawn error: {}", e),
+                "Failed to retrieve updated alias",
+                None,
+            )
+        }
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to retrieve updated alias: {}", e),
+                None,
             )
         }
     };
 
-    // Reload alias cache in ProxyState — outside the lock to avoid holding
-    // the MutexGuard across an .await point (which would make the future !Send).
+    // Reload alias cache in ProxyState
     if let Err(e) = state.reload_aliases().await {
         tracing::warn!("Failed to reload aliases after update: {}", e);
     }
@@ -270,39 +269,28 @@ pub async fn update_alias(
 pub async fn delete_alias(
     State(state): State<Arc<ProxyState>>,
     Extension(web_state): Extension<WebState>,
-    axum::extract::Path(id): axum::extract::Path<i64>,
+    Path(id): Path<i64>,
 ) -> impl IntoResponse {
-    let repo = match shared_repository(&web_state) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
-
-    let result =
-        tokio::task::spawn_blocking(move || -> Result<_, (StatusCode, serde_json::Value)> {
-            let repo = repo.lock().unwrap();
-            repo.delete_alias(id).map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    error_body(format!("Database not configured: {}", e), None),
-                )
-            })?;
-            Ok(())
-        })
-        .await;
-
-    match result {
-        Ok(Ok(())) => {}
-        Ok(Err((s, b))) => return (s, Json(b)).into_response(),
-        Err(e) => {
-            return error_response_simple(
+    let pool = match web_state.db_pool.as_ref() {
+        Some(p) => p.clone(),
+        None => {
+            return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("spawn error: {}", e),
+                "Postgres pool not available",
+                None,
             )
         }
+    };
+
+    if let Err(e) = tama_core::db::queries::delete_alias(&pool, id).await {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Database not configured: {}", e),
+            None,
+        );
     }
 
-    // Reload alias cache in ProxyState — outside the lock to avoid holding
-    // the MutexGuard across an .await point (which would make the future !Send).
+    // Reload alias cache in ProxyState
     if let Err(e) = state.reload_aliases().await {
         tracing::warn!("Failed to reload aliases after delete: {}", e);
     }
@@ -334,19 +322,20 @@ pub struct UpdateAliasRequest {
 mod tests {
     use axum::body::Body;
     use axum::http::Request;
-    use std::sync::{Arc, Mutex};
-    use tama_core::db::repository::Repository;
+    use std::sync::Arc;
     use tama_core::proxy::ProxyState;
     use tower::ServiceExt;
 
     fn build_test_state(
+        pool: Arc<sqlx::PgPool>,
         tmp_dir: &std::path::Path,
     ) -> (Arc<ProxyState>, Arc<crate::web_types::WebState>) {
         let config = tama_core::config::Config::default();
-        let state = Arc::new(ProxyState::new(config, Some(tmp_dir.to_path_buf()), None));
-
-        // Re-open the repository so we have a live handle
-        let repo = Repository::open(tmp_dir).unwrap();
+        let state = Arc::new(ProxyState::new(
+            config,
+            Some(tmp_dir.to_path_buf()),
+            Some(pool.clone()),
+        ));
 
         let web_state = Arc::new(crate::web_types::WebState {
             jobs: Some(Arc::new(crate::web_types::JobManager::new())),
@@ -355,74 +344,44 @@ mod tests {
             binary_version: "test".to_string(),
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-            repository: Some(Arc::new(Mutex::new(repo))),
-            db_pool: None,
+            repository: None,
+            db_pool: Some(pool),
         });
 
         (state, web_state)
     }
 
-    /// POST → GET list → GET single → PATCH disable → DELETE → final GET empty.
-    #[tokio::test]
-    async fn test_alias_crud_round_trip() {
-        let tmp_dir = tempfile::tempdir().expect("tempdir");
-
-        // Seed a model in the DB so alias creation can validate model_id.
-        let conn = tama_core::db::open(tmp_dir.path()).unwrap();
+    /// Seed a model in Postgres so alias creation can validate model_id.
+    /// Returns the model_id.
+    async fn seed_model(pool: &sqlx::PgPool) -> i64 {
         tama_core::db::queries::upsert_model_config(
-            &conn.conn,
+            pool,
             &tama_core::db::queries::ModelConfigRecord {
-                id: 0,
                 repo_id: "test-org/test-model".to_string(),
-                display_name: None,
                 backend: "llama_cpp".to_string(),
-                gpu_variant: None,
-                gpu_device: None,
-                enabled: true,
-                selected_quant: None,
-                selected_mmproj: None,
-                selected_mtp_model: None,
-                context_length: None,
-                num_parallel: None,
-                kv_unified: false,
-                gpu_layers: None,
-                cache_type_k: None,
-                cache_type_v: None,
-                port: None,
-                args: None,
-                sampling: None,
-                modalities: None,
-                profile: None,
                 api_name: Some("test-model".to_string()),
-                health_check: None,
-                hf_format: None,
-                hf_base_model: None,
-                hf_pipeline_tag: None,
-                hf_total_params: None,
-                hf_active_params: None,
-                hf_architecture_type: None,
-                hf_context_length: None,
-                hf_num_layers: None,
-                hf_last_modified: None,
-                spec_decoding: None,
-                created_at: "2024-01-01".into(),
-                updated_at: "2024-01-01".into(),
-                n_batch: None,
-                n_ubatch: None,
-                vllm_config: None,
-                provider_name: None,
-                reasoning_levels: None,
+                ..Default::default()
             },
         )
-        .unwrap();
+        .await
+        .unwrap()
+    }
 
-        let (state, web_state) = build_test_state(tmp_dir.path());
+    /// POST → GET list → GET single → PUT disable → DELETE → final GET empty.
+    #[tokio::test]
+    async fn test_alias_crud_round_trip() {
+        let guard = crate::testing::postgres::with_schema().await;
+        let pool = Arc::new(guard.pool.clone());
+        let model_id = seed_model(&pool).await;
+        let tmp_dir = tempfile::tempdir().expect("tempdir");
+
+        let (state, web_state) = build_test_state(pool, tmp_dir.path());
         let router = crate::router::build_web_routes(web_state.clone())
             .with_state(state)
             .layer(axum::extract::Extension(web_state.as_ref().clone()));
 
         // POST create alias
-        let body = serde_json::json!({"name": "my-alias", "model_id": 1}).to_string();
+        let body = serde_json::json!({"name": "my-alias", "model_id": model_id}).to_string();
         let req = Request::builder()
             .method("POST")
             .uri("/tama/v1/aliases")
@@ -488,69 +447,25 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body_str).unwrap();
         assert_eq!(json.as_array().unwrap().len(), 0);
+
+        guard.finish().await;
     }
 
     /// POST with invalid alias name returns 422.
     #[tokio::test]
     async fn test_create_alias_rejects_invalid_name() {
+        let guard = crate::testing::postgres::with_schema().await;
+        let pool = Arc::new(guard.pool.clone());
+        let model_id = seed_model(&pool).await;
         let tmp_dir = tempfile::tempdir().expect("tempdir");
 
-        // Seed a model in the DB so alias creation can validate model_id.
-        let conn = tama_core::db::open(tmp_dir.path()).unwrap();
-        tama_core::db::queries::upsert_model_config(
-            &conn.conn,
-            &tama_core::db::queries::ModelConfigRecord {
-                id: 0,
-                repo_id: "test-org/test-model".to_string(),
-                display_name: None,
-                backend: "llama_cpp".to_string(),
-                gpu_variant: None,
-                gpu_device: None,
-                enabled: true,
-                selected_quant: None,
-                selected_mmproj: None,
-                selected_mtp_model: None,
-                context_length: None,
-                num_parallel: None,
-                kv_unified: false,
-                gpu_layers: None,
-                cache_type_k: None,
-                cache_type_v: None,
-                port: None,
-                args: None,
-                sampling: None,
-                modalities: None,
-                profile: None,
-                api_name: Some("test-model".to_string()),
-                health_check: None,
-                hf_format: None,
-                hf_base_model: None,
-                hf_pipeline_tag: None,
-                hf_total_params: None,
-                hf_active_params: None,
-                hf_architecture_type: None,
-                hf_context_length: None,
-                hf_num_layers: None,
-                hf_last_modified: None,
-                spec_decoding: None,
-                created_at: "2024-01-01".into(),
-                updated_at: "2024-01-01".into(),
-                n_batch: None,
-                n_ubatch: None,
-                vllm_config: None,
-                provider_name: None,
-                reasoning_levels: None,
-            },
-        )
-        .unwrap();
-
-        let (state, web_state) = build_test_state(tmp_dir.path());
+        let (state, web_state) = build_test_state(pool, tmp_dir.path());
         let router = crate::router::build_web_routes(web_state.clone())
             .with_state(state)
             .layer(axum::extract::Extension(web_state.as_ref().clone()));
 
         // POST with invalid name containing space and exclamation
-        let body = serde_json::json!({"name": "bad name!", "model_id": 1}).to_string();
+        let body = serde_json::json!({"name": "bad name!", "model_id": model_id}).to_string();
         let req = Request::builder()
             .method("POST")
             .uri("/tama/v1/aliases")
@@ -563,69 +478,25 @@ mod tests {
             axum::http::StatusCode::UNPROCESSABLE_ENTITY,
             "invalid alias name should return 422"
         );
+
+        guard.finish().await;
     }
 
     /// POST with a slash-containing alias name like "org/model" returns 201.
     #[tokio::test]
     async fn test_create_alias_accepts_slash_name() {
+        let guard = crate::testing::postgres::with_schema().await;
+        let pool = Arc::new(guard.pool.clone());
+        let model_id = seed_model(&pool).await;
         let tmp_dir = tempfile::tempdir().expect("tempdir");
 
-        // Seed a model in the DB so alias creation can validate model_id.
-        let conn = tama_core::db::open(tmp_dir.path()).unwrap();
-        tama_core::db::queries::upsert_model_config(
-            &conn.conn,
-            &tama_core::db::queries::ModelConfigRecord {
-                id: 0,
-                repo_id: "test-org/test-model".to_string(),
-                display_name: None,
-                backend: "llama_cpp".to_string(),
-                gpu_variant: None,
-                gpu_device: None,
-                enabled: true,
-                selected_quant: None,
-                selected_mmproj: None,
-                selected_mtp_model: None,
-                context_length: None,
-                num_parallel: None,
-                kv_unified: false,
-                gpu_layers: None,
-                cache_type_k: None,
-                cache_type_v: None,
-                port: None,
-                args: None,
-                sampling: None,
-                modalities: None,
-                profile: None,
-                api_name: Some("test-model".to_string()),
-                health_check: None,
-                hf_format: None,
-                hf_base_model: None,
-                hf_pipeline_tag: None,
-                hf_total_params: None,
-                hf_active_params: None,
-                hf_architecture_type: None,
-                hf_context_length: None,
-                hf_num_layers: None,
-                hf_last_modified: None,
-                spec_decoding: None,
-                created_at: "2024-01-01".into(),
-                updated_at: "2024-01-01".into(),
-                n_batch: None,
-                n_ubatch: None,
-                vllm_config: None,
-                provider_name: None,
-                reasoning_levels: None,
-            },
-        )
-        .unwrap();
-
-        let (state, web_state) = build_test_state(tmp_dir.path());
+        let (state, web_state) = build_test_state(pool, tmp_dir.path());
         let router = crate::router::build_web_routes(web_state.clone())
             .with_state(state)
             .layer(axum::extract::Extension(web_state.as_ref().clone()));
 
         // POST with slash-containing name — should be accepted
-        let body = serde_json::json!({"name": "org/model", "model_id": 1}).to_string();
+        let body = serde_json::json!({"name": "org/model", "model_id": model_id}).to_string();
         let req = Request::builder()
             .method("POST")
             .uri("/tama/v1/aliases")
@@ -638,5 +509,7 @@ mod tests {
             axum::http::StatusCode::CREATED,
             "slash-containing alias name should return 201"
         );
+
+        guard.finish().await;
     }
 }

@@ -35,4 +35,7 @@ mod tests {
     mod mmproj_detection_test;
 }
 
+#[cfg(test)]
+pub mod testing;
+
 // TODO: Add module documentation (test v2)

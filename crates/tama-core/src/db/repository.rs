@@ -4,6 +4,12 @@
 //! and exposes domain-level methods. API handlers call repository methods
 //! instead of raw queries, and receive the canonical DB record types from
 //! `db::queries` directly.
+//!
+//! Transitional (plan-190): the model/alias/provider query methods moved to
+//! Postgres in Task 5 — API handlers now use `WebState.db_pool` directly with
+//! the async `db::queries` functions. The methods remaining here (benchmarks,
+//! pull queue, tamads) stay on SQLite until Tasks 7-8 and this module is
+//! deleted in Task 9.
 
 use anyhow::Context;
 use rusqlite::Connection;
@@ -41,10 +47,11 @@ pub struct BenchmarkParams {
 /// Domain-level database access for API handlers.
 ///
 /// Wraps a SQLite connection and provides high-level methods for
-/// model configs, aliases, benchmarks, pull queue, and update checks.
+/// benchmarks, pull queue, and update checks. Model/alias/provider access is
+/// pool-based via `db::queries` (plan-190 Task 5).
 #[derive(Debug)]
 pub struct Repository {
-    conn: Connection,
+    pub(crate) conn: Connection,
 }
 
 // Manual Clone impl: rusqlite::Connection is not Clone, but
@@ -106,89 +113,6 @@ impl Repository {
         )
     }
 
-    /// Load all model configs as a `HashMap<config_key, ModelConfig>`.
-    ///
-    /// Returns the raw `ModelConfig` type (not DTOs), suitable for benchmark
-    /// operations that need config fields like `quants`, `api_name`, etc.
-    pub fn load_model_configs_for_benchmarks(
-        &self,
-    ) -> anyhow::Result<std::collections::HashMap<String, crate::config::ModelConfig>> {
-        crate::db::load_model_configs(&self.conn)
-            .with_context(|| "Failed to load model configs for benchmarks")
-    }
-
-    // ── Model Config ────────────────────────────────────────────────────
-
-    /// Get a model configuration by its integer id.
-    pub fn get_model_config(&self, id: i64) -> anyhow::Result<Option<queries::ModelConfigRecord>> {
-        queries::get_model_config(&self.conn, id)
-            .with_context(|| format!("Failed to get model config id={}", id))
-    }
-
-    /// Get a model configuration by repo_id.
-    pub fn get_model_config_by_repo_id(
-        &self,
-        repo_id: &str,
-    ) -> anyhow::Result<Option<queries::ModelConfigRecord>> {
-        queries::get_model_config_by_repo_id(&self.conn, repo_id)
-            .with_context(|| format!("Failed to get model config by repo_id={}", repo_id))
-    }
-
-    /// Get all files for a model config by its id.
-    pub fn get_model_files(&self, config_id: i64) -> anyhow::Result<Vec<queries::ModelFileRecord>> {
-        queries::get_model_files(&self.conn, config_id)
-            .with_context(|| format!("Failed to get model files for config id={}", config_id))
-    }
-
-    /// Load all model configs as a HashMap<config_key, ModelConfigRecord>.
-    /// config_key is derived via `crate::models::ConfigKey::from_repo_id`.
-    pub fn load_model_configs(
-        &self,
-    ) -> anyhow::Result<std::collections::HashMap<String, queries::ModelConfigRecord>> {
-        let records = queries::get_all_model_configs(&self.conn)?;
-        let mut configs = std::collections::HashMap::new();
-        for record in records {
-            let config_key = crate::models::ConfigKey::from_repo_id(&record.repo_id).to_string();
-            configs.insert(config_key, record);
-        }
-        Ok(configs)
-    }
-
-    // ── Aliases ─────────────────────────────────────────────────────────
-
-    /// Load all aliases with resolved model names.
-    pub fn get_all_aliases(&self) -> anyhow::Result<Vec<queries::AliasResponse>> {
-        queries::get_all_aliases(&self.conn)
-    }
-
-    /// Get a single alias by id.
-    pub fn get_alias_by_id(&self, id: i64) -> anyhow::Result<Option<queries::AliasResponse>> {
-        queries::get_alias_by_id(&self.conn, id)
-    }
-
-    /// Insert a new alias. Returns the new row's id.
-    pub fn insert_alias(
-        &self,
-        name: &str,
-        model_id: i64,
-        description: Option<&str>,
-    ) -> anyhow::Result<i64> {
-        let id = queries::insert_alias(&self.conn, name, model_id, description)?;
-        Ok(id)
-    }
-
-    /// Update an existing alias.
-    pub fn update_alias(&self, id: i64, update: queries::AliasUpdate) -> anyhow::Result<()> {
-        queries::update_alias(&self.conn, id, update)?;
-        Ok(())
-    }
-
-    /// Delete an alias by id.
-    pub fn delete_alias(&self, id: i64) -> anyhow::Result<()> {
-        queries::delete_alias(&self.conn, id)?;
-        Ok(())
-    }
-
     // ── Benchmarks ──────────────────────────────────────────────────────
 
     /// Insert a benchmark result. Returns the new row id.
@@ -229,155 +153,6 @@ impl Repository {
         Ok(())
     }
 
-    // ── Download Queue ──────────────────────────────────────────────────
-
-    // ── Model writes ── Model-domain write methods absorbed from ModelManager.
-    // These are the subset the `tama` API layer needs; queue/active-model/lifecycle
-    // methods stay on ModelManager for tama-core-internal use only.
-
-    /// Convenience method to save a ModelConfig as a DB record.
-    ///
-    /// Converts config_key to repo_id, converts ModelConfig → ModelConfigRecord,
-    /// sets api_name default, and upserts. Returns the model id.
-    pub fn save_model_config(
-        &self,
-        config_key: &str,
-        mc: &crate::config::ModelConfig,
-    ) -> anyhow::Result<i64> {
-        let repo_id = crate::models::config_key_to_repo_id(config_key);
-        let mut record = mc.to_db_record(&repo_id);
-        if record.api_name.as_deref().is_none_or(str::is_empty) {
-            record.api_name = Some(repo_id.clone());
-        }
-        queries::upsert_model_config(&self.conn, &record)
-    }
-
-    /// Get all stored file records for a model.
-    pub fn get_files(&self, model_id: i64) -> anyhow::Result<Vec<queries::ModelFileRecord>> {
-        queries::get_model_files(&self.conn, model_id)
-            .with_context(|| format!("Failed to get model files for id={}", model_id))
-    }
-
-    /// Insert or update a model file record.
-    pub fn upsert_file(
-        &self,
-        model_id: i64,
-        repo_id: &str,
-        filename: &str,
-        quant: Option<&str>,
-        lfs_oid: Option<&str>,
-        size_bytes: Option<i64>,
-    ) -> anyhow::Result<()> {
-        queries::upsert_model_file(
-            &self.conn, model_id, repo_id, filename, quant, lfs_oid, size_bytes,
-        )
-    }
-
-    /// Delete a single model file record by (model_id, filename).
-    pub fn delete_file(&self, model_id: i64, filename: &str) -> anyhow::Result<()> {
-        queries::delete_model_file(&self.conn, model_id, filename).with_context(|| {
-            format!(
-                "Failed to delete model file for id={} filename={}",
-                model_id, filename
-            )
-        })
-    }
-
-    /// Insert or update the pull record for a model.
-    pub fn upsert_pull(
-        &self,
-        model_id: i64,
-        repo_id: &str,
-        commit_sha: &str,
-    ) -> anyhow::Result<()> {
-        queries::upsert_model_pull(&self.conn, model_id, repo_id, commit_sha)
-    }
-
-    /// Get the stored pull record for a model. Returns None if never pulled.
-    pub fn get_pull(&self, model_id: i64) -> anyhow::Result<Option<queries::ModelPullRecord>> {
-        queries::get_model_pull(&self.conn, model_id)
-            .with_context(|| format!("Failed to get pull record for id={}", model_id))
-    }
-
-    /// Update the HF metadata columns on a model_config row (format, architecture,
-    /// base model, …). COALESCE semantics — NULL fields preserve existing values.
-    pub fn update_hf_metadata(
-        &self,
-        model_id: i64,
-        meta: &crate::models::pull::HfModelMetadata,
-    ) -> anyhow::Result<()> {
-        crate::models::update::update_model_config_hf_metadata(&self.conn, model_id, meta)
-    }
-
-    /// Delete the model configuration by id. CASCADE deletes model_pulls and model_files.
-    pub fn delete_config(&self, id: i64) -> anyhow::Result<()> {
-        queries::delete_model_config(&self.conn, id)
-            .with_context(|| format!("Failed to delete model config for id={}", id))
-    }
-
-    /// Update the verification columns for a single file.
-    pub fn update_verification(
-        &self,
-        model_id: i64,
-        filename: &str,
-        verified_ok: Option<bool>,
-        verify_error: Option<&str>,
-    ) -> anyhow::Result<()> {
-        queries::update_verification(&self.conn, model_id, filename, verified_ok, verify_error)
-    }
-
-    // ── Provider CRUD ────────────────────────────────────────────────────
-
-    /// Insert a new provider. Returns the auto-assigned row id.
-    pub fn insert_provider(
-        &self,
-        name: &str,
-        provider_type: &str,
-        engine: &str,
-        tamad_id: Option<&str>,
-        base_url: Option<&str>,
-        api_key: Option<&str>,
-    ) -> anyhow::Result<i64> {
-        queries::insert_provider(
-            &self.conn,
-            name,
-            provider_type,
-            engine,
-            tamad_id,
-            base_url,
-            api_key,
-        )
-        .with_context(|| format!("Failed to insert provider '{}'", name))
-    }
-
-    /// Get a provider by name.
-    pub fn get_provider(&self, name: &str) -> anyhow::Result<Option<crate::providers::Provider>> {
-        queries::get_provider(&self.conn, name)
-            .with_context(|| format!("Failed to get provider '{}'", name))
-    }
-
-    /// List all providers.
-    pub fn list_providers(&self) -> anyhow::Result<Vec<crate::providers::Provider>> {
-        queries::list_providers(&self.conn).with_context(|| "Failed to list providers")
-    }
-
-    /// Update a provider's base_url and/or api_key.
-    pub fn update_provider(
-        &self,
-        name: &str,
-        base_url: Option<&str>,
-        api_key: Option<&str>,
-    ) -> anyhow::Result<()> {
-        queries::update_provider(&self.conn, name, base_url, api_key)
-            .with_context(|| format!("Failed to update provider '{}'", name))
-    }
-
-    /// Delete a provider by name. Returns true if a row was deleted.
-    pub fn delete_provider(&self, name: &str) -> anyhow::Result<bool> {
-        queries::delete_provider(&self.conn, name)
-            .with_context(|| format!("Failed to delete provider '{}'", name))
-    }
-
     // ── Tamad CRUD ───────────────────────────────────────────────────────
 
     /// Insert a new tamad connection.
@@ -395,7 +170,7 @@ impl Repository {
 
     /// Get a tamad connection by id.
     pub fn get_tamad(&self, id: &str) -> anyhow::Result<Option<crate::providers::TamadConnection>> {
-        queries::get_tamad(&self.conn, id).with_context(|| format!("Failed to get tamad '{}'", id))
+        queries::get_tamad(&self.conn, id).with_context(|| "Failed to get tamad")
     }
 
     /// List all tamad connections.
@@ -426,136 +201,20 @@ impl Repository {
 use crate::db::queries;
 
 // ── Tests ────────────────────────────────────────────────────────────────────
+//
+// The model/alias CRUD tests moved to the Postgres harness (plan-190 Task 5):
+// crates/tama-core/tests/{model_config_queries,alias_queries,provider_queries}.rs
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{open_in_memory, OpenResult};
 
     /// Helper: open an in-memory database and return a Repository.
     fn test_repo() -> Repository {
-        let OpenResult { conn, .. } = open_in_memory().unwrap();
-        Repository { conn }
-    }
-
-    /// Helper: insert a model config record and return its id.
-    fn insert_model_config(
-        conn: &Connection,
-        repo_id: &str,
-        display_name: Option<&str>,
-        backend: &str,
-    ) -> i64 {
-        let record = queries::ModelConfigRecord {
-            id: 0,
-            repo_id: repo_id.to_string(),
-            display_name: display_name.map(String::from),
-            backend: backend.to_string(),
-            gpu_variant: None,
-            gpu_device: None,
-            enabled: true,
-            selected_quant: None,
-            selected_mmproj: None,
-            selected_mtp_model: None,
-            context_length: None,
-            num_parallel: None,
-            kv_unified: false,
-            gpu_layers: None,
-            cache_type_k: None,
-            cache_type_v: None,
-            port: None,
-            args: None,
-            sampling: None,
-            modalities: None,
-            profile: None,
-            api_name: Some(repo_id.to_string()),
-            health_check: None,
-            hf_format: None,
-            hf_base_model: None,
-            hf_pipeline_tag: None,
-            hf_total_params: None,
-            hf_active_params: None,
-            hf_architecture_type: None,
-            hf_context_length: None,
-            hf_num_layers: None,
-            hf_last_modified: None,
-            spec_decoding: None,
-            created_at: "2024-01-01T00:00:00Z".to_string(),
-            updated_at: "2024-01-01T00:00:00Z".to_string(),
-            n_batch: None,
-            n_ubatch: None,
-            vllm_config: None,
-            provider_name: None,
-            reasoning_levels: None,
-        };
-        queries::upsert_model_config(conn, &record).unwrap()
-    }
-
-    // ── Alias CRUD ─────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_alias_crud_round_trip() {
-        use rusqlite::params;
-        let repo = test_repo();
-
-        // Insert a model config first (alias references it via FK)
-        let model_id: i64 = repo.conn.query_row(
-            "INSERT INTO model_configs (repo_id, backend, api_name) VALUES (?1, ?2, ?3) RETURNING id",
-            params!["test-org/test-model", "llama_cpp", "test"],
-            |row| row.get(0),
-        ).unwrap();
-
-        // Act: insert alias
-        let alias_id = repo
-            .insert_alias("test-alias", model_id, Some("A test alias"))
-            .unwrap();
-        assert!(alias_id > 0);
-
-        // Assert: retrieve by id
-        let alias = repo.get_alias_by_id(alias_id).unwrap().unwrap();
-        assert_eq!(alias.name, "test-alias");
-        assert_eq!(alias.model_id, model_id);
-        assert_eq!(alias.description, Some("A test alias".to_string()));
-
-        // Act: update alias (use same model_id since model_id+1 doesn't exist)
-        repo.update_alias(
-            alias_id,
-            queries::AliasUpdate {
-                name: Some("renamed"),
-                model_id: Some(model_id),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-
-        // Assert: updated values
-        let alias = repo.get_alias_by_id(alias_id).unwrap().unwrap();
-        assert_eq!(alias.name, "renamed");
-        assert_eq!(alias.model_id, model_id); // unchanged model_id
-        assert_eq!(alias.description, Some("A test alias".to_string())); // unchanged
-
-        // Assert: visible in get_all
-        let all = repo.get_all_aliases().unwrap();
-        assert!(all.iter().any(|a| a.id == alias_id));
-
-        // Act: delete
-        repo.delete_alias(alias_id).unwrap();
-
-        // Assert: gone
-        assert!(repo.get_alias_by_id(alias_id).unwrap().is_none());
-    }
-
-    #[test]
-    fn test_alias_not_found() {
-        let repo = test_repo();
-        let result = repo.get_alias_by_id(999).unwrap();
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_get_all_aliases_empty() {
-        let repo = test_repo();
-        let aliases = repo.get_all_aliases().unwrap();
-        assert!(aliases.is_empty());
+        let open_result = crate::db::open_in_memory().unwrap();
+        Repository {
+            conn: open_result.conn,
+        }
     }
 
     // ── Benchmark CRUD ─────────────────────────────────────────────────────
@@ -616,93 +275,6 @@ mod tests {
         assert!(benchmarks.is_empty());
     }
 
-    // ── Model Configs ──────────────────────────────────────────────────────
-
-    /// `update_hf_metadata` writes HF metadata columns (e.g. hf_format) and
-    /// preserves existing values for fields that are NULL in the new metadata.
-    #[test]
-    fn test_update_hf_metadata() {
-        let repo = test_repo();
-        let id = insert_model_config(&repo.conn, "Qwen/Qwen3.6-27B-FP8", None, "vllm");
-
-        let meta = crate::models::pull::HfModelMetadata {
-            hf_format: Some("transformers".to_string()),
-            hf_architecture_type: Some("Dense".to_string()),
-            ..Default::default()
-        };
-        repo.update_hf_metadata(id, &meta).unwrap();
-
-        let record = repo.get_model_config(id).unwrap().unwrap();
-        assert_eq!(record.hf_format.as_deref(), Some("transformers"));
-        assert_eq!(record.hf_architecture_type.as_deref(), Some("Dense"));
-        // NULL fields in meta must not overwrite / must stay NULL
-        assert!(record.hf_base_model.is_none());
-
-        // COALESCE: a subsequent update with hf_format = None keeps the old value
-        let meta2 = crate::models::pull::HfModelMetadata {
-            hf_base_model: Some("Qwen/Qwen3.6-27B".to_string()),
-            ..Default::default()
-        };
-        repo.update_hf_metadata(id, &meta2).unwrap();
-        let record = repo.get_model_config(id).unwrap().unwrap();
-        assert_eq!(record.hf_format.as_deref(), Some("transformers"));
-        assert_eq!(record.hf_base_model.as_deref(), Some("Qwen/Qwen3.6-27B"));
-    }
-
-    #[test]
-    fn test_load_model_configs_empty() {
-        let repo = test_repo();
-        let configs = repo.load_model_configs().unwrap();
-        assert!(configs.is_empty());
-    }
-
-    #[test]
-    fn test_load_model_configs_returns_inserted() {
-        let repo = test_repo();
-
-        // Insert via queries (Repository has no insert method)
-        let id = insert_model_config(
-            &repo.conn,
-            "test-org/test-model",
-            Some("Test Model"),
-            "llama_cpp",
-        );
-
-        // Load via Repository
-        let configs = repo.load_model_configs().unwrap();
-        assert_eq!(configs.len(), 1);
-
-        let key = "test-org--test-model";
-        let config = configs.get(key).unwrap();
-        assert_eq!(config.id, id);
-        assert_eq!(config.repo_id, "test-org/test-model");
-        assert_eq!(config.display_name, Some("Test Model".to_string()));
-        assert_eq!(config.backend, "llama_cpp");
-        assert!(config.enabled);
-    }
-
-    #[test]
-    fn test_load_model_configs_multiple() {
-        let repo = test_repo();
-
-        insert_model_config(&repo.conn, "org/model-a", Some("Model A"), "llama_cpp");
-        insert_model_config(&repo.conn, "org/model-b", Some("Model B"), "vulkan");
-
-        let configs = repo.load_model_configs().unwrap();
-        assert_eq!(configs.len(), 2);
-        assert!(configs.contains_key("org--model-a"));
-        assert!(configs.contains_key("org--model-b"));
-    }
-
-    // ── Model Files ────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_get_model_files_empty_for_unknown_config() {
-        let repo = test_repo();
-        let files = repo.get_model_files(999).unwrap();
-        assert!(files.is_empty());
-    }
-
     // ── Repository::open() ─────────────────────────────────────────────────
 
     #[test]
@@ -715,66 +287,5 @@ mod tests {
         // Fresh DB: no models exist
         assert!(!repo.model_exists(1).unwrap());
         assert!(!repo.model_exists(0).unwrap());
-    }
-
-    // ── Model writes (absorbed from ModelManager) ──────────────────────────
-
-    #[test]
-    fn test_save_model_config_round_trip() {
-        let repo = test_repo();
-        let mc = crate::config::ModelConfig::default();
-        let id = repo.save_model_config("owner--repo", &mc).unwrap();
-        assert!(id > 0);
-        let record = repo.get_model_config(id).unwrap().unwrap();
-        assert_eq!(record.repo_id, "owner/repo");
-        assert_eq!(record.api_name.as_deref(), Some("owner/repo"));
-    }
-
-    #[test]
-    fn test_upsert_and_get_pull() {
-        let repo = test_repo();
-        let id = insert_model_config(&repo.conn, "owner/repo", Some("Test"), "llama_cpp");
-        repo.upsert_pull(id, "owner/repo", "abc123").unwrap();
-        let pull = repo.get_pull(id).unwrap().unwrap();
-        assert_eq!(pull.commit_sha, "abc123");
-    }
-
-    #[test]
-    fn test_upsert_file_and_delete_file() {
-        let repo = test_repo();
-        let id = insert_model_config(&repo.conn, "owner/repo", Some("Test"), "llama_cpp");
-        repo.upsert_file(
-            id,
-            "owner/repo",
-            "m-q4.gguf",
-            Some("Q4_K_M"),
-            None,
-            Some(123),
-        )
-        .unwrap();
-        let files = repo.get_files(id).unwrap();
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0].filename, "m-q4.gguf");
-        repo.delete_file(id, "m-q4.gguf").unwrap();
-        assert!(repo.get_files(id).unwrap().is_empty());
-    }
-
-    #[test]
-    fn test_delete_config_cascades() {
-        let repo = test_repo();
-        let id = insert_model_config(&repo.conn, "owner/repo", Some("Test"), "llama_cpp");
-        repo.upsert_file(
-            id,
-            "owner/repo",
-            "m-q4.gguf",
-            Some("Q4_K_M"),
-            None,
-            Some(123),
-        )
-        .unwrap();
-        assert!(repo.get_model_config(id).unwrap().is_some());
-        repo.delete_config(id).unwrap();
-        assert!(repo.get_model_config(id).unwrap().is_none());
-        assert!(repo.get_files(id).unwrap().is_empty());
     }
 }

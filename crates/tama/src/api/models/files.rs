@@ -1,5 +1,4 @@
-use crate::api::error::{error_body, error_response};
-use crate::api::helpers::shared_repository;
+use crate::api::error::error_response;
 use axum::{
     extract::{Extension, Path, State},
     http::StatusCode,
@@ -45,33 +44,26 @@ pub async fn refresh_model_metadata(
     Path(id_str): Path<String>,
 ) -> impl IntoResponse {
     // Load config first (async, handles its own spawn_blocking)
-    let (cfg, _config_dir) = match load_config_from_state(&state).await {
+    let (_cfg, _config_dir) = match load_config_from_state(&state).await {
         Ok(x) => x,
         Err((status, body)) => return (status, Json(body)).into_response(),
     };
 
-    let repo_handle = match shared_repository(&web_state) {
-        Ok(h) => h,
-        Err(resp) => return resp,
-    };
-    let repo_handle_for_write = repo_handle.clone();
-
-    // Step 1: resolve model_id and repo_id
-    let resolved = tokio::task::spawn_blocking(move || {
-        let (_repo, model_id, record) = resolve_model_record(&_config_dir, &id_str)?;
-        let models_dir = cfg.models_dir().map_err(|e| {
-            (
+    let pool = match web_state.db_pool.as_ref() {
+        Some(p) => p.clone(),
+        None => {
+            return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                error_body(e.to_string(), None),
+                "Postgres pool not available; cannot refresh model metadata",
+                None,
             )
-        })?;
-        Ok::<_, (StatusCode, serde_json::Value)>((model_id, record.repo_id, models_dir))
-    })
-    .await;
-    let (model_id, repo_id, _models_dir) = match resolved {
-        Ok(Ok(x)) => x,
-        Ok(Err((s, b))) => return (s, Json(b)).into_response(),
-        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
+        }
+    };
+
+    // Step 1: resolve model_id and repo_id (async, against Postgres).
+    let (model_id, repo_id) = match resolve_model_record(&pool, &id_str).await {
+        Ok((model_id, record)) => (model_id, record.repo_id),
+        Err((s, b)) => return (s, Json(b)).into_response(),
     };
 
     // Step 2: async HF fetches (no DB handle held).
@@ -84,20 +76,19 @@ pub async fn refresh_model_metadata(
             match tama_core::models::pull::lookup_hf_metadata(&repo_id).await {
                 Ok(meta) => {
                     let repo_id_out = repo_id.clone();
-                    let write = tokio::task::spawn_blocking(move || {
-                        let repo = repo_handle_for_write.lock().unwrap();
-                        repo.update_hf_metadata(model_id, &meta)
-                    })
+                    let write = tama_core::models::update::update_model_config_hf_metadata(
+                        &pool, model_id, &meta,
+                    )
                     .await;
                     // Keep the in-memory registry (dashboard SSE snapshots) in
                     // sync with the new hf_format/architecture values.
-                    if matches!(&write, Ok(Ok(()))) {
+                    if write.is_ok() {
                         if let Err(e) = state.reload_model_configs().await {
                             tracing::warn!("reload_model_configs after refresh failed: {}", e);
                         }
                     }
                     return match write {
-                        Ok(Ok(())) => Json(serde_json::json!({
+                        Ok(()) => Json(serde_json::json!({
                             "ok": true,
                             "id": model_id,
                             "repo_id": repo_id_out,
@@ -105,14 +96,11 @@ pub async fn refresh_model_metadata(
                             "files": [],
                         }))
                         .into_response(),
-                        Ok(Err(e)) => error_response(
+                        Err(e) => error_response(
                             StatusCode::INTERNAL_SERVER_ERROR,
                             format!("DB write failed: {}", e),
                             None,
                         ),
-                        Err(e) => {
-                            error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None)
-                        }
                     };
                 }
                 Err(meta_err) => {
@@ -136,46 +124,44 @@ pub async fn refresh_model_metadata(
         }
     };
 
-    // Step 3: DB writes (blocking pool, fresh connection).
+    // Step 3: DB writes against Postgres (plan-190 Task 5).
     // Only update metadata for files that already exist locally — do NOT create
     // new entries for quants the user never pulled. This prevents the
     // "Check all for updates" button from polluting the model_files table.
-    let repo_id_for_db = repo_id.clone();
-    let commit_sha = listing.commit_sha.clone();
-    let files = listing.files.clone();
-    let write = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
-        let repo = repo_handle_for_write.lock().unwrap();
-        repo.upsert_pull(model_id, &repo_id_for_db, &commit_sha)?;
+    let write = async {
+        tama_core::db::queries::upsert_model_pull(&pool, model_id, &repo_id, &listing.commit_sha)
+            .await?;
 
         // Build a set of filenames already tracked locally.
-        let local_files = repo.get_files(model_id)?;
+        let local_files = tama_core::db::queries::get_model_files(&pool, model_id).await?;
         let local_filenames: std::collections::HashSet<&str> =
             local_files.iter().map(|f| f.filename.as_str()).collect();
 
         // Only upsert metadata for files that already exist in the local DB.
-        for file in &files {
+        for file in &listing.files {
             if !local_filenames.contains(file.filename.as_str()) {
                 // Skip remote-only files — don't pollute the DB.
                 continue;
             }
             let blob = blobs.get(&file.filename);
-            repo.upsert_file(
+            tama_core::db::queries::upsert_model_file(
+                &pool,
                 model_id,
-                &repo_id_for_db,
+                &repo_id,
                 &file.filename,
                 file.quant.as_deref(),
                 blob.and_then(|b| b.lfs_sha256.as_deref()),
                 blob.and_then(|b| b.size),
-            )?;
+            )
+            .await?;
         }
-        let files_out = repo.get_files(model_id)?;
-        let pull_out = repo.get_pull(model_id)?;
-        Ok((pull_out, files_out))
-    })
-    .await;
+        let files_out = tama_core::db::queries::get_model_files(&pool, model_id).await?;
+        let pull_out = tama_core::db::queries::get_model_pull(&pool, model_id).await?;
+        Ok::<_, anyhow::Error>((pull_out, files_out))
+    };
 
-    match write {
-        Ok(Ok((pull, files))) => {
+    match write.await {
+        Ok((pull, files)) => {
             let files_json: Vec<_> = files.iter().map(file_record_json).collect();
             Json(serde_json::json!({
                 "ok": true,
@@ -187,12 +173,11 @@ pub async fn refresh_model_metadata(
             }))
             .into_response()
         }
-        Ok(Err(e)) => error_response(
+        Err(e) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("DB write failed: {}", e),
             None,
         ),
-        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     }
 }
 
@@ -213,74 +198,77 @@ pub async fn verify_model_files(
         Err((status, body)) => return (status, Json(body)).into_response(),
     };
 
-    let repo_handle = match shared_repository(&web_state) {
-        Ok(h) => h,
-        Err(resp) => return resp,
-    };
-    let repo_handle_for_write = repo_handle.clone();
-
-    let resolved = tokio::task::spawn_blocking(move || {
-        let (_repo, model_id, record) = resolve_model_record(&_config_dir, &id_str)?;
-        let models_dir = cfg.models_dir().map_err(|e| {
-            (
+    let pool = match web_state.db_pool.as_ref() {
+        Some(p) => p.clone(),
+        None => {
+            return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                error_body(e.to_string(), None),
+                "Postgres pool not available; cannot verify model files",
+                None,
             )
-        })?;
-        Ok::<_, (StatusCode, serde_json::Value)>((model_id, record.repo_id, models_dir))
-    })
-    .await;
-    let (model_id, repo_id, models_dir) = match resolved {
-        Ok(Ok(x)) => x,
-        Ok(Err((s, b))) => return (s, Json(b)).into_response(),
+        }
+    };
+
+    // Resolve model_id and repo_id (async, against Postgres).
+    let (model_id, record) = match resolve_model_record(&pool, &id_str).await {
+        Ok(v) => v,
+        Err((s, b)) => return (s, Json(b)).into_response(),
+    };
+    let repo_id = record.repo_id;
+    let models_dir = match cfg.models_dir() {
+        Ok(p) => p,
         Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     };
 
     // Model files live at <models_dir>/<repo_id>/<filename>.gguf
     let model_dir = tama_core::models::repo_path(&models_dir, &repo_id);
-    let repo_id_clone = repo_id.clone();
 
-    let task = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
-        let repo = repo_handle_for_write.lock().unwrap();
-        let results =
-            tama_core::models::verify::verify_model(&repo, model_id, &repo_id_clone, &model_dir)?;
-        let files = repo.get_files(model_id)?;
-        Ok((results, files))
-    })
-    .await;
-
-    match task {
-        Ok(Ok((results, files))) => {
-            let all_ok = results.iter().all(|r| r.ok != Some(false));
-            let any_unknown = results.iter().any(|r| r.ok.is_none());
-            let summary: Vec<_> = results
-                .iter()
-                .map(|r| {
-                    serde_json::json!({
-                        "filename": r.filename,
-                        "ok": r.ok,
-                        "error": r.error,
-                    })
-                })
-                .collect();
-            let files_json: Vec<_> = files.iter().map(file_record_json).collect();
-            Json(serde_json::json!({
-                "ok": all_ok,
-                "any_unknown": any_unknown,
-                "id": model_id,
-                "repo_id": repo_id,
-                "results": summary,
-                "files": files_json,
-            }))
-            .into_response()
+    // Verify against Postgres (plan-190 Task 5) — model files live in Postgres.
+    let pool = pool.as_ref();
+    let results =
+        match tama_core::models::verify::verify_model(pool, model_id, &repo_id, &model_dir).await {
+            Ok(r) => r,
+            Err(e) => {
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("verify failed: {}", e),
+                    None,
+                )
+            }
+        };
+    let files = match tama_core::db::queries::get_model_files(pool, model_id).await {
+        Ok(f) => f,
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("DB read failed: {}", e),
+                None,
+            )
         }
-        Ok(Err(e)) => error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("verify failed: {}", e),
-            None,
-        ),
-        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
-    }
+    };
+
+    let all_ok = results.iter().all(|r| r.ok != Some(false));
+    let any_unknown = results.iter().any(|r| r.ok.is_none());
+    let summary: Vec<_> = results
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "filename": r.filename,
+                "ok": r.ok,
+                "error": r.error,
+            })
+        })
+        .collect();
+    let files_json: Vec<_> = files.iter().map(file_record_json).collect();
+    Json(serde_json::json!({
+        "ok": all_ok,
+        "any_unknown": any_unknown,
+        "id": model_id,
+        "repo_id": repo_id,
+        "results": summary,
+        "files": files_json,
+    }))
+    .into_response()
 }
 
 #[cfg(test)]
@@ -288,20 +276,21 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
     use std::collections::HashMap;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
     use tama_core::config::Config;
-    use tama_core::db::repository::Repository;
     use tama_core::proxy::ProxyState;
     use tower::ServiceExt;
 
     fn build_test_state(
+        pool: Arc<sqlx::PgPool>,
         tmp_dir: &std::path::Path,
     ) -> (Arc<ProxyState>, Arc<crate::web_types::WebState>) {
         let config = Config::default();
-        let state = Arc::new(ProxyState::new(config, Some(tmp_dir.to_path_buf()), None));
-
-        // Open a repository handle for the web_state.
-        let repo = Repository::open(tmp_dir).unwrap();
+        let state = Arc::new(ProxyState::new(
+            config,
+            Some(tmp_dir.to_path_buf()),
+            Some(pool.clone()),
+        ));
 
         let web_state = Arc::new(crate::web_types::WebState {
             jobs: Some(Arc::new(crate::web_types::JobManager::new())),
@@ -310,8 +299,8 @@ mod tests {
             binary_version: "test".to_string(),
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
-            repository: Some(Arc::new(Mutex::new(repo))),
-            db_pool: None,
+            repository: None,
+            db_pool: Some(pool),
         });
 
         (state, web_state)
@@ -320,9 +309,11 @@ mod tests {
     /// POST /tama/v1/models/:id/refresh for unknown model → 404.
     #[tokio::test]
     async fn test_refresh_model_metadata_unknown_model_404() {
+        let guard = crate::testing::postgres::with_schema().await;
+        let pool = Arc::new(guard.pool.clone());
         let tmp_dir = tempfile::tempdir().expect("tempdir");
 
-        let (state, web_state) = build_test_state(tmp_dir.path());
+        let (state, web_state) = build_test_state(pool, tmp_dir.path());
         let router = crate::router::build_web_routes(web_state.clone())
             .with_state(state)
             .layer(axum::extract::Extension(web_state.as_ref().clone()));
@@ -340,14 +331,18 @@ mod tests {
             axum::http::StatusCode::NOT_FOUND,
             "unknown model refresh should return 404"
         );
+
+        guard.finish().await;
     }
 
     /// POST /tama/v1/models/:id/verify for unknown model → 404.
     #[tokio::test]
     async fn test_verify_model_files_unknown_model_404() {
+        let guard = crate::testing::postgres::with_schema().await;
+        let pool = Arc::new(guard.pool.clone());
         let tmp_dir = tempfile::tempdir().expect("tempdir");
 
-        let (state, web_state) = build_test_state(tmp_dir.path());
+        let (state, web_state) = build_test_state(pool, tmp_dir.path());
         let router = crate::router::build_web_routes(web_state.clone())
             .with_state(state)
             .layer(axum::extract::Extension(web_state.as_ref().clone()));
@@ -365,5 +360,7 @@ mod tests {
             axum::http::StatusCode::NOT_FOUND,
             "unknown model verify should return 404"
         );
+
+        guard.finish().await;
     }
 }

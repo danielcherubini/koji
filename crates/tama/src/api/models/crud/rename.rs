@@ -1,5 +1,4 @@
-use crate::api::error::error_body;
-use crate::api::helpers::{spawn_model_crud, DEFAULT_CRUD_STATUS};
+use crate::api::error::error_response;
 use axum::{
     extract::{Extension, Path, State},
     http::StatusCode,
@@ -10,7 +9,6 @@ use std::sync::Arc;
 use tama_core::proxy::tama_handlers::ModelMutationResponse;
 use tama_core::proxy::ProxyState;
 
-use crate::api::load_config_from_state;
 use crate::api::models::resolve_model_record;
 use crate::web_types::WebState;
 use tama_core::models::is_valid_repo_id;
@@ -24,88 +22,83 @@ pub struct RenameBody {
 /// POST /tama/v1/models/:id/rename — rename a model config entry.
 pub async fn rename_model(
     State(state): State<Arc<ProxyState>>,
-    Extension(_web_state): Extension<WebState>,
+    Extension(web_state): Extension<WebState>,
     Path(id_str): Path<String>,
     Json(body): Json<RenameBody>,
 ) -> impl IntoResponse {
-    let state_clone = state.clone();
-
-    let (_, config_dir) = match load_config_from_state(&state).await {
-        Ok(x) => x,
-        Err((status, body)) => return (status, Json(body)).into_response(),
+    let Some(pool) = web_state.db_pool.as_ref() else {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Postgres pool not available",
+            None,
+        );
     };
 
-    // The update_check cleanup (Postgres, plan-190 Task 4) runs after the
-    // rename transaction; the closure hands the old repo_id out through this cell.
-    let pool = state.db_pool();
-    let old_repo_id: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
-    let old_repo_id_capture = Arc::clone(&old_repo_id);
+    let (model_id, existing_record) = match resolve_model_record(pool, &id_str).await {
+        Ok(v) => v,
+        Err((status, body)) => return (status, Json(body)).into_response(),
+    };
+    let old_repo_id = existing_record.repo_id.clone();
+    let mut model_config = tama_core::config::ModelConfig::from_db_record(&existing_record);
 
-    let response = spawn_model_crud(state_clone, DEFAULT_CRUD_STATUS, move || {
-        let (repo, model_id, existing_record) = resolve_model_record(&config_dir, &id_str)?;
-        *old_repo_id_capture.lock().unwrap() = Some(existing_record.repo_id.clone());
-        let mut model_config = tama_core::config::ModelConfig::from_db_record(&existing_record);
+    let new_repo_id = body.new_repo_id.trim().to_string();
+    if new_repo_id.is_empty() {
+        return error_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "New repo_id cannot be empty",
+            Some("ValidationError"),
+        );
+    }
+    if new_repo_id.len() > 256 {
+        return error_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "New repo_id must be at most 256 characters",
+            Some("ValidationError"),
+        );
+    }
+    if !is_valid_repo_id(&new_repo_id) {
+        return error_response(StatusCode::UNPROCESSABLE_ENTITY, "New repo_id contains invalid characters (only alphanumeric, dots, underscores, hyphens, and slashes are allowed)", Some("ValidationError"));
+    }
 
-        let new_repo_id = body.new_repo_id.trim().to_string();
-        if new_repo_id.is_empty() {
-            return Err((
-                StatusCode::UNPROCESSABLE_ENTITY,
-                error_body("New repo_id cannot be empty", Some("ValidationError")),
-            ));
-        }
-        if new_repo_id.len() > 256 {
-            return Err((
-                StatusCode::UNPROCESSABLE_ENTITY,
-                error_body("New repo_id must be at most 256 characters", Some("ValidationError")),
-            ));
-        }
-        if !is_valid_repo_id(&new_repo_id) {
-            return Err((
-                StatusCode::UNPROCESSABLE_ENTITY,
-                error_body("New repo_id contains invalid characters (only alphanumeric, dots, underscores, hyphens, and slashes are allowed)", Some("ValidationError")),
-            ));
-        }
-
-        // Check target repo_id doesn't already exist
-        if repo
-            .get_model_config_by_repo_id(&new_repo_id)
-            .map_err(|e| {
-                (StatusCode::INTERNAL_SERVER_ERROR, error_body(e.to_string(), None))
-            })?
-            .is_some()
-        {
-            return Err((
+    // Check target repo_id doesn't already exist
+    match tama_core::db::queries::get_model_config_by_repo_id(pool, &new_repo_id).await {
+        Ok(Some(_)) => {
+            return error_response(
                 StatusCode::CONFLICT,
-                error_body(
-                    format!("Model '{}' already exists", new_repo_id),
-                    Some("ConflictError"),
-                ),
-            ));
+                format!("Model '{}' already exists", new_repo_id),
+                Some("ConflictError"),
+            )
         }
+        Ok(None) => {}
+        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
+    }
 
-        // Update the model field (repo_id) in the config to reflect the rename
-        model_config.model = Some(new_repo_id.clone());
+    // Update the model field (repo_id) in the config to reflect the rename
+    model_config.model = Some(new_repo_id.clone());
 
-        // Save with new repo_id (keeps same integer id)
-        let config_key = tama_core::models::ConfigKey::from_repo_id(&new_repo_id);
-        let _ = repo
-            .save_model_config(config_key.as_str(), &model_config)
-            .map_err(|e| {
-                (StatusCode::INTERNAL_SERVER_ERROR, error_body(e.to_string(), None))
-            })?;
+    // Save with new repo_id (keeps same integer id)
+    let config_key = tama_core::models::ConfigKey::from_repo_id(&new_repo_id);
+    if let Err(e) = tama_core::db::save_model_config(pool, config_key.as_str(), &model_config).await
+    {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None);
+    }
 
-        Ok(ModelMutationResponse { ok: true, id: model_id })
-    })
-    .await;
+    if let Err(e) = state.reload_model_configs().await {
+        tracing::warn!("failed to reload model configs: {:?}", e);
+    }
+    if let Err(e) = state.reload_aliases().await {
+        tracing::warn!(error = %e, "Failed to reload aliases");
+    }
 
     // Clean up update_check record for old repo_id (best-effort, kept outside
     // the rename transaction so a DB hiccup doesn't fail the rename).
-    let old_repo_id = old_repo_id.lock().unwrap().clone();
-    if let (Some(pool), Some(repo_id)) = (pool.as_deref(), old_repo_id.as_deref()) {
-        if let Err(e) = tama_core::db::queries::delete_update_check(pool, "model", repo_id).await {
-            tracing::warn!("Failed to delete update check record for model {repo_id}: {e}");
-        }
+    if let Err(e) = tama_core::db::queries::delete_update_check(pool, "model", &old_repo_id).await {
+        tracing::warn!("Failed to delete update check record for model {old_repo_id}: {e}");
     }
 
-    response
+    Json(ModelMutationResponse {
+        ok: true,
+        id: model_id,
+    })
+    .into_response()
 }

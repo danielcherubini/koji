@@ -1,4 +1,8 @@
 //! Tests for ModelManager.
+//!
+//! Model-domain tests run against a dedicated Postgres test database via
+//! `crate::testing::postgres::with_schema` (plan-190 Task 5). The
+//! transitional `queue_*` tests keep using the in-memory SQLite connection.
 
 use super::*;
 use crate::config::ModelConfig;
@@ -51,95 +55,118 @@ fn make_test_record(repo_id: &str) -> ModelConfigRecord {
     }
 }
 
-#[test]
-fn test_open_in_memory() {
-    let manager = ModelManager::open_in_memory().unwrap();
-    let _conn = manager.conn();
-    let configs = manager.get_all_configs().unwrap();
-    assert!(configs.is_empty());
+/// Build a ModelManager on a fresh, empty Postgres schema.
+async fn pool_manager() -> (crate::testing::postgres::SchemaGuard, ModelManager) {
+    let guard = crate::testing::postgres::with_schema().await;
+    let manager = ModelManager::new(std::sync::Arc::new(guard.pool.clone()));
+    (guard, manager)
 }
 
-#[test]
-fn test_upsert_and_get_config() {
-    let manager = ModelManager::open_in_memory().unwrap();
+#[tokio::test]
+async fn test_open_with_empty_schema() {
+    let (guard, manager) = pool_manager().await;
+    let configs = manager.get_all_configs().await.unwrap();
+    assert!(configs.is_empty());
+    guard.finish().await;
+}
+
+#[tokio::test]
+async fn test_upsert_and_get_config() {
+    let (guard, manager) = pool_manager().await;
     let record = make_test_record("owner/test-repo");
-    let id = manager.upsert_config(&record).unwrap();
+    let id = manager.upsert_config(&record).await.unwrap();
     assert_eq!(id, 1);
 
-    let fetched = manager.get_config(id).unwrap().unwrap();
+    let fetched = manager.get_config(id).await.unwrap().unwrap();
     assert_eq!(fetched.repo_id, "owner/test-repo");
     assert_eq!(fetched.display_name, Some("Test Model".to_string()));
 
-    let all = manager.get_all_configs().unwrap();
+    let all = manager.get_all_configs().await.unwrap();
     assert_eq!(all.len(), 1);
+    guard.finish().await;
 }
 
-#[test]
-fn test_get_config_by_repo_id_missing() {
-    let manager = ModelManager::open_in_memory().unwrap();
-    let result = manager.get_config_by_repo_id("nonexistent/repo").unwrap();
+#[tokio::test]
+async fn test_get_config_by_repo_id_missing() {
+    let (guard, manager) = pool_manager().await;
+    let result = manager
+        .get_config_by_repo_id("nonexistent/repo")
+        .await
+        .unwrap();
     assert!(result.is_none());
+    guard.finish().await;
 }
 
-#[test]
-fn test_enable_disable_model() {
-    let manager = ModelManager::open_in_memory().unwrap();
+#[tokio::test]
+async fn test_enable_disable_model() {
+    let (guard, manager) = pool_manager().await;
 
     let mc = ModelConfig {
         backend: "llama.cpp".to_string(),
         enabled: true,
         ..Default::default()
     };
-    manager.save_model_config("owner--test-repo", &mc).unwrap();
+    manager
+        .save_model_config("owner--test-repo", &mc)
+        .await
+        .unwrap();
 
     // Disable it
-    manager.disable_model("owner--test-repo").unwrap();
+    manager.disable_model("owner--test-repo").await.unwrap();
     let record = manager
         .get_config_by_repo_id("owner/test-repo")
+        .await
         .unwrap()
         .unwrap();
     assert!(!record.enabled);
 
     // Re-enable it
-    manager.enable_model("owner--test-repo").unwrap();
+    manager.enable_model("owner--test-repo").await.unwrap();
     let record = manager
         .get_config_by_repo_id("owner/test-repo")
+        .await
         .unwrap()
         .unwrap();
     assert!(record.enabled);
+    guard.finish().await;
 }
 
-#[test]
-fn test_rename_config() {
-    let manager = ModelManager::open_in_memory().unwrap();
+#[tokio::test]
+async fn test_rename_config() {
+    let (guard, manager) = pool_manager().await;
     let record = make_test_record("owner/old-name");
-    let id = manager.upsert_config(&record).unwrap();
+    let id = manager.upsert_config(&record).await.unwrap();
 
-    manager.rename_config(id, "owner/new-name").unwrap();
+    manager.rename_config(id, "owner/new-name").await.unwrap();
 
     // Old repo_id should return None
-    let old = manager.get_config_by_repo_id("owner/old-name").unwrap();
+    let old = manager
+        .get_config_by_repo_id("owner/old-name")
+        .await
+        .unwrap();
     assert!(old.is_none());
 
     // New repo_id should return the record
     let new = manager
         .get_config_by_repo_id("owner/new-name")
+        .await
         .unwrap()
         .unwrap();
     assert_eq!(new.repo_id, "owner/new-name");
     assert_eq!(new.display_name, Some("Test Model".to_string()));
+    guard.finish().await;
 }
 
-#[test]
-fn test_file_operations() {
-    let manager = ModelManager::open_in_memory().unwrap();
+#[tokio::test]
+async fn test_file_operations() {
+    let (guard, manager) = pool_manager().await;
 
     // Insert a model config first (required for FK)
     let record = make_test_record("owner/test-model");
-    let model_id = manager.upsert_config(&record).unwrap();
+    let model_id = manager.upsert_config(&record).await.unwrap();
 
     // Verify no files initially
-    let files = manager.get_files(model_id).unwrap();
+    let files = manager.get_files(model_id).await.unwrap();
     assert!(files.is_empty());
 
     // Upsert a file
@@ -152,10 +179,11 @@ fn test_file_operations() {
             Some("sha256-abc123"),
             Some(1_000_000),
         )
+        .await
         .unwrap();
 
     // Verify it appears in get_files
-    let files = manager.get_files(model_id).unwrap();
+    let files = manager.get_files(model_id).await.unwrap();
     assert_eq!(files.len(), 1);
     assert_eq!(files[0].filename, "test-model.Q4_K_M.gguf");
     assert_eq!(files[0].quant, Some("Q4_K_M".to_string()));
@@ -163,53 +191,58 @@ fn test_file_operations() {
     assert_eq!(files[0].size_bytes, Some(1_000_000));
 
     // Verify it appears in get_all_files
-    let all_files = manager.get_all_files().unwrap();
+    let all_files = manager.get_all_files().await.unwrap();
     assert_eq!(all_files.len(), 1);
 
     // Update verification
     manager
         .update_verification(model_id, "test-model.Q4_K_M.gguf", Some(true), None)
+        .await
         .unwrap();
 
-    let files = manager.get_files(model_id).unwrap();
+    let files = manager.get_files(model_id).await.unwrap();
     assert_eq!(files[0].verified_ok, Some(true));
 
     // Delete the file
     manager
         .delete_file(model_id, "test-model.Q4_K_M.gguf")
+        .await
         .unwrap();
 
-    let files = manager.get_files(model_id).unwrap();
+    let files = manager.get_files(model_id).await.unwrap();
     assert!(files.is_empty());
+    guard.finish().await;
 }
 
-#[test]
-fn test_pull_operations() {
-    let manager = ModelManager::open_in_memory().unwrap();
+#[tokio::test]
+async fn test_pull_operations() {
+    let (guard, manager) = pool_manager().await;
 
     // Insert a model config
     let record = make_test_record("owner/test-model");
-    let model_id = manager.upsert_config(&record).unwrap();
+    let model_id = manager.upsert_config(&record).await.unwrap();
 
     // No pull record initially
-    let pull = manager.get_pull(model_id).unwrap();
+    let pull = manager.get_pull(model_id).await.unwrap();
     assert!(pull.is_none());
 
     // Upsert a pull record
     manager
         .upsert_pull(model_id, "owner/test-model", "abc123def456")
+        .await
         .unwrap();
 
     // Verify pull record
-    let pull = manager.get_pull(model_id).unwrap().unwrap();
+    let pull = manager.get_pull(model_id).await.unwrap().unwrap();
     assert_eq!(pull.model_id, model_id);
     assert_eq!(pull.repo_id, "owner/test-model");
     assert_eq!(pull.commit_sha, "abc123def456");
+    guard.finish().await;
 }
 
-#[test]
-fn test_log_pull() {
-    let manager = ModelManager::open_in_memory().unwrap();
+#[tokio::test]
+async fn test_log_pull() {
+    let (guard, manager) = pool_manager().await;
 
     let entry = PullLogEntry {
         repo_id: "owner/test-model".to_string(),
@@ -222,15 +255,16 @@ fn test_log_pull() {
         error_message: None,
     };
 
-    manager.log_pull(&entry).unwrap();
+    manager.log_pull(&entry).await.unwrap();
+    guard.finish().await;
 }
 
-#[test]
-fn test_active_model_operations() {
-    let manager = ModelManager::open_in_memory().unwrap();
+#[tokio::test]
+async fn test_active_model_operations() {
+    let (guard, manager) = pool_manager().await;
 
     // Initially empty
-    let active = manager.get_active().unwrap();
+    let active = manager.get_active().await.unwrap();
     assert!(active.is_empty());
 
     // Insert an active record
@@ -243,10 +277,11 @@ fn test_active_model_operations() {
             8080,
             "http://127.0.0.1:8080",
         )
+        .await
         .unwrap();
 
     // Verify it appears
-    let active = manager.get_active().unwrap();
+    let active = manager.get_active().await.unwrap();
     assert_eq!(active.len(), 1);
     assert_eq!(active[0].server_name, "server1");
     assert_eq!(active[0].model_name, "model.gguf");
@@ -255,18 +290,22 @@ fn test_active_model_operations() {
     assert_eq!(active[0].port, 8080);
 
     // Rename the active record
-    manager.rename_active("server1", "server1-renamed").unwrap();
-    let active = manager.get_active().unwrap();
+    manager
+        .rename_active("server1", "server1-renamed")
+        .await
+        .unwrap();
+    let active = manager.get_active().await.unwrap();
     assert_eq!(active[0].server_name, "server1-renamed");
 
     // Remove the active record
-    manager.remove_active("server1-renamed").unwrap();
-    let active = manager.get_active().unwrap();
+    manager.remove_active("server1-renamed").await.unwrap();
+    let active = manager.get_active().await.unwrap();
     assert!(active.is_empty());
+    guard.finish().await;
 }
 
-#[test]
-fn test_pull_queue_operations() {
+#[tokio::test]
+async fn test_pull_queue_operations() {
     let manager = ModelManager::open_in_memory().unwrap();
 
     // Insert a queue item
@@ -321,8 +360,8 @@ fn test_pull_queue_operations() {
     assert!(active.is_empty());
 }
 
-#[test]
-fn test_queue_cancel() {
+#[tokio::test]
+async fn test_queue_cancel() {
     let manager = ModelManager::open_in_memory().unwrap();
 
     manager
@@ -347,9 +386,9 @@ fn test_queue_cancel() {
     assert!(item.completed_at.is_some());
 }
 
-#[test]
-fn test_save_model_config_convenience() {
-    let manager = ModelManager::open_in_memory().unwrap();
+#[tokio::test]
+async fn test_save_model_config_convenience() {
+    let (guard, manager) = pool_manager().await;
 
     let mc = ModelConfig {
         backend: "llama.cpp".to_string(),
@@ -357,13 +396,17 @@ fn test_save_model_config_convenience() {
         enabled: true,
         ..Default::default()
     };
-    let id = manager.save_model_config("owner--my-model", &mc).unwrap();
+    let id = manager
+        .save_model_config("owner--my-model", &mc)
+        .await
+        .unwrap();
     assert_eq!(id, 1);
 
-    let record = manager.get_config(id).unwrap().unwrap();
+    let record = manager.get_config(id).await.unwrap().unwrap();
     assert_eq!(record.repo_id, "owner/my-model");
     assert_eq!(record.backend, "llama.cpp");
     assert_eq!(record.display_name, Some("My Model".to_string()));
     assert!(record.enabled);
     assert_eq!(record.api_name, Some("owner/my-model".to_string()));
+    guard.finish().await;
 }

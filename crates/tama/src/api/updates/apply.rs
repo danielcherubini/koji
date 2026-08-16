@@ -266,51 +266,38 @@ pub async fn apply_model_update(
     Path(id): Path<i64>,
     Json(req): Json<ModelUpdateRequest>,
 ) -> impl axum::response::IntoResponse {
-    let repo_handle = match shared_repository(&web_state) {
-        Ok(h) => h,
-        Err(resp) => return resp,
+    // 1. Resolve model: get repo_id and model files for requested quant keys
+    //    (Postgres, plan-190 Task 5).
+    let Some(pool) = web_state.db_pool.as_ref() else {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Postgres pool not available",
+            None,
+        );
     };
 
-    // 1. Resolve model: get repo_id and model files for requested quant keys
     let req_quants = req.quants.clone();
-    let res_result = tokio::task::spawn_blocking({
-        let repo_handle = repo_handle.clone();
-        move || -> anyhow::Result<(String, Vec<(String, String)>)> {
-            let repo = repo_handle.lock().unwrap();
-            let model_record = repo
-                .get_model_config(id)?
-                .ok_or_else(|| anyhow::anyhow!("Model not found"))?;
-            let repo_id = model_record.repo_id;
-
-            // Get model files for this model
-            let model_files = repo.get_model_files(id)?;
-
-            // Filter to only the requested quant keys (where quant column matches).
-            // Skip files with NULL/None quant — they won't match any requested key.
-            let files_to_update: Vec<(String, String)> = model_files
-                .into_iter()
-                .filter(|f| f.quant.as_ref().is_some_and(|q| req_quants.contains(q)))
-                .map(|f| (f.quant.clone().unwrap_or_default(), f.filename))
-                .collect();
-
-            Ok((repo_id, files_to_update))
-        }
-    })
-    .await;
-
-    let (repo_id, files_to_update) = match res_result {
-        Ok(Ok(val)) => val,
-        Ok(Err(e)) => {
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None)
-        }
-        Err(e) => {
+    let model_record = match tama_core::db::queries::get_model_config(pool, id).await {
+        Ok(Some(r)) => r,
+        Ok(None) => {
             return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Join error: {}", e),
-                None,
+                StatusCode::NOT_FOUND,
+                "Model not found",
+                Some("NotFoundError"),
             )
         }
+        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     };
+    let repo_id = model_record.repo_id;
+    let model_files = match tama_core::db::queries::get_model_files(pool, id).await {
+        Ok(f) => f,
+        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
+    };
+    let files_to_update: Vec<(String, String)> = model_files
+        .into_iter()
+        .filter(|f| f.quant.as_ref().is_some_and(|q| req_quants.contains(q)))
+        .map(|f| (f.quant.clone().unwrap_or_default(), f.filename))
+        .collect();
 
     // 2. Validate: ensure all requested quants exist for this model
     let valid_keys: std::collections::HashSet<&str> =

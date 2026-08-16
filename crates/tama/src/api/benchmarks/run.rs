@@ -97,6 +97,7 @@ pub async fn run_benchmark_inner(
     // Run benchmark
     let report = llama_bench::run_llama_bench(
         &config,
+        pool,
         &model_id,
         quant.as_deref(),
         backend_name.as_deref(),
@@ -106,15 +107,10 @@ pub async fn run_benchmark_inner(
     )
     .await?;
 
-    // Store results in database — pool the blocking SQLite calls.
-    // Segment 1: load model configs for display-name lookup.
-    let repo_handle_for_load = repo_handle.clone();
+    // Store results in database — load model configs for display-name lookup
+    // from Postgres (plan-190 Task 5).
     let model_configs: std::collections::HashMap<String, tama_core::config::ModelConfig> =
-        tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
-            let repo = repo_handle_for_load.lock().unwrap();
-            repo.load_model_configs_for_benchmarks()
-        })
-        .await??;
+        tama_core::db::load_model_configs(pool).await?;
 
     // Get model display name from config. The request carries the db_id as a
     // string (e.g. "4") because that's what the model dropdown submits, so we
@@ -236,12 +232,12 @@ pub(super) async fn unload_model_before_benchmark(
     }
 }
 
-/// Resolve a model's file path from config and database.
+/// Resolve a model's file path from config and database (Postgres, plan-190 Task 5).
 /// `quant_override` takes priority over `mc.quant` when resolving the target file.
-pub(super) fn resolve_model_path(
+pub(super) async fn resolve_model_path(
     config: &tama_core::config::Config,
     db_dir: &std::path::Path,
-    repo: &tama_core::db::repository::Repository,
+    pool: &sqlx::PgPool,
     model_configs: &std::collections::HashMap<String, tama_core::config::ModelConfig>,
     resolved_id: &str,
     quant_override: Option<&str>,
@@ -250,10 +246,10 @@ pub(super) fn resolve_model_path(
         .get(resolved_id)
         .with_context(|| format!("Model config '{}' not found", resolved_id))?;
     let rec_id = mc.db_id.context("Model config has no db_id")?;
-    let record = repo
-        .get_model_config(rec_id)?
+    let record = tama_core::db::queries::get_model_config(pool, rec_id)
+        .await?
         .with_context(|| format!("Model config record (id={}) not found in database", rec_id))?;
-    let files = repo.get_model_files(record.id)?;
+    let files = tama_core::db::queries::get_model_files(pool, record.id).await?;
 
     // Resolve the target filename: prefer quant_override, then mc.quant from config,
     // falling back to the first .gguf if quants map is empty (legacy configs).

@@ -10,6 +10,9 @@ pub mod router;
 #[cfg(feature = "ssr")]
 pub mod api;
 
+#[cfg(all(test, feature = "ssr"))]
+pub mod testing;
+
 #[cfg(feature = "ssr")]
 pub mod gpu;
 

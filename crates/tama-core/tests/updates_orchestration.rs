@@ -13,7 +13,7 @@
 mod common;
 
 use common::with_schema;
-use tama_core::db::{self, queries};
+use tama_core::db::queries;
 use tama_core::installations::{InstallationInfo, InstallationManager, InstallationType};
 use tama_core::models::pull::RemoteGguf;
 use tama_core::updates::checker::{UpdateChecker, UpdateEvent};
@@ -37,10 +37,9 @@ fn seed_backend(config_dir: &std::path::Path) {
     .unwrap();
 }
 
-/// Seed a model into the config directory's DB with the given repo_id, commit SHA,
-/// and LFS OID. Returns the auto-assigned model id.
-fn seed_model(config_dir: &std::path::Path, repo_id: &str, commit_sha: &str, lfs_oid: &str) -> i64 {
-    let open = db::open(config_dir).unwrap();
+/// Seed a model into Postgres with the given repo_id, commit SHA, and LFS OID.
+/// Returns the auto-assigned model id.
+async fn seed_model(pool: &sqlx::PgPool, repo_id: &str, commit_sha: &str, lfs_oid: &str) -> i64 {
     let record = queries::ModelConfigRecord {
         id: 0,
         repo_id: repo_id.to_string(),
@@ -83,12 +82,14 @@ fn seed_model(config_dir: &std::path::Path, repo_id: &str, commit_sha: &str, lfs
         provider_name: None,
         reasoning_levels: None,
     };
-    let model_id = queries::upsert_model_config(&open.conn, &record).unwrap();
+    let model_id = queries::upsert_model_config(pool, &record).await.unwrap();
 
-    queries::upsert_model_pull(&open.conn, model_id, repo_id, commit_sha).unwrap();
+    queries::upsert_model_pull(pool, model_id, repo_id, commit_sha)
+        .await
+        .unwrap();
 
     queries::upsert_model_file(
-        &open.conn,
+        pool,
         model_id,
         repo_id,
         "Test-Q4_K_M.gguf",
@@ -96,6 +97,7 @@ fn seed_model(config_dir: &std::path::Path, repo_id: &str, commit_sha: &str, lfs
         Some(lfs_oid),
         None,
     )
+    .await
     .unwrap();
 
     model_id
@@ -111,11 +113,12 @@ async fn test_run_check_persists_backend_and_model_rows_and_emits_events() {
     // Seed a TtsKokoro backend and a model with "old" identifiers
     seed_backend(config_dir);
     let _model_id = seed_model(
-        config_dir,
+        &guard.pool,
         "unsloth/Test-GGUF",
         "aaaaaaaaaaaaaaaaaaaa",
         "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-    );
+    )
+    .await;
 
     // Start mock server to simulate HF API
     let server = MockServer::start().await;
@@ -220,7 +223,7 @@ async fn test_run_check_model_up_to_date_via_cache_without_http() {
     // Seed a model with the same SHA as we'll put in the cache
     let sha_same = "same_commit_sha";
     let lfs_same = "same_lfs_hash_hash_hash_hash_hash_hash_hash_hash_hash_hash_hash_hash_hash_hash_hash_hash_hash";
-    seed_model(config_dir, "cached/Model", sha_same, lfs_same);
+    seed_model(&guard.pool, "cached/Model", sha_same, lfs_same).await;
 
     // Seed a backend too
     seed_backend(config_dir);
@@ -271,7 +274,6 @@ async fn test_run_check_model_without_repo_records_unknown() {
     let config_dir = tmp.path();
 
     // Seed a model with an empty repo_id to trigger the "no source repo" path
-    let open = db::open(config_dir).unwrap();
     let record = queries::ModelConfigRecord {
         id: 0,
         repo_id: "".to_string(), // empty repo_id triggers the unknown path
@@ -314,7 +316,9 @@ async fn test_run_check_model_without_repo_records_unknown() {
         provider_name: None,
         reasoning_levels: None,
     };
-    let model_id = queries::upsert_model_config(&open.conn, &record).unwrap();
+    let model_id = queries::upsert_model_config(&guard.pool, &record)
+        .await
+        .unwrap();
 
     // Create checker with event channel to capture events
     let (tx, _rx) = tokio::sync::broadcast::channel(64);

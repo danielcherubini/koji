@@ -14,12 +14,21 @@ fn create_test_state() -> Arc<ProxyState> {
     let tmp = tempfile::tempdir().unwrap();
     let db_dir = tmp.path().to_path_buf();
 
-    // Initialize the database
-    let mgr = tama_core::models::ModelManager::open(&db_dir).unwrap();
+    // The pull-queue methods are still SQLite-backed until Task 7; the pool
+    // only satisfies the transitional ModelManager shape and is never
+    // connected by the pulls endpoints.
+    let pool = Arc::new(
+        sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgresql://tama:tama@127.0.0.1:1/unused")
+            .expect("lazy pool must not fail on a valid URL"),
+    );
+
+    // Initialize the database (SQLite pull queue)
+    let mgr = tama_core::models::ModelManager::open(&db_dir, pool.clone()).unwrap();
     let svc = PullQueueService::new(mgr, 2);
 
     let config = tama_core::config::Config::default();
-    let mut state = ProxyState::new(config, Some(db_dir), None);
+    let mut state = ProxyState::new(config, Some(db_dir), Some(pool));
     state.set_pull_queue(Some(Arc::new(svc)));
     Arc::new(state)
 }

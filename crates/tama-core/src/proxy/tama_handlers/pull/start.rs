@@ -497,16 +497,19 @@ pub async fn start_pull_from_queue(
         // the parent model_configs row exists. Use the id returned by
         // setup_model_after_pull so there's no case-sensitive lookup in
         // between that could miss.
-        match (state_clone.model_mgr(), model_id) {
-            (Some(mgr), Some(mid)) => {
-                if let Err(e) = mgr.upsert_file(
+        match (state_clone.db_pool.clone(), model_id) {
+            (Some(pool), Some(mid)) => {
+                if let Err(e) = crate::db::queries::upsert_model_file(
+                    &pool,
                     mid,
                     &repo_id_clone,
                     &filename_clone,
                     spec_clone.quant.as_deref(),
                     outcome.expected_sha.as_deref(),
                     Some(total_size as i64),
-                ) {
+                )
+                .await
+                {
                     tracing::error!(
                         job_id = %job_id_clone,
                         model_id = mid,
@@ -524,8 +527,8 @@ pub async fn start_pull_from_queue(
                 }
                 // Tag the model_files row with the file kind so downstream
                 // consumers can distinguish MTP draft models from regular
-                // GGUF quants. `upsert_file` does not currently accept a
-                // `kind` parameter, so we issue a follow-up UPDATE. Mirrors
+                // GGUF quants. `upsert_model_file` does not currently accept
+                // a `kind` parameter, so we issue a follow-up UPDATE. Mirrors
                 // the `QuantKind::from_filename` logic used to drive the
                 // card's `kind` field.
                 let db_kind = match crate::config::QuantKind::from_filename(&filename_clone) {
@@ -534,11 +537,14 @@ pub async fn start_pull_from_queue(
                     crate::config::QuantKind::Mtp => "mtp",
                 };
                 if db_kind != "model" {
-                    if let Err(e) = mgr.conn().execute(
-                        "UPDATE model_files SET kind = ?1
-                          WHERE model_id = ?2 AND filename = ?3",
-                        rusqlite::params![db_kind, mid, filename_clone],
-                    ) {
+                    if let Err(e) = crate::db::queries::update_model_file_kind(
+                        &pool,
+                        mid,
+                        &filename_clone,
+                        db_kind,
+                    )
+                    .await
+                    {
                         tracing::warn!(
                             job_id = %job_id_clone,
                             model_id = mid,
@@ -549,12 +555,15 @@ pub async fn start_pull_from_queue(
                         );
                     }
                 }
-                if let Err(e) = mgr.update_verification(
+                if let Err(e) = crate::db::queries::update_verification(
+                    &pool,
                     mid,
                     &filename_clone,
                     outcome.ok,
                     outcome.err.as_deref(),
-                ) {
+                )
+                .await
+                {
                     tracing::warn!(
                         job_id = %job_id_clone,
                         model_id = mid,
@@ -567,7 +576,7 @@ pub async fn start_pull_from_queue(
             (None, _) => {
                 tracing::warn!(
                     job_id = %job_id_clone,
-                    "db_dir not configured — model_files row skipped"
+                    "Postgres pool not configured — model_files row skipped"
                 );
             }
             (Some(_), None) => {

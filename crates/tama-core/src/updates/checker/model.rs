@@ -13,7 +13,7 @@ impl UpdateChecker {
     /// that non-GGUF repo changes don't trigger false positives.
     pub async fn check_model(
         &self,
-        config_dir: &std::path::Path,
+        _config_dir: &std::path::Path,
         pool: &sqlx::PgPool,
         model_id: i64,
         repo_id: Option<&str>,
@@ -56,23 +56,15 @@ impl UpdateChecker {
             }
         };
 
-        // Phase 1 — SYNC: read DB state (no .await)
-        let db_state = tokio::task::spawn_blocking({
-            let config_dir = config_dir.to_path_buf();
-            let repo_id = repo_id.to_string();
-            move || -> anyhow::Result<Option<(db::queries::ModelPullRecord, Vec<db::queries::ModelFileRecord>)>> {
-                let open = db::open(&config_dir)?;
-                let model_record =
-                    match db::queries::get_model_config_by_repo_id(&open.conn, &repo_id)? {
-                        Some(r) => r,
-                        None => return Ok(None),
-                    };
-                let pull_record = get_model_pull(&open.conn, model_record.id)?;
-                let file_records = db::queries::get_model_files(&open.conn, model_record.id)?;
-                Ok(pull_record.map(|pr| (pr, file_records)))
+        // Phase 1 — read DB state from Postgres (no network I/O)
+        let db_state = match db::queries::get_model_config_by_repo_id(pool, repo_id).await? {
+            Some(model_record) => {
+                let pull_record = get_model_pull(pool, model_record.id).await?;
+                let file_records = db::queries::get_model_files(pool, model_record.id).await?;
+                pull_record.map(|pr| (pr, file_records))
             }
-        })
-        .await??;
+            None => None,
+        };
 
         // Handle no prior record
         let Some((pull_record, file_records)) = db_state else {

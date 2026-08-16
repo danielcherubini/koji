@@ -49,7 +49,7 @@ pub async fn upsert_update_check(pool: &PgPool, params: UpdateCheckParams<'_>) -
 }
 
 /// Decode an `update_checks` row into [`UpdateCheckRecord`].
-fn decode_update_check(row: sqlx::postgres::PgRow) -> UpdateCheckRecord {
+fn decode_update_check(row: &sqlx::postgres::PgRow) -> UpdateCheckRecord {
     UpdateCheckRecord {
         item_type: row.get("item_type"),
         item_id: row.get("item_id"),
@@ -72,7 +72,7 @@ const SELECT_ONE: &str = "SELECT item_type, item_id, current_version, latest_ver
 
 pub async fn get_all_update_checks(pool: &PgPool) -> Result<Vec<UpdateCheckRecord>> {
     let rows = sqlx::query(SELECT_ALL).fetch_all(pool).await?;
-    Ok(rows.into_iter().map(decode_update_check).collect())
+    Ok(rows.iter().map(decode_update_check).collect())
 }
 
 pub async fn get_update_check(
@@ -85,7 +85,7 @@ pub async fn get_update_check(
         .bind(item_id)
         .fetch_optional(pool)
         .await?;
-    Ok(row.map(decode_update_check))
+    Ok(row.map(|r| decode_update_check(&r)))
 }
 
 pub async fn delete_update_check(pool: &PgPool, item_type: &str, item_id: &str) -> Result<()> {

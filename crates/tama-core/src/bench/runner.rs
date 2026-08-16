@@ -14,7 +14,6 @@ use tracing::info;
 
 use crate::bench::{compute_summary, BenchConfig, BenchReport, BenchSummary, ModelInfo};
 use crate::config::Config;
-use crate::db::OpenResult;
 use crate::process::{check_health, force_kill_process, is_process_alive, kill_process};
 
 /// Information about a running backend
@@ -86,14 +85,14 @@ fn _override_arg(args: &mut Vec<String>, flag: &str, value: &str) {
 /// Start a backend process and wait for it to be healthy
 async fn _start_backend(
     config: &Config,
+    pool: &sqlx::PgPool,
     backend_name: &str,
     ctx_override: Option<u32>,
 ) -> Result<BenchBackend> {
     info!("Starting backend for model: {}", backend_name);
 
     let db_dir = crate::config::Config::config_dir()?;
-    let OpenResult { conn, .. } = crate::db::open(&db_dir)?;
-    let model_configs = crate::db::load_model_configs(&conn)?;
+    let model_configs = crate::db::load_model_configs(pool).await?;
 
     let (model_config, backend_config) = config
         .resolve_backend(&model_configs, backend_name)
@@ -260,15 +259,14 @@ async fn _stop_backend(backend: &BenchBackend) -> Result<()> {
 /// - The backend cannot be stopped cleanly after a successful benchmark run.
 pub async fn run_benchmark(
     config: &Config,
+    pool: &sqlx::PgPool,
     backend_name: &str,
     bench_config: &BenchConfig,
 ) -> Result<BenchReport> {
     tracing::info!("Starting benchmark for '{}'", backend_name);
 
     // Build ModelInfo from config data
-    let db_dir = crate::config::Config::config_dir()?;
-    let OpenResult { conn, .. } = crate::db::open(&db_dir)?;
-    let model_configs = crate::db::load_model_configs(&conn)?;
+    let model_configs = crate::db::load_model_configs(pool).await?;
 
     let (model_config, backend_config) = config.resolve_backend(&model_configs, backend_name)?;
     let model_info = ModelInfo {
@@ -285,7 +283,7 @@ pub async fn run_benchmark(
     };
 
     // Start backend
-    let backend = _start_backend(config, backend_name, bench_config.ctx_override).await?;
+    let backend = _start_backend(config, pool, backend_name, bench_config.ctx_override).await?;
 
     tracing::info!("Backend loaded in {:.0} ms", backend.load_time_ms);
 

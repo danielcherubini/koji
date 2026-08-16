@@ -33,12 +33,16 @@ impl ProxyState {
             crate::proxy::forward::langfuse::LangfuseClient::from_config(&config.langfuse)
                 .map(Arc::new);
 
-        // Initialize pull queue service if db_dir is configured.
+        // Initialize pull queue service if both the Postgres pool (model
+        // domain, plan-190 Task 5) and db_dir (transitional SQLite pull
+        // queue until Task 7) are configured.
         let poll_interval = config.proxy.pull_queue_poll_interval_secs;
-        let pull_queue = db_dir.as_ref().and_then(|dir| {
-            crate::models::ModelManager::open(dir)
-                .ok()
-                .map(|mm| Arc::new(PullQueueService::new(mm, poll_interval)))
+        let pull_queue = db_pool.as_ref().and_then(|pool| {
+            db_dir.as_ref().and_then(|dir| {
+                crate::models::ModelManager::open(dir, pool.clone())
+                    .ok()
+                    .map(|mm| Arc::new(PullQueueService::new(mm, poll_interval)))
+            })
         });
 
         let state = Self {
@@ -156,10 +160,10 @@ impl ProxyState {
     /// This ensures that the in-memory registry stays in sync with mutations
     /// made via the web API or CLI.
     pub async fn reload_model_configs(&self) -> anyhow::Result<()> {
-        let mgr = self
-            .model_mgr()
-            .with_context(|| "Database directory not configured")?;
-        let configs = crate::db::load_model_configs(mgr.conn())?;
+        let pool = self
+            .db_pool()
+            .with_context(|| "Postgres pool not configured")?;
+        let configs = crate::db::load_model_configs(&pool).await?;
         self.registry.reload_model_configs(configs).await;
         Ok(())
     }
@@ -208,10 +212,10 @@ impl ProxyState {
     /// Populates the in-memory alias map with enabled aliases only.
     /// Disabled aliases are filtered out by the DB query.
     pub async fn reload_aliases(&self) -> anyhow::Result<()> {
-        let mgr = self
-            .model_mgr()
-            .with_context(|| "Database directory not configured")?;
-        let pairs = crate::db::queries::load_aliases_for_cache(mgr.conn())?;
+        let pool = self
+            .db_pool()
+            .with_context(|| "Postgres pool not configured")?;
+        let pairs = crate::db::queries::load_aliases_for_cache(&pool).await?;
         self.registry.reload_aliases(pairs).await;
         Ok(())
     }
@@ -224,16 +228,16 @@ impl ProxyState {
     }
 
     /// Open a ModelManager for model-related database operations.
-    /// Returns `None` if `db_dir` is not configured (e.g., in tests).
+    /// Returns `None` if the Postgres pool is not configured (e.g., in tests).
     ///
     /// Crate-internal ModelManager factory for proxy lifecycle code
     /// (`PullQueueService`, reload paths). The `tama` API layer uses the
-    /// shared `Repository` from `WebState` (plan-160) — do NOT add new
+    /// shared pool from `WebState` (plan-160) — do NOT add new
     /// callers there.
     pub(crate) fn model_mgr(&self) -> Option<crate::models::ModelManager> {
-        self.db_dir
+        self.db_pool
             .as_ref()
-            .and_then(|dir| crate::models::ModelManager::open(dir).ok())
+            .map(|pool| crate::models::ModelManager::new(pool.clone()))
     }
 
     /// Get cached GPU devices for a backend, or discover them on first access.
@@ -295,8 +299,11 @@ impl ProxyState {
     /// Get a provider by name from the database.
     /// Returns None if not found or if DB is not configured.
     pub(crate) async fn get_provider(&self, name: &str) -> Option<crate::providers::Provider> {
-        self.open_db()
-            .and_then(|conn| crate::db::queries::get_provider(&conn, name).ok().flatten())
+        let pool = self.db_pool()?;
+        crate::db::queries::get_provider(&pool, name)
+            .await
+            .ok()
+            .flatten()
     }
 
     /// Resolve the binary path for a backend name using the same logic as `load_model`.
@@ -362,49 +369,6 @@ mod tests {
         assert_eq!(result, "owner--real-model");
     }
 
-    /// Test that reload_aliases populates the cache from the database.
-    #[tokio::test]
-    async fn test_reload_aliases_populates_cache() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let config = crate::config::Config::default();
-        let state = ProxyState::new(config, Some(temp_dir.path().to_path_buf()), None);
-
-        // Insert a model config and an alias directly into the DB
-        let mgr = state.model_mgr().expect("DB should be configured");
-        let conn = mgr.conn();
-        conn.execute(
-            "INSERT INTO model_configs (repo_id, api_name, backend) VALUES (?, ?, ?)",
-            rusqlite::params!["test-owner/test-model", "TestModel", "llama_cpp"],
-        )
-        .unwrap();
-        let model_id: i64 = conn
-            .query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
-            .unwrap();
-        conn.execute(
-            "INSERT INTO model_aliases (name, model_id, enabled) VALUES (?, ?, 1)",
-            rusqlite::params!["short-name", model_id],
-        )
-        .unwrap();
-
-        // Cache should be empty before reload
-        assert!(state.registry.aliases.read().await.is_empty());
-
-        // Reload
-        state.reload_aliases().await.unwrap();
-
-        // Cache should now contain the alias
-        let aliases = state.registry.aliases.read().await;
-        assert!(
-            aliases.contains_key("short-name"),
-            "alias 'short-name' should be in cache"
-        );
-        assert_eq!(
-            aliases.get("short-name"),
-            Some(&"TestModel".to_string()),
-            "resolved name should be the api_name"
-        );
-    }
-
     /// Test that `with_config` / `with_config_mut` / `replace_config` work correctly.
     #[tokio::test]
     async fn test_with_config_and_replace_config() {
@@ -419,46 +383,6 @@ mod tests {
         assert_eq!(state.with_config(|c| c.proxy.port).await, 18888);
     }
 
-    /// Test that disabled aliases are not included in the cache after reload.
-    #[tokio::test]
-    async fn test_reload_aliases_filters_disabled() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let config = crate::config::Config::default();
-        let state = ProxyState::new(config, Some(temp_dir.path().to_path_buf()), None);
-
-        // Insert a model config and two aliases (one enabled, one disabled)
-        let mgr = state.model_mgr().expect("DB should be configured");
-        let conn = mgr.conn();
-        conn.execute(
-            "INSERT INTO model_configs (repo_id, api_name, backend) VALUES (?, ?, ?)",
-            rusqlite::params!["owner/model1", "ModelOne", "llama_cpp"],
-        )
-        .unwrap();
-        let model_id: i64 = conn
-            .query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
-            .unwrap();
-        conn.execute(
-            "INSERT INTO model_aliases (name, model_id, enabled) VALUES (?, ?, 1)",
-            rusqlite::params!["enabled-alias", model_id],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO model_aliases (name, model_id, enabled) VALUES (?, ?, 0)",
-            rusqlite::params!["disabled-alias", model_id],
-        )
-        .unwrap();
-
-        // Reload
-        state.reload_aliases().await.unwrap();
-
-        let aliases = state.registry.aliases.read().await;
-        assert!(
-            aliases.contains_key("enabled-alias"),
-            "enabled alias should be in cache"
-        );
-        assert!(
-            !aliases.contains_key("disabled-alias"),
-            "disabled alias should NOT be in cache"
-        );
-    }
+    // `reload_aliases` disabled-filtering moved to the Postgres harness
+    // (plan-190 Task 5): `crates/tama-core/tests/proxy_state_registry.rs`.
 }

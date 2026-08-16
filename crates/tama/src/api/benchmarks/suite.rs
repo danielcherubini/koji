@@ -116,62 +116,37 @@ async fn run_suite(
         .ok_or_else(|| anyhow::anyhow!("Postgres pool not available; cannot load config"))?;
     let config = tama_core::config::Config::load_from_pool(pool).await?;
 
-    // Resolve model — shared across all sub-runs.
-    let (model_configs, resolved_id, display_name, quant) = {
-        let model_id_for_pool = req.model_id.clone();
-        let quant_for_pool = req.quant.clone();
-        let repo_handle = ctx.repo_handle.clone();
-
-        tokio::task::spawn_blocking(move || -> Result<_> {
-            let repo = repo_handle.lock().unwrap();
-            let model_configs = repo.load_model_configs_for_benchmarks()?;
-
-            // Resolve db_id to config key if needed.
-            let resolved_id = if let Ok(db_id) = model_id_for_pool.parse::<i64>() {
-                model_configs
-                    .iter()
-                    .find(|(_, mc)| mc.db_id == Some(db_id))
-                    .map(|(key, _)| key.clone())
-                    .unwrap_or(model_id_for_pool)
-            } else {
-                model_id_for_pool
-            };
-
-            let display_name = model_configs.get(&resolved_id).and_then(|mc| {
-                mc.display_name
-                    .clone()
-                    .or_else(|| mc.api_name.clone())
-                    .or_else(|| mc.model.clone())
-            });
-
-            Ok((model_configs, resolved_id, display_name, quant_for_pool))
-        })
-        .await?
-    }?;
+    // Resolve model — shared across all sub-runs (Postgres, plan-190 Task 5).
+    let model_configs = tama_core::db::load_model_configs(pool).await?;
+    let resolved_id = if let Ok(db_id) = req.model_id.parse::<i64>() {
+        model_configs
+            .iter()
+            .find(|(_, mc)| mc.db_id == Some(db_id))
+            .map(|(key, _)| key.clone())
+            .unwrap_or(req.model_id.clone())
+    } else {
+        req.model_id.clone()
+    };
+    let display_name = model_configs.get(&resolved_id).and_then(|mc| {
+        mc.display_name
+            .clone()
+            .or_else(|| mc.api_name.clone())
+            .or_else(|| mc.model.clone())
+    });
+    let quant = req.quant.clone();
 
     // Resolve model path.
     let db_dir = db_path.parent().context("db_path has no parent")?;
-    let (model_path, resolved_id_owned) = {
-        let config_for_pool = config.clone();
-        let repo_handle = ctx.repo_handle.clone();
-        let model_configs_for_pool = model_configs.clone();
-        let resolved_id_for_pool = resolved_id.clone();
-        let quant_for_pool = quant.clone();
-        let db_dir_for_pool = db_dir.to_path_buf();
-
-        tokio::task::spawn_blocking(move || -> Result<_> {
-            let model_path = super::run::resolve_model_path(
-                &config_for_pool,
-                &db_dir_for_pool,
-                &repo_handle.lock().unwrap(),
-                &model_configs_for_pool,
-                &resolved_id_for_pool,
-                quant_for_pool.as_deref(),
-            )?;
-            Ok((model_path, resolved_id_for_pool))
-        })
-        .await?
-    }?;
+    let model_path = super::run::resolve_model_path(
+        &config,
+        db_dir,
+        pool,
+        &model_configs,
+        &resolved_id,
+        quant.as_deref(),
+    )
+    .await?;
+    let resolved_id_owned = resolved_id.clone();
 
     // Parse GGUF metadata for authoritative MTP check.
     let nextn_value = tokio::task::spawn_blocking({

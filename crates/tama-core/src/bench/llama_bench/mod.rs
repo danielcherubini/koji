@@ -72,8 +72,10 @@ pub struct LlamaBenchConfig {
 ///
 /// This function is designed to be called from a background job — it streams
 /// progress via the provided ProgressSink.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_llama_bench(
     config: &Config,
+    pool: &sqlx::PgPool,
     model_id: &str,
     quant: Option<&str>,
     backend_name: Option<&str>,
@@ -84,6 +86,7 @@ pub async fn run_llama_bench(
     let db_dir = Config::config_dir()?;
     run_llama_bench_with_dir(
         config,
+        pool,
         &db_dir,
         model_id,
         quant,
@@ -102,6 +105,7 @@ pub async fn run_llama_bench(
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_llama_bench_with_dir(
     config: &Config,
+    pool: &sqlx::PgPool,
     db_dir: &std::path::Path,
     model_id: &str,
     quant: Option<&str>,
@@ -110,10 +114,7 @@ pub(crate) async fn run_llama_bench_with_dir(
     bench_config: &LlamaBenchConfig,
     progress: &dyn ProgressSink,
 ) -> Result<BenchReport> {
-    use crate::db::OpenResult;
-
-    let OpenResult { conn, .. } = crate::db::open(db_dir)?;
-    let model_configs = crate::db::load_model_configs(&conn)?;
+    let model_configs = crate::db::load_model_configs(pool).await?;
 
     // If model_id is an integer db_id, resolve it to the config key first.
     let resolved_id = if let Ok(db_id) = model_id.parse::<i64>() {
@@ -130,7 +131,8 @@ pub(crate) async fn run_llama_bench_with_dir(
         .resolve_backend(&model_configs, resolved_id)
         .context("Failed to resolve server config for benchmark")?;
 
-    let model_path = resolve_model_path(config, db_dir, &conn, &model_configs, resolved_id, quant)?;
+    let model_path =
+        resolve_model_path(config, pool, db_dir, &model_configs, resolved_id, quant).await?;
 
     let target_backend = backend_name.unwrap_or(&model_config.backend);
     // CRITICAL: gpu_variant from the request takes priority; fall back to the
@@ -257,10 +259,10 @@ pub(crate) async fn run_llama_bench_with_dir(
 /// `quant_override` takes priority over `mc.quant` when resolving the target file.
 /// Falls back to the legacy `<db_dir>/models/` location if the configured
 /// `models_dir` doesn't hold the file.
-fn resolve_model_path(
+async fn resolve_model_path(
     config: &Config,
+    pool: &sqlx::PgPool,
     db_dir: &std::path::Path,
-    conn: &rusqlite::Connection,
     model_configs: &std::collections::HashMap<String, crate::config::ModelConfig>,
     resolved_id: &str,
     quant_override: Option<&str>,
@@ -269,9 +271,10 @@ fn resolve_model_path(
         .get(resolved_id)
         .with_context(|| format!("Model config '{}' not found", resolved_id))?;
     let rec_id = mc.db_id.context("Model config has no db_id")?;
-    let record = crate::db::queries::get_model_config(conn, rec_id)?
+    let record = crate::db::queries::get_model_config(pool, rec_id)
+        .await?
         .with_context(|| format!("Model config record (id={}) not found in database", rec_id))?;
-    let files = crate::db::queries::get_model_files(conn, record.id)?;
+    let files = crate::db::queries::get_model_files(pool, record.id).await?;
 
     // Resolve the target filename: prefer quant_override, then mc.quant from config,
     // falling back to the first .gguf if quants map is empty (legacy configs).
@@ -365,8 +368,20 @@ mod tests {
     fn seed_test_db(temp_dir: &tempfile::TempDir) -> anyhow::Result<(std::path::PathBuf, String)> {
         let db_path = temp_dir.path().join("tama.db");
 
-        // Open the database and run migrations
-        let conn = rusqlite::Connection::open(&db_path)?;
+        // Open the database and run migrations. Retry on SQLITE_CANTOPEN:
+        // under the full-workspace parallel load, a transient open failure
+        // (code 14) has been observed on the shared /tmp tmpfs.
+        let mut attempts = 0;
+        let conn = loop {
+            match rusqlite::Connection::open(&db_path) {
+                Ok(c) => break c,
+                Err(_) if attempts < 20 => {
+                    attempts += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(e) => return Err(e.into()),
+            }
+        };
         crate::db::migrations::run(&conn)?;
 
         // 1. Insert a backend config (llama_cpp, cpu)
@@ -411,7 +426,31 @@ mod tests {
             },
         )?;
 
-        // 4. Insert a model config using the high-level API
+        // conn dropped here — commits are flushed and the DB is closed cleanly.
+
+        // Verify the row is readable from a fresh connection (bounded retry,
+        // no reseed). Committed rows are normally visible immediately, but a
+        // transient read has been observed under heavy parallel load.
+        let mut verify = 0;
+        loop {
+            let mgr = crate::installations::InstallationManager::open(temp_dir.path())?;
+            if mgr.list_versions("llama_cpp", None)?.is_some() {
+                break;
+            }
+            verify += 1;
+            if verify >= 20 {
+                anyhow::bail!("seeded backend installation not visible after seeding");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+
+        let config_dir = temp_dir.path().to_path_buf();
+
+        Ok((config_dir, "test-model-Q4_K_M.gguf".to_string()))
+    }
+    /// Seed a model config + file entry in Postgres (plan-190 Task 5 —
+    /// the model domain lives in Postgres). Returns the GGUF filename.
+    async fn seed_test_model(pool: &sqlx::PgPool) -> anyhow::Result<String> {
         let mut quants = BTreeMap::new();
         quants.insert(
             "Q4_K_M".to_string(),
@@ -465,27 +504,25 @@ mod tests {
             reasoning_levels: None,
         };
 
-        let config_key = "test--test-model";
-        crate::db::save_model_config(&conn, config_key, &model_config)?;
-
-        // 5. Insert a model file record
+        let model_id =
+            crate::db::save_model_config(pool, "test--test-model", &model_config).await?;
+        // Record the pulled file so `resolve_model_path` can find the GGUF.
         crate::db::queries::upsert_model_file(
-            &conn,
-            1, // model_id
+            pool,
+            model_id,
             "test/test-model",
             "test-model-Q4_K_M.gguf",
             Some("Q4_K_M"),
-            None,                // lfs_oid
-            Some(4_294_967_296), // size_bytes
-        )?;
-
-        let config_dir = temp_dir.path().to_path_buf();
-
-        Ok((config_dir, "test-model-Q4_K_M.gguf".to_string()))
+            None,
+            Some(4_294_967_296),
+        )
+        .await?;
+        Ok("test-model-Q4_K_M.gguf".to_string())
     }
 
     /// Verifies that `run_llama_bench_with_dir` executes llama-bench via a stub
     /// script, parses the JSON output, and streams progress through the sink.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn test_run_llama_bench_with_stub_binary() {
         let _env_guard = ENV_GUARD.lock().unwrap();
@@ -494,9 +531,13 @@ mod tests {
         std::env::remove_var("LLAMA_BENCH_PATH");
 
         let temp_dir = tempfile::tempdir().unwrap();
+        let config_dir = temp_dir.path().to_path_buf();
 
-        // Seed the database with backend + model entries
-        let (config_dir, gguf_filename) = seed_test_db(&temp_dir).unwrap();
+        // Postgres model domain first (this can be slow under the full-suite
+        // parallel load), then seed the SQLite backend LAST so the fresh DB is
+        // read immediately by `run_llama_bench_with_dir` with no long gap.
+        let guard = crate::testing::postgres::with_schema().await;
+        let gguf_filename = seed_test_model(&guard.pool).await.unwrap();
 
         // Create models directory with a dummy GGUF file
         let models_dir = config_dir.join("models");
@@ -522,6 +563,10 @@ exit 0
 
         // Set LLAMA_BENCH_PATH
         std::env::set_var("LLAMA_BENCH_PATH", stub_script.to_string_lossy().as_ref());
+
+        // Seed the SQLite backend/installation DB now (immediately before the
+        // call under test) so the seeded installation is read from a hot DB.
+        let (config_dir, _) = seed_test_db(&temp_dir).unwrap();
 
         // Build an in-memory Config (plan-190 Task 3: the app config no
         // longer lives in the per-test SQLite file) with models_dir set.
@@ -552,6 +597,7 @@ exit 0
         // Call the function under test (model_id must be the config key format)
         let result = run_llama_bench_with_dir(
             &config,
+            &guard.pool,
             &config_dir,
             "test--test-model",
             None,
@@ -595,6 +641,7 @@ exit 0
 
     /// Verifies that when llama-bench exits with a non-zero status, the error
     /// message contains the stderr output.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn test_run_llama_bench_stub_failure_surfaces_stderr() {
         let _env_guard = ENV_GUARD.lock().unwrap();
@@ -602,9 +649,12 @@ exit 0
         std::env::remove_var("LLAMA_BENCH_PATH");
 
         let temp_dir = tempfile::tempdir().unwrap();
+        let config_dir = temp_dir.path().to_path_buf();
 
-        // Seed the database
-        let (config_dir, gguf_filename) = seed_test_db(&temp_dir).unwrap();
+        // Postgres model domain first, then seed the SQLite backend LAST so the
+        // fresh DB is read immediately by `run_llama_bench_with_dir`.
+        let guard = crate::testing::postgres::with_schema().await;
+        let gguf_filename = seed_test_model(&guard.pool).await.unwrap();
 
         // Create models directory with a dummy GGUF file (needed for path resolution)
         let models_dir = config_dir.join("models");
@@ -653,8 +703,13 @@ exit 1
         // Drop the env guard before calling the async function
         drop(_env_guard);
 
+        // Seed the SQLite backend/installation DB now (immediately before the
+        // call under test) so the seeded installation is read from a hot DB.
+        seed_test_db(&temp_dir).unwrap();
+
         let result = run_llama_bench_with_dir(
             &config,
+            &guard.pool,
             &config_dir,
             "test--test-model",
             None,

@@ -347,9 +347,9 @@ pub async fn handle_tama_cancel_load(
         }
     }
 
-    // ── Step g: clean up DB ────────────────────────────────────────────
-    if let Some(mgr) = state.model_mgr() {
-        if let Err(e) = mgr.remove_active(&backend_name) {
+    // ── Step g: clean up DB (Postgres, plan-190 Task 5) ────────────────
+    if let Some(pool) = state.db_pool.clone() {
+        if let Err(e) = crate::db::queries::remove_active_model(&pool, &backend_name).await {
             warn!(
                 "Failed to remove active entry for '{}': {}",
                 backend_name, e

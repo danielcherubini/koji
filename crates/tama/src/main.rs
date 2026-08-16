@@ -118,11 +118,12 @@ async fn main() -> Result<()> {
             Ok(db_result) => {
                 if db_result.needs_backfill {
                     tracing::info!("Running initial backfill...");
-                    if let Err(e) =
-                        tama_core::db::backfill::run_initial_backfill(&db_result.conn, &config)
-                            .await
-                    {
-                        tracing::error!("Initial backfill failed: {}", e);
+                    if let Some(pool) = db_pool.as_ref() {
+                        if let Err(e) =
+                            tama_core::db::backfill::run_initial_backfill(pool, &config).await
+                        {
+                            tracing::error!("Initial backfill failed: {}", e);
+                        }
                     }
                 }
 

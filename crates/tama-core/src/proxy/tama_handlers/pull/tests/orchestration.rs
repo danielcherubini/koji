@@ -17,7 +17,9 @@ const FILE: &str = "repo-Q4_K_M.gguf";
 /// helper. This helper sets `XDG_CONFIG_HOME` and `HOME` so model cards never
 /// land in a real home directory (Linux uses XDG, macOS uses `$HOME`).
 ///
-/// Returns `(state, models_tmp, xdg_tmp, job_id)`.
+/// Returns `(state, models_tmp, xdg_tmp, job_id, guard)`. The guard keeps the
+/// Postgres test schema alive for the duration of the test (plan-190 Task 5 —
+/// model configs/files live in Postgres).
 async fn create_pull_state(
     _server: &wiremock::MockServer,
 ) -> (
@@ -25,6 +27,7 @@ async fn create_pull_state(
     tempfile::TempDir,
     tempfile::TempDir,
     String,
+    crate::testing::postgres::SchemaGuard,
 ) {
     let models_tmp = tempfile::tempdir().unwrap();
     let xdg_tmp = tempfile::tempdir().unwrap();
@@ -35,12 +38,15 @@ async fn create_pull_state(
     let mut config = crate::config::Config::default();
     config.general.models_dir = Some(models_tmp.path().to_string_lossy().to_string());
 
-    // Reuse models_tmp as the DB directory (same dir used by create_test_state)
+    // Reuse models_tmp as the transitional DB directory (SQLite pull queue
+    // until Task 7); model configs/files live in Postgres.
     let db_dir = models_tmp.path().to_path_buf();
-    let mgr = crate::models::ModelManager::open(&db_dir).unwrap();
+    let guard = crate::testing::postgres::with_schema().await;
+    let pool = Arc::new(guard.pool.clone());
+    let mgr = crate::models::ModelManager::open(&db_dir, pool.clone()).unwrap();
     let svc = PullQueueService::new(mgr, 2);
 
-    let mut state = ProxyState::new(config, Some(db_dir), None);
+    let mut state = ProxyState::new(config, Some(db_dir), Some(pool));
     state.pull.pull_queue = Some(Arc::new(svc));
 
     // Seed the in-memory job — start_pull_from_queue early-returns with "Job not found"
@@ -57,7 +63,7 @@ async fn create_pull_state(
         },
     );
 
-    (Arc::new(state), models_tmp, xdg_tmp, job_id)
+    (Arc::new(state), models_tmp, xdg_tmp, job_id, guard)
 }
 
 /// Compute SHA-256 hex digest of raw bytes.
@@ -126,7 +132,7 @@ async fn test_pull_hash_mismatch_fails_job_and_deletes_file() {
 
     // --- Execute pull ---
     let orig_home = std::env::var("HOME").ok();
-    let (state, models_tmp, _xdg_tmp, job_id) = create_pull_state(&server).await;
+    let (state, models_tmp, _xdg_tmp, job_id, _guard) = create_pull_state(&server).await;
 
     // Enqueue a DB queue row — start_pull_from_queue calls svc.update_status()
     // which requires the row to already exist.
@@ -266,7 +272,7 @@ async fn test_pull_success_completes_and_records_model_files() {
 
     // --- Execute pull ---
     let orig_home = std::env::var("HOME").ok();
-    let (state, models_tmp, xdg_tmp, job_id) = create_pull_state(&server).await;
+    let (state, models_tmp, xdg_tmp, job_id, _guard) = create_pull_state(&server).await;
 
     // Enqueue a DB queue row — start_pull_from_queue calls svc.update_status()
     // which requires the row to already exist.
@@ -333,7 +339,7 @@ async fn test_pull_success_completes_and_records_model_files() {
 
     // 3. DB should have exactly 1 model_files row with filename == FILE
     let mgr = state.model_mgr().expect("model_mgr should be available");
-    let files = mgr.get_all_files().unwrap();
+    let files = mgr.get_all_files().await.unwrap();
     assert_eq!(
         files.len(),
         1,

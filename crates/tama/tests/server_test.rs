@@ -1,10 +1,16 @@
+mod common;
+
 #[cfg(feature = "ssr")]
 mod tests {
+    use sqlx::PgPool;
     use std::collections::HashMap;
     use std::sync::Arc;
 
     /// Create a minimal WebState for tests.
-    fn test_web_state(db_dir: Option<std::path::PathBuf>) -> tama_web::web_types::WebState {
+    fn test_web_state(
+        db_dir: Option<std::path::PathBuf>,
+        pool: Option<Arc<PgPool>>,
+    ) -> tama_web::web_types::WebState {
         let repository = db_dir.and_then(|dir| {
             tama_core::db::repository::Repository::open(&dir)
                 .ok()
@@ -21,7 +27,7 @@ mod tests {
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             repository,
-            db_pool: None,
+            db_pool: pool,
         }
     }
 
@@ -33,9 +39,9 @@ mod tests {
             let state = Arc::new(tama_core::proxy::ProxyState::new(config, None, None));
             axum::serve(
                 listener,
-                tama_web::router::build_web_routes(Arc::new(test_web_state(None)))
+                tama_web::router::build_web_routes(Arc::new(test_web_state(None, None)))
                     .with_state(state)
-                    .layer(axum::extract::Extension(test_web_state(None))),
+                    .layer(axum::extract::Extension(test_web_state(None, None))),
             )
             .await
             .unwrap();
@@ -137,10 +143,9 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let config_dir = temp_dir.path().to_path_buf();
 
-        // Seed the DB with defaults.
-        {
-            let _open_result = tama_core::db::open(&config_dir).unwrap();
-        }
+        // Model CRUD is Postgres-backed; use an isolated migrated schema.
+        let guard = crate::common::with_schema().await;
+        let pool = Arc::new(guard.pool.clone());
 
         let initial_config = tama_core::config::Config::default();
 
@@ -153,22 +158,25 @@ mod tests {
         {
             let proxy_config_server = proxy_config.clone();
             let config_dir_server = config_dir.clone();
+            let pool_server = pool.clone();
             tokio::spawn(async move {
                 let config = (*proxy_config_server.read().await).clone();
                 let state = Arc::new(tama_core::proxy::ProxyState::new(
                     config,
                     Some(config_dir_server.clone()),
-                    None,
+                    Some(pool_server.clone()),
                 ));
                 axum::serve(
                     listener,
-                    tama_web::router::build_web_routes(Arc::new(test_web_state(Some(
-                        config_dir_server.clone(),
-                    ))))
+                    tama_web::router::build_web_routes(Arc::new(test_web_state(
+                        Some(config_dir_server.clone()),
+                        Some(pool_server.clone()),
+                    )))
                     .with_state(state)
-                    .layer(axum::extract::Extension(test_web_state(Some(
-                        config_dir_server.clone(),
-                    )))),
+                    .layer(axum::extract::Extension(test_web_state(
+                        Some(config_dir_server.clone()),
+                        Some(pool_server.clone()),
+                    ))),
                 )
                 .await
                 .unwrap();
@@ -402,13 +410,15 @@ mod tests {
                 ));
                 axum::serve(
                     listener,
-                    tama_web::router::build_web_routes(Arc::new(test_web_state(Some(
-                        config_dir_server.clone(),
-                    ))))
+                    tama_web::router::build_web_routes(Arc::new(test_web_state(
+                        Some(config_dir_server.clone()),
+                        None,
+                    )))
                     .with_state(state)
-                    .layer(axum::extract::Extension(test_web_state(Some(
-                        config_dir_server.clone(),
-                    )))),
+                    .layer(axum::extract::Extension(test_web_state(
+                        Some(config_dir_server.clone()),
+                        None,
+                    ))),
                 )
                 .await
                 .unwrap();

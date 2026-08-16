@@ -7,16 +7,14 @@
 //!    individual file LFS SHA256 hashes. This avoids re-pulling when only
 //!    non-GGUF files changed (e.g., README updates).
 //!
-//! ## Design constraint
-//! `rusqlite::Connection` is `!Send`. All functions that touch both DB and network
-//! are structured as: sync DB reads → async network → sync DB writes. The
-//! `&Connection` is never referenced across `.await` points.
+//! All database access goes through the Postgres pool (`&PgPool`,
+//! plan-190 Task 5).
 
 use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::Result;
-use rusqlite::Connection;
+use sqlx::PgPool;
 
 use crate::db::queries::{
     get_model_config_by_repo_id, get_model_files, get_model_pull, upsert_model_file,
@@ -88,13 +86,10 @@ pub enum FileStatus {
 ///
 /// Network errors are captured as `UpdateStatus::CheckFailed` so that one
 /// model's failure doesn't abort checking all others. DB errors propagate as `Err`.
-///
-/// Structured to avoid holding `&Connection` across `.await` points:
-/// all DB reads happen before the first `.await`, all DB writes happen after.
-pub async fn check_for_updates(conn: &Connection, repo_id: &str) -> Result<UpdateCheckResult> {
-    // Step 1: SYNC — read from DB (no .await)
+pub async fn check_for_updates(pool: &PgPool, repo_id: &str) -> Result<UpdateCheckResult> {
+    // Step 1: read from DB
     // Look up model_id from repo_id first
-    let model_record = match get_model_config_by_repo_id(conn, repo_id)? {
+    let model_record = match get_model_config_by_repo_id(pool, repo_id).await? {
         Some(r) => r,
         None => {
             return Ok(UpdateCheckResult {
@@ -104,8 +99,8 @@ pub async fn check_for_updates(conn: &Connection, repo_id: &str) -> Result<Updat
             });
         }
     };
-    let pull_record = get_model_pull(conn, model_record.id)?;
-    let file_records = get_model_files(conn, model_record.id)?;
+    let pull_record = get_model_pull(pool, model_record.id).await?;
+    let file_records = get_model_files(pool, model_record.id).await?;
 
     // Step 2: handle no prior record
     let Some(pull_record) = pull_record else {
@@ -116,7 +111,7 @@ pub async fn check_for_updates(conn: &Connection, repo_id: &str) -> Result<Updat
         });
     };
 
-    // Step 3: ASYNC — fetch remote state (conn not referenced after this point)
+    // Step 3: ASYNC — fetch remote state
     let remote_listing = match pull::list_gguf_files(repo_id).await {
         Ok(listing) => listing,
         Err(e) => {
@@ -247,20 +242,15 @@ pub fn compare_files(
 /// Fetches current commit SHA and file LFS OIDs from HuggingFace and writes to DB
 /// **only for files that already exist on disk**. Used to establish a baseline for
 /// models pulled before the DB existed.
-///
-/// # !Send note
-/// This function's `Future` is `!Send` because `&Connection` (`Connection: !Send`) is
-/// referenced after `.await` points (the DB writes follow the async fetches). It must
-/// be called with direct `.await` — do **not** pass it to `tokio::spawn`.
-pub async fn refresh_metadata(conn: &Connection, models_dir: &Path, repo_id: &str) -> Result<()> {
+pub async fn refresh_metadata(pool: &PgPool, models_dir: &Path, repo_id: &str) -> Result<()> {
     // ASYNC — fetch remote data
     let listing = pull::list_gguf_files(repo_id).await?;
     // Use the resolved repo_id from listing (may have -GGUF appended)
     let blobs = pull::lookup_blob_metadata(&listing.repo_id).await?;
 
-    // SYNC — write to DB
+    // Write to DB
     // Look up or create model_id
-    let model_record = match get_model_config_by_repo_id(conn, repo_id)? {
+    let model_record = match get_model_config_by_repo_id(pool, repo_id).await? {
         Some(r) => r,
         None => {
             // Create a placeholder config entry
@@ -269,12 +259,13 @@ pub async fn refresh_metadata(conn: &Connection, models_dir: &Path, repo_id: &st
                 ..Default::default()
             };
             let config_key = crate::models::ConfigKey::from_repo_id(repo_id);
-            let model_id = crate::db::save_model_config(conn, config_key.as_str(), &mc)?;
-            crate::db::queries::get_model_config(conn, model_id)?
+            let model_id = crate::db::save_model_config(pool, config_key.as_str(), &mc).await?;
+            crate::db::queries::get_model_config(pool, model_id)
+                .await?
                 .expect("just-created model config should exist")
         }
     };
-    upsert_model_pull(conn, model_record.id, repo_id, &listing.commit_sha)?;
+    upsert_model_pull(pool, model_record.id, repo_id, &listing.commit_sha).await?;
 
     // Only upsert files that actually exist on disk — don't pollute the DB
     // with every remote GGUF just because we're backfilling hashes.
@@ -294,20 +285,21 @@ pub async fn refresh_metadata(conn: &Connection, models_dir: &Path, repo_id: &st
         };
         let blob = blobs.get(&file.filename);
         upsert_model_file(
-            conn,
+            pool,
             model_record.id,
             repo_id,
             &file.filename,
             file.quant.as_deref(),
             blob.and_then(|b| b.lfs_sha256.as_deref()),
             blob.and_then(|b| b.size),
-        )?;
+        )
+        .await?;
     }
 
     // Fetch HF metadata (API + README) and persist to DB
     match pull::lookup_hf_metadata(&listing.repo_id).await {
         Ok(meta) => {
-            update_model_config_hf_metadata(conn, model_record.id, &meta)?;
+            update_model_config_hf_metadata(pool, model_record.id, &meta).await?;
         }
         Err(e) => {
             tracing::debug!(
@@ -323,50 +315,51 @@ pub async fn refresh_metadata(conn: &Connection, models_dir: &Path, repo_id: &st
 
 /// Update the HF metadata columns on a model_config row.
 /// Uses COALESCE to preserve existing DB values when a new value is NULL.
-pub(crate) fn update_model_config_hf_metadata(
-    conn: &Connection,
+pub async fn update_model_config_hf_metadata(
+    pool: &PgPool,
     model_id: i64,
     meta: &HfModelMetadata,
 ) -> Result<()> {
-    conn.execute(
+    sqlx::query(
         "UPDATE model_configs SET \
-            hf_format = COALESCE(?1, hf_format), \
-            hf_base_model = COALESCE(?2, hf_base_model), \
-            hf_pipeline_tag = COALESCE(?3, hf_pipeline_tag), \
-            hf_total_params = COALESCE(?4, hf_total_params), \
-            hf_active_params = COALESCE(?5, hf_active_params), \
-            hf_architecture_type = COALESCE(?6, hf_architecture_type), \
-            hf_context_length = COALESCE(?7, hf_context_length), \
-            hf_num_layers = COALESCE(?8, hf_num_layers), \
-            hf_last_modified = COALESCE(?9, hf_last_modified) \
-         WHERE id=?10",
-        rusqlite::params![
-            meta.hf_format,
-            meta.hf_base_model,
-            meta.hf_pipeline_tag,
-            meta.hf_total_params,
-            meta.hf_active_params,
-            meta.hf_architecture_type,
-            meta.hf_context_length,
-            meta.hf_num_layers,
-            meta.hf_last_modified,
-            model_id,
-        ],
-    )?;
+            hf_format = COALESCE($1, hf_format), \
+            hf_base_model = COALESCE($2, hf_base_model), \
+            hf_pipeline_tag = COALESCE($3, hf_pipeline_tag), \
+            hf_total_params = COALESCE($4, hf_total_params), \
+            hf_active_params = COALESCE($5, hf_active_params), \
+            hf_architecture_type = COALESCE($6, hf_architecture_type), \
+            hf_context_length = COALESCE($7, hf_context_length), \
+            hf_num_layers = COALESCE($8, hf_num_layers), \
+            hf_last_modified = COALESCE($9, hf_last_modified) \
+         WHERE id=$10",
+    )
+    .bind(&meta.hf_format)
+    .bind(&meta.hf_base_model)
+    .bind(&meta.hf_pipeline_tag)
+    .bind(&meta.hf_total_params)
+    .bind(&meta.hf_active_params)
+    .bind(&meta.hf_architecture_type)
+    .bind(meta.hf_context_length.map(|v| v as i64))
+    .bind(meta.hf_num_layers.map(|v| v as i64))
+    .bind(&meta.hf_last_modified)
+    .bind(model_id)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
 /// Set the selected_quant column directly (no COALESCE) — used by the repo-pull
 /// completion path where config.json quantization_method is authoritative.
-pub(crate) fn update_model_config_quant(
-    conn: &rusqlite::Connection,
+pub(crate) async fn update_model_config_quant(
+    pool: &PgPool,
     model_id: i64,
     quant: &str,
 ) -> anyhow::Result<()> {
-    conn.execute(
-        "UPDATE model_configs SET selected_quant = ?1 WHERE id = ?2",
-        rusqlite::params![quant, model_id],
-    )?;
+    sqlx::query("UPDATE model_configs SET selected_quant = $1 WHERE id = $2")
+        .bind(quant)
+        .bind(model_id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -377,7 +370,6 @@ pub(crate) fn update_model_config_quant(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{open_in_memory, OpenResult};
 
     fn make_file_record(
         filename: &str,
@@ -558,58 +550,9 @@ mod tests {
         assert!(matches!(unknown.status, FileStatus::Unknown));
     }
 
-    /// Verifies that `update_model_config_quant` sets `selected_quant`
-    /// directly (no COALESCE): it both fills a NULL column and overwrites
-    /// an existing value.
-    #[test]
-    fn test_update_model_config_quant_direct_set() {
-        let OpenResult { conn, .. } = open_in_memory().unwrap();
-        conn.execute(
-            "INSERT INTO model_configs (repo_id, backend) VALUES ('test/repo', 'llama_cpp')",
-            [],
-        )
-        .unwrap();
-        let model_id: i64 = conn
-            .query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
-            .unwrap();
-
-        // Fills a NULL column.
-        update_model_config_quant(&conn, model_id, "fp8").unwrap();
-        let quant: Option<String> = conn
-            .query_row(
-                "SELECT selected_quant FROM model_configs WHERE id = ?",
-                [model_id],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(quant.as_deref(), Some("fp8"));
-
-        // Direct set (no COALESCE): overwrites the previous value.
-        update_model_config_quant(&conn, model_id, "awq").unwrap();
-        let quant: Option<String> = conn
-            .query_row(
-                "SELECT selected_quant FROM model_configs WHERE id = ?",
-                [model_id],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(quant.as_deref(), Some("awq"));
-    }
-
-    /// Verifies that `check_for_updates` returns `UpdateStatus::NoPriorRecord`
-    /// when the in-memory DB contains no pull record for the given repo.
-    #[tokio::test]
-    async fn test_check_no_prior_record() {
-        let OpenResult { conn, .. } = open_in_memory().unwrap();
-        let result = check_for_updates(&conn, "test/repo")
-            .await
-            .expect("check_for_updates should not fail for an empty DB");
-        assert!(
-            matches!(result.status, UpdateStatus::NoPriorRecord),
-            "expected NoPriorRecord, got {:?}",
-            result.status
-        );
-    }
+    /// `update_model_config_quant` (direct set, no COALESCE) and the DB-backed
+    /// `check_for_updates` paths moved to the Postgres harness:
+    /// `crates/tama-core/tests/models_update.rs` (plan-190 Task 5).
 
     // ── compare_files edge cases ──────────────────────────────────────────
 
