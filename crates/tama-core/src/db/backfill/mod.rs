@@ -4,12 +4,10 @@
 
 mod hf_metadata;
 mod initial_backfill;
-mod migrate_toml_to_db;
 mod vllm_config;
 
 pub use hf_metadata::*;
 pub use initial_backfill::*;
-pub use migrate_toml_to_db::*;
 pub use vllm_config::*;
 
 // ---------------------------------------------------------------------------

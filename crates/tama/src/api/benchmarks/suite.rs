@@ -109,15 +109,20 @@ async fn run_suite(
         "Starting benchmark suite",
     );
 
-    // Load config and resolve model — shared across all sub-runs.
-    let (config, model_configs, resolved_id, display_name, quant) = {
-        let db_path_for_load = db_path.clone();
+    // Load the global config from Postgres (plan-190 Task 3).
+    let pool = ctx
+        .db_pool
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Postgres pool not available; cannot load config"))?;
+    let config = tama_core::config::Config::load_from_pool(pool).await?;
+
+    // Resolve model — shared across all sub-runs.
+    let (model_configs, resolved_id, display_name, quant) = {
         let model_id_for_pool = req.model_id.clone();
         let quant_for_pool = req.quant.clone();
         let repo_handle = ctx.repo_handle.clone();
 
         tokio::task::spawn_blocking(move || -> Result<_> {
-            let config = tama_core::config::Config::load_from(&db_path_for_load)?;
             let repo = repo_handle.lock().unwrap();
             let model_configs = repo.load_model_configs_for_benchmarks()?;
 
@@ -139,13 +144,7 @@ async fn run_suite(
                     .or_else(|| mc.model.clone())
             });
 
-            Ok((
-                config,
-                model_configs,
-                resolved_id,
-                display_name,
-                quant_for_pool,
-            ))
+            Ok((model_configs, resolved_id, display_name, quant_for_pool))
         })
         .await?
     }?;
@@ -438,6 +437,7 @@ async fn run_suite_llama_bench(
         ctx.proxy_base_url.clone(),
         ctx.client.clone(),
         ctx.repo_handle.clone(),
+        ctx.db_pool.clone(),
     )
     .await
 }
@@ -505,6 +505,7 @@ async fn run_suite_spec(
         ctx.proxy_base_url.clone(),
         ctx.client.clone(),
         ctx.repo_handle.clone(),
+        ctx.db_pool.clone(),
     )
     .await
 }
@@ -552,6 +553,7 @@ async fn run_suite_mtp(
         ctx.proxy_base_url.clone(),
         ctx.client.clone(),
         ctx.repo_handle.clone(),
+        ctx.db_pool.clone(),
     )
     .await
 }

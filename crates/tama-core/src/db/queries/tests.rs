@@ -721,36 +721,3 @@ fn test_delete_update_checks_for_backend_escapes() {
         .unwrap()
         .is_some());
 }
-
-#[test]
-fn test_count_active_keys() {
-    let OpenResult { conn, .. } = open_in_memory().unwrap();
-    assert_eq!(count_active_keys(&conn).unwrap(), 0);
-
-    // One active key
-    conn.execute(
-        "INSERT INTO api_keys (name, key_prefix, key_hash, scopes, created_by, created_at, expires_at) \
-         VALUES ('a', 'tama_aaa', 'h1', '[\"inference\"]', 'test', '2026-01-01T00:00:00Z', NULL)",
-        [],
-    )
-    .unwrap();
-    assert_eq!(count_active_keys(&conn).unwrap(), 1);
-
-    // One revoked key — must NOT be counted
-    conn.execute(
-        "INSERT INTO api_keys (name, key_prefix, key_hash, scopes, created_by, created_at, revoked_at) \
-         VALUES ('b', 'tama_bbb', 'h2', '[\"inference\"]', 'test', '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z')",
-        [],
-    )
-    .unwrap();
-    assert_eq!(count_active_keys(&conn).unwrap(), 1);
-
-    // One expired key — must NOT be counted
-    conn.execute(
-        "INSERT INTO api_keys (name, key_prefix, key_hash, scopes, created_by, created_at, expires_at) \
-         VALUES ('c', 'tama_ccc', 'h3', '[\"inference\"]', 'test', '2026-01-01T00:00:00Z', '2020-01-01T00:00:00Z')",
-        [],
-    )
-    .unwrap();
-    assert_eq!(count_active_keys(&conn).unwrap(), 1);
-}

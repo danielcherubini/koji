@@ -38,17 +38,26 @@ async fn test_restart_handler_exits_process() {
 
     eprintln!("Looking for binary at: {:?}", binary_path);
 
-    // Seed a minimal DB in the default config location so the binary can start.
-    let config_dir = crate::config::Config::config_dir().expect("Failed to get config dir");
-    std::fs::create_dir_all(&config_dir).ok();
-    // Open the DB to run migrations and seed defaults.
-    crate::db::open(&config_dir).expect("Failed to open DB for restart test");
+    // Seed a minimal bootstrap config in a temp config dir (plan-190 Task 3:
+    // v3 requires a [database] section in config.toml; the test points the
+    // child at a dead Postgres so it stays alive in its retry loop, which is
+    // exactly what this test asserts).
+    let tmp_config_root = tempfile::tempdir().expect("temp config root");
+    let child_config_dir = tmp_config_root.path().join("tama");
+    std::fs::create_dir_all(&child_config_dir).expect("create child config dir");
+    std::fs::write(
+        child_config_dir.join("config.toml"),
+        "[database]\nhost = \"127.0.0.1\"\nport = 1\n",
+    )
+    .expect("write bootstrap config");
 
-    // Spawn the tama binary using the serve subcommand (config loaded from default location)
+    // Spawn the tama binary using the serve subcommand (config loaded from
+    // the XDG config dir override above)
     let mut child = Command::new(&binary_path)
         .arg("serve")
         .arg("--port")
         .arg("0") // Use port 0 to let the OS assign a free port
+        .env("XDG_CONFIG_HOME", tmp_config_root.path())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()

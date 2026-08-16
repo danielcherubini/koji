@@ -233,13 +233,17 @@ pub async fn restore_preview(
 /// phase is additive and best-effort — a failure mid-merge may leave partially-applied
 /// changes.
 ///
+/// The global app config is NOT part of v3 restores (plan-190 Task 3): it lives in
+/// Postgres and is managed through the config API — `pg_dump` is the DB backup
+/// path. Only model cards and database rows are merged.
+///
 /// `selected_models`, `skip_backends`, and `skip_models` from [`RestoreRequest`]
 /// are accepted at the API level but NOT applied here — restore v1 always
 /// performs the full additive merge.
 fn run_restore(
     config_dir: &std::path::Path,
     archive_path: &std::path::Path,
-) -> anyhow::Result<(tama_core::config::Config, String)> {
+) -> anyhow::Result<String> {
     let extract_dir = tempfile::tempdir().context("Failed to create restore temp dir")?;
     let extracted = tama_core::backup::extract_backup(archive_path, extract_dir.path())
         .context("Failed to extract backup archive")?;
@@ -254,34 +258,23 @@ fn run_restore(
     let db_stats = tama_core::backup::merge_database(&open.conn, &extracted.db_path)
         .context("Failed to merge database")?;
 
-    let db_path = config_dir.join("tama.db");
-    let mut local =
-        tama_core::config::Config::load_from(&db_path).context("Failed to load local config")?;
-    let backup_cfg = tama_core::config::Config::load_from(&extracted.db_path)
-        .context("Failed to load backup config")?;
-    let cfg_stats = tama_core::backup::merge_config(&mut local, &backup_cfg);
-    local
-        .to_db(&db_path)
-        .context("Failed to save merged config")?;
-
     let summary = format!(
         concat!(
             "Restored {} model card(s), {} new model pull(s), {} new model file(s), ",
-            "{} new backend installation(s), {} new backend config(s), ",
-            "{} skipped backend config(s), {} model(s) in manifest.\n",
+            "{} new backend installation(s), {} model(s) in manifest.\n",
             "Full merge performed; selected_models/skip_backends/skip_models are ",
-            "accepted but not yet applied.",
+            "accepted but not yet applied.\n",
+            "Note: the global app config is not restored from v3 backups — it ",
+            "stays in Postgres (pg_dump is the DB backup path).",
         ),
         copied_cards.len(),
         db_stats.new_model_pulls,
         db_stats.new_model_files,
         db_stats.new_provider_installations,
-        cfg_stats.new_backends.len(),
-        cfg_stats.skipped_backends.len(),
         extracted.manifest.models.len(),
     );
 
-    Ok((local, summary))
+    Ok(summary)
 }
 
 /// POST /tama/v1/restore - Start restore job
@@ -358,7 +351,6 @@ pub async fn start_restore(
 
     let jobs_for_spawn = jobs.clone();
     let job_for_spawn = job.clone();
-    let state_for_spawn = state.clone();
     let cleanup_path = upload_path.clone();
     tokio::spawn(async move {
         jobs_for_spawn
@@ -374,10 +366,7 @@ pub async fn start_restore(
         })
         .await;
         match result {
-            Ok(Ok((merged_config, summary))) => {
-                state_for_spawn
-                    .with_config_mut(|c| *c = merged_config)
-                    .await;
+            Ok(Ok(summary)) => {
                 jobs_for_spawn.append_log(&job_for_spawn, summary).await;
                 jobs_for_spawn
                     .finish(&job_for_spawn, crate::web_types::JobStatus::Succeeded, None)
@@ -452,8 +441,6 @@ mod tests {
         std::fs::create_dir_all(dir.join("configs")).expect("create configs dir");
 
         let open = db::open(dir).expect("open db");
-        // Seed defaults so Config::load_from works.
-        tama_core::db::queries::seed_defaults(&open.conn).expect("seed defaults");
 
         // Insert a model_config first (model_pulls has FK to model_configs).
         open.conn
@@ -732,7 +719,7 @@ mod tests {
             result.err()
         );
 
-        let (_config, summary) = result.unwrap();
+        let summary = result.unwrap();
 
         // Summary should mention the full-merge disclaimer and the disclaimer
         // that selected_models/skip_backends/skip_models are not yet applied.
@@ -978,7 +965,6 @@ mod tests {
         std::fs::create_dir_all(source_dir.join("configs")).unwrap();
 
         let open = db::open(source_dir).unwrap();
-        tama_core::db::queries::seed_defaults(&open.conn).unwrap();
 
         // Seed model_config + model_pulls for 'test/repo'.
         open.conn
@@ -1222,12 +1208,24 @@ mod tests {
             .unwrap();
         assert_eq!(count, 1, "source/only should have been merged");
 
-        // Verify: backends HashMap contains "llama_cpp" key.
+        // Verify: the llama_cpp backend installation was merged into the
+        // local DB. (v3: the global app config is not part of restores —
+        // it stays in Postgres and is managed through the config API;
+        // plan-190 Task 3. The v2 backends-map merge is re-specified in
+        // the SQLite-deletion task.)
         {
-            let has_backend = proxy_state
-                .with_config(|c| c.backends.contains_key("llama_cpp"))
-                .await;
-            assert!(has_backend, "backends should contain 'llama_cpp'");
+            let backend_count: i64 = open
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM provider_installations WHERE name = 'llama_cpp'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(
+                backend_count >= 1,
+                "llama_cpp installation should have been merged"
+            );
         }
 
         // Verify: uploaded archive file no longer exists (cleanup after restore).

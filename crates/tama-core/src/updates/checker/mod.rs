@@ -273,10 +273,16 @@ impl UpdateChecker {
     }
 
     /// Check if enough time has passed since last check (based on interval).
-    pub async fn should_check(&self, config_dir: &std::path::Path) -> anyhow::Result<bool> {
-        let config_dir_for_config = config_dir.to_path_buf();
-        let db_path = config_dir_for_config.join("tama.db");
-        let config = tokio::task::spawn_blocking(move || Config::load_from(&db_path)).await??;
+    ///
+    /// The interval comes from the Postgres-backed global config
+    /// (plan-190, Task 3); the oldest-check-time lookup still reads the
+    /// SQLite `update_checks` table until that module is ported (Task 4).
+    pub async fn should_check(
+        &self,
+        pool: &sqlx::PgPool,
+        config_dir: &std::path::Path,
+    ) -> anyhow::Result<bool> {
+        let config = Config::load_from_pool(pool).await?;
 
         let interval_hours = config.general.update_check_interval as i64;
         let interval_secs = interval_hours * 3600;

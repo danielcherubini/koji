@@ -1,4 +1,3 @@
-use crate::config::Config;
 use crate::db::queries::upsert_update_check;
 use crate::updates::checker::UpdateChecker;
 use tempfile::tempdir;
@@ -14,9 +13,6 @@ async fn test_new_checker() {
 async fn test_get_results() {
     let dir = tempdir().unwrap();
     let config_dir = dir.path().to_path_buf();
-
-    let config = Config::default();
-    config.to_db(&config_dir.join("tama.db")).unwrap();
 
     let open = crate::db::open(&config_dir).unwrap();
     upsert_update_check(
@@ -46,40 +42,6 @@ async fn test_get_results() {
     assert!(results[0].update_available);
 }
 
-#[tokio::test]
-async fn test_should_check() {
-    let dir = tempdir().unwrap();
-    let config_dir = dir.path().to_path_buf();
-
-    let mut config = Config::default();
-    config.general.update_check_interval = 1;
-    config.to_db(&config_dir.join("tama.db")).unwrap();
-
-    let open = crate::db::open(&config_dir).unwrap();
-    // No records yet, should return true
-    let checker = UpdateChecker::new();
-    assert!(checker.should_check(&config_dir).await.unwrap());
-
-    // Insert a record from 2 hours ago
-    let now = chrono::Utc::now().timestamp();
-    let two_hours_ago = now - 7200;
-
-    upsert_update_check(
-        &open.conn,
-        crate::db::queries::UpdateCheckParams {
-            item_type: "backend",
-            item_id: "test",
-            current_version: None,
-            latest_version: None,
-            update_available: false,
-            status: "unknown",
-            error_message: None,
-            details_json: None,
-            checked_at: two_hours_ago,
-        },
-    )
-    .unwrap();
-
-    // Interval is 1 hour, so 2 hours ago should trigger check
-    assert!(checker.should_check(&config_dir).await.unwrap());
-}
+// `should_check` reads the interval from the Postgres-backed global config
+// (plan-190 Task 3) — its test lives in
+// `crates/tama-core/tests/config_postgres.rs` on the testcontainer harness.

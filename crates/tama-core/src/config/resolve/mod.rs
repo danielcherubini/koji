@@ -623,26 +623,6 @@ impl Config {
         format!("tama-{}", backend_name)
     }
 
-    /// Open the application database, falling back to an in-memory connection on error.
-    ///
-    /// Tries `crate::db::open(&Config::base_dir()?)`. On failure, emits a `tracing::warn!`
-    /// and returns a freshly-initialised in-memory connection so callers always get a
-    /// usable `rusqlite::Connection` without duplicating the fallback boilerplate.
-    pub fn open_db() -> rusqlite::Connection {
-        match Config::base_dir().and_then(|dir| crate::db::open(&dir)) {
-            Ok(crate::db::OpenResult { conn, .. }) => conn,
-            Err(e) => {
-                tracing::warn!(
-                    "Failed to open DB, falling back to in-memory connection: {}",
-                    e
-                );
-                crate::db::open_in_memory()
-                    .expect("in-memory DB must always open")
-                    .conn
-            }
-        }
-    }
-
     /// Build the proxy base URL from config, e.g. `http://0.0.0.0:11411`.
     /// Always returns a URL since the proxy may be running even if not
     /// marked as enabled in config (e.g. started manually via `tama serve`).

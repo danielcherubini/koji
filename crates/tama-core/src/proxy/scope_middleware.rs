@@ -525,7 +525,6 @@ mod tests {
 
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         crate::db::migrations::run(&conn).unwrap();
-        crate::db::queries::seed_defaults(&conn).unwrap();
 
         let key = crate::proxy::api_keys::generate_key();
         crate::proxy::api_keys::ApiKeyStore::new(&conn)

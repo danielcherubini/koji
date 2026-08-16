@@ -202,6 +202,8 @@ pub struct BenchmarkJobContext {
     pub proxy_base_url: String,
     pub client: reqwest::Client,
     pub repo_handle: std::sync::Arc<std::sync::Mutex<tama_core::db::repository::Repository>>,
+    /// Postgres pool for loading the global app config (plan-190 Task 3).
+    pub db_pool: Option<std::sync::Arc<sqlx::PgPool>>,
 }
 
 /// Resolve shared context needed for benchmark execution.
@@ -226,6 +228,7 @@ pub async fn resolve_benchmark_context(
         proxy_base_url,
         client,
         repo_handle,
+        db_pool: state.db_pool(),
     })
 }
 
@@ -292,6 +295,7 @@ where
             String,
             reqwest::Client,
             std::sync::Arc<std::sync::Mutex<tama_core::db::repository::Repository>>,
+            Option<std::sync::Arc<sqlx::PgPool>>,
         ) -> Fut
         + Send
         + Clone
@@ -314,6 +318,7 @@ where
                 ctx.proxy_base_url,
                 ctx.client,
                 ctx.repo_handle,
+                ctx.db_pool,
             )
             .await
         }

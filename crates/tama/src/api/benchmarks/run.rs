@@ -17,14 +17,16 @@ pub async fn run_benchmark(
     (StatusCode::ACCEPTED, Json(BenchmarkRunResponse { job_id })).into_response()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_benchmark_inner(
     jobs: Arc<JobManager>,
     job: Arc<crate::web_types::Job>,
     req: BenchmarkRunRequest,
-    db_path: std::path::PathBuf,
+    _db_path: std::path::PathBuf,
     proxy_base_url: String,
     client: reqwest::Client,
     repo_handle: std::sync::Arc<std::sync::Mutex<tama_core::db::repository::Repository>>,
+    db_pool: Option<std::sync::Arc<sqlx::PgPool>>,
 ) -> Result<()> {
     use tama_core::bench::llama_bench::{self, LlamaBenchConfig};
 
@@ -53,13 +55,11 @@ pub async fn run_benchmark_inner(
     let tg_sizes_for_serial = tg_sizes_for_trace.clone();
     let threads_for_trace = req.threads.clone();
 
-    // Load config - clone db_path for the blocking task
-    let db_path_for_load = db_path.clone();
-
-    let config = tokio::task::spawn_blocking(move || {
-        tama_core::config::Config::load_from(&db_path_for_load)
-    })
-    .await??;
+    // Load the global config from Postgres (plan-190 Task 3).
+    let pool = db_pool
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Postgres pool not available; cannot load config"))?;
+    let config = tama_core::config::Config::load_from_pool(pool).await?;
 
     // Create progress sink
     let sink = BenchmarkProgressSink {

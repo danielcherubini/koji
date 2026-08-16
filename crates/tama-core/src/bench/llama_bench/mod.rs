@@ -316,8 +316,8 @@ fn resolve_model_path(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, LogLevel, ModelConfig};
-    use crate::db::queries::{insert_installation, upsert_general, upsert_installation_config};
+    use crate::config::{Config, ModelConfig};
+    use crate::db::queries::{insert_installation, upsert_installation_config};
     use std::collections::BTreeMap;
     use std::os::unix::fs::PermissionsExt;
     use std::sync::{Mutex, MutexGuard};
@@ -359,26 +359,15 @@ mod tests {
 
     /// Helper to set up a minimal test database with a backend config,
     /// an installation record, and a model config + file entry.
+    ///
+    /// Note: the global app config is no longer seeded here (plan-190 Task 3 —
+    /// it lives in Postgres); the tests build their in-memory `Config` instead.
     fn seed_test_db(temp_dir: &tempfile::TempDir) -> anyhow::Result<(std::path::PathBuf, String)> {
         let db_path = temp_dir.path().join("tama.db");
 
         // Open the database and run migrations
         let conn = rusqlite::Connection::open(&db_path)?;
         crate::db::migrations::run(&conn)?;
-
-        // Seed defaults so Config::from_db works
-        crate::db::queries::seed_defaults(&conn)?;
-
-        // Set models_dir to point to our temp dir's models subdirectory
-        let models_dir = temp_dir.path().join("models");
-        upsert_general(
-            &conn,
-            &LogLevel::Info,
-            Some(models_dir.to_string_lossy().as_ref()),
-            None, // logs_dir
-            None, // hf_token
-            60,   // update_check_interval
-        )?;
 
         // 1. Insert a backend config (llama_cpp, cpu)
         upsert_installation_config(
@@ -534,8 +523,10 @@ exit 0
         // Set LLAMA_BENCH_PATH
         std::env::set_var("LLAMA_BENCH_PATH", stub_script.to_string_lossy().as_ref());
 
-        // Load Config from the seeded database
-        let config = Config::load_from(&config_dir.join("tama.db")).unwrap();
+        // Build an in-memory Config (plan-190 Task 3: the app config no
+        // longer lives in the per-test SQLite file) with models_dir set.
+        let mut config = Config::default();
+        config.general.models_dir = Some(config_dir.join("models").to_string_lossy().to_string());
 
         // Create a bench config with PP and TG tests
         let bench_config = LlamaBenchConfig {
@@ -638,8 +629,9 @@ exit 1
 
         std::env::set_var("LLAMA_BENCH_PATH", stub_script.to_string_lossy().as_ref());
 
-        let config_dir = temp_dir.path().to_path_buf();
-        let config = Config::load_from(&config_dir.join("tama.db")).unwrap();
+        // Build an in-memory Config with models_dir set (plan-190 Task 3).
+        let mut config = Config::default();
+        config.general.models_dir = Some(config_dir.join("models").to_string_lossy().to_string());
 
         let bench_config = LlamaBenchConfig {
             pp_sizes: vec![512],

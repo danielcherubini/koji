@@ -71,6 +71,7 @@ pub async fn run_mtp_benchmark(
     (StatusCode::ACCEPTED, Json(BenchmarkRunResponse { job_id })).into_response()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_mtp_benchmark_inner(
     jobs: Arc<JobManager>,
     job: Arc<crate::web_types::Job>,
@@ -79,6 +80,7 @@ pub async fn run_mtp_benchmark_inner(
     proxy_base_url: String,
     client: reqwest::Client,
     repo_handle: std::sync::Arc<std::sync::Mutex<tama_core::db::repository::Repository>>,
+    db_pool: Option<std::sync::Arc<sqlx::PgPool>>,
 ) -> Result<()> {
     use tama_core::bench::llama_cli_mtp;
 
@@ -100,13 +102,11 @@ pub async fn run_mtp_benchmark_inner(
     let benchmark_type = req.benchmark_type.clone();
     let draft_max_for_trace = req.draft_max_values.clone();
 
-    // Load config - clone db_path for the blocking task
-    let db_path_for_load = db_path.clone();
-
-    let config = tokio::task::spawn_blocking(move || {
-        tama_core::config::Config::load_from(&db_path_for_load)
-    })
-    .await??;
+    // Load the global config from Postgres (plan-190 Task 3).
+    let pool = db_pool
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Postgres pool not available; cannot load config"))?;
+    let config = tama_core::config::Config::load_from_pool(pool).await?;
 
     // Resolve model path — pool the blocking SQLite calls.
     let db_dir = db_path.parent().context("db_path has no parent")?;

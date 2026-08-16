@@ -667,7 +667,6 @@ fn make_app_with_api_key(
     // Initialize DB with migrations and seed
     let conn = rusqlite::Connection::open(&db_path).unwrap();
     crate::db::migrations::run(&conn).unwrap();
-    crate::db::queries::seed_defaults(&conn).unwrap();
 
     // Create an API key
     let key = api_keys::generate_key();
@@ -783,7 +782,6 @@ async fn test_tama_key_disabled_returns_401() {
 
     let conn = rusqlite::Connection::open(&db_path).unwrap();
     crate::db::migrations::run(&conn).unwrap();
-    crate::db::queries::seed_defaults(&conn).unwrap();
 
     let key = api_keys::generate_key();
     ApiKeyStore::new(&conn)
@@ -988,7 +986,6 @@ async fn test_tama_prefix_case_sensitive() {
 
     let conn = rusqlite::Connection::open(&db_path).unwrap();
     crate::db::migrations::run(&conn).unwrap();
-    crate::db::queries::seed_defaults(&conn).unwrap();
 
     let key = api_keys::generate_key();
     ApiKeyStore::new(&conn)

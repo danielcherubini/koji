@@ -26,7 +26,6 @@ pub use model::*;
 pub use proxy::*;
 
 use crate::profiles::SamplingParams;
-use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
@@ -65,23 +64,19 @@ impl Config {
         Ok(Self::config_dir()?.join("models"))
     }
 
-    /// Load a complete `Config` from a SQLite database at the given path.
+    /// Load a complete `Config` from the Postgres database (plan-190 Task 3).
     ///
-    /// If the database is empty (no rows in any config table), seeds defaults
-    /// via `app_config_queries::seed_defaults` before reading.
-    /// Runs migrations if the database has not been initialized yet.
-    pub fn from_db(db_path: &std::path::Path) -> anyhow::Result<Self> {
-        let conn = rusqlite::Connection::open(db_path)
-            .with_context(|| format!("Failed to open DB at {}", db_path.display()))?;
-
-        // Run migrations if needed (skips quickly if already at latest version)
-        crate::db::migrations::run(&conn)?;
-
+    /// Seeds defaults via `app_config_queries::seed_defaults` if tables are
+    /// empty (idempotent — no-op if rows exist), then assembles the config
+    /// from the singleton rows. `main.rs` is the single owner of the pool;
+    /// this function only reads from it.
+    pub async fn load_from_pool(pool: &sqlx::PgPool) -> anyhow::Result<Self> {
         // Seed defaults if tables are empty (idempotent — no-op if rows exist)
-        crate::db::queries::seed_defaults(&conn)?;
+        crate::db::queries::seed_defaults(pool).await?;
 
         // Read general
-        let general_row = crate::db::queries::get_general(&conn)?
+        let general_row = crate::db::queries::get_general(pool)
+            .await?
             .ok_or_else(|| anyhow::anyhow!("app_general row not found after seeding"))?;
         let general = General {
             log_level: crate::config::types::LogLevel::from_str(&general_row.log_level)
@@ -99,7 +94,8 @@ impl Config {
         };
 
         // Read proxy
-        let proxy_row = crate::db::queries::get_proxy(&conn)?
+        let proxy_row = crate::db::queries::get_proxy(pool)
+            .await?
             .ok_or_else(|| anyhow::anyhow!("app_proxy row not found after seeding"))?;
 
         // Derive `api_keys_enabled` from the actual `api_keys` table. The flag
@@ -107,7 +103,7 @@ impl Config {
         // Treating it as a stored field allowed it to drift on every config
         // save; re-deriving on load ensures a stale DB value can never lock
         // the operator out of their own proxy after a restart.
-        let active_keys = crate::db::queries::count_active_keys(&conn)?;
+        let active_keys = crate::db::queries::count_active_keys(pool).await?;
         let api_keys_enabled = active_keys > 0;
 
         let mut proxy = ProxyConfig {
@@ -142,7 +138,8 @@ impl Config {
         proxy.resolve_env_vars();
 
         // Read lifecycle
-        let lifecycle_row = crate::db::queries::get_lifecycle(&conn)?
+        let lifecycle_row = crate::db::queries::get_lifecycle(pool)
+            .await?
             .ok_or_else(|| anyhow::anyhow!("app_lifecycle row not found after seeding"))?;
         let lifecycle = Lifecycle {
             restart_policy: crate::config::types::RestartPolicy::from_str(
@@ -163,7 +160,8 @@ impl Config {
         };
 
         // Read compaction
-        let compaction_row = crate::db::queries::get_compaction(&conn)?
+        let compaction_row = crate::db::queries::get_compaction(pool)
+            .await?
             .ok_or_else(|| anyhow::anyhow!("app_compaction row not found after seeding"))?;
         let compaction = CompactionConfig {
             enabled: compaction_row.enabled,
@@ -181,7 +179,7 @@ impl Config {
         };
 
         // Read sampling templates
-        let template_rows = crate::db::queries::get_all_sampling_templates(&conn)?;
+        let template_rows = crate::db::queries::get_all_sampling_templates(pool).await?;
         let mut sampling_templates = HashMap::new();
         for template in &template_rows {
             sampling_templates.insert(
@@ -202,19 +200,19 @@ impl Config {
         // Note: BackendConfig (TOML struct) fields `path` and `version` are
         // not stored in the DB — backend resolution is exclusively DB-managed
         // via provider_configs + provider_installations tables.
-        let backend_rows = crate::db::queries::list_installation_configs(&conn)?;
+        let backend_rows = crate::db::queries::list_config_backends(pool).await?;
         let mut backends: HashMap<String, BackendConfig> = HashMap::new();
-        for record in &backend_rows {
+        for (name, gpu_variant) in &backend_rows {
             backends.insert(
-                record.name.clone(),
+                name.clone(),
                 BackendConfig {
                     path: None,
                     version: None,
                     gpu_variant: Some(
-                        crate::gpu::GpuVariant::from_str(&record.gpu_variant).unwrap_or_else(|_| {
+                        crate::gpu::GpuVariant::from_str(gpu_variant).unwrap_or_else(|_| {
                             tracing::warn!(
                                 "unknown gpu_variant '{}' in provider_configs row; treating as custom",
-                                record.gpu_variant
+                                gpu_variant
                             );
                             crate::gpu::GpuVariant::Custom
                         }),
@@ -224,7 +222,8 @@ impl Config {
         }
 
         // Read langfuse
-        let langfuse_row = crate::db::queries::get_langfuse(&conn)?
+        let langfuse_row = crate::db::queries::get_langfuse(pool)
+            .await?
             .ok_or_else(|| anyhow::anyhow!("app_langfuse row not found after seeding"))?;
         let langfuse = LangfuseConfig {
             enabled: langfuse_row.enabled,
@@ -250,27 +249,21 @@ impl Config {
         })
     }
 
-    /// Persist a `Config` to a SQLite database at the given path.
+    /// Persist a `Config` to the Postgres database (plan-190 Task 3).
     ///
     /// Upserts each config section into its corresponding table. Sampling
     /// templates are deleted first then re-inserted to ensure a clean state.
-    /// Runs migrations if the database has not been initialized yet.
-    pub fn to_db(&self, db_path: &std::path::Path) -> anyhow::Result<()> {
-        let conn = rusqlite::Connection::open(db_path)
-            .with_context(|| format!("Failed to open DB at {}", db_path.display()))?;
-
-        // Run migrations to ensure tables exist
-        crate::db::migrations::run(&conn)?;
-
+    pub async fn save(&self, pool: &sqlx::PgPool) -> anyhow::Result<()> {
         // Upsert general
         crate::db::queries::upsert_general(
-            &conn,
+            pool,
             &self.general.log_level,
             self.general.models_dir.as_deref(),
             self.general.logs_dir.as_deref(),
             self.general.hf_token.as_deref(),
             self.general.update_check_interval,
-        )?;
+        )
+        .await?;
 
         // Derive `api_keys_enabled` from the actual `api_keys` table. The flag
         // is a derived value — it must always reflect whether at least one
@@ -279,12 +272,12 @@ impl Config {
         // config save whenever the form's mirror type was missing the field
         // (and even when it didn't, an explicit `false` from a stale client
         // could lock the operator out of their own proxy).
-        let active_keys = crate::db::queries::count_active_keys(&conn)?;
+        let active_keys = crate::db::queries::count_active_keys(pool).await?;
         let api_keys_enabled = active_keys > 0;
 
         // Upsert proxy
         crate::db::queries::upsert_proxy(
-            &conn,
+            pool,
             &self.proxy.host,
             self.proxy.port,
             self.proxy.auto_unload,
@@ -308,34 +301,37 @@ impl Config {
             &self.proxy.oauth2.scopes,
             self.proxy.oauth2.session_ttl_secs,
             api_keys_enabled,
-        )?;
+        )
+        .await?;
 
         // Upsert lifecycle
         crate::db::queries::upsert_lifecycle(
-            &conn,
+            pool,
             &self.lifecycle.restart_policy,
             self.lifecycle.max_restarts,
             self.lifecycle.restart_delay_ms,
             self.lifecycle.health_check_interval_ms,
             self.lifecycle.health_check_timeout_ms,
             self.lifecycle.health_check_retries,
-        )?;
+        )
+        .await?;
 
         // Upsert compaction
         crate::db::queries::upsert_compaction(
-            &conn,
+            pool,
             self.compaction.enabled,
             self.compaction.server_path.as_deref(),
             &self.compaction.device,
             self.compaction.port,
             self.compaction.request_timeout_ms,
-        )?;
+        )
+        .await?;
 
         // Upsert sampling templates (delete all first, then re-insert)
-        crate::db::queries::delete_all_sampling_templates(&conn)?;
+        crate::db::queries::delete_all_sampling_templates(pool).await?;
         for (name, params) in &self.sampling_templates {
             crate::db::queries::upsert_sampling_template(
-                &conn,
+                pool,
                 name,
                 params.temperature,
                 params.top_k,
@@ -344,12 +340,13 @@ impl Config {
                 params.presence_penalty,
                 params.frequency_penalty,
                 params.repeat_penalty,
-            )?;
+            )
+            .await?;
         }
 
         // Upsert langfuse
         crate::db::queries::upsert_langfuse(
-            &conn,
+            pool,
             &crate::db::queries::LangfuseRecord {
                 enabled: self.langfuse.enabled,
                 public_key: self.langfuse.public_key.clone(),
@@ -362,7 +359,8 @@ impl Config {
                 telemetry_max_bytes: self.langfuse.telemetry_max_bytes,
                 electricity_price_per_kwh: self.langfuse.electricity_price_per_kwh,
             },
-        )?;
+        )
+        .await?;
 
         Ok(())
     }

@@ -24,19 +24,13 @@ async fn test_setup_model_creates_card() {
     // Write a dummy GGUF file
     std::fs::write(dest_dir.join(filename), b"dummy gguf content").unwrap();
 
-    let config = crate::config::Config {
-        ..Default::default()
-    };
-    // Save it so Config::load_from can find it
-    config.to_db(&config_dir.join("tama.db")).unwrap();
-
     let spec = super::types::QuantPullSpec {
         filename: filename.to_string(),
         quant: Some("Q4_K_M".to_string()),
         context_length: Some(8192),
     };
 
-    // Call the inner helper directly (avoids relying on system Config::load())
+    // Call the inner helper directly (avoids depending on the DB-backed Config load)
     let mut models = std::collections::HashMap::new();
     _setup_model_after_pull_with_config(
         &configs_dir,
@@ -98,11 +92,6 @@ async fn test_mmproj_pull_auto_enables_vision_on_parent() {
 
     let configs_dir = config_dir.join("configs");
     std::fs::create_dir_all(&configs_dir).unwrap();
-    let config = crate::config::Config {
-        ..Default::default()
-    };
-    config.to_db(&config_dir.join("tama.db")).unwrap();
-
     // Pull 1: parent quant.
     let parent_spec = super::types::QuantPullSpec {
         filename: "TestVision-Q4_K_M.gguf".to_string(),
@@ -175,11 +164,6 @@ async fn test_mmproj_pull_before_parent_creates_stub_then_promotes() {
     let repo_id = "bartowski/TestVisionEarly-GGUF";
     let dest_dir = config_dir.join("models").join(repo_id);
     std::fs::create_dir_all(&dest_dir).unwrap();
-
-    let config = crate::config::Config {
-        ..Default::default()
-    };
-    config.to_db(&config_dir.join("tama.db")).unwrap();
 
     // Pull 1: mmproj first, no parent exists yet.
     let mmproj_spec = super::types::QuantPullSpec {
