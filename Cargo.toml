@@ -53,6 +53,9 @@ nix = { version = "0.29", features = ["process"] }
 regex = "1"
 log = "0.4"
 rand = "0.9"
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "time", "migrate", "macros"] }
+testcontainers = { version = "0.23", features = ["blocking"] }
+testcontainers-modules = { version = "0.12", features = ["postgres"] }
 oauth2 = { version = "5", features = ["reqwest"] }
 cookie = { version = "0.18", features = ["secure", "percent-encode", "signed"] }
 tonic = "0.12"
