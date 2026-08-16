@@ -49,6 +49,11 @@ toml = { workspace = true, optional = true }
 thiserror = { workspace = true, optional = true }
 nix = { workspace = true, optional = true }
 regex = { workspace = true, optional = true }
+clap = { workspace = true, optional = true }
+toml_edit = { workspace = true, optional = true }
+percent-encoding = { workspace = true, optional = true }
+time = { workspace = true, optional = true }
+rusqlite = { workspace = true, optional = true }
 uuid = { version = "1", features = ["v4", "js"] }
 urlencoding = "2.1"
 chrono = "0.4.44"
@@ -63,6 +68,11 @@ ssr = [
   "dep:tama-core", "dep:sqlx", "dep:toml", "dep:tower-http", "dep:thiserror",
   "dep:nix",
   "dep:regex",
+  "dep:clap",
+  "dep:toml_edit",
+  "dep:percent-encoding",
+  "dep:time",
+  "dep:rusqlite",
   "tama-core/web-ui",
 ]
 
@@ -89,6 +99,11 @@ required-features = ["ssr"]
 [[test]]
 name = "router_ownership_test"
 path = "tests/router_ownership_test.rs"
+required-features = ["ssr"]
+
+[[test]]
+name = "migrate"
+path = "tests/migrate.rs"
 required-features = ["ssr"]
 
 [dev-dependencies]

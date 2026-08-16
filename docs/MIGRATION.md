@@ -1,5 +1,69 @@
 # Migration Guide
 
+## v3.0 — Postgres as the state store
+
+**Breaking:** Tama no longer reads or writes `tama.db`. State lives in
+Postgres; `config.toml` is now a bootstrap file containing only
+`[database]`.
+
+### What changed
+
+- App config, models, API keys, pulls, benchmarks, and metrics history all
+  live in Postgres.
+- API keys survive migration (SHA-256 hashes copied verbatim) — existing
+  clients keep working.
+- Backups no longer include the database — `pg_dump tama` is the DB backup
+  path.
+- `config.toml.migrated` (v1 legacy) is ignored by v3; run `tama migrate`
+  instead.
+
+### Upgrade steps
+
+1. Create the Postgres role and database:
+
+   ```sql
+   CREATE ROLE tama LOGIN PASSWORD '...';
+   CREATE DATABASE tama OWNER tama;
+   ```
+
+2. Set `TAMA_DB_PASSWORD` in the service environment. Linux systemd
+   (`/etc/systemd/system/tama.service.d/override.conf`):
+
+   ```ini
+   [Service]
+   Environment=TAMA_DB_PASSWORD=...
+   ```
+
+   then `systemctl daemon-reload && systemctl restart tama`. Windows:
+   `setx TAMA_DB_PASSWORD "..."` (or add the variable to the service's
+   environment via `services.msc`) and restart the service.
+
+3. Run the one-time cutover (it never modifies `tama.db`):
+
+   ```sh
+   tama migrate --sqlite ~/.config/tama/tama.db \
+     --db postgres://tama@127.0.0.1:5432/tama \
+     --password-env TAMA_DB_PASSWORD
+   ```
+
+   Add `--dry-run` first to preview per-table row counts without writing
+   anything.
+
+4. If a `migrate-report-*.json` file appeared next to `tama.db`, review its
+   `skipped` list — rows that could not be converted are listed there with
+   the reason.
+5. Start `tama` and verify your models and API keys in the web UI.
+6. Keep `tama.db` for one week as a rollback source, then delete it.
+
+### Rollback
+
+Stop `tama`; restore `config.toml` from `config.toml.bak-*` (or delete it);
+restart the v2 binary. The v2 database was never modified
+(`PRAGMA query_only`), so the v2 binary sees its data exactly as it left
+it.
+
+---
+
 ## v1.35.11 — Model files auto-repair
 
 Versions v1.35.0 through v1.35.10 shipped a database migration (v9) that

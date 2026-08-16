@@ -51,12 +51,10 @@ async fn test_restart_handler_exits_process() {
     )
     .expect("write bootstrap config");
 
-    // Spawn the tama binary using the serve subcommand (config loaded from
-    // the XDG config dir override above)
+    // Spawn the tama binary (bare `tama` = server; the v3 CLI has no
+    // `serve` subcommand — config comes from the XDG config dir override
+    // above and the child stays alive in its Postgres retry loop)
     let mut child = Command::new(&binary_path)
-        .arg("serve")
-        .arg("--port")
-        .arg("0") // Use port 0 to let the OS assign a free port
         .env("XDG_CONFIG_HOME", tmp_config_root.path())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

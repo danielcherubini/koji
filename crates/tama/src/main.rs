@@ -1,10 +1,13 @@
 //! Tama server binary
 //!
-//! Starts the proxy server with web UI. The global app config is loaded
-//! from Postgres; `config.toml` is a bootstrap file holding only the
-//! `[database]` section (plan-190). No CLI arguments are accepted.
+//! Bare `tama` starts the proxy server with web UI. The global app config is
+//! loaded from Postgres; `config.toml` is a bootstrap file holding only the
+//! `[database]` section (plan-190). `tama migrate` is the one-time v2→v3
+//! cutover tool (plan-190 Task 10) — it dispatches before anything else and
+//! never reads `config.toml`.
 
 use anyhow::{Context, Result};
+use clap::Parser;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tama_core::config::Config;
@@ -20,8 +23,31 @@ fn setup_hf_token(config: &Config) {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    // Dispatch on the subcommand BEFORE anything else: `migrate` takes its
+    // own args and must never read config.toml or connect to Postgres the
+    // way the server does.
+    let cli = tama_web::cli::Cli::parse();
+    match cli.command {
+        Some(tama_web::cli::Command::Migrate(args)) => {
+            let opts = tama_web::migrate::MigrateOpts::from_cli(args);
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .context("building tokio runtime for migrate")?;
+            rt.block_on(tama_web::migrate::run(opts)).map(|_| ())
+        }
+        None => {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .context("building tokio runtime")?;
+            rt.block_on(run_server())
+        }
+    }
+}
+
+async fn run_server() -> Result<()> {
     // Load the v3 bootstrap config FIRST: config.toml is a bootstrap file
     // containing ONLY a [database] section (plan-190). v3 has no SQLite-only
     // mode — a missing [database] section is a hard error.
