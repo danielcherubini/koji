@@ -134,9 +134,17 @@ pub async fn delete_model(
         Err((status, body)) => return (status, Json(body)).into_response(),
     };
 
-    spawn_model_crud(state_clone, DEFAULT_CRUD_STATUS, move || {
+    // The update_check cleanup (Postgres, plan-190 Task 4) runs after the
+    // delete transaction; the closure hands model_id out through this cell.
+    let pool = state.db_pool();
+    let deleted_model_id: Arc<std::sync::Mutex<Option<i64>>> =
+        Arc::new(std::sync::Mutex::new(None));
+    let deleted_model_id_capture = Arc::clone(&deleted_model_id);
+
+    let response = spawn_model_crud(state_clone, DEFAULT_CRUD_STATUS, move || {
         // Resolve model_id and load record
         let (repo, model_id, model_record) = resolve_model_record(&_config_dir, &id_str)?;
+        *deleted_model_id_capture.lock().unwrap() = Some(model_id);
         let _model_config = tama_core::config::ModelConfig::from_db_record(&model_record);
 
         // Step 1: Delete model config — all-or-nothing. CASCADE handles
@@ -153,16 +161,9 @@ pub async fn delete_model(
             }
         }
 
-        // Step 1b: Delete the update check record (best-effort, separate from transaction).
-        // Kept outside the transaction so a missing or corrupted update_checks table
-        // doesn't block model deletion. Errors are logged for visibility.
-        if let Err(e) = repo.delete_update_check("model", &model_id.to_string()) {
-            tracing::warn!(
-                "Failed to delete update check record for model {}: {}",
-                model_id,
-                e
-            );
-        }
+        // Step 1b: The update check record cleanup moved outside the
+        // transaction (best-effort, Postgres) so a missing or corrupted
+        // update_checks table doesn't block model deletion.
 
         // Step 2: File cleanup (best-effort) — after successful DB commit.
         // If file deletion fails, the DB is already clean; orphaned files are
@@ -206,5 +207,21 @@ pub async fn delete_model(
 
         Ok(OkResponse::OK)
     })
-    .await
+    .await;
+
+    // Delete the update check record (best-effort, separate from the delete
+    // transaction). Errors are logged for visibility.
+    let model_id = *deleted_model_id.lock().unwrap();
+    if let Some(pool) = pool {
+        if let Some(model_id) = model_id {
+            if let Err(e) =
+                tama_core::db::queries::delete_update_check(&pool, "model", &model_id.to_string())
+                    .await
+            {
+                tracing::warn!("Failed to delete update check record for model {model_id}: {e}");
+            }
+        }
+    }
+
+    response
 }

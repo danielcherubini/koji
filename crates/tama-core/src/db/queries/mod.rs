@@ -1,7 +1,7 @@
-//! Typed query functions for the tama SQLite database.
+//! Typed query functions for the tama databases.
 //!
-//! All functions take a `&Connection` — the caller owns the connection.
-//! All functions are synchronous (no async).
+//! Modules ported to Postgres (plan-190) are async and take a `&PgPool`;
+//! the remaining modules are still synchronous and take a `&Connection`.
 
 mod active_model_queries;
 mod alias_queries;

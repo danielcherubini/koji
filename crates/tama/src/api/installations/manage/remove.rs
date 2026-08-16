@@ -160,9 +160,9 @@ pub async fn remove_installation_version(
 
     // Clean up update_check records — use LIKE pattern to match all variants
     // (e.g., "llama_cpp:cpu", "llama_cpp:cuda") plus legacy format.
-    if let Ok(repo_handle) = crate::api::helpers::shared_repository(&web_state) {
-        let repo = repo_handle.lock().unwrap();
-        let _ = repo.delete_update_checks_for_backend(&name);
+    // (Postgres, plan-190 Task 4; best-effort.)
+    if let Some(pool) = state.db_pool() {
+        let _ = tama_core::db::queries::delete_update_checks_for_backend(&pool, &name).await;
     }
 
     Json(DeleteResponse { removed: true }).into_response()

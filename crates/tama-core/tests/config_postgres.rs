@@ -500,14 +500,10 @@ async fn test_saved_config_contains_no_database_section() {
 #[tokio::test]
 async fn test_should_check_uses_db_interval() {
     let guard = with_schema().await;
-    let config_dir = tempfile::tempdir().unwrap();
 
     // No records yet, should return true
     let checker = tama_core::updates::checker::UpdateChecker::new();
-    assert!(checker
-        .should_check(&guard.pool, config_dir.path())
-        .await
-        .unwrap());
+    assert!(checker.should_check(&guard.pool).await.unwrap());
 
     // Interval = 1h; a record from 2 hours ago must trigger a check.
     upsert_general(&guard.pool, &LogLevel::Info, None, None, None, 1)
@@ -516,7 +512,7 @@ async fn test_should_check_uses_db_interval() {
     let now = chrono::Utc::now().timestamp();
     let two_hours_ago = now - 7200;
     tama_core::db::queries::upsert_update_check(
-        &crate_test_conn(config_dir.path()),
+        &guard.pool,
         tama_core::db::queries::UpdateCheckParams {
             item_type: "backend",
             item_id: "test",
@@ -529,18 +525,9 @@ async fn test_should_check_uses_db_interval() {
             checked_at: two_hours_ago,
         },
     )
+    .await
     .unwrap();
-    assert!(checker
-        .should_check(&guard.pool, config_dir.path())
-        .await
-        .unwrap());
+    assert!(checker.should_check(&guard.pool).await.unwrap());
 
     guard.finish().await;
-}
-
-/// Helper: open the per-test SQLite dir (the `update_checks` table is only
-/// ported in Task 4, so the oldest-check-time lookup still uses SQLite).
-fn crate_test_conn(config_dir: &std::path::Path) -> rusqlite::Connection {
-    let open = tama_core::db::open(config_dir).unwrap();
-    open.conn
 }

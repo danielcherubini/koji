@@ -1,7 +1,10 @@
-//! System metrics database query functions.
+//! System metrics database query functions (Postgres, plan-190 Task 4).
+//!
+//! All functions are async and take a `&PgPool` — the caller (the metrics
+//! collector) owns the pool.
 
-use anyhow::{bail, Result};
-use rusqlite::Connection;
+use anyhow::{bail, Context, Result};
+use sqlx::{PgPool, Row};
 
 /// One sample of system-level metrics, persisted in `system_metrics_history`.
 #[derive(Debug, Clone)]
@@ -22,341 +25,116 @@ pub struct SystemMetricsRow {
     pub net_tx_bytes: Option<i64>,
 }
 
-impl SystemMetricsRow {
-    /// All 14 columns in SELECT order. Must match `from_row` index order.
-    pub(crate) const COLUMNS: &str = "ts_unix_ms, cpu_usage_pct, ram_used_mib, ram_total_mib, \
-         gpu_utilization_pct, vram_used_mib, vram_total_mib, models_loaded, \
-         tps, prompt_tps, cache_hit_pct, spec_accept_pct, \
-         net_rx_bytes, net_tx_bytes";
-
-    /// Map a row selected with `COLUMNS` order into a row struct.
-    pub(crate) fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Self> {
-        Ok(SystemMetricsRow {
-            ts_unix_ms: row.get(0)?,
-            cpu_usage_pct: row.get(1)?,
-            ram_used_mib: row.get(2)?,
-            ram_total_mib: row.get(3)?,
-            gpu_utilization_pct: row.get(4)?,
-            vram_used_mib: row.get(5)?,
-            vram_total_mib: row.get(6)?,
-            models_loaded: row.get(7)?,
-            tps: row.get(8)?,
-            prompt_tps: row.get(9)?,
-            cache_hit_pct: row.get(10)?,
-            spec_accept_pct: row.get(11)?,
-            net_rx_bytes: row.get(12)?,
-            net_tx_bytes: row.get(13)?,
-        })
+/// Decode a `system_metrics_history` row into [`SystemMetricsRow`].
+fn decode_system_metrics_row(row: &sqlx::postgres::PgRow) -> SystemMetricsRow {
+    SystemMetricsRow {
+        ts_unix_ms: row.get("ts_unix_ms"),
+        cpu_usage_pct: row.get::<f64, _>("cpu_usage_pct") as f32,
+        ram_used_mib: row.get("ram_used_mib"),
+        ram_total_mib: row.get("ram_total_mib"),
+        gpu_utilization_pct: row.get("gpu_utilization_pct"),
+        vram_used_mib: row.get("vram_used_mib"),
+        vram_total_mib: row.get("vram_total_mib"),
+        models_loaded: row.get("models_loaded"),
+        tps: row.get("tps"),
+        prompt_tps: row.get("prompt_tps"),
+        cache_hit_pct: row.get("cache_hit_pct"),
+        spec_accept_pct: row.get("spec_accept_pct"),
+        net_rx_bytes: row.get("net_rx_bytes"),
+        net_tx_bytes: row.get("net_tx_bytes"),
     }
 }
 
 /// Insert one sample and prune anything older than `cutoff_ms` in a single
 /// transaction. Both operations succeed or fail together so a crash never
 /// leaves the table half-pruned.
-pub fn insert_system_metric(
-    conn: &Connection,
+pub async fn insert_system_metric(
+    pool: &PgPool,
     row: &SystemMetricsRow,
     cutoff_ms: i64,
 ) -> Result<()> {
-    let tx = conn.unchecked_transaction()?;
-    tx.execute(
+    let mut tx = pool
+        .begin()
+        .await
+        .context("Failed to begin system_metrics_history transaction")?;
+    sqlx::query(
         "INSERT INTO system_metrics_history
              (ts_unix_ms, cpu_usage_pct, ram_used_mib, ram_total_mib,
               gpu_utilization_pct, vram_used_mib, vram_total_mib, models_loaded,
               tps, prompt_tps, cache_hit_pct, spec_accept_pct,
               net_rx_bytes, net_tx_bytes)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
-        (
-            row.ts_unix_ms,
-            row.cpu_usage_pct as f64,
-            row.ram_used_mib,
-            row.ram_total_mib,
-            row.gpu_utilization_pct,
-            row.vram_used_mib,
-            row.vram_total_mib,
-            row.models_loaded,
-            row.tps,
-            row.prompt_tps,
-            row.cache_hit_pct,
-            row.spec_accept_pct,
-            row.net_rx_bytes,
-            row.net_tx_bytes,
-        ),
-    )?;
-    tx.execute(
-        "DELETE FROM system_metrics_history WHERE ts_unix_ms < ?1",
-        [cutoff_ms],
-    )?;
-    tx.commit()?;
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+    )
+    .bind(row.ts_unix_ms)
+    .bind(row.cpu_usage_pct as f64)
+    .bind(row.ram_used_mib)
+    .bind(row.ram_total_mib)
+    .bind(row.gpu_utilization_pct)
+    .bind(row.vram_used_mib)
+    .bind(row.vram_total_mib)
+    .bind(row.models_loaded)
+    .bind(row.tps)
+    .bind(row.prompt_tps)
+    .bind(row.cache_hit_pct)
+    .bind(row.spec_accept_pct)
+    .bind(row.net_rx_bytes)
+    .bind(row.net_tx_bytes)
+    .execute(&mut *tx)
+    .await
+    .context("Failed to insert system metric")?;
+    sqlx::query("DELETE FROM system_metrics_history WHERE ts_unix_ms < $1")
+        .bind(cutoff_ms)
+        .execute(&mut *tx)
+        .await
+        .context("Failed to prune old system metrics")?;
+    tx.commit()
+        .await
+        .context("Failed to commit system_metrics_history transaction")?;
     Ok(())
 }
 
 /// Fetch all samples newer than `since_ms` (exclusive), oldest-first.
-pub fn get_system_metrics_since(conn: &Connection, since_ms: i64) -> Result<Vec<SystemMetricsRow>> {
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {} FROM system_metrics_history WHERE ts_unix_ms > ?1 ORDER BY ts_unix_ms ASC",
-        SystemMetricsRow::COLUMNS
-    ))?;
-    let rows = stmt.query_map([since_ms], SystemMetricsRow::from_row)?;
-    rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(Into::into)
+pub async fn get_system_metrics_since(
+    pool: &PgPool,
+    since_ms: i64,
+) -> Result<Vec<SystemMetricsRow>> {
+    let rows = sqlx::query(
+        "SELECT ts_unix_ms, cpu_usage_pct, ram_used_mib, ram_total_mib,
+                gpu_utilization_pct, vram_used_mib, vram_total_mib, models_loaded,
+                tps, prompt_tps, cache_hit_pct, spec_accept_pct,
+                net_rx_bytes, net_tx_bytes
+         FROM system_metrics_history WHERE ts_unix_ms > $1 ORDER BY ts_unix_ms ASC",
+    )
+    .bind(since_ms)
+    .fetch_all(pool)
+    .await
+    .context("Failed to read system_metrics_history")?;
+    Ok(rows
+        .into_iter()
+        .map(|row| decode_system_metrics_row(&row))
+        .collect())
 }
 
 /// Fetch the most recent `limit` samples, oldest-first.
-pub fn get_recent_system_metrics(conn: &Connection, limit: i64) -> Result<Vec<SystemMetricsRow>> {
+pub async fn get_recent_system_metrics(pool: &PgPool, limit: i64) -> Result<Vec<SystemMetricsRow>> {
     if limit < 0 {
         bail!("limit must be >= 0");
     }
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {} FROM system_metrics_history ORDER BY ts_unix_ms DESC LIMIT ?1",
-        SystemMetricsRow::COLUMNS
-    ))?;
-    let rows = stmt.query_map([limit], SystemMetricsRow::from_row)?;
-    let mut rows: Vec<SystemMetricsRow> = rows.collect::<rusqlite::Result<_>>()?;
+    let rows = sqlx::query(
+        "SELECT ts_unix_ms, cpu_usage_pct, ram_used_mib, ram_total_mib,
+                gpu_utilization_pct, vram_used_mib, vram_total_mib, models_loaded,
+                tps, prompt_tps, cache_hit_pct, spec_accept_pct,
+                net_rx_bytes, net_tx_bytes
+         FROM system_metrics_history ORDER BY ts_unix_ms DESC LIMIT $1",
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+    .context("Failed to read recent system_metrics_history")?;
+    let mut rows: Vec<SystemMetricsRow> = rows
+        .into_iter()
+        .map(|row| decode_system_metrics_row(&row))
+        .collect();
     rows.reverse(); // reverse to return oldest-first
     Ok(rows)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Create an in-memory SQLite connection with the system_metrics_history table.
-    fn test_conn() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE system_metrics_history (
-                ts_unix_ms INTEGER PRIMARY KEY,
-                cpu_usage_pct REAL NOT NULL,
-                ram_used_mib INTEGER NOT NULL,
-                ram_total_mib INTEGER NOT NULL,
-                gpu_utilization_pct INTEGER,
-                vram_used_mib INTEGER,
-                vram_total_mib INTEGER,
-                models_loaded INTEGER NOT NULL,
-                tps REAL,
-                prompt_tps REAL,
-                cache_hit_pct REAL,
-                spec_accept_pct REAL,
-                net_rx_bytes BIGINT,
-                net_tx_bytes BIGINT
-            )",
-        )
-        .unwrap();
-        conn
-    }
-
-    /// Helper to create a test metrics row.
-    fn make_row(ts: i64, cpu: f32, ram: i64) -> SystemMetricsRow {
-        SystemMetricsRow {
-            ts_unix_ms: ts,
-            cpu_usage_pct: cpu,
-            ram_used_mib: ram,
-            ram_total_mib: 16384,
-            gpu_utilization_pct: Some(75),
-            vram_used_mib: Some(8192),
-            vram_total_mib: Some(16384),
-            models_loaded: 1,
-            tps: None,
-            prompt_tps: None,
-            cache_hit_pct: None,
-            spec_accept_pct: None,
-            net_rx_bytes: None,
-            net_tx_bytes: None,
-        }
-    }
-
-    #[test]
-    fn test_insert_system_metric() {
-        let conn = test_conn();
-        let row = make_row(1000, 45.5, 8192);
-        insert_system_metric(&conn, &row, 0).unwrap();
-
-        let metrics = get_system_metrics_since(&conn, 0).unwrap();
-        assert_eq!(metrics.len(), 1);
-        assert_eq!(metrics[0].ts_unix_ms, 1000);
-        assert!((metrics[0].cpu_usage_pct - 45.5).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn test_insert_system_metric_with_cutoff() {
-        let conn = test_conn();
-        // Insert an old row
-        insert_system_metric(&conn, &make_row(100, 10.0, 1000), 500).unwrap();
-        // Insert a new row
-        insert_system_metric(&conn, &make_row(1000, 45.5, 8192), 500).unwrap();
-
-        // Old row should have been pruned
-        let metrics = get_system_metrics_since(&conn, 0).unwrap();
-        assert_eq!(metrics.len(), 1);
-        assert_eq!(metrics[0].ts_unix_ms, 1000);
-    }
-
-    #[test]
-    fn test_get_system_metrics_since_empty() {
-        let conn = test_conn();
-        let metrics = get_system_metrics_since(&conn, 0).unwrap();
-        assert!(metrics.is_empty());
-    }
-
-    #[test]
-    fn test_get_system_metrics_since_filter() {
-        let conn = test_conn();
-        insert_system_metric(&conn, &make_row(100, 10.0, 1000), 0).unwrap();
-        insert_system_metric(&conn, &make_row(200, 20.0, 2000), 0).unwrap();
-        insert_system_metric(&conn, &make_row(300, 30.0, 3000), 0).unwrap();
-
-        let metrics = get_system_metrics_since(&conn, 150).unwrap();
-        assert_eq!(metrics.len(), 2);
-        assert_eq!(metrics[0].ts_unix_ms, 200);
-        assert_eq!(metrics[1].ts_unix_ms, 300);
-    }
-
-    #[test]
-    fn test_get_system_metrics_since_ordered() {
-        let conn = test_conn();
-        insert_system_metric(&conn, &make_row(300, 30.0, 3000), 0).unwrap();
-        insert_system_metric(&conn, &make_row(100, 10.0, 1000), 0).unwrap();
-        insert_system_metric(&conn, &make_row(200, 20.0, 2000), 0).unwrap();
-
-        let metrics = get_system_metrics_since(&conn, 0).unwrap();
-        assert_eq!(metrics[0].ts_unix_ms, 100);
-        assert_eq!(metrics[1].ts_unix_ms, 200);
-        assert_eq!(metrics[2].ts_unix_ms, 300);
-    }
-
-    #[test]
-    fn test_get_recent_system_metrics_empty() {
-        let conn = test_conn();
-        let metrics = get_recent_system_metrics(&conn, 10).unwrap();
-        assert!(metrics.is_empty());
-    }
-
-    #[test]
-    fn test_get_recent_system_metrics_limit() {
-        let conn = test_conn();
-        for i in 1..=5 {
-            insert_system_metric(&conn, &make_row(i * 100, i as f32 * 10.0, i * 1000), 0).unwrap();
-        }
-
-        let metrics = get_recent_system_metrics(&conn, 3).unwrap();
-        assert_eq!(metrics.len(), 3);
-        // Should return the 3 most recent, oldest-first
-        assert_eq!(metrics[0].ts_unix_ms, 300);
-        assert_eq!(metrics[1].ts_unix_ms, 400);
-        assert_eq!(metrics[2].ts_unix_ms, 500);
-    }
-
-    #[test]
-    fn test_get_recent_system_metrics_ordered() {
-        let conn = test_conn();
-        insert_system_metric(&conn, &make_row(300, 30.0, 3000), 0).unwrap();
-        insert_system_metric(&conn, &make_row(100, 10.0, 1000), 0).unwrap();
-        insert_system_metric(&conn, &make_row(200, 20.0, 2000), 0).unwrap();
-
-        let metrics = get_recent_system_metrics(&conn, 10).unwrap();
-        // Should be ordered oldest-first
-        assert_eq!(metrics[0].ts_unix_ms, 100);
-        assert_eq!(metrics[1].ts_unix_ms, 200);
-        assert_eq!(metrics[2].ts_unix_ms, 300);
-    }
-
-    #[test]
-    fn test_get_recent_system_metrics_zero_limit() {
-        let conn = test_conn();
-        insert_system_metric(&conn, &make_row(100, 10.0, 1000), 0).unwrap();
-
-        let metrics = get_recent_system_metrics(&conn, 0).unwrap();
-        assert!(metrics.is_empty());
-    }
-
-    #[test]
-    fn test_get_recent_system_metrics_negative_limit_error() {
-        let conn = test_conn();
-        let result = get_recent_system_metrics(&conn, -1);
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("limit must be >= 0"));
-    }
-
-    #[test]
-    fn test_system_metrics_row_with_null_gpu() {
-        let conn = test_conn();
-        let row = SystemMetricsRow {
-            ts_unix_ms: 1000,
-            cpu_usage_pct: 50.0,
-            ram_used_mib: 8192,
-            ram_total_mib: 16384,
-            gpu_utilization_pct: None,
-            vram_used_mib: None,
-            vram_total_mib: None,
-            models_loaded: 0,
-            tps: None,
-            prompt_tps: None,
-            cache_hit_pct: None,
-            spec_accept_pct: None,
-            net_rx_bytes: None,
-            net_tx_bytes: None,
-        };
-        insert_system_metric(&conn, &row, 0).unwrap();
-
-        let metrics = get_system_metrics_since(&conn, 0).unwrap();
-        assert_eq!(metrics.len(), 1);
-        assert!(metrics[0].gpu_utilization_pct.is_none());
-        assert!(metrics[0].vram_used_mib.is_none());
-    }
-
-    /// Verify the 4 inference columns (tps, prompt_tps, cache_hit_pct, spec_accept_pct)
-    /// exist in the test schema and round-trip through insert + query.
-    #[test]
-    fn test_inference_columns_exist_and_queryable() {
-        let conn = test_conn();
-
-        // Verify the columns exist in the table schema
-        for col in ["tps", "prompt_tps", "cache_hit_pct", "spec_accept_pct"] {
-            let count: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM pragma_table_info('system_metrics_history') WHERE name=?",
-                    [col],
-                    |row| row.get(0),
-                )
-                .unwrap();
-            assert_eq!(
-                count, 1,
-                "column '{}' must exist in system_metrics_history",
-                col
-            );
-        }
-
-        // Insert a row with non-null inference values
-        let row = SystemMetricsRow {
-            ts_unix_ms: 1000,
-            cpu_usage_pct: 50.0,
-            ram_used_mib: 8192,
-            ram_total_mib: 16384,
-            gpu_utilization_pct: Some(75),
-            vram_used_mib: Some(8192),
-            vram_total_mib: Some(16384),
-            models_loaded: 1,
-            tps: Some(25.5),
-            prompt_tps: Some(150.0),
-            cache_hit_pct: Some(92.3),
-            spec_accept_pct: Some(67.8),
-            net_rx_bytes: Some(1048576),
-            net_tx_bytes: Some(524288),
-        };
-        insert_system_metric(&conn, &row, 0).unwrap();
-
-        // Query back and verify the values
-        let metrics = get_system_metrics_since(&conn, 0).unwrap();
-        assert_eq!(metrics.len(), 1);
-        assert_eq!(metrics[0].tps, Some(25.5));
-        assert_eq!(metrics[0].prompt_tps, Some(150.0));
-        assert_eq!(metrics[0].cache_hit_pct, Some(92.3));
-        assert_eq!(metrics[0].spec_accept_pct, Some(67.8));
-        assert_eq!(metrics[0].net_rx_bytes, Some(1048576));
-        assert_eq!(metrics[0].net_tx_bytes, Some(524288));
-    }
 }

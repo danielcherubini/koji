@@ -59,13 +59,27 @@ pub async fn get_updates(
     State(state): State<Arc<ProxyState>>,
     Extension(web_state): Extension<WebState>,
 ) -> impl axum::response::IntoResponse {
-    let config_dir = match crate::api::helpers::resolve_config_dir(&state) {
+    // `config_dir` is no longer needed here: update-check results come from
+    // Postgres (plan-190 Task 4). The resolution is kept so handlers without
+    // a configured config dir keep failing loudly.
+    let _config_dir = match crate::api::helpers::resolve_config_dir(&state) {
         Ok(d) => d,
         Err(resp) => return resp,
     };
 
+    let pool = match state.db_pool() {
+        Some(p) => p,
+        None => {
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Postgres pool not available",
+                Some("ServiceUnavailableError"),
+            )
+        }
+    };
+
     let checker = &web_state.update_checker;
-    match checker.get_results(&config_dir).await {
+    match checker.get_results(&pool).await {
         Ok(records) => {
             // Pooled pre-pass: collect all model IDs and resolve display names
             // in a single spawn_blocking call instead of opening the repo per-record.
@@ -180,10 +194,21 @@ pub async fn trigger_check(
         Err(resp) => return resp,
     };
 
+    let pool = match state.db_pool() {
+        Some(p) => p,
+        None => {
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Postgres pool not available",
+                Some("ServiceUnavailableError"),
+            )
+        }
+    };
+
     let checker = web_state.update_checker.clone();
     // Run in background, return immediately
     tokio::spawn(async move {
-        if let Err(e) = checker.run_check(&config_dir).await {
+        if let Err(e) = checker.run_check(&config_dir, &pool).await {
             tracing::error!("Background update check failed: {}", e);
         }
     });
@@ -217,6 +242,27 @@ pub async fn check_item_for_update(
     let config_dir = match crate::api::helpers::resolve_config_dir(&state) {
         Ok(d) => d,
         Err(resp) => return resp,
+    };
+
+    // Validate item_type first so a malformed request fails with 400 even
+    // when the pool is unavailable.
+    if !matches!(item_type.as_str(), "backend" | "model") {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "Invalid item_type",
+            Some("ValidationError"),
+        );
+    }
+
+    let pool = match state.db_pool() {
+        Some(p) => p,
+        None => {
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Postgres pool not available",
+                Some("ServiceUnavailableError"),
+            )
+        }
     };
 
     let checker = &web_state.update_checker;
@@ -271,7 +317,7 @@ pub async fn check_item_for_update(
                         return Json(OkResponse::OK).into_response();
                     }
                     checker
-                        .check_backend(&config_dir, &item_id, &bt, &gpu_variant)
+                        .check_backend(&config_dir, &pool, &item_id, &bt, &gpu_variant)
                         .await
                         .map(|_| ())
                 }
@@ -308,7 +354,7 @@ pub async fn check_item_for_update(
 
             match rid_result {
                 Ok(Ok((Some(model_id), Some(repo_id)))) => checker
-                    .check_model(&config_dir, model_id, Some(&repo_id))
+                    .check_model(&config_dir, &pool, model_id, Some(&repo_id))
                     .await
                     .map(|_| ()),
                 Ok(Ok((None, _))) | Ok(Ok((_, None))) => {

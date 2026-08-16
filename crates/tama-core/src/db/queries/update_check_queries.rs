@@ -1,5 +1,9 @@
+//! Update check database query functions (Postgres, plan-190 Task 4).
+//!
+//! All functions are async and take a `&PgPool` — the caller owns the pool.
+
 use anyhow::Result;
-use rusqlite::Connection;
+use sqlx::{PgPool, Row};
 
 use super::types::UpdateCheckRecord;
 
@@ -17,79 +21,95 @@ pub struct UpdateCheckParams<'a> {
     pub checked_at: i64,
 }
 
-pub fn upsert_update_check(conn: &Connection, params: UpdateCheckParams) -> Result<()> {
-    conn.execute(
+pub async fn upsert_update_check(pool: &PgPool, params: UpdateCheckParams<'_>) -> Result<()> {
+    sqlx::query(
         "INSERT INTO update_checks (item_type, item_id, current_version, latest_version, update_available, status, error_message, details_json, checked_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-         ON CONFLICT(item_type, item_id) DO UPDATE SET
-             current_version = excluded.current_version,
-             latest_version = excluded.latest_version,
-             update_available = excluded.update_available,
-             status = excluded.status,
-             error_message = excluded.error_message,
-             details_json = excluded.details_json,
-             checked_at = excluded.checked_at",
-        (
-            params.item_type,
-            params.item_id,
-            params.current_version,
-            params.latest_version,
-            params.update_available as i32,
-            params.status,
-            params.error_message,
-            params.details_json,
-            params.checked_at,
-        ),
-    )?;
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         ON CONFLICT (item_type, item_id) DO UPDATE SET
+             current_version = EXCLUDED.current_version,
+             latest_version = EXCLUDED.latest_version,
+             update_available = EXCLUDED.update_available,
+             status = EXCLUDED.status,
+             error_message = EXCLUDED.error_message,
+             details_json = EXCLUDED.details_json,
+             checked_at = EXCLUDED.checked_at",
+    )
+    .bind(params.item_type)
+    .bind(params.item_id)
+    .bind(params.current_version)
+    .bind(params.latest_version)
+    .bind(params.update_available)
+    .bind(params.status)
+    .bind(params.error_message)
+    .bind(params.details_json)
+    .bind(params.checked_at)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
-pub fn get_all_update_checks(conn: &Connection) -> Result<Vec<UpdateCheckRecord>> {
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {} FROM update_checks ORDER BY item_type, item_id",
-        UpdateCheckRecord::COLUMNS
-    ))?;
-    let rows = stmt.query_map([], UpdateCheckRecord::from_row)?;
-    rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(Into::into)
-}
-
-pub fn get_update_check(
-    conn: &Connection,
-    item_type: &str,
-    item_id: &str,
-) -> Result<Option<UpdateCheckRecord>> {
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {} FROM update_checks WHERE item_type = ?1 AND item_id = ?2",
-        UpdateCheckRecord::COLUMNS
-    ))?;
-    let mut rows = stmt.query_map((item_type, item_id), UpdateCheckRecord::from_row)?;
-    match rows.next() {
-        Some(row) => Ok(Some(row?)),
-        None => Ok(None),
+/// Decode an `update_checks` row into [`UpdateCheckRecord`].
+fn decode_update_check(row: sqlx::postgres::PgRow) -> UpdateCheckRecord {
+    UpdateCheckRecord {
+        item_type: row.get("item_type"),
+        item_id: row.get("item_id"),
+        current_version: row.get("current_version"),
+        latest_version: row.get("latest_version"),
+        update_available: row.get("update_available"),
+        status: row.get("status"),
+        error_message: row.get("error_message"),
+        details_json: row.get("details_json"),
+        checked_at: row.get("checked_at"),
     }
 }
 
-pub fn delete_update_check(conn: &Connection, item_type: &str, item_id: &str) -> Result<()> {
-    conn.execute(
-        "DELETE FROM update_checks WHERE item_type = ?1 AND item_id = ?2",
-        (item_type, item_id),
-    )?;
+const SELECT_ALL: &str = "SELECT item_type, item_id, current_version, latest_version, \
+     update_available, status, error_message, details_json, checked_at \
+     FROM update_checks ORDER BY item_type, item_id";
+const SELECT_ONE: &str = "SELECT item_type, item_id, current_version, latest_version, \
+     update_available, status, error_message, details_json, checked_at \
+     FROM update_checks WHERE item_type = $1 AND item_id = $2";
+
+pub async fn get_all_update_checks(pool: &PgPool) -> Result<Vec<UpdateCheckRecord>> {
+    let rows = sqlx::query(SELECT_ALL).fetch_all(pool).await?;
+    Ok(rows.into_iter().map(decode_update_check).collect())
+}
+
+pub async fn get_update_check(
+    pool: &PgPool,
+    item_type: &str,
+    item_id: &str,
+) -> Result<Option<UpdateCheckRecord>> {
+    let row = sqlx::query(SELECT_ONE)
+        .bind(item_type)
+        .bind(item_id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.map(decode_update_check))
+}
+
+pub async fn delete_update_check(pool: &PgPool, item_type: &str, item_id: &str) -> Result<()> {
+    sqlx::query("DELETE FROM update_checks WHERE item_type = $1 AND item_id = $2")
+        .bind(item_type)
+        .bind(item_id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
 /// Delete update check records matching a SQL LIKE pattern.
 /// The pattern should have `_` and `%` already escaped with `\\` for literal matching.
-/// Uses `ESCAPE '\\'` so that `\\_` matches a literal `_` and `\\%` matches a literal `%`.
-pub fn delete_update_checks_by_pattern(
-    conn: &Connection,
+/// Uses `ESCAPE '\'` so that `\\_` matches a literal `_` and `\\%` matches a literal `%`.
+pub async fn delete_update_checks_by_pattern(
+    pool: &PgPool,
     item_type: &str,
     item_id_pattern: &str,
 ) -> Result<()> {
-    conn.execute(
-        "DELETE FROM update_checks WHERE item_type = ?1 AND item_id LIKE ?2 ESCAPE '\\'",
-        (item_type, item_id_pattern),
-    )?;
+    sqlx::query("DELETE FROM update_checks WHERE item_type = $1 AND item_id LIKE $2 ESCAPE '\\'")
+        .bind(item_type)
+        .bind(item_id_pattern)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -97,21 +117,19 @@ pub fn delete_update_checks_by_pattern(
 /// gpu_variant (`name:%`) plus the legacy variant-less row (`name`).
 /// Handles the SQL LIKE escaping of `name` internally so callers never
 /// hand-write patterns.
-pub fn delete_update_checks_for_backend(conn: &Connection, name: &str) -> Result<()> {
+pub async fn delete_update_checks_for_backend(pool: &PgPool, name: &str) -> Result<()> {
     let escaped = name
         .replace('\\', "\\\\")
         .replace('_', "\\_")
         .replace('%', "\\%");
-    delete_update_checks_by_pattern(conn, "backend", &format!("{}:%", escaped))?;
-    delete_update_check(conn, "backend", name)?;
+    delete_update_checks_by_pattern(pool, "backend", &format!("{}:%", escaped)).await?;
+    delete_update_check(pool, "backend", name).await?;
     Ok(())
 }
 
-pub fn get_oldest_check_time(conn: &Connection) -> Result<Option<i64>> {
-    let mut stmt = conn.prepare("SELECT MIN(checked_at) FROM update_checks")?;
-    let mut rows = stmt.query_map([], |row| row.get::<_, Option<i64>>(0))?;
-    match rows.next() {
-        Some(row) => Ok(row?),
-        None => Ok(None),
-    }
+pub async fn get_oldest_check_time(pool: &PgPool) -> Result<Option<i64>> {
+    let row = sqlx::query("SELECT MIN(checked_at) AS oldest FROM update_checks")
+        .fetch_one(pool)
+        .await?;
+    Ok(row.get("oldest"))
 }

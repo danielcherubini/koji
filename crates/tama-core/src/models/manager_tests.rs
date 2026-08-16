@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::config::ModelConfig;
-use crate::db::queries::{ModelConfigRecord, PullLogEntry, UpdateCheckParams};
+use crate::db::queries::{ModelConfigRecord, PullLogEntry};
 
 fn make_test_record(repo_id: &str) -> ModelConfigRecord {
     use chrono::{SecondsFormat, Utc};
@@ -345,45 +345,6 @@ fn test_queue_cancel() {
         .unwrap();
     assert_eq!(item.status, "cancelled");
     assert!(item.completed_at.is_some());
-}
-
-#[test]
-fn test_update_check_operations() {
-    let manager = ModelManager::open_in_memory().unwrap();
-
-    // Initially no update check
-    let check = manager.get_update_check("backend", "llama.cpp").unwrap();
-    assert!(check.is_none());
-
-    // Upsert an update check
-    let params = UpdateCheckParams {
-        item_type: "backend",
-        item_id: "llama.cpp",
-        current_version: Some("0.1"),
-        latest_version: Some("0.2"),
-        update_available: true,
-        status: "update_available",
-        error_message: None,
-        details_json: None,
-        checked_at: 1700000000,
-    };
-    manager.upsert_update_check(params).unwrap();
-
-    // Retrieve it
-    let check = manager
-        .get_update_check("backend", "llama.cpp")
-        .unwrap()
-        .unwrap();
-    assert_eq!(check.item_type, "backend");
-    assert_eq!(check.item_id, "llama.cpp");
-    assert_eq!(check.current_version, Some("0.1".to_string()));
-    assert_eq!(check.latest_version, Some("0.2".to_string()));
-    assert!(check.update_available);
-
-    // Delete it
-    manager.delete_update_check("backend", "llama.cpp").unwrap();
-    let check = manager.get_update_check("backend", "llama.cpp").unwrap();
-    assert!(check.is_none());
 }
 
 #[test]

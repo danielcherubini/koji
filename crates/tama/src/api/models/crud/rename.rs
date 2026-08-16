@@ -35,8 +35,15 @@ pub async fn rename_model(
         Err((status, body)) => return (status, Json(body)).into_response(),
     };
 
-    spawn_model_crud(state_clone, DEFAULT_CRUD_STATUS, move || {
+    // The update_check cleanup (Postgres, plan-190 Task 4) runs after the
+    // rename transaction; the closure hands the old repo_id out through this cell.
+    let pool = state.db_pool();
+    let old_repo_id: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
+    let old_repo_id_capture = Arc::clone(&old_repo_id);
+
+    let response = spawn_model_crud(state_clone, DEFAULT_CRUD_STATUS, move || {
         let (repo, model_id, existing_record) = resolve_model_record(&config_dir, &id_str)?;
+        *old_repo_id_capture.lock().unwrap() = Some(existing_record.repo_id.clone());
         let mut model_config = tama_core::config::ModelConfig::from_db_record(&existing_record);
 
         let new_repo_id = body.new_repo_id.trim().to_string();
@@ -87,10 +94,18 @@ pub async fn rename_model(
                 (StatusCode::INTERNAL_SERVER_ERROR, error_body(e.to_string(), None))
             })?;
 
-        // Clean up update_check record for old repo_id
-        let _ = repo.delete_update_check("model", &existing_record.repo_id);
-
         Ok(ModelMutationResponse { ok: true, id: model_id })
     })
-    .await
+    .await;
+
+    // Clean up update_check record for old repo_id (best-effort, kept outside
+    // the rename transaction so a DB hiccup doesn't fail the rename).
+    let old_repo_id = old_repo_id.lock().unwrap().clone();
+    if let (Some(pool), Some(repo_id)) = (pool.as_deref(), old_repo_id.as_deref()) {
+        if let Err(e) = tama_core::db::queries::delete_update_check(pool, "model", repo_id).await {
+            tracing::warn!("Failed to delete update check record for model {repo_id}: {e}");
+        }
+    }
+
+    response
 }

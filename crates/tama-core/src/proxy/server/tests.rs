@@ -229,32 +229,9 @@ async fn test_metrics_merges_backend_metrics() {
     );
 }
 
-#[tokio::test]
-async fn test_metrics_task_persists_to_db() {
-    let tmp = tempfile::tempdir().unwrap();
-    let config = crate::config::Config::default();
-    let state = Arc::new(crate::proxy::ProxyState::new(
-        config,
-        Some(tmp.path().to_path_buf()),
-        None,
-    ));
-
-    let _server = ProxyServer::new(state.clone()).await;
-
-    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-
-    let conn = state.open_db().unwrap();
-    let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM system_metrics_history", [], |row| {
-            row.get(0)
-        })
-        .unwrap();
-    assert!(
-        count >= 1,
-        "Expected at least 1 row in system_metrics_history after 2s, got {}",
-        count
-    );
-}
+/// `test_metrics_task_persists_to_db` now lives in
+/// `crates/tama-core/tests/metrics_collector.rs` on the Postgres harness
+/// (plan-190 Task 4 — system metrics persist to Postgres).
 
 #[tokio::test]
 async fn test_metrics_task_broadcasts_samples() {

@@ -14,6 +14,7 @@ impl UpdateChecker {
     pub async fn check_backend(
         &self,
         config_dir: &std::path::Path,
+        pool: &sqlx::PgPool,
         backend_name: &str,
         backend_type: &InstallationType,
         gpu_variant: &str,
@@ -49,7 +50,7 @@ impl UpdateChecker {
                     Ok(v) => Some(v),
                     Err(e) => {
                         self.save_check_result(
-                            config_dir,
+                            pool,
                             "backend",
                             &item_id,
                             current_version.as_deref(),
@@ -94,7 +95,7 @@ impl UpdateChecker {
 
         let save_result = self
             .save_check_result(
-                config_dir,
+                pool,
                 "backend",
                 &item_id,
                 current_version.as_deref(),

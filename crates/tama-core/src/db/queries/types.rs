@@ -255,28 +255,8 @@ pub struct TtsConfigRecord {
     pub speed: f32,     // 0.5 to 2.0
     pub format: String, // mp3, wav, ogg
     pub enabled: bool,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-impl TtsConfigRecord {
-    /// All 8 columns in SELECT order (id first). Must match `from_row` index order.
-    pub(crate) const COLUMNS: &str =
-        "id, engine, default_voice, speed, format, enabled, created_at, updated_at";
-
-    /// Map a row selected with `COLUMNS` order into a record.
-    pub(crate) fn from_row(row: &Row) -> rusqlite::Result<Self> {
-        Ok(TtsConfigRecord {
-            id: row.get(0)?,
-            engine: row.get(1)?,
-            default_voice: row.get(2)?,
-            speed: row.get(3)?,
-            format: row.get(4)?,
-            enabled: row.get::<_, i32>(5)? != 0,
-            created_at: row.get(6)?,
-            updated_at: row.get(7)?,
-        })
-    }
+    pub created_at: sqlx::types::time::OffsetDateTime,
+    pub updated_at: sqlx::types::time::OffsetDateTime,
 }
 
 /// A stored update check record for a backend or model.
@@ -291,26 +271,4 @@ pub struct UpdateCheckRecord {
     pub error_message: Option<String>,
     pub details_json: Option<String>, // JSON blob for model file changes
     pub checked_at: i64,              // unix timestamp
-}
-
-impl UpdateCheckRecord {
-    /// All 9 columns in SELECT order. Must match `from_row` index order.
-    pub(crate) const COLUMNS: &str =
-        "item_type, item_id, current_version, latest_version, update_available, \
-         status, error_message, details_json, checked_at";
-
-    /// Map a row selected with `COLUMNS` order into a record.
-    pub(crate) fn from_row(row: &Row) -> rusqlite::Result<Self> {
-        Ok(UpdateCheckRecord {
-            item_type: row.get(0)?,
-            item_id: row.get(1)?,
-            current_version: row.get(2)?,
-            latest_version: row.get(3)?,
-            update_available: row.get::<_, i32>(4)? != 0,
-            status: row.get(5)?,
-            error_message: row.get(6)?,
-            details_json: row.get(7)?,
-            checked_at: row.get(8)?,
-        })
-    }
 }

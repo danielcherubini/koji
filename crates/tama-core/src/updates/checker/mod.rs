@@ -13,9 +13,6 @@ mod cache;
 mod helpers;
 mod model;
 
-#[cfg(all(test, feature = "web-ui"))]
-mod orchestration_tests;
-
 #[cfg(test)]
 mod tests;
 
@@ -110,6 +107,29 @@ impl UpdateChecker {
         self.update_events_tx = Some(tx);
     }
 
+    /// Test hook: pre-populate the GGUF listing cache (plan-190 Task 4 —
+    /// moved from the in-file orchestration tests that could touch the
+    /// private `gguf_listing_cache` field).
+    #[doc(hidden)]
+    pub async fn seed_gguf_listing_cache(
+        &self,
+        repo_id: String,
+        commit_sha: String,
+        files: Vec<crate::models::pull::RemoteGguf>,
+        now: Option<i64>,
+    ) {
+        self.gguf_listing_cache
+            .insert(repo_id, commit_sha, files, now)
+            .await
+    }
+
+    /// Test hook: acquire the run lock to simulate a concurrent check in
+    /// progress (plan-190 Task 4).
+    #[doc(hidden)]
+    pub fn try_hold_run_lock(&self) -> Option<tokio::sync::MutexGuard<'_, ()>> {
+        self.lock.try_lock().ok()
+    }
+
     /// Emit an update event (non-blocking, fire-and-forget).
     #[cfg(feature = "web-ui")]
     fn emit(&self, event: UpdateEvent) {
@@ -122,7 +142,11 @@ impl UpdateChecker {
 
     /// Run a full update check for all backends and models.
     /// Returns immediately if another check is already in progress.
-    pub async fn run_check(&self, config_dir: &std::path::Path) -> anyhow::Result<()> {
+    pub async fn run_check(
+        &self,
+        config_dir: &std::path::Path,
+        pool: &sqlx::PgPool,
+    ) -> anyhow::Result<()> {
         // Try to acquire the lock
         let _guard = match self.lock.try_lock() {
             Ok(guard) => guard,
@@ -189,7 +213,7 @@ impl UpdateChecker {
         // Phase 2: Async network - check each backend
         for (backend_name, backend_type, gpu_variant) in &backends {
             if let Err(e) = self
-                .check_backend(config_dir, backend_name, backend_type, gpu_variant)
+                .check_backend(config_dir, pool, backend_name, backend_type, gpu_variant)
                 .await
             {
                 tracing::warn!("Failed to check backend {}: {}", backend_name, e);
@@ -199,7 +223,7 @@ impl UpdateChecker {
         // Phase 2: Async network - check each model
         for (model_id, repo_id) in &models {
             if let Err(e) = self
-                .check_model(config_dir, *model_id, repo_id.as_deref())
+                .check_model(config_dir, pool, *model_id, repo_id.as_deref())
                 .await
             {
                 tracing::warn!("Failed to check model {}: {}", model_id, e);
@@ -213,7 +237,7 @@ impl UpdateChecker {
     #[allow(clippy::too_many_arguments)]
     async fn save_check_result(
         &self,
-        config_dir: &std::path::Path,
+        pool: &sqlx::PgPool,
         item_type: &str,
         item_id: &str,
         current_version: Option<&str>,
@@ -224,77 +248,39 @@ impl UpdateChecker {
         details_json: Option<&str>,
     ) -> anyhow::Result<()> {
         let now = chrono::Utc::now().timestamp();
-        let status_str = status.to_string();
-        tokio::task::spawn_blocking({
-            let config_dir = config_dir.to_path_buf();
-            let item_type = item_type.to_string();
-            let item_id = item_id.to_string();
-            let current_version = current_version.map(String::from);
-            let latest_version = latest_version.map(String::from);
-            let error_message = error_message.map(String::from);
-            let details_json = details_json.map(String::from);
-            let status = status_str;
-            move || -> anyhow::Result<()> {
-                let open = db::open(&config_dir)?;
-                crate::db::queries::upsert_update_check(
-                    &open.conn,
-                    crate::db::queries::UpdateCheckParams {
-                        item_type: &item_type,
-                        item_id: &item_id,
-                        current_version: current_version.as_deref(),
-                        latest_version: latest_version.as_deref(),
-                        update_available,
-                        status: &status,
-                        error_message: error_message.as_deref(),
-                        details_json: details_json.as_deref(),
-                        checked_at: now,
-                    },
-                )?;
-                Ok(())
-            }
-        })
-        .await??;
-        Ok(())
+        crate::db::queries::upsert_update_check(
+            pool,
+            crate::db::queries::UpdateCheckParams {
+                item_type,
+                item_id,
+                current_version,
+                latest_version,
+                update_available,
+                status,
+                error_message,
+                details_json,
+                checked_at: now,
+            },
+        )
+        .await
     }
 
     /// Get cached update check results.
-    pub async fn get_results(
-        &self,
-        config_dir: &std::path::Path,
-    ) -> anyhow::Result<Vec<UpdateCheckRecord>> {
-        tokio::task::spawn_blocking({
-            let config_dir = config_dir.to_path_buf();
-            move || -> anyhow::Result<Vec<UpdateCheckRecord>> {
-                let repo = crate::db::repository::Repository::open(&config_dir)?;
-                repo.get_all_update_checks()
-            }
-        })
-        .await?
+    pub async fn get_results(&self, pool: &sqlx::PgPool) -> anyhow::Result<Vec<UpdateCheckRecord>> {
+        crate::db::queries::get_all_update_checks(pool).await
     }
 
     /// Check if enough time has passed since last check (based on interval).
     ///
-    /// The interval comes from the Postgres-backed global config
-    /// (plan-190, Task 3); the oldest-check-time lookup still reads the
-    /// SQLite `update_checks` table until that module is ported (Task 4).
-    pub async fn should_check(
-        &self,
-        pool: &sqlx::PgPool,
-        config_dir: &std::path::Path,
-    ) -> anyhow::Result<bool> {
+    /// Both the interval (Postgres-backed global config, plan-190 Task 3)
+    /// and the oldest-check-time lookup (plan-190 Task 4) are Postgres-based.
+    pub async fn should_check(&self, pool: &sqlx::PgPool) -> anyhow::Result<bool> {
         let config = Config::load_from_pool(pool).await?;
 
         let interval_hours = config.general.update_check_interval as i64;
         let interval_secs = interval_hours * 3600;
 
-        let oldest = tokio::task::spawn_blocking({
-            let config_dir_for_db = config_dir.to_path_buf();
-            move || -> anyhow::Result<Option<i64>> {
-                let open = db::open(&config_dir_for_db)?;
-                get_oldest_check_time(&open.conn)
-            }
-        })
-        .await??;
+        let oldest = get_oldest_check_time(pool).await?;
 
         let now = chrono::Utc::now().timestamp();
         match oldest {

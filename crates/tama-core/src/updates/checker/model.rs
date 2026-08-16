@@ -14,6 +14,7 @@ impl UpdateChecker {
     pub async fn check_model(
         &self,
         config_dir: &std::path::Path,
+        pool: &sqlx::PgPool,
         model_id: i64,
         repo_id: Option<&str>,
     ) -> anyhow::Result<()> {
@@ -31,7 +32,7 @@ impl UpdateChecker {
             Some(id) if !id.is_empty() => id,
             _ => {
                 self.save_check_result(
-                    config_dir,
+                    pool,
                     "model",
                     &model_id.to_string(),
                     None,
@@ -77,7 +78,7 @@ impl UpdateChecker {
         let Some((pull_record, file_records)) = db_state else {
             let save_result = self
                 .save_check_result(
-                    config_dir,
+                    pool,
                     "model",
                     &model_id.to_string(),
                     None,
@@ -159,7 +160,7 @@ impl UpdateChecker {
         if remote_listing.commit_sha == pull_record.commit_sha {
             let save_result = self
                 .save_check_result(
-                    config_dir,
+                    pool,
                     "model",
                     &model_id.to_string(),
                     Some(&pull_record.commit_sha),
@@ -215,7 +216,7 @@ impl UpdateChecker {
             Err(e) => {
                 let save_result = self
                     .save_check_result(
-                        config_dir,
+                        pool,
                         "model",
                         &model_id.to_string(),
                         Some(&pull_record.commit_sha),
@@ -352,7 +353,7 @@ impl UpdateChecker {
 
         let save_result = self
             .save_check_result(
-                config_dir,
+                pool,
                 "model",
                 &model_id.to_string(),
                 Some(&pull_record.commit_sha),

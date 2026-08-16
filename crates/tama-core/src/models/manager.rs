@@ -6,7 +6,7 @@ use rusqlite::Connection;
 use crate::config::ModelConfig;
 use crate::db::queries::{
     ActiveModelRecord, ModelConfigRecord, ModelFileRecord, ModelPullRecord, PullLogEntry,
-    PullQueueItem, UpdateCheckParams, UpdateCheckRecord,
+    PullQueueItem,
 };
 
 /// Centralized model data access. Each caller opens its own instance.
@@ -315,27 +315,6 @@ impl ModelManager {
     /// Retrieve a queue item by its job_id.
     pub fn queue_get_by_job_id(&self, job_id: &str) -> Result<Option<PullQueueItem>> {
         crate::db::queries::get_item_by_job_id(&self.conn, job_id)
-    }
-
-    // ── Update checks ──────────────────────────────────────────
-
-    /// Get a stored update check record.
-    pub fn get_update_check(
-        &self,
-        item_type: &str,
-        item_id: &str,
-    ) -> Result<Option<UpdateCheckRecord>> {
-        crate::db::queries::get_update_check(&self.conn, item_type, item_id)
-    }
-
-    /// Insert or update an update check record.
-    pub fn upsert_update_check(&self, params: UpdateCheckParams) -> Result<()> {
-        crate::db::queries::upsert_update_check(&self.conn, params)
-    }
-
-    /// Delete a stored update check record.
-    pub fn delete_update_check(&self, item_type: &str, item_id: &str) -> Result<()> {
-        crate::db::queries::delete_update_check(&self.conn, item_type, item_id)
     }
 
     // ── Async wrappers ────────────────────────────────────────

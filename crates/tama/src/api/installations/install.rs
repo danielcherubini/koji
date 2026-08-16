@@ -606,11 +606,12 @@ pub async fn remove_installation(
         }
     }
 
-    // Block 2: pooled remove — safe_remove_installation loop + delete_all_versions
-    // + update-check cleanup, all on the blocking pool.
+    // Block 2: pooled remove — safe_remove_installation loop + delete_all_versions,
+    // all on the blocking pool.
     let name_for_block2 = name.clone();
     let gpu_variant_for_block2 = gpu_variant.clone();
     let backends_for_block2 = backends_to_remove.clone();
+    let pool = state.db_pool();
     #[allow(clippy::result_large_err)]
     match tokio::task::spawn_blocking(move || -> Result<(), axum::response::Response> {
         // Remove files for each variant
@@ -642,13 +643,6 @@ pub async fn remove_installation(
             ));
         }
 
-        // Clean up update_check records — use LIKE pattern to match all variants
-        // (e.g., "llama_cpp:cpu", "llama_cpp:cuda") plus legacy format.
-        if let Ok(repo_handle) = crate::api::helpers::shared_repository(&web_state) {
-            let repo = repo_handle.lock().unwrap();
-            let _ = repo.delete_update_checks_for_backend(&name_for_block2);
-        }
-
         Ok(())
     })
     .await
@@ -661,6 +655,13 @@ pub async fn remove_installation(
                 format!("spawn error: {}", e),
             )
         }
+    }
+
+    // Clean up update_check records — use LIKE pattern to match all variants
+    // (e.g., "llama_cpp:cpu", "llama_cpp:cuda") plus legacy format.
+    // (Postgres, plan-190 Task 4; best-effort.)
+    if let Some(pool) = pool {
+        let _ = tama_core::db::queries::delete_update_checks_for_backend(&pool, &name).await;
     }
 
     Json(DeleteResponse { removed: true }).into_response()

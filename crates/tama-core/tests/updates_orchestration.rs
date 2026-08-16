@@ -1,7 +1,22 @@
-use super::{UpdateChecker, UpdateEvent};
-use crate::db::{self, queries};
-use crate::installations::{InstallationInfo, InstallationManager, InstallationType};
-use crate::models::pull::RemoteGguf;
+//! Postgres port of the update checker orchestration tests (plan-190, Task 4).
+//!
+//! The `update_checks` rows now live in Postgres (testcontainer harness), so
+//! the assertions read them through the async query functions. Backend and
+//! model seed data is still SQLite — `installation_configs` and
+//! `model_configs` are ported in Tasks 8 and 5.
+//!
+//! The event-channel assertions require the `web-ui` feature (same gate as
+//! the former in-file tests).
+
+#![cfg(feature = "web-ui")]
+
+mod common;
+
+use common::with_schema;
+use tama_core::db::{self, queries};
+use tama_core::installations::{InstallationInfo, InstallationManager, InstallationType};
+use tama_core::models::pull::RemoteGguf;
+use tama_core::updates::checker::{UpdateChecker, UpdateEvent};
 use tempfile::tempdir;
 use wiremock::matchers::{method, path_regex, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -89,6 +104,7 @@ fn seed_model(config_dir: &std::path::Path, repo_id: &str, commit_sha: &str, lfs
 /// TEST 1: Full pipeline — run_check persists backend and model rows and emits events.
 #[tokio::test]
 async fn test_run_check_persists_backend_and_model_rows_and_emits_events() {
+    let guard = with_schema().await;
     let tmp = tempdir().unwrap();
     let config_dir = tmp.path();
 
@@ -134,11 +150,10 @@ async fn test_run_check_persists_backend_and_model_rows_and_emits_events() {
     checker.set_update_events_tx(tx);
 
     // Run the full check
-    checker.run_check(config_dir).await.unwrap();
+    checker.run_check(config_dir, &guard.pool).await.unwrap();
 
     // ── DB assertions: backend row should be "up_to_date" ───────────────
-    let repo = crate::db::repository::Repository::open(config_dir).unwrap();
-    let checks = repo.get_all_update_checks().unwrap();
+    let checks = queries::get_all_update_checks(&guard.pool).await.unwrap();
 
     let backend_check = checks
         .iter()
@@ -191,11 +206,14 @@ async fn test_run_check_persists_backend_and_model_rows_and_emits_events() {
     );
 
     std::env::remove_var("HF_ENDPOINT");
+
+    guard.finish().await;
 }
 
 /// TEST 2: Model update check via cache — no HTTP call needed.
 #[tokio::test]
 async fn test_run_check_model_up_to_date_via_cache_without_http() {
+    let guard = with_schema().await;
     let tmp = tempdir().unwrap();
     let config_dir = tmp.path();
 
@@ -215,20 +233,17 @@ async fn test_run_check_model_up_to_date_via_cache_without_http() {
         filename: "Test-Q4_K_M.gguf".into(),
         quant: Some("Q4_K_M".into()),
     }];
-    // Access private field — allowed because this module is a child of `checker`
     checker
-        .gguf_listing_cache
-        .insert("cached/Model".into(), sha_same.into(), files, None)
+        .seed_gguf_listing_cache("cached/Model".into(), sha_same.into(), files, None)
         .await;
 
     let (tx, _rx) = tokio::sync::broadcast::channel(64);
     checker.set_update_events_tx(tx);
 
     // Run the full check — should use cache and find model up_to_date
-    checker.run_check(config_dir).await.unwrap();
+    checker.run_check(config_dir, &guard.pool).await.unwrap();
 
-    let repo = crate::db::repository::Repository::open(config_dir).unwrap();
-    let checks = repo.get_all_update_checks().unwrap();
+    let checks = queries::get_all_update_checks(&guard.pool).await.unwrap();
 
     // Model should be up_to_date because commit SHA matches the cached listing
     let model_check = checks
@@ -244,11 +259,14 @@ async fn test_run_check_model_up_to_date_via_cache_without_http() {
         .find(|c| c.item_type == "backend")
         .expect("should have a backend check record");
     assert_eq!(backend_check.status, "up_to_date");
+
+    guard.finish().await;
 }
 
 /// TEST 3: Model without repo records → status "unknown" via CheckError.
 #[tokio::test]
 async fn test_run_check_model_without_repo_records_unknown() {
+    let guard = with_schema().await;
     let tmp = tempdir().unwrap();
     let config_dir = tmp.path();
 
@@ -305,12 +323,11 @@ async fn test_run_check_model_without_repo_records_unknown() {
 
     // Call check_model directly — repo_id is None/empty → should go to unknown path
     checker
-        .check_model(config_dir, model_id, None)
+        .check_model(config_dir, &guard.pool, model_id, None)
         .await
         .unwrap();
 
-    let repo = crate::db::repository::Repository::open(config_dir).unwrap();
-    let checks = repo.get_all_update_checks().unwrap();
+    let checks = queries::get_all_update_checks(&guard.pool).await.unwrap();
 
     // Should have a record for this model with status "unknown"
     let model_check = checks
@@ -318,11 +335,14 @@ async fn test_run_check_model_without_repo_records_unknown() {
         .find(|c| c.item_type == "model")
         .expect("should have a model check record");
     assert_eq!(model_check.status, "unknown");
+
+    guard.finish().await;
 }
 
 /// TEST 4: Concurrent invocation — acquiring the lock first causes run_check to skip.
 #[tokio::test]
 async fn test_run_check_concurrent_invocation_skips() {
+    let guard = with_schema().await;
     let tmp = tempdir().unwrap();
     let config_dir = tmp.path();
 
@@ -332,16 +352,17 @@ async fn test_run_check_concurrent_invocation_skips() {
     let checker = UpdateChecker::new();
 
     // Manually acquire the lock to simulate a concurrent check in progress
-    let _lock_guard = checker.lock.try_lock().unwrap();
+    let _lock_guard = checker.try_hold_run_lock().unwrap();
 
     // Now run_check should return Ok(()) immediately without doing any work
-    checker.run_check(config_dir).await.unwrap();
+    checker.run_check(config_dir, &guard.pool).await.unwrap();
 
     // The DB should have no check records since the check was skipped
-    let repo = crate::db::repository::Repository::open(config_dir).unwrap();
-    let checks = repo.get_all_update_checks().unwrap();
+    let checks = queries::get_all_update_checks(&guard.pool).await.unwrap();
     assert!(
         checks.is_empty(),
         "no check records should exist when run_check is skipped"
     );
+
+    guard.finish().await;
 }

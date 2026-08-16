@@ -53,28 +53,23 @@ pub async fn list_installations(
         })
         .unwrap_or_default();
 
-    // Load cached update checks from DB (keyed by "name:variant")
+    // Load cached update checks from Postgres (keyed by "name:variant")
     let update_checks: std::collections::HashMap<
         String,
         tama_core::db::queries::UpdateCheckRecord,
-    > = match crate::api::helpers::shared_repository(&web_state) {
-        Ok(repo_handle) => {
-            let repo_handle = repo_handle.clone();
-            match tokio::task::spawn_blocking(move || {
-                let repo = repo_handle.lock().unwrap();
-                repo.get_all_update_checks()
-            })
-            .await
-            {
-                Ok(Ok(records)) => records
-                    .into_iter()
-                    .filter(|r| r.item_type == "backend")
-                    .map(|r| (r.item_id.clone(), r))
-                    .collect(),
-                _ => std::collections::HashMap::new(),
+    > = match state.db_pool() {
+        Some(pool) => match tama_core::db::queries::get_all_update_checks(&pool).await {
+            Ok(records) => records
+                .into_iter()
+                .filter(|r| r.item_type == "backend")
+                .map(|r| (r.item_id.clone(), r))
+                .collect(),
+            Err(e) => {
+                tracing::warn!("Failed to load update checks: {e}");
+                std::collections::HashMap::new()
             }
-        }
-        Err(_) => std::collections::HashMap::new(),
+        },
+        None => std::collections::HashMap::new(),
     };
 
     // Build the response including available backend types

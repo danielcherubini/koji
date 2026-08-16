@@ -227,6 +227,7 @@ pub async fn update_installation(
     // Clone variables needed for the post-update check
     let checker = web_state.update_checker.clone();
     let backend_type_clone = backend_type.clone();
+    let pool = state.db_pool();
 
     // Spawn the update task
     let jobs_clone = jobs.clone();
@@ -268,14 +269,17 @@ pub async fn update_installation(
                     .finish(&job_clone, crate::web_types::JobStatus::Succeeded, None)
                     .await;
                 // Refresh the update check record so the Updates Center reflects the new version
-                let _ = checker
-                    .check_backend(
-                        &config_dir_clone,
-                        &name_clone,
-                        &backend_type_clone,
-                        &gpu_variant_clone,
-                    )
-                    .await;
+                if let Some(pool) = &pool {
+                    let _ = checker
+                        .check_backend(
+                            &config_dir_clone,
+                            pool,
+                            &name_clone,
+                            &backend_type_clone,
+                            &gpu_variant_clone,
+                        )
+                        .await;
+                }
             }
             Err(e) => {
                 let _ = jobs_clone
