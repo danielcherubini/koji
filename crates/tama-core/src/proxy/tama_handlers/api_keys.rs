@@ -541,7 +541,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let proxy_state = Arc::new(ProxyState::new(config, Some(db_dir)));
+        let proxy_state = Arc::new(ProxyState::new(config, Some(db_dir), None));
 
         (proxy_state, temp_dir, key)
     }

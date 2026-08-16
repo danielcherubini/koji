@@ -21,6 +21,7 @@ mod tests {
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             repository,
+            db_pool: None,
         }
     }
 
@@ -29,7 +30,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
             let config = tama_core::config::Config::default();
-            let state = Arc::new(tama_core::proxy::ProxyState::new(config, None));
+            let state = Arc::new(tama_core::proxy::ProxyState::new(config, None, None));
             axum::serve(
                 listener,
                 tama_web::router::build_web_routes(Arc::new(test_web_state(None)))
@@ -157,6 +158,7 @@ mod tests {
                 let state = Arc::new(tama_core::proxy::ProxyState::new(
                     config,
                     Some(config_dir_server.clone()),
+                    None,
                 ));
                 axum::serve(
                     listener,
@@ -396,6 +398,7 @@ mod tests {
                 let state = Arc::new(tama_core::proxy::ProxyState::new(
                     config,
                     Some(config_dir_server.clone()),
+                    None,
                 ));
                 axum::serve(
                     listener,

@@ -133,7 +133,7 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_config_dir_prefers_db_dir() {
         let tmp_dir = tempfile::tempdir().expect("tempdir");
-        let state = ProxyState::new(Config::default(), Some(tmp_dir.path().to_path_buf()));
+        let state = ProxyState::new(Config::default(), Some(tmp_dir.path().to_path_buf()), None);
 
         let resolved = resolve_config_dir(&state).unwrap();
         assert_eq!(resolved, tmp_dir.path());
@@ -145,7 +145,7 @@ mod tests {
     /// the fallback path here.
     #[test]
     fn test_resolve_config_dir_falls_back_to_system_dir() {
-        let state = ProxyState::new(Config::default(), None);
+        let state = ProxyState::new(Config::default(), None, None);
 
         let resolved = resolve_config_dir(&state).unwrap();
         let system_dir = Config::config_dir().expect("system config dir should be available");

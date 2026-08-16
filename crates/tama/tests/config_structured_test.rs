@@ -27,6 +27,7 @@ fn test_web_state() -> tama_web::web_types::WebState {
         update_tx: Arc::new(tokio::sync::Mutex::new(None)),
         upload_lock: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         repository: None,
+        db_pool: None,
     }
 }
 
@@ -80,7 +81,11 @@ fn build_test_state(_config_content: &str) -> (Arc<ProxyState>, TempDir) {
     let _open_result = tama_core::db::open(temp_dir.path()).expect("open test DB");
 
     let config = tama_core::config::Config::default();
-    let state = Arc::new(ProxyState::new(config, Some(temp_dir.path().to_path_buf())));
+    let state = Arc::new(ProxyState::new(
+        config,
+        Some(temp_dir.path().to_path_buf()),
+        None,
+    ));
 
     (state, temp_dir)
 }
@@ -193,7 +198,11 @@ async fn test_get_structured_config_without_db_dir() {
     let _open_result = tama_core::db::open(temp_dir.path()).expect("open test DB");
 
     let config = tama_core::config::Config::default();
-    let state = Arc::new(ProxyState::new(config, Some(temp_dir.path().to_path_buf())));
+    let state = Arc::new(ProxyState::new(
+        config,
+        Some(temp_dir.path().to_path_buf()),
+        None,
+    ));
     let router = build_web_routes(Arc::new(test_web_state()))
         .with_state(state)
         .layer(axum::extract::Extension(test_web_state()));

@@ -5,6 +5,7 @@
 
 pub mod backfill;
 pub mod migrations;
+pub mod pool;
 pub mod postgres;
 pub mod queries;
 pub mod repository;

@@ -260,6 +260,7 @@ impl Clone for ProxyState {
             langfuse_client: Arc::clone(&self.langfuse_client),
             remote_forwarder: self.remote_forwarder.clone(),
             tamad_clients: Arc::clone(&self.tamad_clients),
+            db_pool: self.db_pool.clone(),
         }
     }
 }
@@ -299,9 +300,19 @@ pub struct ProxyState {
     /// Uses Arc<RwLock> so mutable access (lazy client creation) works across clones.
     pub(crate) tamad_clients:
         Arc<tokio::sync::RwLock<HashMap<String, crate::tamad::client::TamadClient>>>,
+    /// Postgres pool (plan-190). `None` until Postgres becomes required
+    /// (Task 9); `main.rs` is the single owner of the pool and hands the
+    /// same `Arc<PgPool>` to both `ProxyState` and `WebState`.
+    pub(crate) db_pool: Option<Arc<sqlx::PgPool>>,
 }
 
 impl ProxyState {
+    /// The Postgres pool, if Postgres is enabled (plan-190). `None` during
+    /// the SQLite-only migration stages.
+    pub fn db_pool(&self) -> Option<Arc<sqlx::PgPool>> {
+        self.db_pool.clone()
+    }
+
     /// Open a DB connection for a quick sync operation.
     /// Returns None if db_dir is not configured (e.g., in tests).
     ///
@@ -456,7 +467,11 @@ mod tests {
     /// unknown job id yields None.
     #[tokio::test]
     async fn test_get_repo_pull_status_dto() {
-        let state = Arc::new(ProxyState::new(crate::config::Config::default(), None));
+        let state = Arc::new(ProxyState::new(
+            crate::config::Config::default(),
+            None,
+            None,
+        ));
         let dest = tempfile::tempdir().unwrap();
         std::fs::write(dest.path().join("a.bin"), vec![0u8; 100]).unwrap();
         let nested = dest.path().join("nested");
@@ -500,7 +515,11 @@ mod tests {
     /// ("not found" / "already finished") and flags a running job.
     #[tokio::test]
     async fn test_cancel_repo_pull_delegate() {
-        let state = Arc::new(ProxyState::new(crate::config::Config::default(), None));
+        let state = Arc::new(ProxyState::new(
+            crate::config::Config::default(),
+            None,
+            None,
+        ));
 
         assert_eq!(
             state.cancel_repo_pull("missing").await,
@@ -548,7 +567,11 @@ mod tests {
     /// validates the repo id before any other work.
     #[tokio::test]
     async fn test_start_repo_pull_delegate_invalid_id() {
-        let state = Arc::new(ProxyState::new(crate::config::Config::default(), None));
+        let state = Arc::new(ProxyState::new(
+            crate::config::Config::default(),
+            None,
+            None,
+        ));
         let err = state
             .start_repo_pull("a/b\\c", None)
             .await
@@ -563,7 +586,7 @@ mod tests {
     /// composition — not lock guards.
     #[test]
     fn test_proxy_state_public_surface() {
-        let state = ProxyState::new(crate::config::Config::default(), None);
+        let state = ProxyState::new(crate::config::Config::default(), None, None);
         let _: &reqwest::Client = state.client();
         let _: &Option<std::path::PathBuf> = state.db_dir();
         let _: &Option<Arc<PullQueueService>> = state.pull_queue();

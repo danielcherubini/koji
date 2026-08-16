@@ -39,7 +39,14 @@ impl Config {
         // Run one-time TOML → DB migration if config.toml exists.
         // The migration is idempotent (checks app_general row), so concurrent
         // callers are safe — the second will skip.
-        if config_dir.join("config.toml").exists() {
+        //
+        // A v3 bootstrap file (only a [database] table) is NOT legacy app
+        // config — leave it untouched; `tama migrate` owns it (plan-190).
+        let is_v3_bootstrap = matches!(
+            crate::config::database::load_bootstrap(&config_dir),
+            Ok(Some(_))
+        );
+        if config_dir.join("config.toml").exists() && !is_v3_bootstrap {
             crate::db::backfill::migrate_toml_to_db(&config_dir, &db_path)?;
         }
 

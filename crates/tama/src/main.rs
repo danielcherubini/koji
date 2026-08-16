@@ -21,6 +21,13 @@ fn setup_hf_token(config: &Config) {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Load the v3 bootstrap config FIRST: a config.toml with a [database]
+    // table enables Postgres (plan-190). This must run before
+    // Config::load(), which would otherwise treat the bootstrap file as
+    // legacy v2 app config and rename it.
+    let config_dir = Config::config_dir().context("Failed to determine config directory")?;
+    let db_bootstrap = tama_core::config::database::load_bootstrap(&config_dir)?;
+
     // Load configuration FIRST (needed for log_level and logs_dir)
     let config = Config::load()?;
 
@@ -34,6 +41,34 @@ async fn main() -> Result<()> {
 
     // Set up HF_TOKEN from config before any hf_hub usage
     setup_hf_token(&config);
+
+    // Postgres bootstrap (plan-190). main.rs is the SINGLE owner of the
+    // pool: load → resolve password → create pool → retry until reachable
+    // → run migrations → share the Arc<PgPool> with ProxyState + WebState.
+    let db_pool: Option<Arc<sqlx::PgPool>> = match db_bootstrap {
+        None => {
+            tracing::info!("Postgres disabled (no [database] in config.toml)");
+            None
+        }
+        Some(cfg) => {
+            // Fail loud on a missing password env var (names the exact var).
+            cfg.resolved_password()
+                .with_context(|| "failed to resolve Postgres password")?;
+            let pool = tama_core::db::pool::create_pool(&cfg)
+                .await
+                .context("creating Postgres pool")?;
+            // Retry forever with backoff — the daemon stays alive while
+            // Postgres comes up, logging each attempt.
+            tama_core::db::pool::connect_with_retry(&pool, std::time::Duration::from_secs(1))
+                .await
+                .context("connecting to Postgres")?;
+            // A migration failure (not a connection failure) exits non-zero.
+            tama_core::db::postgres::run_migrations(&pool)
+                .await
+                .context("applying Postgres migrations")?;
+            Some(Arc::new(pool))
+        }
+    };
 
     // Parse host and port from config
     let host = config.proxy.host.clone();
@@ -62,7 +97,7 @@ async fn main() -> Result<()> {
     );
 
     // Database setup and migrations
-    let db_dir = Config::config_dir().ok();
+    let db_dir = Some(config_dir.clone());
     if let Some(ref dir) = db_dir {
         match tama_core::db::open(dir) {
             Ok(db_result) => {
@@ -94,7 +129,11 @@ async fn main() -> Result<()> {
     }
 
     // Create shared proxy state
-    let proxy_state = Arc::new(ProxyState::new(config.clone(), db_dir.clone()));
+    let proxy_state = Arc::new(ProxyState::new(
+        config.clone(),
+        db_dir.clone(),
+        db_pool.clone(),
+    ));
 
     #[cfg(feature = "ssr")]
     {
@@ -124,6 +163,7 @@ async fn main() -> Result<()> {
                 update_tx: Arc::new(tokio::sync::Mutex::new(None)),
                 upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
                 repository,
+                db_pool: db_pool.clone(),
             })
         };
 

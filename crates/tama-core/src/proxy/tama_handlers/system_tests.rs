@@ -13,7 +13,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 #[tokio::test]
 async fn test_handle_tama_system_health() {
     let config = Config::default();
-    let state = Arc::new(ProxyState::new(config, None));
+    let state = Arc::new(ProxyState::new(config, None, None));
 
     // Insert one Ready entry into the model registry.
     use std::time::Instant;

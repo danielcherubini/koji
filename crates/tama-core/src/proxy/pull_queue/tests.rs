@@ -929,7 +929,11 @@ async fn test_queue_processor_loop_dead_task_detection() {
     let temp_dir = tempfile::tempdir().unwrap();
     let config = Config::default();
 
-    let state = Arc::new(ProxyState::new(config, Some(temp_dir.path().to_path_buf())));
+    let state = Arc::new(ProxyState::new(
+        config,
+        Some(temp_dir.path().to_path_buf()),
+        None,
+    ));
 
     // Insert a running item with old started_at (> 10 seconds ago)
     let mgr = state

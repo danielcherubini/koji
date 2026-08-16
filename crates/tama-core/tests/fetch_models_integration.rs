@@ -62,7 +62,7 @@ async fn test_fetch_models_from_backend_returns_data() {
         .await;
 
     let config = Config::default();
-    let state = ProxyState::new(config, None);
+    let state = ProxyState::new(config, None, None);
 
     let result = fetch_models_from_backend(&state, &mock_server.uri()).await;
 
@@ -83,7 +83,7 @@ async fn test_fetch_models_from_backend_invalid_response() {
         .await;
 
     let config = Config::default();
-    let state = ProxyState::new(config, None);
+    let state = ProxyState::new(config, None, None);
 
     let result = fetch_models_from_backend(&state, &mock_server.uri()).await;
 
@@ -102,7 +102,7 @@ async fn test_fetch_models_from_backend_server_error() {
         .await;
 
     let config = Config::default();
-    let state = ProxyState::new(config, None);
+    let state = ProxyState::new(config, None, None);
 
     let result = fetch_models_from_backend(&state, &mock_server.uri()).await;
 
@@ -113,7 +113,7 @@ async fn test_fetch_models_from_backend_server_error() {
 #[tokio::test]
 async fn test_fetch_models_from_backend_connection_refused() {
     let config = Config::default();
-    let state = ProxyState::new(config, None);
+    let state = ProxyState::new(config, None, None);
 
     // Use a port that nothing is listening on
     let result = fetch_models_from_backend(&state, "http://localhost:59999").await;

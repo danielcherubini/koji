@@ -800,6 +800,7 @@ mod tests {
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             repository: None,
+            db_pool: None,
         }
     }
 
@@ -807,7 +808,7 @@ mod tests {
     #[tokio::test]
     async fn test_list_installations_empty_registry() {
         let config = Config::default();
-        let state = Arc::new(ProxyState::new(config, None));
+        let state = Arc::new(ProxyState::new(config, None, None));
 
         let web_state = Arc::new(test_web_state());
         let router = crate::router::build_web_routes(web_state.clone())
@@ -838,7 +839,11 @@ mod tests {
     async fn test_list_installation_versions_unknown_404() {
         let config = Config::default();
         let db_dir = tempfile::tempdir().unwrap();
-        let state = Arc::new(ProxyState::new(config, Some(db_dir.path().to_path_buf())));
+        let state = Arc::new(ProxyState::new(
+            config,
+            Some(db_dir.path().to_path_buf()),
+            None,
+        ));
 
         let web_state = Arc::new(test_web_state());
         let router = crate::router::build_web_routes(web_state.clone())

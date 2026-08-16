@@ -125,7 +125,7 @@ async fn test_unified_app_serves_api_not_spa_html() {
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         let config = tama_core::config::Config::default();
-        let state = Arc::new(tama_core::proxy::ProxyState::new(config, None));
+        let state = Arc::new(tama_core::proxy::ProxyState::new(config, None, None));
         let web_state = Arc::new(tama_web::web_types::WebState {
             jobs: Some(Arc::new(tama_web::web_types::JobManager::new())),
             capabilities: None,
@@ -134,6 +134,7 @@ async fn test_unified_app_serves_api_not_spa_html() {
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             repository: None,
+            db_pool: None,
         });
         let web_routes = tama_web::router::build_web_routes(web_state);
         let server = tama_core::proxy::ProxyServer::new(state).await;

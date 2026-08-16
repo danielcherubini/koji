@@ -1214,6 +1214,7 @@ mod tests {
         let state = Arc::new(crate::proxy::ProxyState::new(
             crate::config::Config::default(),
             None,
+            None,
         ));
 
         let err = start_repo_pull(&state, "../evil", None)
@@ -1231,6 +1232,7 @@ mod tests {
     async fn test_start_repo_pull_rejects_duplicate() {
         let state = Arc::new(crate::proxy::ProxyState::new(
             crate::config::Config::default(),
+            None,
             None,
         ));
         let child_arc: Arc<Mutex<Option<tokio::process::Child>>> = Arc::new(Mutex::new(None));
@@ -1266,6 +1268,7 @@ mod tests {
     async fn test_start_repo_pull_missing_binary() {
         let state = Arc::new(crate::proxy::ProxyState::new(
             crate::config::Config::default(),
+            None,
             None,
         ));
         let empty_path = tempfile::tempdir().unwrap();
@@ -1304,6 +1307,7 @@ mod tests {
 
         let state = Arc::new(crate::proxy::ProxyState::new(
             crate::config::Config::default(),
+            None,
             None,
         ));
         let bin_dir = tempfile::tempdir().unwrap();
@@ -1375,6 +1379,7 @@ printf 'fake-weights' > \"$dest/model.safetensors\"\nexit 0\n",
         let state = Arc::new(crate::proxy::ProxyState::new(
             config,
             Some(db_dir.path().to_path_buf()),
+            None,
         ));
 
         // The wizard pre-creates the stub model row before starting the pull.
@@ -1460,7 +1465,7 @@ printf 'fake-weights' > \"$dest/model.safetensors\"\nexit 0\n",
             let _guard = ENV_GUARD.lock().unwrap();
             std::env::set_var("HF_ENDPOINT", server.uri());
         }
-        let state = crate::proxy::ProxyState::new(crate::config::Config::default(), None);
+        let state = crate::proxy::ProxyState::new(crate::config::Config::default(), None, None);
         let sink: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(b"boom\n".to_vec()));
         let child_arc: Arc<Mutex<Option<tokio::process::Child>>> = Arc::new(Mutex::new(None));
         state
@@ -1508,7 +1513,7 @@ printf 'fake-weights' > \"$dest/model.safetensors\"\nexit 0\n",
             let _guard = ENV_GUARD.lock().unwrap();
             std::env::set_var("HF_ENDPOINT", server.uri());
         }
-        let state = crate::proxy::ProxyState::new(crate::config::Config::default(), None);
+        let state = crate::proxy::ProxyState::new(crate::config::Config::default(), None, None);
         let child_arc: Arc<Mutex<Option<tokio::process::Child>>> = Arc::new(Mutex::new(None));
         state
             .pull
@@ -1559,7 +1564,7 @@ printf 'fake-weights' > \"$dest/model.safetensors\"\nexit 0\n",
             let _guard = ENV_GUARD.lock().unwrap();
             std::env::set_var("HF_ENDPOINT", server.uri());
         }
-        let state = crate::proxy::ProxyState::new(crate::config::Config::default(), None);
+        let state = crate::proxy::ProxyState::new(crate::config::Config::default(), None, None);
         let child_arc: Arc<Mutex<Option<tokio::process::Child>>> = Arc::new(Mutex::new(None));
         state
             .pull
@@ -1640,6 +1645,7 @@ exit 3\n",
         let state = Arc::new(crate::proxy::ProxyState::new(
             config,
             Some(db_dir.path().to_path_buf()),
+            None,
         ));
 
         // The wizard pre-creates the stub model row before starting the pull.
@@ -1739,6 +1745,7 @@ exit 3\n",
         let state = crate::proxy::ProxyState::new(
             crate::config::Config::default(),
             Some(db_dir.path().to_path_buf()),
+            None,
         );
         let model_id: i64 = {
             let conn = state.open_db().expect("db must be available");
@@ -1814,7 +1821,7 @@ exit 3\n",
     /// with the "exited abnormally" fallback message.
     #[tokio::test]
     async fn test_finish_repo_pull_signal_death_message() {
-        let state = crate::proxy::ProxyState::new(crate::config::Config::default(), None);
+        let state = crate::proxy::ProxyState::new(crate::config::Config::default(), None, None);
         let child_arc: Arc<Mutex<Option<tokio::process::Child>>> = Arc::new(Mutex::new(None));
         state
             .pull
@@ -1871,6 +1878,7 @@ exit 3\n",
         let state = crate::proxy::ProxyState::new(
             crate::config::Config::default(),
             Some(db_dir.path().to_path_buf()),
+            None,
         );
 
         // dest holds a config.json, but with model_id = None nothing may be
@@ -1935,6 +1943,7 @@ exit 3\n",
 
         let state = Arc::new(crate::proxy::ProxyState::new(
             crate::config::Config::default(),
+            None,
             None,
         ));
         let bin_dir = tempfile::tempdir().unwrap();

@@ -90,7 +90,7 @@ mod tests {
     #[tokio::test]
     async fn test_hf_metadata_invalid_repo_id_error_shape() {
         let config = Config::default();
-        let state = Arc::new(ProxyState::new(config, None));
+        let state = Arc::new(ProxyState::new(config, None, None));
 
         let web_state = Arc::new(crate::web_types::WebState {
             jobs: Some(Arc::new(crate::web_types::JobManager::new())),
@@ -100,6 +100,7 @@ mod tests {
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             repository: None,
+            db_pool: None,
         });
 
         let router = crate::router::build_web_routes(web_state.clone())
@@ -171,7 +172,7 @@ mod tests {
         std::env::set_var("HF_ENDPOINT", mock_server.uri());
 
         let config = Config::default();
-        let state = Arc::new(ProxyState::new(config, None));
+        let state = Arc::new(ProxyState::new(config, None, None));
 
         // Build a minimal router with just the hf route for isolation.
         let web_state = Arc::new(crate::web_types::WebState {
@@ -182,6 +183,7 @@ mod tests {
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             repository: None,
+            db_pool: None,
         });
 
         let router = crate::router::build_web_routes(web_state.clone())
@@ -247,7 +249,7 @@ mod tests {
         std::env::set_var("HF_ENDPOINT", mock_server.uri());
 
         let config = Config::default();
-        let state = Arc::new(ProxyState::new(config, None));
+        let state = Arc::new(ProxyState::new(config, None, None));
 
         let web_state = Arc::new(crate::web_types::WebState {
             jobs: Some(Arc::new(crate::web_types::JobManager::new())),
@@ -257,6 +259,7 @@ mod tests {
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             repository: None,
+            db_pool: None,
         });
 
         let router = crate::router::build_web_routes(web_state.clone())
@@ -290,7 +293,7 @@ mod tests {
     #[tokio::test]
     async fn test_hf_metadata_rejects_traversal() {
         let config = Config::default();
-        let state = Arc::new(ProxyState::new(config, None));
+        let state = Arc::new(ProxyState::new(config, None, None));
 
         let web_state = Arc::new(crate::web_types::WebState {
             jobs: Some(Arc::new(crate::web_types::JobManager::new())),
@@ -300,6 +303,7 @@ mod tests {
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             repository: None,
+            db_pool: None,
         });
 
         let router = crate::router::build_web_routes(web_state.clone())

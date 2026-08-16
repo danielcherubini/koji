@@ -5,7 +5,7 @@ use std::sync::Arc;
 #[tokio::test]
 async fn test_proxy_routes_exist() {
     let config = crate::config::Config::default();
-    let state = Arc::new(crate::proxy::ProxyState::new(config, None));
+    let state = Arc::new(crate::proxy::ProxyState::new(config, None, None));
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let bound_addr = listener.local_addr().unwrap();
@@ -48,7 +48,7 @@ async fn test_proxy_routes_exist() {
 #[tokio::test]
 async fn test_metrics_returns_prometheus_format() {
     let config = crate::config::Config::default();
-    let state = Arc::new(crate::proxy::ProxyState::new(config, None));
+    let state = Arc::new(crate::proxy::ProxyState::new(config, None, None));
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let bound_addr = listener.local_addr().unwrap();
@@ -112,7 +112,7 @@ async fn test_metrics_returns_prometheus_format() {
 #[tokio::test]
 async fn test_metrics_no_backends_returns_tama_only() {
     let config = crate::config::Config::default();
-    let state = Arc::new(crate::proxy::ProxyState::new(config, None));
+    let state = Arc::new(crate::proxy::ProxyState::new(config, None, None));
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let bound_addr = listener.local_addr().unwrap();
@@ -169,7 +169,7 @@ async fn test_metrics_merges_backend_metrics() {
 
     // Create state and register the mock as a Ready backend
     let config = crate::config::Config::default();
-    let state = Arc::new(crate::proxy::ProxyState::new(config, None));
+    let state = Arc::new(crate::proxy::ProxyState::new(config, None, None));
 
     {
         let mut models = state.registry.models.write().await;
@@ -236,6 +236,7 @@ async fn test_metrics_task_persists_to_db() {
     let state = Arc::new(crate::proxy::ProxyState::new(
         config,
         Some(tmp.path().to_path_buf()),
+        None,
     ));
 
     let _server = ProxyServer::new(state.clone()).await;
@@ -262,6 +263,7 @@ async fn test_metrics_task_broadcasts_samples() {
     let state = Arc::new(crate::proxy::ProxyState::new(
         config,
         Some(tmp.path().to_path_buf()),
+        None,
     ));
 
     let mut rx = state.metrics.metrics_tx.subscribe();
@@ -301,6 +303,7 @@ async fn test_metric_sample_broadcast_populates_models_field() {
     let state = Arc::new(crate::proxy::ProxyState::new(
         config,
         Some(tmp.path().to_path_buf()),
+        None,
     ));
 
     // Manually insert a model into model_configs since it's no longer in Config
@@ -385,6 +388,7 @@ async fn test_system_metrics_stream_emits_samples() {
     let state = Arc::new(crate::proxy::ProxyState::new(
         config,
         Some(tmp.path().to_path_buf()),
+        None,
     ));
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -477,6 +481,7 @@ async fn test_system_metrics_stream_sample_models_round_trip() {
     let state = Arc::new(crate::proxy::ProxyState::new(
         config,
         Some(tmp.path().to_path_buf()),
+        None,
     ));
 
     // Manually insert a model into model_configs since it's no longer in Config
@@ -654,7 +659,7 @@ async fn test_proxy_loads_models_from_db_on_startup() {
     }
 
     let config = crate::config::Config::default();
-    let state = Arc::new(crate::proxy::ProxyState::new(config, Some(db_dir)));
+    let state = Arc::new(crate::proxy::ProxyState::new(config, Some(db_dir), None));
 
     // Start the server (which should load models from DB)
     let _server = ProxyServer::new(state.clone()).await;
@@ -710,7 +715,7 @@ async fn test_proxy_loads_aliases_from_db_on_startup() {
     }
 
     let config = crate::config::Config::default();
-    let state = Arc::new(crate::proxy::ProxyState::new(config, Some(db_dir)));
+    let state = Arc::new(crate::proxy::ProxyState::new(config, Some(db_dir), None));
 
     // Start the server (which should load aliases from DB)
     let _server = ProxyServer::new(state.clone()).await;

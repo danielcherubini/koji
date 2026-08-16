@@ -221,7 +221,7 @@ mod tests {
     #[tokio::test]
     async fn test_proxy_router_serves_known_routes() {
         let config = crate::config::Config::default();
-        let state = Arc::new(crate::proxy::ProxyState::new(config, None));
+        let state = Arc::new(crate::proxy::ProxyState::new(config, None, None));
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let bound_addr = listener.local_addr().unwrap();
@@ -267,7 +267,7 @@ mod tests {
     #[tokio::test]
     async fn test_unified_router_route_priority() {
         let config = crate::config::Config::default();
-        let state = Arc::new(crate::proxy::ProxyState::new(config, None));
+        let state = Arc::new(crate::proxy::ProxyState::new(config, None, None));
 
         // Simulate web UI routes: PUT/DELETE on /tama/v1/models/:id
         // (GET is handled by web UI in the real app, not defined here to avoid overlap)

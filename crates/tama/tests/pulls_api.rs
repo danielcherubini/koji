@@ -19,7 +19,7 @@ fn create_test_state() -> Arc<ProxyState> {
     let svc = PullQueueService::new(mgr, 2);
 
     let config = tama_core::config::Config::default();
-    let mut state = ProxyState::new(config, Some(db_dir));
+    let mut state = ProxyState::new(config, Some(db_dir), None);
     state.set_pull_queue(Some(Arc::new(svc)));
     Arc::new(state)
 }

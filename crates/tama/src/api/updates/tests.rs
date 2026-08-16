@@ -218,7 +218,11 @@ fn test_check_response_serialization_false() {
 async fn test_check_item_for_update_invalid_item_type_error_shape() {
     let config = Config::default();
     let tmp_dir = tempfile::tempdir().expect("tempdir");
-    let state = Arc::new(ProxyState::new(config, Some(tmp_dir.path().to_path_buf())));
+    let state = Arc::new(ProxyState::new(
+        config,
+        Some(tmp_dir.path().to_path_buf()),
+        None,
+    ));
 
     let web_state = Arc::new(crate::web_types::WebState {
         jobs: Some(Arc::new(crate::web_types::JobManager::new())),
@@ -228,6 +232,7 @@ async fn test_check_item_for_update_invalid_item_type_error_shape() {
         update_tx: Arc::new(tokio::sync::Mutex::new(None)),
         upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         repository: None,
+        db_pool: None,
     });
 
     let router = crate::router::build_web_routes(web_state.clone())

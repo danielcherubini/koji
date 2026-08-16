@@ -44,6 +44,7 @@ tracing-subscriber = { workspace = true, optional = true }
 tracing-appender = { workspace = true, optional = true }
 async-stream = { version = "0.3", optional = true }
 tama-core = { path = "../tama-core", optional = true }
+sqlx = { workspace = true, optional = true }
 toml = { workspace = true, optional = true }
 thiserror = { workspace = true, optional = true }
 nix = { workspace = true, optional = true }
@@ -59,7 +60,7 @@ csr = []
 ssr = [
   "dep:axum", "dep:tokio", "dep:async-stream", "dep:anyhow", "dep:include_dir",
   "dep:reqwest", "dep:mime_guess", "dep:tracing", "dep:tracing-subscriber", "dep:tracing-appender",
-  "dep:tama-core", "dep:toml", "dep:tower-http", "dep:thiserror",
+  "dep:tama-core", "dep:sqlx", "dep:toml", "dep:tower-http", "dep:thiserror",
   "dep:nix",
   "dep:regex",
   "tama-core/web-ui",

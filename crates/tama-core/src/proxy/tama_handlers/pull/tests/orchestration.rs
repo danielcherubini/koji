@@ -40,7 +40,7 @@ async fn create_pull_state(
     let mgr = crate::models::ModelManager::open(&db_dir).unwrap();
     let svc = PullQueueService::new(mgr, 2);
 
-    let mut state = ProxyState::new(config, Some(db_dir));
+    let mut state = ProxyState::new(config, Some(db_dir), None);
     state.pull.pull_queue = Some(Arc::new(svc));
 
     // Seed the in-memory job — start_pull_from_queue early-returns with "Job not found"

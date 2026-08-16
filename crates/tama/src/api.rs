@@ -654,6 +654,7 @@ mod tests {
         let state = Arc::new(tama_core::proxy::ProxyState::new(
             config,
             Some(tmp_dir.path().to_path_buf()),
+            None,
         ));
 
         let web_state = Arc::new(crate::web_types::WebState {
@@ -664,6 +665,7 @@ mod tests {
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             repository: None,
+            db_pool: None,
         });
 
         let router = crate::router::build_web_routes(web_state.clone())

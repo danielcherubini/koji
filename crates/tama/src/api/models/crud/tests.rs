@@ -2316,6 +2316,7 @@ async fn test_delete_model_removes_db_row() {
     let state = Arc::new(tama_core::proxy::ProxyState::new(
         config,
         Some(tmp_dir.path().to_path_buf()),
+        None,
     ));
 
     // Reuse the test WebState from backends/manage/tests.rs pattern.
@@ -2329,6 +2330,7 @@ async fn test_delete_model_removes_db_row() {
         repository: Some(Arc::new(std::sync::Mutex::new(
             tama_core::db::repository::Repository::open(tmp_dir.path()).unwrap(),
         ))),
+        db_pool: None,
     });
 
     let router = crate::router::build_web_routes(web_state.clone())
@@ -2431,6 +2433,7 @@ async fn test_create_model_response_deserializes_into_mutation_response() {
     let state = Arc::new(tama_core::proxy::ProxyState::new(
         config,
         Some(tmp_dir.path().to_path_buf()),
+        None,
     ));
 
     let web_state = Arc::new(crate::web_types::WebState {
@@ -2443,6 +2446,7 @@ async fn test_create_model_response_deserializes_into_mutation_response() {
         repository: Some(Arc::new(std::sync::Mutex::new(
             tama_core::db::repository::Repository::open(tmp_dir.path()).unwrap(),
         ))),
+        db_pool: None,
     });
 
     let router = crate::router::build_web_routes(web_state.clone())
@@ -2552,6 +2556,7 @@ async fn test_delete_model_response_deserializes_into_ok_response() {
     let state = Arc::new(tama_core::proxy::ProxyState::new(
         config,
         Some(tmp_dir.path().to_path_buf()),
+        None,
     ));
 
     let web_state = Arc::new(crate::web_types::WebState {
@@ -2564,6 +2569,7 @@ async fn test_delete_model_response_deserializes_into_ok_response() {
         repository: Some(Arc::new(std::sync::Mutex::new(
             tama_core::db::repository::Repository::open(tmp_dir.path()).unwrap(),
         ))),
+        db_pool: None,
     });
 
     let router = crate::router::build_web_routes(web_state.clone())
@@ -2669,6 +2675,7 @@ fn vllm_put_harness(
     let state = Arc::new(tama_core::proxy::ProxyState::new(
         config,
         Some(tmp_dir.path().to_path_buf()),
+        None,
     ));
 
     let web_state = Arc::new(crate::web_types::WebState {
@@ -2681,6 +2688,7 @@ fn vllm_put_harness(
         repository: Some(Arc::new(std::sync::Mutex::new(
             tama_core::db::repository::Repository::open(tmp_dir.path()).unwrap(),
         ))),
+        db_pool: None,
     });
 
     let router = crate::router::build_web_routes(web_state.clone())
@@ -2965,6 +2973,7 @@ fn reasoning_levels_harness(
     let state = Arc::new(tama_core::proxy::ProxyState::new(
         config,
         Some(tmp_dir.path().to_path_buf()),
+        None,
     ));
 
     let web_state = Arc::new(crate::web_types::WebState {
@@ -2977,6 +2986,7 @@ fn reasoning_levels_harness(
         repository: Some(Arc::new(std::sync::Mutex::new(
             tama_core::db::repository::Repository::open(tmp_dir.path()).unwrap(),
         ))),
+        db_pool: None,
     });
 
     let router = crate::router::build_web_routes(web_state.clone())

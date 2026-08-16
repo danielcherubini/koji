@@ -419,6 +419,9 @@ pub struct WebState {
     /// Temporary upload storage for restore archives.
     pub upload_lock: Arc<tokio::sync::RwLock<std::collections::HashMap<String, UploadEntry>>>,
     pub repository: Option<std::sync::Arc<std::sync::Mutex<tama_core::db::repository::Repository>>>,
+    /// Postgres pool (plan-190). `None` until Postgres becomes required
+    /// (Task 9); `main.rs` is the single owner of the pool.
+    pub db_pool: Option<std::sync::Arc<sqlx::PgPool>>,
 }
 
 // Compile-time check: WebState must be Clone + Send + Sync + 'static for the

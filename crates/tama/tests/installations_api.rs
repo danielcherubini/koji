@@ -18,6 +18,7 @@ fn test_web_state() -> WebState {
         update_tx: Arc::new(tokio::sync::Mutex::new(None)),
         upload_lock: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         repository: None,
+        db_pool: None,
     }
 }
 
@@ -72,7 +73,7 @@ fn seed_custom_backend(tmp_dir: &std::path::Path) {
 #[tokio::test]
 async fn test_get_backends_empty_registry_matches_snapshot() {
     let config = Config::default();
-    let state = Arc::new(ProxyState::new(config, None));
+    let state = Arc::new(ProxyState::new(config, None, None));
 
     let web_state_for_test = Arc::new(test_web_state());
     let router = build_web_routes(state.clone(), web_state_for_test);
@@ -119,7 +120,11 @@ async fn test_get_backends_includes_installed_entry() {
     seed_llama_cpp_backend(tmp_dir.path());
 
     let config = Config::default();
-    let state = Arc::new(ProxyState::new(config, Some(tmp_dir.path().to_path_buf())));
+    let state = Arc::new(ProxyState::new(
+        config,
+        Some(tmp_dir.path().to_path_buf()),
+        None,
+    ));
 
     let web_state_for_test = Arc::new(test_web_state());
     let router = build_web_routes(state.clone(), web_state_for_test);
@@ -163,7 +168,11 @@ async fn test_get_backends_custom_entry_appears_in_custom_array() {
     seed_custom_backend(tmp_dir.path());
 
     let config = Config::default();
-    let state = Arc::new(ProxyState::new(config, Some(tmp_dir.path().to_path_buf())));
+    let state = Arc::new(ProxyState::new(
+        config,
+        Some(tmp_dir.path().to_path_buf()),
+        None,
+    ));
 
     let web_state_for_test = Arc::new(test_web_state());
     let router = build_web_routes(state.clone(), web_state_for_test);
@@ -204,7 +213,7 @@ async fn test_get_backends_custom_entry_appears_in_custom_array() {
 #[tokio::test]
 async fn test_get_capabilities_returns_supported_cuda_versions() {
     let config = Config::default();
-    let state = Arc::new(ProxyState::new(config, None));
+    let state = Arc::new(ProxyState::new(config, None, None));
 
     // Build WebState with a CapabilitiesCache so the endpoint can compute
     let web_state = Arc::new(WebState {
@@ -215,6 +224,7 @@ async fn test_get_capabilities_returns_supported_cuda_versions() {
         update_tx: Arc::new(tokio::sync::Mutex::new(None)),
         upload_lock: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         repository: None,
+        db_pool: None,
     });
 
     let router = build_web_routes(state.clone(), web_state);
@@ -247,7 +257,7 @@ async fn test_get_capabilities_returns_supported_cuda_versions() {
 #[tokio::test]
 async fn test_origin_enforcement_blocks_cross_origin_post() {
     let config = Config::default();
-    let state = Arc::new(ProxyState::new(config, None));
+    let state = Arc::new(ProxyState::new(config, None, None));
 
     let web_state_for_test = Arc::new(test_web_state());
     let router = build_web_routes(state.clone(), web_state_for_test);

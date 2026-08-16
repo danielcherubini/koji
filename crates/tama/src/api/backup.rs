@@ -438,6 +438,7 @@ mod tests {
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             repository: None,
+            db_pool: None,
         }
     }
 
@@ -781,6 +782,7 @@ mod tests {
         let proxy_state = Arc::new(tama_core::proxy::ProxyState::new(
             tama_core::config::Config::default(),
             Some(config_temp.path().to_path_buf()),
+            None,
         ));
 
         let web_state = WebState {
@@ -799,6 +801,7 @@ mod tests {
                 ),
             ]))),
             repository: None,
+            db_pool: None,
         };
 
         let app = Router::new()
@@ -857,6 +860,7 @@ mod tests {
         let proxy_state = Arc::new(tama_core::proxy::ProxyState::new(
             tama_core::config::Config::default(),
             None,
+            None,
         ));
 
         let web_state = WebState {
@@ -875,6 +879,7 @@ mod tests {
                 ),
             ]))),
             repository: None,
+            db_pool: None,
         };
 
         let app = Router::new()
@@ -908,6 +913,7 @@ mod tests {
         let state = Arc::new(ProxyState::new(
             tama_core::config::Config::default(),
             Some(temp_dir.path().to_path_buf()),
+            None,
         ));
 
         let web_state = Arc::new(test_web_state());
@@ -1075,6 +1081,7 @@ mod tests {
         let proxy_state = Arc::new(ProxyState::new(
             tama_core::config::Config::default(),
             Some(config_temp.path().to_path_buf()),
+            None,
         ));
 
         let web_state = WebState {
@@ -1085,6 +1092,7 @@ mod tests {
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             repository: None,
+            db_pool: None,
         };
 
         let app = Router::new()
@@ -1152,6 +1160,7 @@ mod tests {
         let proxy_state = Arc::new(ProxyState::new(
             tama_core::config::Config::default(),
             Some(local_temp.path().to_path_buf()),
+            None,
         ));
 
         let web_state = WebState {
@@ -1162,6 +1171,7 @@ mod tests {
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: upload_lock.clone(),
             repository: None,
+            db_pool: None,
         };
 
         let app = Router::new()
@@ -1250,6 +1260,7 @@ mod tests {
         let proxy_state = Arc::new(ProxyState::new(
             tama_core::config::Config::default(),
             Some(local_temp.path().to_path_buf()),
+            None,
         ));
 
         let upload_lock = Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::from([
@@ -1270,6 +1281,7 @@ mod tests {
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: upload_lock.clone(),
             repository: None,
+            db_pool: None,
         };
 
         let app = Router::new()
@@ -1385,6 +1397,7 @@ mod tests {
         let proxy_state = Arc::new(ProxyState::new(
             tama_core::config::Config::default(),
             Some(local_temp.path().to_path_buf()),
+            None,
         ));
 
         let web_state = WebState {
@@ -1395,6 +1408,7 @@ mod tests {
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: upload_lock.clone(),
             repository: None,
+            db_pool: None,
         };
 
         let app = Router::new()

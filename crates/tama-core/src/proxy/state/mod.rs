@@ -23,7 +23,11 @@ use super::pull_queue::{queue_processor_loop, PullQueueService};
 use super::types::{BackendState, ProxyState};
 
 impl ProxyState {
-    pub fn new(config: crate::config::Config, db_dir: Option<std::path::PathBuf>) -> Self {
+    pub fn new(
+        config: crate::config::Config,
+        db_dir: Option<std::path::PathBuf>,
+        db_pool: Option<Arc<sqlx::PgPool>>,
+    ) -> Self {
         // Initialize Langfuse client from config before wrapping in Arc.
         let langfuse_client =
             crate::proxy::forward::langfuse::LangfuseClient::from_config(&config.langfuse)
@@ -61,6 +65,7 @@ impl ProxyState {
             langfuse_client: Arc::new(tokio::sync::RwLock::new(langfuse_client)),
             remote_forwarder: crate::proxy::remote::RemoteForwarder::new(),
             tamad_clients: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            db_pool,
         };
 
         // Spawn the queue processor background task if pull queue is configured.
@@ -325,7 +330,7 @@ mod tests {
     #[test]
     fn test_proxy_state_new_creates_metrics_channel() {
         let config = crate::config::Config::default();
-        let state = ProxyState::new(config, None);
+        let state = ProxyState::new(config, None, None);
         let _subscriber = state.metrics.subscribe_metrics();
         assert_eq!(state.metrics.metrics_tx.receiver_count(), 1);
     }
@@ -336,7 +341,7 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_alias_pass_through() {
         let config = crate::config::Config::default();
-        let state = ProxyState::new(config, None);
+        let state = ProxyState::new(config, None, None);
         let result = state.resolve_alias("some-model-name").await;
         assert_eq!(result, "some-model-name");
     }
@@ -345,7 +350,7 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_alias_resolves() {
         let config = crate::config::Config::default();
-        let state = ProxyState::new(config, None);
+        let state = ProxyState::new(config, None, None);
 
         // Manually populate the alias cache
         {
@@ -362,7 +367,7 @@ mod tests {
     async fn test_reload_aliases_populates_cache() {
         let temp_dir = tempfile::tempdir().unwrap();
         let config = crate::config::Config::default();
-        let state = ProxyState::new(config, Some(temp_dir.path().to_path_buf()));
+        let state = ProxyState::new(config, Some(temp_dir.path().to_path_buf()), None);
 
         // Insert a model config and an alias directly into the DB
         let mgr = state.model_mgr().expect("DB should be configured");
@@ -403,7 +408,7 @@ mod tests {
     /// Test that `with_config` / `with_config_mut` / `replace_config` work correctly.
     #[tokio::test]
     async fn test_with_config_and_replace_config() {
-        let state = ProxyState::new(crate::config::Config::default(), None);
+        let state = ProxyState::new(crate::config::Config::default(), None, None);
         let port = state.with_config(|c| c.proxy.port).await;
         assert_eq!(port, crate::config::Config::default().proxy.port);
         let mut new_config = crate::config::Config::default();
@@ -419,7 +424,7 @@ mod tests {
     async fn test_reload_aliases_filters_disabled() {
         let temp_dir = tempfile::tempdir().unwrap();
         let config = crate::config::Config::default();
-        let state = ProxyState::new(config, Some(temp_dir.path().to_path_buf()));
+        let state = ProxyState::new(config, Some(temp_dir.path().to_path_buf()), None);
 
         // Insert a model config and two aliases (one enabled, one disabled)
         let mgr = state.model_mgr().expect("DB should be configured");

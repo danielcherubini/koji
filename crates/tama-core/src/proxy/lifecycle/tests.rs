@@ -66,7 +66,7 @@ fn make_unloading_state(model_name: &str, backend: &str) -> BackendState {
 #[tokio::test]
 async fn test_starting_state_skipped_in_idle_check() {
     let config = Config::default();
-    let state = ProxyState::new(config, None);
+    let state = ProxyState::new(config, None, None);
     state.registry.models.write().await.insert(
         "test-server".to_string(),
         make_starting_state("model.gguf", "llama-cpp"),
@@ -83,7 +83,7 @@ async fn test_starting_state_skipped_in_idle_check() {
 #[tokio::test]
 async fn test_failed_server_marked_for_cleanup() {
     let config = Config::default();
-    let state = ProxyState::new(config, None);
+    let state = ProxyState::new(config, None, None);
     state
         .registry
         .models
@@ -289,7 +289,7 @@ fn test_unloading_variant_match() {
 async fn test_evict_lru_if_needed_zero_is_unlimited() {
     let mut config = Config::default();
     config.proxy.max_loaded_models = 0;
-    let state = ProxyState::new(config, None);
+    let state = ProxyState::new(config, None, None);
 
     // Add a Ready model to ensure we're not returning None due to empty map
     state.registry.models.write().await.insert(
@@ -314,7 +314,7 @@ async fn test_evict_lru_if_needed_zero_is_unlimited() {
 async fn test_evict_lru_if_needed_under_limit_no_eviction() {
     let mut config = Config::default();
     config.proxy.max_loaded_models = 2;
-    let state = ProxyState::new(config, None);
+    let state = ProxyState::new(config, None, None);
 
     // Add 1 Ready model (below limit of 2)
     state.registry.models.write().await.insert(
@@ -339,7 +339,7 @@ async fn test_evict_lru_if_needed_under_limit_no_eviction() {
 async fn test_evict_lru_if_needed_at_limit_evicts_lru() {
     let mut config = Config::default();
     config.proxy.max_loaded_models = 1;
-    let state = ProxyState::new(config, None);
+    let state = ProxyState::new(config, None, None);
 
     // Add a Ready model with last_accessed set in the past
     let mut ready_state = make_ready_state("model.gguf", "llama-cpp");
@@ -373,7 +373,7 @@ async fn test_evict_lru_if_needed_at_limit_evicts_lru() {
 async fn test_evict_lru_if_needed_skips_starting_models() {
     let mut config = Config::default();
     config.proxy.max_loaded_models = 1;
-    let state = ProxyState::new(config, None);
+    let state = ProxyState::new(config, None, None);
 
     // Add a Starting model (not Ready)
     state.registry.models.write().await.insert(
@@ -401,7 +401,7 @@ async fn test_evict_lru_if_needed_skips_starting_models() {
 async fn test_evict_lru_if_needed_skips_failed_models() {
     let mut config = Config::default();
     config.proxy.max_loaded_models = 1;
-    let state = ProxyState::new(config, None);
+    let state = ProxyState::new(config, None, None);
 
     // Add a Failed model
     state
@@ -427,7 +427,7 @@ async fn test_evict_lru_if_needed_skips_failed_models() {
 async fn test_evict_lru_if_needed_concurrent_no_double_eviction() {
     let mut config = Config::default();
     config.proxy.max_loaded_models = 1;
-    let state = ProxyState::new(config, None);
+    let state = ProxyState::new(config, None, None);
 
     // Add 2 Ready models with different last_accessed times (LRU + newer)
     let mut ready1 = make_ready_state("model1.gguf", "llama-cpp");
@@ -528,7 +528,7 @@ async fn test_evict_lru_excludes_tts_backends() {
 
     let mut config = Config::default();
     config.proxy.max_loaded_models = 1;
-    let state = ProxyState::new(config, None);
+    let state = ProxyState::new(config, None, None);
 
     // Register the TTS server in model_configs with a tts_ backend
     // so it's excluded from the LLM count.
@@ -574,7 +574,7 @@ async fn test_evict_lru_per_gpu_isolation() {
 
     let mut config = Config::default();
     config.proxy.max_loaded_models = 1;
-    let state = ProxyState::new(config, None);
+    let state = ProxyState::new(config, None, None);
 
     // Register CUDA0 server in model_configs with gpu_device = "CUDA0"
     state.registry.model_configs.write().await.insert(
@@ -638,7 +638,7 @@ async fn test_evict_lru_same_gpu_counts_together() {
 
     let mut config = Config::default();
     config.proxy.max_loaded_models = 1;
-    let state = ProxyState::new(config, None);
+    let state = ProxyState::new(config, None, None);
 
     // Register two servers both targeting CUDA0
     state.registry.model_configs.write().await.insert(
@@ -723,7 +723,7 @@ async fn test_evict_lru_none_gpu_grouped() {
 
     let mut config = Config::default();
     config.proxy.max_loaded_models = 1;
-    let state = ProxyState::new(config, None);
+    let state = ProxyState::new(config, None, None);
 
     // Register two servers without gpu_device (None)
     state.registry.model_configs.write().await.insert(
@@ -796,7 +796,7 @@ async fn test_three_phase_idle_timeout_with_mock_health_checker() {
     config.proxy.startup_timeout_secs = 1;
     config.lifecycle.max_restarts = 0;
 
-    let state = ProxyState::new(config, None);
+    let state = ProxyState::new(config, None, None);
     let mock_checker = MockHealthChecker::new();
 
     // Phase 1 setup: Add a Ready model that is idle (last_accessed in the past)
@@ -854,7 +854,7 @@ async fn test_health_checker_confirms_alive_server_not_dead() {
     config.proxy.startup_timeout_secs = 1;
     config.lifecycle.max_restarts = 0;
 
-    let state = ProxyState::new(config, None);
+    let state = ProxyState::new(config, None, None);
     let mock_checker = MockHealthChecker::new();
 
     // Add a Ready model with a PID that doesn't exist (would normally be dead)
@@ -903,7 +903,7 @@ async fn test_load_model_pipeline_with_mock_health_checker() {
     let mut config = Config::default();
     config.proxy.startup_timeout_secs = 2;
 
-    let state = ProxyState::new(config, None);
+    let state = ProxyState::new(config, None, None);
     let mock_checker = MockHealthChecker::new();
 
     // Register a model in the config
@@ -948,7 +948,7 @@ async fn test_load_model_health_check_failure_cleanup() {
     let mut config = Config::default();
     config.proxy.startup_timeout_secs = 1; // Short timeout
 
-    let state = ProxyState::new(config, None);
+    let state = ProxyState::new(config, None, None);
     let mock_checker = MockHealthChecker::new();
 
     // Register a model in the config
@@ -1019,7 +1019,7 @@ async fn test_dead_pid_detection_with_mock_process_checker() {
 #[tokio::test]
 async fn test_unload_model_graceful_shutdown() {
     let config = Config::default();
-    let state = ProxyState::new(config, None);
+    let state = ProxyState::new(config, None, None);
 
     // Add a Ready model
     state.registry.models.write().await.insert(
@@ -1058,7 +1058,7 @@ async fn test_unload_model_graceful_shutdown() {
 #[tokio::test]
 async fn test_unload_model_nonexistent_backend() {
     let config = Config::default();
-    let state = ProxyState::new(config, None);
+    let state = ProxyState::new(config, None, None);
 
     let result = state.unload_model("nonexistent").await;
     assert!(
@@ -1071,7 +1071,7 @@ async fn test_unload_model_nonexistent_backend() {
 #[tokio::test]
 async fn test_unload_model_non_ready_state() {
     let config = Config::default();
-    let state = ProxyState::new(config, None);
+    let state = ProxyState::new(config, None, None);
 
     // Add a Starting model
     state.registry.models.write().await.insert(
@@ -1098,7 +1098,7 @@ async fn test_load_compaction_health_timeout_marks_failed() {
     config.proxy.startup_timeout_secs = 1;
 
     let tempdir = tempfile::tempdir().unwrap();
-    let state = ProxyState::new(config, Some(tempdir.path().to_path_buf()));
+    let state = ProxyState::new(config, Some(tempdir.path().to_path_buf()), None);
 
     let mock_checker = MockHealthChecker::new();
     mock_checker.set_response(false); // Always unhealthy
@@ -1169,7 +1169,7 @@ async fn test_load_compaction_spawn_failure_cleans_up() {
     config.proxy.startup_timeout_secs = 10; // Long enough that timeout won't fire
 
     let tempdir = tempfile::tempdir().unwrap();
-    let state = ProxyState::new(config, Some(tempdir.path().to_path_buf()));
+    let state = ProxyState::new(config, Some(tempdir.path().to_path_buf()), None);
 
     let mock_checker = MockHealthChecker::new();
     let mock_port = MockPortAllocator::new();
@@ -1217,7 +1217,7 @@ async fn test_load_tts_health_timeout_cleans_up() {
     config.proxy.startup_timeout_secs = 1;
 
     let tempdir = tempfile::tempdir().unwrap();
-    let state = ProxyState::new(config, Some(tempdir.path().to_path_buf()));
+    let state = ProxyState::new(config, Some(tempdir.path().to_path_buf()), None);
 
     // Seed a TTS backend installation in the backend registry
     let base_dir = tempdir.path().join("backends");
@@ -1286,7 +1286,7 @@ async fn test_load_tts_spawn_failure_cleans_up() {
     config.proxy.startup_timeout_secs = 10; // Long enough that timeout won't fire
 
     let tempdir = tempfile::tempdir().unwrap();
-    let state = ProxyState::new(config, Some(tempdir.path().to_path_buf()));
+    let state = ProxyState::new(config, Some(tempdir.path().to_path_buf()), None);
 
     // Seed a TTS backend installation
     let base_dir = tempdir.path().join("backends");
@@ -1352,7 +1352,7 @@ async fn test_load_tts_success_marks_ready() {
     config.proxy.startup_timeout_secs = 10;
 
     let tempdir = tempfile::tempdir().unwrap();
-    let state = ProxyState::new(config, Some(tempdir.path().to_path_buf()));
+    let state = ProxyState::new(config, Some(tempdir.path().to_path_buf()), None);
 
     // Seed a TTS backend installation
     let base_dir = tempdir.path().join("backends");

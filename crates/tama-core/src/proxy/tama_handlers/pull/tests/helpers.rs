@@ -19,7 +19,7 @@ pub(crate) fn create_test_state() -> (Arc<ProxyState>, tempfile::TempDir) {
     let mgr = crate::models::ModelManager::open(&db_dir).unwrap();
     let svc = PullQueueService::new(mgr, 2);
     let config = crate::config::Config::default();
-    let mut state = ProxyState::new(config, Some(db_dir));
+    let mut state = ProxyState::new(config, Some(db_dir), None);
     state.pull.pull_queue = Some(Arc::new(svc));
     (Arc::new(state), tmp)
 }

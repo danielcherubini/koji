@@ -4,6 +4,11 @@
 //! by every test in the process) and per-test isolated schemas so parallel
 //! tests never see each other's data. Isolation is not sacrificed for speed:
 //! each test gets a fresh schema with the migrations applied to it.
+//!
+//! `#![allow(dead_code)]`: the harness is compiled into every test binary
+//! that declares `mod common;`, but each binary only uses a subset of it.
+
+#![allow(dead_code)]
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
@@ -128,6 +133,18 @@ fn shared() -> &'static SharedState {
 /// all callers.
 pub async fn test_pool() -> PgPool {
     shared().1.clone()
+}
+
+/// Host and port of the container's Postgres service.
+///
+/// For building a `DatabaseConfig` that points at the shared container
+/// (plan-190 pool startup tests).
+pub fn container_host_port() -> (String, u16) {
+    let url = url::Url::parse(&shared().2).expect("valid test container URL");
+    (
+        url.host_str().unwrap_or("localhost").to_string(),
+        url.port().unwrap_or(5432),
+    )
 }
 
 /// A Postgres pool scoped to a private test schema with migrations applied.

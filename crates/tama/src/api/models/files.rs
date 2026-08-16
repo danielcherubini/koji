@@ -298,7 +298,7 @@ mod tests {
         tmp_dir: &std::path::Path,
     ) -> (Arc<ProxyState>, Arc<crate::web_types::WebState>) {
         let config = Config::default();
-        let state = Arc::new(ProxyState::new(config, Some(tmp_dir.to_path_buf())));
+        let state = Arc::new(ProxyState::new(config, Some(tmp_dir.to_path_buf()), None));
 
         // Open a repository handle for the web_state.
         let repo = Repository::open(tmp_dir).unwrap();
@@ -311,6 +311,7 @@ mod tests {
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             repository: Some(Arc::new(Mutex::new(repo))),
+            db_pool: None,
         });
 
         (state, web_state)

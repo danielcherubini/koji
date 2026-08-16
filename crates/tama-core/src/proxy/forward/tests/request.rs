@@ -63,7 +63,11 @@ async fn body_json(resp: axum::response::Response) -> serde_json::Value {
 }
 
 fn test_state() -> Arc<ProxyState> {
-    Arc::new(ProxyState::new(crate::config::Config::default(), None))
+    Arc::new(ProxyState::new(
+        crate::config::Config::default(),
+        None,
+        None,
+    ))
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────
