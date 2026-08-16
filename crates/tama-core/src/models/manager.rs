@@ -1,18 +1,11 @@
 //! Centralized model data access.
 //!
 //! `ModelManager` is a facade over the Postgres pool for all model-domain
-//! data (configs, files, pulls, active models).
-//!
-//! TRANSITIONAL STATE (plan-190 Task 5 → 7): the pull-queue delegation
-//! methods (`queue_*`) still use the synchronous rusqlite
-//! `pull_queue_queries` against the SQLite `pull_queue` table until Task 7.
-//! The `conn` field exists solely for those methods and is deleted in
-//! Task 7, which ports `queue_*` to the pool.
+//! data (configs, files, pulls, active models, pull queue).
 
 use std::path::Path;
 
 use anyhow::{anyhow, Result};
-use rusqlite::Connection;
 use sqlx::{PgPool, Row};
 use std::sync::Arc;
 
@@ -23,70 +16,14 @@ use crate::db::queries::{
 };
 
 /// Centralized model data access. Each caller opens its own instance.
-///
-/// `ModelManager` is `!Send` while the transitional `conn` field exists
-/// (`Connection: !Send`); the model-domain methods only touch the pool.
 pub struct ModelManager {
     /// Postgres pool for all model-domain data.
     pub(crate) pool: Arc<PgPool>,
-    // TODO(task 7): delete this field — `queue_*` methods are the only
-    // consumers; they will be ported to the pool and the SQLite pull queue
-    // removed.
-    conn: Option<Connection>,
 }
 
 impl ModelManager {
-    /// Create a pool-backed manager. `queue_*` methods error until a SQLite
-    /// connection is attached (Task 7 removes them entirely).
     pub fn new(pool: Arc<PgPool>) -> Self {
-        Self { pool, conn: None }
-    }
-
-    /// Create a manager with both the pool and the transitional SQLite
-    /// connection needed by the `queue_*` pull-queue methods (Task 7).
-    pub fn with_sqlite_conn(pool: Arc<PgPool>, conn: Connection) -> Self {
-        Self {
-            pool,
-            conn: Some(conn),
-        }
-    }
-
-    /// Open the transitional SQLite connection from a config directory
-    /// (runs DB migrations on first open) and wrap it with the pool.
-    ///
-    /// Transitional (Task 7): the queue_* methods still need the SQLite
-    /// `pull_queue` table; everything else is pool-based.
-    pub fn open(config_dir: &Path, pool: Arc<PgPool>) -> Result<Self> {
-        let open_result = crate::db::open(config_dir)?;
-        Ok(Self {
-            pool,
-            conn: Some(open_result.conn),
-        })
-    }
-
-    /// Test-only: in-memory SQLite queue connection plus a lazy pool that
-    /// never connects. `queue_*` methods work; pool-based methods fail —
-    /// use the Postgres test harness for those.
-    #[cfg(test)]
-    pub fn open_in_memory() -> Result<Self> {
-        let open_result = crate::db::open_in_memory()?;
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .connect_lazy("postgresql://tama:tama@127.0.0.1:1/unused")
-            .expect("lazy pool must not fail on a syntactically valid URL");
-        Ok(Self {
-            pool: Arc::new(pool),
-            conn: Some(open_result.conn),
-        })
-    }
-
-    /// Returns reference to the transitional SQLite connection.
-    ///
-    /// Crate-internal escape hatch for `queue_*` code (Task 7) and pull
-    /// completion raw writes that are not yet pool-ported.
-    pub(crate) fn conn(&self) -> &Connection {
-        self.conn
-            .as_ref()
-            .expect("transitional SQLite connection must be configured")
+        Self { pool }
     }
 
     /// Returns the Postgres pool.
@@ -316,18 +253,11 @@ impl ModelManager {
         crate::db::queries::rename_active_model(self.pool.as_ref(), old_name, new_name).await
     }
 
-    // ── Pull queue (transitional — SQLite until Task 7) ──────────────────────
-
-    /// The transitional SQLite connection used by `queue_*` (Task 7).
-    fn queue_conn(&self) -> Result<&Connection> {
-        self.conn
-            .as_ref()
-            .ok_or_else(|| anyhow!("pull queue SQLite connection not configured (Task 7)"))
-    }
+    // ── Pull queue ────────────────────────────────────────────
 
     /// Insert a new item into the pull queue. Returns the new row id.
     #[allow(clippy::too_many_arguments)]
-    pub fn queue_insert(
+    pub async fn queue_insert(
         &self,
         job_id: &str,
         repo_id: &str,
@@ -337,9 +267,8 @@ impl ModelManager {
         quant: Option<&str>,
         context_length: Option<u32>,
     ) -> Result<i64> {
-        let conn = self.queue_conn()?;
         crate::db::queries::insert_queue_item(
-            conn,
+            self.pool.as_ref(),
             job_id,
             repo_id,
             filename,
@@ -348,28 +277,26 @@ impl ModelManager {
             quant,
             context_length,
         )
+        .await
     }
 
     /// Retrieve the oldest queued item (FIFO).
-    pub fn queue_get_queued(&self) -> Result<Option<PullQueueItem>> {
-        let conn = self.queue_conn()?;
-        crate::db::queries::get_queued_item(conn)
+    pub async fn queue_get_queued(&self) -> Result<Option<PullQueueItem>> {
+        crate::db::queries::get_queued_item(self.pool.as_ref()).await
     }
 
     /// Get all active items (queued, running, verifying), ordered by status priority then queued_at.
-    pub fn queue_get_active(&self) -> Result<Vec<PullQueueItem>> {
-        let conn = self.queue_conn()?;
-        crate::db::queries::get_active_items(conn)
+    pub async fn queue_get_active(&self) -> Result<Vec<PullQueueItem>> {
+        crate::db::queries::get_active_items(self.pool.as_ref()).await
     }
 
     /// Get history items (completed, failed, cancelled), sorted newest first.
-    pub fn queue_get_history(&self, limit: i64, offset: i64) -> Result<Vec<PullQueueItem>> {
-        let conn = self.queue_conn()?;
-        crate::db::queries::get_history_items(conn, limit, offset)
+    pub async fn queue_get_history(&self, limit: i64, offset: i64) -> Result<Vec<PullQueueItem>> {
+        crate::db::queries::get_history_items(self.pool.as_ref(), limit, offset).await
     }
 
     /// Update a queue item's status and related fields.
-    pub fn queue_update_status(
+    pub async fn queue_update_status(
         &self,
         job_id: &str,
         new_status: &str,
@@ -377,39 +304,42 @@ impl ModelManager {
         total_bytes: Option<i64>,
         error_message: Option<&str>,
     ) -> Result<()> {
-        let conn = self.queue_conn()?;
         crate::db::queries::update_queue_status(
-            conn,
+            self.pool.as_ref(),
             job_id,
             new_status,
             bytes_pulled,
             total_bytes,
             error_message,
         )
+        .await
     }
 
     /// Update only progress fields (bytes_pulled, total_bytes) without
     /// changing the status. Used for real-time progress streaming via SSE.
-    pub fn queue_update_progress(
+    pub async fn queue_update_progress(
         &self,
         job_id: &str,
         bytes_pulled: i64,
         total_bytes: Option<i64>,
     ) -> Result<()> {
-        let conn = self.queue_conn()?;
-        crate::db::queries::update_progress_only(conn, job_id, bytes_pulled, total_bytes)
+        crate::db::queries::update_progress_only(
+            self.pool.as_ref(),
+            job_id,
+            bytes_pulled,
+            total_bytes,
+        )
+        .await
     }
 
     /// Cancel a queue item if it hasn't reached a terminal state.
-    pub fn queue_cancel(&self, job_id: &str) -> Result<()> {
-        let conn = self.queue_conn()?;
-        crate::db::queries::cancel_queue_item(conn, job_id)
+    pub async fn queue_cancel(&self, job_id: &str) -> Result<()> {
+        crate::db::queries::cancel_queue_item(self.pool.as_ref(), job_id).await
     }
 
     /// Retrieve a queue item by its job_id.
-    pub fn queue_get_by_job_id(&self, job_id: &str) -> Result<Option<PullQueueItem>> {
-        let conn = self.queue_conn()?;
-        crate::db::queries::get_item_by_job_id(conn, job_id)
+    pub async fn queue_get_by_job_id(&self, job_id: &str) -> Result<Option<PullQueueItem>> {
+        crate::db::queries::get_item_by_job_id(self.pool.as_ref(), job_id).await
     }
 
     // ── Async wrappers ────────────────────────────────────────

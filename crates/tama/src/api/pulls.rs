@@ -53,6 +53,20 @@ pub struct PullCancelResponse {
 /// Convert a `PullQueueItem` to a `PullQueueItemDto`.
 /// Note: progress_percent is computed client-side from bytes_pulled
 /// and total_bytes, so it's not included in the API response.
+/// Format a timestamp the same shape the API always emitted: `YYYY-MM-DDTHH:MM:SS.mmmZ`.
+fn format_ts(dt: &sqlx::types::time::OffsetDateTime) -> String {
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+        dt.year(),
+        dt.month(),
+        dt.day(),
+        dt.hour(),
+        dt.minute(),
+        dt.second(),
+        dt.millisecond(),
+    )
+}
+
 fn item_to_dto(item: &tama_core::db::queries::PullQueueItem) -> PullQueueItemDto {
     PullQueueItemDto {
         job_id: item.job_id.clone(),
@@ -63,9 +77,9 @@ fn item_to_dto(item: &tama_core::db::queries::PullQueueItem) -> PullQueueItemDto
         bytes_pulled: item.bytes_pulled,
         total_bytes: item.total_bytes,
         error_message: item.error_message.clone(),
-        started_at: item.started_at.clone(),
-        completed_at: item.completed_at.clone(),
-        queued_at: item.queued_at.clone(),
+        started_at: item.started_at.as_ref().map(format_ts),
+        completed_at: item.completed_at.as_ref().map(format_ts),
+        queued_at: format_ts(&item.queued_at),
         kind: item.kind.clone(),
     }
 }
@@ -104,7 +118,7 @@ pub async fn get_active_pulls(
         )
     })?;
 
-    let items = svc.get_active_items_dto().map_err(|e| {
+    let items = svc.get_active_items_dto().await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(error_body(e.to_string(), None)),
@@ -133,6 +147,7 @@ pub async fn get_pull_history(
 
     let items = svc
         .get_history_items_dto(query.limit, query.offset)
+        .await
         .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -140,7 +155,7 @@ pub async fn get_pull_history(
             )
         })?;
 
-    let total = svc.count_history_items().map_err(|e| {
+    let total = svc.count_history_items().await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(error_body(e.to_string(), None)),
@@ -170,7 +185,7 @@ pub async fn cancel_pull(
         }
     };
 
-    match svc.cancel(&job_id) {
+    match svc.cancel(&job_id).await {
         Ok(()) => Json(PullCancelResponse {
             ok: true,
             message: None,

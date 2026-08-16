@@ -1,8 +1,7 @@
 //! Tests for ModelManager.
 //!
 //! Model-domain tests run against a dedicated Postgres test database via
-//! `crate::testing::postgres::with_schema` (plan-190 Task 5). The
-//! transitional `queue_*` tests keep using the in-memory SQLite connection.
+//! `crate::testing::postgres::with_schema` (plan-190).
 
 use super::*;
 use crate::config::ModelConfig;
@@ -306,7 +305,7 @@ async fn test_active_model_operations() {
 
 #[tokio::test]
 async fn test_pull_queue_operations() {
-    let manager = ModelManager::open_in_memory().unwrap();
+    let (guard, manager) = pool_manager().await;
 
     // Insert a queue item
     let id = manager
@@ -319,11 +318,12 @@ async fn test_pull_queue_operations() {
             Some("Q4_K_M"),
             Some(4096),
         )
+        .await
         .unwrap();
     assert!(id > 0);
 
     // Get queued item
-    let item = manager.queue_get_queued().unwrap().unwrap();
+    let item = manager.queue_get_queued().await.unwrap().unwrap();
     assert_eq!(item.job_id, "pull-abc123");
     assert_eq!(item.status, "queued");
     assert_eq!(item.kind, "model");
@@ -333,36 +333,44 @@ async fn test_pull_queue_operations() {
     // Update status to running
     manager
         .queue_update_status("pull-abc123", "running", 500, Some(1000), None)
+        .await
         .unwrap();
 
     // Get by job_id
-    let item = manager.queue_get_by_job_id("pull-abc123").unwrap().unwrap();
+    let item = manager
+        .queue_get_by_job_id("pull-abc123")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(item.status, "running");
     assert_eq!(item.bytes_pulled, 500);
 
     // Get active items
-    let active = manager.queue_get_active().unwrap();
+    let active = manager.queue_get_active().await.unwrap();
     assert_eq!(active.len(), 1);
     assert_eq!(active[0].job_id, "pull-abc123");
 
     // Complete the item
     manager
         .queue_update_status("pull-abc123", "completed", 1000, Some(1000), None)
+        .await
         .unwrap();
 
     // Should appear in history now
-    let history = manager.queue_get_history(10, 0).unwrap();
+    let history = manager.queue_get_history(10, 0).await.unwrap();
     assert_eq!(history.len(), 1);
     assert_eq!(history[0].status, "completed");
 
     // Should no longer be in active
-    let active = manager.queue_get_active().unwrap();
+    let active = manager.queue_get_active().await.unwrap();
     assert!(active.is_empty());
+
+    guard.finish().await;
 }
 
 #[tokio::test]
 async fn test_queue_cancel() {
-    let manager = ModelManager::open_in_memory().unwrap();
+    let (guard, manager) = pool_manager().await;
 
     manager
         .queue_insert(
@@ -374,16 +382,20 @@ async fn test_queue_cancel() {
             None,
             None,
         )
+        .await
         .unwrap();
 
-    manager.queue_cancel("pull-cancel1").unwrap();
+    manager.queue_cancel("pull-cancel1").await.unwrap();
 
     let item = manager
         .queue_get_by_job_id("pull-cancel1")
+        .await
         .unwrap()
         .unwrap();
     assert_eq!(item.status, "cancelled");
     assert!(item.completed_at.is_some());
+
+    guard.finish().await;
 }
 
 #[tokio::test]

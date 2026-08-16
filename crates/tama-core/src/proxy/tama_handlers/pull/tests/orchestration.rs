@@ -38,15 +38,12 @@ async fn create_pull_state(
     let mut config = crate::config::Config::default();
     config.general.models_dir = Some(models_tmp.path().to_string_lossy().to_string());
 
-    // Reuse models_tmp as the transitional DB directory (SQLite pull queue
-    // until Task 7); model configs/files live in Postgres.
-    let db_dir = models_tmp.path().to_path_buf();
     let guard = crate::testing::postgres::with_schema().await;
     let pool = Arc::new(guard.pool.clone());
-    let mgr = crate::models::ModelManager::open(&db_dir, pool.clone()).unwrap();
-    let svc = PullQueueService::new(mgr, 2);
+    let svc = PullQueueService::new(pool.clone(), 2);
 
-    let mut state = ProxyState::new(config, Some(db_dir), Some(pool));
+    let mut state = ProxyState::new(config, None, Some(pool));
+    assert!(state.pull_queue().is_some());
     state.pull.pull_queue = Some(Arc::new(svc));
 
     // Seed the in-memory job — start_pull_from_queue early-returns with "Job not found"
@@ -141,14 +138,12 @@ async fn test_pull_hash_mismatch_fails_job_and_deletes_file() {
         .as_ref()
         .expect("pull_queue should be set");
     svc.enqueue(&job_id, REPO, FILE, None, "model", Some("Q4_K_M"), None)
+        .await
         .unwrap();
 
     // Verify the queue row was created (pre-condition for start_pull_from_queue).
     assert!(
-        svc.test_model_mgr()
-            .queue_get_by_job_id(&job_id)
-            .unwrap()
-            .is_some(),
+        svc.get_queue_item(&job_id).await.unwrap().is_some(),
         "queue row should exist after enqueue"
     );
 
@@ -203,7 +198,7 @@ async fn test_pull_hash_mismatch_fails_job_and_deletes_file() {
         .pull_queue()
         .as_ref()
         .expect("pull_queue should be set");
-    let db_row = svc.test_model_mgr().queue_get_by_job_id(&job_id).unwrap();
+    let db_row = svc.get_queue_item(&job_id).await.unwrap();
     assert!(db_row.is_some(), "DB queue row should exist");
     assert_eq!(
         db_row.unwrap().status,
@@ -281,14 +276,12 @@ async fn test_pull_success_completes_and_records_model_files() {
         .as_ref()
         .expect("pull_queue should be set");
     svc.enqueue(&job_id, REPO, FILE, None, "model", Some("Q4_K_M"), None)
+        .await
         .unwrap();
 
     // Verify the queue row was created (pre-condition for start_pull_from_queue).
     assert!(
-        svc.test_model_mgr()
-            .queue_get_by_job_id(&job_id)
-            .unwrap()
-            .is_some(),
+        svc.get_queue_item(&job_id).await.unwrap().is_some(),
         "queue row should exist after enqueue"
     );
 
@@ -366,7 +359,7 @@ async fn test_pull_success_completes_and_records_model_files() {
         .pull_queue()
         .as_ref()
         .expect("pull_queue should be set");
-    let db_row = svc.test_model_mgr().queue_get_by_job_id(&job_id).unwrap();
+    let db_row = svc.get_queue_item(&job_id).await.unwrap();
     assert!(db_row.is_some(), "DB queue row should exist");
     assert_eq!(
         db_row.unwrap().status,

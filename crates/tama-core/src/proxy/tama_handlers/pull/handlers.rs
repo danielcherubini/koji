@@ -126,7 +126,8 @@ pub async fn handle_tama_pull_model(
                 display_name.as_deref(),
                 quant.as_deref(),
                 None, // context_length: None — populated from GGUF during pull
-            );
+            )
+            .await;
 
             job_entries.push(serde_json::json!({
                 "job_id": job_id,
@@ -227,7 +228,8 @@ pub async fn handle_tama_pull_model(
                 display_name.as_deref(),
                 spec.quant.as_deref(),
                 spec.context_length,
-            );
+            )
+            .await;
 
             job_entries.push(serde_json::json!({
                 "job_id": job_id,
@@ -352,7 +354,8 @@ pub async fn handle_tama_pull_model(
         display_name.as_deref(),
         Some(&quant),
         request.context_length,
-    );
+    )
+    .await;
 
     Json(serde_json::json!({
         "job_id": job_id,

@@ -6,10 +6,10 @@
 //! `db::queries` directly.
 //!
 //! Transitional (plan-190): the model/alias/provider query methods moved to
-//! Postgres in Task 5 — API handlers now use `WebState.db_pool` directly with
-//! the async `db::queries` functions. The methods remaining here (benchmarks,
-//! pull queue, tamads) stay on SQLite until Tasks 7-8 and this module is
-//! deleted in Task 9.
+//! Postgres in Task 5 and the pull queue/tamad queries moved to Postgres in
+//! Task 7 — API handlers now use `WebState.db_pool` directly with the async
+//! `db::queries` functions. The methods remaining here (benchmarks) stay on
+//! SQLite until Task 8 and this module is deleted in Task 9.
 
 use anyhow::Context;
 use rusqlite::Connection;
@@ -47,8 +47,8 @@ pub struct BenchmarkParams {
 /// Domain-level database access for API handlers.
 ///
 /// Wraps a SQLite connection and provides high-level methods for
-/// benchmarks, pull queue, and update checks. Model/alias/provider access is
-/// pool-based via `db::queries` (plan-190 Task 5).
+/// benchmarks. Model/alias/provider and pull queue/tamad access is
+/// pool-based via `db::queries` (plan-190 Tasks 5 and 7).
 #[derive(Debug)]
 pub struct Repository {
     pub(crate) conn: Connection,
@@ -94,25 +94,6 @@ impl Repository {
         Ok(count > 0)
     }
 
-    /// Get an active pull queue item by repo_id and filename.
-    ///
-    /// Returns `None` if no active (queued/running/verifying) item exists
-    /// for the given repo_id and filename combination.
-    pub fn get_active_pull_by_filename(
-        &self,
-        repo_id: &str,
-        filename: &str,
-    ) -> anyhow::Result<Option<queries::PullQueueItem>> {
-        queries::get_active_item_by_repo_filename(&self.conn, repo_id, filename).with_context(
-            || {
-                format!(
-                    "Failed to get active pull for repo_id={} filename={}",
-                    repo_id, filename
-                )
-            },
-        )
-    }
-
     // ── Benchmarks ──────────────────────────────────────────────────────
 
     /// Insert a benchmark result. Returns the new row id.
@@ -151,49 +132,6 @@ impl Repository {
     pub fn delete_benchmark(&self, id: i64) -> anyhow::Result<()> {
         queries::delete_benchmark(&self.conn, id)?;
         Ok(())
-    }
-
-    // ── Tamad CRUD ───────────────────────────────────────────────────────
-
-    /// Insert a new tamad connection.
-    pub fn insert_tamad(
-        &self,
-        id: &str,
-        name: &str,
-        url: &str,
-        protocol: &str,
-        token: Option<&str>,
-    ) -> anyhow::Result<()> {
-        queries::insert_tamad(&self.conn, id, name, url, protocol, token)
-            .with_context(|| format!("Failed to insert tamad '{}'", name))
-    }
-
-    /// Get a tamad connection by id.
-    pub fn get_tamad(&self, id: &str) -> anyhow::Result<Option<crate::providers::TamadConnection>> {
-        queries::get_tamad(&self.conn, id).with_context(|| "Failed to get tamad")
-    }
-
-    /// List all tamad connections.
-    pub fn list_tamads(&self) -> anyhow::Result<Vec<crate::providers::TamadConnection>> {
-        queries::list_tamads(&self.conn).with_context(|| "Failed to list tamads")
-    }
-
-    /// Update a tamad connection's url and/or token.
-    pub fn update_tamad(&self, id: &str, url: &str, token: Option<&str>) -> anyhow::Result<()> {
-        queries::update_tamad(&self.conn, id, url, token)
-            .with_context(|| format!("Failed to update tamad '{}'", id))
-    }
-
-    /// Delete a tamad connection by id. Returns true if a row was deleted.
-    pub fn delete_tamad(&self, id: &str) -> anyhow::Result<bool> {
-        queries::delete_tamad(&self.conn, id)
-            .with_context(|| format!("Failed to delete tamad '{}'", id))
-    }
-
-    /// Update only the status of a tamad connection.
-    pub fn update_tamad_status(&self, id: &str, status: &str) -> anyhow::Result<()> {
-        queries::update_tamad_status(&self.conn, id, status)
-            .with_context(|| format!("Failed to update tamad status '{}'", id))
     }
 }
 

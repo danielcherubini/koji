@@ -28,7 +28,7 @@ fn seed_job(state: &Arc<ProxyState>, job_id: &str, status: PullJobStatus) {
 /// Test that GET /tama/v1/pulls/:job_id returns 404 for an unknown job.
 #[tokio::test]
 async fn test_get_pull_job_unknown_returns_404() {
-    let (state, _tmp) = create_test_state();
+    let (state, _guard) = create_test_state().await;
     let app = pull_router(state);
 
     let resp = app
@@ -54,7 +54,7 @@ async fn test_get_pull_job_unknown_returns_404() {
 /// Test that GET /tama/v1/pulls/:job_id returns a snapshot for an existing job.
 #[tokio::test]
 async fn test_get_pull_job_returns_snapshot() {
-    let (state, _tmp) = create_test_state();
+    let (state, _guard) = create_test_state().await;
     seed_job(&state, "pull-1", PullJobStatus::Running);
 
     let app = pull_router(state);
@@ -88,7 +88,7 @@ async fn test_get_pull_job_returns_snapshot() {
 /// Test that the SSE stream emits progress then done events when a job transitions.
 #[tokio::test]
 async fn test_pull_job_stream_emits_progress_then_done() {
-    let (state, _tmp) = create_test_state();
+    let (state, _guard) = create_test_state().await;
     seed_job(&state, "pull-sse", PullJobStatus::Pending);
 
     // Schedule status flip: Pending → Completed after 800ms.
@@ -162,7 +162,7 @@ async fn test_pull_job_stream_emits_progress_then_done() {
 /// Test that the SSE stream for an unknown job closes without emitting events.
 #[tokio::test]
 async fn test_pull_job_stream_unknown_job_closes_without_events() {
-    let (state, _tmp) = create_test_state();
+    let (state, _guard) = create_test_state().await;
 
     let app = pull_router(state);
     let resp = app

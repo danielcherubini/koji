@@ -44,14 +44,16 @@ pub async fn start_pull_from_queue(
         }
         drop(jobs);
         if let Some(ref svc) = state_clone.pull_queue() {
-            let _ = svc.update_status(
-                &job_id_clone,
-                "failed",
-                0,
-                None,
-                Some("Invalid filename"),
-                None,
-            );
+            let _ = svc
+                .update_status(
+                    &job_id_clone,
+                    "failed",
+                    0,
+                    None,
+                    Some("Invalid filename"),
+                    None,
+                )
+                .await;
         }
         return;
     }
@@ -63,14 +65,16 @@ pub async fn start_pull_from_queue(
         }
         drop(jobs);
         if let Some(ref svc) = state_clone.pull_queue() {
-            let _ = svc.update_status(
-                &job_id_clone,
-                "failed",
-                0,
-                None,
-                Some("Invalid repo_id"),
-                None,
-            );
+            let _ = svc
+                .update_status(
+                    &job_id_clone,
+                    "failed",
+                    0,
+                    None,
+                    Some("Invalid repo_id"),
+                    None,
+                )
+                .await;
         }
         return;
     }
@@ -102,14 +106,16 @@ pub async fn start_pull_from_queue(
             }
             drop(jobs);
             if let Some(ref svc) = state_clone.pull_queue() {
-                let _ = svc.update_status(
-                    &job_id_clone,
-                    "failed",
-                    0,
-                    None,
-                    Some(&format!("Failed to get models dir: {}", e)),
-                    None,
-                );
+                let _ = svc
+                    .update_status(
+                        &job_id_clone,
+                        "failed",
+                        0,
+                        None,
+                        Some(&format!("Failed to get models dir: {}", e)),
+                        None,
+                    )
+                    .await;
             }
             return;
         }
@@ -125,14 +131,16 @@ pub async fn start_pull_from_queue(
         }
         drop(jobs);
         if let Some(ref svc) = state_clone.pull_queue() {
-            let _ = svc.update_status(
-                &job_id_clone,
-                "failed",
-                0,
-                None,
-                Some(&format!("Failed to create dest dir: {}", e)),
-                None,
-            );
+            let _ = svc
+                .update_status(
+                    &job_id_clone,
+                    "failed",
+                    0,
+                    None,
+                    Some(&format!("Failed to create dest dir: {}", e)),
+                    None,
+                )
+                .await;
         }
         return;
     }
@@ -150,14 +158,16 @@ pub async fn start_pull_from_queue(
             }
             drop(jobs);
             if let Some(ref svc) = state_clone.pull_queue() {
-                let _ = svc.update_status(
-                    &job_id_clone,
-                    "failed",
-                    0,
-                    None,
-                    Some(&format!("Failed to create destination subdirectory: {}", e)),
-                    None,
-                );
+                let _ = svc
+                    .update_status(
+                        &job_id_clone,
+                        "failed",
+                        0,
+                        None,
+                        Some(&format!("Failed to create destination subdirectory: {}", e)),
+                        None,
+                    )
+                    .await;
             }
             return;
         }
@@ -179,17 +189,19 @@ pub async fn start_pull_from_queue(
             }
             drop(jobs);
             if let Some(ref svc) = state_clone.pull_queue() {
-                let _ = svc.update_status(
-                    &job_id_clone,
-                    "failed",
-                    0,
-                    None,
-                    Some(&format!(
-                        "Another pull of '{}' is already in progress",
-                        filename_clone
-                    )),
-                    None,
-                );
+                let _ = svc
+                    .update_status(
+                        &job_id_clone,
+                        "failed",
+                        0,
+                        None,
+                        Some(&format!(
+                            "Another pull of '{}' is already in progress",
+                            filename_clone
+                        )),
+                        None,
+                    )
+                    .await;
             }
             return;
         }
@@ -250,11 +262,13 @@ pub async fn start_pull_from_queue(
                                 last_progress_pct = pct;
                                 drop(jobs);
                                 if let Some(ref svc) = poll_pull_queue {
-                                    let _ = svc.update_progress(
-                                        &poll_job_id,
-                                        bytes_pulled as i64,
-                                        Some(total as i64),
-                                    );
+                                    let _ = svc
+                                        .update_progress(
+                                            &poll_job_id,
+                                            bytes_pulled as i64,
+                                            Some(total as i64),
+                                        )
+                                        .await;
                                 }
                             }
                         }
@@ -280,9 +294,14 @@ pub async fn start_pull_from_queue(
                     }
                 }
             }
-            // Emit SSE progress event directly
-            if let Some(ref svc) = progress_queue {
-                let _ = svc.update_progress(&job_id, pulled as i64, Some(total as i64));
+            // Emit SSE progress event directly (async — spawn to keep the callback sync)
+            if let Some(svc) = progress_queue.clone() {
+                let job_id = job_id.clone();
+                tokio::spawn(async move {
+                    let _ = svc
+                        .update_progress(&job_id, pulled as i64, Some(total as i64))
+                        .await;
+                });
             }
         });
 
@@ -312,14 +331,16 @@ pub async fn start_pull_from_queue(
             poll_handle.abort();
             in_flight_clone.lock().await.remove(&dest_path);
             if let Some(ref svc) = state_clone.pull_queue() {
-                let _ = svc.update_status(
-                    &job_id_clone,
-                    "failed",
-                    0,
-                    None,
-                    Some(&format!("Failed to build HTTP client: {}", e)),
-                    None,
-                );
+                let _ = svc
+                    .update_status(
+                        &job_id_clone,
+                        "failed",
+                        0,
+                        None,
+                        Some(&format!("Failed to build HTTP client: {}", e)),
+                        None,
+                    )
+                    .await;
             }
             return;
         }
@@ -347,14 +368,16 @@ pub async fn start_pull_from_queue(
             poll_handle.abort();
             in_flight_clone.lock().await.remove(&dest_path);
             if let Some(ref svc) = state_clone.pull_queue() {
-                let _ = svc.update_status(
-                    &job_id_clone,
-                    "failed",
-                    0,
-                    None,
-                    Some(&format!("Pull failed: {}", e)),
-                    None,
-                );
+                let _ = svc
+                    .update_status(
+                        &job_id_clone,
+                        "failed",
+                        0,
+                        None,
+                        Some(&format!("Pull failed: {}", e)),
+                        None,
+                    )
+                    .await;
             }
             return;
         }
@@ -606,14 +629,16 @@ pub async fn start_pull_from_queue(
     };
 
     if let Some(ref svc) = state_clone.pull_queue() {
-        let _ = svc.update_status(
-            &job_id_clone,
-            final_status,
-            total_size as i64,
-            Some(total_size as i64),
-            error_msg,
-            duration_ms,
-        );
+        let _ = svc
+            .update_status(
+                &job_id_clone,
+                final_status,
+                total_size as i64,
+                Some(total_size as i64),
+                error_msg,
+                duration_ms,
+            )
+            .await;
     }
 
     // Update in-memory PullJob with duration

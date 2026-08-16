@@ -10,7 +10,6 @@ use axum::{
 use std::sync::Arc;
 
 use crate::api::error::error_response;
-use crate::api::helpers::shared_repository;
 use crate::web_types::WebState;
 use tama_core::proxy::ProxyState;
 
@@ -20,20 +19,17 @@ pub async fn list_tamads(
     State(_state): State<Arc<ProxyState>>,
     Extension(web_state): Extension<WebState>,
 ) -> impl IntoResponse {
-    let repo = match shared_repository(&web_state) {
-        Ok(r) => r,
-        Err(resp) => return resp,
+    let Some(pool) = web_state.db_pool.as_ref() else {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Postgres pool not available",
+            None,
+        );
     };
-    let repo = repo.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let repo = repo.lock().unwrap();
-        repo.list_tamads()
-    })
-    .await;
-    match result {
-        Ok(Ok(tamads)) => Json(tamads).into_response(),
-        Ok(Err(e)) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
-        Err(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "Task panicked", None),
+
+    match tama_core::db::queries::list_tamads(pool).await {
+        Ok(tamads) => Json(tamads).into_response(),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     }
 }
 
@@ -44,26 +40,22 @@ pub async fn get_tamad(
     Extension(web_state): Extension<WebState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let repo = match shared_repository(&web_state) {
-        Ok(r) => r,
-        Err(resp) => return resp,
+    let Some(pool) = web_state.db_pool.as_ref() else {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Postgres pool not available",
+            None,
+        );
     };
-    let id_clone = id.clone();
-    let repo = repo.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let repo = repo.lock().unwrap();
-        repo.get_tamad(&id)
-    })
-    .await;
-    match result {
-        Ok(Ok(Some(tamad))) => Json(tamad).into_response(),
-        Ok(Ok(None)) => error_response(
+
+    match tama_core::db::queries::get_tamad(pool, &id).await {
+        Ok(Some(tamad)) => Json(tamad).into_response(),
+        Ok(None) => error_response(
             StatusCode::NOT_FOUND,
-            format!("Tamad '{}' not found", id_clone),
+            format!("Tamad '{}' not found", id),
             Some("NotFoundError"),
         ),
-        Ok(Err(e)) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
-        Err(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "Task panicked", None),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     }
 }
 
@@ -71,18 +63,19 @@ pub async fn get_tamad(
 mod tests {
     use axum::body::Body;
     use axum::http::Request;
-    use std::sync::{Arc, Mutex};
-    use tama_core::db::repository::Repository;
+    use std::sync::Arc;
     use tama_core::proxy::ProxyState;
     use tower::ServiceExt;
 
-    fn build_test_state(
-        tmp_dir: &std::path::Path,
-    ) -> (Arc<ProxyState>, Arc<crate::web_types::WebState>) {
+    async fn build_test_state() -> (
+        Arc<ProxyState>,
+        Arc<crate::web_types::WebState>,
+        crate::testing::postgres::SchemaGuard,
+    ) {
+        let guard = crate::testing::postgres::with_schema().await;
+        let pool = Arc::new(guard.pool.clone());
         let config = tama_core::config::Config::default();
-        let state = Arc::new(ProxyState::new(config, Some(tmp_dir.to_path_buf()), None));
-
-        let repo = Repository::open(tmp_dir).unwrap();
+        let state = Arc::new(ProxyState::new(config, None, Some(pool.clone())));
 
         let web_state = Arc::new(crate::web_types::WebState {
             jobs: Some(Arc::new(crate::web_types::JobManager::new())),
@@ -91,18 +84,17 @@ mod tests {
             binary_version: "test".to_string(),
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-            repository: Some(Arc::new(Mutex::new(repo))),
-            db_pool: None,
+            repository: None,
+            db_pool: Some(pool),
         });
 
-        (state, web_state)
+        (state, web_state, guard)
     }
 
     /// GET /tama/v1/tamads on empty DB → 200 with empty array.
     #[tokio::test]
     async fn test_list_tamads_empty() {
-        let tmp_dir = tempfile::tempdir().expect("tempdir");
-        let (state, web_state) = build_test_state(tmp_dir.path());
+        let (state, web_state, guard) = build_test_state().await;
         let router = crate::router::build_web_routes(web_state.clone())
             .with_state(state)
             .layer(axum::extract::Extension(web_state.as_ref().clone()));
@@ -123,13 +115,14 @@ mod tests {
             serde_json::from_slice(&body_str).expect("body should be valid JSON");
         assert!(json.is_array());
         assert_eq!(json.as_array().unwrap().len(), 0);
+
+        guard.finish().await;
     }
 
     /// GET /tama/v1/tamads/:id for unknown tamad → 404.
     #[tokio::test]
     async fn test_get_tamad_not_found() {
-        let tmp_dir = tempfile::tempdir().expect("tempdir");
-        let (state, web_state) = build_test_state(tmp_dir.path());
+        let (state, web_state, guard) = build_test_state().await;
         let router = crate::router::build_web_routes(web_state.clone())
             .with_state(state)
             .layer(axum::extract::Extension(web_state.as_ref().clone()));
@@ -146,13 +139,14 @@ mod tests {
             axum::http::StatusCode::NOT_FOUND,
             "unknown tamad should return 404"
         );
+
+        guard.finish().await;
     }
 
     /// POST → GET list → GET single round trip.
     #[tokio::test]
     async fn test_tamad_crud_round_trip() {
-        let tmp_dir = tempfile::tempdir().expect("tempdir");
-        let (state, web_state) = build_test_state(tmp_dir.path());
+        let (state, web_state, guard) = build_test_state().await;
         let router = crate::router::build_web_routes(web_state.clone())
             .with_state(state)
             .layer(axum::extract::Extension(web_state.as_ref().clone()));
@@ -208,5 +202,7 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body_str).unwrap();
         assert_eq!(json["name"], "my-tamad");
         assert_eq!(json["id"], tamad_id);
+
+        guard.finish().await;
     }
 }

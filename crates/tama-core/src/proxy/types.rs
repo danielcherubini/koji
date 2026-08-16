@@ -313,19 +313,6 @@ impl ProxyState {
         self.db_pool.clone()
     }
 
-    /// Open a DB connection for a quick sync operation.
-    /// Returns None if db_dir is not configured (e.g., in tests).
-    ///
-    /// Crate-internal connection factory for proxy services (API-key validation,
-    /// metrics persistence, auth). The management API in the `tama` crate uses
-    /// the shared `Repository` from `WebState` (plan-160) instead — do NOT add
-    /// new callers there.
-    pub(crate) fn open_db(&self) -> Option<rusqlite::Connection> {
-        self.db_dir
-            .as_ref()
-            .and_then(|dir| crate::db::open(dir).ok().map(|r| r.conn))
-    }
-
     /// Start a whole-repo `hf` CLI pull.
     ///
     /// `model_id` is the pre-created stub row (None = no DB update on
@@ -440,10 +427,11 @@ impl ProxyState {
         }
 
         // Slow path: load from DB and create client
-        let conn = self
-            .open_db()
+        let pool = self
+            .db_pool()
             .with_context(|| "Database not available for tamad lookup")?;
-        let tamad_record = crate::db::queries::get_tamad(&conn, tamad_id)
+        let tamad_record = crate::db::queries::get_tamad(pool.as_ref(), tamad_id)
+            .await
             .with_context(|| "Failed to look up tamad in database")?
             .ok_or_else(|| anyhow::anyhow!("tamad '{}' not found in registry", tamad_id))?;
 

@@ -9,7 +9,6 @@ use std::sync::Arc;
 
 use super::check::CheckSingleQuery;
 use crate::api::error::{error_body, error_response};
-use crate::api::helpers::shared_repository;
 use crate::web_types::WebState;
 use tama_core::installations::{
     check_latest_version, get_backend_install_path, InstallOptions, InstallationManager,
@@ -322,7 +321,7 @@ pub async fn apply_model_update(
         .filter(|(_, fn_)| seen_filenames.insert(fn_.clone()))
         .collect();
 
-    // 4. Pre-check for duplicate enqueues and enqueue each quant — all in one spawn_blocking.
+    // 4. Pre-check for duplicate enqueues and enqueue each quant.
     let svc = match state.pull_queue().as_ref() {
         Some(s) => s.clone(),
         None => {
@@ -334,81 +333,63 @@ pub async fn apply_model_update(
         }
     };
 
-    let enqueue_result = tokio::task::spawn_blocking(
-        move || -> Result<Vec<String>, (StatusCode, serde_json::Value)> {
-            let repo = shared_repository(&web_state).map_err(|resp| {
-                (
-                    resp.status(),
-                    serde_json::json!({ "error": "Database not configured" }),
+    // Phase 1: Preflight — check all items for duplicates before creating any jobs.
+    for (quant_key, filename) in &unique_files {
+        let existing = match tama_core::db::queries::get_active_item_by_repo_filename(
+            pool, &repo_id, filename,
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "error": format!("Queue check failed for '{}': {}", filename, e)
+                    })),
                 )
-            })?;
-            let repo = repo.lock().unwrap();
-
-            // Phase 1: Preflight — check all items for duplicates before creating any jobs.
-            for (quant_key, filename) in &unique_files {
-                match repo.get_active_pull_by_filename(&repo_id, filename) {
-                    Ok(Some(existing)) => {
-                        let mut body = error_body(
-                            format!(
-                                "Download already in progress for quant '{}' ({})",
-                                quant_key, filename
-                            ),
-                            Some("ConflictError"),
-                        );
-                        body["existing_job_id"] = serde_json::json!(existing.job_id);
-                        return Err((StatusCode::CONFLICT, body));
-                    }
-                    Ok(None) => {}
-                    Err(e) => {
-                        return Err((
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            serde_json::json!({
-                                "error": format!("Queue check failed for '{}': {}", filename, e)
-                            }),
-                        ));
-                    }
-                }
+                    .into_response()
             }
+        };
+        if let Some(existing) = existing {
+            let mut body = error_body(
+                format!(
+                    "Download already in progress for quant '{}' ({})",
+                    quant_key, filename
+                ),
+                Some("ConflictError"),
+            );
+            body["existing_job_id"] = serde_json::json!(existing.job_id);
+            return (StatusCode::CONFLICT, Json(body)).into_response();
+        }
+    }
 
-            // Phase 2: All preflight checks passed — generate job IDs and enqueue.
-            let mut job_ids = Vec::new();
-            for (quant_key, filename) in &unique_files {
-                let job_id = uuid::Uuid::new_v4().to_string();
+    // Phase 2: All preflight checks passed — generate job IDs and enqueue.
+    let mut job_ids = Vec::new();
+    for (quant_key, filename) in &unique_files {
+        let job_id = uuid::Uuid::new_v4().to_string();
 
-                if let Err(e) = svc.enqueue(
-                    &job_id,
-                    &repo_id,
-                    filename,
-                    Some(quant_key.as_str()),
-                    "model",
-                    Some(quant_key.as_str()),
-                    None,
-                ) {
-                    return Err((
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        serde_json::json!({ "error": e.to_string() }),
-                    ));
-                }
-
-                job_ids.push(job_id);
-            }
-
-            Ok(job_ids)
-        },
-    )
-    .await;
-
-    let job_ids = match enqueue_result {
-        Ok(Ok(ids)) => ids,
-        Ok(Err((s, b))) => return (s, Json(b)).into_response(),
-        Err(e) => {
+        if let Err(e) = svc
+            .enqueue(
+                &job_id,
+                &repo_id,
+                filename,
+                Some(quant_key.as_str()),
+                "model",
+                Some(quant_key.as_str()),
+                None,
+            )
+            .await
+        {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": format!("spawn error: {}", e) })),
+                Json(serde_json::json!({ "error": e.to_string() })),
             )
-                .into_response()
+                .into_response();
         }
-    };
+
+        job_ids.push(job_id);
+    }
 
     let total = job_ids.len();
     Json(ModelUpdateResponse { job_ids, total }).into_response()

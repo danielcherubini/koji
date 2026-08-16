@@ -10,8 +10,7 @@ use axum::{
 };
 use std::sync::Arc;
 
-use crate::api::error::{error_body, error_response};
-use crate::api::helpers::shared_repository;
+use crate::api::error::error_response;
 use crate::web_types::WebState;
 use tama_core::proxy::ProxyState;
 
@@ -30,27 +29,26 @@ pub async fn update_tamad(
     Path(id): Path<String>,
     Json(req): Json<UpdateTamadRequest>,
 ) -> impl IntoResponse {
-    // Check tamad exists first
-    let repo = match shared_repository(&web_state) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
-
-    let exists = match &web_state.repository {
-        Some(repo_arc) => {
-            let repo = repo_arc.lock().unwrap();
-            repo.get_tamad(&id).map(|t| t.is_some()).unwrap_or(false)
-        }
-        None => false,
-    };
-
-    if !exists {
+    let Some(pool) = web_state.db_pool.as_ref() else {
         return error_response(
-            StatusCode::NOT_FOUND,
-            format!("Tamad '{}' not found", id),
-            Some("NotFoundError"),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Postgres pool not available",
+            None,
         );
-    }
+    };
+
+    // Check tamad exists first
+    let current = match tama_core::db::queries::get_tamad(pool, &id).await {
+        Ok(Some(t)) => t,
+        Ok(None) => {
+            return error_response(
+                StatusCode::NOT_FOUND,
+                format!("Tamad '{}' not found", id),
+                Some("NotFoundError"),
+            )
+        }
+        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
+    };
 
     // Validate at least one field is provided
     if req.url.is_none() && req.token.is_none() {
@@ -61,63 +59,22 @@ pub async fn update_tamad(
         );
     }
 
-    let repo = repo.clone();
+    let new_url = req.url.as_deref().unwrap_or(current.url.as_str());
+    let new_token = req.token.as_deref().or(current.token.as_deref());
 
-    // Capture fields for spawn_blocking closure
-    let url = req.url.clone();
-    let token = req.token.clone();
+    if let Err(e) = tama_core::db::queries::update_tamad(pool, &id, new_url, new_token).await {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None);
+    }
 
-    let result =
-        tokio::task::spawn_blocking(move || -> Result<_, (StatusCode, serde_json::Value)> {
-            let repo = repo.lock().unwrap();
-
-            // Get the current tamad to preserve fields not being updated
-            let current = repo.get_tamad(&id).map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    error_body(e.to_string(), None),
-                )
-            })?;
-
-            let current = current.ok_or_else(|| {
-                (
-                    StatusCode::NOT_FOUND,
-                    error_body(format!("Tamad '{}' not found", id), Some("NotFoundError")),
-                )
-            })?;
-
-            let new_url = url.as_deref().unwrap_or(current.url.as_str());
-            let new_token = token.as_deref().or(current.token.as_deref());
-
-            repo.update_tamad(&id, new_url, new_token).map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    error_body(e.to_string(), None),
-                )
-            })?;
-
-            repo.get_tamad(&id).ok().flatten().ok_or_else(|| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    error_body("Failed to retrieve updated tamad", None),
-                )
-            })
-        })
-        .await;
-
-    let tamad = match result {
-        Ok(Ok(t)) => t,
-        Ok(Err((s, b))) => return (s, Json(b)).into_response(),
-        Err(e) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Task panicked: {}", e),
-                None,
-            )
-        }
-    };
-
-    Json(tamad).into_response()
+    match tama_core::db::queries::get_tamad(pool, &id).await {
+        Ok(Some(tamad)) => Json(tamad).into_response(),
+        Ok(None) => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to retrieve updated tamad",
+            None,
+        ),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
+    }
 }
 
 /// DELETE /tama/v1/tamads/:id
@@ -127,45 +84,28 @@ pub async fn delete_tamad(
     Extension(web_state): Extension<WebState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let repo = match shared_repository(&web_state) {
-        Ok(r) => r,
-        Err(resp) => return resp,
+    let Some(pool) = web_state.db_pool.as_ref() else {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Postgres pool not available",
+            None,
+        );
     };
 
-    let id_clone = id.clone();
-    let repo = repo.clone();
+    let deleted = match tama_core::db::queries::delete_tamad(pool, &id).await {
+        Ok(d) => d,
+        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
+    };
 
-    let result =
-        tokio::task::spawn_blocking(move || -> Result<_, (StatusCode, serde_json::Value)> {
-            let repo = repo.lock().unwrap();
-            let deleted = repo.delete_tamad(&id).map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    error_body(e.to_string(), None),
-                )
-            })?;
-            if !deleted {
-                return Err((
-                    StatusCode::NOT_FOUND,
-                    error_body(
-                        format!("Tamad '{}' not found", id_clone),
-                        Some("NotFoundError"),
-                    ),
-                ));
-            }
-            Ok(())
-        })
-        .await;
-
-    match result {
-        Ok(Ok(())) => Json(serde_json::json!({"deleted": true})).into_response(),
-        Ok(Err((s, b))) => (s, Json(b)).into_response(),
-        Err(e) => error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Task panicked: {}", e),
-            None,
-        ),
+    if !deleted {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            format!("Tamad '{}' not found", id),
+            Some("NotFoundError"),
+        );
     }
+
+    Json(serde_json::json!({"deleted": true})).into_response()
 }
 
 /// POST /tama/v1/tamads/:id/health
@@ -176,11 +116,11 @@ pub async fn trigger_health_check(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     // Check tamad exists
-    let exists = match &web_state.repository {
-        Some(repo_arc) => {
-            let repo = repo_arc.lock().unwrap();
-            repo.get_tamad(&id).map(|t| t.is_some()).unwrap_or(false)
-        }
+    let exists = match web_state.db_pool.as_ref() {
+        Some(pool) => match tama_core::db::queries::get_tamad(pool, &id).await {
+            Ok(t) => t.is_some(),
+            Err(_) => false,
+        },
         None => false,
     };
 
@@ -210,18 +150,19 @@ pub async fn trigger_health_check(
 mod tests {
     use axum::body::Body;
     use axum::http::Request;
-    use std::sync::{Arc, Mutex};
-    use tama_core::db::repository::Repository;
+    use std::sync::Arc;
     use tama_core::proxy::ProxyState;
     use tower::ServiceExt;
 
-    fn build_test_state(
-        tmp_dir: &std::path::Path,
-    ) -> (Arc<ProxyState>, Arc<crate::web_types::WebState>) {
+    async fn build_test_state() -> (
+        Arc<ProxyState>,
+        Arc<crate::web_types::WebState>,
+        crate::testing::postgres::SchemaGuard,
+    ) {
+        let guard = crate::testing::postgres::with_schema().await;
+        let pool = Arc::new(guard.pool.clone());
         let config = tama_core::config::Config::default();
-        let state = Arc::new(ProxyState::new(config, Some(tmp_dir.to_path_buf()), None));
-
-        let repo = Repository::open(tmp_dir).unwrap();
+        let state = Arc::new(ProxyState::new(config, None, Some(pool.clone())));
 
         let web_state = Arc::new(crate::web_types::WebState {
             jobs: Some(Arc::new(crate::web_types::JobManager::new())),
@@ -230,18 +171,17 @@ mod tests {
             binary_version: "test".to_string(),
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-            repository: Some(Arc::new(Mutex::new(repo))),
-            db_pool: None,
+            repository: None,
+            db_pool: Some(pool),
         });
 
-        (state, web_state)
+        (state, web_state, guard)
     }
 
     /// PATCH on non-existent tamad → 404.
     #[tokio::test]
     async fn test_update_tamad_not_found_returns_404() {
-        let tmp_dir = tempfile::tempdir().expect("tempdir");
-        let (state, web_state) = build_test_state(tmp_dir.path());
+        let (state, web_state, guard) = build_test_state().await;
         let router = crate::router::build_web_routes(web_state.clone())
             .with_state(state)
             .layer(axum::extract::Extension(web_state.as_ref().clone()));
@@ -262,13 +202,14 @@ mod tests {
             axum::http::StatusCode::NOT_FOUND,
             "update non-existent tamad should return 404"
         );
+
+        guard.finish().await;
     }
 
     /// DELETE on non-existent tamad → 404.
     #[tokio::test]
     async fn test_delete_tamad_not_found_returns_404() {
-        let tmp_dir = tempfile::tempdir().expect("tempdir");
-        let (state, web_state) = build_test_state(tmp_dir.path());
+        let (state, web_state, guard) = build_test_state().await;
         let router = crate::router::build_web_routes(web_state.clone())
             .with_state(state)
             .layer(axum::extract::Extension(web_state.as_ref().clone()));
@@ -278,19 +219,21 @@ mod tests {
             .uri("/tama/v1/tamads/nonexistent-id")
             .body(Body::empty())
             .unwrap();
+
         let resp = router.oneshot(req).await.expect("request should complete");
         assert_eq!(
             resp.status(),
             axum::http::StatusCode::NOT_FOUND,
             "delete non-existent tamad should return 404"
         );
+
+        guard.finish().await;
     }
 
     /// POST create → PATCH update → GET verify → DELETE → GET 404.
     #[tokio::test]
     async fn test_tamad_update_and_delete_round_trip() {
-        let tmp_dir = tempfile::tempdir().expect("tempdir");
-        let (state, web_state) = build_test_state(tmp_dir.path());
+        let (state, web_state, guard) = build_test_state().await;
         let router = crate::router::build_web_routes(web_state.clone())
             .with_state(state)
             .layer(axum::extract::Extension(web_state.as_ref().clone()));
@@ -363,13 +306,14 @@ mod tests {
             .unwrap();
         let resp = router.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), axum::http::StatusCode::NOT_FOUND);
+
+        guard.finish().await;
     }
 
     /// PATCH update only url preserves token.
     #[tokio::test]
     async fn test_update_tamad_partial_preserves_other_fields() {
-        let tmp_dir = tempfile::tempdir().expect("tempdir");
-        let (state, web_state) = build_test_state(tmp_dir.path());
+        let (state, web_state, guard) = build_test_state().await;
         let router = crate::router::build_web_routes(web_state.clone())
             .with_state(state)
             .layer(axum::extract::Extension(web_state.as_ref().clone()));
@@ -417,13 +361,14 @@ mod tests {
         assert_eq!(json["url"], "grpc://newhost:50051");
         assert_eq!(json["token"], "secret-token"); // preserved
         assert_eq!(json["name"], "partial-tamad"); // preserved
+
+        guard.finish().await;
     }
 
     /// POST /tama/v1/tamads/:id/health for non-existent tamad → 404.
     #[tokio::test]
     async fn test_health_check_not_found_returns_404() {
-        let tmp_dir = tempfile::tempdir().expect("tempdir");
-        let (state, web_state) = build_test_state(tmp_dir.path());
+        let (state, web_state, guard) = build_test_state().await;
         let router = crate::router::build_web_routes(web_state.clone())
             .with_state(state)
             .layer(axum::extract::Extension(web_state.as_ref().clone()));
@@ -439,14 +384,15 @@ mod tests {
             axum::http::StatusCode::NOT_FOUND,
             "health check for non-existent tamad should return 404"
         );
+
+        guard.finish().await;
     }
 
     /// POST /tama/v1/tamads/:id/health for existing tamad → 200.
     /// The status will be "error" since no actual tamad server is running.
     #[tokio::test]
     async fn test_health_check_existing_tamad() {
-        let tmp_dir = tempfile::tempdir().expect("tempdir");
-        let (state, web_state) = build_test_state(tmp_dir.path());
+        let (state, web_state, guard) = build_test_state().await;
         let router = crate::router::build_web_routes(web_state.clone())
             .with_state(state)
             .layer(axum::extract::Extension(web_state.as_ref().clone()));
@@ -488,5 +434,7 @@ mod tests {
         // Status is "error" because no actual tamad server is listening
         assert_eq!(json["status"], "error");
         assert!(json.get("error").is_some(), "should include error message");
+
+        guard.finish().await;
     }
 }

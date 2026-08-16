@@ -1,5 +1,7 @@
 //! Integration tests for the Pulls Center API endpoints.
 
+mod common;
+
 use axum::{body::Body, http::Request, Router};
 use std::sync::Arc;
 use tower::ServiceExt;
@@ -7,30 +9,13 @@ use tower::ServiceExt;
 use tama_core::proxy::ProxyState;
 use tama_web::api::pulls::{PullCancelResponse, PullsActiveResponse, PullsHistoryResponse};
 
-/// Create a test ProxyState with an in-memory pull queue service.
-fn create_test_state() -> Arc<ProxyState> {
-    use tama_core::proxy::pull_queue::PullQueueService;
-
-    let tmp = tempfile::tempdir().unwrap();
-    let db_dir = tmp.path().to_path_buf();
-
-    // The pull-queue methods are still SQLite-backed until Task 7; the pool
-    // only satisfies the transitional ModelManager shape and is never
-    // connected by the pulls endpoints.
-    let pool = Arc::new(
-        sqlx::postgres::PgPoolOptions::new()
-            .connect_lazy("postgresql://tama:tama@127.0.0.1:1/unused")
-            .expect("lazy pool must not fail on a valid URL"),
-    );
-
-    // Initialize the database (SQLite pull queue)
-    let mgr = tama_core::models::ModelManager::open(&db_dir, pool.clone()).unwrap();
-    let svc = PullQueueService::new(mgr, 2);
-
+/// Create a test ProxyState with a pull queue service on an isolated schema.
+async fn create_test_state() -> (Arc<ProxyState>, common::SchemaGuard) {
+    let guard = common::with_schema().await;
+    let pool = Arc::new(guard.pool.clone());
     let config = tama_core::config::Config::default();
-    let mut state = ProxyState::new(config, Some(db_dir), Some(pool));
-    state.set_pull_queue(Some(Arc::new(svc)));
-    Arc::new(state)
+    let state = ProxyState::new(config, None, Some(pool));
+    (Arc::new(state), guard)
 }
 
 /// Build the router with the given state, including only pulls routes.
@@ -56,7 +41,7 @@ fn build_pull_router(state: Arc<ProxyState>) -> Router {
 /// Seed the pull queue with test data:
 /// - 2 active items (queued + running)
 /// - 3 history items (completed, failed, cancelled)
-fn seed_test_data(state: &ProxyState) {
+async fn seed_test_data(state: &ProxyState) {
     let svc = state.pull_queue().as_ref().expect("pull_queue configured");
 
     // Active items
@@ -69,6 +54,7 @@ fn seed_test_data(state: &ProxyState) {
         Some("Q4_K_M"),
         Some(4096),
     )
+    .await
     .unwrap();
 
     svc.enqueue(
@@ -80,10 +66,12 @@ fn seed_test_data(state: &ProxyState) {
         Some("Q5_K_M"),
         Some(8192),
     )
+    .await
     .unwrap();
 
     // Transition job-active-2 to running with some progress
     svc.update_status("job-active-2", "running", 1500, Some(3000), None, None)
+        .await
         .unwrap();
 
     // History items
@@ -96,6 +84,7 @@ fn seed_test_data(state: &ProxyState) {
         None,
         None,
     )
+    .await
     .unwrap();
     svc.update_status(
         "job-history-1",
@@ -105,6 +94,7 @@ fn seed_test_data(state: &ProxyState) {
         None,
         Some(5000),
     )
+    .await
     .unwrap();
 
     svc.enqueue(
@@ -116,6 +106,7 @@ fn seed_test_data(state: &ProxyState) {
         None,
         None,
     )
+    .await
     .unwrap();
     svc.update_status(
         "job-history-2",
@@ -125,6 +116,7 @@ fn seed_test_data(state: &ProxyState) {
         Some("LFS hash mismatch"),
         None,
     )
+    .await
     .unwrap();
 
     svc.enqueue(
@@ -136,15 +128,17 @@ fn seed_test_data(state: &ProxyState) {
         None,
         None,
     )
+    .await
     .unwrap();
     svc.update_status("job-history-3", "cancelled", 100, Some(2000), None, None)
+        .await
         .unwrap();
 }
 
 #[tokio::test]
 async fn test_get_active_pulls_returns_correct_dtos() {
-    let state = create_test_state();
-    seed_test_data(&state);
+    let (state, guard) = create_test_state().await;
+    seed_test_data(&state).await;
 
     let app = build_pull_router(state);
 
@@ -192,12 +186,13 @@ async fn test_get_active_pulls_returns_correct_dtos() {
     assert_eq!(queued_item.filename, "Qwen3.6-35B-Q4_K_M.gguf");
     assert_eq!(queued_item.display_name, Some("Qwen3.6 35B".to_string()));
     assert_eq!(queued_item.kind, "model");
+    guard.finish().await;
 }
 
 #[tokio::test]
 async fn test_get_pull_history_with_pagination() {
-    let state = create_test_state();
-    seed_test_data(&state);
+    let (state, guard) = create_test_state().await;
+    seed_test_data(&state).await;
 
     // Test default pagination (limit=50, offset=0)
     let app = build_pull_router(state.clone());
@@ -270,12 +265,13 @@ async fn test_get_pull_history_with_pagination() {
 
     assert_eq!(response_obj.total, 3);
     assert_eq!(response_obj.items.len(), 1);
+    guard.finish().await;
 }
 
 #[tokio::test]
 async fn test_cancel_pull_succeeds_for_queued_item() {
-    let state = create_test_state();
-    seed_test_data(&state);
+    let (state, guard) = create_test_state().await;
+    seed_test_data(&state).await;
 
     let _svc = state.pull_queue().as_ref().unwrap();
 
@@ -304,12 +300,13 @@ async fn test_cancel_pull_succeeds_for_queued_item() {
 
     assert!(response_obj.ok);
     assert!(response_obj.message.is_none());
+    guard.finish().await;
 }
 
 #[tokio::test]
 async fn test_cancel_pull_returns_error_for_completed_item() {
-    let state = create_test_state();
-    seed_test_data(&state);
+    let (state, guard) = create_test_state().await;
+    seed_test_data(&state).await;
 
     let app = build_pull_router(state);
 
@@ -338,12 +335,13 @@ async fn test_cancel_pull_returns_error_for_completed_item() {
     assert!(response_obj.message.is_some());
     let msg = response_obj.message.unwrap();
     assert!(msg.contains("terminal state"));
+    guard.finish().await;
 }
 
 #[tokio::test]
 async fn test_cancel_nonexistent_item_returns_error() {
-    let state = create_test_state();
-    seed_test_data(&state);
+    let (state, guard) = create_test_state().await;
+    seed_test_data(&state).await;
 
     let app = build_pull_router(state);
 
@@ -370,4 +368,5 @@ async fn test_cancel_nonexistent_item_returns_error() {
 
     assert!(!response_obj.ok);
     assert!(response_obj.message.is_some());
+    guard.finish().await;
 }

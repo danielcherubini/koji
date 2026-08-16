@@ -127,14 +127,16 @@ pub(super) async fn run_verification(
 
     // Update DB queue item to "verifying" so Downloads Center shows progress.
     if let Some(ref svc) = pull_queue {
-        let _ = svc.update_status(
-            &job_id,
-            "verifying",
-            bytes as i64,
-            Some(bytes as i64),
-            None,
-            None,
-        );
+        let _ = svc
+            .update_status(
+                &job_id,
+                "verifying",
+                bytes as i64,
+                Some(bytes as i64),
+                None,
+                None,
+            )
+            .await;
     }
 
     // Step 3: hash the cached file in a blocking thread.

@@ -33,17 +33,11 @@ impl ProxyState {
             crate::proxy::forward::langfuse::LangfuseClient::from_config(&config.langfuse)
                 .map(Arc::new);
 
-        // Initialize pull queue service if both the Postgres pool (model
-        // domain, plan-190 Task 5) and db_dir (transitional SQLite pull
-        // queue until Task 7) are configured.
+        // Initialize pull queue service when a Postgres pool is configured.
         let poll_interval = config.proxy.pull_queue_poll_interval_secs;
-        let pull_queue = db_pool.as_ref().and_then(|pool| {
-            db_dir.as_ref().and_then(|dir| {
-                crate::models::ModelManager::open(dir, pool.clone())
-                    .ok()
-                    .map(|mm| Arc::new(PullQueueService::new(mm, poll_interval)))
-            })
-        });
+        let pull_queue = db_pool
+            .as_ref()
+            .map(|pool| Arc::new(PullQueueService::new(pool.clone(), poll_interval)));
 
         let state = Self {
             registry: RegistryState::new(),

@@ -13,7 +13,7 @@ const CT_JSON: &str = "application/json";
 /// Malformed JSON body returns 400 (axum JsonSyntaxError)
 #[tokio::test]
 async fn test_pull_model_malformed_json_returns_400() {
-    let (state, _tmp) = create_test_state();
+    let (state, _guard) = create_test_state().await;
     let app = pull_router(state);
 
     let req = Request::builder()
@@ -30,7 +30,7 @@ async fn test_pull_model_malformed_json_returns_400() {
 /// Missing repo_id returns 422 (JsonDataError)
 #[tokio::test]
 async fn test_pull_model_missing_repo_id_returns_422() {
-    let (state, _tmp) = create_test_state();
+    let (state, _guard) = create_test_state().await;
     let app = pull_router(state);
 
     let req = Request::builder()
@@ -53,7 +53,7 @@ async fn test_pull_model_too_many_files_returns_400() {
         std::env::remove_var("TAMA_MAX_CONCURRENT_PULLS");
     }
 
-    let (state, _tmp) = create_test_state();
+    let (state, _guard) = create_test_state().await;
     let app = pull_router(state);
 
     let max = max_concurrent_pulls();
@@ -94,7 +94,7 @@ async fn test_pull_model_too_many_quants_returns_400() {
         std::env::remove_var("TAMA_MAX_CONCURRENT_PULLS");
     }
 
-    let (state, _tmp) = create_test_state();
+    let (state, _guard) = create_test_state().await;
     let app = pull_router(state);
 
     let max = max_concurrent_pulls();
@@ -144,7 +144,7 @@ async fn test_pull_model_unknown_filename_returns_400() {
 
     mount_listing(&server, "test/repo", &["repo-Q4_K_M.gguf"]).await;
 
-    let (state, _tmp) = create_test_state();
+    let (state, _guard) = create_test_state().await;
     let app = pull_router(state);
 
     let body = serde_json::json!({
@@ -190,7 +190,7 @@ async fn test_pull_model_duplicate_filename_returns_400() {
 
     mount_listing(&server, "test/repo", &["repo-Q4_K_M.gguf"]).await;
 
-    let (state, _tmp) = create_test_state();
+    let (state, _guard) = create_test_state().await;
     let app = pull_router(state);
 
     let body = serde_json::json!({
@@ -236,7 +236,7 @@ async fn test_pull_model_missing_quant_returns_422_with_available() {
 
     mount_listing(&server, "test/repo", &["repo-Q4_K_M.gguf"]).await;
 
-    let (state, _tmp) = create_test_state();
+    let (state, _guard) = create_test_state().await;
     let app = pull_router(state);
 
     // Send repo_id but no filenames/quant — triggers listing fetch
@@ -284,7 +284,7 @@ async fn test_pull_model_unknown_quant_returns_422() {
 
     mount_listing(&server, "test/repo", &["repo-Q4_K_M.gguf"]).await;
 
-    let (state, _tmp) = create_test_state();
+    let (state, _guard) = create_test_state().await;
     let app = pull_router(state);
 
     let body = serde_json::json!({
@@ -338,7 +338,7 @@ async fn test_pull_model_listing_failure_returns_502() {
         .mount(&server)
         .await;
 
-    let (state, _tmp) = create_test_state();
+    let (state, _guard) = create_test_state().await;
     let app = pull_router(state);
 
     let body = serde_json::json!({
@@ -376,7 +376,7 @@ async fn test_pull_model_enqueues_job_and_returns_pending() {
 
     mount_listing(&server, "test/repo", &["repo-Q4_K_M.gguf"]).await;
 
-    let (state, _tmp) = create_test_state();
+    let (state, _guard) = create_test_state().await;
     let app = pull_router(state.clone());
 
     let body = serde_json::json!({
@@ -423,7 +423,7 @@ async fn test_pull_model_enqueues_job_and_returns_pending() {
 
     // Verify the DB queue row exists.
     let svc = state.pull_queue().as_ref().unwrap();
-    let db_row = svc.test_model_mgr().queue_get_by_job_id(&job_id).unwrap();
+    let db_row = svc.get_queue_item(&job_id).await.unwrap();
     assert!(
         db_row.is_some(),
         "pull_queue DB row should exist for job {}",
