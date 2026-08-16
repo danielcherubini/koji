@@ -1,7 +1,6 @@
 //! Typed query functions for the tama databases.
 //!
-//! Modules ported to Postgres (plan-190) are async and take a `&PgPool`;
-//! the remaining modules are still synchronous and take a `&Connection`.
+//! All modules are ported to Postgres (plan-190) and are async, taking a `&PgPool`.
 
 mod active_model_queries;
 mod alias_queries;

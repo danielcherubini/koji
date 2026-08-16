@@ -124,21 +124,19 @@ impl ProxyState {
         model_config.gpu_device = effective_gpu_device;
 
         // Open InstallationManager for path resolution and default args.
+        // Postgres-pool based (plan-190 Task 8); None when no pool is configured.
         let manager = self
-            .db_dir
-            .as_ref()
-            .and_then(|dir| crate::installations::InstallationManager::open(dir).ok())
-            .unwrap_or_else(|| {
-                crate::installations::InstallationManager::open_in_memory()
-                    .expect("in-memory InstallationManager must always open")
-            });
+            .db_pool()
+            .map(crate::installations::InstallationManager::new);
 
         // Resolve the backend binary path: DB takes priority, config.path is fallback.
-        let backend_path = config.resolve_backend_path(
-            &model_config.backend,
-            model_config.gpu_variant.as_ref(),
-            &manager,
-        )?;
+        let backend_path = config
+            .resolve_backend_path(
+                &model_config.backend,
+                model_config.gpu_variant.as_ref(),
+                manager.as_ref(),
+            )
+            .await?;
 
         // Resolve gpu_variant (reuse same fallback logic as resolve_backend_path)
         let gpu_variant = model_config
@@ -149,7 +147,13 @@ impl ProxyState {
         // Get active installation to check for docker_config.
         // Note: use the backend *name* (e.g. "vllm"), not the model config key,
         // since provider_installations rows are keyed by backend name + gpu_variant.
-        let active = manager.get_active(&model_config.backend, gpu_variant.variant_folder())?;
+        let active = match &manager {
+            Some(m) => {
+                m.get_active(&model_config.backend, gpu_variant.variant_folder())
+                    .await?
+            }
+            None => None,
+        };
         let docker_config = active.and_then(|a| a.docker_config);
 
         // Atomically check if already loaded and reserve if not (single write lock).
@@ -185,15 +189,25 @@ impl ProxyState {
 
         if let Some(docker_cfg) = docker_config {
             // Build args now (before entering async context with docker path)
-            let default_args =
-                manager.get_default_args(&model_config.backend, gpu_variant.variant_folder());
+            let default_args = match &manager {
+                Some(m) => {
+                    m.get_default_args(&model_config.backend, gpu_variant.variant_folder())
+                        .await
+                }
+                None => Vec::new(),
+            };
             let args =
                 config.build_full_args(&model_config, backend_config, None, &default_args)?;
 
             // Build env vars for the container from the backend's default_env,
             // plus auto-inject HF_TOKEN so vLLM can download gated models.
-            let mut env_vars =
-                manager.get_default_env(&model_config.backend, gpu_variant.variant_folder());
+            let mut env_vars = match &manager {
+                Some(m) => {
+                    m.get_default_env(&model_config.backend, gpu_variant.variant_folder())
+                        .await
+                }
+                None => Vec::new(),
+            };
             let has_hf_token = env_vars
                 .iter()
                 .any(|e| e.split_once('=').map(|(k, _)| k) == Some("HF_TOKEN"));
@@ -546,13 +560,8 @@ impl ProxyState {
     ) -> Result<String> {
         // Create InstallationManager internally (doesn't borrow across await points)
         let manager = self
-            .db_dir
-            .as_ref()
-            .and_then(|dir| crate::installations::InstallationManager::open(dir).ok())
-            .unwrap_or_else(|| {
-                crate::installations::InstallationManager::open_in_memory()
-                    .expect("in-memory InstallationManager must always open")
-            });
+            .db_pool()
+            .map(crate::installations::InstallationManager::new);
 
         // Find a free port for this backend.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -567,8 +576,13 @@ impl ProxyState {
         );
 
         // Build full args and override host/port
-        let default_args =
-            manager.get_default_args(&model_config.backend, gpu_variant.variant_folder());
+        let default_args = match &manager {
+            Some(m) => {
+                m.get_default_args(&model_config.backend, gpu_variant.variant_folder())
+                    .await
+            }
+            None => Vec::new(),
+        };
         let mut args =
             config.build_full_args(&model_config, &backend_config, None, &default_args)?;
 
@@ -617,8 +631,13 @@ impl ProxyState {
         configure_process_group(&mut child);
 
         // Apply default env vars from backend config
-        let default_env =
-            manager.get_default_env(&model_config.backend, gpu_variant.variant_folder());
+        let default_env = match &manager {
+            Some(m) => {
+                m.get_default_env(&model_config.backend, gpu_variant.variant_folder())
+                    .await
+            }
+            None => Vec::new(),
+        };
         for env_var in &default_env {
             if let Some((key, value)) = env_var.split_once('=') {
                 info!("Applying env var: {}={}", key, value);

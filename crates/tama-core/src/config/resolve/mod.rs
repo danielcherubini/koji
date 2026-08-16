@@ -643,11 +643,15 @@ impl Config {
     ///    in the InstallationManager for the resolved variant.
     /// 2. Otherwise, use the active (latest) installation for that variant.
     /// 3. Fallback to `path` field in the [backends] section.
-    pub fn resolve_backend_path(
+    ///
+    /// `manager` is `None` when no Postgres pool is configured (e.g. in tests):
+    /// DB lookups are then skipped and only the config-path fallback applies
+    /// (a pinned version still fails hard when missing).
+    pub async fn resolve_backend_path(
         &self,
         name: &str,
         model_variant: Option<&crate::gpu::GpuVariant>,
-        manager: &crate::installations::InstallationManager,
+        manager: Option<&crate::installations::InstallationManager>,
     ) -> Result<std::path::PathBuf> {
         // Determine the gpu_variant to use (model > config > "cpu")
         let gpu_variant: &str = model_variant
@@ -662,17 +666,30 @@ impl Config {
 
         // Check if a specific version is pinned in config
         if let Some(pinned_version) = self.backends.get(name).and_then(|b| b.version.as_deref()) {
-            // Try the specified variant first
-            if let Some(info) = manager.get_by_version(name, gpu_variant, pinned_version)? {
-                return Ok(info.path);
-            }
-            // If not found, try all variants of this backend for the pinned version
-            if let Some(versions) = manager.list_versions(name, None)? {
-                for v in &versions {
-                    if v.version == pinned_version {
-                        return Ok(v.path.clone());
-                    }
+            let pinned_path = if let Some(manager) = manager {
+                // Try the specified variant first
+                if let Some(info) = manager
+                    .get_by_version(name, gpu_variant, pinned_version)
+                    .await?
+                {
+                    Some(info.path)
+                } else {
+                    // If not found, try all variants of this backend for the pinned version
+                    manager
+                        .list_versions(name, None)
+                        .await?
+                        .and_then(|versions| {
+                            versions
+                                .into_iter()
+                                .find(|v| v.version == pinned_version)
+                                .map(|v| v.path)
+                        })
                 }
+            } else {
+                None
+            };
+            if let Some(path) = pinned_path {
+                return Ok(path);
             }
             anyhow::bail!(
                 "Backend '{}' version '{}' not found in DB. Run `tama backend install {}` first.",
@@ -683,28 +700,23 @@ impl Config {
         }
 
         // No version pin — try to find the active installation.
-        // First, try the specific variant (model > config > "cpu").
-        if let Some(info) = manager.get_active(name, gpu_variant)? {
-            return Ok(info.path);
-        }
+        if let Some(manager) = manager {
+            // First, try the specific variant (model > config > "cpu").
+            if let Some(info) = manager.get_active(name, gpu_variant).await? {
+                return Ok(info.path);
+            }
 
-        // If not found for the specific variant, try all active variants
-        // for this backend. This handles the case where the user selects
-        // a backend that's installed for a different GPU variant (e.g.,
-        // "rocm" instead of "cpu").
-        if let Some(versions) = manager.list_versions(name, None)? {
-            let active_versions: Vec<_> = versions
-                .iter()
-                .filter(|v| {
-                    manager
-                        .get_active(name, &v.gpu_variant)
-                        .ok()
-                        .flatten()
-                        .is_some()
-                })
-                .collect();
-            if let Some(info) = active_versions.first() {
-                return Ok(info.path.clone());
+            // If not found for the specific variant, try all active variants
+            // for this backend. This handles the case where the user selects
+            // a backend that's installed for a different GPU variant (e.g.,
+            // "rocm" instead of "cpu").
+            if let Some(info) = manager
+                .list_active()
+                .await?
+                .into_iter()
+                .find(|v| v.name == name)
+            {
+                return Ok(info.path);
             }
         }
 

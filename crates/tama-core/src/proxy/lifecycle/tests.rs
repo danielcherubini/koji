@@ -1217,7 +1217,12 @@ async fn test_load_tts_health_timeout_cleans_up() {
     config.proxy.startup_timeout_secs = 1;
 
     let tempdir = tempfile::tempdir().unwrap();
-    let state = ProxyState::new(config, Some(tempdir.path().to_path_buf()), None);
+    let guard = crate::testing::postgres::with_schema().await;
+    let state = ProxyState::new(
+        config,
+        Some(tempdir.path().to_path_buf()),
+        Some(std::sync::Arc::new(guard.pool.clone())),
+    );
 
     // Seed a TTS backend installation in the backend registry
     let base_dir = tempdir.path().join("backends");
@@ -1225,7 +1230,8 @@ async fn test_load_tts_health_timeout_cleans_up() {
     let backend_dir = base_dir.join("tts_kokoro");
     std::fs::create_dir_all(&backend_dir).unwrap();
 
-    let mgr = crate::installations::InstallationManager::open(tempdir.path()).unwrap();
+    let mgr =
+        crate::installations::InstallationManager::new(std::sync::Arc::new(guard.pool.clone()));
     mgr.add_installation(&crate::installations::InstallationInfo {
         name: "tts_kokoro".into(),
         backend_type: crate::installations::InstallationType::TtsKokoro,
@@ -1236,6 +1242,7 @@ async fn test_load_tts_health_timeout_cleans_up() {
         source: None,
         docker_config: None,
     })
+    .await
     .unwrap();
 
     let mock_checker = MockHealthChecker::new();
@@ -1286,7 +1293,12 @@ async fn test_load_tts_spawn_failure_cleans_up() {
     config.proxy.startup_timeout_secs = 10; // Long enough that timeout won't fire
 
     let tempdir = tempfile::tempdir().unwrap();
-    let state = ProxyState::new(config, Some(tempdir.path().to_path_buf()), None);
+    let guard = crate::testing::postgres::with_schema().await;
+    let state = ProxyState::new(
+        config,
+        Some(tempdir.path().to_path_buf()),
+        Some(std::sync::Arc::new(guard.pool.clone())),
+    );
 
     // Seed a TTS backend installation
     let base_dir = tempdir.path().join("backends");
@@ -1294,7 +1306,8 @@ async fn test_load_tts_spawn_failure_cleans_up() {
     let backend_dir = base_dir.join("tts_kokoro");
     std::fs::create_dir_all(&backend_dir).unwrap();
 
-    let mgr = crate::installations::InstallationManager::open(tempdir.path()).unwrap();
+    let mgr =
+        crate::installations::InstallationManager::new(std::sync::Arc::new(guard.pool.clone()));
     mgr.add_installation(&crate::installations::InstallationInfo {
         name: "tts_kokoro".into(),
         backend_type: crate::installations::InstallationType::TtsKokoro,
@@ -1305,6 +1318,7 @@ async fn test_load_tts_spawn_failure_cleans_up() {
         source: None,
         docker_config: None,
     })
+    .await
     .unwrap();
 
     let mock_checker = MockHealthChecker::new();
@@ -1352,7 +1366,12 @@ async fn test_load_tts_success_marks_ready() {
     config.proxy.startup_timeout_secs = 10;
 
     let tempdir = tempfile::tempdir().unwrap();
-    let state = ProxyState::new(config, Some(tempdir.path().to_path_buf()), None);
+    let guard = crate::testing::postgres::with_schema().await;
+    let state = ProxyState::new(
+        config,
+        Some(tempdir.path().to_path_buf()),
+        Some(std::sync::Arc::new(guard.pool.clone())),
+    );
 
     // Seed a TTS backend installation
     let base_dir = tempdir.path().join("backends");
@@ -1360,7 +1379,8 @@ async fn test_load_tts_success_marks_ready() {
     let backend_dir = base_dir.join("tts_kokoro");
     std::fs::create_dir_all(&backend_dir).unwrap();
 
-    let mgr = crate::installations::InstallationManager::open(tempdir.path()).unwrap();
+    let mgr =
+        crate::installations::InstallationManager::new(std::sync::Arc::new(guard.pool.clone()));
     mgr.add_installation(&crate::installations::InstallationInfo {
         name: "tts_kokoro".into(),
         backend_type: crate::installations::InstallationType::TtsKokoro,
@@ -1371,6 +1391,7 @@ async fn test_load_tts_success_marks_ready() {
         source: None,
         docker_config: None,
     })
+    .await
     .unwrap();
 
     let mock_checker = MockHealthChecker::new();

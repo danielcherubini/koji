@@ -79,7 +79,6 @@ pub async fn run_mtp_benchmark_inner(
     db_path: std::path::PathBuf,
     proxy_base_url: String,
     client: reqwest::Client,
-    repo_handle: std::sync::Arc<std::sync::Mutex<tama_core::db::repository::Repository>>,
     db_pool: Option<std::sync::Arc<sqlx::PgPool>>,
 ) -> Result<()> {
     use tama_core::bench::llama_cli_mtp;
@@ -164,19 +163,11 @@ pub async fn run_mtp_benchmark_inner(
         jobs: jobs.clone(),
     });
 
-    // Resolve backend path — pool the blocking SQLite calls.
-    let db_dir_for_pm = db_dir.to_path_buf();
-    let target_backend_for_pm = target_backend.clone();
-    let gpu_variant_for_pm = gpu_variant.clone();
-    let backend_path = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
-        let manager = tama_core::installations::InstallationManager::open(&db_dir_for_pm)?;
-        config.resolve_backend_path(
-            &target_backend_for_pm,
-            gpu_variant_for_pm.as_ref(),
-            &manager,
-        )
-    })
-    .await??;
+    // Resolve backend path via the Postgres-backed InstallationManager.
+    let manager = tama_core::installations::InstallationManager::new(pool.clone());
+    let backend_path = config
+        .resolve_backend_path(&target_backend, gpu_variant.as_ref(), Some(&manager))
+        .await?;
 
     // Discover llama-server binary
     // The resolved path may be a file (llama-server) rather than the backend directory.
@@ -213,41 +204,29 @@ pub async fn run_mtp_benchmark_inner(
     // Get VRAM info
     let vram = query_vram();
 
-    // Clone values before moving into the spawn_blocking closure.
-    let display_name_for_trace = display_name.clone();
-    let model_id_for_trace = model_id.clone();
-    let quant_for_trace = quant.clone();
-    let target_backend_for_trace = target_backend.clone();
-    let run_status_for_insert = run_status.to_string();
-
-    // Insert into database — pool the blocking SQLite call.
-    let repo_handle_for_insert = repo_handle.clone();
-    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let repo = repo_handle_for_insert.lock().unwrap();
-        repo.insert_benchmark(&tama_core::db::repository::BenchmarkParams {
-            model_id: model_id_for_trace,
-            display_name: display_name_for_trace,
-            quant: quant_for_trace,
-            backend: target_backend_for_trace.to_string(),
-            engine: "llama_cli_mtp".to_string(),
-            pp_sizes_json: pp_sizes_json.to_string(),
-            tg_sizes_json: tg_sizes_json.to_string(),
-            threads_json: None,
-            ngl_range: None,
-            runs: 1,
-            warmup: 0,
-            results_json,
-            load_time_ms: None,
-            vram_used_mib: vram.as_ref().map(|v| v.used_mib as i64),
-            vram_total_mib: vram.as_ref().map(|v| v.total_mib as i64),
-            duration_seconds: 0.0,
-            status: run_status_for_insert,
-            benchmark_type: benchmark_type.clone(),
-            suite_id: req.suite_id,
-        })?;
-        Ok(())
-    })
-    .await??;
+    // Insert into Postgres (plan-190 Task 8).
+    let params = tama_core::db::queries::BenchmarkInsertParams {
+        model_id: &model_id,
+        display_name: display_name.as_deref(),
+        quant: quant.as_deref(),
+        backend: &target_backend,
+        engine: "llama_cli_mtp",
+        pp_sizes_json,
+        tg_sizes_json,
+        threads_json: None,
+        ngl_range: None,
+        runs: 1,
+        warmup: 0,
+        results_json: &results_json,
+        load_time_ms: None,
+        vram_used_mib: vram.as_ref().map(|v| v.used_mib as i64),
+        vram_total_mib: vram.as_ref().map(|v| v.total_mib as i64),
+        duration_seconds: 0.0,
+        status: run_status,
+        benchmark_type: benchmark_type.as_deref(),
+        suite_id: req.suite_id.as_deref(),
+    };
+    tama_core::db::queries::insert_benchmark(pool, &params).await?;
 
     tracing::info!(
         job_id = %job.id,

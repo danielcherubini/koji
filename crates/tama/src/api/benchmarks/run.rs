@@ -25,7 +25,6 @@ pub async fn run_benchmark_inner(
     _db_path: std::path::PathBuf,
     proxy_base_url: String,
     client: reqwest::Client,
-    repo_handle: std::sync::Arc<std::sync::Mutex<tama_core::db::repository::Repository>>,
     db_pool: Option<std::sync::Arc<sqlx::PgPool>>,
 ) -> Result<()> {
     use tama_core::bench::llama_bench::{self, LlamaBenchConfig};
@@ -153,39 +152,33 @@ pub async fn run_benchmark_inner(
     // Get VRAM info
     let vram = query_vram();
 
-    // Clone values before moving into the spawn_blocking closure.
+    // Clone values used for tracing after the insert.
     let display_name_for_trace = display_name.clone();
     let backend_for_trace = report.model_info.backend.clone();
-    let run_status_for_insert = run_status.to_string();
 
-    // Segment 2: insert benchmark record on the blocking pool.
-    let repo_for_insert = repo_handle.clone();
-    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let repo = repo_for_insert.lock().unwrap();
-        repo.insert_benchmark(&tama_core::db::repository::BenchmarkParams {
-            model_id: req.model_id.clone(),
-            display_name: display_name.clone(),
-            quant: report.model_info.quant.clone(),
-            backend: report.model_info.backend.clone(),
-            engine: "llama_bench".to_string(),
-            pp_sizes_json,
-            tg_sizes_json,
-            threads_json,
-            ngl_range: ngl_range_for_insert,
-            runs: req.runs,
-            warmup: req.warmup,
-            results_json,
-            load_time_ms: Some(report.load_time_ms),
-            vram_used_mib: vram.as_ref().map(|v| v.used_mib as i64),
-            vram_total_mib: vram.as_ref().map(|v| v.total_mib as i64),
-            duration_seconds: 0.0, // duration tracked by job system
-            status: run_status_for_insert,
-            benchmark_type: benchmark_type.clone(),
-            suite_id: req.suite_id,
-        })?;
-        Ok(())
-    })
-    .await??;
+    // Insert the benchmark record into Postgres (plan-190 Task 8).
+    let params = tama_core::db::queries::BenchmarkInsertParams {
+        model_id: &req.model_id,
+        display_name: display_name.as_deref(),
+        quant: report.model_info.quant.as_deref(),
+        backend: &report.model_info.backend,
+        engine: "llama_bench",
+        pp_sizes_json: &pp_sizes_json,
+        tg_sizes_json: &tg_sizes_json,
+        threads_json: threads_json.as_deref(),
+        ngl_range: ngl_range_for_insert.as_deref(),
+        runs: req.runs,
+        warmup: req.warmup,
+        results_json: &results_json,
+        load_time_ms: Some(report.load_time_ms),
+        vram_used_mib: vram.as_ref().map(|v| v.used_mib as i64),
+        vram_total_mib: vram.as_ref().map(|v| v.total_mib as i64),
+        duration_seconds: 0.0, // duration tracked by job system
+        status: run_status,
+        benchmark_type: benchmark_type.as_deref(),
+        suite_id: req.suite_id.as_deref(),
+    };
+    tama_core::db::queries::insert_benchmark(pool, &params).await?;
 
     tracing::info!(
         job_id = %job.id,

@@ -26,80 +26,68 @@ pub async fn update_installation_source(
         return resp;
     }
 
-    let config_dir = match crate::api::helpers::resolve_config_dir(&state) {
-        Ok(d) => d,
-        Err(resp) => return resp,
-    };
-
-    // Open manager and determine gpu_variant
-    let config_dir_clone = config_dir.clone();
-    let name_clone = name.clone();
-    let query_gpu_variant = query.gpu_variant.clone();
-    let mgr_result: Result<(tama_core::installations::InstallationManager, String), _> =
-        tokio::task::spawn_blocking(move || {
-            let mgr = tama_core::installations::InstallationManager::open(&config_dir_clone)?;
-
-            // Determine gpu_variant: use explicit value or auto-infer from manager
-            let gpu_variant = match query_gpu_variant {
-                Some(v) => v,
-                None => {
-                    let versions = mgr.list_versions(&name_clone, None)?;
-                    let versions = match versions {
-                        Some(v) => v,
-                        None => {
-                            return Err(anyhow::anyhow!(
-                                "Backend '{}' not found",
-                                name_clone
-                            ));
-                        }
-                    };
-                    let mut variants: Vec<String> =
-                        versions.iter().map(|v| v.gpu_variant.clone()).collect();
-                    variants.sort();
-                    variants.dedup();
-                    match variants.len() {
-                        1 => variants.into_iter().next().unwrap(),
-                        _ => {
-                            return Err(anyhow::anyhow!(
-                                "Backend '{}' has multiple variants. Please specify gpu_variant. Available: {}",
-                                name_clone,
-                                variants.join(", ")
-                            ));
-                        }
-                    }
-                }
-            };
-
-            // Validate resolved gpu_variant for path traversal
-            if crate::api::installations::is_path_traversal(&gpu_variant) {
-                return Err(anyhow::anyhow!(
-                    "Invalid gpu_variant: path separators or traversal sequences not allowed"
-                ));
-            }
-
-            Ok((mgr, gpu_variant))
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("spawn error: {}", e))
-        .and_then(|r| r);
-
-    let (mgr, gpu_variant) = match mgr_result {
-        Ok(r) => r,
-        Err(e) => {
-            let err_msg = e.to_string();
-            if err_msg.contains("not found") {
-                return error_response(StatusCode::NOT_FOUND, err_msg, Some("NotFoundError"));
-            }
-            if err_msg.contains("Invalid gpu_variant") || err_msg.contains("multiple variants") {
-                return error_response(StatusCode::BAD_REQUEST, err_msg, Some("ValidationError"));
-            }
+    let pool = match state.db_pool() {
+        Some(p) => p,
+        None => {
             return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to open manager: {}", e),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Database not configured",
                 None,
-            );
+            )
         }
     };
+    let mgr = tama_core::installations::InstallationManager::new(pool);
+
+    // Determine gpu_variant: use explicit value or auto-infer from manager
+    let gpu_variant = match query.gpu_variant {
+        Some(v) => v,
+        None => {
+            let versions = match mgr.list_versions(&name, None).await {
+                Ok(Some(v)) => v,
+                Ok(None) => {
+                    return error_response(
+                        StatusCode::NOT_FOUND,
+                        format!("Backend '{}' not found", name),
+                        Some("NotFoundError"),
+                    )
+                }
+                Err(e) => {
+                    return error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Failed to query backend: {}", e),
+                        None,
+                    )
+                }
+            };
+            let mut variants: Vec<String> =
+                versions.iter().map(|v| v.gpu_variant.clone()).collect();
+            variants.sort();
+            variants.dedup();
+            match variants.len() {
+                1 => variants.into_iter().next().unwrap(),
+                _ => {
+                    return error_response(
+                        StatusCode::BAD_REQUEST,
+                        format!(
+                            "Backend '{}' has multiple variants. Please specify gpu_variant. Available: {}",
+                            name,
+                            variants.join(", ")
+                        ),
+                        Some("ValidationError"),
+                    )
+                }
+            }
+        }
+    };
+
+    // Validate resolved gpu_variant for path traversal
+    if crate::api::installations::is_path_traversal(&gpu_variant) {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "Invalid gpu_variant: path separators or traversal sequences not allowed".to_string(),
+            Some("ValidationError"),
+        );
+    }
 
     // Check for active job conflict
     if let Some(jobs) = web_state.jobs.as_ref() {
@@ -114,23 +102,18 @@ pub async fn update_installation_source(
         }
     }
 
-    let name_for_update = name.clone();
-    let gpu_variant_for_update = gpu_variant.clone();
     let build_from_source = req.build_from_source;
 
-    let update_result: Result<(), anyhow::Error> = tokio::task::spawn_blocking(move || {
-        mgr.update_build_method(&name_for_update, &gpu_variant_for_update, build_from_source)
-    })
-    .await
-    .map_err(|e| anyhow::anyhow!("spawn error: {}", e))
-    .and_then(|r| r);
-
-    match update_result {
-        Ok(()) => Json(UpdateSourceResponse { build_from_source }).into_response(),
-        Err(e) => error_response(
+    if let Err(e) = mgr
+        .update_build_method(&name, &gpu_variant, build_from_source)
+        .await
+    {
+        return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Failed to update build method: {}", e),
             None,
-        ),
+        );
     }
+
+    Json(UpdateSourceResponse { build_from_source }).into_response()
 }

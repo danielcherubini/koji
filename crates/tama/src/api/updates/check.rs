@@ -178,11 +178,6 @@ pub async fn trigger_check(
     State(state): State<Arc<ProxyState>>,
     Extension(web_state): Extension<WebState>,
 ) -> impl axum::response::IntoResponse {
-    let config_dir = match crate::api::helpers::resolve_config_dir(&state) {
-        Ok(d) => d,
-        Err(resp) => return resp,
-    };
-
     let pool = match state.db_pool() {
         Some(p) => p,
         None => {
@@ -197,7 +192,7 @@ pub async fn trigger_check(
     let checker = web_state.update_checker.clone();
     // Run in background, return immediately
     tokio::spawn(async move {
-        if let Err(e) = checker.run_check(&config_dir, &pool).await {
+        if let Err(e) = checker.run_check(&pool).await {
             tracing::error!("Background update check failed: {}", e);
         }
     });
@@ -228,11 +223,6 @@ pub async fn check_item_for_update(
     Path((item_type, item_id)): Path<(String, String)>,
     axum::extract::Query(query): axum::extract::Query<CheckSingleQuery>,
 ) -> impl axum::response::IntoResponse {
-    let config_dir = match crate::api::helpers::resolve_config_dir(&state) {
-        Ok(d) => d,
-        Err(resp) => return resp,
-    };
-
     // Validate item_type first so a malformed request fails with 400 even
     // when the pool is unavailable.
     if !matches!(item_type.as_str(), "backend" | "model") {
@@ -257,62 +247,68 @@ pub async fn check_item_for_update(
     let checker = &web_state.update_checker;
     let result = match item_type.as_str() {
         "backend" => {
-            let config_dir_clone = config_dir.clone();
-            let item_id_clone = item_id.clone();
             let requested_variant = query.gpu_variant.clone();
-            let bt_result = tokio::task::spawn_blocking(
-                move || -> anyhow::Result<Option<(tama_core::installations::InstallationType, String, bool)>> {
-                    let mgr = tama_core::installations::InstallationManager::open(&config_dir_clone)?;
-                    let versions = mgr.list_versions(&item_id_clone, None)?;
+            let bt_result = {
+                let mgr = tama_core::installations::InstallationManager::new(pool.clone());
+                let versions = mgr.list_versions(&item_id, None).await;
 
-                    // If a specific variant is requested, find that variant
-                    // Otherwise, fall back to the active variant (legacy behavior)
-                    let versions = match versions {
-                        Some(v) => v,
-                        None => return Ok(None),
-                    };
-
-                    let record = if let Some(ref variant) = requested_variant {
-                        versions.iter().find(|v| v.gpu_variant == *variant)
-                    } else {
-                        // No is_active field on InstallationInfo; use first as fallback
-                        versions.first()
-                    };
-
-                    Ok(record.map(|r| {
-                        let is_docker = r.docker_config.is_some();
-                        (
-                            match r.backend_type {
-                                tama_core::installations::InstallationType::LlamaCpp => {
-                                    tama_core::installations::InstallationType::LlamaCpp
-                                }
-                                tama_core::installations::InstallationType::IkLlama => {
-                                    tama_core::installations::InstallationType::IkLlama
-                                }
-                                _ => tama_core::installations::InstallationType::Custom,
-                            },
-                            r.gpu_variant.clone(),
-                            is_docker,
+                // If a specific variant is requested, find that variant
+                // Otherwise, fall back to the active variant (legacy behavior)
+                let versions = match versions {
+                    Ok(Some(v)) => v,
+                    Ok(None) => {
+                        return error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "Backend not found",
+                            None,
                         )
-                    }))
-                },
-            )
-            .await;
+                    }
+                    Err(e) => {
+                        return error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("Failed to query backend: {}", e),
+                            None,
+                        )
+                    }
+                };
+
+                let record = if let Some(ref variant) = requested_variant {
+                    versions.iter().find(|v| v.gpu_variant == *variant)
+                } else {
+                    // No is_active field on InstallationInfo; use first as fallback
+                    versions.first()
+                };
+
+                record.map(|r| {
+                    let is_docker = r.docker_config.is_some();
+                    (
+                        match r.backend_type {
+                            tama_core::installations::InstallationType::LlamaCpp => {
+                                tama_core::installations::InstallationType::LlamaCpp
+                            }
+                            tama_core::installations::InstallationType::IkLlama => {
+                                tama_core::installations::InstallationType::IkLlama
+                            }
+                            _ => tama_core::installations::InstallationType::Custom,
+                        },
+                        r.gpu_variant.clone(),
+                        is_docker,
+                    )
+                })
+            };
 
             match bt_result {
-                Ok(Ok(Some((bt, gpu_variant, is_docker)))) => {
+                Some((bt, gpu_variant, is_docker)) => {
                     if is_docker {
                         // Docker backends have no release feed to check
                         return Json(OkResponse::OK).into_response();
                     }
                     checker
-                        .check_backend(&config_dir, &pool, &item_id, &bt, &gpu_variant)
+                        .check_backend(&pool, &item_id, &bt, &gpu_variant)
                         .await
                         .map(|_| ())
                 }
-                Ok(Ok(None)) => Err(anyhow::anyhow!("Backend not found")),
-                Ok(Err(e)) => Err(e),
-                Err(e) => Err(anyhow::anyhow!("Join error: {}", e)),
+                None => Err(anyhow::anyhow!("Backend not found")),
             }
         }
         "model" => {
@@ -328,7 +324,7 @@ pub async fn check_item_for_update(
             };
             match record {
                 Some(r) => checker
-                    .check_model(&config_dir, &pool, r.id, Some(&r.repo_id))
+                    .check_model(&pool, r.id, Some(&r.repo_id))
                     .await
                     .map(|_| ()),
                 None => Err(anyhow::anyhow!("Model not found in DB")),

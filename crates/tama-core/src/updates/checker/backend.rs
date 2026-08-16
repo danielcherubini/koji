@@ -1,7 +1,6 @@
 use super::UpdateChecker;
 #[cfg(feature = "web-ui")]
 use super::UpdateEvent;
-use crate::db;
 use crate::db::queries::get_active_installation;
 use crate::installations::{check_latest_version, InstallationType};
 
@@ -13,7 +12,6 @@ impl UpdateChecker {
     /// update check records and don't overwrite each other.
     pub async fn check_backend(
         &self,
-        config_dir: &std::path::Path,
         pool: &sqlx::PgPool,
         backend_name: &str,
         backend_type: &InstallationType,
@@ -30,18 +28,10 @@ impl UpdateChecker {
             variant: Some(gpu_variant.to_string()),
         });
 
-        // Sync: Get current version from DB
-        let current_version = tokio::task::spawn_blocking({
-            let config_dir = config_dir.to_path_buf();
-            let backend_name = backend_name.to_string();
-            let gpu_variant = gpu_variant.to_string();
-            move || -> anyhow::Result<Option<String>> {
-                let open = db::open(&config_dir)?;
-                let record = get_active_installation(&open.conn, &backend_name, &gpu_variant)?;
-                Ok(record.map(|r| r.version))
-            }
-        })
-        .await??;
+        // Get current version from Postgres (plan-190 Task 8)
+        let current_version = get_active_installation(pool, backend_name, gpu_variant)
+            .await?
+            .map(|r| r.version);
 
         // Async: Check latest version from network
         let latest_version = match backend_type {

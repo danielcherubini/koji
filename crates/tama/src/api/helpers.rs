@@ -51,21 +51,15 @@ pub async fn open_repository(state: &ProxyState) -> Result<Repository, axum::res
 /// Default status code for successful CRUD operations.
 pub const DEFAULT_CRUD_STATUS: StatusCode = StatusCode::OK;
 
-/// Open a InstallationManager from Arc<ProxyState>, returning an error response on failure.
+/// Build an InstallationManager from the shared Postgres pool held in
+/// ProxyState, returning an error response when no pool is configured.
 pub async fn open_backend_manager(
     proxy_state: &Arc<ProxyState>,
 ) -> Result<InstallationManager, axum::response::Response> {
-    let config_dir = resolve_config_dir(proxy_state)?;
-    let config_dir_clone = config_dir.clone();
-    tokio::task::spawn_blocking(move || InstallationManager::open(&config_dir_clone))
-        .await
-        .map_err(|e| {
-            error_response_simple(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("spawn error: {}", e),
-            )
-        })?
-        .map_err(|e| error_response_simple(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+    let pool = proxy_state.db_pool().ok_or_else(|| {
+        error_response_simple(StatusCode::SERVICE_UNAVAILABLE, "Database not configured")
+    })?;
+    Ok(InstallationManager::new(pool))
 }
 
 /// Run a closure in spawn_blocking, handle the Result, trigger proxy reload on success.

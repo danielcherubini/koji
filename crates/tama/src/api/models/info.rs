@@ -17,19 +17,12 @@ use tama_core::db::queries::{ModelConfigRecord, ModelFileRecord};
 use tama_core::installations::InstallationOption;
 
 /// Build the list of available backend options by querying installed variants from the DB.
-async fn build_backend_options(
-    _cfg: &tama_core::config::Config,
-    config_dir: &std::path::Path,
-) -> Vec<InstallationOption> {
-    let config_dir = config_dir.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        let mgr = tama_core::installations::InstallationManager::open(&config_dir).ok()?;
-        mgr.available_installations().ok()
-    })
-    .await
-    .ok()
-    .flatten()
-    .unwrap_or_default()
+async fn build_backend_options(pool: Option<&Arc<PgPool>>) -> Vec<InstallationOption> {
+    let Some(pool) = pool else {
+        return Vec::new();
+    };
+    let mgr = tama_core::installations::InstallationManager::new(pool.clone());
+    mgr.available_installations().await.unwrap_or_default()
 }
 
 /// Resolve a model identifier string (integer DB id or config_key) to the integer DB id.
@@ -204,7 +197,7 @@ pub async fn list_models(
     match load_config_from_state(&state).await {
         Ok((cfg, config_dir)) => {
             let configs_dir = config_dir.join("configs");
-            let backend_options = build_backend_options(&cfg, &config_dir).await;
+            let backend_options = build_backend_options(web_state.db_pool.as_ref()).await;
 
             // Collect current runtime state for each model (idle/ready/etc.)
             // Keyed by db_id so we can look up by the integer ID from the DB record.
@@ -303,9 +296,9 @@ pub async fn get_model(
     Path(id_str): Path<String>,
 ) -> impl IntoResponse {
     match load_config_from_state(&state).await {
-        Ok((cfg, config_dir)) => {
+        Ok((_cfg, config_dir)) => {
             let configs_dir = config_dir.join("configs");
-            let backend_options = build_backend_options(&cfg, &config_dir).await;
+            let backend_options = build_backend_options(web_state.db_pool.as_ref()).await;
 
             // Collect current runtime state for model lookup
             // Keyed by db_id so we can look up by the integer ID from the DB record.

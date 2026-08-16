@@ -141,11 +141,7 @@ impl UpdateChecker {
 
     /// Run a full update check for all backends and models.
     /// Returns immediately if another check is already in progress.
-    pub async fn run_check(
-        &self,
-        config_dir: &std::path::Path,
-        pool: &sqlx::PgPool,
-    ) -> anyhow::Result<()> {
+    pub async fn run_check(&self, pool: &sqlx::PgPool) -> anyhow::Result<()> {
         // Try to acquire the lock
         let _guard = match self.lock.try_lock() {
             Ok(guard) => guard,
@@ -171,48 +167,39 @@ impl UpdateChecker {
 
         // Phase 1b: sync DB - fetch all backends to check.
         // For backends: iterate ALL installed variants (not just active ones)
-        let backends = tokio::task::spawn_blocking({
-            let config_dir = config_dir.to_path_buf();
-            move || -> anyhow::Result<Vec<(String, InstallationType, String)>> {
-                let mgr = InstallationManager::open(&config_dir)?;
+        // (Postgres pool, plan-190 Task 8).
+        let manager = InstallationManager::new(std::sync::Arc::new(pool.clone()));
+        let all_backends = manager.list_active().await.unwrap_or_default();
+        let backend_names: Vec<String> = all_backends.iter().map(|b| b.name.clone()).collect();
 
-                // Collect all unique (name, backend_type) pairs from all installed backends
-                let all_backends = mgr.list_active().unwrap_or_default();
-                let backend_names: Vec<String> =
-                    all_backends.iter().map(|b| b.name.clone()).collect();
+        // For each backend name, get ALL versions and group by variant
+        let mut backend_entries: Vec<(String, InstallationType, String)> = Vec::new();
+        for name in &backend_names {
+            if let Ok(Some(versions)) = manager.list_versions(name, None).await {
+                // Collect unique variants for this backend
+                let mut variants: Vec<String> =
+                    versions.iter().map(|v| v.gpu_variant.clone()).collect();
+                variants.sort();
+                variants.dedup();
 
-                // For each backend name, get ALL versions and group by variant
-                let mut backend_entries: Vec<(String, InstallationType, String)> = Vec::new();
-                for name in &backend_names {
-                    if let Ok(Some(versions)) = mgr.list_versions(name, None) {
-                        // Collect unique variants for this backend
-                        let mut variants: Vec<String> =
-                            versions.iter().map(|v| v.gpu_variant.clone()).collect();
-                        variants.sort();
-                        variants.dedup();
-
-                        for variant in variants {
-                            // Get the backend type from the first version with this variant
-                            if let Some(info) = versions.iter().find(|v| v.gpu_variant == variant) {
-                                backend_entries.push((
-                                    name.clone(),
-                                    info.backend_type.clone(),
-                                    variant.clone(),
-                                ));
-                            }
-                        }
+                for variant in variants {
+                    // Get the backend type from the first version with this variant
+                    if let Some(info) = versions.iter().find(|v| v.gpu_variant == variant) {
+                        backend_entries.push((
+                            name.clone(),
+                            info.backend_type.clone(),
+                            variant.clone(),
+                        ));
                     }
                 }
-
-                Ok(backend_entries)
             }
-        })
-        .await??;
+        }
+        let backends = backend_entries;
 
         // Phase 2: Async network - check each backend
         for (backend_name, backend_type, gpu_variant) in &backends {
             if let Err(e) = self
-                .check_backend(config_dir, pool, backend_name, backend_type, gpu_variant)
+                .check_backend(pool, backend_name, backend_type, gpu_variant)
                 .await
             {
                 tracing::warn!("Failed to check backend {}: {}", backend_name, e);
@@ -221,10 +208,7 @@ impl UpdateChecker {
 
         // Phase 2: Async network - check each model
         for (model_id, repo_id) in &models {
-            if let Err(e) = self
-                .check_model(config_dir, pool, *model_id, repo_id.as_deref())
-                .await
-            {
+            if let Err(e) = self.check_model(pool, *model_id, repo_id.as_deref()).await {
                 tracing::warn!("Failed to check model {}: {}", model_id, e);
             }
         }

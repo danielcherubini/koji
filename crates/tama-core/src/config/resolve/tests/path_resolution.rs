@@ -1,9 +1,10 @@
 use crate::config::BackendConfig;
 use crate::installations::{InstallationInfo, InstallationManager, InstallationType};
+use crate::testing::postgres::with_schema;
 
 use super::make_test_config;
 
-fn insert_active_backend(
+async fn insert_active_backend(
     manager: &InstallationManager,
     name: &str,
     gpu_variant: &str,
@@ -20,49 +21,59 @@ fn insert_active_backend(
         source: None,
         docker_config: None,
     };
-    manager.add_installation(&info).unwrap();
+    manager.add_installation(&info).await.unwrap();
 }
 
-#[test]
-fn test_resolve_backend_path_from_db() {
-    let manager = InstallationManager::open_in_memory().unwrap();
+#[tokio::test]
+async fn test_resolve_backend_path_from_db() {
+    let guard = with_schema().await;
+    let manager = InstallationManager::new(std::sync::Arc::new(guard.pool.clone()));
     insert_active_backend(
         &manager,
         "llama_cpp",
         "cpu",
         "v1.0.0",
         "/usr/local/bin/llama-server",
-    );
+    )
+    .await;
 
     let config = make_test_config(None);
     let result = config
-        .resolve_backend_path("llama_cpp", None, &manager)
+        .resolve_backend_path("llama_cpp", None, Some(&manager))
+        .await
         .unwrap();
     assert_eq!(
         result,
         std::path::PathBuf::from("/usr/local/bin/llama-server")
     );
+    guard.finish().await;
 }
 
-#[test]
-fn test_resolve_backend_path_fallback() {
-    let manager = InstallationManager::open_in_memory().unwrap();
+#[tokio::test]
+async fn test_resolve_backend_path_fallback() {
+    let guard = with_schema().await;
+    let manager = InstallationManager::new(std::sync::Arc::new(guard.pool.clone()));
     // Empty DB — no installed backend
 
     let config = make_test_config(Some("/fallback/llama-server"));
     let result = config
-        .resolve_backend_path("llama_cpp", None, &manager)
+        .resolve_backend_path("llama_cpp", None, Some(&manager))
+        .await
         .unwrap();
     assert_eq!(result, std::path::PathBuf::from("/fallback/llama-server"));
+    guard.finish().await;
 }
 
-#[test]
-fn test_resolve_backend_path_error() {
-    let manager = InstallationManager::open_in_memory().unwrap();
+#[tokio::test]
+async fn test_resolve_backend_path_error() {
+    let guard = with_schema().await;
+    let manager = InstallationManager::new(std::sync::Arc::new(guard.pool.clone()));
     // Empty DB, path = None
 
     let config = make_test_config(None);
-    let result = config.resolve_backend_path("llama_cpp", None, &manager);
+    let result = config
+        .resolve_backend_path("llama_cpp", None, Some(&manager))
+        .await;
     assert!(
         result.is_err(),
         "Expected Err when no DB record and no path in config"
@@ -74,15 +85,17 @@ fn test_resolve_backend_path_error() {
         "Unexpected error: {}",
         err
     );
+    guard.finish().await;
 }
 
-#[test]
-fn test_resolve_backend_path_version_pin() {
-    let manager = InstallationManager::open_in_memory().unwrap();
+#[tokio::test]
+async fn test_resolve_backend_path_version_pin() {
+    let guard = with_schema().await;
+    let manager = InstallationManager::new(std::sync::Arc::new(guard.pool.clone()));
 
     // Insert v1.0.0 and v2.0.0 (v2.0.0 will be active since added last)
-    insert_active_backend(&manager, "llama_cpp", "cpu", "v1.0.0", "/v1/llama-server");
-    insert_active_backend(&manager, "llama_cpp", "cpu", "v2.0.0", "/v2/llama-server");
+    insert_active_backend(&manager, "llama_cpp", "cpu", "v1.0.0", "/v1/llama-server").await;
+    insert_active_backend(&manager, "llama_cpp", "cpu", "v2.0.0", "/v2/llama-server").await;
 
     // Pin config to v1.0.0
     let mut config = make_test_config(None);
@@ -96,15 +109,18 @@ fn test_resolve_backend_path_version_pin() {
     );
 
     let result = config
-        .resolve_backend_path("llama_cpp", None, &manager)
+        .resolve_backend_path("llama_cpp", None, Some(&manager))
+        .await
         .unwrap();
     // Should return v1 path, not v2 (which is active)
     assert_eq!(result, std::path::PathBuf::from("/v1/llama-server"));
+    guard.finish().await;
 }
 
-#[test]
-fn test_resolve_backend_path_version_pin_not_found() {
-    let manager = InstallationManager::open_in_memory().unwrap();
+#[tokio::test]
+async fn test_resolve_backend_path_version_pin_not_found() {
+    let guard = with_schema().await;
+    let manager = InstallationManager::new(std::sync::Arc::new(guard.pool.clone()));
     // Empty DB — version pin won't find anything
 
     let mut config = make_test_config(None);
@@ -117,7 +133,9 @@ fn test_resolve_backend_path_version_pin_not_found() {
         },
     );
 
-    let result = config.resolve_backend_path("llama_cpp", None, &manager);
+    let result = config
+        .resolve_backend_path("llama_cpp", None, Some(&manager))
+        .await;
     assert!(
         result.is_err(),
         "Expected Err when pinned version not in DB"
@@ -128,4 +146,5 @@ fn test_resolve_backend_path_version_pin_not_found() {
         "Expected 'not found in DB' in error message, got: {}",
         err
     );
+    guard.finish().await;
 }

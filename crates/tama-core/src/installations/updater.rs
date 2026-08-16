@@ -151,7 +151,8 @@ pub async fn update_installation_with_progress(
 ) -> Result<()> {
     // Validate backend exists before installing to prevent orphaned files
     manager
-        .get_active(backend_name, gpu_variant)?
+        .get_active(backend_name, gpu_variant)
+        .await?
         .ok_or_else(|| anyhow!("Backend '{}' not found", backend_name))?;
 
     // Clone source before install_backend moves options
@@ -173,13 +174,15 @@ pub async fn update_installation_with_progress(
         latest_version
     };
 
-    manager.update_version(
-        backend_name,
-        gpu_variant,
-        resolved_version,
-        new_binary_path,
-        Some(source),
-    )?;
+    manager
+        .update_version(
+            backend_name,
+            gpu_variant,
+            resolved_version,
+            new_binary_path,
+            Some(source),
+        )
+        .await?;
 
     tracing::info!("Update complete!");
     Ok(())

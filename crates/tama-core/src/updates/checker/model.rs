@@ -13,7 +13,6 @@ impl UpdateChecker {
     /// that non-GGUF repo changes don't trigger false positives.
     pub async fn check_model(
         &self,
-        _config_dir: &std::path::Path,
         pool: &sqlx::PgPool,
         model_id: i64,
         repo_id: Option<&str>,

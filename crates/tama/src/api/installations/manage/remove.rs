@@ -27,37 +27,26 @@ pub async fn remove_installation_version(
         return resp;
     }
 
-    let config_dir = match crate::api::helpers::resolve_config_dir(&state) {
-        Ok(d) => d,
-        Err(resp) => return resp,
-    };
-
-    // Open manager and get the specific version
-    let config_dir_clone = config_dir.clone();
-    let mgr_result: Result<tama_core::installations::InstallationManager, _> =
-        tokio::task::spawn_blocking(move || {
-            tama_core::installations::InstallationManager::open(&config_dir_clone)
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("spawn error: {}", e))
-        .and_then(|r| r);
-
-    let mgr = match mgr_result {
-        Ok(r) => r,
-        Err(e) => {
+    let pool = match state.db_pool() {
+        Some(p) => p,
+        None => {
             return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to open manager: {}", e),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Database not configured",
                 None,
             )
         }
     };
+    let mgr = tama_core::installations::InstallationManager::new(pool);
 
     // Use gpu_variant from query param if provided
     let gpu_variant_filter = query.gpu_variant.clone();
 
     // Get the specific version record before deleting
-    let versions = match mgr.list_versions(&name, gpu_variant_filter.as_deref()) {
+    let versions = match mgr
+        .list_versions(&name, gpu_variant_filter.as_deref())
+        .await
+    {
         Ok(Some(v)) => v,
         Ok(None) => {
             return error_response(
@@ -150,7 +139,7 @@ pub async fn remove_installation_version(
     }
 
     // Remove from DB (activates another version if this was active)
-    if let Err(e) = mgr.remove_version(&name, &info.gpu_variant, &version) {
+    if let Err(e) = mgr.remove_version(&name, &info.gpu_variant, &version).await {
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Failed to remove version: {}", e),

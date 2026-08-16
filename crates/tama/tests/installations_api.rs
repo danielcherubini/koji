@@ -8,6 +8,8 @@ use tama_core::proxy::ProxyState;
 use tama_web::web_types::{CapabilitiesCache, JobManager, WebState};
 use tower::ServiceExt;
 
+mod common;
+
 /// Create a minimal WebState for tests.
 fn test_web_state() -> WebState {
     WebState {
@@ -29,12 +31,13 @@ fn build_web_routes(state: Arc<ProxyState>, web_state: Arc<WebState>) -> axum::R
         .layer(axum::extract::Extension(web_state.as_ref().clone()))
 }
 
-/// Seed a InstallationManager with an installed llama_cpp backend (cpu variant).
-fn seed_llama_cpp_backend(tmp_dir: &std::path::Path) {
+/// Seed a llama_cpp backend installation into Postgres (cpu variant).
+async fn seed_llama_cpp_backend(pool: &sqlx::PgPool) {
     use tama_core::installations::InstallationManager;
-    let mgr = InstallationManager::open(tmp_dir).unwrap();
+    let mgr = InstallationManager::new(Arc::new(pool.clone()));
     // Save config so list_configs returns it
     mgr.save_config("llama_cpp", "cpu", &["-fa 1".to_string()], &[], None)
+        .await
         .unwrap();
     // Add an installation record so list_versions returns it
     let info = InstallationInfo {
@@ -47,14 +50,16 @@ fn seed_llama_cpp_backend(tmp_dir: &std::path::Path) {
         source: None,
         docker_config: None,
     };
-    mgr.add_installation(&info).unwrap();
+    mgr.add_installation(&info).await.unwrap();
 }
 
-/// Seed a InstallationManager with a custom backend.
-fn seed_custom_backend(tmp_dir: &std::path::Path) {
+/// Seed a custom backend installation into Postgres.
+async fn seed_custom_backend(pool: &sqlx::PgPool) {
     use tama_core::installations::InstallationManager;
-    let mgr = InstallationManager::open(tmp_dir).unwrap();
-    mgr.save_config("my_custom", "cpu", &[], &[], None).unwrap();
+    let mgr = InstallationManager::new(Arc::new(pool.clone()));
+    mgr.save_config("my_custom", "cpu", &[], &[], None)
+        .await
+        .unwrap();
     let info = InstallationInfo {
         name: "my_custom".to_string(),
         backend_type: InstallationType::Custom,
@@ -65,15 +70,20 @@ fn seed_custom_backend(tmp_dir: &std::path::Path) {
         source: None,
         docker_config: None,
     };
-    mgr.add_installation(&info).unwrap();
+    mgr.add_installation(&info).await.unwrap();
 }
 
 /// GET /tama/v1/installations on an empty registry returns 200 with backends=[],
 /// custom=[], available containing known types, and compaction.enabled==false.
 #[tokio::test]
 async fn test_get_backends_empty_registry_matches_snapshot() {
+    let guard = common::with_schema().await;
     let config = Config::default();
-    let state = Arc::new(ProxyState::new(config, None, None));
+    let state = Arc::new(ProxyState::new(
+        config,
+        None,
+        Some(Arc::new(guard.pool.clone())),
+    ));
 
     let web_state_for_test = Arc::new(test_web_state());
     let router = build_web_routes(state.clone(), web_state_for_test);
@@ -116,14 +126,14 @@ async fn test_get_backends_empty_registry_matches_snapshot() {
 /// GET /tama/v1/installations includes an installed llama_cpp entry.
 #[tokio::test]
 async fn test_get_backends_includes_installed_entry() {
-    let tmp_dir = tempfile::tempdir().expect("tempdir");
-    seed_llama_cpp_backend(tmp_dir.path());
+    let guard = common::with_schema().await;
+    seed_llama_cpp_backend(&guard.pool).await;
 
     let config = Config::default();
     let state = Arc::new(ProxyState::new(
         config,
-        Some(tmp_dir.path().to_path_buf()),
         None,
+        Some(Arc::new(guard.pool.clone())),
     ));
 
     let web_state_for_test = Arc::new(test_web_state());
@@ -164,14 +174,14 @@ async fn test_get_backends_includes_installed_entry() {
 /// Custom backend entries appear in the custom array, not in backends.
 #[tokio::test]
 async fn test_get_backends_custom_entry_appears_in_custom_array() {
-    let tmp_dir = tempfile::tempdir().expect("tempdir");
-    seed_custom_backend(tmp_dir.path());
+    let guard = common::with_schema().await;
+    seed_custom_backend(&guard.pool).await;
 
     let config = Config::default();
     let state = Arc::new(ProxyState::new(
         config,
-        Some(tmp_dir.path().to_path_buf()),
         None,
+        Some(Arc::new(guard.pool.clone())),
     ));
 
     let web_state_for_test = Arc::new(test_web_state());

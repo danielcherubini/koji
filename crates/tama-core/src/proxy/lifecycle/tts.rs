@@ -25,18 +25,16 @@ impl ProxyState {
     ) -> Result<String> {
         debug!("Loading TTS backend: {}", backend_name);
 
-        // Resolve base directory from self.db_dir first, fall back to Config::base_dir()
-        let base_dir = match self.db_dir.clone() {
-            Some(dir) => dir,
-            None => crate::config::Config::base_dir()
-                .with_context(|| "Failed to get config directory")?,
-        };
-        let mgr = InstallationManager::open(&base_dir)
-            .with_context(|| "Failed to open backend manager")?;
+        // Postgres-pool based manager (plan-190 Task 8)
+        let pool = self
+            .db_pool()
+            .with_context(|| "Postgres pool not configured")?;
+        let mgr = InstallationManager::new(pool);
 
         // Discover variant dynamically - TTS backends typically only have one variant
         let variants = mgr
             .list_versions(backend_name, None)
+            .await
             .with_context(|| format!("Failed to list versions for '{}'", backend_name))?
             .ok_or_else(|| anyhow::anyhow!("Backend '{}' not installed", backend_name))?;
 
@@ -47,6 +45,7 @@ impl ProxyState {
 
         let info = mgr
             .get_active(backend_name, &variant)
+            .await
             .with_context(|| format!("Backend '{}' not found in manager", backend_name))?
             .ok_or_else(|| anyhow::anyhow!("Backend '{}' not installed", backend_name))?;
 

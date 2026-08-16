@@ -36,12 +36,6 @@ pub async fn update_installation(
         }
     };
 
-    let config_dir = match crate::api::helpers::resolve_config_dir(&state) {
-        Ok(d) => d,
-        Err(resp) => return resp,
-    };
-    let config_dir_clone = config_dir.clone();
-
     let mgr = match open_backend_manager(&state).await {
         Ok(mgr) => mgr,
         Err(e) => return e,
@@ -52,7 +46,7 @@ pub async fn update_installation(
         Some(v) => v,
         None => {
             // Auto-infer: find unique variant for this backend
-            let versions = match mgr.list_versions(&name, None) {
+            let versions = match mgr.list_versions(&name, None).await {
                 Ok(Some(v)) => v,
                 Ok(None) => {
                     return error_response(
@@ -90,7 +84,7 @@ pub async fn update_installation(
         }
     };
 
-    let backend_info = match mgr.get_active(&name, &lookup_variant) {
+    let backend_info = match mgr.get_active(&name, &lookup_variant).await {
         Ok(Some(info)) => info,
         Ok(None) => {
             return error_response(
@@ -271,13 +265,7 @@ pub async fn update_installation(
                 // Refresh the update check record so the Updates Center reflects the new version
                 if let Some(pool) = &pool {
                     let _ = checker
-                        .check_backend(
-                            &config_dir_clone,
-                            pool,
-                            &name_clone,
-                            &backend_type_clone,
-                            &gpu_variant_clone,
-                        )
+                        .check_backend(pool, &name_clone, &backend_type_clone, &gpu_variant_clone)
                         .await;
                 }
             }

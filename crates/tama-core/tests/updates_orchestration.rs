@@ -2,8 +2,7 @@
 //!
 //! The `update_checks` rows now live in Postgres (testcontainer harness), so
 //! the assertions read them through the async query functions. Backend and
-//! model seed data is still SQLite — `installation_configs` and
-//! `model_configs` are ported in Tasks 8 and 5.
+//! model seed data lives in Postgres (Tasks 8 and 5).
 //!
 //! The event-channel assertions require the `web-ui` feature (same gate as
 //! the former in-file tests).
@@ -21,19 +20,20 @@ use tempfile::tempdir;
 use wiremock::matchers::{method, path_regex, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-/// Seed a TtsKokoro backend installation into the config directory's DB.
-fn seed_backend(config_dir: &std::path::Path) {
-    let mgr = InstallationManager::open(config_dir).unwrap();
+/// Seed a TtsKokoro backend installation into Postgres.
+async fn seed_backend(pool: &sqlx::PgPool, path_base: &std::path::Path) {
+    let mgr = InstallationManager::new(std::sync::Arc::new(pool.clone()));
     mgr.add_installation(&InstallationInfo {
         name: "tts_kokoro".into(),
         backend_type: InstallationType::TtsKokoro,
         version: "1.0.0".into(),
-        path: config_dir.join("tts_kokoro"),
+        path: path_base.join("tts_kokoro"),
         installed_at: 0,
         gpu_variant: "cpu".into(),
         source: None,
         docker_config: None,
     })
+    .await
     .unwrap();
 }
 
@@ -111,7 +111,7 @@ async fn test_run_check_persists_backend_and_model_rows_and_emits_events() {
     let config_dir = tmp.path();
 
     // Seed a TtsKokoro backend and a model with "old" identifiers
-    seed_backend(config_dir);
+    seed_backend(&guard.pool, config_dir).await;
     let _model_id = seed_model(
         &guard.pool,
         "unsloth/Test-GGUF",
@@ -153,7 +153,7 @@ async fn test_run_check_persists_backend_and_model_rows_and_emits_events() {
     checker.set_update_events_tx(tx);
 
     // Run the full check
-    checker.run_check(config_dir, &guard.pool).await.unwrap();
+    checker.run_check(&guard.pool).await.unwrap();
 
     // ── DB assertions: backend row should be "up_to_date" ───────────────
     let checks = queries::get_all_update_checks(&guard.pool).await.unwrap();
@@ -226,7 +226,7 @@ async fn test_run_check_model_up_to_date_via_cache_without_http() {
     seed_model(&guard.pool, "cached/Model", sha_same, lfs_same).await;
 
     // Seed a backend too
-    seed_backend(config_dir);
+    seed_backend(&guard.pool, config_dir).await;
 
     // Do NOT set HF_ENDPOINT or start wiremock — we want to use the cache.
 
@@ -244,7 +244,7 @@ async fn test_run_check_model_up_to_date_via_cache_without_http() {
     checker.set_update_events_tx(tx);
 
     // Run the full check — should use cache and find model up_to_date
-    checker.run_check(config_dir, &guard.pool).await.unwrap();
+    checker.run_check(&guard.pool).await.unwrap();
 
     let checks = queries::get_all_update_checks(&guard.pool).await.unwrap();
 
@@ -270,8 +270,6 @@ async fn test_run_check_model_up_to_date_via_cache_without_http() {
 #[tokio::test]
 async fn test_run_check_model_without_repo_records_unknown() {
     let guard = with_schema().await;
-    let tmp = tempdir().unwrap();
-    let config_dir = tmp.path();
 
     // Seed a model with an empty repo_id to trigger the "no source repo" path
     let record = queries::ModelConfigRecord {
@@ -327,7 +325,7 @@ async fn test_run_check_model_without_repo_records_unknown() {
 
     // Call check_model directly — repo_id is None/empty → should go to unknown path
     checker
-        .check_model(config_dir, &guard.pool, model_id, None)
+        .check_model(&guard.pool, model_id, None)
         .await
         .unwrap();
 
@@ -351,7 +349,7 @@ async fn test_run_check_concurrent_invocation_skips() {
     let config_dir = tmp.path();
 
     // Seed a backend so there's something to check
-    seed_backend(config_dir);
+    seed_backend(&guard.pool, config_dir).await;
 
     let checker = UpdateChecker::new();
 
@@ -359,7 +357,7 @@ async fn test_run_check_concurrent_invocation_skips() {
     let _lock_guard = checker.try_hold_run_lock().unwrap();
 
     // Now run_check should return Ok(()) immediately without doing any work
-    checker.run_check(config_dir, &guard.pool).await.unwrap();
+    checker.run_check(&guard.pool).await.unwrap();
 
     // The DB should have no check records since the check was skipped
     let checks = queries::get_all_update_checks(&guard.pool).await.unwrap();

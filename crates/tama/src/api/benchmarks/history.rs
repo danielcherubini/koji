@@ -1,6 +1,5 @@
 use super::*;
 use crate::api::error::error_response;
-use crate::api::helpers::shared_repository;
 use crate::web_types::WebState;
 use tama_core::proxy::tama_handlers::OkResponse;
 use tama_core::proxy::ProxyState;
@@ -103,21 +102,16 @@ pub async fn list_benchmark_history(
     State(_state): State<Arc<ProxyState>>,
     Extension(web_state): Extension<WebState>,
 ) -> impl IntoResponse {
-    let repo_handle = match shared_repository(&web_state) {
-        Ok(h) => h,
-        Err(resp) => return resp,
+    let Some(pool) = web_state.db_pool.as_ref() else {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Postgres pool not available",
+            None,
+        );
     };
 
-    let entries = match tokio::task::spawn_blocking(move || {
-        let repo = repo_handle.lock().unwrap();
-        repo.list_benchmarks()
-    })
-    .await
-    {
-        Ok(Ok(entries)) => entries,
-        Ok(Err(e)) => {
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None)
-        }
+    let entries = match tama_core::db::queries::list_benchmarks(pool).await {
+        Ok(entries) => entries,
         Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     };
 
@@ -167,19 +161,16 @@ pub async fn delete_benchmark(
     Extension(web_state): Extension<WebState>,
     Path(id): Path<i64>,
 ) -> impl IntoResponse {
-    let repo_handle = match shared_repository(&web_state) {
-        Ok(h) => h,
-        Err(resp) => return resp,
+    let Some(pool) = web_state.db_pool.as_ref() else {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Postgres pool not available",
+            None,
+        );
     };
 
-    match tokio::task::spawn_blocking(move || {
-        let repo = repo_handle.lock().unwrap();
-        repo.delete_benchmark(id)
-    })
-    .await
-    {
-        Ok(Ok(())) => Json(OkResponse::OK).into_response(),
-        Ok(Err(e)) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
+    match tama_core::db::queries::delete_benchmark(pool, id).await {
+        Ok(()) => Json(OkResponse::OK).into_response(),
         Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     }
 }

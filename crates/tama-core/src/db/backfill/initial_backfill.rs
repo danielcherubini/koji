@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use rusqlite::Connection;
 use sqlx::PgPool;
 
 use crate::config::Config;
@@ -111,16 +110,18 @@ pub async fn run_initial_backfill(pool: &PgPool, config: &Config) -> Result<()> 
     Ok(())
 }
 
-/// Migrate existing `backend_registry.toml` into the `provider_installations` SQLite table.
+/// Migrate existing `backend_registry.toml` into the `provider_installations` table.
 ///
 /// If the file does not exist, returns `Ok(())` immediately.
 /// After migrating all entries, renames the file to `backend_registry.toml.migrated`
 /// so it is not re-imported on subsequent startups.
 ///
-/// Duplicate `(name, version)` entries are handled by `INSERT OR REPLACE` — the old row
-/// is deleted and re-inserted with a new `id`.
-pub fn migrate_backend_registry_toml(
-    conn: &Connection,
+/// Duplicate `(name, gpu_variant, version)` entries are handled by the
+/// `ON CONFLICT` upsert in `insert_installation`.
+///
+/// Postgres-based (plan-190 Task 8) — installations live in Postgres.
+pub async fn migrate_backend_registry_toml(
+    pool: &PgPool,
     config_dir: &std::path::Path,
 ) -> Result<()> {
     use crate::db::queries::{insert_installation, InstallationRecord};
@@ -162,8 +163,9 @@ pub fn migrate_backend_registry_toml(
             logical_id: String::new(),
         };
 
-        // INSERT OR REPLACE handles duplicate (name, version) by replacing the row
-        insert_installation(conn, &record)
+        // ON CONFLICT upsert handles duplicate (name, variant, version) rows
+        insert_installation(pool, &record)
+            .await
             .with_context(|| format!("Failed to insert backend '{}' during migration", name))?;
         count += 1;
     }
@@ -312,8 +314,6 @@ pub async fn repair_orphaned_model_files(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::open_in_memory;
-    use crate::db::OpenResult;
 
     /// Test backfill with no models — should return Ok without error.
     #[tokio::test]
@@ -347,8 +347,8 @@ mod tests {
     }
 
     /// Test that migrate_backend_registry_toml correctly migrates a TOML file into the DB.
-    #[test]
-    fn test_migrate_backend_registry_toml() {
+    #[tokio::test]
+    async fn test_migrate_backend_registry_toml() {
         let tmp = tempfile::tempdir().unwrap();
         let registry_path = tmp.path().join("backend_registry.toml");
 
@@ -362,13 +362,16 @@ installed_at = 1700000000
 "#;
         std::fs::write(&registry_path, toml_content).unwrap();
 
-        let OpenResult { conn, .. } = open_in_memory().unwrap();
+        let guard = crate::testing::postgres::with_schema().await;
 
         // Run the migration
-        migrate_backend_registry_toml(&conn, tmp.path()).unwrap();
+        migrate_backend_registry_toml(&guard.pool, tmp.path())
+            .await
+            .unwrap();
 
         // Assert that the backend was inserted correctly
-        let record = crate::db::queries::get_active_installation(&conn, "llama_cpp", "cpu")
+        let record = crate::db::queries::get_active_installation(&guard.pool, "llama_cpp", "cpu")
+            .await
             .unwrap()
             .expect("llama_cpp should exist in DB after migration");
         assert_eq!(record.version, "b3456");
@@ -385,22 +388,26 @@ installed_at = 1700000000
             !tmp.path().join("backend_registry.toml").exists(),
             "backend_registry.toml should have been renamed"
         );
+
+        guard.finish().await;
     }
 
     /// Test that migrate_backend_registry_toml returns Ok when the file does not exist.
-    #[test]
-    fn test_migrate_backend_registry_toml_no_file() {
+    #[tokio::test]
+    async fn test_migrate_backend_registry_toml_no_file() {
         let tmp = tempfile::tempdir().unwrap();
-        let OpenResult { conn, .. } = open_in_memory().unwrap();
+        let guard = crate::testing::postgres::with_schema().await;
 
         // Should return Ok without any error
-        let result = migrate_backend_registry_toml(&conn, tmp.path());
+        let result = migrate_backend_registry_toml(&guard.pool, tmp.path()).await;
         assert!(result.is_ok());
+
+        guard.finish().await;
     }
 
     /// Test that a duplicate entry is skipped (not an error).
-    #[test]
-    fn test_migrate_backend_registry_toml_duplicate_skipped() {
+    #[tokio::test]
+    async fn test_migrate_backend_registry_toml_duplicate_skipped() {
         let tmp = tempfile::tempdir().unwrap();
         let registry_path = tmp.path().join("backend_registry.toml");
 
@@ -413,11 +420,11 @@ installed_at = 1700000000
 "#;
         std::fs::write(&registry_path, toml_content).unwrap();
 
-        let OpenResult { conn, .. } = open_in_memory().unwrap();
+        let guard = crate::testing::postgres::with_schema().await;
 
         // Pre-insert the same record (same name + version)
         crate::db::queries::insert_installation(
-            &conn,
+            &guard.pool,
             &crate::db::queries::InstallationRecord {
                 id: 0,
                 name: "llama_cpp".to_string(),
@@ -432,15 +439,18 @@ installed_at = 1700000000
                 logical_id: String::new(),
             },
         )
+        .await
         .unwrap();
 
         // Migration should succeed (duplicate is skipped, not an error)
-        let result = migrate_backend_registry_toml(&conn, tmp.path());
+        let result = migrate_backend_registry_toml(&guard.pool, tmp.path()).await;
         assert!(result.is_ok());
 
         // File should still be renamed
         assert!(tmp.path().join("backend_registry.toml.migrated").exists());
         assert!(!tmp.path().join("backend_registry.toml").exists());
+
+        guard.finish().await;
     }
 
     /// Simulates the state a user ends up in after the v9 FK-cascade bug:

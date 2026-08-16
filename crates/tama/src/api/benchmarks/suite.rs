@@ -411,7 +411,6 @@ async fn run_suite_llama_bench(
         ctx.db_path.clone(),
         ctx.proxy_base_url.clone(),
         ctx.client.clone(),
-        ctx.repo_handle.clone(),
         ctx.db_pool.clone(),
     )
     .await
@@ -479,7 +478,6 @@ async fn run_suite_spec(
         ctx.db_path.clone(),
         ctx.proxy_base_url.clone(),
         ctx.client.clone(),
-        ctx.repo_handle.clone(),
         ctx.db_pool.clone(),
     )
     .await
@@ -527,7 +525,6 @@ async fn run_suite_mtp(
         ctx.db_path.clone(),
         ctx.proxy_base_url.clone(),
         ctx.client.clone(),
-        ctx.repo_handle.clone(),
         ctx.db_pool.clone(),
     )
     .await

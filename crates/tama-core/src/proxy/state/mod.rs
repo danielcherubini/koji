@@ -88,21 +88,20 @@ impl ProxyState {
             .with_context(|| format!("Backend '{}' not found", backend_name))?
             .0;
 
-        // Open InstallationManager for health_check_url lookup
-        let manager = self
-            .db_dir
-            .as_ref()
-            .and_then(|dir| crate::installations::InstallationManager::open(dir).ok())
-            .unwrap_or_else(|| {
-                crate::installations::InstallationManager::open_in_memory()
-                    .expect("in-memory InstallationManager must always open")
-            });
+        // Look up the health_check_url from the Postgres pool (plan-190 Task 8).
         let gpu_variant = backend_config
             .gpu_variant
             .clone()
             .unwrap_or(crate::gpu::GpuVariant::CpuOnly);
-        let health_url =
-            manager.get_health_check_url(&backend_config.backend, gpu_variant.variant_folder());
+        let health_url = match self.db_pool() {
+            Some(pool) => {
+                let manager = crate::installations::InstallationManager::new(pool);
+                manager
+                    .get_health_check_url(&backend_config.backend, gpu_variant.variant_folder())
+                    .await
+            }
+            None => None,
+        };
         let backend_url = config
             .resolve_backend_url(backend_config, health_url.as_deref())
             .with_context(|| format!("No backend URL resolved for backend '{}'", backend_name))?;
@@ -302,8 +301,8 @@ impl ProxyState {
 
     /// Resolve the binary path for a backend name using the same logic as `load_model`.
     ///
-    /// Opens the InstallationManager, looks up the active installation, and returns the path.
-    /// Falls back to config.path if no DB entry exists.
+    /// Looks up the active installation via the Postgres pool, and returns the path.
+    /// Falls back to config.path if no DB entry exists (or no pool is configured).
     pub async fn resolve_backend_binary_path(
         &self,
         backend_name: &str,
@@ -311,15 +310,12 @@ impl ProxyState {
     ) -> anyhow::Result<std::path::PathBuf> {
         let config = self.config.read().await;
         let manager = self
-            .db_dir
-            .as_ref()
-            .and_then(|dir| crate::installations::InstallationManager::open(dir).ok())
-            .unwrap_or_else(|| {
-                crate::installations::InstallationManager::open_in_memory()
-                    .expect("in-memory InstallationManager must always open")
-            });
+            .db_pool()
+            .map(crate::installations::InstallationManager::new);
 
-        config.resolve_backend_path(backend_name, gpu_variant, &manager)
+        config
+            .resolve_backend_path(backend_name, gpu_variant, manager.as_ref())
+            .await
     }
 }
 

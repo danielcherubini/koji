@@ -23,30 +23,23 @@ pub async fn activate_installation_version(
         return resp;
     }
 
-    let config_dir = match crate::api::helpers::resolve_config_dir(&state) {
-        Ok(d) => d,
-        Err(resp) => return resp,
+    let pool = match state.db_pool() {
+        Some(p) => p,
+        None => {
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Database not configured",
+                None,
+            )
+        }
     };
+    let mgr = tama_core::installations::InstallationManager::new(pool);
 
     // Determine gpu_variant: use explicit value or auto-infer from manager
     let gpu_variant = match query.gpu_variant {
         Some(v) => v,
         None => {
-            let config_dir_clone = config_dir.clone();
-            let name_clone = name.clone();
-            let version_clone = req.version.clone();
-            let infer_result: Result<
-                Option<Vec<tama_core::installations::InstallationInfo>>,
-                anyhow::Error,
-            > = tokio::task::spawn_blocking(move || {
-                let mgr = tama_core::installations::InstallationManager::open(&config_dir_clone)?;
-                mgr.list_versions(&name_clone, None)
-            })
-            .await
-            .map_err(|e| anyhow::anyhow!("spawn error: {}", e))
-            .and_then(|r| r);
-
-            let versions = match infer_result {
+            let versions = match mgr.list_versions(&name, None).await {
                 Ok(Some(v)) => v,
                 Ok(None) => {
                     return error_response(
@@ -63,6 +56,8 @@ pub async fn activate_installation_version(
                     )
                 }
             };
+
+            let version_clone = req.version.clone();
 
             // Collect unique variants
             let mut variants: Vec<String> =
@@ -116,44 +111,34 @@ pub async fn activate_installation_version(
         }
     };
 
-    let config_dir_clone = config_dir.clone();
     let version_clone = req.version.clone();
-    let name_clone = name.clone();
     let version_for_error = version_clone.clone();
-    let gpu_variant_clone = gpu_variant.to_string();
-    let mgr_result: Result<(tama_core::installations::InstallationManager, bool), _> =
-        tokio::task::spawn_blocking(move || {
-            let mgr = tama_core::installations::InstallationManager::open(&config_dir_clone)?;
-            let activated = mgr.activate(&name_clone, &gpu_variant_clone, &version_clone)?;
-            Ok((mgr, activated))
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("spawn error: {}", e))
-        .and_then(|r| r);
 
-    match mgr_result {
-        Ok((_, activated)) => {
-            if !activated {
-                return error_response(
-                    StatusCode::NOT_FOUND,
-                    format!(
-                        "Version '{}' not found for backend '{}'",
-                        version_for_error, name
-                    ),
-                    Some("NotFoundError"),
-                );
-            }
-
-            Json(ActivateResponse {
-                version: req.version,
-                is_active: true,
-            })
-            .into_response()
+    let activated = match mgr.activate(&name, &gpu_variant, &version_clone).await {
+        Ok(activated) => activated,
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to activate: {}", e),
+                None,
+            )
         }
-        Err(e) => error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to activate: {}", e),
-            None,
-        ),
+    };
+
+    if !activated {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            format!(
+                "Version '{}' not found for backend '{}'",
+                version_for_error, name
+            ),
+            Some("NotFoundError"),
+        );
     }
+
+    Json(ActivateResponse {
+        version: req.version,
+        is_active: true,
+    })
+    .into_response()
 }

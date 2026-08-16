@@ -91,7 +91,6 @@ async fn _start_backend(
 ) -> Result<BenchBackend> {
     info!("Starting backend for model: {}", backend_name);
 
-    let db_dir = crate::config::Config::config_dir()?;
     let model_configs = crate::db::load_model_configs(pool).await?;
 
     let (model_config, backend_config) = config
@@ -101,13 +100,14 @@ async fn _start_backend(
     let spawn_start = Instant::now();
 
     // Open InstallationManager for resolution
-    let manager = crate::installations::InstallationManager::open(&db_dir)?;
+    let manager = crate::installations::InstallationManager::new(std::sync::Arc::new(pool.clone()));
     let gpu_variant = model_config
         .gpu_variant
         .clone()
         .unwrap_or(crate::gpu::GpuVariant::CpuOnly);
-    let default_args =
-        manager.get_default_args(&model_config.backend, gpu_variant.variant_folder());
+    let default_args = manager
+        .get_default_args(&model_config.backend, gpu_variant.variant_folder())
+        .await;
 
     // Allocate a free port
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -121,11 +121,13 @@ async fn _start_backend(
     _override_arg(&mut args, "--port", &port.to_string());
 
     // Resolve the backend binary path: DB takes priority, config.path is fallback.
-    let backend_path = config.resolve_backend_path(
-        &model_config.backend,
-        model_config.gpu_variant.as_ref(),
-        &manager,
-    )?;
+    let backend_path = config
+        .resolve_backend_path(
+            &model_config.backend,
+            model_config.gpu_variant.as_ref(),
+            Some(&manager),
+        )
+        .await?;
 
     let health_url = format!("http://127.0.0.1:{}/health", port);
 

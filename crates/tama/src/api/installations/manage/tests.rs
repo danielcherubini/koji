@@ -149,10 +149,11 @@ async fn test_update_installation_source_path_traversal_rejected() {
 async fn test_update_installation_source_missing_backend() {
     let config = tama_core::config::Config::default();
     let db_dir = tempfile::tempdir().unwrap();
+    let guard = crate::testing::postgres::with_schema().await;
     let state = Arc::new(tama_core::proxy::ProxyState::new(
         config,
         Some(db_dir.path().to_path_buf()),
-        None,
+        Some(Arc::new(guard.pool.clone())),
     ));
 
     let web_state_for_test = Arc::new(test_web_state());
@@ -260,15 +261,16 @@ async fn test_patch_installation_path_traversal_rejected() {
 async fn test_patch_installation_all_none_preserves() {
     let config = tama_core::config::Config::default();
     let tmp_dir = tempfile::tempdir().expect("tempdir");
+    let guard = crate::testing::postgres::with_schema().await;
     let state = Arc::new(tama_core::proxy::ProxyState::new(
         config,
         Some(tmp_dir.path().to_path_buf()),
-        None,
+        Some(Arc::new(guard.pool.clone())),
     ));
 
     // Seed backend config via InstallationManager
     {
-        let mgr = tama_core::installations::InstallationManager::open(tmp_dir.path()).unwrap();
+        let mgr = tama_core::installations::InstallationManager::new(Arc::new(guard.pool.clone()));
         mgr.save_config(
             "llama_cpp",
             "cpu",
@@ -276,6 +278,7 @@ async fn test_patch_installation_all_none_preserves() {
             &["RADV_PERFTEST=nogttspill".to_string()],
             Some("http://localhost:8080/health"),
         )
+        .await
         .unwrap();
     }
 
@@ -320,14 +323,14 @@ async fn test_patch_installation_all_none_preserves() {
     assert_eq!(json["success"], true);
 
     // Verify fields were preserved
-    let mgr = tama_core::installations::InstallationManager::open(tmp_dir.path()).unwrap();
-    let args = mgr.get_default_args("llama_cpp", "cpu");
+    let mgr = tama_core::installations::InstallationManager::new(Arc::new(guard.pool.clone()));
+    let args = mgr.get_default_args("llama_cpp", "cpu").await;
     assert_eq!(args, vec!["-fa 1", "-b 2048"]);
 
-    let env = mgr.get_default_env("llama_cpp", "cpu");
+    let env = mgr.get_default_env("llama_cpp", "cpu").await;
     assert_eq!(env, vec!["RADV_PERFTEST=nogttspill"]);
 
-    let health = mgr.get_health_check_url("llama_cpp", "cpu");
+    let health = mgr.get_health_check_url("llama_cpp", "cpu").await;
     assert_eq!(health, Some("http://localhost:8080/health".to_string()));
 }
 
@@ -336,15 +339,16 @@ async fn test_patch_installation_all_none_preserves() {
 async fn test_patch_installation_default_args_only() {
     let config = tama_core::config::Config::default();
     let tmp_dir = tempfile::tempdir().expect("tempdir");
+    let guard = crate::testing::postgres::with_schema().await;
     let state = Arc::new(tama_core::proxy::ProxyState::new(
         config,
         Some(tmp_dir.path().to_path_buf()),
-        None,
+        Some(Arc::new(guard.pool.clone())),
     ));
 
     // Seed backend config
     {
-        let mgr = tama_core::installations::InstallationManager::open(tmp_dir.path()).unwrap();
+        let mgr = tama_core::installations::InstallationManager::new(Arc::new(guard.pool.clone()));
         mgr.save_config(
             "llama_cpp",
             "cpu",
@@ -352,6 +356,7 @@ async fn test_patch_installation_default_args_only() {
             &["RADV_PERFTEST=nogttspill".to_string()],
             Some("http://localhost:8080/health"),
         )
+        .await
         .unwrap();
     }
 
@@ -399,16 +404,16 @@ async fn test_patch_installation_default_args_only() {
     assert_eq!(json["success"], true);
 
     // Verify args changed
-    let mgr = tama_core::installations::InstallationManager::open(tmp_dir.path()).unwrap();
-    let args = mgr.get_default_args("llama_cpp", "cpu");
+    let mgr = tama_core::installations::InstallationManager::new(Arc::new(guard.pool.clone()));
+    let args = mgr.get_default_args("llama_cpp", "cpu").await;
     assert_eq!(args, vec!["-fa 2", "-b 4096"]);
 
     // Verify env preserved
-    let env = mgr.get_default_env("llama_cpp", "cpu");
+    let env = mgr.get_default_env("llama_cpp", "cpu").await;
     assert_eq!(env, vec!["RADV_PERFTEST=nogttspill"]);
 
     // Verify health_check_url preserved
-    let health = mgr.get_health_check_url("llama_cpp", "cpu");
+    let health = mgr.get_health_check_url("llama_cpp", "cpu").await;
     assert_eq!(health, Some("http://localhost:8080/health".to_string()));
 }
 

@@ -45,6 +45,7 @@ pub async fn install_tts_kokoro(
 
     manager
         .add_installation(&info)
+        .await
         .with_context(|| "Failed to register Kokoro backend")?;
 
     Ok(())

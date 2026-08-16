@@ -138,8 +138,10 @@ pub(crate) async fn run_llama_bench_with_dir(
     // CRITICAL: gpu_variant from the request takes priority; fall back to the
     // model config's own gpu_variant (preserving Auto behavior when None).
     let variant = gpu_variant.as_ref().or(model_config.gpu_variant.as_ref());
-    let manager = crate::installations::InstallationManager::open(db_dir)?;
-    let backend_path = config.resolve_backend_path(target_backend, variant, &manager)?;
+    let manager = crate::installations::InstallationManager::new(std::sync::Arc::new(pool.clone()));
+    let backend_path = config
+        .resolve_backend_path(target_backend, variant, Some(&manager))
+        .await?;
 
     let bench_binary = discovery::find_llama_bench(&backend_path).context(format!(
         "llama-bench not found for backend '{}'. Install llama.cpp from source or set LLAMA_BENCH_PATH",
@@ -360,40 +362,24 @@ mod tests {
         }
     }
 
-    /// Helper to set up a minimal test database with a backend config,
-    /// an installation record, and a model config + file entry.
-    ///
-    /// Note: the global app config is no longer seeded here (plan-190 Task 3 —
-    /// it lives in Postgres); the tests build their in-memory `Config` instead.
-    fn seed_test_db(temp_dir: &tempfile::TempDir) -> anyhow::Result<(std::path::PathBuf, String)> {
-        let db_path = temp_dir.path().join("tama.db");
-
-        // Open the database and run migrations. Retry on SQLITE_CANTOPEN:
-        // under the full-workspace parallel load, a transient open failure
-        // (code 14) has been observed on the shared /tmp tmpfs.
-        let mut attempts = 0;
-        let conn = loop {
-            match rusqlite::Connection::open(&db_path) {
-                Ok(c) => break c,
-                Err(_) if attempts < 20 => {
-                    attempts += 1;
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                }
-                Err(e) => return Err(e.into()),
-            }
-        };
-        crate::db::migrations::run(&conn)?;
-
+    /// Helper to set up the test backend config + installation in Postgres
+    /// (plan-190 Task 8 — the installation domain lives in Postgres) and a
+    /// fake llama-server binary on disk. Returns the config directory.
+    async fn seed_test_db(
+        temp_dir: &tempfile::TempDir,
+        pool: &sqlx::PgPool,
+    ) -> anyhow::Result<std::path::PathBuf> {
         // 1. Insert a backend config (llama_cpp, cpu)
         upsert_installation_config(
-            &conn,
+            pool,
             "",
             "llama_cpp",
             "cpu",
             &[],
             &[],
             Some("http://localhost:8080/health"),
-        )?;
+        )
+        .await?;
 
         // 2. Create a fake llama-server binary in the temp dir
         let backend_dir = temp_dir
@@ -410,7 +396,7 @@ mod tests {
 
         // 3. Insert a backend installation record pointing to the fake binary
         insert_installation(
-            &conn,
+            pool,
             &crate::db::queries::InstallationRecord {
                 id: 0,
                 name: "llama_cpp".to_string(),
@@ -424,29 +410,10 @@ mod tests {
                 docker_config: None,
                 logical_id: String::new(),
             },
-        )?;
+        )
+        .await?;
 
-        // conn dropped here — commits are flushed and the DB is closed cleanly.
-
-        // Verify the row is readable from a fresh connection (bounded retry,
-        // no reseed). Committed rows are normally visible immediately, but a
-        // transient read has been observed under heavy parallel load.
-        let mut verify = 0;
-        loop {
-            let mgr = crate::installations::InstallationManager::open(temp_dir.path())?;
-            if mgr.list_versions("llama_cpp", None)?.is_some() {
-                break;
-            }
-            verify += 1;
-            if verify >= 20 {
-                anyhow::bail!("seeded backend installation not visible after seeding");
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-
-        let config_dir = temp_dir.path().to_path_buf();
-
-        Ok((config_dir, "test-model-Q4_K_M.gguf".to_string()))
+        Ok(temp_dir.path().to_path_buf())
     }
     /// Seed a model config + file entry in Postgres (plan-190 Task 5 —
     /// the model domain lives in Postgres). Returns the GGUF filename.
@@ -533,9 +500,9 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let config_dir = temp_dir.path().to_path_buf();
 
-        // Postgres model domain first (this can be slow under the full-suite
-        // parallel load), then seed the SQLite backend LAST so the fresh DB is
-        // read immediately by `run_llama_bench_with_dir` with no long gap.
+        // Seed the model domain (Postgres, plan-190 Task 5) and the backend
+        // installation (Postgres, plan-190 Task 8) immediately before the call
+        // under test.
         let guard = crate::testing::postgres::with_schema().await;
         let gguf_filename = seed_test_model(&guard.pool).await.unwrap();
 
@@ -564,9 +531,9 @@ exit 0
         // Set LLAMA_BENCH_PATH
         std::env::set_var("LLAMA_BENCH_PATH", stub_script.to_string_lossy().as_ref());
 
-        // Seed the SQLite backend/installation DB now (immediately before the
-        // call under test) so the seeded installation is read from a hot DB.
-        let (config_dir, _) = seed_test_db(&temp_dir).unwrap();
+        // Seed the backend/installation record now (immediately before the
+        // call under test).
+        let config_dir = seed_test_db(&temp_dir, &guard.pool).await.unwrap();
 
         // Build an in-memory Config (plan-190 Task 3: the app config no
         // longer lives in the per-test SQLite file) with models_dir set.
@@ -651,8 +618,9 @@ exit 0
         let temp_dir = tempfile::tempdir().unwrap();
         let config_dir = temp_dir.path().to_path_buf();
 
-        // Postgres model domain first, then seed the SQLite backend LAST so the
-        // fresh DB is read immediately by `run_llama_bench_with_dir`.
+        // Seed the model domain (Postgres, plan-190 Task 5) and the backend
+        // installation (Postgres, plan-190 Task 8) immediately before the call
+        // under test.
         let guard = crate::testing::postgres::with_schema().await;
         let gguf_filename = seed_test_model(&guard.pool).await.unwrap();
 
@@ -703,9 +671,9 @@ exit 1
         // Drop the env guard before calling the async function
         drop(_env_guard);
 
-        // Seed the SQLite backend/installation DB now (immediately before the
-        // call under test) so the seeded installation is read from a hot DB.
-        seed_test_db(&temp_dir).unwrap();
+        // Seed the backend/installation record now (immediately before the
+        // call under test).
+        let config_dir = seed_test_db(&temp_dir, &guard.pool).await.unwrap();
 
         let result = run_llama_bench_with_dir(
             &config,

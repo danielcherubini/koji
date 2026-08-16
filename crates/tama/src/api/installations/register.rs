@@ -23,7 +23,7 @@ use tama_core::proxy::ProxyState;
 /// Validates docker availability and docker_config before inserting into DB.
 pub async fn register_installation(
     Extension(_web_state): Extension<WebState>,
-    _state: State<Arc<ProxyState>>,
+    state: State<Arc<ProxyState>>,
     Json(req): Json<RegisterBackendRequest>,
 ) -> impl IntoResponse {
     // Validate name (non-empty, no path traversal)
@@ -104,17 +104,17 @@ pub async fn register_installation(
         }
     };
 
-    // Open manager and insert into DB
-    let config_dir = match tama_core::config::Config::config_dir() {
-        Ok(d) => d,
-        Err(e) => {
+    let pool = match state.db_pool() {
+        Some(p) => p,
+        None => {
             return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to get config dir: {}", e),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Database not configured",
                 None,
-            );
+            )
         }
     };
+    let mgr = tama_core::installations::InstallationManager::new(pool);
 
     let info = tama_core::installations::InstallationInfo {
         name: req.name.clone(),
@@ -140,19 +140,9 @@ pub async fn register_installation(
         docker_config: req.docker_config,
     };
 
-    let mgr_result = tokio::task::spawn_blocking({
-        let config_dir = config_dir.clone();
-        let info_clone = info.clone();
-        move || {
-            let mgr = tama_core::installations::InstallationManager::open(&config_dir)?;
-            mgr.add_installation(&info_clone)
-        }
-    })
-    .await
-    .map_err(|e| anyhow::anyhow!("spawn error: {}", e))
-    .and_then(|r| r);
+    let add_result = mgr.add_installation(&info).await;
 
-    match mgr_result {
+    match add_result {
         Ok(()) => {
             let response = RegisterBackendResponse::from(info);
             (StatusCode::CREATED, Json(response)).into_response()

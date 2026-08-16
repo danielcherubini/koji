@@ -24,7 +24,6 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::api::error::error_response;
-use crate::api::helpers::shared_repository;
 use crate::gpu::query_vram;
 use crate::web_types::{JobEvent, JobKind, JobManager, JobStatus, WebState};
 use tama_core::bench::llama_cli_spec::{SpecBenchConfig, SpecType};
@@ -201,7 +200,6 @@ pub struct BenchmarkJobContext {
     pub db_path: std::path::PathBuf,
     pub proxy_base_url: String,
     pub client: reqwest::Client,
-    pub repo_handle: std::sync::Arc<std::sync::Mutex<tama_core::db::repository::Repository>>,
     /// Postgres pool for loading the global app config (plan-190 Task 3).
     pub db_pool: Option<std::sync::Arc<sqlx::PgPool>>,
 }
@@ -209,7 +207,7 @@ pub struct BenchmarkJobContext {
 /// Resolve shared context needed for benchmark execution.
 pub async fn resolve_benchmark_context(
     state: &tama_core::proxy::ProxyState,
-    web_state: &WebState,
+    _web_state: &WebState,
 ) -> std::result::Result<BenchmarkJobContext, axum::response::Response> {
     let db_path = match crate::api::helpers::resolve_config_dir(state) {
         Ok(d) => d.join("tama.db"),
@@ -218,16 +216,10 @@ pub async fn resolve_benchmark_context(
     let proxy_base_url = state.with_config(|c| c.proxy_url()).await;
     let client = state.client().clone();
 
-    let repo_handle = match shared_repository(web_state) {
-        Ok(h) => h,
-        Err(resp) => return Err(resp),
-    };
-
     Ok(BenchmarkJobContext {
         db_path,
         proxy_base_url,
         client,
-        repo_handle,
         db_pool: state.db_pool(),
     })
 }
@@ -294,7 +286,6 @@ where
             std::path::PathBuf,
             String,
             reqwest::Client,
-            std::sync::Arc<std::sync::Mutex<tama_core::db::repository::Repository>>,
             Option<std::sync::Arc<sqlx::PgPool>>,
         ) -> Fut
         + Send
@@ -317,7 +308,6 @@ where
                 ctx.db_path,
                 ctx.proxy_base_url,
                 ctx.client,
-                ctx.repo_handle,
                 ctx.db_pool,
             )
             .await

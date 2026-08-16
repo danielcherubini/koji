@@ -11,8 +11,8 @@ use super::check::CheckSingleQuery;
 use crate::api::error::{error_body, error_response};
 use crate::web_types::WebState;
 use tama_core::installations::{
-    check_latest_version, get_backend_install_path, InstallOptions, InstallationManager,
-    InstallationSource, InstallationType,
+    check_latest_version, get_backend_install_path, InstallOptions, InstallationSource,
+    InstallationType,
 };
 use tama_core::proxy::ProxyState;
 
@@ -39,56 +39,51 @@ pub async fn apply_backend_update(
     Path(name): Path<String>,
     axum::extract::Query(query): axum::extract::Query<CheckSingleQuery>,
 ) -> impl axum::response::IntoResponse {
-    let config_dir = match crate::api::helpers::resolve_config_dir(&state) {
-        Ok(d) => d,
-        Err(resp) => return resp,
+    let pool = match state.db_pool() {
+        Some(p) => p,
+        None => {
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Database not configured",
+                None,
+            )
+        }
     };
+    let mgr = tama_core::installations::InstallationManager::new(pool.clone());
 
     // Load backend info from DB — discover gpu_variant dynamically
     let requested_variant = query.gpu_variant.clone();
-    let bt_result = tokio::task::spawn_blocking({
-        let config_dir = config_dir.clone();
-        let name = name.clone();
-        let requested_variant = requested_variant.clone();
-        move || -> anyhow::Result<(Option<InstallationType>, Option<String>)> {
-            let mgr = tama_core::installations::InstallationManager::open(&config_dir)?;
-            let versions = mgr.list_versions(&name, None)?;
-
-            // If a specific variant is requested, find that variant
-            // Otherwise, fall back to the active variant (legacy behavior)
-            let versions = match versions {
-                Some(v) => v,
-                None => return Ok((None, None)),
-            };
-
-            let record = if let Some(ref variant) = requested_variant {
-                versions.iter().find(|v| v.gpu_variant == *variant)
-            } else {
-                // No is_active field on InstallationInfo; use first as fallback
-                versions.first()
-            };
-
-            Ok(record
-                .map(|r| {
-                    let bt = match r.backend_type {
-                        InstallationType::LlamaCpp => InstallationType::LlamaCpp,
-                        InstallationType::IkLlama => InstallationType::IkLlama,
-                        _ => InstallationType::Custom,
-                    };
-                    (Some(bt), Some(r.gpu_variant.clone()))
-                })
-                .unwrap_or((None, None)))
-        }
-    })
-    .await;
-
-    let (backend_type, current_version) = match bt_result {
-        Ok(Ok(res)) => res,
-        Ok(Err(e)) => {
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None)
+    let versions = match mgr.list_versions(&name, None).await {
+        Ok(Some(v)) => v,
+        Ok(None) => {
+            return error_response(
+                StatusCode::NOT_FOUND,
+                "Backend not found",
+                Some("NotFoundError"),
+            )
         }
         Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     };
+
+    // If a specific variant is requested, find that variant
+    // Otherwise, fall back to the active variant (legacy behavior)
+    let record = if let Some(ref variant) = requested_variant {
+        versions.iter().find(|v| v.gpu_variant == *variant)
+    } else {
+        // No is_active field on InstallationInfo; use first as fallback
+        versions.first()
+    };
+
+    let (backend_type, current_version) = record
+        .map(|r| {
+            let bt = match r.backend_type {
+                InstallationType::LlamaCpp => InstallationType::LlamaCpp,
+                InstallationType::IkLlama => InstallationType::IkLlama,
+                _ => InstallationType::Custom,
+            };
+            (Some(bt), Some(r.gpu_variant.clone()))
+        })
+        .unwrap_or((None, None));
 
     let (Some(backend_type), Some(_version)) = (backend_type, current_version) else {
         return error_response(
@@ -148,38 +143,22 @@ pub async fn apply_backend_update(
     let jobs_clone = jobs.clone();
     let job_clone = job.clone();
     let name_clone = name.clone();
-    let config_dir_clone = config_dir.clone();
+    let pool_clone = pool.clone();
     tokio::spawn(async move {
-        let config_dir = config_dir_clone;
         let name_for_prep = name_clone.clone();
-        let prep = tokio::task::spawn_blocking(
-            move || -> Result<(InstallationManager, Option<Vec<_>>), String> {
-                let mgr = match InstallationManager::open(&config_dir) {
-                    Ok(m) => m,
-                    Err(e) => return Err(format!("Failed to open backend manager: {}", e)),
-                };
-                match mgr.list_versions(&name_for_prep, None) {
-                    Ok(v) => Ok((mgr, v)),
-                    Err(e) => Err(format!(
-                        "Failed to list versions for backend '{}': {}",
-                        name_for_prep, e
-                    )),
-                }
-            },
-        )
-        .await;
-        let (mgr, all_versions) = match prep {
-            Ok(Ok((m, Some(v)))) => (m, v),
-            Ok(Ok((_, None))) => {
+        let mgr = tama_core::installations::InstallationManager::new(pool_clone);
+        let all_versions = match mgr.list_versions(&name_for_prep, None).await {
+            Ok(Some(v)) => v,
+            Ok(None) => {
                 tracing::error!("Backend '{}' not found during update", name_clone);
                 return;
             }
-            Ok(Err(msg)) => {
-                tracing::error!("{}", msg);
-                return;
-            }
             Err(e) => {
-                tracing::error!("spawn error: {}", e);
+                tracing::error!(
+                    "Failed to list versions for backend '{}': {}",
+                    name_for_prep,
+                    e
+                );
                 return;
             }
         };

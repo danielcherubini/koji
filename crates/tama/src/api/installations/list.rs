@@ -41,17 +41,20 @@ pub async fn list_installations(
     let backend_configs_map: std::collections::HashMap<
         (String, String),
         (Vec<String>, Vec<String>),
-    > = mgr_result
-        .as_ref()
-        .ok()
-        .and_then(|mgr| mgr.list_configs().ok())
-        .map(|configs| {
-            configs
-                .into_iter()
-                .map(|c| ((c.name, c.gpu_variant), (c.default_args, c.default_env)))
-                .collect()
-        })
-        .unwrap_or_default();
+    > = match &mgr_result {
+        Ok(mgr) => mgr
+            .list_configs()
+            .await
+            .ok()
+            .map(|configs| {
+                configs
+                    .into_iter()
+                    .map(|c| ((c.name, c.gpu_variant), (c.default_args, c.default_env)))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        Err(_) => std::collections::HashMap::new(),
+    };
 
     // Load cached update checks from Postgres (keyed by "name:variant")
     let update_checks: std::collections::HashMap<
@@ -82,7 +85,7 @@ pub async fn list_installations(
         Ok(mgr) => {
             // Emit one card per (backend_type, gpu_variant) pair — only if installed
             for (type_, display_name, release_notes_url) in KNOWN_BACKENDS {
-                let versions_opt = mgr.list_versions(type_, None).unwrap_or(None);
+                let versions_opt = mgr.list_versions(type_, None).await.unwrap_or(None);
 
                 if let Some(versions) = versions_opt {
                     // Group versions by gpu_variant
@@ -102,7 +105,7 @@ pub async fn list_installations(
                             .cloned()
                             .unwrap_or_default();
 
-                        let active_version = mgr.get_active(type_, &variant).ok().flatten();
+                        let active_version = mgr.get_active(type_, &variant).await.ok().flatten();
 
                         // Sort versions by installed_at DESC
                         let mut sorted_versions = variant_versions;
@@ -165,7 +168,7 @@ pub async fn list_installations(
             // Custom backends — one card per (name, variant) pair
             // Collect unique custom backend names to avoid duplicate cards
             // when multiple variants are active for the same backend
-            let active_backends = mgr.list_active().unwrap_or_default();
+            let active_backends = mgr.list_active().await.unwrap_or_default();
             let mut custom_names: std::collections::HashSet<String> =
                 std::collections::HashSet::new();
             let mut docker_names: std::collections::HashSet<String> =
@@ -180,7 +183,7 @@ pub async fn list_installations(
             }
 
             for name in &custom_names {
-                let versions_opt = mgr.list_versions(name, None).unwrap_or(None);
+                let versions_opt = mgr.list_versions(name, None).await.unwrap_or(None);
 
                 if let Some(versions) = versions_opt {
                     let bt = versions
@@ -199,7 +202,7 @@ pub async fn list_installations(
                     }
 
                     for (variant, variant_versions) in variant_groups {
-                        let active_version = mgr.get_active(name, &variant).ok().flatten();
+                        let active_version = mgr.get_active(name, &variant).await.ok().flatten();
                         let (default_args, default_env) = backend_configs_map
                             .get(&(name.clone(), variant.clone()))
                             .cloned()
@@ -260,7 +263,7 @@ pub async fn list_installations(
             }
 
             for name in &docker_names {
-                let versions_opt = mgr.list_versions(name, None).unwrap_or(None);
+                let versions_opt = mgr.list_versions(name, None).await.unwrap_or(None);
 
                 if let Some(versions) = versions_opt {
                     let bt = versions
@@ -279,7 +282,7 @@ pub async fn list_installations(
                     }
 
                     for (variant, variant_versions) in variant_groups {
-                        let active_version = mgr.get_active(name, &variant).ok().flatten();
+                        let active_version = mgr.get_active(name, &variant).await.ok().flatten();
                         let (default_args, default_env) = backend_configs_map
                             .get(&(name.clone(), variant.clone()))
                             .cloned()
@@ -410,17 +413,20 @@ pub async fn check_installation_updates(
     let backend_configs_map: std::collections::HashMap<
         (String, String),
         (Vec<String>, Vec<String>),
-    > = mgr_result
-        .as_ref()
-        .ok()
-        .and_then(|mgr| mgr.list_configs().ok())
-        .map(|configs| {
-            configs
-                .into_iter()
-                .map(|c| ((c.name, c.gpu_variant), (c.default_args, c.default_env)))
-                .collect()
-        })
-        .unwrap_or_default();
+    > = match &mgr_result {
+        Ok(mgr) => mgr
+            .list_configs()
+            .await
+            .ok()
+            .map(|configs| {
+                configs
+                    .into_iter()
+                    .map(|c| ((c.name, c.gpu_variant), (c.default_args, c.default_env)))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        Err(_) => std::collections::HashMap::new(),
+    };
 
     let mut backends: Vec<InstallationCardDto> = Vec::new();
     let mut custom: Vec<InstallationCardDto> = Vec::new();
@@ -430,7 +436,7 @@ pub async fn check_installation_updates(
         Ok(mgr) => {
             // Emit one card per (backend_type, gpu_variant) pair
             for (type_, display_name, release_notes_url) in KNOWN_BACKENDS {
-                let versions_opt = mgr.list_versions(type_, None).unwrap_or(None);
+                let versions_opt = mgr.list_versions(type_, None).await.unwrap_or(None);
 
                 if let Some(versions) = versions_opt {
                     // Group versions by gpu_variant
@@ -450,7 +456,7 @@ pub async fn check_installation_updates(
                             .cloned()
                             .unwrap_or_default();
 
-                        let active_version = mgr.get_active(type_, &variant).ok().flatten();
+                        let active_version = mgr.get_active(type_, &variant).await.ok().flatten();
 
                         // Check for updates against the active version
                         let update_check = match active_version.as_ref() {
@@ -526,7 +532,7 @@ pub async fn check_installation_updates(
 
             // Custom backends — one card per (name, variant) pair
             // Collect unique custom backend names to avoid duplicate cards
-            let active_backends = mgr.list_active().unwrap_or_default();
+            let active_backends = mgr.list_active().await.unwrap_or_default();
             let mut custom_names: std::collections::HashSet<String> =
                 std::collections::HashSet::new();
             let mut docker_names: std::collections::HashSet<String> =
@@ -541,7 +547,7 @@ pub async fn check_installation_updates(
             }
 
             for name in &custom_names {
-                let versions_opt = mgr.list_versions(name, None).unwrap_or(None);
+                let versions_opt = mgr.list_versions(name, None).await.unwrap_or(None);
 
                 if let Some(versions) = versions_opt {
                     let bt = versions
@@ -560,7 +566,7 @@ pub async fn check_installation_updates(
                     }
 
                     for (variant, variant_versions) in variant_groups {
-                        let active_version = mgr.get_active(name, &variant).ok().flatten();
+                        let active_version = mgr.get_active(name, &variant).await.ok().flatten();
                         let (default_args, default_env) = backend_configs_map
                             .get(&(name.clone(), variant.clone()))
                             .cloned()
@@ -606,7 +612,7 @@ pub async fn check_installation_updates(
             }
 
             for name in &docker_names {
-                let versions_opt = mgr.list_versions(name, None).unwrap_or(None);
+                let versions_opt = mgr.list_versions(name, None).await.unwrap_or(None);
 
                 if let Some(versions) = versions_opt {
                     let bt = versions
@@ -625,7 +631,7 @@ pub async fn check_installation_updates(
                     }
 
                     for (variant, variant_versions) in variant_groups {
-                        let active_version = mgr.get_active(name, &variant).ok().flatten();
+                        let active_version = mgr.get_active(name, &variant).await.ok().flatten();
                         let (default_args, default_env) = backend_configs_map
                             .get(&(name.clone(), variant.clone()))
                             .cloned()
@@ -707,7 +713,7 @@ pub async fn list_installation_versions(
 
     match mgr_result {
         Ok(mgr) => {
-            let versions_opt = match mgr.list_versions(&name, None) {
+            let versions_opt = match mgr.list_versions(&name, None).await {
                 Ok(v) => v,
                 Err(e) => {
                     return error_response(
@@ -732,6 +738,7 @@ pub async fn list_installation_versions(
             // Get the active version for this backend, keyed by (name, gpu_variant)
             let active_backends: Vec<_> = mgr
                 .list_active()
+                .await
                 .ok()
                 .map(|backends| {
                     backends
@@ -834,10 +841,11 @@ mod tests {
     async fn test_list_installation_versions_unknown_404() {
         let config = Config::default();
         let db_dir = tempfile::tempdir().unwrap();
+        let guard = crate::testing::postgres::with_schema().await;
         let state = Arc::new(ProxyState::new(
             config,
             Some(db_dir.path().to_path_buf()),
-            None,
+            Some(Arc::new(guard.pool.clone())),
         ));
 
         let web_state = Arc::new(test_web_state());

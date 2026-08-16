@@ -114,6 +114,8 @@ async fn main() -> Result<()> {
     // Database setup and migrations
     let db_dir = Some(config_dir.clone());
     if let Some(ref dir) = db_dir {
+        // The needs_backfill flag is still derived from the transitional
+        // SQLite DB (deleted in plan-190 Task 9).
         match tama_core::db::open(dir) {
             Ok(db_result) => {
                 if db_result.needs_backfill {
@@ -126,15 +128,26 @@ async fn main() -> Result<()> {
                         }
                     }
                 }
-
-                // Always run the backend registry TOML migration (runs once, then renames the file)
-                if let Err(e) =
-                    tama_core::db::backfill::migrate_backend_registry_toml(&db_result.conn, dir)
-                {
-                    tracing::error!("Backend registry TOML migration failed: {}", e);
-                }
             }
             Err(e) => tracing::error!("Failed to open DB for backfill check: {}", e),
+        }
+
+        // One-shot migrations run from the Postgres pool (plan-190 Task 8):
+        // the backend registry TOML import and the legacy flat-layout backend
+        // file migration (idempotent; marker-file guarded).
+        if let Some(pool) = db_pool.as_ref() {
+            if let Err(e) = tama_core::db::backfill::migrate_backend_registry_toml(pool, dir).await
+            {
+                tracing::error!("Backend registry TOML migration failed: {}", e);
+            }
+            if let Err(e) = tama_core::installations::migration::migrate_legacy_backends(
+                pool,
+                &config_dir.join("backends"),
+            )
+            .await
+            {
+                tracing::error!("Legacy backend migration failed: {}", e);
+            }
         }
     }
 
