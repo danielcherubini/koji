@@ -23,92 +23,90 @@ impl ProxyServer {
     /// and unloads them.
     pub async fn new(state: Arc<ProxyState>) -> Self {
         // Populate in-memory model registry from Postgres (plan-190 Task 5)
-        if let Some(pool) = state.db_pool.as_deref() {
-            // Repair model_configs rows whose model_files were wiped by the
-            // v9 FK-cascade bug. No-op when rows are intact.
-            {
-                let config = state.config.read().await;
-                match config.models_dir() {
-                    Ok(models_dir) => {
-                        if let Err(e) =
-                            crate::db::backfill::repair_orphaned_model_files(pool, &models_dir)
-                                .await
-                        {
-                            tracing::warn!("repair_orphaned_model_files failed: {}", e);
-                        }
+        let pool = state.db_pool.as_ref();
+        // Repair model_configs rows whose model_files were wiped by the
+        // v9 FK-cascade bug. No-op when rows are intact.
+        {
+            let config = state.config.read().await;
+            match config.models_dir() {
+                Ok(models_dir) => {
+                    if let Err(e) =
+                        crate::db::backfill::repair_orphaned_model_files(pool, &models_dir).await
+                    {
+                        tracing::warn!("repair_orphaned_model_files failed: {}", e);
                     }
-                    Err(e) => tracing::debug!("models_dir unavailable for repair scan: {}", e),
                 }
+                Err(e) => tracing::debug!("models_dir unavailable for repair scan: {}", e),
             }
+        }
 
-            match crate::db::load_model_configs(pool).await {
-                Ok(db_models) if !db_models.is_empty() => {
-                    tracing::info!("Loaded {} models from database", db_models.len());
-                    *state.registry.model_configs.write().await = db_models;
+        match crate::db::load_model_configs(pool).await {
+            Ok(db_models) if !db_models.is_empty() => {
+                tracing::info!("Loaded {} models from database", db_models.len());
+                *state.registry.model_configs.write().await = db_models;
+            }
+            Ok(_) => {}
+            Err(e) => tracing::error!("Failed to load model configs from database: {}", e),
+        }
+
+        // Load aliases into the in-memory cache.
+        // Without this, /v1/models and /v1/opencode/models return zero aliases
+        // because the cache is never populated at startup.
+        match crate::db::queries::load_aliases_for_cache(pool).await {
+            Ok(pairs) => {
+                if !pairs.is_empty() {
+                    tracing::info!("Loaded {} aliases from database", pairs.len());
                 }
-                Ok(_) => {}
-                Err(e) => tracing::error!("Failed to load model configs from database: {}", e),
+                *state.registry.aliases.write().await = pairs.into_iter().collect();
             }
+            Err(e) => tracing::error!("Failed to load aliases from database: {}", e),
+        }
 
-            // Load aliases into the in-memory cache.
-            // Without this, /v1/models and /v1/opencode/models return zero aliases
-            // because the cache is never populated at startup.
-            match crate::db::queries::load_aliases_for_cache(pool).await {
-                Ok(pairs) => {
-                    if !pairs.is_empty() {
-                        tracing::info!("Loaded {} aliases from database", pairs.len());
-                    }
-                    *state.registry.aliases.write().await = pairs.into_iter().collect();
-                }
-                Err(e) => tracing::error!("Failed to load aliases from database: {}", e),
-            }
-
-            // Check if any models need HF metadata backfill (after migration v19).
-            // If so, spawn a background task to fetch and populate the columns.
-            let needs_backfill: i64 =
-                sqlx::query_scalar("SELECT COUNT(*) FROM model_configs WHERE hf_format IS NULL")
-                    .fetch_one(pool)
-                    .await
-                    .unwrap_or(0);
-            if needs_backfill > 0 {
-                let pool = state.db_pool.clone().unwrap();
-                // Fire-and-forget background task — doesn't block startup.
-                // JoinHandle is intentionally dropped; backfill errors are logged internally.
-                let _handle = tokio::spawn(async move {
-                    if let Err(e) = crate::db::backfill::backfill_hf_metadata(&pool).await {
-                        tracing::warn!("HF metadata backfill failed: {}", e);
-                    }
-                });
-            }
-
-            // Check if any models need vLLM config backfill (args → vllm_config migration).
-            // Intentionally NOT in run_initial_backfill because that is first-run-only
-            // and would never fire on existing databases.
-            // Gate: args contains at least one managed vLLM flag.
-            let needs_vllm_backfill: i64 =
-                sqlx::query_scalar(
-                    "SELECT COUNT(*) FROM model_configs WHERE hf_format = 'transformers' AND (\n                     args LIKE '%--quantization%' OR \
-                     args LIKE '%--kv-cache-dtype%' OR \
-                     args LIKE '%--tensor-parallel-size%' OR \
-                     args LIKE '%--gpu-memory-utilization%' OR \
-                     args LIKE '%--max-model-len%' OR \
-                     args LIKE '%--max-num-batched-tokens%' OR \
-                     args LIKE '%--enable-prefix-caching%' OR \
-                     args LIKE '%--trust-remote-code%')",
-                )
+        // Check if any models need HF metadata backfill (after migration v19).
+        // If so, spawn a background task to fetch and populate the columns.
+        let needs_backfill: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM model_configs WHERE hf_format IS NULL")
                 .fetch_one(pool)
                 .await
                 .unwrap_or(0);
-            if needs_vllm_backfill > 0 {
-                let pool = state.db_pool.clone().unwrap();
-                // Fire-and-forget background task — doesn't block startup.
-                // JoinHandle is intentionally dropped; backfill errors are logged internally.
-                let _handle = tokio::spawn(async move {
-                    if let Err(e) = crate::db::backfill::backfill_vllm_config(&pool).await {
-                        tracing::warn!("vLLM config backfill failed: {}", e);
-                    }
-                });
-            }
+        if needs_backfill > 0 {
+            let pool = state.db_pool.clone();
+            // Fire-and-forget background task — doesn't block startup.
+            // JoinHandle is intentionally dropped; backfill errors are logged internally.
+            let _handle = tokio::spawn(async move {
+                if let Err(e) = crate::db::backfill::backfill_hf_metadata(&pool).await {
+                    tracing::warn!("HF metadata backfill failed: {}", e);
+                }
+            });
+        }
+
+        // Check if any models need vLLM config backfill (args → vllm_config migration).
+        // Intentionally NOT in run_initial_backfill because that is first-run-only
+        // and would never fire on existing databases.
+        // Gate: args contains at least one managed vLLM flag.
+        let needs_vllm_backfill: i64 =
+            sqlx::query_scalar(
+                "SELECT COUNT(*) FROM model_configs WHERE hf_format = 'transformers' AND (\n                     args LIKE '%--quantization%' OR \
+                 args LIKE '%--kv-cache-dtype%' OR \
+                 args LIKE '%--tensor-parallel-size%' OR \
+                 args LIKE '%--gpu-memory-utilization%' OR \
+                 args LIKE '%--max-model-len%' OR \
+                 args LIKE '%--max-num-batched-tokens%' OR \
+                 args LIKE '%--enable-prefix-caching%' OR \
+                 args LIKE '%--trust-remote-code%')",
+            )
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0);
+        if needs_vllm_backfill > 0 {
+            let pool = state.db_pool.clone();
+            // Fire-and-forget background task — doesn't block startup.
+            // JoinHandle is intentionally dropped; backfill errors are logged internally.
+            let _handle = tokio::spawn(async move {
+                if let Err(e) = crate::db::backfill::backfill_vllm_config(&pool).await {
+                    tracing::warn!("vLLM config backfill failed: {}", e);
+                }
+            });
         }
 
         // Reap any managed Docker containers left behind from crashed Tama instances.
@@ -132,10 +130,7 @@ impl ProxyServer {
     }
 
     async fn cleanup_stale_processes(state: &ProxyState) {
-        let pool = match state.db_pool() {
-            Some(p) => p,
-            None => return,
-        };
+        let pool = state.db_pool();
         let active = match crate::db::queries::get_active_models(&pool).await {
             Ok(a) => a,
             Err(_) => return,

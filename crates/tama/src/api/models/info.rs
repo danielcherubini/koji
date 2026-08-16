@@ -17,10 +17,7 @@ use tama_core::db::queries::{ModelConfigRecord, ModelFileRecord};
 use tama_core::installations::InstallationOption;
 
 /// Build the list of available backend options by querying installed variants from the DB.
-async fn build_backend_options(pool: Option<&Arc<PgPool>>) -> Vec<InstallationOption> {
-    let Some(pool) = pool else {
-        return Vec::new();
-    };
+async fn build_backend_options(pool: &Arc<PgPool>) -> Vec<InstallationOption> {
     let mgr = tama_core::installations::InstallationManager::new(pool.clone());
     mgr.available_installations().await.unwrap_or_default()
 }
@@ -197,7 +194,7 @@ pub async fn list_models(
     match load_config_from_state(&state).await {
         Ok((cfg, config_dir)) => {
             let configs_dir = config_dir.join("configs");
-            let backend_options = build_backend_options(web_state.db_pool.as_ref()).await;
+            let backend_options = build_backend_options(&web_state.db_pool).await;
 
             // Collect current runtime state for each model (idle/ready/etc.)
             // Keyed by db_id so we can look up by the integer ID from the DB record.
@@ -209,13 +206,7 @@ pub async fn list_models(
                 .collect();
 
             // Load models from the Postgres pool.
-            let Some(pool) = web_state.db_pool.as_ref() else {
-                return error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Postgres pool not available",
-                    None,
-                );
-            };
+            let pool = web_state.db_pool.as_ref();
             let configs_dir_clone = configs_dir.clone();
             let records = match tama_core::db::queries::get_all_model_configs(pool).await {
                 Ok(r) => r,
@@ -298,7 +289,7 @@ pub async fn get_model(
     match load_config_from_state(&state).await {
         Ok((_cfg, config_dir)) => {
             let configs_dir = config_dir.join("configs");
-            let backend_options = build_backend_options(web_state.db_pool.as_ref()).await;
+            let backend_options = build_backend_options(&web_state.db_pool).await;
 
             // Collect current runtime state for model lookup
             // Keyed by db_id so we can look up by the integer ID from the DB record.
@@ -310,13 +301,7 @@ pub async fn get_model(
                 .collect();
 
             // Resolve + load the model from the Postgres pool.
-            let Some(pool) = web_state.db_pool.as_ref() else {
-                return error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Postgres pool not available",
-                    None,
-                );
-            };
+            let pool = web_state.db_pool.as_ref();
             let configs_dir_clone = configs_dir.clone();
             let backend_options_clone = backend_options.clone();
             let (model_id, record) = match resolve_model_record(pool, &id_str).await {

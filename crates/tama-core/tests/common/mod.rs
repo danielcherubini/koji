@@ -78,6 +78,17 @@ fn init_shared() -> SharedState {
                 .with_env_var("POSTGRES_USER", POSTGRES_USER)
                 .with_env_var("POSTGRES_PASSWORD", POSTGRES_PASSWORD)
                 .with_env_var("POSTGRES_DB", POSTGRES_DB)
+                // Keep per-container memory small — many test binaries run
+                // containers in parallel on a 32GB host.
+                .with_cmd([
+                    "postgres",
+                    "-c",
+                    "shared_buffers=64MB",
+                    "-c",
+                    "work_mem=4MB",
+                    "-c",
+                    "maintenance_work_mem=16MB",
+                ])
                 .start()
                 .map_err(|e| e.to_string())?;
             let port = container

@@ -66,16 +66,7 @@ pub async fn get_updates(
         Err(resp) => return resp,
     };
 
-    let pool = match state.db_pool() {
-        Some(p) => p,
-        None => {
-            return error_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Postgres pool not available",
-                Some("ServiceUnavailableError"),
-            )
-        }
-    };
+    let pool = state.db_pool();
 
     let checker = &web_state.update_checker;
     match checker.get_results(&pool).await {
@@ -178,16 +169,7 @@ pub async fn trigger_check(
     State(state): State<Arc<ProxyState>>,
     Extension(web_state): Extension<WebState>,
 ) -> impl axum::response::IntoResponse {
-    let pool = match state.db_pool() {
-        Some(p) => p,
-        None => {
-            return error_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Postgres pool not available",
-                Some("ServiceUnavailableError"),
-            )
-        }
-    };
+    let pool = state.db_pool();
 
     let checker = web_state.update_checker.clone();
     // Run in background, return immediately
@@ -233,16 +215,7 @@ pub async fn check_item_for_update(
         );
     }
 
-    let pool = match state.db_pool() {
-        Some(p) => p,
-        None => {
-            return error_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Postgres pool not available",
-                Some("ServiceUnavailableError"),
-            )
-        }
-    };
+    let pool = state.db_pool();
 
     let checker = &web_state.update_checker;
     let result = match item_type.as_str() {

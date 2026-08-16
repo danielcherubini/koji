@@ -29,13 +29,7 @@ pub async fn update_model(
         return error_response(StatusCode::UNPROCESSABLE_ENTITY, e, Some("ValidationError"));
     }
 
-    let Some(pool) = web_state.db_pool.as_ref() else {
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Postgres pool not available",
-            None,
-        );
-    };
+    let pool = web_state.db_pool.as_ref();
 
     let (_, existing_record) = match resolve_model_record(pool, &id_str).await {
         Ok(v) => v,
@@ -85,13 +79,7 @@ pub async fn patch_model(
         return error_response(StatusCode::UNPROCESSABLE_ENTITY, e, Some("ValidationError"));
     }
 
-    let Some(pool) = web_state.db_pool.as_ref() else {
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Postgres pool not available",
-            None,
-        );
-    };
+    let pool = web_state.db_pool.as_ref();
 
     let (_, existing_record) = match resolve_model_record(pool, &id_str).await {
         Ok(v) => v,

@@ -75,18 +75,32 @@ pub async fn create_backup(State(state): State<Arc<ProxyState>>) -> impl IntoRes
         Err(resp) => return resp,
     };
 
-    // Spawn blocking task for backup
-    let result = tokio::task::spawn_blocking(move || {
-        let temp_dir = tempfile::tempdir().map_err(|e| anyhow::anyhow!(e))?;
-        let output_path = temp_dir.path().join("backup.tar.gz");
+    // Build the archive (manifest from Postgres + config cards, plan-190
+    // Task 9), then read the bytes on the blocking pool to keep the async
+    // runtime free.
+    let pool = state.db_pool();
+    let temp_dir = match tempfile::tempdir() {
+        Ok(d) => d,
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to create temp dir: {}", e),
+                None,
+            )
+        }
+    };
+    let output_path = temp_dir.path().join("backup.tar.gz");
+    let manifest = match tama_core::backup::create_backup(pool.as_ref(), &config_dir, &output_path)
+        .await
+    {
+        Ok(m) => m,
+        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
+    };
 
-        let manifest = tama_core::backup::create_backup(&config_dir, &output_path)
-            .map_err(|e| anyhow::anyhow!(e))?;
-
+    let file_result = tokio::task::spawn_blocking(move || {
         let size = std::fs::metadata(&output_path)
             .map(|m| m.len())
             .unwrap_or(0);
-
         // Read file inside blocking task to avoid blocking async runtime
         let file_bytes = std::fs::read(&output_path).map_err(|e| anyhow::anyhow!(e))?;
 
@@ -100,6 +114,7 @@ pub async fn create_backup(State(state): State<Arc<ProxyState>>) -> impl IntoRes
     })
     .await;
 
+    let result = file_result;
     match result {
         Ok(Ok((file_bytes, filename, _manifest, _size))) => {
             let disposition = format!("attachment; filename=\"{}\"", filename);
@@ -227,20 +242,18 @@ pub async fn restore_preview(
     }
 }
 
-/// Perform a full additive restore of a backup archive into the config directory.
+/// Restore a v3 backup archive into the config directory (plan-190 Task 9).
 ///
-/// Extraction and validation are atomic (all-or-nothing in the temp dir); the merge
-/// phase is additive and best-effort — a failure mid-merge may leave partially-applied
-/// changes.
-///
-/// The global app config is NOT part of v3 restores (plan-190 Task 3): it lives in
-/// Postgres and is managed through the config API — `pg_dump` is the DB backup
-/// path. Only model cards and database rows are merged.
+/// Extraction and validation are atomic (all-or-nothing in the temp dir);
+/// the card merge is additive. v3 archives contain only `manifest.json` +
+/// config cards — the model/backend lists in the manifest come from the
+/// source's Postgres at backup time, and the local DB/global config are NOT
+/// touched (they live in Postgres; `pg_dump` is the DB backup path).
 ///
 /// `selected_models`, `skip_backends`, and `skip_models` from [`RestoreRequest`]
-/// are accepted at the API level but NOT applied here — restore v1 always
-/// performs the full additive merge.
-fn run_restore(
+/// are accepted at the API level but NOT applied here — restore v3 always
+/// merges every missing card.
+async fn run_restore(
     config_dir: &std::path::Path,
     archive_path: &std::path::Path,
 ) -> anyhow::Result<String> {
@@ -254,24 +267,16 @@ fn run_restore(
     )
     .context("Failed to merge model cards")?;
 
-    let open = tama_core::db::open(config_dir).context("Failed to open local database")?;
-    let db_stats = tama_core::backup::merge_database(&open.conn, &extracted.db_path)
-        .context("Failed to merge database")?;
-
     let summary = format!(
         concat!(
-            "Restored {} model card(s), {} new model pull(s), {} new model file(s), ",
-            "{} new backend installation(s), {} model(s) in manifest.\n",
-            "Full merge performed; selected_models/skip_backends/skip_models are ",
-            "accepted but not yet applied.\n",
-            "Note: the global app config is not restored from v3 backups — it ",
-            "stays in Postgres (pg_dump is the DB backup path).",
+            "Restored {} model card(s); {} model(s), {} backend(s) listed in ",
+            "manifest.\n",
+            "Note: v3 restores merge model cards only — the global app config ",
+            "and DB state stay in Postgres (pg_dump is the DB backup path).",
         ),
         copied_cards.len(),
-        db_stats.new_model_pulls,
-        db_stats.new_model_files,
-        db_stats.new_provider_installations,
         extracted.manifest.models.len(),
+        extracted.manifest.backends.len(),
     );
 
     Ok(summary)
@@ -359,36 +364,21 @@ pub async fn start_restore(
                 "Extracting and validating backup archive".to_string(),
             )
             .await;
-        let config_dir_for_blocking = config_dir.clone();
-        let archive_for_blocking = upload_path.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            run_restore(&config_dir_for_blocking, &archive_for_blocking)
-        })
-        .await;
+        let result = run_restore(&config_dir, &upload_path).await;
         match result {
-            Ok(Ok(summary)) => {
+            Ok(summary) => {
                 jobs_for_spawn.append_log(&job_for_spawn, summary).await;
                 jobs_for_spawn
                     .finish(&job_for_spawn, crate::web_types::JobStatus::Succeeded, None)
                     .await;
             }
-            Ok(Err(e)) => {
+            Err(e) => {
                 tracing::error!("Restore job {} failed: {:#}", job_for_spawn.id, e);
                 jobs_for_spawn
                     .finish(
                         &job_for_spawn,
                         crate::web_types::JobStatus::Failed,
                         Some(format!("{:#}", e)),
-                    )
-                    .await;
-            }
-            Err(join_err) => {
-                tracing::error!("Restore task panicked: {:?}", join_err);
-                jobs_for_spawn
-                    .finish(
-                        &job_for_spawn,
-                        crate::web_types::JobStatus::Failed,
-                        Some(format!("Restore task panicked: {}", join_err)),
                     )
                     .await;
             }
@@ -409,71 +399,49 @@ pub async fn start_restore(
 
 /// Re-export from local web_types for backward compatibility.
 pub use crate::web_types::UploadEntry;
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     // ── Shared test helpers ───────────────────────────────────────────────
 
-    /// Create a minimal WebState for route tests.
-    fn test_web_state() -> crate::web_types::WebState {
-        use std::collections::HashMap;
-        crate::web_types::WebState {
-            jobs: Some(Arc::new(crate::web_types::JobManager::new())),
-            capabilities: None,
-            update_checker: Arc::new(tama_core::updates::UpdateChecker::default()),
-            binary_version: "test".to_string(),
-            update_tx: Arc::new(tokio::sync::Mutex::new(None)),
-            upload_lock: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
-            repository: None,
-            db_pool: None,
-        }
-    }
-
-    /// Seed a config directory with a minimal `tama.db` for backup tests.
+    /// Build a valid v3 archive (manifest + config cards) without a DB.
     ///
-    /// Uses `tama_core::db::open` so migrations run and the schema is fully
-    /// compatible with the local DB (required for merge_database to work).
-    fn seed_config_dir(dir: &std::path::Path) {
-        use tama_core::db;
+    /// `cards` are (filename, content) pairs. The manifest lists one model
+    /// and one backend so restore summaries have data to report.
+    fn make_v3_archive(archive_path: &std::path::Path, cards: &[(&str, &str)]) {
+        use tama_core::backup::archive::StreamingHasher;
 
-        std::fs::create_dir_all(dir.join("configs")).expect("create configs dir");
+        let temp = tempfile::tempdir().unwrap();
+        let configs = temp.path().join("configs");
+        std::fs::create_dir_all(&configs).unwrap();
 
-        let open = db::open(dir).expect("open db");
+        let mut names: Vec<&str> = cards.iter().map(|(n, _)| *n).collect();
+        names.sort_unstable();
 
-        // Insert a model_config first (model_pulls has FK to model_configs).
-        open.conn
-            .execute(
-                "INSERT INTO model_configs (repo_id, backend) VALUES ('test/repo', 'llama_cpp')",
-                [],
-            )
-            .expect("insert model_config");
-        let model_id: i64 = open
-            .conn
-            .query_row(
-                "SELECT id FROM model_configs WHERE repo_id = 'test/repo'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("get model_id");
-        open.conn
-            .execute(
-                "INSERT INTO model_pulls (model_id, repo_id, commit_sha, pulled_at) \
-                 VALUES (?1, 'test/repo', 'abc123', '2024-01-01T00:00:00Z')",
-                [model_id],
-            )
-            .expect("insert model pull");
-    }
+        let mut hasher = StreamingHasher::new();
+        for name in &names {
+            let content = cards.iter().find(|(n, _)| n == name).unwrap().1;
+            std::fs::write(configs.join(name), content).unwrap();
+            hasher.update(content.as_bytes());
+        }
 
-    /// Build a test app router with the given ProxyState and WebState.
-    fn test_app(
-        state: Arc<ProxyState>,
-        web_state: &Arc<crate::web_types::WebState>,
-    ) -> axum::Router {
-        crate::router::build_web_routes(web_state.clone())
-            .with_state(state)
-            .layer(axum::extract::Extension(web_state.as_ref().clone()))
+        let mut manifest = tama_core::backup::manifest::BackupManifest::new("2.1.0");
+        manifest.sha256 = hasher.finalize_hex();
+        manifest.models = vec![tama_core::backup::manifest::BackupModelEntry {
+            repo_id: "source/repo".to_string(),
+            quants: vec!["Q4_K_M".to_string()],
+            total_size_bytes: 1000,
+        }];
+        manifest.backends = vec![tama_core::backup::manifest::BackendEntry {
+            name: "llama_cpp".to_string(),
+            version: "v1.0".to_string(),
+            backend_type: "llama_cpp".to_string(),
+            source: Some("prebuilt".to_string()),
+            docker_config: None,
+        }];
+
+        tama_core::backup::archive::write_archive(temp.path(), archive_path, &manifest).unwrap();
     }
 
     // ── RestorePreviewRequest tests ───────────────────────────────────────
@@ -662,57 +630,30 @@ mod tests {
         assert_eq!(entry.source, Some("build".to_string()));
     }
 
-    #[test]
-    fn test_run_restore_merges_backup() {
-        use tama_core::db;
+    // ── run_restore unit test (no DB involved in v3) ──────────────────────
 
-        // Source: create a properly-migrated config dir with test data.
-        let source_dir = tempfile::tempdir().unwrap();
-        {
-            let open = db::open(source_dir.path()).expect("open source db");
-            // Insert a model_config first (model_pulls has a FK to model_configs).
-            open.conn
-                .execute(
-                    "INSERT INTO model_configs (repo_id, backend) VALUES ('test/repo', 'llama_cpp')",
-                    [],
-                )
-                .expect("insert model_config");
-            let model_id: i64 = open
-                .conn
-                .query_row(
-                    "SELECT id FROM model_configs WHERE repo_id = 'test/repo'",
-                    [],
-                    |row| row.get(0),
-                )
-                .expect("get model_id");
-            open.conn
-                .execute(
-                    "INSERT INTO model_pulls (model_id, repo_id, commit_sha, pulled_at) \
-                     VALUES (?1, 'test/repo', 'abc123', '2024-01-01T00:00:00Z')",
-                    [model_id],
-                )
-                .expect("insert model pull");
-        } // connection dropped — close before create_backup
+    #[tokio::test]
+    async fn test_run_restore_copies_missing_cards_only() {
+        // Source archive with two cards; target already has one.
+        let archive_path = tempfile::tempdir().unwrap().path().join("backup.tar.gz");
+        make_v3_archive(
+            &archive_path,
+            &[
+                ("existing.toml", "[model]\nid = \"source/existing\"\n"),
+                ("new_card.toml", "[model]\nid = \"source/new\"\n"),
+            ],
+        );
 
-        // Add a model card so merge_model_cards has something to copy.
-        let configs_dir = source_dir.path().join("configs");
-        std::fs::create_dir_all(&configs_dir).unwrap();
+        let target_dir = tempfile::tempdir().unwrap();
+        let local_configs = target_dir.path().join("configs");
+        std::fs::create_dir_all(&local_configs).unwrap();
         std::fs::write(
-            configs_dir.join("source_card.toml"),
-            "[model]\nid = \"source/card\"\n",
+            local_configs.join("existing.toml"),
+            "[model]\nid = \"local/existing\"\n",
         )
         .unwrap();
 
-        // Create a backup archive from the source.
-        let archive_path = source_dir.path().join("backup.tar.gz");
-        tama_core::backup::create_backup(source_dir.path(), &archive_path)
-            .expect("create_backup should succeed");
-
-        // Target: a fresh, empty config dir.
-        let target_dir = tempfile::tempdir().unwrap();
-
-        // Run restore — should merge everything into the target.
-        let result = run_restore(target_dir.path(), &archive_path);
+        let result = run_restore(target_dir.path(), &archive_path).await;
         assert!(
             result.is_ok(),
             "run_restore should succeed: {:?}",
@@ -720,35 +661,22 @@ mod tests {
         );
 
         let summary = result.unwrap();
-
-        // Summary should mention the full-merge disclaimer and the disclaimer
-        // that selected_models/skip_backends/skip_models are not yet applied.
         assert!(
-            summary.contains("Full merge performed"),
-            "summary should mention full merge, got: {}",
+            summary.starts_with("Restored 1 model card(s)"),
+            "only the missing card should be copied, got: {}",
             summary
         );
-        assert!(
-            summary.contains("selected_models/skip_backends/skip_models"),
-            "summary should mention the accepted-but-not-applied disclaimer"
-        );
-        // The summary should report 1 model card copied from the backup.
-        assert!(
-            summary.starts_with("Restored 1 model card"),
-            "summary should report 1 copied model card, got: {}",
-            summary
-        );
-
-        // The model card should have been copied to the target configs dir.
-        assert!(
-            target_dir
-                .path()
-                .join("configs")
-                .join("source_card.toml")
-                .exists(),
-            "model card should be copied to target"
-        );
+        // Existing local card untouched.
+        assert!(std::fs::read_to_string(local_configs.join("existing.toml"))
+            .unwrap()
+            .contains("local/existing"));
+        // New card copied.
+        assert!(std::fs::read_to_string(local_configs.join("new_card.toml"))
+            .unwrap()
+            .contains("source/new"));
     }
+
+    // ── Route tests ───────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn test_start_restore_submits_job_and_returns_200() {
@@ -756,9 +684,8 @@ mod tests {
         use serde_json::json;
         use tower::ServiceExt;
 
-        // Config dir with a seeded DB so the restore task has a real DB to open.
         let config_temp = tempfile::tempdir().unwrap();
-        seed_config_dir(config_temp.path());
+        let _ = config_temp.path();
 
         // Upload dir with a fake archive.
         let upload_temp = tempfile::tempdir().unwrap();
@@ -769,7 +696,7 @@ mod tests {
         let proxy_state = Arc::new(tama_core::proxy::ProxyState::new(
             tama_core::config::Config::default(),
             Some(config_temp.path().to_path_buf()),
-            None,
+            tama_core::db::pool::test_dummy_pool(),
         ));
 
         let web_state = WebState {
@@ -787,8 +714,7 @@ mod tests {
                     },
                 ),
             ]))),
-            repository: None,
-            db_pool: None,
+            db_pool: tama_core::db::pool::test_dummy_pool(),
         };
 
         let app = Router::new()
@@ -847,7 +773,7 @@ mod tests {
         let proxy_state = Arc::new(tama_core::proxy::ProxyState::new(
             tama_core::config::Config::default(),
             None,
-            None,
+            tama_core::db::pool::test_dummy_pool(),
         ));
 
         let web_state = WebState {
@@ -865,8 +791,7 @@ mod tests {
                     },
                 ),
             ]))),
-            repository: None,
-            db_pool: None,
+            db_pool: tama_core::db::pool::test_dummy_pool(),
         };
 
         let app = Router::new()
@@ -887,152 +812,6 @@ mod tests {
             StatusCode::SERVICE_UNAVAILABLE,
             "should return 503 when job manager is not configured"
         );
-    }
-
-    #[tokio::test]
-    async fn test_create_backup_route_returns_gzip_download() {
-        use axum::body::Body;
-        use tower::ServiceExt;
-
-        let temp_dir = tempfile::tempdir().unwrap();
-        seed_config_dir(temp_dir.path());
-
-        let state = Arc::new(ProxyState::new(
-            tama_core::config::Config::default(),
-            Some(temp_dir.path().to_path_buf()),
-            None,
-        ));
-
-        let web_state = Arc::new(test_web_state());
-        let app = test_app(state, &web_state);
-
-        let request = axum::http::Request::builder()
-            .method("GET")
-            .uri("/tama/v1/backup")
-            .body(Body::empty())
-            .unwrap();
-
-        let response = app.oneshot(request).await.unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let content_type = response
-            .headers()
-            .get(axum::http::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        assert_eq!(content_type, "application/gzip");
-
-        let content_disposition = response
-            .headers()
-            .get(axum::http::header::CONTENT_DISPOSITION)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        assert!(
-            content_disposition.starts_with("attachment"),
-            "content-disposition should start with 'attachment', got: {}",
-            content_disposition
-        );
-
-        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-
-        // Gzip magic bytes: 0x1f 0x8b
-        assert!(
-            body_bytes.len() >= 2 && body_bytes[..2] == [0x1f, 0x8b],
-            "body should start with gzip magic bytes 0x1f 0x8b"
-        );
-
-        // Write body to temp file and verify manifest is parseable
-        let archive_path = temp_dir.path().join("test_backup_archive.tar.gz");
-        std::fs::write(&archive_path, &body_bytes).unwrap();
-
-        let manifest = tama_core::backup::extract_manifest(&archive_path).unwrap();
-        assert!(
-            manifest.models.iter().any(|m| m.repo_id == "test/repo"),
-            "manifest should contain test/repo model, got models: {:?}",
-            manifest.models
-        );
-    }
-
-    // ── Route-level restore tests (full router with CSRF middleware) ───────
-
-    /// Seed a source config dir with extra data and create a backup archive.
-    fn seed_source_and_make_archive(source_dir: &std::path::Path, archive_path: &std::path::Path) {
-        use tama_core::db;
-
-        std::fs::create_dir_all(source_dir.join("configs")).unwrap();
-
-        let open = db::open(source_dir).unwrap();
-
-        // Seed model_config + model_pulls for 'test/repo'.
-        open.conn
-            .execute(
-                "INSERT INTO model_configs (repo_id, backend) VALUES ('test/repo', 'llama_cpp')",
-                [],
-            )
-            .unwrap();
-        let mid: i64 = open
-            .conn
-            .query_row(
-                "SELECT id FROM model_configs WHERE repo_id='test/repo'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        open.conn
-            .execute(
-                "INSERT INTO model_pulls (model_id, repo_id, commit_sha, pulled_at) \
-                 VALUES (?1, 'test/repo', 'abc123', '2024-01-01T00:00:00Z')",
-                [mid],
-            )
-            .unwrap();
-
-        // Insert an EXTRA row that the local dir does NOT have (proves merge works).
-        open.conn
-            .execute(
-                "INSERT INTO model_configs (repo_id, backend) VALUES ('source/only', 'llama_cpp')",
-                [],
-            )
-            .unwrap();
-        let mid2: i64 = open
-            .conn
-            .query_row(
-                "SELECT id FROM model_configs WHERE repo_id='source/only'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        open.conn
-            .execute(
-                "INSERT INTO model_pulls (model_id, repo_id, commit_sha, pulled_at) \
-                 VALUES (?1, 'source/only', 'def456', '2024-01-01T00:00:00Z')",
-                [mid2],
-            )
-            .unwrap();
-
-        // Insert a backend_configs row for 'llama_cpp'/'cpu'.
-        open.conn
-            .execute(
-                "INSERT INTO provider_configs (name, gpu_variant, default_args, default_env, \
-                 health_check_url) VALUES ('llama_cpp', 'cpu', '[]', '[]', NULL)",
-                [],
-            )
-            .unwrap();
-
-        // Insert a backend_installations row.
-        open.conn
-            .execute(
-                "INSERT INTO provider_installations (name, backend_type, version, path, \
-                 installed_at, gpu_variant, source, is_active) VALUES ('llama_cpp', 'llama_cpp', \
-                 'v1.0', '/tmp/llama', 1234567890, 'cpu', 'prebuilt', 1)",
-                [],
-            )
-            .unwrap();
-
-        drop(open); // Close connection before create_backup.
-        tama_core::backup::create_backup(source_dir, archive_path).expect("create fixture archive");
     }
 
     /// Poll a job until it reaches a terminal state (Succeeded or Failed).
@@ -1062,12 +841,11 @@ mod tests {
         use tower::ServiceExt;
 
         let config_temp = tempfile::tempdir().unwrap();
-        seed_config_dir(config_temp.path());
 
         let proxy_state = Arc::new(ProxyState::new(
             tama_core::config::Config::default(),
             Some(config_temp.path().to_path_buf()),
-            None,
+            tama_core::db::pool::test_dummy_pool(),
         ));
 
         let web_state = WebState {
@@ -1077,8 +855,7 @@ mod tests {
             binary_version: "test".to_string(),
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-            repository: None,
-            db_pool: None,
+            db_pool: tama_core::db::pool::test_dummy_pool(),
         };
 
         let app = Router::new()
@@ -1116,17 +893,20 @@ mod tests {
     async fn test_start_restore_merges_archive_and_completes_job() {
         use axum::{body::Body, routing::post, Router};
         use serde_json::json;
-        use tama_core::db;
         use tower::ServiceExt;
 
-        // Local config dir (seeded with seed_config_dir).
+        // Local config dir (no DB in v3 — cards only).
         let local_temp = tempfile::tempdir().unwrap();
-        seed_config_dir(local_temp.path());
+        std::fs::create_dir_all(local_temp.path().join("configs")).unwrap();
 
-        // Source dir: seeded + archive created.
+        // Source archive built by make_v3_archive (manifest from "Postgres"
+        // at backup time; here hand-built to avoid a real DB).
         let source_temp = tempfile::tempdir().unwrap();
         let archive_path = source_temp.path().join("backup.tar.gz");
-        seed_source_and_make_archive(source_temp.path(), &archive_path);
+        make_v3_archive(
+            &archive_path,
+            &[("source_card.toml", "[model]\nid = \"source/card\"\n")],
+        );
 
         // Create the JobManager first so we can keep a reference for wait_for_job.
         let jobs = Arc::new(crate::web_types::JobManager::new());
@@ -1146,7 +926,7 @@ mod tests {
         let proxy_state = Arc::new(ProxyState::new(
             tama_core::config::Config::default(),
             Some(local_temp.path().to_path_buf()),
-            None,
+            tama_core::db::pool::test_dummy_pool(),
         ));
 
         let web_state = WebState {
@@ -1156,13 +936,12 @@ mod tests {
             binary_version: "test".to_string(),
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: upload_lock.clone(),
-            repository: None,
-            db_pool: None,
+            db_pool: tama_core::db::pool::test_dummy_pool(),
         };
 
         let app = Router::new()
             .route("/tama/v1/restore", post(start_restore))
-            .layer(Extension(web_state))
+            .layer(axum::extract::Extension(web_state))
             .with_state(proxy_state.clone());
 
         // POST → 200 with job_id.
@@ -1196,37 +975,15 @@ mod tests {
         assert_eq!(status, crate::web_types::JobStatus::Succeeded);
         assert!(error.is_none(), "job should not have error: {:?}", error);
 
-        // Verify: source/only model_pulls row was merged.
-        let open = db::open(local_temp.path()).unwrap();
-        let count: i64 = open
-            .conn
-            .query_row(
-                "SELECT COUNT(*) FROM model_pulls WHERE repo_id = 'source/only'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(count, 1, "source/only should have been merged");
-
-        // Verify: the llama_cpp backend installation was merged into the
-        // local DB. (v3: the global app config is not part of restores —
-        // it stays in Postgres and is managed through the config API;
-        // plan-190 Task 3. The v2 backends-map merge is re-specified in
-        // the SQLite-deletion task.)
-        {
-            let backend_count: i64 = open
-                .conn
-                .query_row(
-                    "SELECT COUNT(*) FROM provider_installations WHERE name = 'llama_cpp'",
-                    [],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            assert!(
-                backend_count >= 1,
-                "llama_cpp installation should have been merged"
-            );
-        }
+        // The model card was copied to the target configs dir.
+        let card = local_temp.path().join("configs").join("source_card.toml");
+        assert!(card.exists(), "model card should be copied to target");
+        assert!(
+            std::fs::read_to_string(&card)
+                .unwrap()
+                .contains("source/card"),
+            "model card content should round-trip"
+        );
 
         // Verify: uploaded archive file no longer exists (cleanup after restore).
         assert!(
@@ -1235,17 +992,16 @@ mod tests {
         );
     }
 
-    // ── Test 3: corrupt archive → job fails, local DB/configs untouched ──
+    // ── Test 3: corrupt archive → job fails, local configs untouched ──────
 
     #[tokio::test]
     async fn test_start_restore_corrupt_archive_fails_job_and_leaves_config_untouched() {
         use axum::{body::Body, routing::post, Router};
         use serde_json::json;
-        use tama_core::db;
         use tower::ServiceExt;
 
         let local_temp = tempfile::tempdir().unwrap();
-        seed_config_dir(local_temp.path());
+        std::fs::create_dir_all(local_temp.path().join("configs")).unwrap();
 
         // Write a non-gzip file as the "archive".
         let upload_id = "up-corrupt".to_string();
@@ -1258,7 +1014,7 @@ mod tests {
         let proxy_state = Arc::new(ProxyState::new(
             tama_core::config::Config::default(),
             Some(local_temp.path().to_path_buf()),
-            None,
+            tama_core::db::pool::test_dummy_pool(),
         ));
 
         let upload_lock = Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::from([
@@ -1278,13 +1034,12 @@ mod tests {
             binary_version: "test".to_string(),
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: upload_lock.clone(),
-            repository: None,
-            db_pool: None,
+            db_pool: tama_core::db::pool::test_dummy_pool(),
         };
 
         let app = Router::new()
             .route("/tama/v1/restore", post(start_restore))
-            .layer(Extension(web_state))
+            .layer(axum::extract::Extension(web_state))
             .with_state(proxy_state.clone());
 
         // POST → 200 (job accepted).
@@ -1323,17 +1078,6 @@ mod tests {
             err_msg
         );
 
-        // Verify: local DB still has exactly 1 model_pulls row (the seeded 'test/repo').
-        let open = db::open(local_temp.path()).unwrap();
-        let count: i64 = open
-            .conn
-            .query_row("SELECT COUNT(*) FROM model_pulls", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(
-            count, 1,
-            "local DB should still have exactly 1 model_pulls row"
-        );
-
         // Verify: local/configs/ has no new files.
         let configs_dir = local_temp.path().join("configs");
         let entries: Vec<_> = std::fs::read_dir(&configs_dir)
@@ -1353,16 +1097,18 @@ mod tests {
     async fn test_start_restore_tampered_sha_fails_job() {
         use axum::{body::Body, routing::post, Router};
         use serde_json::json;
-        use tama_core::db;
         use tower::ServiceExt;
 
         let local_temp = tempfile::tempdir().unwrap();
-        seed_config_dir(local_temp.path());
+        std::fs::create_dir_all(local_temp.path().join("configs")).unwrap();
 
         // Source dir: create a valid archive.
         let source_temp = tempfile::tempdir().unwrap();
         let archive_path = source_temp.path().join("backup.tar.gz");
-        seed_source_and_make_archive(source_temp.path(), &archive_path);
+        make_v3_archive(
+            &archive_path,
+            &[("source_card.toml", "[model]\nid = \"source/card\"\n")],
+        );
 
         // Read the file, tamper with it (XOR a byte in the middle of the
         // compressed data — avoids the gzip trailer where CRC32 checks may
@@ -1395,7 +1141,7 @@ mod tests {
         let proxy_state = Arc::new(ProxyState::new(
             tama_core::config::Config::default(),
             Some(local_temp.path().to_path_buf()),
-            None,
+            tama_core::db::pool::test_dummy_pool(),
         ));
 
         let web_state = WebState {
@@ -1405,13 +1151,12 @@ mod tests {
             binary_version: "test".to_string(),
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: upload_lock.clone(),
-            repository: None,
-            db_pool: None,
+            db_pool: tama_core::db::pool::test_dummy_pool(),
         };
 
         let app = Router::new()
             .route("/tama/v1/restore", post(start_restore))
-            .layer(Extension(web_state))
+            .layer(axum::extract::Extension(web_state))
             .with_state(proxy_state.clone());
 
         // POST → 200 (job accepted).
@@ -1443,16 +1188,5 @@ mod tests {
         // Wait for the background job to finish.
         let (status, _error) = wait_for_job(&jobs, &job_id).await;
         assert_eq!(status, crate::web_types::JobStatus::Failed);
-
-        // Verify: local DB unchanged (still 1 model_pulls row).
-        let open = db::open(local_temp.path()).unwrap();
-        let count: i64 = open
-            .conn
-            .query_row("SELECT COUNT(*) FROM model_pulls", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(
-            count, 1,
-            "local DB should still have exactly 1 model_pulls row"
-        );
     }
 }

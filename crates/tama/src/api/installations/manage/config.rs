@@ -33,16 +33,7 @@ pub async fn rename_installation(
         }
     };
 
-    let pool = match state.db_pool() {
-        Some(p) => p,
-        None => {
-            return error_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Database not configured",
-                None,
-            )
-        }
-    };
+    let pool = state.db_pool();
     let mgr = tama_core::installations::InstallationManager::new(pool);
 
     let rename_to = new_name.clone();
@@ -101,16 +92,7 @@ pub async fn update_installation_default_args(
         return resp;
     }
 
-    let pool = match state.db_pool() {
-        Some(p) => p,
-        None => {
-            return error_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Database not configured",
-                None,
-            )
-        }
-    };
+    let pool = state.db_pool();
     let mgr = tama_core::installations::InstallationManager::new(pool);
 
     let gpu_variant = query.gpu_variant.clone();
@@ -152,16 +134,7 @@ pub async fn update_installation_default_env(
         return resp;
     }
 
-    let pool = match state.db_pool() {
-        Some(p) => p,
-        None => {
-            return error_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Database not configured",
-                None,
-            )
-        }
-    };
+    let pool = state.db_pool();
     let mgr = tama_core::installations::InstallationManager::new(pool);
 
     let gpu_variant = query.gpu_variant.clone();
@@ -203,16 +176,7 @@ pub async fn patch_installation(
         return resp;
     }
 
-    let pool = match state.db_pool() {
-        Some(p) => p,
-        None => {
-            return error_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Database not configured",
-                None,
-            )
-        }
-    };
+    let pool = state.db_pool();
     let mgr = tama_core::installations::InstallationManager::new(pool);
 
     let gpu_variant = query.gpu_variant.clone();

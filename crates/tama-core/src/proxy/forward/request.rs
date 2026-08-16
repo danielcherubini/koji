@@ -48,9 +48,8 @@ pub async fn forward_request(
             state.metrics.modify_inference_stats(|map| {
                 map.remove(backend_name);
             });
-            if let Some(pool) = state.db_pool() {
-                let _ = crate::db::queries::remove_active_model(&pool, backend_name).await;
-            }
+            let pool = state.db_pool();
+            let _ = crate::db::queries::remove_active_model(&pool, backend_name).await;
             return (
                 axum::http::StatusCode::BAD_GATEWAY,
                 axum::response::Json(serde_json::json!({
@@ -183,14 +182,11 @@ pub async fn forward_request(
             // DB lookup for key name (async Postgres pool).
             // Only done when langfuse is enabled (checked via langfuse_cfg below,
             // but we always resolve here to keep the logic simple).
-            match state.db_pool() {
-                Some(pool) => crate::proxy::api_keys::ApiKeyStore::new(pool)
-                    .get_key_name(key_id)
-                    .await
-                    .ok()
-                    .flatten(),
-                None => None,
-            }
+            crate::proxy::api_keys::ApiKeyStore::new(state.db_pool())
+                .get_key_name(key_id)
+                .await
+                .ok()
+                .flatten()
         }
         None => None,
     };
@@ -605,9 +601,8 @@ pub async fn forward_request(
                     map.remove(backend_name);
                 });
                 // Best-effort DB cleanup
-                if let Some(pool) = state.db_pool() {
-                    let _ = crate::db::queries::remove_active_model(&pool, backend_name).await;
-                }
+                let pool = state.db_pool();
+                let _ = crate::db::queries::remove_active_model(&pool, backend_name).await;
             } else {
                 // Process is alive — this is a transient error (timeout, busy, etc.)
                 // Increment the circuit breaker counter.

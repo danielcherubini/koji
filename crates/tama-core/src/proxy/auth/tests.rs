@@ -32,7 +32,11 @@ fn make_app(auth_url: Option<String>, skip_paths: Vec<String>) -> Router {
         },
         ..Default::default()
     };
-    let proxy_state = Arc::new(crate::proxy::ProxyState::new(config, None, None));
+    let proxy_state = Arc::new(crate::proxy::ProxyState::new(
+        config,
+        None,
+        crate::db::pool::test_dummy_pool(),
+    ));
 
     Router::new()
         .route("/", get(test_handler))
@@ -435,7 +439,11 @@ fn make_app_oauth2(auth_url: Option<String>) -> (Router, Arc<crate::proxy::Proxy
         },
         ..Default::default()
     };
-    let proxy_state = Arc::new(crate::proxy::ProxyState::new(config, None, None));
+    let proxy_state = Arc::new(crate::proxy::ProxyState::new(
+        config,
+        None,
+        crate::db::pool::test_dummy_pool(),
+    ));
 
     let app = Router::new()
         .route("/", get(test_handler))
@@ -474,7 +482,11 @@ fn make_login_flow_state(
         },
         ..Default::default()
     };
-    Arc::new(crate::proxy::ProxyState::new(config, None, None))
+    Arc::new(crate::proxy::ProxyState::new(
+        config,
+        None,
+        crate::db::pool::test_dummy_pool(),
+    ))
 }
 
 /// Helper: minimal router mounting the login-flow handlers directly
@@ -633,7 +645,11 @@ async fn test_handle_login_disabled_returns_503() {
         },
         ..Default::default()
     };
-    let state = Arc::new(crate::proxy::ProxyState::new(config, None, None));
+    let state = Arc::new(crate::proxy::ProxyState::new(
+        config,
+        None,
+        crate::db::pool::test_dummy_pool(),
+    ));
     let app = login_flow_app(state);
 
     let resp = app
@@ -691,7 +707,7 @@ async fn make_app_with_api_key(
     let proxy_state = Arc::new(crate::proxy::ProxyState::new(
         config,
         None,
-        Some(Arc::new(guard.pool.clone())),
+        Arc::new(guard.pool.clone()),
     ));
 
     let app = Router::new()
@@ -794,7 +810,7 @@ async fn test_tama_key_disabled_returns_401() {
     let proxy_state = Arc::new(crate::proxy::ProxyState::new(
         config,
         None,
-        Some(Arc::new(guard.pool.clone())),
+        Arc::new(guard.pool.clone()),
     ));
 
     let app = Router::new()
@@ -843,7 +859,11 @@ async fn test_non_tama_bearer_still_validates_authentik() {
         },
         ..Default::default()
     };
-    let proxy_state = Arc::new(crate::proxy::ProxyState::new(config, None, None));
+    let proxy_state = Arc::new(crate::proxy::ProxyState::new(
+        config,
+        None,
+        crate::db::pool::test_dummy_pool(),
+    ));
 
     let app = Router::new()
         .route("/", get(test_handler))
@@ -877,7 +897,11 @@ async fn test_auth_not_configured_open_mode() {
         },
         ..Default::default()
     };
-    let proxy_state = Arc::new(crate::proxy::ProxyState::new(config, None, None));
+    let proxy_state = Arc::new(crate::proxy::ProxyState::new(
+        config,
+        None,
+        crate::db::pool::test_dummy_pool(),
+    ));
 
     let app = Router::new()
         .route("/", get(test_handler))
@@ -998,7 +1022,7 @@ async fn test_tama_prefix_case_sensitive() {
     let proxy_state = Arc::new(crate::proxy::ProxyState::new(
         config,
         None,
-        Some(Arc::new(guard.pool.clone())),
+        Arc::new(guard.pool.clone()),
     ));
 
     let app = Router::new()
@@ -1498,7 +1522,11 @@ async fn test_logout_redirects_to_configured_logout_url() {
         },
         ..Default::default()
     };
-    let state = Arc::new(crate::proxy::ProxyState::new(config, None, None));
+    let state = Arc::new(crate::proxy::ProxyState::new(
+        config,
+        None,
+        crate::db::pool::test_dummy_pool(),
+    ));
     let app = login_flow_app(state);
 
     let resp = app

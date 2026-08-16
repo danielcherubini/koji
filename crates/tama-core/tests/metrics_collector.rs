@@ -20,7 +20,7 @@ async fn test_metrics_task_persists_to_db() {
     let state = Arc::new(ProxyState::new(
         config,
         Some(tmp.path().to_path_buf()),
-        Some(pool),
+        pool,
     ));
 
     let _server = ProxyServer::new(state.clone()).await;
@@ -30,7 +30,7 @@ async fn test_metrics_task_persists_to_db() {
     tokio::time::sleep(Duration::from_secs(3)).await;
 
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM system_metrics_history")
-        .fetch_one(&*state.db_pool().unwrap())
+        .fetch_one(&*state.db_pool())
         .await
         .unwrap();
     assert!(

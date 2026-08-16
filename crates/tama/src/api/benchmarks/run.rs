@@ -25,7 +25,7 @@ pub async fn run_benchmark_inner(
     _db_path: std::path::PathBuf,
     proxy_base_url: String,
     client: reqwest::Client,
-    db_pool: Option<std::sync::Arc<sqlx::PgPool>>,
+    db_pool: std::sync::Arc<sqlx::PgPool>,
 ) -> Result<()> {
     use tama_core::bench::llama_bench::{self, LlamaBenchConfig};
 
@@ -55,9 +55,7 @@ pub async fn run_benchmark_inner(
     let threads_for_trace = req.threads.clone();
 
     // Load the global config from Postgres (plan-190 Task 3).
-    let pool = db_pool
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("Postgres pool not available; cannot load config"))?;
+    let pool = db_pool.as_ref();
     let config = tama_core::config::Config::load_from_pool(pool).await?;
 
     // Create progress sink

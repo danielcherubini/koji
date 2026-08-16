@@ -111,8 +111,7 @@ mod tests {
             binary_version: "test".to_string(),
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-            repository: None,
-            db_pool: None,
+            db_pool: tama_core::db::pool::test_dummy_pool(),
         }
     }
 
@@ -120,7 +119,11 @@ mod tests {
     #[tokio::test]
     async fn test_get_job_unknown_returns_404() {
         let config = Config::default();
-        let state = Arc::new(ProxyState::new(config, None, None));
+        let state = Arc::new(ProxyState::new(
+            config,
+            None,
+            tama_core::db::pool::test_dummy_pool(),
+        ));
         let web_state = Arc::new(test_web_state());
         let router = crate::router::build_web_routes(web_state.clone())
             .with_state(state)
@@ -152,7 +155,11 @@ mod tests {
     #[tokio::test]
     async fn test_get_job_returns_snapshot() {
         let config = Config::default();
-        let state = Arc::new(ProxyState::new(config, None, None));
+        let state = Arc::new(ProxyState::new(
+            config,
+            None,
+            tama_core::db::pool::test_dummy_pool(),
+        ));
         let web_state = Arc::new(test_web_state());
         let router = crate::router::build_web_routes(web_state.clone())
             .with_state(state)
@@ -194,7 +201,11 @@ mod tests {
     #[tokio::test]
     async fn test_job_events_sse_unknown_job() {
         let config = Config::default();
-        let state = Arc::new(ProxyState::new(config, None, None));
+        let state = Arc::new(ProxyState::new(
+            config,
+            None,
+            tama_core::db::pool::test_dummy_pool(),
+        ));
         let web_state = Arc::new(test_web_state());
         let router = crate::router::build_web_routes(web_state.clone())
             .with_state(state)

@@ -14,8 +14,7 @@ fn test_web_state() -> crate::web_types::WebState {
         binary_version: "test".to_string(),
         update_tx: Arc::new(tokio::sync::Mutex::new(None)),
         upload_lock: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
-        repository: None,
-        db_pool: None,
+        db_pool: tama_core::db::pool::test_dummy_pool(),
     }
 }
 
@@ -23,7 +22,11 @@ fn test_web_state() -> crate::web_types::WebState {
 #[tokio::test]
 async fn test_update_installation_path_traversal_rejected() {
     let config = tama_core::config::Config::default();
-    let state = Arc::new(tama_core::proxy::ProxyState::new(config, None, None));
+    let state = Arc::new(tama_core::proxy::ProxyState::new(
+        config,
+        None,
+        tama_core::db::pool::test_dummy_pool(),
+    ));
 
     let web_state_for_test = Arc::new(test_web_state());
     let router = crate::router::build_web_routes(web_state_for_test.clone())
@@ -84,7 +87,11 @@ async fn test_update_installation_path_traversal_rejected() {
 #[tokio::test]
 async fn test_update_installation_source_path_traversal_rejected() {
     let config = tama_core::config::Config::default();
-    let state = Arc::new(tama_core::proxy::ProxyState::new(config, None, None));
+    let state = Arc::new(tama_core::proxy::ProxyState::new(
+        config,
+        None,
+        tama_core::db::pool::test_dummy_pool(),
+    ));
 
     let web_state_for_test = Arc::new(test_web_state());
     let router = crate::router::build_web_routes(web_state_for_test.clone())
@@ -153,7 +160,7 @@ async fn test_update_installation_source_missing_backend() {
     let state = Arc::new(tama_core::proxy::ProxyState::new(
         config,
         Some(db_dir.path().to_path_buf()),
-        Some(Arc::new(guard.pool.clone())),
+        Arc::new(guard.pool.clone()),
     ));
 
     let web_state_for_test = Arc::new(test_web_state());
@@ -197,7 +204,11 @@ async fn test_update_installation_source_missing_backend() {
 #[tokio::test]
 async fn test_patch_installation_path_traversal_rejected() {
     let config = tama_core::config::Config::default();
-    let state = Arc::new(tama_core::proxy::ProxyState::new(config, None, None));
+    let state = Arc::new(tama_core::proxy::ProxyState::new(
+        config,
+        None,
+        tama_core::db::pool::test_dummy_pool(),
+    ));
 
     let web_state_for_test = Arc::new(test_web_state());
     let router = crate::router::build_web_routes(web_state_for_test.clone())
@@ -265,7 +276,7 @@ async fn test_patch_installation_all_none_preserves() {
     let state = Arc::new(tama_core::proxy::ProxyState::new(
         config,
         Some(tmp_dir.path().to_path_buf()),
-        Some(Arc::new(guard.pool.clone())),
+        Arc::new(guard.pool.clone()),
     ));
 
     // Seed backend config via InstallationManager
@@ -343,7 +354,7 @@ async fn test_patch_installation_default_args_only() {
     let state = Arc::new(tama_core::proxy::ProxyState::new(
         config,
         Some(tmp_dir.path().to_path_buf()),
-        Some(Arc::new(guard.pool.clone())),
+        Arc::new(guard.pool.clone()),
     ));
 
     // Seed backend config
@@ -422,7 +433,11 @@ async fn test_patch_installation_default_args_only() {
 #[tokio::test]
 async fn test_remove_installation_error_shape() {
     let config = tama_core::config::Config::default();
-    let state = Arc::new(tama_core::proxy::ProxyState::new(config, None, None));
+    let state = Arc::new(tama_core::proxy::ProxyState::new(
+        config,
+        None,
+        tama_core::db::pool::test_dummy_pool(),
+    ));
 
     let web_state_for_test = Arc::new(test_web_state());
     let router = crate::router::build_web_routes(web_state_for_test.clone())
@@ -459,7 +474,11 @@ async fn test_remove_installation_error_shape() {
 #[tokio::test]
 async fn test_activate_backend_error_shape() {
     let config = tama_core::config::Config::default();
-    let state = Arc::new(tama_core::proxy::ProxyState::new(config, None, None));
+    let state = Arc::new(tama_core::proxy::ProxyState::new(
+        config,
+        None,
+        tama_core::db::pool::test_dummy_pool(),
+    ));
 
     let web_state_for_test = Arc::new(test_web_state());
     let router = crate::router::build_web_routes(web_state_for_test.clone())

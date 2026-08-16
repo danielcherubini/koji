@@ -435,7 +435,7 @@ mod tests {
     #[tokio::test]
     async fn test_collect_model_state_snapshots_reports_idle_when_no_runtime_entry() {
         let config = Config::default();
-        let state = ProxyState::new(config, None, None);
+        let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
         // Populate model_configs
         {
@@ -502,7 +502,7 @@ mod tests {
                 gpu_variant: None,
             },
         );
-        let state = ProxyState::new(config, None, None);
+        let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
         // Populate model_configs
         {
@@ -584,7 +584,7 @@ mod tests {
         use std::time::Instant;
 
         let config = Config::default();
-        let state = ProxyState::new(config, None, None);
+        let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
         // Populate model_configs
         {
@@ -687,7 +687,7 @@ mod tests {
                 gpu_variant: None,
             },
         );
-        let state = ProxyState::new(config, None, None);
+        let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
         {
             let mut mc = state.registry.model_configs.write().await;
@@ -763,7 +763,7 @@ mod tests {
     #[tokio::test]
     async fn test_vllm_quant_fallback_gguf_wins() {
         let config = Config::default();
-        let state = ProxyState::new(config, None, None);
+        let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
         {
             let mut mc = state.registry.model_configs.write().await;
@@ -798,7 +798,7 @@ mod tests {
     #[tokio::test]
     async fn test_vllm_quant_fallback_uses_vllm() {
         let config = Config::default();
-        let state = ProxyState::new(config, None, None);
+        let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
         {
             let mut mc = state.registry.model_configs.write().await;
@@ -833,7 +833,7 @@ mod tests {
     #[tokio::test]
     async fn test_vllm_quant_fallback_both_none() {
         let config = Config::default();
-        let state = ProxyState::new(config, None, None);
+        let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
         {
             let mut mc = state.registry.model_configs.write().await;
@@ -862,7 +862,7 @@ mod tests {
     #[tokio::test]
     async fn test_vllm_context_length_fallback_gguf_wins() {
         let config = Config::default();
-        let state = ProxyState::new(config, None, None);
+        let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
         {
             let mut mc = state.registry.model_configs.write().await;
@@ -897,7 +897,7 @@ mod tests {
     #[tokio::test]
     async fn test_vllm_context_length_fallback_uses_vllm() {
         let config = Config::default();
-        let state = ProxyState::new(config, None, None);
+        let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
         {
             let mut mc = state.registry.model_configs.write().await;
@@ -932,7 +932,7 @@ mod tests {
     #[tokio::test]
     async fn test_vllm_context_length_fallback_both_none() {
         let config = Config::default();
-        let state = ProxyState::new(config, None, None);
+        let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
         {
             let mut mc = state.registry.model_configs.write().await;
@@ -961,7 +961,7 @@ mod tests {
     #[tokio::test]
     async fn test_vllm_cache_type_k_fallback_gguf_wins() {
         let config = Config::default();
-        let state = ProxyState::new(config, None, None);
+        let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
         {
             let mut mc = state.registry.model_configs.write().await;
@@ -996,7 +996,7 @@ mod tests {
     #[tokio::test]
     async fn test_vllm_cache_type_k_fallback_uses_vllm() {
         let config = Config::default();
-        let state = ProxyState::new(config, None, None);
+        let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
         {
             let mut mc = state.registry.model_configs.write().await;
@@ -1031,7 +1031,7 @@ mod tests {
     #[tokio::test]
     async fn test_vllm_cache_type_v_fallback_gguf_wins() {
         let config = Config::default();
-        let state = ProxyState::new(config, None, None);
+        let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
         {
             let mut mc = state.registry.model_configs.write().await;
@@ -1066,7 +1066,7 @@ mod tests {
     #[tokio::test]
     async fn test_vllm_cache_type_v_fallback_uses_vllm() {
         let config = Config::default();
-        let state = ProxyState::new(config, None, None);
+        let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
         {
             let mut mc = state.registry.model_configs.write().await;
@@ -1102,7 +1102,7 @@ mod tests {
     #[tokio::test]
     async fn test_vllm_cache_types_resolve_independently() {
         let config = Config::default();
-        let state = ProxyState::new(config, None, None);
+        let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
         // cache_type_k is Some, cache_type_v is None — only V should fall back
         {

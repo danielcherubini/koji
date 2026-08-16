@@ -1,14 +1,14 @@
 //! Record types for database query results.
 //!
 //! These types are the canonical row representations; the API layer uses
-//! them directly via `db::repository::Repository`.
+//! them directly via the async `db::queries` functions.
 
 use serde::{Deserialize, Serialize};
 
 /// Per-repo user configuration for a model.
 ///
 /// This type is part of `ModelManager`'s public API and is also returned
-/// directly by `Repository` methods.
+/// directly by the `db::queries` functions.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModelConfigRecord {
     pub id: i64,         // auto-increment primary key

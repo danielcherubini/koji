@@ -11,7 +11,7 @@ use tower::ServiceExt;
 /// Helper: create a ProxyState with a single model config.
 pub async fn create_state_with_model(model_cfg: ModelConfig) -> Arc<ProxyState> {
     let config = Config::default();
-    let state = ProxyState::new(config, None, None);
+    let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
     let mut mc = state.registry.model_configs.write().await;
     mc.insert("test-model".to_string(), model_cfg);
     drop(mc);

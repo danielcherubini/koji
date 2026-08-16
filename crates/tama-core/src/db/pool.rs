@@ -35,8 +35,8 @@ pub async fn create_pool(cfg: &DatabaseConfig) -> anyhow::Result<PgPool> {
 }
 
 /// Wait until the pool can acquire a connection, retrying with exponential
-/// backoff (capped at 30s) forever. Intended for daemon startup: the
-/// process stays alive while Postgres comes up, logging each attempt.
+/// backoff (capped at 30s) forever. Intended for daemon startup:
+/// the process stays alive while Postgres comes up, logging each attempt.
 pub async fn connect_with_retry(pool: &PgPool, initial_backoff: Duration) -> anyhow::Result<()> {
     connect_with_retry_capped(pool, initial_backoff, None).await
 }
@@ -72,6 +72,20 @@ pub async fn connect_with_retry_capped(
             }
         }
     }
+}
+
+/// A lazily-created pool for tests that must hold a pool but never touch
+/// the database. `connect_lazy` does not dial, so construction is safe
+/// without a running server (port 1 is virtually guaranteed closed).
+#[allow(dead_code)]
+pub fn test_dummy_pool() -> std::sync::Arc<PgPool> {
+    std::sync::Arc::new(
+        PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(Duration::from_secs(1))
+            .connect_lazy("postgres://tama:tama@127.0.0.1:1/tama")
+            .expect("valid dummy pool config"),
+    )
 }
 
 #[cfg(test)]

@@ -124,10 +124,10 @@ impl ProxyState {
         model_config.gpu_device = effective_gpu_device;
 
         // Open InstallationManager for path resolution and default args.
-        // Postgres-pool based (plan-190 Task 8); None when no pool is configured.
-        let manager = self
-            .db_pool()
-            .map(crate::installations::InstallationManager::new);
+        // Postgres-pool based (plan-190 Task 8).
+        let manager = Some(crate::installations::InstallationManager::new(
+            self.db_pool(),
+        ));
 
         // Resolve the backend binary path: DB takes priority, config.path is fallback.
         let backend_path = config
@@ -456,18 +456,17 @@ impl ProxyState {
         }
 
         // Write to DB after model is ready (best-effort)
-        if let Some(pool) = self.db_pool() {
-            let _ = crate::db::queries::insert_active_model(
-                &pool,
-                backend_name,
-                model_name,
-                &model_config.backend,
-                container.pid as i64,
-                host_port as i64,
-                &backend_url,
-            )
-            .await;
-        }
+        let pool = self.db_pool();
+        let _ = crate::db::queries::insert_active_model(
+            &pool,
+            backend_name,
+            model_name,
+            &model_config.backend,
+            container.pid as i64,
+            host_port as i64,
+            &backend_url,
+        )
+        .await;
 
         info!("Docker backend '{}' loaded successfully", backend_name);
         self.metrics
@@ -559,9 +558,9 @@ impl ProxyState {
         _health_checker: &H,
     ) -> Result<String> {
         // Create InstallationManager internally (doesn't borrow across await points)
-        let manager = self
-            .db_pool()
-            .map(crate::installations::InstallationManager::new);
+        let manager = Some(crate::installations::InstallationManager::new(
+            self.db_pool(),
+        ));
 
         // Find a free port for this backend.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -837,18 +836,17 @@ impl ProxyState {
         }
 
         // Write to DB after model is ready (best-effort)
-        if let Some(pool) = self.db_pool() {
-            let _ = crate::db::queries::insert_active_model(
-                &pool,
-                backend_name,
-                model_name,
-                &model_config.backend,
-                pid as i64,
-                port as i64,
-                &backend_url,
-            )
-            .await;
-        }
+        let pool = self.db_pool();
+        let _ = crate::db::queries::insert_active_model(
+            &pool,
+            backend_name,
+            model_name,
+            &model_config.backend,
+            pid as i64,
+            port as i64,
+            &backend_url,
+        )
+        .await;
 
         info!("Backend '{}' loaded successfully", backend_name);
         self.metrics
@@ -1093,9 +1091,8 @@ impl ProxyState {
         });
 
         // Write to DB after model is unloaded (best-effort)
-        if let Some(pool) = self.db_pool() {
-            let _ = crate::db::queries::remove_active_model(&pool, backend_name).await;
-        }
+        let pool = self.db_pool();
+        let _ = crate::db::queries::remove_active_model(&pool, backend_name).await;
 
         info!(gpu = %gpu_info, "Backend '{}' unloaded", backend_name);
         self.metrics

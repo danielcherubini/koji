@@ -544,7 +544,7 @@ mod tests {
         let proxy_state = Arc::new(crate::proxy::ProxyState::new(
             config,
             None,
-            Some(Arc::new(guard.pool.clone())),
+            Arc::new(guard.pool.clone()),
         ));
 
         (proxy_state, guard, key)

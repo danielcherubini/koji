@@ -26,9 +26,7 @@ impl ProxyState {
         debug!("Loading TTS backend: {}", backend_name);
 
         // Postgres-pool based manager (plan-190 Task 8)
-        let pool = self
-            .db_pool()
-            .with_context(|| "Postgres pool not configured")?;
+        let pool = self.db_pool();
         let mgr = InstallationManager::new(pool);
 
         // Discover variant dynamically - TTS backends typically only have one variant

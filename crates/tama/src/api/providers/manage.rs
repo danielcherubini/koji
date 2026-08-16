@@ -29,13 +29,7 @@ pub async fn update_provider(
     Path(name): Path<String>,
     Json(req): Json<UpdateProviderRequest>,
 ) -> impl IntoResponse {
-    let Some(pool) = web_state.db_pool.as_ref() else {
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Postgres pool not available",
-            None,
-        );
-    };
+    let pool = web_state.db_pool.as_ref();
 
     // Check provider exists first
     match tama_core::db::queries::get_provider(pool, &name).await {
@@ -79,13 +73,7 @@ pub async fn delete_provider(
     Extension(web_state): Extension<WebState>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    let Some(pool) = web_state.db_pool.as_ref() else {
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Postgres pool not available",
-            None,
-        );
-    };
+    let pool = web_state.db_pool.as_ref();
 
     match tama_core::db::queries::delete_provider(pool, &name).await {
         Ok(true) => Json(serde_json::json!({"deleted": true})).into_response(),
@@ -114,7 +102,7 @@ mod tests {
         let state = Arc::new(ProxyState::new(
             config,
             Some(tmp_dir.to_path_buf()),
-            Some(pool.clone()),
+            pool.clone(),
         ));
 
         let web_state = Arc::new(crate::web_types::WebState {
@@ -124,8 +112,7 @@ mod tests {
             binary_version: "test".to_string(),
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-            repository: None,
-            db_pool: Some(pool),
+            db_pool: pool,
         });
 
         (state, web_state)

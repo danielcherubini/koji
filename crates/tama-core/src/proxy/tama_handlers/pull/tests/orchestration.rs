@@ -42,7 +42,7 @@ async fn create_pull_state(
     let pool = Arc::new(guard.pool.clone());
     let svc = PullQueueService::new(pool.clone(), 2);
 
-    let mut state = ProxyState::new(config, None, Some(pool));
+    let mut state = ProxyState::new(config, None, pool);
     assert!(state.pull_queue().is_some());
     state.pull.pull_queue = Some(Arc::new(svc));
 
@@ -331,7 +331,7 @@ async fn test_pull_success_completes_and_records_model_files() {
     );
 
     // 3. DB should have exactly 1 model_files row with filename == FILE
-    let mgr = state.model_mgr().expect("model_mgr should be available");
+    let mgr = state.model_mgr();
     let files = mgr.get_all_files().await.unwrap();
     assert_eq!(
         files.len(),

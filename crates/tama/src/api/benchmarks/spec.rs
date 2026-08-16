@@ -70,7 +70,7 @@ pub async fn run_spec_benchmark_inner(
     db_path: std::path::PathBuf,
     proxy_base_url: String,
     client: reqwest::Client,
-    db_pool: Option<std::sync::Arc<sqlx::PgPool>>,
+    db_pool: std::sync::Arc<sqlx::PgPool>,
 ) -> Result<()> {
     use tama_core::bench::llama_cli_spec;
 
@@ -96,9 +96,7 @@ pub async fn run_spec_benchmark_inner(
     let ngram_m_for_trace = req.ngram_m_values.clone();
 
     // Load the global config from Postgres (plan-190 Task 3).
-    let pool = db_pool
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("Postgres pool not available; cannot load config"))?;
+    let pool = db_pool.as_ref();
     let config = tama_core::config::Config::load_from_pool(pool).await?;
 
     // Resolve model path — model configs and files come from Postgres.
@@ -168,7 +166,7 @@ pub async fn run_spec_benchmark_inner(
     });
 
     // Resolve backend path via the Postgres-backed InstallationManager.
-    let manager = tama_core::installations::InstallationManager::new(pool.clone());
+    let manager = tama_core::installations::InstallationManager::new(db_pool.clone());
     let backend_path = config
         .resolve_backend_path(&target_backend, gpu_variant.as_ref(), Some(&manager))
         .await?;

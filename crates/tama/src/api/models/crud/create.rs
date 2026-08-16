@@ -58,13 +58,7 @@ pub async fn create_model(
         return error_response(StatusCode::UNPROCESSABLE_ENTITY, e, Some("ValidationError"));
     }
 
-    let Some(pool) = web_state.db_pool.as_ref() else {
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Postgres pool not available",
-            None,
-        );
-    };
+    let pool = web_state.db_pool.as_ref();
 
     // Reject if a model with this repo_id already exists.
     match tama_core::db::queries::get_model_config_by_repo_id(pool, &repo_id).await {

@@ -26,13 +26,7 @@ pub async fn rename_model(
     Path(id_str): Path<String>,
     Json(body): Json<RenameBody>,
 ) -> impl IntoResponse {
-    let Some(pool) = web_state.db_pool.as_ref() else {
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Postgres pool not available",
-            None,
-        );
-    };
+    let pool = web_state.db_pool.as_ref();
 
     let (model_id, existing_record) = match resolve_model_record(pool, &id_str).await {
         Ok(v) => v,

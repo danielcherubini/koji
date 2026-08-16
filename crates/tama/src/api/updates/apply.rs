@@ -39,16 +39,7 @@ pub async fn apply_backend_update(
     Path(name): Path<String>,
     axum::extract::Query(query): axum::extract::Query<CheckSingleQuery>,
 ) -> impl axum::response::IntoResponse {
-    let pool = match state.db_pool() {
-        Some(p) => p,
-        None => {
-            return error_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Database not configured",
-                None,
-            )
-        }
-    };
+    let pool = state.db_pool();
     let mgr = tama_core::installations::InstallationManager::new(pool.clone());
 
     // Load backend info from DB — discover gpu_variant dynamically
@@ -246,13 +237,7 @@ pub async fn apply_model_update(
 ) -> impl axum::response::IntoResponse {
     // 1. Resolve model: get repo_id and model files for requested quant keys
     //    (Postgres, plan-190 Task 5).
-    let Some(pool) = web_state.db_pool.as_ref() else {
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Postgres pool not available",
-            None,
-        );
-    };
+    let pool = web_state.db_pool.as_ref();
 
     let req_quants = req.quants.clone();
     let model_record = match tama_core::db::queries::get_model_config(pool, id).await {

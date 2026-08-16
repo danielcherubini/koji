@@ -44,13 +44,7 @@ pub async fn list_aliases(
     State(_state): State<Arc<ProxyState>>,
     Extension(web_state): Extension<WebState>,
 ) -> impl IntoResponse {
-    let Some(pool) = web_state.db_pool.as_ref() else {
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Postgres pool not available",
-            None,
-        );
-    };
+    let pool = web_state.db_pool.as_ref();
     match tama_core::db::queries::get_all_aliases(pool).await {
         Ok(aliases) => Json(aliases).into_response(),
         Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
@@ -63,13 +57,7 @@ pub async fn get_alias(
     Extension(web_state): Extension<WebState>,
     Path(id): Path<i64>,
 ) -> impl IntoResponse {
-    let Some(pool) = web_state.db_pool.as_ref() else {
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Postgres pool not available",
-            None,
-        );
-    };
+    let pool = web_state.db_pool.as_ref();
     match tama_core::db::queries::get_alias_by_id(pool, id).await {
         Ok(Some(alias)) => Json(alias).into_response(),
         Ok(None) => error_response(
@@ -87,16 +75,7 @@ pub async fn create_alias(
     Extension(web_state): Extension<WebState>,
     Json(payload): Json<CreateAliasRequest>,
 ) -> impl IntoResponse {
-    let pool = match web_state.db_pool.as_ref() {
-        Some(p) => p.clone(),
-        None => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Postgres pool not available",
-                None,
-            )
-        }
-    };
+    let pool = web_state.db_pool.as_ref();
 
     // Validate alias name
     if let Some(err) = validate_alias_name(&payload.name) {
@@ -112,7 +91,7 @@ pub async fn create_alias(
     let desc = payload.description;
 
     // Validate model_id exists (Postgres is the model source of truth)
-    match tama_core::db::queries::get_model_config(&pool, model_id).await {
+    match tama_core::db::queries::get_model_config(pool, model_id).await {
         Ok(Some(_)) => {}
         Ok(None) => {
             return error_response(
@@ -131,7 +110,7 @@ pub async fn create_alias(
     }
 
     let new_id =
-        match tama_core::db::queries::insert_alias(&pool, &name, model_id, desc.as_deref()).await {
+        match tama_core::db::queries::insert_alias(pool, &name, model_id, desc.as_deref()).await {
             Ok(id) => id,
             Err(e) => {
                 return error_response(
@@ -142,7 +121,7 @@ pub async fn create_alias(
             }
         };
 
-    let alias = match tama_core::db::queries::get_alias_by_id(&pool, new_id).await {
+    let alias = match tama_core::db::queries::get_alias_by_id(pool, new_id).await {
         Ok(Some(a)) => a,
         Ok(None) => {
             return error_response(
@@ -176,16 +155,7 @@ pub async fn update_alias(
     Path(id): Path<i64>,
     Json(payload): Json<UpdateAliasRequest>,
 ) -> impl IntoResponse {
-    let pool = match web_state.db_pool.as_ref() {
-        Some(p) => p.clone(),
-        None => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Postgres pool not available",
-                None,
-            )
-        }
-    };
+    let pool = web_state.db_pool.as_ref();
 
     // Validate alias name if provided
     if let Some(ref name) = payload.name {
@@ -200,7 +170,7 @@ pub async fn update_alias(
 
     // Validate model_id if provided
     if let Some(model_id) = payload.model_id {
-        match tama_core::db::queries::get_model_config(&pool, model_id).await {
+        match tama_core::db::queries::get_model_config(pool, model_id).await {
             Ok(Some(_)) => {}
             Ok(None) => {
                 return error_response(
@@ -231,7 +201,7 @@ pub async fn update_alias(
         enabled: payload.enabled,
     };
 
-    if let Err(e) = tama_core::db::queries::update_alias(&pool, id, update).await {
+    if let Err(e) = tama_core::db::queries::update_alias(pool, id, update).await {
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Database not configured: {}", e),
@@ -239,7 +209,7 @@ pub async fn update_alias(
         );
     }
 
-    let alias = match tama_core::db::queries::get_alias_by_id(&pool, id).await {
+    let alias = match tama_core::db::queries::get_alias_by_id(pool, id).await {
         Ok(Some(a)) => a,
         Ok(None) => {
             return error_response(
@@ -271,18 +241,9 @@ pub async fn delete_alias(
     Extension(web_state): Extension<WebState>,
     Path(id): Path<i64>,
 ) -> impl IntoResponse {
-    let pool = match web_state.db_pool.as_ref() {
-        Some(p) => p.clone(),
-        None => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Postgres pool not available",
-                None,
-            )
-        }
-    };
+    let pool = web_state.db_pool.as_ref();
 
-    if let Err(e) = tama_core::db::queries::delete_alias(&pool, id).await {
+    if let Err(e) = tama_core::db::queries::delete_alias(pool, id).await {
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Database not configured: {}", e),
@@ -334,7 +295,7 @@ mod tests {
         let state = Arc::new(ProxyState::new(
             config,
             Some(tmp_dir.to_path_buf()),
-            Some(pool.clone()),
+            pool.clone(),
         ));
 
         let web_state = Arc::new(crate::web_types::WebState {
@@ -344,8 +305,7 @@ mod tests {
             binary_version: "test".to_string(),
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-            repository: None,
-            db_pool: Some(pool),
+            db_pool: pool,
         });
 
         (state, web_state)

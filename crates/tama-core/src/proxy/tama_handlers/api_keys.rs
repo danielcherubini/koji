@@ -153,17 +153,7 @@ pub async fn handle_tama_api_keys_create(
     let key_prefix = api_keys::extract_prefix(&raw_key);
 
     // Insert into DB
-    let Some(pool) = state.db_pool() else {
-        warn!(
-            reason = "no database connection",
-            "failed to create API key"
-        );
-        return json_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "failed to create API key",
-            None,
-        );
-    };
+    let pool = state.db_pool();
     let store = ApiKeyStore::new(pool);
 
     let key_id = match store
@@ -215,14 +205,7 @@ pub async fn handle_tama_api_keys_create(
 ///
 /// Returns 200 with key metadata (no plaintext keys).
 pub async fn handle_tama_api_keys_list(State(state): State<Arc<ProxyState>>) -> impl IntoResponse {
-    let Some(pool) = state.db_pool() else {
-        warn!(reason = "no database connection", "failed to list API keys");
-        return json_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "failed to list API keys",
-            None,
-        );
-    };
+    let pool = state.db_pool();
     let store = ApiKeyStore::new(pool);
 
     let keys = match store.list_keys().await {
@@ -301,14 +284,7 @@ pub async fn handle_tama_api_keys_update(
     }
 
     // Validate key exists
-    let Some(pool) = state.db_pool() else {
-        warn!(reason = "no database connection", "failed to get API key");
-        return json_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "failed to get API key",
-            None,
-        );
-    };
+    let pool = state.db_pool();
     let store = ApiKeyStore::new(pool);
     let key_exists = store.get_key(key_id).await;
 
@@ -389,14 +365,7 @@ pub async fn handle_tama_api_keys_revoke(
     };
 
     // Validate key exists (already-revoked keys are accepted — revoke is idempotent)
-    let Some(pool) = state.db_pool() else {
-        warn!(reason = "no database connection", "failed to get API key");
-        return json_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "failed to get API key",
-            None,
-        );
-    };
+    let pool = state.db_pool();
     let store = ApiKeyStore::new(pool);
     let key_exists = store.get_key(key_id).await;
 
@@ -491,11 +460,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let proxy_state = Arc::new(ProxyState::new(
-            config,
-            None,
-            Some(Arc::new(guard.pool.clone())),
-        ));
+        let proxy_state = Arc::new(ProxyState::new(config, None, Arc::new(guard.pool.clone())));
 
         (proxy_state, guard, key)
     }

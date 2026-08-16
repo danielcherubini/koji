@@ -26,13 +26,7 @@ pub async fn delete_quant(
         Err((status, body)) => return (status, Json(body)).into_response(),
     };
 
-    let Some(pool) = web_state.db_pool.as_ref() else {
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Postgres pool not available",
-            None,
-        );
-    };
+    let pool = web_state.db_pool.as_ref();
 
     // Find the model from DB
     let model_record = match tama_core::db::queries::get_model_config(pool, id).await {
@@ -130,13 +124,7 @@ pub async fn delete_model(
         Err((status, body)) => return (status, Json(body)).into_response(),
     };
 
-    let Some(pool) = web_state.db_pool.as_ref() else {
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Postgres pool not available",
-            None,
-        );
-    };
+    let pool = web_state.db_pool.as_ref();
 
     // Resolve model_id and load record
     let (model_id, model_record) = match resolve_model_record(pool, &id_str).await {

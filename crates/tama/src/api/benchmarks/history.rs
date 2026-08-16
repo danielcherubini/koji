@@ -102,13 +102,7 @@ pub async fn list_benchmark_history(
     State(_state): State<Arc<ProxyState>>,
     Extension(web_state): Extension<WebState>,
 ) -> impl IntoResponse {
-    let Some(pool) = web_state.db_pool.as_ref() else {
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Postgres pool not available",
-            None,
-        );
-    };
+    let pool = web_state.db_pool.as_ref();
 
     let entries = match tama_core::db::queries::list_benchmarks(pool).await {
         Ok(entries) => entries,
@@ -161,13 +155,7 @@ pub async fn delete_benchmark(
     Extension(web_state): Extension<WebState>,
     Path(id): Path<i64>,
 ) -> impl IntoResponse {
-    let Some(pool) = web_state.db_pool.as_ref() else {
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Postgres pool not available",
-            None,
-        );
-    };
+    let pool = web_state.db_pool.as_ref();
 
     match tama_core::db::queries::delete_benchmark(pool, id).await {
         Ok(()) => Json(OkResponse::OK).into_response(),
@@ -633,7 +621,11 @@ mod tests {
     #[tokio::test]
     async fn test_get_benchmark_result_not_found_error_shape() {
         let config = Config::default();
-        let state = Arc::new(ProxyState::new(config, None, None));
+        let state = Arc::new(ProxyState::new(
+            config,
+            None,
+            tama_core::db::pool::test_dummy_pool(),
+        ));
 
         let web_state = Arc::new(crate::web_types::WebState {
             jobs: Some(Arc::new(crate::web_types::JobManager::new())),
@@ -642,8 +634,7 @@ mod tests {
             binary_version: "test".to_string(),
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-            repository: None,
-            db_pool: None,
+            db_pool: tama_core::db::pool::test_dummy_pool(),
         });
 
         let router = crate::router::build_web_routes(web_state.clone())

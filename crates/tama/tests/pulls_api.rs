@@ -14,7 +14,7 @@ async fn create_test_state() -> (Arc<ProxyState>, common::SchemaGuard) {
     let guard = common::with_schema().await;
     let pool = Arc::new(guard.pool.clone());
     let config = tama_core::config::Config::default();
-    let state = ProxyState::new(config, None, Some(pool));
+    let state = ProxyState::new(config, None, pool);
     (Arc::new(state), guard)
 }
 

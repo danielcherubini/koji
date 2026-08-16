@@ -201,7 +201,7 @@ pub struct BenchmarkJobContext {
     pub proxy_base_url: String,
     pub client: reqwest::Client,
     /// Postgres pool for loading the global app config (plan-190 Task 3).
-    pub db_pool: Option<std::sync::Arc<sqlx::PgPool>>,
+    pub db_pool: std::sync::Arc<sqlx::PgPool>,
 }
 
 /// Resolve shared context needed for benchmark execution.
@@ -286,7 +286,7 @@ where
             std::path::PathBuf,
             String,
             reqwest::Client,
-            Option<std::sync::Arc<sqlx::PgPool>>,
+            std::sync::Arc<sqlx::PgPool>,
         ) -> Fut
         + Send
         + Clone

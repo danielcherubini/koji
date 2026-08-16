@@ -29,13 +29,7 @@ pub async fn update_tamad(
     Path(id): Path<String>,
     Json(req): Json<UpdateTamadRequest>,
 ) -> impl IntoResponse {
-    let Some(pool) = web_state.db_pool.as_ref() else {
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Postgres pool not available",
-            None,
-        );
-    };
+    let pool = web_state.db_pool.as_ref();
 
     // Check tamad exists first
     let current = match tama_core::db::queries::get_tamad(pool, &id).await {
@@ -84,13 +78,7 @@ pub async fn delete_tamad(
     Extension(web_state): Extension<WebState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let Some(pool) = web_state.db_pool.as_ref() else {
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Postgres pool not available",
-            None,
-        );
-    };
+    let pool = web_state.db_pool.as_ref();
 
     let deleted = match tama_core::db::queries::delete_tamad(pool, &id).await {
         Ok(d) => d,
@@ -116,12 +104,10 @@ pub async fn trigger_health_check(
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     // Check tamad exists
-    let exists = match web_state.db_pool.as_ref() {
-        Some(pool) => match tama_core::db::queries::get_tamad(pool, &id).await {
-            Ok(t) => t.is_some(),
-            Err(_) => false,
-        },
-        None => false,
+    let pool = web_state.db_pool.as_ref();
+    let exists = match tama_core::db::queries::get_tamad(pool, &id).await {
+        Ok(t) => t.is_some(),
+        Err(_) => false,
     };
 
     if !exists {
@@ -162,7 +148,7 @@ mod tests {
         let guard = crate::testing::postgres::with_schema().await;
         let pool = Arc::new(guard.pool.clone());
         let config = tama_core::config::Config::default();
-        let state = Arc::new(ProxyState::new(config, None, Some(pool.clone())));
+        let state = Arc::new(ProxyState::new(config, None, pool.clone()));
 
         let web_state = Arc::new(crate::web_types::WebState {
             jobs: Some(Arc::new(crate::web_types::JobManager::new())),
@@ -171,8 +157,7 @@ mod tests {
             binary_version: "test".to_string(),
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-            repository: None,
-            db_pool: Some(pool),
+            db_pool: pool,
         });
 
         (state, web_state, guard)

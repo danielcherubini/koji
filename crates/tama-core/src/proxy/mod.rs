@@ -48,7 +48,7 @@ mod tests {
     #[tokio::test]
     async fn test_proxy_state_new() {
         let config = Config::default();
-        let state = ProxyState::new(config.clone(), None, None);
+        let state = ProxyState::new(config.clone(), None, crate::db::pool::test_dummy_pool());
         assert!(state.registry.models.read().await.is_empty());
         assert_eq!(
             state.config.read().await.proxy.idle_timeout_secs,
@@ -59,7 +59,7 @@ mod tests {
     #[tokio::test]
     async fn test_no_available_server_for_unknown_model() {
         let config = Config::default();
-        let state = ProxyState::new(config, None, None);
+        let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
         let result = state.get_available_backend_for_model("nonexistent").await;
         assert!(result.is_none());
     }
@@ -67,7 +67,7 @@ mod tests {
     #[tokio::test]
     async fn test_build_status_response() {
         let config = Config::default();
-        let state = ProxyState::new(config, None, None);
+        let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
         let response = state.build_status_response().await;
         let v = serde_json::to_value(&response).unwrap();
@@ -99,7 +99,7 @@ mod tests {
     async fn test_build_status_response_model_fields() {
         // Create a config with a model for testing
         let config = Config::default();
-        let state = ProxyState::new(config, None, None);
+        let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
         // Add a model to the registry
         {
@@ -140,7 +140,7 @@ mod tests {
         let config = Config {
             ..Default::default()
         };
-        let state = ProxyState::new(config, None, None);
+        let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
         // Add a model to the registry
         {
@@ -167,7 +167,7 @@ mod tests {
     #[tokio::test]
     async fn test_rename_model_new_name_taken() {
         let config = Config::default();
-        let state = ProxyState::new(config, None, None);
+        let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
         // Add models to the registry
         {
@@ -202,7 +202,7 @@ mod tests {
     #[tokio::test]
     async fn test_rename_model_old_name_not_found() {
         let config = Config::default();
-        let state = ProxyState::new(config, None, None);
+        let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
         // Add a model to the registry
         {
@@ -229,7 +229,7 @@ mod tests {
     #[tokio::test]
     async fn test_rename_model_empty_name() {
         let config = Config::default();
-        let state = ProxyState::new(config, None, None);
+        let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
         // Add a model to the registry
         {
@@ -253,7 +253,7 @@ mod tests {
     #[tokio::test]
     async fn test_rename_model_same_name() {
         let config = Config::default();
-        let state = ProxyState::new(config, None, None);
+        let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
         // Add a model to the registry
         {
@@ -280,7 +280,7 @@ mod tests {
     #[tokio::test]
     async fn test_proxy_state_shutdown_clears_models() {
         let config = Config::default();
-        let state = ProxyState::new(config, None, None);
+        let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
         // Add a model to the state
         let mut models = state.registry.models.write().await;
@@ -319,7 +319,7 @@ mod tests {
         use crate::proxy::pull_jobs::PullJobStatus;
 
         let config = Config::default();
-        let state = ProxyState::new(config, None, None);
+        let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
         // Add a pull job
         let mut pull_jobs = state.pull.pull_jobs.write().await;
@@ -359,7 +359,7 @@ mod tests {
     #[tokio::test]
     async fn test_build_status_response_backend_path_null() {
         let config = Config::default();
-        let state = ProxyState::new(config, None, None);
+        let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
         // Explicitly ensure backends are empty
         {
@@ -416,7 +416,7 @@ mod tests {
                 gpu_variant: None,
             },
         );
-        let state = ProxyState::new(config, None, None);
+        let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
         // Two model configs: one idle, one ready (with db_id).
         {
@@ -615,7 +615,7 @@ mod tests {
         use std::time::Duration;
 
         let config = Config::default();
-        let state = ProxyState::new(config, None, None);
+        let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
         // Verify the semaphore has capacity 4
         assert_eq!(state.config_write_semaphore.available_permits(), 4);

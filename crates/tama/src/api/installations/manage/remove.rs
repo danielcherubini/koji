@@ -27,16 +27,7 @@ pub async fn remove_installation_version(
         return resp;
     }
 
-    let pool = match state.db_pool() {
-        Some(p) => p,
-        None => {
-            return error_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Database not configured",
-                None,
-            )
-        }
-    };
+    let pool = state.db_pool();
     let mgr = tama_core::installations::InstallationManager::new(pool);
 
     // Use gpu_variant from query param if provided
@@ -150,9 +141,8 @@ pub async fn remove_installation_version(
     // Clean up update_check records — use LIKE pattern to match all variants
     // (e.g., "llama_cpp:cpu", "llama_cpp:cuda") plus legacy format.
     // (Postgres, plan-190 Task 4; best-effort.)
-    if let Some(pool) = state.db_pool() {
-        let _ = tama_core::db::queries::delete_update_checks_for_backend(&pool, &name).await;
-    }
+    let pool = state.db_pool();
+    let _ = tama_core::db::queries::delete_update_checks_for_backend(&pool, &name).await;
 
     Json(DeleteResponse { removed: true }).into_response()
 }

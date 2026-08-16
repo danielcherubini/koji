@@ -50,12 +50,9 @@ pub async fn update_compaction(
             })
             .await;
         // Persist to Postgres (plan-190 Task 3) — best effort, don't fail the toggle.
-        if let Some(pool) = state.db_pool() {
-            if let Err(e) = config_to_save.save(&pool).await {
-                tracing::warn!(error = %e, "Failed to persist compaction config to database");
-            }
-        } else {
-            tracing::warn!("Postgres not configured; compaction config not persisted");
+        let pool = state.db_pool();
+        if let Err(e) = config_to_save.save(&pool).await {
+            tracing::warn!(error = %e, "Failed to persist compaction config to database");
         }
 
         // If enabling and not already running, try to start

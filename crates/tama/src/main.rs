@@ -83,7 +83,7 @@ async fn main() -> Result<()> {
     // Set up HF_TOKEN from config before any hf_hub usage
     setup_hf_token(&config);
 
-    let db_pool: Option<Arc<sqlx::PgPool>> = Some(Arc::new(pool));
+    let db_pool: Arc<sqlx::PgPool> = Arc::new(pool);
 
     // Parse host and port from config
     let host = config.proxy.host.clone();
@@ -111,43 +111,24 @@ async fn main() -> Result<()> {
         idle_timeout
     );
 
-    // Database setup and migrations
     let db_dir = Some(config_dir.clone());
-    if let Some(ref dir) = db_dir {
-        // The needs_backfill flag is still derived from the transitional
-        // SQLite DB (deleted in plan-190 Task 9).
-        match tama_core::db::open(dir) {
-            Ok(db_result) => {
-                if db_result.needs_backfill {
-                    tracing::info!("Running initial backfill...");
-                    if let Some(pool) = db_pool.as_ref() {
-                        if let Err(e) =
-                            tama_core::db::backfill::run_initial_backfill(pool, &config).await
-                        {
-                            tracing::error!("Initial backfill failed: {}", e);
-                        }
-                    }
-                }
-            }
-            Err(e) => tracing::error!("Failed to open DB for backfill check: {}", e),
-        }
 
-        // One-shot migrations run from the Postgres pool (plan-190 Task 8):
-        // the backend registry TOML import and the legacy flat-layout backend
-        // file migration (idempotent; marker-file guarded).
-        if let Some(pool) = db_pool.as_ref() {
-            if let Err(e) = tama_core::db::backfill::migrate_backend_registry_toml(pool, dir).await
-            {
-                tracing::error!("Backend registry TOML migration failed: {}", e);
-            }
-            if let Err(e) = tama_core::installations::migration::migrate_legacy_backends(
-                pool,
-                &config_dir.join("backends"),
-            )
-            .await
-            {
-                tracing::error!("Legacy backend migration failed: {}", e);
-            }
+    // One-shot migrations run from the Postgres pool (plan-190 Task 8):
+    // the backend registry TOML import and the legacy flat-layout backend
+    // file migration (idempotent; marker-file guarded).
+    if let Some(ref dir) = db_dir {
+        if let Err(e) =
+            tama_core::db::backfill::migrate_backend_registry_toml(db_pool.as_ref(), dir).await
+        {
+            tracing::error!("Backend registry TOML migration failed: {}", e);
+        }
+        if let Err(e) = tama_core::installations::migration::migrate_legacy_backends(
+            db_pool.as_ref(),
+            &config_dir.join("backends"),
+        )
+        .await
+        {
+            tracing::error!("Legacy backend migration failed: {}", e);
         }
     }
 
@@ -160,18 +141,6 @@ async fn main() -> Result<()> {
 
     #[cfg(feature = "ssr")]
     {
-        // Shared repository for the management API — opened once; migrations
-        // already ran above (idempotent), so this open is cheap.
-        let repository = db_dir.as_ref().and_then(|dir| {
-            match tama_core::db::repository::Repository::open(dir) {
-                Ok(r) => Some(Arc::new(std::sync::Mutex::new(r))),
-                Err(e) => {
-                    tracing::error!("Failed to open shared repository: {}", e);
-                    None
-                }
-            }
-        });
-
         // Create WebState separately from ProxyState.
         // WebState is owned by the tama crate, not tama-core.
         let web_state = {
@@ -185,7 +154,6 @@ async fn main() -> Result<()> {
                 binary_version: env!("CARGO_PKG_VERSION").to_string(),
                 update_tx: Arc::new(tokio::sync::Mutex::new(None)),
                 upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-                repository,
                 db_pool: db_pool.clone(),
             })
         };

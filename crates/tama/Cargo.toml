@@ -72,6 +72,11 @@ path = "tests/server_test.rs"
 required-features = ["ssr"]
 
 [[test]]
+name = "backup_restore"
+path = "tests/backup_restore.rs"
+required-features = ["ssr"]
+
+[[test]]
 name = "config_structured_test"
 path = "tests/config_structured_test.rs"
 required-features = ["ssr"]
@@ -95,7 +100,6 @@ tempfile = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
 testcontainers.workspace = true
 testcontainers-modules.workspace = true
-rusqlite = { workspace = true }
 wiremock = "0.6"
 
 [package.metadata.deb]

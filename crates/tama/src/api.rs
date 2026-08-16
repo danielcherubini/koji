@@ -81,16 +81,7 @@ pub async fn save_structured_config(
     State(state): State<Arc<ProxyState>>,
     Json(body): Json<StructuredConfigBody>,
 ) -> impl IntoResponse {
-    let pool = match state.db_pool() {
-        Some(pool) => pool,
-        None => {
-            return error_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Postgres not configured; cannot save config",
-                Some("ServiceUnavailableError"),
-            )
-        }
-    };
+    let pool = state.db_pool();
 
     // Convert mirror types back to tama_core::Config
     let new_config: tama_core::config::Config = body.into();
@@ -128,23 +119,16 @@ async fn load_config_from_state(
                 error_body("config directory not configured", Some("NotFoundError")),
             )
         })?;
-    match proxy_state.db_pool() {
-        Some(pool) => {
-            let cfg = tama_core::config::Config::load_from_pool(&pool)
-                .await
-                .map_err(|e| {
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        error_body(format!("Failed to load config: {}", e).as_str(), None),
-                    )
-                })?;
-            Ok((cfg, config_dir))
-        }
-        None => {
-            let cfg = proxy_state.with_config(|c| c.clone()).await;
-            Ok((cfg, config_dir))
-        }
-    }
+    let pool = proxy_state.db_pool();
+    let cfg = tama_core::config::Config::load_from_pool(&pool)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error_body(format!("Failed to load config: {}", e).as_str(), None),
+            )
+        })?;
+    Ok((cfg, config_dir))
 }
 
 // ── PATCH /tama/v1/config/structured ────────────────────────────────────────
@@ -383,16 +367,7 @@ pub async fn patch_structured_config(
     let merged_core: tama_core::config::Config = merged_mirror.into();
 
     // Persist to Postgres DB (plan-190 Task 3: async pool-based save)
-    let pool = match state.db_pool() {
-        Some(pool) => pool,
-        None => {
-            return error_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Postgres not configured; cannot save config",
-                Some("ServiceUnavailableError"),
-            )
-        }
-    };
+    let pool = state.db_pool();
     match merged_core.clone().save(&pool).await {
         Ok(()) => {
             // Sync proxy config for hot-reload

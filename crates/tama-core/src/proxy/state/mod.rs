@@ -26,18 +26,19 @@ impl ProxyState {
     pub fn new(
         config: crate::config::Config,
         db_dir: Option<std::path::PathBuf>,
-        db_pool: Option<Arc<sqlx::PgPool>>,
+        db_pool: Arc<sqlx::PgPool>,
     ) -> Self {
         // Initialize Langfuse client from config before wrapping in Arc.
         let langfuse_client =
             crate::proxy::forward::langfuse::LangfuseClient::from_config(&config.langfuse)
                 .map(Arc::new);
 
-        // Initialize pull queue service when a Postgres pool is configured.
+        // Initialize pull queue service from the Postgres pool.
         let poll_interval = config.proxy.pull_queue_poll_interval_secs;
-        let pull_queue = db_pool
-            .as_ref()
-            .map(|pool| Arc::new(PullQueueService::new(pool.clone(), poll_interval)));
+        let pull_queue = Some(Arc::new(PullQueueService::new(
+            db_pool.clone(),
+            poll_interval,
+        )));
 
         let state = Self {
             registry: RegistryState::new(),
@@ -66,14 +67,16 @@ impl ProxyState {
             db_pool,
         };
 
-        // Spawn the queue processor background task if pull queue is configured.
-        // This must be called from within a tokio runtime context (which is always true
-        // in practice since ProxyState::new is only called from async functions).
+        // Spawn the queue processor background task.
+        // This must be called from within a tokio runtime context (production
+        // always is; plain `#[test]` contexts skip it via try_current).
         if let Some(ref _dq) = pull_queue {
-            let state_clone = Arc::new(state.clone());
-            tokio::spawn(async move {
-                queue_processor_loop(state_clone).await;
-            });
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                let state_clone = Arc::new(state.clone());
+                handle.spawn(async move {
+                    queue_processor_loop(state_clone).await;
+                });
+            }
         }
 
         state
@@ -93,15 +96,11 @@ impl ProxyState {
             .gpu_variant
             .clone()
             .unwrap_or(crate::gpu::GpuVariant::CpuOnly);
-        let health_url = match self.db_pool() {
-            Some(pool) => {
-                let manager = crate::installations::InstallationManager::new(pool);
-                manager
-                    .get_health_check_url(&backend_config.backend, gpu_variant.variant_folder())
-                    .await
-            }
-            None => None,
-        };
+        let pool = self.db_pool();
+        let manager = crate::installations::InstallationManager::new(pool);
+        let health_url = manager
+            .get_health_check_url(&backend_config.backend, gpu_variant.variant_folder())
+            .await;
         let backend_url = config
             .resolve_backend_url(backend_config, health_url.as_deref())
             .with_context(|| format!("No backend URL resolved for backend '{}'", backend_name))?;
@@ -153,9 +152,7 @@ impl ProxyState {
     /// This ensures that the in-memory registry stays in sync with mutations
     /// made via the web API or CLI.
     pub async fn reload_model_configs(&self) -> anyhow::Result<()> {
-        let pool = self
-            .db_pool()
-            .with_context(|| "Postgres pool not configured")?;
+        let pool = self.db_pool();
         let configs = crate::db::load_model_configs(&pool).await?;
         self.registry.reload_model_configs(configs).await;
         Ok(())
@@ -205,9 +202,7 @@ impl ProxyState {
     /// Populates the in-memory alias map with enabled aliases only.
     /// Disabled aliases are filtered out by the DB query.
     pub async fn reload_aliases(&self) -> anyhow::Result<()> {
-        let pool = self
-            .db_pool()
-            .with_context(|| "Postgres pool not configured")?;
+        let pool = self.db_pool();
         let pairs = crate::db::queries::load_aliases_for_cache(&pool).await?;
         self.registry.reload_aliases(pairs).await;
         Ok(())
@@ -221,16 +216,13 @@ impl ProxyState {
     }
 
     /// Open a ModelManager for model-related database operations.
-    /// Returns `None` if the Postgres pool is not configured (e.g., in tests).
     ///
     /// Crate-internal ModelManager factory for proxy lifecycle code
     /// (`PullQueueService`, reload paths). The `tama` API layer uses the
     /// shared pool from `WebState` (plan-160) — do NOT add new
     /// callers there.
-    pub(crate) fn model_mgr(&self) -> Option<crate::models::ModelManager> {
-        self.db_pool
-            .as_ref()
-            .map(|pool| crate::models::ModelManager::new(pool.clone()))
+    pub(crate) fn model_mgr(&self) -> crate::models::ModelManager {
+        crate::models::ModelManager::new(self.db_pool.clone())
     }
 
     /// Get cached GPU devices for a backend, or discover them on first access.
@@ -292,8 +284,7 @@ impl ProxyState {
     /// Get a provider by name from the database.
     /// Returns None if not found or if DB is not configured.
     pub(crate) async fn get_provider(&self, name: &str) -> Option<crate::providers::Provider> {
-        let pool = self.db_pool()?;
-        crate::db::queries::get_provider(&pool, name)
+        crate::db::queries::get_provider(&self.db_pool, name)
             .await
             .ok()
             .flatten()
@@ -302,19 +293,17 @@ impl ProxyState {
     /// Resolve the binary path for a backend name using the same logic as `load_model`.
     ///
     /// Looks up the active installation via the Postgres pool, and returns the path.
-    /// Falls back to config.path if no DB entry exists (or no pool is configured).
+    /// Falls back to config.path if no DB entry exists.
     pub async fn resolve_backend_binary_path(
         &self,
         backend_name: &str,
         gpu_variant: Option<&crate::gpu::GpuVariant>,
     ) -> anyhow::Result<std::path::PathBuf> {
         let config = self.config.read().await;
-        let manager = self
-            .db_pool()
-            .map(crate::installations::InstallationManager::new);
+        let manager = crate::installations::InstallationManager::new(self.db_pool.clone());
 
         config
-            .resolve_backend_path(backend_name, gpu_variant, manager.as_ref())
+            .resolve_backend_path(backend_name, gpu_variant, Some(&manager))
             .await
     }
 }
@@ -324,10 +313,10 @@ mod tests {
     use super::*;
 
     /// Test that `ProxyState::new` creates a metrics channel and that subscribing adds a receiver.
-    #[test]
-    fn test_proxy_state_new_creates_metrics_channel() {
+    #[tokio::test]
+    async fn test_proxy_state_new_creates_metrics_channel() {
         let config = crate::config::Config::default();
-        let state = ProxyState::new(config, None, None);
+        let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
         let _subscriber = state.metrics.subscribe_metrics();
         assert_eq!(state.metrics.metrics_tx.receiver_count(), 1);
     }
@@ -338,7 +327,7 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_alias_pass_through() {
         let config = crate::config::Config::default();
-        let state = ProxyState::new(config, None, None);
+        let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
         let result = state.resolve_alias("some-model-name").await;
         assert_eq!(result, "some-model-name");
     }
@@ -347,7 +336,7 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_alias_resolves() {
         let config = crate::config::Config::default();
-        let state = ProxyState::new(config, None, None);
+        let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
         // Manually populate the alias cache
         {
@@ -362,7 +351,11 @@ mod tests {
     /// Test that `with_config` / `with_config_mut` / `replace_config` work correctly.
     #[tokio::test]
     async fn test_with_config_and_replace_config() {
-        let state = ProxyState::new(crate::config::Config::default(), None, None);
+        let state = ProxyState::new(
+            crate::config::Config::default(),
+            None,
+            crate::db::pool::test_dummy_pool(),
+        );
         let port = state.with_config(|c| c.proxy.port).await;
         assert_eq!(port, crate::config::Config::default().proxy.port);
         let mut new_config = crate::config::Config::default();

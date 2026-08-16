@@ -292,10 +292,9 @@ impl ProxyState {
             }
             // Clean DB — remove ALL dead entries so cleanup_stale_processes()
             // doesn't rediscover them, regardless of whether they'll be restarted
-            if let Some(pool) = self.db_pool() {
-                for backend_name in &removed_backends {
-                    let _ = crate::db::queries::remove_active_model(&pool, backend_name).await;
-                }
+            let pool = self.db_pool();
+            for backend_name in &removed_backends {
+                let _ = crate::db::queries::remove_active_model(&pool, backend_name).await;
             }
 
             // Spawn restart tasks (no locks)

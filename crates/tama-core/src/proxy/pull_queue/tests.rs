@@ -930,7 +930,7 @@ async fn test_queue_processor_loop_dead_task_detection() {
     let state = Arc::new(ProxyState::new(
         config,
         None,
-        Some(std::sync::Arc::new(pool.clone())),
+        std::sync::Arc::new(pool.clone()),
     ));
 
     // The service (constructed by ProxyState::new from the pool) is the same

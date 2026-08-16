@@ -60,19 +60,16 @@ pub async fn list_installations(
     let update_checks: std::collections::HashMap<
         String,
         tama_core::db::queries::UpdateCheckRecord,
-    > = match state.db_pool() {
-        Some(pool) => match tama_core::db::queries::get_all_update_checks(&pool).await {
-            Ok(records) => records
-                .into_iter()
-                .filter(|r| r.item_type == "backend")
-                .map(|r| (r.item_id.clone(), r))
-                .collect(),
-            Err(e) => {
-                tracing::warn!("Failed to load update checks: {e}");
-                std::collections::HashMap::new()
-            }
-        },
-        None => std::collections::HashMap::new(),
+    > = match tama_core::db::queries::get_all_update_checks(&state.db_pool()).await {
+        Ok(records) => records
+            .into_iter()
+            .filter(|r| r.item_type == "backend")
+            .map(|r| (r.item_id.clone(), r))
+            .collect(),
+        Err(e) => {
+            tracing::warn!("Failed to load update checks: {e}");
+            std::collections::HashMap::new()
+        }
     };
 
     // Build the response including available backend types
@@ -801,8 +798,7 @@ mod tests {
             binary_version: "test".to_string(),
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
-            repository: None,
-            db_pool: None,
+            db_pool: tama_core::db::pool::test_dummy_pool(),
         }
     }
 
@@ -810,7 +806,11 @@ mod tests {
     #[tokio::test]
     async fn test_list_installations_empty_registry() {
         let config = Config::default();
-        let state = Arc::new(ProxyState::new(config, None, None));
+        let state = Arc::new(ProxyState::new(
+            config,
+            None,
+            tama_core::db::pool::test_dummy_pool(),
+        ));
 
         let web_state = Arc::new(test_web_state());
         let router = crate::router::build_web_routes(web_state.clone())
@@ -845,7 +845,7 @@ mod tests {
         let state = Arc::new(ProxyState::new(
             config,
             Some(db_dir.path().to_path_buf()),
-            Some(Arc::new(guard.pool.clone())),
+            Arc::new(guard.pool.clone()),
         ));
 
         let web_state = Arc::new(test_web_state());

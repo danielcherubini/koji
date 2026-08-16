@@ -263,11 +263,14 @@ pub async fn update_installation(
                     .finish(&job_clone, crate::web_types::JobStatus::Succeeded, None)
                     .await;
                 // Refresh the update check record so the Updates Center reflects the new version
-                if let Some(pool) = &pool {
-                    let _ = checker
-                        .check_backend(pool, &name_clone, &backend_type_clone, &gpu_variant_clone)
-                        .await;
-                }
+                let _ = checker
+                    .check_backend(
+                        pool.as_ref(),
+                        &name_clone,
+                        &backend_type_clone,
+                        &gpu_variant_clone,
+                    )
+                    .await;
             }
             Err(e) => {
                 let _ = jobs_clone

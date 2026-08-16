@@ -18,7 +18,11 @@ use super::helpers::create_state_with_model;
 #[tokio::test]
 async fn test_handle_tama_list_models_states() {
     let config = Config::default();
-    let state = Arc::new(ProxyState::new(config, None, None));
+    let state = Arc::new(ProxyState::new(
+        config,
+        None,
+        crate::db::pool::test_dummy_pool(),
+    ));
 
     // Insert two model configs.
     {

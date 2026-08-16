@@ -328,13 +328,12 @@ pub(crate) async fn apply_repo_pull_completion_with_meta(
 /// (hf writes it early, before the weights), and must not mark the model
 /// row as configured. Non-Completed jobs skip the network fetch entirely.
 ///
-/// Order matters — `rusqlite::Connection` is `!Sync`, so no `&Connection` may
-/// cross an `.await`:
+/// Order matters so the network/DB awaits never hold the job lock:
 /// 1. re-read the job fields under a brief lock,
 /// 2. compute the terminal decision (status + error),
 /// 3. (Completed only) parse config.json (sync fs, soft-fail — a repo without
-///    it completes), fetch HF metadata (network — no connection open), then
-///    update the model row on an OWNED, short-lived connection (sync),
+///    it completes), fetch HF metadata (network), then update the model row
+///    on the Postgres pool,
 /// 4. write the terminal status under a brief lock.
 ///
 /// DB errors are logged but never fail the job — metadata is informational,
@@ -385,31 +384,21 @@ pub(crate) async fn finish_repo_pull(
 
         // DB step — Postgres pool (plan-190 Task 5).
         if let Some(model_id) = model_id {
-            match state.db_pool() {
-                Some(pool) => {
-                    match apply_repo_pull_completion_with_meta(
-                        &pool,
-                        model_id,
-                        &base,
-                        meta_tf.as_ref(),
-                        &dest,
-                    )
-                    .await
-                    {
-                        Ok(context_length_tf) => context_length = context_length_tf,
-                        Err(e) => {
-                            // Metadata is informational — the job still completes.
-                            tracing::warn!(
-                                "repo-pull completion: DB update failed for '{}': {e}",
-                                repo_id
-                            );
-                        }
-                    }
-                }
-                None => {
+            let pool = state.db_pool();
+            match apply_repo_pull_completion_with_meta(
+                &pool,
+                model_id,
+                &base,
+                meta_tf.as_ref(),
+                &dest,
+            )
+            .await
+            {
+                Ok(context_length_tf) => context_length = context_length_tf,
+                Err(e) => {
+                    // Metadata is informational — the job still completes.
                     tracing::warn!(
-                        "repo-pull completion: no database available for '{}', \
-                         skipping model row update",
+                        "repo-pull completion: DB update failed for '{}': {e}",
                         repo_id
                     );
                 }
@@ -1013,7 +1002,7 @@ mod tests {
         let state = Arc::new(crate::proxy::ProxyState::new(
             crate::config::Config::default(),
             None,
-            None,
+            crate::db::pool::test_dummy_pool(),
         ));
 
         let err = start_repo_pull(&state, "../evil", None)
@@ -1032,7 +1021,7 @@ mod tests {
         let state = Arc::new(crate::proxy::ProxyState::new(
             crate::config::Config::default(),
             None,
-            None,
+            crate::db::pool::test_dummy_pool(),
         ));
         let child_arc: Arc<Mutex<Option<tokio::process::Child>>> = Arc::new(Mutex::new(None));
         state
@@ -1068,7 +1057,7 @@ mod tests {
         let state = Arc::new(crate::proxy::ProxyState::new(
             crate::config::Config::default(),
             None,
-            None,
+            crate::db::pool::test_dummy_pool(),
         ));
         let empty_path = tempfile::tempdir().unwrap();
         {
@@ -1107,7 +1096,7 @@ mod tests {
         let state = Arc::new(crate::proxy::ProxyState::new(
             crate::config::Config::default(),
             None,
-            None,
+            crate::db::pool::test_dummy_pool(),
         ));
         let bin_dir = tempfile::tempdir().unwrap();
         let _stub = write_stub(bin_dir.path(), "hf", "#!/bin/sh\nexit 0\n");
@@ -1183,7 +1172,7 @@ printf 'fake-weights' > \"$dest/model.safetensors\"\nexit 0\n",
         let state = Arc::new(crate::proxy::ProxyState::new(
             config,
             Some(db_dir.path().to_path_buf()),
-            Some(pool.clone()),
+            pool.clone(),
         ));
 
         // The wizard pre-creates the stub model row before starting the pull.
@@ -1272,7 +1261,11 @@ printf 'fake-weights' > \"$dest/model.safetensors\"\nexit 0\n",
             let _guard = ENV_GUARD.lock().unwrap();
             std::env::set_var("HF_ENDPOINT", server.uri());
         }
-        let state = crate::proxy::ProxyState::new(crate::config::Config::default(), None, None);
+        let state = crate::proxy::ProxyState::new(
+            crate::config::Config::default(),
+            None,
+            crate::db::pool::test_dummy_pool(),
+        );
         let sink: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(b"boom\n".to_vec()));
         let child_arc: Arc<Mutex<Option<tokio::process::Child>>> = Arc::new(Mutex::new(None));
         state
@@ -1320,7 +1313,11 @@ printf 'fake-weights' > \"$dest/model.safetensors\"\nexit 0\n",
             let _guard = ENV_GUARD.lock().unwrap();
             std::env::set_var("HF_ENDPOINT", server.uri());
         }
-        let state = crate::proxy::ProxyState::new(crate::config::Config::default(), None, None);
+        let state = crate::proxy::ProxyState::new(
+            crate::config::Config::default(),
+            None,
+            crate::db::pool::test_dummy_pool(),
+        );
         let child_arc: Arc<Mutex<Option<tokio::process::Child>>> = Arc::new(Mutex::new(None));
         state
             .pull
@@ -1371,7 +1368,11 @@ printf 'fake-weights' > \"$dest/model.safetensors\"\nexit 0\n",
             let _guard = ENV_GUARD.lock().unwrap();
             std::env::set_var("HF_ENDPOINT", server.uri());
         }
-        let state = crate::proxy::ProxyState::new(crate::config::Config::default(), None, None);
+        let state = crate::proxy::ProxyState::new(
+            crate::config::Config::default(),
+            None,
+            crate::db::pool::test_dummy_pool(),
+        );
         let child_arc: Arc<Mutex<Option<tokio::process::Child>>> = Arc::new(Mutex::new(None));
         state
             .pull
@@ -1454,7 +1455,7 @@ exit 3\n",
         let state = Arc::new(crate::proxy::ProxyState::new(
             config,
             Some(db_dir.path().to_path_buf()),
-            Some(pool.clone()),
+            pool.clone(),
         ));
 
         // The wizard pre-creates the stub model row before starting the pull.
@@ -1556,7 +1557,7 @@ exit 3\n",
         let state = crate::proxy::ProxyState::new(
             crate::config::Config::default(),
             Some(db_dir.path().to_path_buf()),
-            Some(pool.clone()),
+            pool.clone(),
         );
         let model_id: i64 = {
             let record = crate::db::queries::ModelConfigRecord {
@@ -1631,7 +1632,11 @@ exit 3\n",
     /// with the "exited abnormally" fallback message.
     #[tokio::test]
     async fn test_finish_repo_pull_signal_death_message() {
-        let state = crate::proxy::ProxyState::new(crate::config::Config::default(), None, None);
+        let state = crate::proxy::ProxyState::new(
+            crate::config::Config::default(),
+            None,
+            crate::db::pool::test_dummy_pool(),
+        );
         let child_arc: Arc<Mutex<Option<tokio::process::Child>>> = Arc::new(Mutex::new(None));
         state
             .pull
@@ -1688,7 +1693,7 @@ exit 3\n",
         let state = crate::proxy::ProxyState::new(
             crate::config::Config::default(),
             Some(db_dir.path().to_path_buf()),
-            None,
+            crate::db::pool::test_dummy_pool(),
         );
 
         // dest holds a config.json, but with model_id = None nothing may be
@@ -1754,7 +1759,7 @@ exit 3\n",
         let state = Arc::new(crate::proxy::ProxyState::new(
             crate::config::Config::default(),
             None,
-            None,
+            crate::db::pool::test_dummy_pool(),
         ));
         let bin_dir = tempfile::tempdir().unwrap();
         let _stub = write_stub(bin_dir.path(), "hf", "#!/bin/sh\nexit 0\n");

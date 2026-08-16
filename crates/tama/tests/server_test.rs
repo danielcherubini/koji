@@ -6,19 +6,9 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    /// Create a minimal WebState for tests.
-    fn test_web_state(
-        db_dir: Option<std::path::PathBuf>,
-        pool: Option<Arc<PgPool>>,
-    ) -> tama_web::web_types::WebState {
-        let repository = db_dir.and_then(|dir| {
-            tama_core::db::repository::Repository::open(&dir)
-                .ok()
-                .map(|r| {
-                    Arc::new(std::sync::Mutex::new(r))
-                        as Arc<std::sync::Mutex<tama_core::db::repository::Repository>>
-                })
-        });
+    /// Create a minimal WebState for tests (dummy pool when none supplied —
+    /// it never connects).
+    fn test_web_state(pool: Option<Arc<PgPool>>) -> tama_web::web_types::WebState {
         tama_web::web_types::WebState {
             jobs: Some(Arc::new(tama_web::web_types::JobManager::new())),
             capabilities: None,
@@ -26,8 +16,7 @@ mod tests {
             binary_version: "test".to_string(),
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
-            repository,
-            db_pool: pool,
+            db_pool: pool.unwrap_or_else(tama_core::db::pool::test_dummy_pool),
         }
     }
 
@@ -36,12 +25,16 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
             let config = tama_core::config::Config::default();
-            let state = Arc::new(tama_core::proxy::ProxyState::new(config, None, None));
+            let state = Arc::new(tama_core::proxy::ProxyState::new(
+                config,
+                None,
+                tama_core::db::pool::test_dummy_pool(),
+            ));
             axum::serve(
                 listener,
-                tama_web::router::build_web_routes(Arc::new(test_web_state(None, None)))
+                tama_web::router::build_web_routes(Arc::new(test_web_state(None)))
                     .with_state(state)
-                    .layer(axum::extract::Extension(test_web_state(None, None))),
+                    .layer(axum::extract::Extension(test_web_state(None))),
             )
             .await
             .unwrap();
@@ -164,19 +157,17 @@ mod tests {
                 let state = Arc::new(tama_core::proxy::ProxyState::new(
                     config,
                     Some(config_dir_server.clone()),
-                    Some(pool_server.clone()),
+                    pool_server.clone(),
                 ));
                 axum::serve(
                     listener,
-                    tama_web::router::build_web_routes(Arc::new(test_web_state(
-                        Some(config_dir_server.clone()),
-                        Some(pool_server.clone()),
-                    )))
+                    tama_web::router::build_web_routes(Arc::new(test_web_state(Some(
+                        pool_server.clone(),
+                    ))))
                     .with_state(state)
-                    .layer(axum::extract::Extension(test_web_state(
-                        Some(config_dir_server.clone()),
-                        Some(pool_server.clone()),
-                    ))),
+                    .layer(axum::extract::Extension(test_web_state(Some(
+                        pool_server.clone(),
+                    )))),
                 )
                 .await
                 .unwrap();
@@ -395,22 +386,16 @@ mod tests {
             let pool_server_ext = Arc::new(guard.pool.clone());
             tokio::spawn(async move {
                 let config = tama_core::config::Config::default();
-                let state = Arc::new(tama_core::proxy::ProxyState::new(
-                    config,
-                    None,
-                    Some(pool_server),
-                ));
+                let state = Arc::new(tama_core::proxy::ProxyState::new(config, None, pool_server));
                 axum::serve(
                     listener,
-                    tama_web::router::build_web_routes(Arc::new(test_web_state(
-                        None,
-                        Some(pool_server_ext),
-                    )))
+                    tama_web::router::build_web_routes(Arc::new(test_web_state(Some(
+                        pool_server_ext,
+                    ))))
                     .with_state(state)
-                    .layer(axum::extract::Extension(test_web_state(
-                        None,
-                        Some(Arc::new(guard.pool.clone())),
-                    ))),
+                    .layer(axum::extract::Extension(test_web_state(Some(Arc::new(
+                        guard.pool.clone(),
+                    ))))),
                 )
                 .await
                 .unwrap();

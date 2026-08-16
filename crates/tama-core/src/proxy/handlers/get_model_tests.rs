@@ -149,7 +149,7 @@ async fn test_handle_get_model_fetches_from_backend_with_meta() {
         .await;
 
     let config = Config::default();
-    let state = ProxyState::new(config, None, None);
+    let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
     // Add model config
     {
@@ -307,7 +307,7 @@ async fn test_handle_get_model_matches_by_model_field_when_multiple() {
         .await;
 
     let config = Config::default();
-    let state = ProxyState::new(config, None, None);
+    let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
     // Config's model field matches model-b
     {
@@ -362,7 +362,7 @@ async fn test_handle_get_model_matches_by_model_field_when_multiple() {
 #[tokio::test]
 async fn test_handle_get_model_backend_failure_fallback() {
     let config = Config::default();
-    let state = ProxyState::new(config, None, None);
+    let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
     // Add model config
     {
@@ -440,7 +440,7 @@ async fn test_handle_get_model_normalizes_id_from_alias() {
         .await;
 
     let config = Config::default();
-    let state = ProxyState::new(config, None, None);
+    let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
     {
         let mut mc = state.registry.model_configs.write().await;
@@ -540,7 +540,7 @@ async fn test_handle_get_model_loaded_with_reasoning_levels() {
         .await;
 
     let config = Config::default();
-    let state = ProxyState::new(config, None, None);
+    let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
     {
         let mut mc = state.registry.model_configs.write().await;
@@ -631,7 +631,7 @@ async fn test_handle_get_model_loaded_without_reasoning_levels_unchanged() {
         .await;
 
     let config = Config::default();
-    let state = ProxyState::new(config, None, None);
+    let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
     {
         let mut mc = state.registry.model_configs.write().await;

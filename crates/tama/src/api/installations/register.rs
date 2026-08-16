@@ -104,16 +104,7 @@ pub async fn register_installation(
         }
     };
 
-    let pool = match state.db_pool() {
-        Some(p) => p,
-        None => {
-            return error_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Database not configured",
-                None,
-            )
-        }
-    };
+    let pool = state.db_pool();
     let mgr = tama_core::installations::InstallationManager::new(pool);
 
     let info = tama_core::installations::InstallationInfo {
@@ -173,8 +164,7 @@ mod tests {
             binary_version: "test".to_string(),
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
-            repository: None,
-            db_pool: None,
+            db_pool: tama_core::db::pool::test_dummy_pool(),
         }
     }
 
@@ -182,7 +172,11 @@ mod tests {
     #[tokio::test]
     async fn test_register_docker_without_config_returns_400() {
         let config = Config::default();
-        let state = Arc::new(ProxyState::new(config, None, None));
+        let state = Arc::new(ProxyState::new(
+            config,
+            None,
+            tama_core::db::pool::test_dummy_pool(),
+        ));
 
         let web_state = Arc::new(test_web_state());
         let router = crate::router::build_web_routes(web_state.clone())
@@ -226,7 +220,11 @@ mod tests {
     #[tokio::test]
     async fn test_register_non_docker_with_config_returns_400() {
         let config = Config::default();
-        let state = Arc::new(ProxyState::new(config, None, None));
+        let state = Arc::new(ProxyState::new(
+            config,
+            None,
+            tama_core::db::pool::test_dummy_pool(),
+        ));
 
         let web_state = Arc::new(test_web_state());
         let router = crate::router::build_web_routes(web_state.clone())
@@ -277,7 +275,11 @@ mod tests {
     #[tokio::test]
     async fn test_register_empty_name_returns_400() {
         let config = Config::default();
-        let state = Arc::new(ProxyState::new(config, None, None));
+        let state = Arc::new(ProxyState::new(
+            config,
+            None,
+            tama_core::db::pool::test_dummy_pool(),
+        ));
 
         let web_state = Arc::new(test_web_state());
         let router = crate::router::build_web_routes(web_state.clone())
@@ -317,7 +319,11 @@ mod tests {
     #[tokio::test]
     async fn test_register_invalid_docker_config_returns_400() {
         let config = Config::default();
-        let state = Arc::new(ProxyState::new(config, None, None));
+        let state = Arc::new(ProxyState::new(
+            config,
+            None,
+            tama_core::db::pool::test_dummy_pool(),
+        ));
 
         let web_state = Arc::new(test_web_state());
         let router = crate::router::build_web_routes(web_state.clone())

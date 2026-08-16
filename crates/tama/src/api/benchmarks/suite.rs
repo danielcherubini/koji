@@ -110,10 +110,7 @@ async fn run_suite(
     );
 
     // Load the global config from Postgres (plan-190 Task 3).
-    let pool = ctx
-        .db_pool
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("Postgres pool not available; cannot load config"))?;
+    let pool = ctx.db_pool.as_ref();
     let config = tama_core::config::Config::load_from_pool(pool).await?;
 
     // Resolve model — shared across all sub-runs (Postgres, plan-190 Task 5).

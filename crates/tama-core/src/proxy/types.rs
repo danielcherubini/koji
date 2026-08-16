@@ -300,16 +300,15 @@ pub struct ProxyState {
     /// Uses Arc<RwLock> so mutable access (lazy client creation) works across clones.
     pub(crate) tamad_clients:
         Arc<tokio::sync::RwLock<HashMap<String, crate::tamad::client::TamadClient>>>,
-    /// Postgres pool (plan-190). `None` until Postgres becomes required
-    /// (Task 9); `main.rs` is the single owner of the pool and hands the
-    /// same `Arc<PgPool>` to both `ProxyState` and `WebState`.
-    pub(crate) db_pool: Option<Arc<sqlx::PgPool>>,
+    /// Postgres pool (plan-190 Task 9: always present). `main.rs` is the
+    /// single owner of the pool and hands the same `Arc<PgPool>` to both
+    /// `ProxyState` and `WebState`.
+    pub(crate) db_pool: Arc<sqlx::PgPool>,
 }
 
 impl ProxyState {
-    /// The Postgres pool, if Postgres is enabled (plan-190). `None` during
-    /// the SQLite-only migration stages.
-    pub fn db_pool(&self) -> Option<Arc<sqlx::PgPool>> {
+    /// The Postgres pool (always present; plan-190 Task 9).
+    pub fn db_pool(&self) -> Arc<sqlx::PgPool> {
         self.db_pool.clone()
     }
 
@@ -427,9 +426,7 @@ impl ProxyState {
         }
 
         // Slow path: load from DB and create client
-        let pool = self
-            .db_pool()
-            .with_context(|| "Database not available for tamad lookup")?;
+        let pool = self.db_pool();
         let tamad_record = crate::db::queries::get_tamad(pool.as_ref(), tamad_id)
             .await
             .with_context(|| "Failed to look up tamad in database")?
@@ -458,7 +455,7 @@ mod tests {
         let state = Arc::new(ProxyState::new(
             crate::config::Config::default(),
             None,
-            None,
+            crate::db::pool::test_dummy_pool(),
         ));
         let dest = tempfile::tempdir().unwrap();
         std::fs::write(dest.path().join("a.bin"), vec![0u8; 100]).unwrap();
@@ -506,7 +503,7 @@ mod tests {
         let state = Arc::new(ProxyState::new(
             crate::config::Config::default(),
             None,
-            None,
+            crate::db::pool::test_dummy_pool(),
         ));
 
         assert_eq!(
@@ -558,7 +555,7 @@ mod tests {
         let state = Arc::new(ProxyState::new(
             crate::config::Config::default(),
             None,
-            None,
+            crate::db::pool::test_dummy_pool(),
         ));
         let err = state
             .start_repo_pull("a/b\\c", None)
@@ -572,9 +569,13 @@ mod tests {
 
     /// Verify the public surface exposes service handles and sub-struct
     /// composition — not lock guards.
-    #[test]
-    fn test_proxy_state_public_surface() {
-        let state = ProxyState::new(crate::config::Config::default(), None, None);
+    #[tokio::test]
+    async fn test_proxy_state_public_surface() {
+        let state = ProxyState::new(
+            crate::config::Config::default(),
+            None,
+            crate::db::pool::test_dummy_pool(),
+        );
         let _: &reqwest::Client = state.client();
         let _: &Option<std::path::PathBuf> = state.db_dir();
         let _: &Option<Arc<PullQueueService>> = state.pull_queue();

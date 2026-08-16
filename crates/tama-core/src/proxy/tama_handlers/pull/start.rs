@@ -520,8 +520,9 @@ pub async fn start_pull_from_queue(
         // the parent model_configs row exists. Use the id returned by
         // setup_model_after_pull so there's no case-sensitive lookup in
         // between that could miss.
-        match (state_clone.db_pool.clone(), model_id) {
-            (Some(pool), Some(mid)) => {
+        match model_id {
+            Some(mid) => {
+                let pool = state_clone.db_pool();
                 if let Err(e) = crate::db::queries::upsert_model_file(
                     &pool,
                     mid,
@@ -596,13 +597,7 @@ pub async fn start_pull_from_queue(
                     );
                 }
             }
-            (None, _) => {
-                tracing::warn!(
-                    job_id = %job_id_clone,
-                    "Postgres pool not configured — model_files row skipped"
-                );
-            }
-            (Some(_), None) => {
+            None => {
                 tracing::info!(
                     job_id = %job_id_clone,
                     repo = %repo_id_clone,

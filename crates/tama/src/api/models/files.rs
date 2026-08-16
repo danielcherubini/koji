@@ -33,11 +33,11 @@ fn file_record_json(rec: &ModelFileRecord) -> serde_json::Value {
 /// POST /tama/v1/models/:id/refresh — re-query HuggingFace for the current commit
 /// SHA and per-file LFS hashes / sizes, and write them into the local DB.
 ///
-/// Structured to keep `rusqlite::Connection` off `.await` points:
+/// Structured so the Postgres pool is only used off `.await`-held state:
 ///   1. Load config (async, handles its own spawn_blocking)
-///   2. `spawn_blocking` — resolve repo_id from DB
+///   2. resolve repo_id from the Postgres pool
 ///   3. `.await` — fetch from HF
-///   4. `spawn_blocking` — open DB, upsert pull + files, read back
+///   4. upsert pull + files on the pool, read back
 pub async fn refresh_model_metadata(
     State(state): State<Arc<ProxyState>>,
     Extension(web_state): Extension<WebState>,
@@ -49,19 +49,10 @@ pub async fn refresh_model_metadata(
         Err((status, body)) => return (status, Json(body)).into_response(),
     };
 
-    let pool = match web_state.db_pool.as_ref() {
-        Some(p) => p.clone(),
-        None => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Postgres pool not available; cannot refresh model metadata",
-                None,
-            )
-        }
-    };
+    let pool = web_state.db_pool.as_ref();
 
     // Step 1: resolve model_id and repo_id (async, against Postgres).
-    let (model_id, repo_id) = match resolve_model_record(&pool, &id_str).await {
+    let (model_id, repo_id) = match resolve_model_record(pool, &id_str).await {
         Ok((model_id, record)) => (model_id, record.repo_id),
         Err((s, b)) => return (s, Json(b)).into_response(),
     };
@@ -77,7 +68,7 @@ pub async fn refresh_model_metadata(
                 Ok(meta) => {
                     let repo_id_out = repo_id.clone();
                     let write = tama_core::models::update::update_model_config_hf_metadata(
-                        &pool, model_id, &meta,
+                        pool, model_id, &meta,
                     )
                     .await;
                     // Keep the in-memory registry (dashboard SSE snapshots) in
@@ -129,11 +120,11 @@ pub async fn refresh_model_metadata(
     // new entries for quants the user never pulled. This prevents the
     // "Check all for updates" button from polluting the model_files table.
     let write = async {
-        tama_core::db::queries::upsert_model_pull(&pool, model_id, &repo_id, &listing.commit_sha)
+        tama_core::db::queries::upsert_model_pull(pool, model_id, &repo_id, &listing.commit_sha)
             .await?;
 
         // Build a set of filenames already tracked locally.
-        let local_files = tama_core::db::queries::get_model_files(&pool, model_id).await?;
+        let local_files = tama_core::db::queries::get_model_files(pool, model_id).await?;
         let local_filenames: std::collections::HashSet<&str> =
             local_files.iter().map(|f| f.filename.as_str()).collect();
 
@@ -145,7 +136,7 @@ pub async fn refresh_model_metadata(
             }
             let blob = blobs.get(&file.filename);
             tama_core::db::queries::upsert_model_file(
-                &pool,
+                pool,
                 model_id,
                 &repo_id,
                 &file.filename,
@@ -155,8 +146,8 @@ pub async fn refresh_model_metadata(
             )
             .await?;
         }
-        let files_out = tama_core::db::queries::get_model_files(&pool, model_id).await?;
-        let pull_out = tama_core::db::queries::get_model_pull(&pool, model_id).await?;
+        let files_out = tama_core::db::queries::get_model_files(pool, model_id).await?;
+        let pull_out = tama_core::db::queries::get_model_pull(pool, model_id).await?;
         Ok::<_, anyhow::Error>((pull_out, files_out))
     };
 
@@ -198,19 +189,10 @@ pub async fn verify_model_files(
         Err((status, body)) => return (status, Json(body)).into_response(),
     };
 
-    let pool = match web_state.db_pool.as_ref() {
-        Some(p) => p.clone(),
-        None => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Postgres pool not available; cannot verify model files",
-                None,
-            )
-        }
-    };
+    let pool = web_state.db_pool.as_ref();
 
     // Resolve model_id and repo_id (async, against Postgres).
-    let (model_id, record) = match resolve_model_record(&pool, &id_str).await {
+    let (model_id, record) = match resolve_model_record(pool, &id_str).await {
         Ok(v) => v,
         Err((s, b)) => return (s, Json(b)).into_response(),
     };
@@ -224,7 +206,6 @@ pub async fn verify_model_files(
     let model_dir = tama_core::models::repo_path(&models_dir, &repo_id);
 
     // Verify against Postgres (plan-190 Task 5) — model files live in Postgres.
-    let pool = pool.as_ref();
     let results =
         match tama_core::models::verify::verify_model(pool, model_id, &repo_id, &model_dir).await {
             Ok(r) => r,
@@ -289,7 +270,7 @@ mod tests {
         let state = Arc::new(ProxyState::new(
             config,
             Some(tmp_dir.to_path_buf()),
-            Some(pool.clone()),
+            pool.clone(),
         ));
 
         let web_state = Arc::new(crate::web_types::WebState {
@@ -299,8 +280,7 @@ mod tests {
             binary_version: "test".to_string(),
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
-            repository: None,
-            db_pool: Some(pool),
+            db_pool: pool,
         });
 
         (state, web_state)

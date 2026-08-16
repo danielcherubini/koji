@@ -177,12 +177,11 @@ pub fn start_metrics_collector(
         // Seed in-memory bucket accumulator from Postgres. Replay the most
         // recent raw rows through the same feed_sample() path used by the
         // live loop so the seeded buckets have identical structure to live ones.
-        if let Some(pool) = metrics_state.db_pool() {
-            if let Ok(rows) = crate::db::queries::get_recent_system_metrics(&pool, 450).await {
-                for row in rows {
-                    let sample = row_into_sample(&row);
-                    feed_sample(&mut frozen_buckets, &mut accum, &sample);
-                }
+        let pool = metrics_state.db_pool();
+        if let Ok(rows) = crate::db::queries::get_recent_system_metrics(&pool, 450).await {
+            for row in rows {
+                let sample = row_into_sample(&row);
+                feed_sample(&mut frozen_buckets, &mut accum, &sample);
             }
         }
 
@@ -328,12 +327,9 @@ pub fn start_metrics_collector(
                 .proxy
                 .metrics_retention_secs;
             let cutoff_ms = sample.ts_unix_ms - (retention_secs as i128 * 1000) as i64;
-            if let Some(pool) = metrics_state.db_pool() {
-                if let Err(e) =
-                    crate::db::queries::insert_system_metric(&pool, &row, cutoff_ms).await
-                {
-                    tracing::warn!("failed to persist system metric: {}", e);
-                }
+            let pool = metrics_state.db_pool();
+            if let Err(e) = crate::db::queries::insert_system_metric(&pool, &row, cutoff_ms).await {
+                tracing::warn!("failed to persist system metric: {}", e);
             }
 
             // 6. Feed this sample into the bucket accumulator. This freezes

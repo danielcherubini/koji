@@ -353,7 +353,11 @@ mod tests {
     #[tokio::test]
     async fn test_compaction_disabled_returns_501() {
         let config = crate::config::Config::default();
-        let state = Arc::new(ProxyState::new(config, None, None));
+        let state = Arc::new(ProxyState::new(
+            config,
+            None,
+            crate::db::pool::test_dummy_pool(),
+        ));
         let app = crate::proxy::server::router::build_router(state.clone()).await;
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -379,7 +383,11 @@ mod tests {
     #[tokio::test]
     async fn test_compaction_body_size_limit() {
         let config = crate::config::Config::default();
-        let state = Arc::new(ProxyState::new(config, None, None));
+        let state = Arc::new(ProxyState::new(
+            config,
+            None,
+            crate::db::pool::test_dummy_pool(),
+        ));
         let app = crate::proxy::server::router::build_router(state.clone()).await;
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

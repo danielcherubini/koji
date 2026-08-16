@@ -66,7 +66,7 @@ fn test_state() -> Arc<ProxyState> {
     Arc::new(ProxyState::new(
         crate::config::Config::default(),
         None,
-        None,
+        crate::db::pool::test_dummy_pool(),
     ))
 }
 

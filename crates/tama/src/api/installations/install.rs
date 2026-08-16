@@ -142,16 +142,7 @@ pub async fn install_installation(
         };
 
         // Capture the Postgres pool for the background task
-        let pool = match state.db_pool() {
-            Some(p) => p,
-            None => {
-                return error_response(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "Database not configured",
-                    None,
-                )
-            }
-        };
+        let pool = state.db_pool();
 
         let jobs_clone = jobs.clone();
         let job_clone = job.clone();
@@ -425,27 +416,26 @@ pub async fn install_installation(
         match result {
             Ok(binary_path) => {
                 // Register the installation in the DB so `resolve_backend_path` can find it.
-                if let Some(pool) = db_pool {
-                    let installed_at = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_secs() as i64)
-                        .unwrap_or(0);
-                    let mgr = tama_core::installations::InstallationManager::new(pool);
-                    let reg_result = mgr
-                        .add_installation(&tama_core::installations::InstallationInfo {
-                            name: reg_backend_name,
-                            backend_type: reg_backend_type,
-                            version: reg_version,
-                            path: binary_path,
-                            installed_at,
-                            gpu_variant: reg_gpu_variant,
-                            source: Some(reg_source),
-                            docker_config: None,
-                        })
-                        .await;
-                    if let Err(e) = reg_result {
-                        tracing::warn!("Failed to register backend in DB: {}", e);
-                    }
+                let pool = db_pool;
+                let installed_at = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                let mgr = tama_core::installations::InstallationManager::new(pool);
+                let reg_result = mgr
+                    .add_installation(&tama_core::installations::InstallationInfo {
+                        name: reg_backend_name,
+                        backend_type: reg_backend_type,
+                        version: reg_version,
+                        path: binary_path,
+                        installed_at,
+                        gpu_variant: reg_gpu_variant,
+                        source: Some(reg_source),
+                        docker_config: None,
+                    })
+                    .await;
+                if let Err(e) = reg_result {
+                    tracing::warn!("Failed to register backend in DB: {}", e);
                 }
                 let _ = jobs_clone
                     .finish(&job_clone, crate::web_types::JobStatus::Succeeded, None)
@@ -624,9 +614,8 @@ pub async fn remove_installation(
     // Clean up update_check records — use LIKE pattern to match all variants
     // (e.g., "llama_cpp:cpu", "llama_cpp:cuda") plus legacy format.
     // (Postgres, plan-190 Task 4; best-effort.)
-    if let Some(pool) = state.db_pool() {
-        let _ = tama_core::db::queries::delete_update_checks_for_backend(&pool, &name).await;
-    }
+    let pool = state.db_pool();
+    let _ = tama_core::db::queries::delete_update_checks_for_backend(&pool, &name).await;
 
     Json(DeleteResponse { removed: true }).into_response()
 }

@@ -63,13 +63,7 @@ pub async fn create_tamad(
         }
     };
 
-    let Some(pool) = web_state.db_pool.as_ref() else {
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Postgres pool not available",
-            None,
-        );
-    };
+    let pool = web_state.db_pool.as_ref();
 
     // Auto-generate UUID for tamad id
     let tamad_id = Uuid::new_v4().to_string();
@@ -127,7 +121,7 @@ mod tests {
         let guard = crate::testing::postgres::with_schema().await;
         let pool = Arc::new(guard.pool.clone());
         let config = tama_core::config::Config::default();
-        let state = Arc::new(ProxyState::new(config, None, Some(pool.clone())));
+        let state = Arc::new(ProxyState::new(config, None, pool.clone()));
 
         let web_state = Arc::new(crate::web_types::WebState {
             jobs: Some(Arc::new(crate::web_types::JobManager::new())),
@@ -136,8 +130,7 @@ mod tests {
             binary_version: "test".to_string(),
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-            repository: None,
-            db_pool: Some(pool),
+            db_pool: pool,
         });
 
         (state, web_state, guard)

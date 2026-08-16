@@ -18,7 +18,7 @@ pub(crate) async fn create_test_state() -> (Arc<ProxyState>, crate::testing::pos
     let pool = Arc::new(guard.pool.clone());
     let svc = PullQueueService::new(pool.clone(), 2);
     let config = crate::config::Config::default();
-    let mut state = ProxyState::new(config, None, Some(pool));
+    let mut state = ProxyState::new(config, None, pool);
     state.pull.pull_queue = Some(Arc::new(svc));
     (Arc::new(state), guard)
 }

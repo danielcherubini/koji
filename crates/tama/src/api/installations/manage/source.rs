@@ -26,16 +26,7 @@ pub async fn update_installation_source(
         return resp;
     }
 
-    let pool = match state.db_pool() {
-        Some(p) => p,
-        None => {
-            return error_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Database not configured",
-                None,
-            )
-        }
-    };
+    let pool = state.db_pool();
     let mgr = tama_core::installations::InstallationManager::new(pool);
 
     // Determine gpu_variant: use explicit value or auto-infer from manager

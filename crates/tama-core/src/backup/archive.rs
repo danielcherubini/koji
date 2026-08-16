@@ -1,35 +1,45 @@
 //! Archive creation and extraction for Tama backup/restore.
 //!
-//! **SHA-256 Contract:** The SHA-256 in the manifest covers all archive entries
-//! **EXCEPT** `manifest.json` itself. This avoids the chicken-and-egg problem.
+//! **v3 format (plan-190 Task 9):** the archive contains ONLY `manifest.json`
+//! and `configs/*.toml` model cards — no database file. All DB state and the
+//! global app config live in Postgres (`pg_dump` is the DB backup path). The
+//! manifest's model/backend lists come from Postgres queries at backup time.
+//!
+//! **SHA-256 Contract:** `manifest.sha256` covers all archive entries
+//! **EXCEPT** `manifest.json` itself (i.e. the config-card entries). This
+//! avoids the chicken-and-egg problem.
 //!
 //! On creation (`create_backup`):
-//! 1. Stream config files + DB through a hasher
+//! 1. Stream config cards through a hasher
 //! 2. Compute SHA-256
 //! 3. Write tar.gz with manifest.json first (containing the hash)
-//! 4. Then write all other entries
+//! 4. Then write the config-card entries
 //!
 //! On extraction (`extract_backup`):
 //! 1. Read all entries except manifest.json into a hasher
 //! 2. Compare computed SHA-256 against manifest.sha256
 //! 3. If mismatch, delete extracted files and error
+//!
+//! Pre-v3 archives (containing `tama.db`) still extract: the db entry is
+//! hashed (for integrity) but ignored — its data stays in Postgres.
 
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
+use sqlx::PgPool;
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use tar::{Archive, Builder};
 
 use crate::backup::manifest::{BackendEntry, BackupManifest, BackupModelEntry};
+use crate::db::queries;
 
 /// Result of extracting a backup archive.
 #[derive(Debug)]
 pub struct ExtractResult {
     /// Parsed manifest from the archive
     pub manifest: BackupManifest,
-    /// Path to extracted tama.db
-    pub db_path: PathBuf,
     /// Paths to extracted model card TOML files
     pub card_paths: Vec<PathBuf>,
 }
@@ -85,28 +95,92 @@ impl Write for StreamingHasher {
     }
 }
 
-/// Create a backup archive containing tama.db, configs/*.toml (model cards).
+/// Create a v3 backup archive: `manifest.json` (built from Postgres) +
+/// config cards only.
 ///
-/// **SHA-256 Contract:** The returned manifest's `sha256` field covers all archive
-/// entries **EXCEPT** `manifest.json` itself.
-pub fn create_backup(config_dir: &Path, output_path: &Path) -> Result<BackupManifest> {
+/// **SHA-256 Contract:** The returned manifest's `sha256` field covers all
+/// archive entries **EXCEPT** `manifest.json` itself (the config cards).
+pub async fn create_backup(
+    pool: &PgPool,
+    config_dir: &Path,
+    output_path: &Path,
+) -> Result<BackupManifest> {
     if !config_dir.exists() {
         anyhow::bail!("Config directory does not exist: {}", config_dir.display());
     }
 
-    // Step 1: Compute SHA-256 by streaming files through hasher
+    // Manifest lists come from Postgres (plan-190 Task 9: no tama.db).
+    let models = backup_model_entries(pool).await?;
+    let backends = backup_backend_entries(pool).await?;
+
+    // File streaming is blocking — keep it off the async runtime.
+    let (config_dir, output_path) = (config_dir.to_path_buf(), output_path.to_path_buf());
+    tokio::task::spawn_blocking(move || {
+        create_backup_offline(&models, &backends, &config_dir, &output_path)
+    })
+    .await
+    .context("backup task panicked")?
+    .context("Failed to create archive")
+}
+
+/// Model entries for the backup manifest, from Postgres `model_pulls` +
+/// `model_files`.
+async fn backup_model_entries(pool: &PgPool) -> Result<Vec<BackupModelEntry>> {
+    let pulls = queries::get_all_model_pulls(pool).await?;
+    let files = queries::get_all_model_files(pool).await?;
+
+    let mut files_by_repo: HashMap<String, Vec<(Option<String>, i64)>> = HashMap::new();
+    for f in files {
+        files_by_repo
+            .entry(f.repo_id)
+            .or_default()
+            .push((f.quant, f.size_bytes.unwrap_or(0)));
+    }
+
+    Ok(pulls
+        .into_iter()
+        .map(|pull| {
+            let repo_files = files_by_repo
+                .get(&pull.repo_id)
+                .cloned()
+                .unwrap_or_default();
+            let quants: Vec<String> = repo_files.iter().filter_map(|(q, _)| q.clone()).collect();
+            let total_size_bytes: i64 = repo_files.iter().map(|(_, size)| *size).sum();
+            BackupModelEntry {
+                repo_id: pull.repo_id,
+                quants,
+                total_size_bytes,
+            }
+        })
+        .collect())
+}
+
+/// Active backend entries for the backup manifest, from Postgres
+/// `provider_installations`.
+async fn backup_backend_entries(pool: &PgPool) -> Result<Vec<BackendEntry>> {
+    Ok(queries::list_active_installations(pool)
+        .await?
+        .into_iter()
+        .map(|r| BackendEntry {
+            name: r.name,
+            version: r.version,
+            backend_type: r.backend_type,
+            source: r.source,
+            docker_config: r.docker_config,
+        })
+        .collect())
+}
+
+/// Blocking half of [`create_backup`]: hash the config cards, build the
+/// manifest, write the tar.gz (manifest first, then cards).
+fn create_backup_offline(
+    models: &[BackupModelEntry],
+    backends: &[BackendEntry],
+    config_dir: &Path,
+    output_path: &Path,
+) -> Result<BackupManifest> {
+    // Step 1: compute SHA-256 by streaming the config cards through a hasher.
     let mut hasher = StreamingHasher::new();
-
-    let mut add_file_to_hasher = |path: &Path, description: &str| -> Result<()> {
-        let file = File::open(path)
-            .with_context(|| format!("Failed to open {}: {}", description, path.display()))?;
-        let mut reader = BufReader::new(file);
-        std::io::copy(&mut reader, &mut hasher)
-            .with_context(|| format!("Failed to hash {}: {}", description, path.display()))?;
-        Ok(())
-    };
-
-    // Add all model card TOML files (sorted for consistent hashing)
     let configs_dir = config_dir.join("configs");
     if configs_dir.exists() {
         let mut entries: Vec<_> = fs::read_dir(&configs_dir)?
@@ -116,105 +190,34 @@ pub fn create_backup(config_dir: &Path, output_path: &Path) -> Result<BackupMani
         entries.sort_by_key(|e| e.path());
         for entry in entries {
             let path = entry.path();
-            add_file_to_hasher(&path, &format!("config card: {}", path.display()))?;
+            let file = File::open(&path)
+                .with_context(|| format!("Failed to open config card: {}", path.display()))?;
+            let mut reader = BufReader::new(file);
+            std::io::copy(&mut reader, &mut hasher)
+                .with_context(|| format!("Failed to hash config card: {}", path.display()))?;
         }
     }
-
-    // Add tama.db using VACUUM INTO for a clean copy
-    let db_path = config_dir.join("tama.db");
-    if !db_path.exists() {
-        anyhow::bail!("tama.db not found at {}", db_path.display());
-    }
-    let temp_db =
-        tempfile::NamedTempFile::new().context("Failed to create temp file for DB backup")?;
-    let temp_db_path = temp_db.path().to_path_buf();
-    crate::db::backup_db(config_dir, &temp_db_path).context("Failed to backup database")?;
-    add_file_to_hasher(&temp_db_path, "tama.db")?;
-
-    // Compute SHA-256
     let sha256_hex = hasher.finalize_hex();
 
-    // Step 2: Build BackupManifest by querying the DB
-    let conn = rusqlite::Connection::open(&db_path)
-        .context("Failed to open database for manifest generation")?;
-    let manifest = build_manifest_from_db(&conn, &sha256_hex)?;
+    // Step 2: build the manifest (lists already fetched from Postgres).
+    let mut manifest = BackupManifest::new(env!("CARGO_PKG_VERSION"));
+    manifest.sha256 = sha256_hex;
+    manifest.models = models.to_vec();
+    manifest.backends = backends.to_vec();
 
-    // Step 3: Create the tar.gz archive
-    create_tar_gz_archive(config_dir, output_path, &manifest, &temp_db_path)
-        .context("Failed to create archive")?;
-
+    // Step 3: create the tar.gz archive.
+    write_archive(config_dir, output_path, &manifest)?;
     Ok(manifest)
 }
 
-fn build_manifest_from_db(conn: &rusqlite::Connection, sha256: &str) -> Result<BackupManifest> {
-    use std::collections::HashMap;
-
-    let mut stmt_pulls = conn
-        .prepare("SELECT repo_id, commit_sha FROM model_pulls")
-        .context("Failed to prepare model_pulls query")?;
-    let pulls: Vec<(String, String)> = stmt_pulls
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-        .collect::<Result<_, _>>()?;
-
-    let mut stmt_files = conn
-        .prepare("SELECT repo_id, quant, size_bytes FROM model_files")
-        .context("Failed to prepare model_files query")?;
-    let files: Vec<(String, Option<String>, i64)> = stmt_files
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
-        .collect::<Result<_, _>>()?;
-
-    let mut files_by_repo: HashMap<String, Vec<(Option<String>, i64)>> = HashMap::new();
-    for (repo_id, quant, size_bytes) in files {
-        files_by_repo
-            .entry(repo_id)
-            .or_default()
-            .push((quant, size_bytes));
-    }
-
-    let models_vec: Vec<BackupModelEntry> = pulls
-        .into_iter()
-        .map(|(repo_id, _)| {
-            let repo_files = files_by_repo.get(&repo_id).cloned().unwrap_or_default();
-            let quants: Vec<String> = repo_files.iter().filter_map(|(q, _)| q.clone()).collect();
-            let total_size: i64 = repo_files.iter().map(|(_, size)| *size).sum();
-            BackupModelEntry {
-                repo_id,
-                quants,
-                total_size_bytes: total_size,
-            }
-        })
-        .collect();
-
-    let mut stmt_backends = conn.prepare(
-        "SELECT name, version, backend_type, source, docker_config FROM provider_installations WHERE is_active = 1"
-    ).context("Failed to prepare provider_installations query")?;
-    let backends: Vec<BackendEntry> = stmt_backends
-        .query_map([], |row| {
-            Ok(BackendEntry {
-                name: row.get(0)?,
-                version: row.get(1)?,
-                backend_type: row.get(2)?,
-                source: row.get(3)?,
-                docker_config: row.get(4)?,
-            })
-        })?
-        .collect::<Result<_, _>>()?;
-
-    let tama_version = env!("CARGO_PKG_VERSION").to_string();
-
-    let mut manifest = BackupManifest::new(&tama_version);
-    manifest.sha256 = sha256.to_string();
-    manifest.models = models_vec;
-    manifest.backends = backends;
-
-    Ok(manifest)
-}
-
-fn create_tar_gz_archive(
+/// Write the tar.gz archive: `manifest.json` first, then the sorted config
+/// cards. No database file (v3, plan-190 Task 9).
+///
+/// Public so tests (and future tooling) can build archives without a DB.
+pub fn write_archive(
     config_dir: &Path,
     output_path: &Path,
     manifest: &BackupManifest,
-    temp_db_path: &Path,
 ) -> Result<()> {
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent)
@@ -259,9 +262,6 @@ fn create_tar_gz_archive(
                 .context("Failed to add config card to archive")?;
         }
     }
-
-    add_file_to_archive(&mut tar, temp_db_path, "tama.db")
-        .context("Failed to add tama.db to archive")?;
 
     tar.into_inner()?
         .finish()
@@ -345,7 +345,6 @@ pub fn extract_backup(archive_path: &Path, target_dir: &Path) -> Result<ExtractR
     let mut archive = Archive::new(decoder);
 
     let mut hasher = StreamingHasher::new();
-    let mut extracted_db: Option<PathBuf> = None;
     let mut extracted_cards: Vec<PathBuf> = Vec::new();
 
     for entry_result in archive.entries()? {
@@ -429,10 +428,10 @@ pub fn extract_backup(archive_path: &Path, target_dir: &Path) -> Result<ExtractR
                     .with_context(|| format!("Failed to write file: {}", dest_path.display()))?;
             }
 
-            match entry_name_owned.as_str() {
-                "tama.db" => extracted_db = Some(dest_path),
-                name if name.starts_with("configs/") => extracted_cards.push(dest_path),
-                _ => {}
+            // v3: only config cards matter; pre-v3 `tama.db` entries are
+            // extracted + hashed (integrity) but ignored.
+            if entry_name_owned.starts_with("configs/") {
+                extracted_cards.push(dest_path);
             }
         } else {
             let mut _contents = Vec::new();
@@ -454,7 +453,6 @@ pub fn extract_backup(archive_path: &Path, target_dir: &Path) -> Result<ExtractR
 
     Ok(ExtractResult {
         manifest,
-        db_path: extracted_db.context("tama.db not found in archive")?,
         card_paths: extracted_cards,
     })
 }
@@ -462,142 +460,222 @@ pub fn extract_backup(archive_path: &Path, target_dir: &Path) -> Result<ExtractR
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rusqlite::Connection;
-    use std::fs;
 
-    #[test]
-    fn test_create_and_extract_backup_roundtrip() {
+    /// Seed a Postgres schema with one pulled model + one active backend.
+    async fn seed_fixture(pool: &PgPool) {
+        let mc = crate::config::ModelConfig {
+            backend: "llama_cpp".to_string(),
+            model: Some("test/repo".to_string()),
+            ..Default::default()
+        };
+        let key = crate::models::ConfigKey::from_repo_id("test/repo");
+        let model_id = crate::db::save_model_config(pool, key.as_str(), &mc)
+            .await
+            .unwrap();
+        crate::db::queries::upsert_model_pull(pool, model_id, "test/repo", "abc123")
+            .await
+            .unwrap();
+        crate::db::queries::upsert_model_file(
+            pool,
+            model_id,
+            "test/repo",
+            "model.gguf",
+            Some("Q4_K_M"),
+            None,
+            Some(1000),
+        )
+        .await
+        .unwrap();
+        crate::db::queries::insert_installation(
+            pool,
+            &crate::db::queries::InstallationRecord {
+                id: 0,
+                name: "llama_cpp".to_string(),
+                backend_type: "llama_cpp".to_string(),
+                version: "v1.0".to_string(),
+                path: "/tmp/llama".to_string(),
+                installed_at: 1234567890,
+                gpu_variant: "cpu".to_string(),
+                source: Some("prebuilt".to_string()),
+                is_active: true,
+                docker_config: None,
+                logical_id: String::new(),
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    /// v3 round-trip: manifest from Postgres, no db entry in the archive,
+    /// config card survives create -> extract.
+    #[tokio::test]
+    async fn test_create_and_extract_backup_roundtrip() {
+        let guard = crate::testing::postgres::with_schema().await;
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let config_dir = config_dir.path();
+        let output_path = config_dir_dir_join(config_dir, "backup.tar.gz");
+        let extract_dir = config_dir_dir_join(config_dir, "extracted");
+
+        fs::create_dir_all(config_dir.join("configs")).expect("create dirs");
+        fs::write(
+            config_dir.join("configs").join("test_config.toml"),
+            "[model]\nid = \"test/model\"\nname = \"Test Model\"\n",
+        )
+        .expect("write model card");
+
+        seed_fixture(&guard.pool).await;
+
+        let manifest = create_backup(&guard.pool, config_dir, &output_path)
+            .await
+            .expect("create_backup should succeed");
+        assert!(
+            manifest.sha256.len() == 64,
+            "sha256 should be hex: {:?}",
+            manifest
+        );
+        assert_eq!(
+            manifest.models.len(),
+            1,
+            "manifest should list the pulled model"
+        );
+        assert_eq!(manifest.models[0].repo_id, "test/repo");
+        assert_eq!(manifest.models[0].quants, vec!["Q4_K_M".to_string()]);
+        assert_eq!(manifest.models[0].total_size_bytes, 1000);
+        assert_eq!(
+            manifest.backends.len(),
+            1,
+            "manifest should list the active backend"
+        );
+        assert_eq!(manifest.backends[0].name, "llama_cpp");
+
+        let extracted = extract_backup(&output_path, &extract_dir).unwrap();
+        // No db entry: only the model card is extracted as content.
+        assert_eq!(
+            extracted.card_paths.len(),
+            1,
+            "only the model card should extract"
+        );
+        let card = fs::read_to_string(&extracted.card_paths[0]).expect("read card");
+        assert!(card.contains("test/model"));
+
+        // The archive must not contain a tama.db entry.
+        assert!(
+            !archive_contains_entry(&output_path, "tama.db"),
+            "v3 archive must not contain tama.db"
+        );
+        guard.finish().await;
+    }
+
+    fn config_dir_dir_join(dir: &Path, name: &str) -> PathBuf {
+        dir.join(name)
+    }
+
+    fn archive_contains_entry(archive_path: &Path, name: &str) -> bool {
+        let file = File::open(archive_path).unwrap();
+        let decoder = flate2::read::GzDecoder::new(file);
+        let mut archive = Archive::new(decoder);
+        archive.entries().unwrap().any(|e| {
+            e.as_ref()
+                .map(|e| {
+                    e.path()
+                        .map(|p| p.to_string_lossy() == name)
+                        .unwrap_or(false)
+                })
+                .unwrap_or(false)
+        })
+    }
+
+    /// A tampered manifest version is rejected on extraction.
+    #[tokio::test]
+    async fn test_backup_version_validation_rejects_incompatible() {
+        let guard = crate::testing::postgres::with_schema().await;
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let config_dir = temp_dir.path().join("config");
         let output_path = temp_dir.path().join("backup.tar.gz");
         let extract_dir = temp_dir.path().join("extracted");
 
         fs::create_dir_all(config_dir.join("configs")).expect("create dirs");
+        seed_fixture(&guard.pool).await;
+        create_backup(&guard.pool, &config_dir, &output_path)
+            .await
+            .expect("create backup");
 
-        // Write a model card TOML file to verify it round-trips through the archive
-        let model_card = r#"
-[model]
-id = "test/model"
-name = "Test Model"
-backend = "llama_cpp"
+        // Re-pack the archive with the manifest version tampered to 99.
+        let temp_archive = tempfile::NamedTempFile::new().expect("temp file");
+        let modified_dir = tempfile::tempdir().expect("temp dir");
+        {
+            let mut archive = Archive::new(flate2::read::GzDecoder::new(
+                File::open(&output_path).unwrap(),
+            ));
+            for entry_result in archive.entries().unwrap() {
+                let mut entry = entry_result.unwrap();
+                let path = entry.path().unwrap().into_owned();
+                let path_str = path.to_string_lossy().to_string();
+                if path_str == "manifest.json" {
+                    let mut contents = String::new();
+                    entry.read_to_string(&mut contents).unwrap();
+                    let mut manifest: serde_json::Value = serde_json::from_str(&contents).unwrap();
+                    manifest["version"] = serde_json::json!(99);
+                    let modified_json = serde_json::to_string_pretty(&manifest).unwrap();
+                    fs::write(modified_dir.path().join("manifest.json"), &modified_json).unwrap();
+                } else {
+                    entry.unpack(modified_dir.path().join(&path)).unwrap();
+                }
+            }
+        }
+        let packed_file = File::create(temp_archive.path()).unwrap();
+        let encoder = flate2::write::GzEncoder::new(packed_file, flate2::Compression::default());
+        let mut tar_builder = Builder::new(encoder);
+        for entry in fs::read_dir(modified_dir.path()).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            let file = File::open(&path).unwrap();
+            let metadata = file.metadata().unwrap();
+            let mut header = tar::Header::new_gnu();
+            header.set_path(&name).unwrap();
+            header.set_size(metadata.len());
+            header.set_mode(0o644);
+            header.set_mtime(chrono::Utc::now().timestamp() as u64);
+            header.set_cksum();
+            let mut reader = BufReader::new(file);
+            tar_builder.append(&header, &mut reader).unwrap();
+        }
+        tar_builder.into_inner().unwrap().finish().unwrap();
 
-[[files]]
-filename = "model.gguf"
-quant = "Q4_K_M"
-size_bytes = 1000
-"#;
-        fs::write(
-            config_dir.join("configs").join("test_config.toml"),
-            model_card,
-        )
-        .expect("write model card");
-
-        let db_path = config_dir.join("tama.db");
-        let conn = Connection::open(&db_path).expect("open db");
-        conn.execute_batch(
-            "CREATE TABLE model_pulls (id INTEGER PRIMARY KEY AUTOINCREMENT, repo_id TEXT NOT NULL, commit_sha TEXT NOT NULL, pulled_at TEXT NOT NULL, UNIQUE(repo_id));
-             CREATE TABLE model_files (id INTEGER PRIMARY KEY AUTOINCREMENT, repo_id TEXT NOT NULL, filename TEXT NOT NULL, quant TEXT, lfs_oid TEXT, size_bytes INTEGER NOT NULL, pulled_at TEXT NOT NULL, last_verified_at TEXT, verified_ok INTEGER, verify_error TEXT, UNIQUE(repo_id, filename));
-             CREATE TABLE provider_installations (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, backend_type TEXT NOT NULL, version TEXT NOT NULL, path TEXT NOT NULL, installed_at INTEGER NOT NULL, gpu_variant TEXT NOT NULL DEFAULT 'cpu', source TEXT, is_active INTEGER NOT NULL DEFAULT 0, docker_config TEXT DEFAULT NULL, UNIQUE(name, gpu_variant, version));"
-        ).expect("create tables");
-        conn.execute(
-            "INSERT INTO model_pulls (repo_id, commit_sha, pulled_at) VALUES ('test/repo', 'abc123', '2024-01-01T00:00:00Z');",
-            [],
-        ).expect("insert model pull");
-        conn.execute(
-            "INSERT INTO model_files (repo_id, filename, quant, size_bytes, pulled_at) VALUES ('test/repo', 'model.gguf', 'Q4_K_M', 1000, '2024-01-01T00:00:00Z');",
-            [],
-        ).expect("insert model file");
-        conn.execute(
-            "INSERT INTO provider_installations (name, backend_type, version, path, installed_at, gpu_variant, source, is_active) VALUES ('llama_cpp', 'llama_cpp', 'v1.0', '/tmp/llama', 1234567890, 'cpu', 'prebuilt', 1);",
-            [],
-        ).expect("insert backend");
-
-        let result = create_backup(&config_dir, &output_path);
+        let result = extract_backup(temp_archive.path(), &extract_dir);
         assert!(
-            result.is_ok(),
-            "create_backup should succeed: {:?}",
-            result.err()
+            result.is_err(),
+            "extract_backup should reject incompatible backup version"
         );
-
-        let extract_result = extract_backup(&output_path, &extract_dir);
+        let err_chain = format!("{}", result.unwrap_err());
         assert!(
-            extract_result.is_ok(),
-            "extract_backup should succeed: {:?}",
-            extract_result.err()
+            err_chain.contains("Incompatible backup format version")
+                || err_chain.contains("version mismatch"),
+            "error message should mention version mismatch: {}",
+            err_chain
         );
-
-        let extracted = extract_result.unwrap();
-        assert!(extracted.db_path.exists(), "tama.db should exist");
-
-        // Verify model card round-trips
-        assert!(
-            !extracted.card_paths.is_empty(),
-            "model card should round-trip through archive"
-        );
-        let card_path = &extracted.card_paths[0];
-        assert!(
-            card_path.exists(),
-            "model card should exist at {:?}",
-            card_path
-        );
-        let card_content = fs::read_to_string(card_path).expect("read model card");
-        assert!(
-            card_content.contains("test/model"),
-            "model card should contain the original model id"
-        );
-
-        // Verify DB content round-trips
-        let backup_conn = Connection::open(&extracted.db_path).expect("open extracted db");
-        let count: i64 = backup_conn
-            .query_row(
-                "SELECT COUNT(*) FROM model_pulls",
-                [],
-                |row: &rusqlite::Row| row.get(0),
-            )
-            .expect("count rows");
-        assert_eq!(count, 1, "backup should have 1 model_pull row");
+        guard.finish().await;
     }
 
-    #[test]
-    fn test_backup_db() {
-        use crate::db::backup_db;
+    /// create_backup with an empty DB: manifest has no models/backends,
+    /// hashing still works, archive round-trips.
+    #[tokio::test]
+    async fn test_create_backup_empty_db() {
+        let guard = crate::testing::postgres::with_schema().await;
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let output_path = config_dir.path().join("backup.tar.gz");
+        let extract_dir = config_dir.path().join("extracted");
 
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let config_dir = temp_dir.path().join("config");
-        let dest = temp_dir.path().join("backup.db");
-
-        let db_path = config_dir.join("tama.db");
-        fs::create_dir_all(&config_dir).expect("create dirs");
-
-        let conn = Connection::open(&db_path).expect("open db");
-        conn.execute_batch("CREATE TABLE test (id INTEGER PRIMARY KEY, value TEXT);")
-            .expect("create table");
-        conn.execute("INSERT INTO test (value) VALUES ('hello');", [])
-            .expect("insert data");
-
-        let result = backup_db(&config_dir, &dest);
-        assert!(
-            result.is_ok(),
-            "backup_db should succeed: {:?}",
-            result.err()
-        );
-
-        let backup_conn = Connection::open(&dest).expect("open backup");
-        let count: i64 = backup_conn
-            .query_row("SELECT COUNT(*) FROM test", [], |row: &rusqlite::Row| {
-                row.get(0)
-            })
-            .expect("count rows");
-        assert_eq!(count, 1, "backup should have 1 row");
-
-        let value: String = backup_conn
-            .query_row(
-                "SELECT value FROM test WHERE id = 1",
-                [],
-                |row: &rusqlite::Row| row.get(0),
-            )
-            .expect("get value");
-        assert_eq!(value, "hello");
+        let manifest = create_backup(&guard.pool, config_dir.path(), &output_path)
+            .await
+            .expect("create_backup should succeed with no models");
+        assert!(manifest.models.is_empty());
+        assert!(manifest.backends.is_empty());
+        // Empty archive still verifies.
+        let extracted = extract_backup(&output_path, &extract_dir).unwrap();
+        assert!(extracted.card_paths.is_empty());
+        guard.finish().await;
     }
 
     #[test]
@@ -639,98 +717,6 @@ size_bytes = 1000
         assert_eq!(
             hash,
             "05c6e08f1d9fdafa03147fcb8f82f124c76d2f70e3d989dc8aadb5e7d7450bec"
-        );
-    }
-
-    #[test]
-    fn test_backup_version_validation_rejects_incompatible() {
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let config_dir = temp_dir.path().join("config");
-        let output_path = temp_dir.path().join("backup.tar.gz");
-        let extract_dir = temp_dir.path().join("extracted");
-
-        fs::create_dir_all(config_dir.join("configs")).expect("create dirs");
-
-        // Create a minimal DB
-        let db_path = config_dir.join("tama.db");
-        let conn = Connection::open(&db_path).expect("open db");
-        conn.execute_batch(
-            "CREATE TABLE model_pulls (id INTEGER PRIMARY KEY AUTOINCREMENT, repo_id TEXT NOT NULL, commit_sha TEXT NOT NULL, pulled_at TEXT NOT NULL, UNIQUE(repo_id));
-             CREATE TABLE model_files (id INTEGER PRIMARY KEY AUTOINCREMENT, repo_id TEXT NOT NULL, filename TEXT NOT NULL, quant TEXT, lfs_oid TEXT, size_bytes INTEGER NOT NULL, pulled_at TEXT NOT NULL, last_verified_at TEXT, verified_ok INTEGER, verify_error TEXT, UNIQUE(repo_id, filename));
-             CREATE TABLE provider_installations (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, backend_type TEXT NOT NULL, version TEXT NOT NULL, path TEXT NOT NULL, installed_at INTEGER NOT NULL, gpu_variant TEXT NOT NULL DEFAULT 'cpu', source TEXT, is_active INTEGER NOT NULL DEFAULT 0, docker_config TEXT DEFAULT NULL, UNIQUE(name, gpu_variant, version));"
-        ).expect("create tables");
-
-        // Create a backup normally
-        let _result = create_backup(&config_dir, &output_path).expect("create backup");
-
-        // Now tamper with the manifest to use an incompatible version
-        let temp_archive = tempfile::NamedTempFile::new().expect("temp file");
-        let temp_archive_path = temp_archive.path();
-
-        // Extract the original archive, modify manifest, re-pack
-        let mut archive = Archive::new(flate2::read::GzDecoder::new(
-            File::open(&output_path).unwrap(),
-        ));
-        let modified_dir = tempfile::tempdir().expect("temp dir");
-
-        for entry_result in archive.entries().unwrap() {
-            let mut entry = entry_result.unwrap();
-            let path = entry.path().unwrap().into_owned();
-            let path_str = path.to_string_lossy().to_string();
-
-            if path_str == "manifest.json" {
-                // Read and modify manifest
-                let mut contents = String::new();
-                entry.read_to_string(&mut contents).unwrap();
-                let mut manifest: serde_json::Value = serde_json::from_str(&contents).unwrap();
-                manifest["version"] = serde_json::json!(99);
-                let modified_json = serde_json::to_string_pretty(&manifest).unwrap();
-
-                // Write modified manifest to temp dir
-                let manifest_path = modified_dir.path().join("manifest.json");
-                fs::write(&manifest_path, &modified_json).unwrap();
-            } else {
-                entry.unpack(modified_dir.path().join(&path)).unwrap();
-            }
-        }
-
-        // Re-pack as tar.gz with tampered manifest
-        let packed_file = File::create(temp_archive_path).unwrap();
-        let encoder = flate2::write::GzEncoder::new(packed_file, flate2::Compression::default());
-        let mut tar_builder = Builder::new(encoder);
-
-        for entry in fs::read_dir(modified_dir.path()).unwrap() {
-            let entry = entry.unwrap();
-            let path = entry.path();
-            let name = path.file_name().unwrap().to_string_lossy().to_string();
-
-            let file = File::open(&path).unwrap();
-            let metadata = file.metadata().unwrap();
-            let mut header = tar::Header::new_gnu();
-            header.set_path(&name).unwrap();
-            header.set_size(metadata.len());
-            header.set_mode(0o644);
-            header.set_mtime(chrono::Utc::now().timestamp() as u64);
-            header.set_cksum();
-
-            let mut reader = BufReader::new(file);
-            tar_builder.append(&header, &mut reader).unwrap();
-        }
-
-        tar_builder.into_inner().unwrap().finish().unwrap();
-
-        // Extracting should fail due to version mismatch
-        let result = extract_backup(temp_archive_path, &extract_dir);
-        assert!(
-            result.is_err(),
-            "extract_backup should reject incompatible backup version"
-        );
-        let err_chain = format!("{}", result.unwrap_err());
-        assert!(
-            err_chain.contains("Incompatible backup format version")
-                || err_chain.contains("version mismatch"),
-            "error message should mention version mismatch: {}",
-            err_chain
         );
     }
 }

@@ -57,6 +57,24 @@ pub async fn get_model_pull(pool: &PgPool, model_id: i64) -> Result<Option<Model
     }))
 }
 
+/// Get all stored pull records (backup manifest, plan-190 Task 9).
+pub async fn get_all_model_pulls(pool: &PgPool) -> Result<Vec<ModelPullRecord>> {
+    const PULL_SQL: &str = "SELECT id, model_id, repo_id, commit_sha, \
+         to_char(pulled_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') AS pulled_at \
+         FROM model_pulls ORDER BY repo_id";
+    let rows = sqlx::query(PULL_SQL).fetch_all(pool).await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| ModelPullRecord {
+            id: r.get("id"),
+            model_id: r.get("model_id"),
+            repo_id: r.get("repo_id"),
+            commit_sha: r.get("commit_sha"),
+            pulled_at: r.get("pulled_at"),
+        })
+        .collect())
+}
+
 /// Insert or update a file record for a pulled GGUF.
 /// Uses `INSERT ... ON CONFLICT (model_id, filename) DO UPDATE`.
 ///

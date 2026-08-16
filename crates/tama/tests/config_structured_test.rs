@@ -28,8 +28,7 @@ fn test_web_state() -> tama_web::web_types::WebState {
         binary_version: "test".to_string(),
         update_tx: Arc::new(tokio::sync::Mutex::new(None)),
         upload_lock: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
-        repository: None,
-        db_pool: None,
+        db_pool: tama_core::db::pool::test_dummy_pool(),
     }
 }
 
@@ -96,7 +95,7 @@ async fn build_test_state() -> (
     let state = Arc::new(ProxyState::new(
         config,
         Some(temp_dir.path().to_path_buf()),
-        Some(pool.clone()),
+        pool.clone(),
     ));
 
     (state, temp_dir, pool, guard)
@@ -224,7 +223,7 @@ async fn test_get_structured_config_without_db_dir() {
     let state = Arc::new(ProxyState::new(
         config,
         Some(temp_dir.path().to_path_buf()),
-        Some(pool),
+        pool,
     ));
     let router = build_web_routes(Arc::new(test_web_state()))
         .with_state(state)
