@@ -2,7 +2,7 @@
 //!
 //! Copies the v2 SQLite `tama.db` (schema v49) into Postgres and writes the
 //! v3 bootstrap `config.toml`. The SQLite file is opened read-only
-//! (`PRAGMA query_only = ON`) and is never modified.
+//! (`OpenFlags::SQLITE_OPEN_READ_ONLY`) and is never modified.
 //!
 //! Behavior:
 //! - refuses if the SQLite schema is older than v49 (upgrade the v2 binary
@@ -20,7 +20,7 @@
 
 use anyhow::{bail, Context, Result};
 use percent_encoding::{percent_decode, utf8_percent_encode, AsciiSet, CONTROLS};
-use rusqlite::{types::Value, Connection};
+use rusqlite::{types::Value, Connection, OpenFlags};
 use serde::Serialize;
 use sqlx::postgres::{PgConnection, PgPoolOptions};
 use sqlx::{PgPool, QueryBuilder, Transaction};
@@ -154,9 +154,13 @@ pub struct SkippedRow {
 #[derive(Debug, Clone, Serialize)]
 pub struct MigrationReport {
     pub dry_run: bool,
+    /// Whether the migration transaction committed. `false` on the abort
+    /// path, where `inserted` is zeroed (the attempted inserts rolled back).
+    pub committed: bool,
     /// table → `[sqlite_rows, postgres_rows_before]`
     pub counts: BTreeMap<String, [u64; 2]>,
-    /// table → rows inserted this run (0 in a dry run)
+    /// table → rows inserted this run (0 in a dry run or when the run
+    /// aborted — the transaction rolled back, so nothing was committed)
     pub inserted: BTreeMap<String, u64>,
     pub skipped: Vec<SkippedRow>,
     /// Where the JSON report was written (None in a dry run).
@@ -236,12 +240,10 @@ pub async fn run(opts: MigrateOpts) -> Result<MigrationReport> {
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
-    // 1. Open the SQLite db READ-ONLY — the tool never writes it.
-    let sqlite = Connection::open(&opts.sqlite_path)
+    // 1. Open the SQLite db READ-ONLY at the OS level — the tool never
+    //    writes it, even on a read-only filesystem or mount.
+    let sqlite = Connection::open_with_flags(&opts.sqlite_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .with_context(|| format!("opening SQLite db {}", opts.sqlite_path.display()))?;
-    sqlite
-        .pragma_update(None, "query_only", true)
-        .context("setting PRAGMA query_only = ON")?;
 
     // 2. Schema version gate.
     let user_version: i32 = sqlite
@@ -278,6 +280,7 @@ pub async fn run(opts: MigrateOpts) -> Result<MigrationReport> {
 
     let mut report = MigrationReport {
         dry_run: opts.dry_run,
+        committed: true,
         counts: BTreeMap::new(),
         inserted: BTreeMap::new(),
         skipped: Vec::new(),
@@ -350,7 +353,14 @@ pub async fn run(opts: MigrateOpts) -> Result<MigrationReport> {
         }
     }
 
-    // 9. Write the report even on abort — it lists what failed.
+    // 9. Write the report even on abort — it lists what failed. On the
+    //    abort path the transaction rolled back, so mark the report
+    //    uncommitted and zero the per-table counts (they were attempted,
+    //    not committed).
+    if failed {
+        report.committed = false;
+        report.inserted.clear();
+    }
     let report_path = opts
         .sqlite_path
         .with_file_name(format!("migrate-report-{unix_ts}.json"));

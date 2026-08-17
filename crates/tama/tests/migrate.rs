@@ -570,13 +570,96 @@ async fn test_invalid_rows_reported_valid_rows_committed() {
     // SQLite untouched.
     assert_eq!(std::fs::read(tmp.path().join("tama.db")).unwrap(), bytes);
 
-    // Skips land in the JSON report.
+    // Skips land in the JSON report; the run committed.
     let parsed: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(report_file(tmp.path())).unwrap()).unwrap();
+    assert_eq!(
+        parsed["committed"], true,
+        "report must say the run committed"
+    );
     let skipped = parsed["skipped"].as_array().unwrap();
     assert_eq!(skipped.len(), 2);
     assert_eq!(skipped[0]["table"], "model_configs");
     assert_eq!(skipped[0]["id"], "3");
+    guard.finish().await;
+}
+
+#[tokio::test]
+async fn test_abort_writes_uncommitted_report() {
+    let guard = common::with_schema().await;
+    let tmp = TempDir::new().unwrap();
+    let (db, _bytes) = build_fixture(tmp.path(), 49, false);
+    let config_dir = tmp.path().join("config");
+
+    // Schema drift: a column in SQLite that the Postgres schema does not
+    // have — copy_table bails, the run aborts, the transaction rolls back.
+    {
+        let conn = Connection::open(&db).expect("reopen fixture db");
+        conn.execute("ALTER TABLE app_compaction ADD COLUMN drift_col TEXT", [])
+            .expect("add drift column");
+    }
+
+    let err = tama_web::migrate::run(opts_for(db, &guard.schema, config_dir, false, false))
+        .await
+        .expect_err("schema drift must abort the migration");
+    assert!(
+        err.to_string().to_lowercase().contains("aborted"),
+        "error should say the migration aborted: {err}"
+    );
+
+    // Target left untouched — the transaction rolled back.
+    assert_eq!(pg_count(&guard.pool, "model_configs").await, 0);
+    assert_eq!(pg_count(&guard.pool, "app_compaction").await, 0);
+    assert_eq!(pg_count(&guard.pool, "api_keys").await, 0);
+
+    // The report reflects the rollback: committed=false and no rows
+    // inserted (the pre-failure counts were rolled back, not committed).
+    let parsed: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(report_file(tmp.path())).unwrap()).unwrap();
+    assert_eq!(
+        parsed["committed"], false,
+        "report must say the run did not commit"
+    );
+    let inserted = parsed["inserted"].as_object().unwrap();
+    for (table, n) in inserted {
+        assert_eq!(n, 0, "inserted[{table}] must be 0 after a rollback");
+    }
+    guard.finish().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_readonly_sqlite_file_still_migrates() {
+    use std::os::unix::fs::PermissionsExt;
+    let guard = common::with_schema().await;
+    let tmp = TempDir::new().unwrap();
+    let (db, bytes) = build_fixture(tmp.path(), 49, false);
+    let config_dir = tmp.path().join("config");
+
+    // A read-only file (0o444) must not block the migration — the tool
+    // opens the db read-only and never writes it.
+    std::fs::set_permissions(&db, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+    let report = tama_web::migrate::run(opts_for(
+        db.clone(),
+        &guard.schema,
+        config_dir,
+        false,
+        false,
+    ))
+    .await
+    .expect("migration must succeed on a read-only SQLite file");
+    assert_eq!(report.inserted["model_configs"], 2);
+    assert_eq!(pg_count(&guard.pool, "model_configs").await, 2);
+
+    // File bytes unchanged.
+    assert_eq!(
+        std::fs::read(&db).unwrap(),
+        bytes,
+        "migrate must not modify the read-only SQLite file"
+    );
+    // Restore so TempDir cleanup can remove the file.
+    std::fs::set_permissions(&db, std::fs::Permissions::from_mode(0o644)).unwrap();
     guard.finish().await;
 }
 

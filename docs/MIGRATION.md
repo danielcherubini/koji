@@ -49,6 +49,13 @@ Postgres; `config.toml` is now a bootstrap file containing only
    Add `--dry-run` first to preview per-table row counts without writing
    anything.
 
+   **Troubleshooting — "config.toml already exists":** a leftover v2
+   `config.toml` containing the full app config (present if you never ran
+   a v2 release after the TOML→DB auto-migration) makes the first run
+   refuse. Review the file, then re-run with `--force` — it is backed up
+   to `config.toml.bak-<ts>` first. The v1-legacy `config.toml.migrated`
+   is ignored by v3.
+
 4. If a `migrate-report-*.json` file appeared next to `tama.db`, review its
    `skipped` list — rows that could not be converted are listed there with
    the reason.
@@ -58,9 +65,8 @@ Postgres; `config.toml` is now a bootstrap file containing only
 ### Rollback
 
 Stop `tama`; restore `config.toml` from `config.toml.bak-*` (or delete it);
-restart the v2 binary. The v2 database was never modified
-(`PRAGMA query_only`), so the v2 binary sees its data exactly as it left
-it.
+restart the v2 binary. The v2 database was never modified (opened
+read-only), so the v2 binary sees its data exactly as it left it.
 
 ---
 
