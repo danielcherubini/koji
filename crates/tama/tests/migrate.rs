@@ -621,9 +621,12 @@ async fn test_abort_writes_uncommitted_report() {
         "report must say the run did not commit"
     );
     let inserted = parsed["inserted"].as_object().unwrap();
-    for (table, n) in inserted {
-        assert_eq!(n, 0, "inserted[{table}] must be 0 after a rollback");
-    }
+    // The report's inserted map is cleared on abort, serializing to `{}`;
+    // assert that explicitly rather than looping over (possibly zero) keys.
+    assert!(
+        inserted.is_empty(),
+        "inserted must be empty after a rollback, got: {inserted:?}"
+    );
     guard.finish().await;
 }
 

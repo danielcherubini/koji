@@ -77,6 +77,50 @@ const RAW_UPSERT: &str = "INSERT INTO model_configs (repo_id, display_name, back
      VALUES ($1, $2, $3) ON CONFLICT (lower(repo_id)) DO UPDATE SET \
      display_name = EXCLUDED.display_name";
 
+/// Sequential: inserting 'Owner/Repo' then upserting 'Owner/Repo' again
+/// (identical casing) updates the same row instead of creating a duplicate.
+#[tokio::test]
+async fn test_upsert_same_casing_updates_same_row() {
+    let guard = with_schema().await;
+
+    sqlx::query(RAW_UPSERT)
+        .bind("Owner/Repo")
+        .bind("First")
+        .bind("llama_cpp")
+        .execute(&guard.pool)
+        .await
+        .expect("insert Owner/Repo");
+
+    // Same casing, same repo_id: must route to the lower(repo_id) arbiter
+    // and update the row — NOT raise duplicate-key on the (now removed)
+    // plain repo_id unique index.
+    sqlx::query(RAW_UPSERT)
+        .bind("Owner/Repo")
+        .bind("Second")
+        .bind("llama_cpp")
+        .execute(&guard.pool)
+        .await
+        .expect("upsert Owner/Repo again (same case)");
+
+    assert_eq!(
+        count_rows(&guard.pool, "Owner/Repo").await,
+        1,
+        "same-case upsert must not create a duplicate row"
+    );
+
+    let (display_name,): (String,) =
+        sqlx::query_as("SELECT display_name FROM model_configs WHERE repo_id = 'Owner/Repo'")
+            .fetch_one(&guard.pool)
+            .await
+            .expect("read stored row");
+    assert_eq!(
+        display_name, "Second",
+        "same-case upsert must update the existing row"
+    );
+
+    guard.finish().await;
+}
+
 /// Sequential: inserting 'Owner/Repo' then upserting 'owner/repo' updates
 /// the same row instead of creating a duplicate.
 #[tokio::test]
@@ -137,6 +181,43 @@ async fn test_api_upsert_case_insensitive_same_id() {
         count_rows(&guard.pool, "owner/repo").await,
         1,
         "API upsert must not create a case-variant duplicate"
+    );
+
+    guard.finish().await;
+}
+
+/// The public API with the IDENTICAL repo_id twice (same case): the common
+/// model refresh / re-registration path. The upsert's `ON CONFLICT
+/// (lower(repo_id))` must update the existing row — not raise a duplicate-
+/// key error on a redundant case-sensitive unique index.
+#[tokio::test]
+async fn test_api_upsert_same_casing_updates_same_row() {
+    let guard = with_schema().await;
+
+    let id1 = upsert_model_config(&guard.pool, &make_record("Owner/Repo"))
+        .await
+        .expect("first upsert Owner/Repo");
+    let id2 = upsert_model_config(&guard.pool, &make_record("Owner/Repo"))
+        .await
+        .expect("second upsert Owner/Repo (same case) must not error");
+
+    assert_eq!(id1, id2, "same-case re-upsert must return the same id");
+    assert_eq!(
+        count_rows(&guard.pool, "Owner/Repo").await,
+        1,
+        "same-case re-upsert must not create a duplicate row"
+    );
+
+    // The stored row reflects the second upsert's record.
+    let (display_name,): (String,) =
+        sqlx::query_as("SELECT display_name FROM model_configs WHERE id = $1")
+            .bind(id2)
+            .fetch_one(&guard.pool)
+            .await
+            .expect("read stored row");
+    assert_eq!(
+        display_name, "Test Model",
+        "same-case re-upsert must update the existing row"
     );
 
     guard.finish().await;

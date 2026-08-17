@@ -106,25 +106,65 @@ fn parse_host_port(raw: &str) -> Option<u16> {
     raw.trim().parse().ok()
 }
 
-/// Host port the named container maps Postgres (5432) to, if it exists.
-///
-/// Returns `None` when the container does not exist or `docker` is
-/// unavailable, and `Some(port)` (possibly `0`) when it does.
-fn container_mapped_port(name: &str) -> Option<u16> {
+/// Classification of a `docker inspect` probe of the shared container.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContainerProbe {
+    /// No container with that name (or docker unavailable) — start fresh.
+    NotFound,
+    /// Exists, running, and mapped to the expected port — reuse it.
+    Reuse,
+    /// Exists but stopped, or mapped to a stale port — safe to remove.
+    Remove,
+}
+
+/// Parse the combined inspect output (`{{.State.Running}}|<HostPort>`),
+/// where the port half may be `<no value>` or empty when the container has
+/// no port mapping (pure; unit-tested).
+fn parse_inspect_line(raw: &str) -> Option<(bool, Option<u16>)> {
+    let (running, port) = raw.trim().split_once('|')?;
+    let running = running.trim().parse::<bool>().ok()?;
+    Some((running, parse_host_port(port)))
+}
+
+/// Classify a probe result against the expected shared port (pure;
+/// unit-tested). A STOPPED container's `docker inspect` still reports its
+/// mapped port, so the running flag decides: only a *running* container on
+/// the expected port is reusable; anything else is safe to remove.
+fn classify_probe(running: bool, mapped_port: Option<u16>, expected_port: u16) -> ContainerProbe {
+    if running && mapped_port == Some(expected_port) {
+        ContainerProbe::Reuse
+    } else {
+        ContainerProbe::Remove
+    }
+}
+
+/// Probe the named container: `NotFound` when it is absent or docker is
+/// unavailable, otherwise `Reuse`/`Remove` for the given expected port.
+fn probe_container(name: &str, expected_port: u16) -> ContainerProbe {
     let out = std::process::Command::new("docker")
         .args([
             "inspect",
             "--format",
-            "{{(index .NetworkSettings.Ports \"5432/tcp\").[0].HostPort}}",
+            "{{.State.Running}}|{{(index .NetworkSettings.Ports \"5432/tcp\").[0].HostPort}}",
             name,
         ])
         .output()
-        .ok()?;
+        .ok();
+    let Some(out) = out else {
+        return ContainerProbe::NotFound;
+    };
     if !out.status.success() {
-        return None;
+        return ContainerProbe::NotFound;
     }
-    let stdout = String::from_utf8(out.stdout).ok()?;
-    parse_host_port(&stdout)
+    let Ok(stdout) = String::from_utf8(out.stdout) else {
+        return ContainerProbe::Remove;
+    };
+    match parse_inspect_line(&stdout) {
+        Some((running, port)) => classify_probe(running, port, expected_port),
+        // Inspect succeeded but the output is unparseable: the container
+        // exists — remove it and start fresh (pre-fix recovery behavior).
+        None => ContainerProbe::Remove,
+    }
 }
 
 /// Start the shared container on a fixed host port.
@@ -139,8 +179,8 @@ fn container_mapped_port(name: &str) -> Option<u16> {
 /// become reachable. Only a container that is absent or mapped to a
 /// different (stale) port is removed first.
 fn start_shared_container(port: u16) -> Result<Container<GenericImage>, String> {
-    match container_mapped_port(SHARED_CONTAINER_NAME) {
-        Some(p) if p == port => {
+    match probe_container(SHARED_CONTAINER_NAME, port) {
+        ContainerProbe::Reuse => {
             return Err(format!(
                 "container {SHARED_CONTAINER_NAME} is already running on port {port}"
             ))
@@ -501,5 +541,60 @@ mod tests {
         assert_eq!(parse_host_port("0"), Some(0));
         assert_eq!(parse_host_port(""), None);
         assert_eq!(parse_host_port("<nil>"), None);
+    }
+
+    #[test]
+    fn test_parse_inspect_line_running_with_port() {
+        assert_eq!(parse_inspect_line("true|5433\n"), Some((true, Some(5433))));
+    }
+
+    #[test]
+    fn test_parse_inspect_line_stopped_still_reports_port() {
+        // A stopped container's inspect output still includes the mapped
+        // port — this is exactly the regression case (F2).
+        assert_eq!(
+            parse_inspect_line("false|5433\n"),
+            Some((false, Some(5433)))
+        );
+    }
+
+    #[test]
+    fn test_parse_inspect_line_no_value_port() {
+        assert_eq!(parse_inspect_line("true|<no value>\n"), Some((true, None)));
+    }
+
+    #[test]
+    fn test_parse_inspect_line_garbage() {
+        assert_eq!(parse_inspect_line(""), None);
+        assert_eq!(parse_inspect_line("true\n"), None);
+        assert_eq!(parse_inspect_line("notabool|5433\n"), None);
+    }
+
+    #[test]
+    fn test_classify_probe_running_expected_port_reuse() {
+        assert_eq!(
+            classify_probe(true, Some(5433), 5433),
+            ContainerProbe::Reuse
+        );
+    }
+
+    #[test]
+    fn test_classify_probe_stopped_removable() {
+        // Stopped but on the right port: must be treated as removable, not
+        // "already running" (F2 regression).
+        assert_eq!(
+            classify_probe(false, Some(5433), 5433),
+            ContainerProbe::Remove
+        );
+        assert_eq!(classify_probe(false, None, 5433), ContainerProbe::Remove);
+    }
+
+    #[test]
+    fn test_classify_probe_stale_port_removable() {
+        assert_eq!(
+            classify_probe(true, Some(5434), 5433),
+            ContainerProbe::Remove
+        );
+        assert_eq!(classify_probe(true, None, 5433), ContainerProbe::Remove);
     }
 }
