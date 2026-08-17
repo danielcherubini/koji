@@ -4858,9 +4858,8 @@ dependencies = [
  "serde_json",
  "sqlx",
  "tama-core",
+ "tama-test-support",
  "tempfile",
- "testcontainers 0.23.3",
- "testcontainers-modules",
  "thiserror 1.0.69",
  "time",
  "tokio",
@@ -4924,10 +4923,9 @@ dependencies = [
  "sqlx",
  "strum",
  "sysinfo",
+ "tama-test-support",
  "tar",
  "tempfile",
- "testcontainers 0.23.3",
- "testcontainers-modules",
  "thiserror 1.0.69",
  "tokio",
  "tokio-util",
@@ -4957,6 +4955,18 @@ dependencies = [
  "tower 0.5.3",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "tama-test-support"
+version = "2.1.0"
+dependencies = [
+ "anyhow",
+ "sqlx",
+ "testcontainers 0.23.3",
+ "testcontainers-modules",
+ "tokio",
+ "url",
 ]
 
 [[package]]

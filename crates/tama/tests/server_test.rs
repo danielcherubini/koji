@@ -16,7 +16,7 @@ mod tests {
             binary_version: "test".to_string(),
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
-            db_pool: pool.unwrap_or_else(tama_core::db::pool::test_dummy_pool),
+            db_pool: pool.unwrap_or_else(tama_test_support::test_dummy_pool),
         }
     }
 
@@ -28,7 +28,7 @@ mod tests {
             let state = Arc::new(tama_core::proxy::ProxyState::new(
                 config,
                 None,
-                tama_core::db::pool::test_dummy_pool(),
+                tama_test_support::test_dummy_pool(),
             ));
             axum::serve(
                 listener,

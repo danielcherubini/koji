@@ -696,7 +696,7 @@ mod tests {
         let proxy_state = Arc::new(tama_core::proxy::ProxyState::new(
             tama_core::config::Config::default(),
             Some(config_temp.path().to_path_buf()),
-            tama_core::db::pool::test_dummy_pool(),
+            tama_test_support::test_dummy_pool(),
         ));
 
         let web_state = WebState {
@@ -714,7 +714,7 @@ mod tests {
                     },
                 ),
             ]))),
-            db_pool: tama_core::db::pool::test_dummy_pool(),
+            db_pool: tama_test_support::test_dummy_pool(),
         };
 
         let app = Router::new()
@@ -773,7 +773,7 @@ mod tests {
         let proxy_state = Arc::new(tama_core::proxy::ProxyState::new(
             tama_core::config::Config::default(),
             None,
-            tama_core::db::pool::test_dummy_pool(),
+            tama_test_support::test_dummy_pool(),
         ));
 
         let web_state = WebState {
@@ -791,7 +791,7 @@ mod tests {
                     },
                 ),
             ]))),
-            db_pool: tama_core::db::pool::test_dummy_pool(),
+            db_pool: tama_test_support::test_dummy_pool(),
         };
 
         let app = Router::new()
@@ -845,7 +845,7 @@ mod tests {
         let proxy_state = Arc::new(ProxyState::new(
             tama_core::config::Config::default(),
             Some(config_temp.path().to_path_buf()),
-            tama_core::db::pool::test_dummy_pool(),
+            tama_test_support::test_dummy_pool(),
         ));
 
         let web_state = WebState {
@@ -855,7 +855,7 @@ mod tests {
             binary_version: "test".to_string(),
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-            db_pool: tama_core::db::pool::test_dummy_pool(),
+            db_pool: tama_test_support::test_dummy_pool(),
         };
 
         let app = Router::new()
@@ -926,7 +926,7 @@ mod tests {
         let proxy_state = Arc::new(ProxyState::new(
             tama_core::config::Config::default(),
             Some(local_temp.path().to_path_buf()),
-            tama_core::db::pool::test_dummy_pool(),
+            tama_test_support::test_dummy_pool(),
         ));
 
         let web_state = WebState {
@@ -936,7 +936,7 @@ mod tests {
             binary_version: "test".to_string(),
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: upload_lock.clone(),
-            db_pool: tama_core::db::pool::test_dummy_pool(),
+            db_pool: tama_test_support::test_dummy_pool(),
         };
 
         let app = Router::new()
@@ -1014,7 +1014,7 @@ mod tests {
         let proxy_state = Arc::new(ProxyState::new(
             tama_core::config::Config::default(),
             Some(local_temp.path().to_path_buf()),
-            tama_core::db::pool::test_dummy_pool(),
+            tama_test_support::test_dummy_pool(),
         ));
 
         let upload_lock = Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::from([
@@ -1034,7 +1034,7 @@ mod tests {
             binary_version: "test".to_string(),
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: upload_lock.clone(),
-            db_pool: tama_core::db::pool::test_dummy_pool(),
+            db_pool: tama_test_support::test_dummy_pool(),
         };
 
         let app = Router::new()
@@ -1141,7 +1141,7 @@ mod tests {
         let proxy_state = Arc::new(ProxyState::new(
             tama_core::config::Config::default(),
             Some(local_temp.path().to_path_buf()),
-            tama_core::db::pool::test_dummy_pool(),
+            tama_test_support::test_dummy_pool(),
         ));
 
         let web_state = WebState {
@@ -1151,7 +1151,7 @@ mod tests {
             binary_version: "test".to_string(),
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: upload_lock.clone(),
-            db_pool: tama_core::db::pool::test_dummy_pool(),
+            db_pool: tama_test_support::test_dummy_pool(),
         };
 
         let app = Router::new()

@@ -93,7 +93,7 @@ mod tests {
         let state = ProxyState::new(
             Config::default(),
             Some(tmp_dir.path().to_path_buf()),
-            tama_core::db::pool::test_dummy_pool(),
+            tama_test_support::test_dummy_pool(),
         );
 
         let resolved = resolve_config_dir(&state).unwrap();
@@ -109,7 +109,7 @@ mod tests {
         let state = ProxyState::new(
             Config::default(),
             None,
-            tama_core::db::pool::test_dummy_pool(),
+            tama_test_support::test_dummy_pool(),
         );
 
         let resolved = resolve_config_dir(&state).unwrap();

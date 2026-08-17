@@ -113,8 +113,7 @@ serde_json = { workspace = true }
 axum = { workspace = true }
 tempfile = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
-testcontainers.workspace = true
-testcontainers-modules.workspace = true
+tama-test-support.workspace = true
 wiremock = "0.6"
 
 [package.metadata.deb]

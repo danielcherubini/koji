@@ -28,7 +28,7 @@ fn test_web_state() -> tama_web::web_types::WebState {
         binary_version: "test".to_string(),
         update_tx: Arc::new(tokio::sync::Mutex::new(None)),
         upload_lock: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
-        db_pool: tama_core::db::pool::test_dummy_pool(),
+        db_pool: tama_test_support::test_dummy_pool(),
     }
 }
 

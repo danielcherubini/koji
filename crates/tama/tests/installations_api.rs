@@ -19,7 +19,7 @@ fn test_web_state() -> WebState {
         binary_version: "test".to_string(),
         update_tx: Arc::new(tokio::sync::Mutex::new(None)),
         upload_lock: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
-        db_pool: tama_core::db::pool::test_dummy_pool(),
+        db_pool: tama_test_support::test_dummy_pool(),
     }
 }
 
@@ -213,7 +213,7 @@ async fn test_get_capabilities_returns_supported_cuda_versions() {
     let state = Arc::new(ProxyState::new(
         config,
         None,
-        tama_core::db::pool::test_dummy_pool(),
+        tama_test_support::test_dummy_pool(),
     ));
 
     // Build WebState with a CapabilitiesCache so the endpoint can compute
@@ -224,7 +224,7 @@ async fn test_get_capabilities_returns_supported_cuda_versions() {
         binary_version: "test".to_string(),
         update_tx: Arc::new(tokio::sync::Mutex::new(None)),
         upload_lock: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
-        db_pool: tama_core::db::pool::test_dummy_pool(),
+        db_pool: tama_test_support::test_dummy_pool(),
     });
 
     let router = build_web_routes(state.clone(), web_state);
@@ -260,7 +260,7 @@ async fn test_origin_enforcement_blocks_cross_origin_post() {
     let state = Arc::new(ProxyState::new(
         config,
         None,
-        tama_core::db::pool::test_dummy_pool(),
+        tama_test_support::test_dummy_pool(),
     ));
 
     let web_state_for_test = Arc::new(test_web_state());

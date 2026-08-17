@@ -111,7 +111,7 @@ mod tests {
             binary_version: "test".to_string(),
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-            db_pool: tama_core::db::pool::test_dummy_pool(),
+            db_pool: tama_test_support::test_dummy_pool(),
         }
     }
 
@@ -122,7 +122,7 @@ mod tests {
         let state = Arc::new(ProxyState::new(
             config,
             None,
-            tama_core::db::pool::test_dummy_pool(),
+            tama_test_support::test_dummy_pool(),
         ));
         let web_state = Arc::new(test_web_state());
         let router = crate::router::build_web_routes(web_state.clone())
@@ -158,7 +158,7 @@ mod tests {
         let state = Arc::new(ProxyState::new(
             config,
             None,
-            tama_core::db::pool::test_dummy_pool(),
+            tama_test_support::test_dummy_pool(),
         ));
         let web_state = Arc::new(test_web_state());
         let router = crate::router::build_web_routes(web_state.clone())
@@ -204,7 +204,7 @@ mod tests {
         let state = Arc::new(ProxyState::new(
             config,
             None,
-            tama_core::db::pool::test_dummy_pool(),
+            tama_test_support::test_dummy_pool(),
         ));
         let web_state = Arc::new(test_web_state());
         let router = crate::router::build_web_routes(web_state.clone())

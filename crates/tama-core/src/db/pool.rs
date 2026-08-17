@@ -75,18 +75,9 @@ pub async fn connect_with_retry_capped(
 }
 
 /// A lazily-created pool for tests that must hold a pool but never touch
-/// the database. `connect_lazy` does not dial, so construction is safe
-/// without a running server (port 1 is virtually guaranteed closed).
-#[allow(dead_code)]
-pub fn test_dummy_pool() -> std::sync::Arc<PgPool> {
-    std::sync::Arc::new(
-        PgPoolOptions::new()
-            .max_connections(1)
-            .acquire_timeout(Duration::from_secs(1))
-            .connect_lazy("postgres://tama:tama@127.0.0.1:1/tama")
-            .expect("valid dummy pool config"),
-    )
-}
+/// the database. Re-exported from `tama-test-support` for in-crate tests.
+#[cfg(test)]
+pub use tama_test_support::test_dummy_pool;
 
 #[cfg(test)]
 mod tests {
