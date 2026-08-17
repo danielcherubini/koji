@@ -9,7 +9,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tama_core::config::Config;
 use tama_core::proxy::{ProxyServer, ProxyState};
 
@@ -60,11 +60,15 @@ async fn run_server() -> Result<()> {
             )
         })?;
 
-    // Minimal default tracing (console, info) BEFORE the pool is created so
-    // connection-retry and migration logs are visible. The full subscriber
-    // (DB-derived log_level + JSON file layer) is swapped in below, once the
-    // Postgres-backed config is loaded.
-    init_default_tracing();
+    // Install the ONE global tracing subscriber (console + JSON file layers)
+    // BEFORE the pool is created so connection-retry and migration logs are
+    // visible. It starts at `info` with a dynamic `EnvFilter` behind a
+    // `reload::Handle`; the JSON file layer writes through a
+    // `SwappableFileWriter` that discards until the Postgres-backed config
+    // provides `logs_dir`. After `Config::load_from_pool`, `init_tracing`
+    // applies the DB-derived log_level and installs the real file writer —
+    // no second global `.init()` (which would panic).
+    let (filter_handle, file_writer) = init_default_tracing();
 
     // main.rs is the SINGLE owner of the pool: load bootstrap → resolve
     // password → create pool → retry until reachable → run migrations →
@@ -97,14 +101,15 @@ async fn run_server() -> Result<()> {
         .await
         .context("loading app config from Postgres")?;
 
-    // Swap in the full tracing subscriber built from the DB-derived
-    // log_level + logs_dir. The guard must stay in scope for the program's
+    // Apply the DB-derived log_level to the live subscriber (dynamic filter
+    // via the reload handle) and install the real JSON file writer behind
+    // the swappable writer. The guard must stay in scope for the program's
     // lifetime to keep the background writer thread alive — if dropped,
     // file logging silently stops. On normal exit, WorkerGuard::Drop
     // flushes remaining entries; on SIGKILL/panic-abort the last few
     // buffered lines may be lost (inherent trade-off of non-blocking
     // writes; console layer is synchronous).
-    let _log_guard = init_tracing(&config)?;
+    let _log_guard = init_tracing(&config, &filter_handle, &file_writer)?;
 
     // Set up HF_TOKEN from config before any hf_hub usage
     setup_hf_token(&config);
@@ -253,44 +258,120 @@ fn build_log_filter(log_level: &tama_core::config::LogLevel) -> tracing_subscrib
     env_filter
 }
 
-/// Minimal default tracing subscriber: pretty console output at `info`.
+/// JSON file writer that discards writes until the real non-blocking writer
+/// is installed.
 ///
-/// Installed at process start — BEFORE the Postgres pool is created — so
-/// connection-retry and migration logs are visible. Once the DB-backed
-/// config is loaded, `init_tracing` replaces this subscriber with the full
-/// one (DB-derived log_level + JSON file layer). The swap is safe: it
-/// happens at startup, before any spans outlive it.
-fn init_default_tracing() {
+/// The global subscriber must be installed at process start — BEFORE the
+/// Postgres pool exists — but the log file path comes from the DB-backed
+/// config (`logs_dir`), so the file can't be opened yet. The JSON layer is
+/// therefore wired to this writer from the start: it drops entries until
+/// `install` is called after `Config::load_from_pool`, then forwards to the
+/// real file. This keeps exactly ONE global subscriber init per process
+/// (a second `SubscriberInitExt::init()` would panic).
+#[derive(Clone)]
+struct SwappableFileWriter {
+    inner: Arc<Mutex<Option<tracing_appender::non_blocking::NonBlocking>>>,
+}
+
+impl SwappableFileWriter {
+    fn new() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Install the real non-blocking writer. The returned `WorkerGuard`
+    /// must be kept alive for the process lifetime.
+    fn install(&self, writer: tracing_appender::non_blocking::NonBlocking) {
+        *self.inner.lock().unwrap() = Some(writer);
+    }
+}
+
+impl std::io::Write for SwappableFileWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if let Some(writer) = &mut *self.inner.lock().unwrap() {
+            writer.write(buf)
+        } else {
+            Ok(buf.len())
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        if let Some(writer) = &mut *self.inner.lock().unwrap() {
+            writer.flush()
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl<'writer> tracing_subscriber::fmt::MakeWriter<'writer> for SwappableFileWriter {
+    type Writer = SwappableFileWriter;
+
+    fn make_writer(&self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+/// Install the SINGLE global tracing subscriber for the process.
+///
+/// Two layers, both gated by a dynamic `EnvFilter` (initially `info`) held
+/// behind a `reload::Handle`:
+/// - Console: pretty-formatted output to stdout
+/// - File: JSON lines through a `SwappableFileWriter` (discarding until the
+///   real writer is installed by `init_tracing` after the DB config load)
+///
+/// Returns the filter handle (to apply the DB-derived log_level) and the
+/// swappable file writer (to install the real log file). Must be called
+/// exactly once — a second `init()` would panic.
+fn init_default_tracing() -> (
+    tracing_subscriber::reload::Handle<tracing_subscriber::EnvFilter, tracing_subscriber::Registry>,
+    SwappableFileWriter,
+) {
     use tracing_subscriber::{
-        fmt,
-        layer::{Layer, SubscriberExt},
-        util::SubscriberInitExt,
+        fmt, layer::SubscriberExt, reload, util::SubscriberInitExt, Registry,
     };
 
     let env_filter = build_log_filter(&tama_core::config::LogLevel::Info);
-    tracing_subscriber::registry()
+    let (filter, filter_handle) = reload::Layer::new(env_filter);
+    let file_writer = SwappableFileWriter::new();
+    Registry::default()
+        .with(filter)
         .with(
             fmt::layer()
                 .with_target(false)
                 .with_file(false)
-                .with_line_number(false)
-                .with_filter(env_filter),
+                .with_line_number(false),
         )
+        .with(fmt::layer().json().with_writer(file_writer.clone()))
         .init();
+
+    (filter_handle, file_writer)
 }
 
-/// Initialize the full tracing setup with two layers:
-/// - Console: pretty-formatted output to stdout
-/// - File: JSON lines written non-blockingly to tama.log with size-based rotation
+/// Apply the DB-derived tracing configuration to the live subscriber:
+/// - Update the dynamic `EnvFilter` to `config.general.log_level`
+/// - Install the real non-blocking JSON file writer (tama.log with
+///   size-based rotation) behind the swappable writer
 ///
-/// Uses the DB-derived `log_level` + `logs_dir` (plan-190 Task 3: the
+/// No second global `.init()` — the subscriber installed by
+/// `init_default_tracing` serves the whole process (plan-190 Task 3: the
 /// config comes from Postgres, so this runs after pool + migrations).
 ///
 /// Returns the WorkerGuard that must be kept alive for the program's lifetime.
-fn init_tracing(config: &Config) -> Result<tracing_appender::non_blocking::WorkerGuard> {
-    use tracing_subscriber::{fmt, layer::Layer, layer::SubscriberExt, util::SubscriberInitExt};
-
+fn init_tracing(
+    config: &Config,
+    filter_handle: &tracing_subscriber::reload::Handle<
+        tracing_subscriber::EnvFilter,
+        tracing_subscriber::Registry,
+    >,
+    file_writer: &SwappableFileWriter,
+) -> Result<tracing_appender::non_blocking::WorkerGuard> {
+    // Apply the DB-derived log level to the live subscriber.
     let env_filter = build_log_filter(&config.general.log_level);
+    filter_handle
+        .modify(|f| *f = env_filter)
+        .context("updating dynamic log-level filter after DB config load")?;
 
     // Ensure logs directory exists
     let logs_dir = config
@@ -309,7 +390,9 @@ fn init_tracing(config: &Config) -> Result<tracing_appender::non_blocking::Worke
         }
     }
 
-    // Open non-blocking file writer for JSON output
+    // Open non-blocking file writer for JSON output and install it behind
+    // the swappable writer (the JSON layer is already live on the global
+    // subscriber).
     let file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -317,30 +400,15 @@ fn init_tracing(config: &Config) -> Result<tracing_appender::non_blocking::Worke
         .with_context(|| format!("Failed to open log file: {}", log_path.display()))?;
 
     let (non_blocking, guard) = tracing_appender::non_blocking(file);
-
-    // Build two-layer subscriber
-    tracing_subscriber::registry()
-        .with(
-            fmt::layer()
-                .with_target(false)
-                .with_file(false)
-                .with_line_number(false)
-                .with_filter(env_filter.clone()),
-        )
-        .with(
-            fmt::layer()
-                .json()
-                .with_writer(non_blocking)
-                .with_filter(env_filter),
-        )
-        .init();
+    file_writer.install(non_blocking);
 
     Ok(guard)
 }
 
 #[cfg(test)]
 mod tracing_tests {
-    use super::build_log_filter;
+    use super::{build_log_filter, SwappableFileWriter};
+    use std::io::Write;
     use std::sync::{Arc, Mutex};
     use tracing_subscriber::layer::{Layer, SubscriberExt};
 
@@ -396,5 +464,65 @@ mod tracing_tests {
                 "level {level:?} must {expects_info:?} for INFO events"
             );
         }
+    }
+
+    /// The DB-configured `log_level` is applied to the live subscriber via
+    /// the `reload::Handle` AFTER startup — exactly one global subscriber
+    /// exists; events before the update are gated by the initial level,
+    /// events after by the DB-derived level.
+    #[test]
+    fn test_reload_handle_applies_db_log_level_after_startup() {
+        use tracing_subscriber::{reload, Registry};
+
+        let collected: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+        let writer = Collector(collected.clone());
+        let (filter, handle) = reload::Layer::new(build_log_filter(&LogLevel::Info));
+        let subscriber = Registry::default().with(filter).with(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .with_writer(move || writer.clone()),
+        );
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::debug!("pre-update-debug");
+            handle
+                .modify(|f| *f = build_log_filter(&LogLevel::Debug))
+                .expect("reload handle must work against a live subscriber");
+            tracing::debug!("post-update-debug");
+            tracing::info!("post-update-info");
+        });
+        let text = String::from_utf8_lossy(&collected.lock().unwrap()).to_string();
+        assert!(
+            !text.contains("pre-update-debug"),
+            "initial info filter must gate DEBUG before the DB level is applied"
+        );
+        assert!(
+            text.contains("post-update-debug"),
+            "DB log_level=debug must open DEBUG events after startup"
+        );
+        assert!(text.contains("post-update-info"));
+    }
+
+    /// The swappable file writer discards writes until the real non-blocking
+    /// writer is installed (after DB config load), then forwards — so the
+    /// JSON layer is installed once at process start and only the writer is
+    /// swapped in, never a second global subscriber.
+    #[test]
+    fn test_swappable_file_writer_discards_then_forwards() {
+        let collected: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut sw = SwappableFileWriter::new();
+        sw.write_all(b"pre-install").unwrap();
+        let (non_blocking, guard) = tracing_appender::non_blocking(Collector(collected.clone()));
+        sw.install(non_blocking);
+        sw.write_all(b"post-install").unwrap();
+        drop(guard); // flush the background writer thread
+        let text = String::from_utf8_lossy(&collected.lock().unwrap()).to_string();
+        assert!(
+            !text.contains("pre-install"),
+            "writes before install must be discarded"
+        );
+        assert!(
+            text.contains("post-install"),
+            "writes after install must be forwarded"
+        );
     }
 }
