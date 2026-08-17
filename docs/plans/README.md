@@ -12,19 +12,13 @@ Plans for features, refactors, and bug fixes in the Tama project.
 
 ## Quick Stats
 
-- **Total Plans**: 95
-- **Backlog**: 1
-- **Completed**: 93 ✅
+- **Total Plans**: 96
+- **Backlog**: 0
+- **Completed**: 94 ✅
 
 ---
 
 ## Backlog
-
-| # | Plan | Status |
-|---|------|--------|
-| 190 | [SQLite → Postgres Database Migration](plan-190-sqlite-to-postgres.md) | Backlog |
-
----
 
 > **Note:** The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan.
 
@@ -34,6 +28,7 @@ Plans for features, refactors, and bug fixes in the Tama project.
 
 | # | Plan | Status |
 |---|------|--------|
+| 190 | [SQLite → Postgres Database Migration](done/plan-190-sqlite-to-postgres.md) | ✅ COMPLETED |
 | 189 | [Model Reasoning Effort](done/plan-189-model-reasoning-effort.md) | ✅ COMPLETED |
 | 188 | [hf CLI Repo Pull (Safetensors Wizard Support)](done/plan-188-hf-cli-repo-pull.md) | ✅ COMPLETED |
 | 091 | [VLLM Spec Attention Backend](done/plan-091-vllm-spec-attention-backend.md) | ✅ COMPLETED |
