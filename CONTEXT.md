@@ -1,15 +1,27 @@
 # Tama
 
-A local AI server written in Rust that provides an OpenAI-compatible API on a single port. It manages backend lifecycles — starting models on demand, routing requests, and unloading idle models — with a SvelteKit web control plane.
+Tama is a local AI server written in Rust that provides an OpenAI-compatible API on a single port. The proxy (tama) is the central control plane — routing, model resolution, and configuration. All self-hosted concerns (backend lifecycle, installs, pulls, benchmarks, host stats) live in **tamad** daemons on the inference hosts (ADR-0010). The web control plane is SvelteKit.
 
 ## Language
 
 **Backend**:
-An inference engine binary (e.g. `llama.cpp`, `ik_llama`) that serves a specific model on a local HTTP port. Managed by the proxy's lifecycle system.
+An inference engine binary (e.g. `llama.cpp`, `ik_llama`) that serves a specific model on a local HTTP port. Managed by the tamad's lifecycle system on the host where it runs.
 _Avoid_: Server, engine, runner
 
+**tamad**:
+A daemon on an inference host that owns all self-hosted concerns: installing/upgrading backend binaries, the backend process lifecycle (spawn, health poll, idle unload, restart, shutdown), model pulls to local disk, benchmarks, and host/GPU introspection. The proxy never spawns processes or reads local hardware — it talks to tamads over the shared gRPC/HTTP protocol (ADR-0010).
+_Avoid_: Daemon, sidecar, worker, backend host (use "tamad" for the daemon, "host" or "inference host" for the machine)
+
+**Provider**:
+A registered inference capability in the DB. *Local* providers are backends served by exactly one tamad (`Provider.tamad_id`); *remote* providers are direct HTTP endpoints (OpenAI-compatible, Anthropic) that the proxy forwards to with no tamad involved.
+_Avoid_: Backend (that's the engine binary a local provider runs), model (that's the config layered on top)
+
+**TamadConnection**:
+The proxy's registration of a reachable tamad: a UUID id, name, URL (`grpc://` or `http://`), protocol, and optional auth token. Stored in `tamad_registry`.
+_Avoid_: Tamad, daemon connection, remote host
+
 **Model**:
-A user-facing configuration entry in the DB — maps a name (repo_id) to a backend, quantization variant, and optional GPU assignment. A model is not the GGUF file itself; it is the config that tells the proxy which file to load into which backend.
+A user-facing configuration entry in the DB — maps a name (repo_id) to a backend, quantization variant, and optional GPU assignment. A model is not the GGUF file itself; it is the config that tells the tamad which file to load into which backend.
 _Avoid_: Model card, model config (use "model" alone)
 
 **Quant** (short for "quantization variant"):
@@ -17,7 +29,7 @@ A specific quantization of a model (e.g. `Q4_K_M`, `Q8_0`). Each quant is a sepa
 _Avoid_: Quantization, quant level
 
 **Proxy**:
-The core Tama component — an Axum HTTP server that listens on a single port, accepts OpenAI-compatible requests, routes them to the correct backend, and manages backend lifecycle (start, stop, health check, reload).
+The core Tama component — an Axum HTTP server that listens on a single port, accepts OpenAI-compatible requests, and routes them to the correct provider (local via a tamad, or remote directly). It orchestrates but never executes: it spawns no backend processes and reads no local hardware — all of that is delegated to tamads (ADR-0010).
 _Avoid_: Gateway, router, control plane (use "proxy")
 
 **gpu_variant**:
@@ -33,7 +45,7 @@ Prompt compression via Microsoft's LLMLingua-2 model. Reduces token count before
 _Avoid_: Prompt compression, summarization
 
 **Backend lifecycle**:
-The proxy's system for managing backend processes: spawn, health poll, idle timeout unload, dead PID detection, auto-restart (with max restarts limit), and graceful shutdown. Applies to LLM backends, Kokoro TTS, and compaction servers.
+The tamad's system for managing backend processes: spawn, health poll, idle timeout unload, dead PID detection, auto-restart (with max restarts limit), and graceful shutdown. Applies to LLM backends, Kokoro TTS, and compaction servers. The proxy requests lifecycle operations; the tamad executes them on its host.
 _Avoid_: Process management, backend supervisor
 
 **ModelState**:
@@ -41,7 +53,7 @@ The state machine for a loaded model: `Starting` → `Ready` → `Unloading` →
 _Avoid_: Model status, model state machine
 
 **Pull**:
-The process of downloading a model from HuggingFace — includes API lookup, parallel chunked download, GGUF metadata parsing, and DB insertion. Tracked in the download queue with real-time SSE progress. Applies to GGUF files only.
+The process of downloading a model from HuggingFace — includes API lookup, parallel chunked download, GGUF metadata parsing, and DB insertion. The download executes on the tamad's host (it's the tamad's disk); the proxy tracks it in the download queue with real-time SSE progress. Applies to GGUF files only.
 _Avoid_: Download, fetch
 
 **Repo pull**:
