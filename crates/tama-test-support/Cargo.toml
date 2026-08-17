@@ -12,3 +12,6 @@ tokio.workspace = true
 url.workspace = true
 testcontainers.workspace = true
 testcontainers-modules.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

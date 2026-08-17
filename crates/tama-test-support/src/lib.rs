@@ -18,8 +18,10 @@
 //! This crate is a **dev-dependency only** — it must never be a regular
 //! dependency of a crate that is compiled for WASM.
 
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Connection, PgConnection, PgPool, Row};
@@ -36,6 +38,18 @@ const PG_DB: &str = "tama";
 const DEFAULT_SHARED_PORT: u16 = 5433;
 /// Name/label of the shared container (used by `make docker-clean`).
 const SHARED_CONTAINER_NAME: &str = "tama-test-pg";
+/// Fixed name of the cross-process bootstrap lock file (lives under
+/// `target/` or `/tmp` — never checked into git).
+const LOCK_FILE_NAME: &str = "tama-test-pg.lock";
+/// A lock file older than this is considered stale (its holder crashed)
+/// and is broken by removing it.
+const STALE_LOCK_AGE: Duration = Duration::from_secs(120);
+/// Poll interval while waiting for the bootstrap lock.
+const LOCK_POLL_INTERVAL: Duration = Duration::from_millis(50);
+/// How long the lock holder waits for the freshly-started server to
+/// answer before releasing the lock (the outer readiness loop remains
+/// the long-lead safety net).
+const SHARED_READY_TIMEOUT: Duration = Duration::from_secs(15);
 /// Literal SQL for the startup sweep of leaked `tama_%` schemas
 /// (a compile-time string, satisfying sqlx's `SqlSafeStr` bound).
 const SWEEP_LIST_SQL: &str = "SELECT nspname FROM pg_namespace WHERE nspname LIKE 'tama_%'";
@@ -251,6 +265,124 @@ type SharedState = (
     tokio::runtime::Runtime,
 );
 
+/// Cross-process advisory lock guarding the shared-container bootstrap
+/// critical section (probe → rm → start → first-reachable).
+///
+/// Multiple test-binary processes race on the same container name; without
+/// mutual exclusion the probe-then-rm-then-start sequence is a TOCTOU race
+/// (a sibling's `docker rm -f` can remove the winner's just-started
+/// container, or a name collision makes `start()` fail). This lock makes
+/// exactly one binary run the bootstrap while all others block, then probe
+/// again and find the container already reachable.
+///
+/// Implemented with `OpenOptions::create_new` (atomic on the local
+/// filesystem) so no extra dependency is needed: acquiring is a blocking
+/// spin with a 50ms poll; a lock file older than [`STALE_LOCK_AGE`] is
+/// considered stale (holder crashed) and is broken by removing it.
+struct BootstrapLock {
+    path: PathBuf,
+}
+
+impl BootstrapLock {
+    /// Acquire the lock, waiting (blocking) until it is free or stale.
+    fn acquire(path: &Path) -> std::io::Result<Self> {
+        Self::acquire_stale_after(path, STALE_LOCK_AGE)
+    }
+
+    /// Acquire the lock with an explicit stale threshold (injectable so
+    /// tests can exercise stale recovery without sleeping).
+    fn acquire_stale_after(path: &Path, stale_after: Duration) -> std::io::Result<Self> {
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+        loop {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+            {
+                Ok(mut file) => {
+                    // Record our pid in the lock file for debuggability.
+                    let _ = std::io::Write::write_all(
+                        &mut file,
+                        std::process::id().to_string().as_bytes(),
+                    );
+                    return Ok(BootstrapLock {
+                        path: path.to_path_buf(),
+                    });
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let stale = std::fs::metadata(path)
+                        .ok()
+                        .and_then(|m| m.modified().ok())
+                        .map(|t| t.elapsed().unwrap_or_default() >= stale_after)
+                        .unwrap_or(false);
+                    if stale {
+                        // Holder crashed: break the lock. The extra pause
+                        // lets a racing waiter re-create it first, which
+                        // keeps the fresh file's mtime honest.
+                        let _ = std::fs::remove_file(path);
+                    }
+                    std::thread::sleep(LOCK_POLL_INTERVAL);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+}
+
+impl Drop for BootstrapLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Does this `Cargo.toml` contain a `[workspace]` table? (pure; used to
+/// find the workspace root when locating the lock file).
+fn file_mentions_workspace(path: &Path) -> bool {
+    std::fs::read_to_string(path)
+        .map(|s| s.lines().any(|line| line.trim() == "[workspace]"))
+        .unwrap_or(false)
+}
+
+/// Resolve the bootstrap lock file path.
+///
+/// All test-binary processes must agree on the same path, and the file
+/// must never be checked into git (`target/` is already ignored):
+/// 1. `CARGO_TARGET_DIR` if set;
+/// 2. `<workspace-root>/target/` (workspace root found by walking up from
+///    `CARGO_MANIFEST_DIR` to a `Cargo.toml` with a `[workspace]` table);
+/// 3. `/tmp/` as a last resort.
+fn lock_file_path() -> PathBuf {
+    // 1. Explicit target dir override.
+    if let Ok(dir) = std::env::var("CARGO_TARGET_DIR") {
+        let dir = dir.trim();
+        if !dir.is_empty() {
+            let mut dir = PathBuf::from(dir);
+            if dir.is_relative() {
+                if let Ok(cwd) = std::env::current_dir() {
+                    dir = cwd.join(dir);
+                }
+            }
+            return dir.join(LOCK_FILE_NAME);
+        }
+    }
+    // 2. Workspace target dir (walk up from the crate manifest).
+    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
+        let mut dir = Some(PathBuf::from(manifest_dir));
+        while let Some(d) = dir {
+            if d.join("Cargo.toml").is_file() && file_mentions_workspace(&d.join("Cargo.toml")) {
+                return d.join("target").join(LOCK_FILE_NAME);
+            }
+            dir = d.parent().map(PathBuf::from);
+        }
+    }
+    // 3. Fallback: system temp dir.
+    PathBuf::from("/tmp").join(LOCK_FILE_NAME)
+}
+
 /// Resolve the shared Postgres and return its state (blocking; runs once).
 fn init_shared() -> SharedState {
     // testcontainers' sync runner drives its async client with `block_on`,
@@ -274,50 +406,84 @@ fn init_shared() -> SharedState {
                 PgTarget::Direct(dsn) => (dsn, None),
                 PgTarget::Shared { port } => {
                     let dsn = shared_dsn(port);
-                    // Another binary may have already started the shared
-                    // container on this port — reuse it if reachable.
+                    // Cross-process mutual exclusion: without a lock, several
+                    // test binaries probe the same container name at once and
+                    // the probe→rm→start sequence races (a sibling's
+                    // `docker rm -f` can remove the winner's just-started
+                    // container; a name collision makes `start()` fail and
+                    // the loser waits for a server that is gone). Hold a
+                    // lockfile for the whole critical section so exactly one
+                    // binary bootstraps and the rest block, then reuse.
+                    let lock = BootstrapLock::acquire(&lock_file_path())
+                        .map_err(|e| format!("failed to acquire shared-container lock: {e}"))?;
+
+                    // (a) Already reachable (started by another binary or a
+                    // previous run): reuse as-is, no container to manage.
                     if probe(&rt, &dsn) {
+                        drop(lock);
                         (dsn, None)
                     } else {
-                        match start_shared_container(port) {
-                            Ok(c) => (dsn, Some(c)),
-                            // Start failed (another binary is starting or
-                            // already started the container): wait for the
-                            // other binary's server to become reachable.
+                        // (b) We are the bootstrap binary: rm + start, then
+                        // wait for the server to answer while still holding
+                        // the lock, so the next binary to acquire it finds
+                        // the container reachable and skips the start path.
+                        let container = match start_shared_container(port) {
+                            Ok(c) => Some(c),
                             Err(e) => {
-                                let deadline =
-                                    std::time::Instant::now() + std::time::Duration::from_secs(60);
-                                loop {
-                                    if probe(&rt, &dsn) {
-                                        break (dsn, None);
-                                    }
-                                    if std::time::Instant::now() >= deadline {
-                                        return Err(format!(
-                                            "failed to start shared postgres container on port {port} and no server became reachable: {e}"
-                                        ));
-                                    }
-                                    std::thread::sleep(std::time::Duration::from_millis(500));
-                                }
+                                eprintln!("shared container start failed: {e}");
+                                None
+                            }
+                        };
+                        let deadline = std::time::Instant::now() + SHARED_READY_TIMEOUT;
+                        let mut reachable = false;
+                        while std::time::Instant::now() < deadline {
+                            if probe(&rt, &dsn) {
+                                reachable = true;
+                                break;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(500));
+                        }
+                        // Fresh container: sweep leaked schemas while still
+                        // holding the lock. The sweep must not race with a
+                        // sibling's `CREATE SCHEMA` (dropping a schema that
+                        // another binary is mid-test inside surfaces as
+                        // `no schema has been selected to create in`).
+                        if reachable && container.is_some() {
+                            let sweep = rt.block_on(async {
+                                tokio::time::timeout(
+                                    std::time::Duration::from_secs(5),
+                                    sqlx::PgConnection::connect(&dsn),
+                                )
+                                .await
+                                .ok()
+                                .and_then(|r| r.ok())
+                            });
+                            if let Some(mut conn) = sweep {
+                                rt.block_on(async {
+                                    sweep_leaked_schemas(&mut conn).await;
+                                });
                             }
                         }
+                        // Release regardless of reachability: the outer
+                        // readiness loop below is the long-lead safety net,
+                        // and siblings that acquire the lock next only rm a
+                        // container that is NOT running on our port (a
+                        // running one is left alone by `start_shared_container`).
+                        drop(lock);
+                        (dsn, container)
                     }
                 }
             };
 
             // The entrypoint restarts Postgres while initializing the DB, so
-            // poll until a real connection succeeds.
+            // poll until a real connection succeeds. (The leaked-schema sweep
+            // already ran inside the bootstrap lock, before any sibling could
+            // create a schema — never sweep here, where another binary may
+            // already be mid-test.)
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
             loop {
                 match rt.block_on(sqlx::PgConnection::connect(&url)) {
-                    Ok(mut conn) => {
-                        // Fresh container: sweep leaked schemas from
-                        // previously killed test runs (safe only because
-                        // we just created it).
-                        if container.is_some() {
-                            rt.block_on(async {
-                                sweep_leaked_schemas(&mut conn).await;
-                            });
-                        }
+                    Ok(conn) => {
                         drop(conn);
                         break;
                     }
@@ -596,5 +762,115 @@ mod tests {
             ContainerProbe::Remove
         );
         assert_eq!(classify_probe(true, None, 5433), ContainerProbe::Remove);
+    }
+
+    // --- Cross-process bootstrap lock -------------------------------------
+
+    #[test]
+    fn test_bootstrap_lock_mutual_exclusion() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tama-test-pg.lock");
+        let path = std::sync::Arc::new(path);
+        let current = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let max_seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let threads = 8;
+        let iterations = 5;
+
+        let mut handles = Vec::new();
+        for _ in 0..threads {
+            let path = std::sync::Arc::clone(&path);
+            let current = std::sync::Arc::clone(&current);
+            let max_seen = std::sync::Arc::clone(&max_seen);
+            handles.push(std::thread::spawn(move || {
+                for _ in 0..iterations {
+                    let _lock = BootstrapLock::acquire(&path).expect("acquire lock");
+                    let now = current.fetch_add(1, Ordering::SeqCst) + 1;
+                    max_seen.fetch_max(now, Ordering::SeqCst);
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    current.fetch_sub(1, Ordering::SeqCst);
+                }
+            }));
+        }
+        for handle in handles {
+            handle.join().expect("lock thread panicked");
+        }
+
+        assert_eq!(
+            max_seen.load(Ordering::SeqCst),
+            1,
+            "more than one thread held the bootstrap lock at the same time"
+        );
+        assert_eq!(current.load(Ordering::SeqCst), 0, "lock counter leaked");
+        assert!(
+            !path.exists(),
+            "lock file must be removed once all holders released it"
+        );
+    }
+
+    #[test]
+    fn test_bootstrap_lock_stale_recovery() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tama-test-pg.lock");
+
+        // Simulate a crashed holder: a lock file with no live owner.
+        std::fs::write(&path, b"dead pid").expect("write stale lock");
+
+        // stale_after = 0 makes the pre-existing lock instantly stale, so
+        // the acquire must break it (no real waiting) and take ownership.
+        let lock = BootstrapLock::acquire_stale_after(&path, std::time::Duration::ZERO)
+            .expect("stale lock must be broken and re-acquired");
+        assert!(path.exists(), "lock file exists while held");
+        drop(lock);
+        assert!(
+            !path.exists(),
+            "released lock file must be removed by the holder"
+        );
+    }
+
+    #[test]
+    fn test_bootstrap_lock_fresh_lock_not_broken() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tama-test-pg.lock");
+
+        let _held = BootstrapLock::acquire(&path).expect("acquire lock");
+
+        // A second acquire on the same (fresh) lock file must NOT break it:
+        // it must block. Prove non-breaking by acquiring from a thread that
+        // would observe the lock being stolen (stale_after=0 would steal a
+        // fresh lock, so use the default stale threshold and a short bound).
+        let stolen = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stolen2 = std::sync::Arc::clone(&stolen);
+        let path2 = path.clone();
+        let handle = std::thread::spawn(move || {
+            let _lock = BootstrapLock::acquire_stale_after(&path2, STALE_LOCK_AGE)
+                .expect("second acquire must eventually succeed");
+            stolen2.store(true, Ordering::SeqCst);
+        });
+        // Give the waiter a few poll cycles; it must still be blocked.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(
+            !stolen.load(Ordering::SeqCst),
+            "fresh lock must not be stolen while the holder is alive"
+        );
+        drop(_held);
+        handle.join().expect("waiter thread panicked");
+        assert!(
+            stolen.load(Ordering::SeqCst),
+            "waiter acquires after release"
+        );
+    }
+
+    #[test]
+    fn test_lock_file_path_is_stable_and_absolute() {
+        let path = lock_file_path();
+        assert_eq!(
+            path.file_name().and_then(|n| n.to_str()),
+            Some("tama-test-pg.lock"),
+            "lock file must use the fixed shared name"
+        );
+        assert!(
+            path.parent().is_some_and(|p| p.is_absolute()),
+            "lock path must be absolute so all processes agree on it, got {path:?}"
+        );
     }
 }
