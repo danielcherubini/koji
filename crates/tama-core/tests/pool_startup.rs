@@ -20,9 +20,9 @@ async fn test_pool_connects_to_container() {
     let cfg = DatabaseConfig {
         host,
         port,
-        name: "postgres".to_string(),
-        user: "postgres".to_string(),
-        password: "postgres".to_string(),
+        name: "tama".to_string(),
+        user: "tama".to_string(),
+        password: "tama".to_string(),
     };
     let pool = create_pool(&cfg).await.expect("pool creation");
     connect_with_retry(&pool, Duration::from_millis(100))

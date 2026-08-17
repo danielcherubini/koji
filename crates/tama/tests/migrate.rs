@@ -24,7 +24,7 @@ const V49_SCHEMA: &str = include_str!("fixtures/v49_schema.sql");
 /// SHA-256 of "sk-tama-test-key-0001" — the fixture's known API key.
 const KNOWN_KEY_HASH: &str = "40ccee018c46de25a1d2d4af0f08c0569e4a8d430f10f739574f924202fa37e5";
 
-/// Env var name the tests use for `--password-env` (value: "postgres").
+/// Env var name the tests use for `--password-env` (value: "tama").
 const TEST_PW_ENV: &str = "TAMA_MIGRATE_TEST_PW";
 
 /// Expected row count per table in the standard fixture.
@@ -61,7 +61,7 @@ fn expected_counts() -> BTreeMap<&'static str, u64> {
 /// selected via the `options` runtime parameter (preserved by `migrate`).
 fn dsn_for(schema: &str) -> String {
     let (host, port) = common::container_host_port();
-    format!("postgres://postgres:postgres@{host}:{port}/postgres?options=-c+search_path={schema}")
+    format!("postgres://tama:tama@{host}:{port}/tama?options=-c+search_path={schema}")
 }
 
 fn opts_for(
@@ -72,7 +72,7 @@ fn opts_for(
     dry_run: bool,
 ) -> tama_web::migrate::MigrateOpts {
     // Same key/value in every test — parallel set_var is harmless.
-    std::env::set_var(TEST_PW_ENV, "postgres");
+    std::env::set_var(TEST_PW_ENV, "tama");
     tama_web::migrate::MigrateOpts {
         sqlite_path: sqlite,
         db_url: dsn_for(schema),
@@ -413,8 +413,8 @@ async fn test_full_migration_copies_all_tables() {
     let (host, port) = common::container_host_port();
     assert_eq!(cfg["database"]["host"].as_str(), Some(host.as_str()));
     assert_eq!(cfg["database"]["port"].as_integer(), Some(port as i64));
-    assert_eq!(cfg["database"]["name"].as_str(), Some("postgres"));
-    assert_eq!(cfg["database"]["user"].as_str(), Some("postgres"));
+    assert_eq!(cfg["database"]["name"].as_str(), Some("tama"));
+    assert_eq!(cfg["database"]["user"].as_str(), Some("tama"));
 
     guard.finish().await;
 }

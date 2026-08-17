@@ -1,9 +1,16 @@
 //! Shared Postgres integration test harness.
 //!
-//! Provides a process-global `postgres:16` container (started once and shared
-//! by every test in the process) and per-test isolated schemas so parallel
-//! tests never see each other's data. Isolation is not sacrificed for speed:
-//! each test gets a fresh schema with the migrations applied to it.
+//! All test binaries on the machine share ONE `postgres:16` instance:
+//! - `TAMA_TEST_PG_DSN` (e.g. `postgres://tama:tama@127.0.0.1:5433/tama`)
+//!   connects directly to an externally-managed Postgres — no container.
+//! - Otherwise, connect to the shared container at 127.0.0.1:`TAMA_TEST_PG_PORT`
+//!   (default 5433); if nothing is there, start a container named/labelled
+//!   `tama-test-pg` on that fixed port. The container is intentionally NOT
+//!   removed when the binary exits (other binaries share it) — clean up with
+//!   `make docker-clean`.
+//!
+//! Per-test isolation is still via private schemas (`SchemaGuard`): each test
+//! gets a fresh schema with the migrations applied to it.
 //!
 //! `#![allow(dead_code)]`: the harness is compiled into every test binary
 //! that declares `mod common;`, but each binary only uses a subset of it.
@@ -20,9 +27,14 @@ use testcontainers::{Container, GenericImage, ImageExt};
 
 /// Pinned container image tag.
 const POSTGRES_TAG: &str = "16";
-const POSTGRES_USER: &str = "postgres";
-const POSTGRES_PASSWORD: &str = "postgres";
-const POSTGRES_DB: &str = "postgres";
+/// Credentials of the shared test server (container or external).
+const PG_USER: &str = "tama";
+const PG_PASSWORD: &str = "tama";
+const PG_DB: &str = "tama";
+/// Default host port of the shared container (override: `TAMA_TEST_PG_PORT`).
+const DEFAULT_SHARED_PORT: u16 = 5433;
+/// Name/label of the shared container (used by `make docker-clean`).
+const SHARED_CONTAINER_NAME: &str = "tama-test-pg";
 
 /// Monotonic counter for unique schema names.
 static SCHEMA_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -47,17 +59,88 @@ fn background_runtime() -> &'static tokio::runtime::Runtime {
     })
 }
 
-/// Shared state: container, pool, base URL, and the runtime that owns the
-/// pool (sqlx 0.9 pools are bound to the runtime that created them, so it
-/// must be kept alive for the process).
+/// Where to get Postgres: a direct DSN or the shared container port.
+#[derive(Debug)]
+enum PgTarget {
+    /// Connect directly to this DSN (from `TAMA_TEST_PG_DSN`).
+    Direct(String),
+    /// Use the shared container on 127.0.0.1 at this port.
+    Shared { port: u16 },
+}
+
+/// Resolve the Postgres target from env vars (pure; unit-tested).
+fn resolve_target(dsn_env: Option<&str>, port_env: Option<&str>) -> PgTarget {
+    match dsn_env {
+        Some(dsn) if !dsn.trim().is_empty() => PgTarget::Direct(dsn.trim().to_string()),
+        _ => PgTarget::Shared {
+            port: port_env
+                .and_then(|p| p.trim().parse().ok())
+                .unwrap_or(DEFAULT_SHARED_PORT),
+        },
+    }
+}
+
+/// DSN of the shared container (user/password/db are all `tama`).
+fn shared_dsn(port: u16) -> String {
+    format!("postgresql://{PG_USER}:{PG_PASSWORD}@127.0.0.1:{port}/{PG_DB}?sslmode=disable")
+}
+
+/// Short-timeout connection probe (returns false instead of erroring).
+fn probe(rt: &tokio::runtime::Runtime, url: &str) -> bool {
+    rt.block_on(async {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            sqlx::PgConnection::connect(url),
+        )
+        .await
+        .is_ok_and(|r| r.is_ok())
+    })
+}
+
+/// Start the shared container on a fixed host port.
+///
+/// The returned handle is kept in the process-global static and never
+/// dropped, so the container survives this binary's exit (other test
+/// binaries share it). `make docker-clean` removes it.
+fn start_shared_container(port: u16) -> Result<Container<GenericImage>, String> {
+    // Best-effort: remove a stale (stopped) container holding the name.
+    let _ = std::process::Command::new("docker")
+        .args(["rm", "-f", SHARED_CONTAINER_NAME])
+        .status();
+
+    GenericImage::new("postgres", POSTGRES_TAG)
+        .with_container_name(SHARED_CONTAINER_NAME)
+        .with_label("tama-test", "true")
+        .with_mapped_port(port, 5432.into())
+        .with_env_var("POSTGRES_USER", PG_USER)
+        .with_env_var("POSTGRES_PASSWORD", PG_PASSWORD)
+        .with_env_var("POSTGRES_DB", PG_DB)
+        // Keep the shared container's memory small (32GB host).
+        .with_cmd([
+            "postgres",
+            "-c",
+            "shared_buffers=64MB",
+            "-c",
+            "work_mem=4MB",
+            "-c",
+            "maintenance_work_mem=16MB",
+        ])
+        .start()
+        .map_err(|e| e.to_string())
+}
+
+/// Shared state: optional container (only if this binary started it),
+/// pool, base URL, and the runtime that owns the pool (sqlx 0.9 pools are
+/// bound to the runtime that created them, so it must be kept alive for the
+/// process).
 type SharedState = (
-    Container<GenericImage>,
+    Option<Container<GenericImage>>,
     PgPool,
     String,
     tokio::runtime::Runtime,
 );
 
-/// Start the shared container and return its state (blocking; runs once).
+/// Resolve the shared Postgres and return its state (blocking; runs once).
 fn init_shared() -> SharedState {
     // testcontainers' sync runner drives its async client with `block_on`,
     // so the container must be started on a plain thread, never from within
@@ -73,31 +156,42 @@ fn init_shared() -> SharedState {
                 .build()
                 .map_err(|e| e.to_string())?;
 
-            let container = GenericImage::new("postgres", POSTGRES_TAG)
-                .with_exposed_port(5432.into())
-                .with_env_var("POSTGRES_USER", POSTGRES_USER)
-                .with_env_var("POSTGRES_PASSWORD", POSTGRES_PASSWORD)
-                .with_env_var("POSTGRES_DB", POSTGRES_DB)
-                // Keep per-container memory small — many test binaries run
-                // containers in parallel on a 32GB host.
-                .with_cmd([
-                    "postgres",
-                    "-c",
-                    "shared_buffers=64MB",
-                    "-c",
-                    "work_mem=4MB",
-                    "-c",
-                    "maintenance_work_mem=16MB",
-                ])
-                .start()
-                .map_err(|e| e.to_string())?;
-            let port = container
-                .get_host_port_ipv4(5432)
-                .map_err(|e| e.to_string())?;
-            let url = format!(
-                "postgresql://{}:{}@localhost:{}/{}?sslmode=disable",
-                POSTGRES_USER, POSTGRES_PASSWORD, port, POSTGRES_DB
-            );
+            let (url, container) = match resolve_target(
+                std::env::var("TAMA_TEST_PG_DSN").ok().as_deref(),
+                std::env::var("TAMA_TEST_PG_PORT").ok().as_deref(),
+            ) {
+                PgTarget::Direct(dsn) => (dsn, None),
+                PgTarget::Shared { port } => {
+                    let dsn = shared_dsn(port);
+                    // Another binary may have already started the shared
+                    // container on this port — reuse it if reachable.
+                    if probe(&rt, &dsn) {
+                        (dsn, None)
+                    } else {
+                        match start_shared_container(port) {
+                            Ok(c) => (dsn, Some(c)),
+                            // Start failed (raced another binary for the port
+                            // or the name): wait for the other binary's
+                            // server to become reachable.
+                            Err(e) => {
+                                let deadline =
+                                    std::time::Instant::now() + std::time::Duration::from_secs(60);
+                                loop {
+                                    if probe(&rt, &dsn) {
+                                        break (dsn, None);
+                                    }
+                                    if std::time::Instant::now() >= deadline {
+                                        return Err(format!(
+                                            "failed to start shared postgres container on port {port} and no server became reachable: {e}"
+                                        ));
+                                    }
+                                    std::thread::sleep(std::time::Duration::from_millis(500));
+                                }
+                            }
+                        }
+                    }
+                }
+            };
 
             // The entrypoint restarts Postgres while initializing the DB, so
             // poll until a real connection succeeds.
@@ -129,10 +223,10 @@ fn init_shared() -> SharedState {
     });
     rx.recv()
         .expect("init thread died")
-        .expect("failed to start postgres:16 test container")
+        .expect("failed to reach shared postgres:16 test server")
 }
 
-/// The shared container + pool + URL + owning runtime (started once).
+/// The shared pool + URL + owning runtime (started once).
 fn shared() -> &'static SharedState {
     static INIT: OnceLock<SharedState> = OnceLock::new();
     INIT.get_or_init(init_shared)
@@ -171,8 +265,9 @@ pub struct SchemaGuard {
 /// and run the embedded Postgres migrations against it.
 pub async fn with_schema() -> SchemaGuard {
     let (base, url) = (&shared().1, &shared().2);
+    let pid = std::process::id();
     let n = SCHEMA_COUNTER.fetch_add(1, Ordering::SeqCst);
-    let schema = format!("tama_test_{n:04}");
+    let schema = format!("tama_test_{pid}_{n:04}");
 
     {
         let mut conn = base
@@ -232,5 +327,55 @@ impl Drop for SchemaGuard {
                 .await;
             pool.close().await;
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_target_prefers_dsn_env() {
+        let target = resolve_target(Some("postgres://u:p@h:1/d"), Some("5434"));
+        assert!(
+            matches!(&target, PgTarget::Direct(d) if d == "postgres://u:p@h:1/d"),
+            "DSN env must win over port env, got {target:?}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_target_ignores_blank_dsn() {
+        assert!(matches!(
+            resolve_target(Some("  "), None),
+            PgTarget::Shared { port: 5433 }
+        ));
+    }
+
+    #[test]
+    fn test_resolve_target_port_env() {
+        assert!(matches!(
+            resolve_target(None, Some("5434")),
+            PgTarget::Shared { port: 5434 }
+        ));
+    }
+
+    #[test]
+    fn test_resolve_target_default_port() {
+        assert!(matches!(
+            resolve_target(None, None),
+            PgTarget::Shared { port: 5433 }
+        ));
+        assert!(matches!(
+            resolve_target(None, Some("not-a-port")),
+            PgTarget::Shared { port: 5433 }
+        ));
+    }
+
+    #[test]
+    fn test_shared_dsn_format() {
+        assert_eq!(
+            shared_dsn(5433),
+            "postgresql://tama:tama@127.0.0.1:5433/tama?sslmode=disable"
+        );
     }
 }
