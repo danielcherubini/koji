@@ -31,6 +31,7 @@ Plans for features, refactors, and bug fixes in the Tama project.
 | 190 | [SQLite → Postgres Database Migration](done/plan-190-sqlite-to-postgres.md) | ✅ COMPLETED |
 | 189 | [Model Reasoning Effort](done/plan-189-model-reasoning-effort.md) | ✅ COMPLETED |
 | 188 | [hf CLI Repo Pull (Safetensors Wizard Support)](done/plan-188-hf-cli-repo-pull.md) | ✅ COMPLETED |
+| 089 | [VLLM Spec Decoding Settings](done/plan-089-vllm-spec-decoding.md) | ✅ COMPLETED |
 | 091 | [VLLM Spec Attention Backend](done/plan-091-vllm-spec-attention-backend.md) | ✅ COMPLETED |
 | 090 | [Consolidate Models Page](done/plan-090-consolidate-models-page.md) | ✅ COMPLETED |
 
