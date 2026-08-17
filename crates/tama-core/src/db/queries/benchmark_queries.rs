@@ -423,13 +423,24 @@ mod tests {
         let entries = list_benchmarks(&guard.pool).await.unwrap();
         assert_eq!(entries.len(), 2);
 
-        // Both have the same created_at (SystemTime::now()), so the id ASC
-        // tie-break applies: model-a was inserted first → lower id → first.
-        assert_eq!(entries[0].model_id, "model-a");
-        assert_eq!(entries[0].suite_id, Some("suite-1".to_string()));
+        // Assert per-model round-trip instead of positional order: created_at
+        // is clock-derived (whole-second epoch here; TIMESTAMPTZ now() with
+        // microsecond precision in the migrated schema), so back-to-back
+        // inserts may get distinct timestamps. The query's
+        // `ORDER BY created_at DESC, id ASC` tie-break then no longer
+        // guarantees model-a (inserted first) sorts first, so positional
+        // assertions are timing-dependent and flaky.
+        let entry_a = entries
+            .iter()
+            .find(|e| e.model_id == "model-a")
+            .expect("model-a present");
+        assert_eq!(entry_a.suite_id, Some("suite-1".to_string()));
 
-        assert_eq!(entries[1].model_id, "model-b");
-        assert!(entries[1].suite_id.is_none());
+        let entry_b = entries
+            .iter()
+            .find(|e| e.model_id == "model-b")
+            .expect("model-b present");
+        assert!(entry_b.suite_id.is_none());
         guard.finish().await;
     }
 }
