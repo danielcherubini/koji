@@ -5,7 +5,11 @@ use std::sync::Arc;
 #[tokio::test]
 async fn test_proxy_routes_exist() {
     let config = crate::config::Config::default();
-    let state = Arc::new(crate::proxy::ProxyState::new(config, None));
+    let state = Arc::new(crate::proxy::ProxyState::new(
+        config,
+        None,
+        crate::db::pool::test_dummy_pool(),
+    ));
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let bound_addr = listener.local_addr().unwrap();
@@ -48,7 +52,11 @@ async fn test_proxy_routes_exist() {
 #[tokio::test]
 async fn test_metrics_returns_prometheus_format() {
     let config = crate::config::Config::default();
-    let state = Arc::new(crate::proxy::ProxyState::new(config, None));
+    let state = Arc::new(crate::proxy::ProxyState::new(
+        config,
+        None,
+        crate::db::pool::test_dummy_pool(),
+    ));
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let bound_addr = listener.local_addr().unwrap();
@@ -112,7 +120,11 @@ async fn test_metrics_returns_prometheus_format() {
 #[tokio::test]
 async fn test_metrics_no_backends_returns_tama_only() {
     let config = crate::config::Config::default();
-    let state = Arc::new(crate::proxy::ProxyState::new(config, None));
+    let state = Arc::new(crate::proxy::ProxyState::new(
+        config,
+        None,
+        crate::db::pool::test_dummy_pool(),
+    ));
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let bound_addr = listener.local_addr().unwrap();
@@ -169,7 +181,11 @@ async fn test_metrics_merges_backend_metrics() {
 
     // Create state and register the mock as a Ready backend
     let config = crate::config::Config::default();
-    let state = Arc::new(crate::proxy::ProxyState::new(config, None));
+    let state = Arc::new(crate::proxy::ProxyState::new(
+        config,
+        None,
+        crate::db::pool::test_dummy_pool(),
+    ));
 
     {
         let mut models = state.registry.models.write().await;
@@ -229,31 +245,9 @@ async fn test_metrics_merges_backend_metrics() {
     );
 }
 
-#[tokio::test]
-async fn test_metrics_task_persists_to_db() {
-    let tmp = tempfile::tempdir().unwrap();
-    let config = crate::config::Config::default();
-    let state = Arc::new(crate::proxy::ProxyState::new(
-        config,
-        Some(tmp.path().to_path_buf()),
-    ));
-
-    let _server = ProxyServer::new(state.clone()).await;
-
-    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-
-    let conn = state.open_db().unwrap();
-    let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM system_metrics_history", [], |row| {
-            row.get(0)
-        })
-        .unwrap();
-    assert!(
-        count >= 1,
-        "Expected at least 1 row in system_metrics_history after 2s, got {}",
-        count
-    );
-}
+/// `test_metrics_task_persists_to_db` now lives in
+/// `crates/tama-core/tests/metrics_collector.rs` on the Postgres harness
+/// (plan-190 Task 4 — system metrics persist to Postgres).
 
 #[tokio::test]
 async fn test_metrics_task_broadcasts_samples() {
@@ -262,6 +256,7 @@ async fn test_metrics_task_broadcasts_samples() {
     let state = Arc::new(crate::proxy::ProxyState::new(
         config,
         Some(tmp.path().to_path_buf()),
+        crate::db::pool::test_dummy_pool(),
     ));
 
     let mut rx = state.metrics.metrics_tx.subscribe();
@@ -301,6 +296,7 @@ async fn test_metric_sample_broadcast_populates_models_field() {
     let state = Arc::new(crate::proxy::ProxyState::new(
         config,
         Some(tmp.path().to_path_buf()),
+        crate::db::pool::test_dummy_pool(),
     ));
 
     // Manually insert a model into model_configs since it's no longer in Config
@@ -385,6 +381,7 @@ async fn test_system_metrics_stream_emits_samples() {
     let state = Arc::new(crate::proxy::ProxyState::new(
         config,
         Some(tmp.path().to_path_buf()),
+        crate::db::pool::test_dummy_pool(),
     ));
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -477,6 +474,7 @@ async fn test_system_metrics_stream_sample_models_round_trip() {
     let state = Arc::new(crate::proxy::ProxyState::new(
         config,
         Some(tmp.path().to_path_buf()),
+        crate::db::pool::test_dummy_pool(),
     ));
 
     // Manually insert a model into model_configs since it's no longer in Config
@@ -638,23 +636,24 @@ async fn test_system_metrics_stream_sample_models_round_trip() {
 #[tokio::test]
 async fn test_proxy_loads_models_from_db_on_startup() {
     use crate::config::ModelConfig;
-    let tmp = tempfile::tempdir().unwrap();
-    let db_dir = tmp.path().to_path_buf();
+    let guard = crate::testing::postgres::with_schema().await;
 
-    // Pre-populate DB with a model config
-    {
-        let open_res = crate::db::open(&db_dir).unwrap();
-        let conn = open_res.conn;
-        let mc = ModelConfig {
-            backend: "llama_cpp".to_string(),
-            display_name: Some("DB Model".to_string()),
-            ..Default::default()
-        };
-        crate::db::save_model_config(&conn, "db-model-key", &mc).unwrap();
-    }
+    // Pre-populate Postgres with a model config (plan-190 Task 5)
+    let mc = ModelConfig {
+        backend: "llama_cpp".to_string(),
+        display_name: Some("DB Model".to_string()),
+        ..Default::default()
+    };
+    crate::db::save_model_config(&guard.pool, "db-model-key", &mc)
+        .await
+        .unwrap();
 
     let config = crate::config::Config::default();
-    let state = Arc::new(crate::proxy::ProxyState::new(config, Some(db_dir)));
+    let state = Arc::new(crate::proxy::ProxyState::new(
+        config,
+        None,
+        Arc::new(guard.pool.clone()),
+    ));
 
     // Start the server (which should load models from DB)
     let _server = ProxyServer::new(state.clone()).await;
@@ -667,6 +666,8 @@ async fn test_proxy_loads_models_from_db_on_startup() {
     );
     let model = model_configs.get("db-model-key").unwrap();
     assert_eq!(model.display_name.as_deref(), Some("DB Model"));
+
+    guard.finish().await;
 }
 
 /// Test that aliases are loaded from the DB into the in-memory cache at startup.
@@ -676,41 +677,27 @@ async fn test_proxy_loads_models_from_db_on_startup() {
 async fn test_proxy_loads_aliases_from_db_on_startup() {
     use crate::config::ModelConfig;
 
-    let tmp = tempfile::tempdir().unwrap();
-    let db_dir = tmp.path().to_path_buf();
+    let guard = crate::testing::postgres::with_schema().await;
 
-    // Pre-populate DB with a model config and an alias
-    {
-        let open_res = crate::db::open(&db_dir).unwrap();
-        let conn = open_res.conn;
-
-        // Insert a model config
-        let mc = ModelConfig {
-            backend: "llama_cpp".to_string(),
-            api_name: Some("test-model".to_string()),
-            ..Default::default()
-        };
-        crate::db::save_model_config(&conn, "owner--test-repo", &mc).unwrap();
-
-        // Get the model's integer id
-        let model_id: i64 = conn
-            .query_row(
-                "SELECT id FROM model_configs WHERE repo_id = ?1",
-                ["owner/test-repo"],
-                |row| row.get(0),
-            )
-            .unwrap();
-
-        // Insert an alias pointing to the model
-        conn.execute(
-            "INSERT INTO model_aliases (name, model_id, enabled) VALUES (?1, ?2, 1)",
-            rusqlite::params!["my-alias", model_id],
-        )
+    // Pre-populate Postgres with a model config and an alias (plan-190 Task 5)
+    let mc = ModelConfig {
+        backend: "llama_cpp".to_string(),
+        api_name: Some("test-model".to_string()),
+        ..Default::default()
+    };
+    let model_id = crate::db::save_model_config(&guard.pool, "owner--test-repo", &mc)
+        .await
         .unwrap();
-    }
+    crate::db::queries::insert_alias(&guard.pool, "my-alias", model_id, None)
+        .await
+        .unwrap();
 
     let config = crate::config::Config::default();
-    let state = Arc::new(crate::proxy::ProxyState::new(config, Some(db_dir)));
+    let state = Arc::new(crate::proxy::ProxyState::new(
+        config,
+        None,
+        Arc::new(guard.pool.clone()),
+    ));
 
     // Start the server (which should load aliases from DB)
     let _server = ProxyServer::new(state.clone()).await;
@@ -727,4 +714,6 @@ async fn test_proxy_loads_aliases_from_db_on_startup() {
         Some(&"test-model".to_string()),
         "alias should resolve to the model's api_name"
     );
+
+    guard.finish().await;
 }

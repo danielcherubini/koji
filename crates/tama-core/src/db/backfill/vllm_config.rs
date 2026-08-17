@@ -5,6 +5,7 @@
 //! from `args`, preventing duplication when the new columns are used.
 
 use anyhow::Result;
+use sqlx::PgPool;
 
 /// Backfill `vllm_config` from `args` for models that carry managed vLLM flags.
 ///
@@ -12,49 +13,19 @@ use anyhow::Result;
 /// When a row already has a non-empty `vllm_config`, existing column values
 /// win per-field; extracted values only fill fields that are `None`/`false`.
 ///
-/// Takes a `db_dir` path (not a `&Connection`) so it can be called from a
-/// `tokio::task::spawn_blocking` task. Opens its own connection internally.
-pub fn backfill_vllm_config(db_dir: &std::path::Path) -> Result<()> {
-    let conn = crate::db::open(db_dir)?.conn;
-
+/// Postgres-based (plan-190 Task 5) — model configs live in Postgres.
+pub async fn backfill_vllm_config(pool: &PgPool) -> Result<()> {
     // Find rows whose args contain at least one managed flag.
     // We check for the flag strings in the JSON representation of args.
-    let managed_flags = [
-        "--quantization",
-        "--kv-cache-dtype",
-        "--tensor-parallel-size",
-        "--gpu-memory-utilization",
-        "--max-model-len",
-        "--max-num-batched-tokens",
-        "--enable-prefix-caching",
-        "--trust-remote-code",
-    ];
-
-    // Build a query that matches any managed flag in the args column.
-    let conditions: Vec<String> = managed_flags
-        .iter()
-        .map(|f| format!("args LIKE '%{}%'", f))
-        .collect();
-    let where_clause = conditions.join(" OR ");
-
-    let sql = format!(
-        "SELECT id, repo_id, args, vllm_config FROM model_configs WHERE ({}) AND hf_format = 'transformers'",
-        where_clause
-    );
-
-    let mut stmt = conn.prepare(&sql)?;
+    const SELECT_SQL: &str = "SELECT id, repo_id, args, vllm_config FROM model_configs \
+        WHERE (args LIKE '%--quantization%' OR args LIKE '%--kv-cache-dtype%' \
+           OR args LIKE '%--tensor-parallel-size%' OR args LIKE '%--gpu-memory-utilization%' \
+           OR args LIKE '%--max-model-len%' OR args LIKE '%--max-num-batched-tokens%' \
+           OR args LIKE '%--enable-prefix-caching%' OR args LIKE '%--trust-remote-code%') \
+        AND hf_format = 'transformers'";
     // Collect rows into a Vec first — we update the same table during iteration.
-    let rows: Vec<_> = stmt
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, Option<String>>(3)?,
-            ))
-        })?
-        .filter_map(|r| r.ok())
-        .collect();
+    let rows: Vec<(i64, String, Option<String>, Option<String>)> =
+        sqlx::query_as(SELECT_SQL).fetch_all(pool).await?;
 
     let mut migrated = 0;
     let mut failed = 0;
@@ -127,10 +98,15 @@ pub fn backfill_vllm_config(db_dir: &std::path::Path) -> Result<()> {
         };
 
         // Update the row
-        if let Err(e) = conn.execute(
-            "UPDATE model_configs SET vllm_config = ?1, args = ?2, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?3",
-            rusqlite::params![merged_json, stripped_args_json, id],
-        ) {
+        if let Err(e) = sqlx::query(
+            "UPDATE model_configs SET vllm_config = $1, args = $2, updated_at = now() WHERE id = $3",
+        )
+        .bind(&merged_json)
+        .bind(&stripped_args_json)
+        .bind(id)
+        .execute(pool)
+        .await
+        {
             tracing::warn!(
                 model_id = id,
                 repo_id = %repo_id,
@@ -236,484 +212,294 @@ fn merge_vllm_spec_decoding(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::queries::{upsert_model_config, ModelConfigRecord};
-    use crate::db::OpenResult;
+    use crate::db::queries::{get_model_config, upsert_model_config, ModelConfigRecord};
 
     fn make_record(
-        id: i64,
         repo_id: &str,
         args: Option<Vec<String>>,
         vllm_config: Option<crate::config::types::VllmConfig>,
     ) -> ModelConfigRecord {
-        let now = "2026-05-03T00:00:00Z".to_string();
         let args_json = args.map(|a| serde_json::to_string(&a).unwrap());
         let vllm_json = vllm_config.map(|v| serde_json::to_string(&v).unwrap());
 
         ModelConfigRecord {
-            id,
             repo_id: repo_id.to_string(),
-            display_name: None,
             backend: "vllm".to_string(),
-            gpu_variant: None,
-            gpu_device: None,
-            enabled: true,
-            selected_quant: None,
-            selected_mmproj: None,
-            selected_mtp_model: None,
-            context_length: None,
-            num_parallel: Some(1),
-            kv_unified: false,
-            gpu_layers: None,
-            cache_type_k: None,
-            cache_type_v: None,
-            port: None,
             args: args_json,
-            sampling: None,
-            modalities: None,
-            profile: None,
-            api_name: None,
-            health_check: None,
             hf_format: Some("transformers".to_string()),
-            hf_base_model: None,
-            hf_pipeline_tag: None,
-            hf_total_params: None,
-            hf_active_params: None,
-            hf_architecture_type: None,
-            hf_context_length: None,
-            hf_num_layers: None,
-            hf_last_modified: None,
-            spec_decoding: None,
-            created_at: now.clone(),
-            updated_at: now,
-            n_batch: None,
-            n_ubatch: None,
             vllm_config: vllm_json,
-            provider_name: None,
-            reasoning_levels: None,
+            ..Default::default()
         }
+    }
+
+    async fn get_record(pool: &PgPool, id: i64) -> ModelConfigRecord {
+        get_model_config(pool, id).await.unwrap().unwrap()
     }
 
     /// Row with grouped vLLM args → vllm_config populated, args stripped.
-    #[test]
-    fn test_backfill_grouped_args() {
-        let tmp = tempfile::tempdir().unwrap();
-        let db_dir = tmp.path().to_path_buf();
+    #[tokio::test]
+    async fn test_backfill_grouped_args() {
+        let guard = crate::testing::postgres::with_schema().await;
+        let pool = &guard.pool;
+        let args = vec![
+            "--quantization fp8".to_string(),
+            "--kv-cache-dtype fp8".to_string(),
+            "--tensor-parallel-size 2".to_string(),
+            "--gpu-memory-utilization 0.92".to_string(),
+            "--attention-backend ROCM_AITER_UNIFIED_ATTN".to_string(),
+            "--max-num-batched-tokens 2560".to_string(),
+            "--enable-prefix-caching".to_string(),
+        ];
+        let id = upsert_model_config(pool, &make_record("test/model1", Some(args), None))
+            .await
+            .unwrap();
 
-        {
-            let OpenResult { conn, .. } = crate::db::open(&db_dir).unwrap();
-            let args = vec![
-                "--quantization fp8".to_string(),
-                "--kv-cache-dtype fp8".to_string(),
-                "--tensor-parallel-size 2".to_string(),
-                "--gpu-memory-utilization 0.92".to_string(),
-                "--attention-backend ROCM_AITER_UNIFIED_ATTN".to_string(),
-                "--max-num-batched-tokens 2560".to_string(),
-                "--enable-prefix-caching".to_string(),
-            ];
-            let record = make_record(1, "test/model1", Some(args), None);
-            upsert_model_config(&conn, &record).unwrap();
-        }
+        backfill_vllm_config(pool).await.unwrap();
 
-        // Run backfill
-        backfill_vllm_config(&db_dir).unwrap();
+        let row = get_record(pool, id).await;
+        let vllm: crate::config::types::VllmConfig =
+            serde_json::from_str(row.vllm_config.as_ref().unwrap()).unwrap();
+        assert_eq!(vllm.quantization, Some("fp8".to_string()));
+        assert_eq!(vllm.kv_cache_dtype, Some("fp8".to_string()));
+        assert_eq!(vllm.tensor_parallel_size, Some(2));
+        assert_eq!(vllm.gpu_memory_utilization, Some(0.92));
+        assert_eq!(vllm.max_num_batched_tokens, Some(2560));
+        assert!(vllm.enable_prefix_caching);
 
-        // Verify
-        {
-            let OpenResult { conn, .. } = crate::db::open(&db_dir).unwrap();
-            let row: ModelConfigRecord = conn
-                .query_row(
-                    &format!(
-                        "SELECT {} FROM model_configs WHERE id = 1",
-                        ModelConfigRecord::COLUMNS
-                    ),
-                    [],
-                    ModelConfigRecord::from_row,
-                )
-                .unwrap();
-
-            // vllm_config should have the extracted values
-            let vllm: crate::config::types::VllmConfig =
-                serde_json::from_str(row.vllm_config.as_ref().unwrap()).unwrap();
-            assert_eq!(vllm.quantization, Some("fp8".to_string()));
-            assert_eq!(vllm.kv_cache_dtype, Some("fp8".to_string()));
-            assert_eq!(vllm.tensor_parallel_size, Some(2));
-            assert_eq!(vllm.gpu_memory_utilization, Some(0.92));
-            assert_eq!(vllm.max_num_batched_tokens, Some(2560));
-            assert!(vllm.enable_prefix_caching);
-
-            // args should be stripped to only unmanaged flags
-            let args: Vec<String> = serde_json::from_str(row.args.as_ref().unwrap()).unwrap();
-            assert_eq!(args, vec!["--attention-backend ROCM_AITER_UNIFIED_ATTN"]);
-        }
+        let args: Vec<String> = serde_json::from_str(row.args.as_ref().unwrap()).unwrap();
+        assert_eq!(args, vec!["--attention-backend ROCM_AITER_UNIFIED_ATTN"]);
+        guard.finish().await;
     }
 
     /// Row without managed vLLM flags → untouched.
-    #[test]
-    fn test_backfill_no_managed_flags_untouched() {
-        let tmp = tempfile::tempdir().unwrap();
-        let db_dir = tmp.path().to_path_buf();
+    #[tokio::test]
+    async fn test_backfill_no_managed_flags_untouched() {
+        let guard = crate::testing::postgres::with_schema().await;
+        let pool = &guard.pool;
+        let args = vec![
+            "--attention-backend ROCM".to_string(),
+            "--max-logprobs 100".to_string(),
+        ];
+        let id = upsert_model_config(pool, &make_record("test/model2", Some(args), None))
+            .await
+            .unwrap();
 
-        {
-            let OpenResult { conn, .. } = crate::db::open(&db_dir).unwrap();
-            let args = vec![
-                "--attention-backend ROCM".to_string(),
-                "--max-logprobs 100".to_string(),
-            ];
-            let record = make_record(1, "test/model2", Some(args), None);
-            upsert_model_config(&conn, &record).unwrap();
-        }
+        backfill_vllm_config(pool).await.unwrap();
 
-        // Run backfill
-        backfill_vllm_config(&db_dir).unwrap();
-
-        // Verify — args unchanged, vllm_config still NULL
-        {
-            let OpenResult { conn, .. } = crate::db::open(&db_dir).unwrap();
-            let row: ModelConfigRecord = conn
-                .query_row(
-                    &format!(
-                        "SELECT {} FROM model_configs WHERE id = 1",
-                        ModelConfigRecord::COLUMNS
-                    ),
-                    [],
-                    ModelConfigRecord::from_row,
-                )
-                .unwrap();
-
-            assert!(row.vllm_config.is_none());
-            let args: Vec<String> = serde_json::from_str(row.args.as_ref().unwrap()).unwrap();
-            assert_eq!(args, vec!["--attention-backend ROCM", "--max-logprobs 100"]);
-        }
+        let row = get_record(pool, id).await;
+        assert!(row.vllm_config.is_none());
+        let args: Vec<String> = serde_json::from_str(row.args.as_ref().unwrap()).unwrap();
+        assert_eq!(args, vec!["--attention-backend ROCM", "--max-logprobs 100"]);
+        guard.finish().await;
     }
 
     /// Row with existing vllm_config → existing values win on conflict.
-    #[test]
-    fn test_backfill_existing_vllm_config_wins() {
-        let tmp = tempfile::tempdir().unwrap();
-        let db_dir = tmp.path().to_path_buf();
+    #[tokio::test]
+    async fn test_backfill_existing_vllm_config_wins() {
+        let guard = crate::testing::postgres::with_schema().await;
+        let pool = &guard.pool;
+        let args = vec![
+            "--quantization fp8".to_string(),
+            "--tensor-parallel-size 2".to_string(),
+        ];
+        let existing = crate::config::types::VllmConfig {
+            quantization: Some("awq".to_string()),
+            kv_cache_dtype: None,
+            tensor_parallel_size: Some(4),
+            ..Default::default()
+        };
+        let id = upsert_model_config(
+            pool,
+            &make_record("test/model3", Some(args), Some(existing)),
+        )
+        .await
+        .unwrap();
 
-        {
-            let OpenResult { conn, .. } = crate::db::open(&db_dir).unwrap();
-            let args = vec![
-                "--quantization fp8".to_string(),
-                "--tensor-parallel-size 2".to_string(),
-            ];
-            // Existing vllm_config has quantization=awq and tensor_parallel_size=4
-            // These should win over the extracted values
-            let existing = crate::config::types::VllmConfig {
-                quantization: Some("awq".to_string()),
-                kv_cache_dtype: None,
-                tensor_parallel_size: Some(4),
-                gpu_memory_utilization: None,
-                max_model_len: None,
-                max_num_batched_tokens: None,
-                enable_prefix_caching: false,
-                trust_remote_code: false,
-                ..Default::default()
-            };
-            let record = make_record(1, "test/model3", Some(args), Some(existing));
-            upsert_model_config(&conn, &record).unwrap();
-        }
+        backfill_vllm_config(pool).await.unwrap();
 
-        // Run backfill
-        backfill_vllm_config(&db_dir).unwrap();
-
-        // Verify — existing values win
-        {
-            let OpenResult { conn, .. } = crate::db::open(&db_dir).unwrap();
-            let row: ModelConfigRecord = conn
-                .query_row(
-                    &format!(
-                        "SELECT {} FROM model_configs WHERE id = 1",
-                        ModelConfigRecord::COLUMNS
-                    ),
-                    [],
-                    ModelConfigRecord::from_row,
-                )
-                .unwrap();
-
-            let vllm: crate::config::types::VllmConfig =
-                serde_json::from_str(row.vllm_config.as_ref().unwrap()).unwrap();
-            // Existing values win
-            assert_eq!(vllm.quantization, Some("awq".to_string()));
-            assert_eq!(vllm.tensor_parallel_size, Some(4));
-        }
+        let row = get_record(pool, id).await;
+        let vllm: crate::config::types::VllmConfig =
+            serde_json::from_str(row.vllm_config.as_ref().unwrap()).unwrap();
+        assert_eq!(vllm.quantization, Some("awq".to_string()));
+        assert_eq!(vllm.tensor_parallel_size, Some(4));
+        guard.finish().await;
     }
 
     /// Row with existing vllm_config that has None fields → extracted fills gaps.
-    #[test]
-    fn test_backfill_existing_vllm_config_fills_gaps() {
-        let tmp = tempfile::tempdir().unwrap();
-        let db_dir = tmp.path().to_path_buf();
+    #[tokio::test]
+    async fn test_backfill_existing_vllm_config_fills_gaps() {
+        let guard = crate::testing::postgres::with_schema().await;
+        let pool = &guard.pool;
+        let args = vec![
+            "--quantization fp8".to_string(),
+            "--tensor-parallel-size 2".to_string(),
+        ];
+        let existing = crate::config::types::VllmConfig {
+            quantization: Some("awq".to_string()),
+            ..Default::default()
+        };
+        let id = upsert_model_config(
+            pool,
+            &make_record("test/model4", Some(args), Some(existing)),
+        )
+        .await
+        .unwrap();
 
-        {
-            let OpenResult { conn, .. } = crate::db::open(&db_dir).unwrap();
-            let args = vec![
-                "--quantization fp8".to_string(),
-                "--tensor-parallel-size 2".to_string(),
-            ];
-            // Existing vllm_config has quantization but not tensor_parallel_size
-            let existing = crate::config::types::VllmConfig {
-                quantization: Some("awq".to_string()),
-                kv_cache_dtype: None,
-                tensor_parallel_size: None, // This should be filled from args
-                gpu_memory_utilization: None,
-                max_model_len: None,
-                max_num_batched_tokens: None,
-                enable_prefix_caching: false,
-                trust_remote_code: false,
-                ..Default::default()
-            };
-            let record = make_record(1, "test/model4", Some(args), Some(existing));
-            upsert_model_config(&conn, &record).unwrap();
-        }
+        backfill_vllm_config(pool).await.unwrap();
 
-        // Run backfill
-        backfill_vllm_config(&db_dir).unwrap();
-
-        // Verify — existing quantization wins, tensor_parallel_size filled from args
-        {
-            let OpenResult { conn, .. } = crate::db::open(&db_dir).unwrap();
-            let row: ModelConfigRecord = conn
-                .query_row(
-                    &format!(
-                        "SELECT {} FROM model_configs WHERE id = 1",
-                        ModelConfigRecord::COLUMNS
-                    ),
-                    [],
-                    ModelConfigRecord::from_row,
-                )
-                .unwrap();
-
-            let vllm: crate::config::types::VllmConfig =
-                serde_json::from_str(row.vllm_config.as_ref().unwrap()).unwrap();
-            assert_eq!(vllm.quantization, Some("awq".to_string())); // existing wins
-            assert_eq!(vllm.tensor_parallel_size, Some(2)); // filled from args
-        }
+        let row = get_record(pool, id).await;
+        let vllm: crate::config::types::VllmConfig =
+            serde_json::from_str(row.vllm_config.as_ref().unwrap()).unwrap();
+        assert_eq!(vllm.quantization, Some("awq".to_string())); // existing wins
+        assert_eq!(vllm.tensor_parallel_size, Some(2)); // filled from args
+        guard.finish().await;
     }
 
     /// Empty DB — no crash.
-    #[test]
-    fn test_backfill_empty_db() {
-        let tmp = tempfile::tempdir().unwrap();
-        let db_dir = tmp.path().to_path_buf();
-
-        // Create the DB (empty, just migrations)
-        let _ = crate::db::open(&db_dir).unwrap();
-
-        let result = backfill_vllm_config(&db_dir);
-        assert!(result.is_ok());
+    #[tokio::test]
+    async fn test_backfill_empty_db() {
+        let guard = crate::testing::postgres::with_schema().await;
+        backfill_vllm_config(&guard.pool).await.unwrap();
+        guard.finish().await;
     }
 
     /// Flattened form in args → correctly extracted.
-    #[test]
-    fn test_backfill_flattened_form() {
-        let tmp = tempfile::tempdir().unwrap();
-        let db_dir = tmp.path().to_path_buf();
+    #[tokio::test]
+    async fn test_backfill_flattened_form() {
+        let guard = crate::testing::postgres::with_schema().await;
+        let pool = &guard.pool;
+        let args = vec![
+            "--quantization".to_string(),
+            "fp8".to_string(),
+            "--tensor-parallel-size".to_string(),
+            "4".to_string(),
+        ];
+        let id = upsert_model_config(pool, &make_record("test/model5", Some(args), None))
+            .await
+            .unwrap();
 
-        {
-            let OpenResult { conn, .. } = crate::db::open(&db_dir).unwrap();
-            let args = vec![
-                "--quantization".to_string(),
-                "fp8".to_string(),
-                "--tensor-parallel-size".to_string(),
-                "4".to_string(),
-            ];
-            let record = make_record(1, "test/model5", Some(args), None);
-            upsert_model_config(&conn, &record).unwrap();
-        }
+        backfill_vllm_config(pool).await.unwrap();
 
-        // Run backfill
-        backfill_vllm_config(&db_dir).unwrap();
+        let row = get_record(pool, id).await;
+        let vllm: crate::config::types::VllmConfig =
+            serde_json::from_str(row.vllm_config.as_ref().unwrap()).unwrap();
+        assert_eq!(vllm.quantization, Some("fp8".to_string()));
+        assert_eq!(vllm.tensor_parallel_size, Some(4));
 
-        // Verify
-        {
-            let OpenResult { conn, .. } = crate::db::open(&db_dir).unwrap();
-            let row: ModelConfigRecord = conn
-                .query_row(
-                    &format!(
-                        "SELECT {} FROM model_configs WHERE id = 1",
-                        ModelConfigRecord::COLUMNS
-                    ),
-                    [],
-                    ModelConfigRecord::from_row,
-                )
-                .unwrap();
-
-            let vllm: crate::config::types::VllmConfig =
-                serde_json::from_str(row.vllm_config.as_ref().unwrap()).unwrap();
-            assert_eq!(vllm.quantization, Some("fp8".to_string()));
-            assert_eq!(vllm.tensor_parallel_size, Some(4));
-
-            // args should be empty (all entries were managed)
-            let args: Vec<String> = serde_json::from_str(row.args.as_ref().unwrap()).unwrap();
-            assert!(args.is_empty());
-        }
+        let args: Vec<String> = serde_json::from_str(row.args.as_ref().unwrap()).unwrap();
+        assert!(args.is_empty());
+        guard.finish().await;
     }
 
     /// Multiple rows — one with corrupt args JSON — should not abort the batch.
-    /// The good row still migrates; the corrupt row is skipped with a warning.
-    #[test]
-    fn test_backfill_corrupt_row_does_not_abort_batch() {
-        let tmp = tempfile::tempdir().unwrap();
-        let db_dir = tmp.path().to_path_buf();
-
-        {
-            let OpenResult { conn, .. } = crate::db::open(&db_dir).unwrap();
-            // Row 1: valid args with managed vLLM flags
-            let args1 = vec!["--quantization fp8".to_string()];
-            let record1 = make_record(1, "test/good", Some(args1), None);
-            upsert_model_config(&conn, &record1).unwrap();
-
-            // Row 2: corrupt args JSON that contains a managed flag substring
-            let record2 = make_record(2, "test/bad", Some(vec![]), None);
-            upsert_model_config(&conn, &record2).unwrap();
-            // Overwrite args with invalid JSON that still matches the LIKE query
-            conn.execute(
-                "UPDATE model_configs SET args = 'NOT VALID JSON --quantization' WHERE id = 2",
-                [],
-            )
+    #[tokio::test]
+    async fn test_backfill_corrupt_row_does_not_abort_batch() {
+        let guard = crate::testing::postgres::with_schema().await;
+        let pool = &guard.pool;
+        let id1 = upsert_model_config(
+            pool,
+            &make_record(
+                "test/good",
+                Some(vec!["--quantization fp8".to_string()]),
+                None,
+            ),
+        )
+        .await
+        .unwrap();
+        let id2 = upsert_model_config(pool, &make_record("test/bad", Some(vec![]), None))
+            .await
             .unwrap();
+        // Overwrite args with invalid JSON that still matches the LIKE query
+        sqlx::query("UPDATE model_configs SET args = $1 WHERE id = $2")
+            .bind("NOT VALID JSON --quantization")
+            .bind(id2)
+            .execute(pool)
+            .await
+            .unwrap();
+        let id3 = upsert_model_config(
+            pool,
+            &make_record(
+                "test/good2",
+                Some(vec!["--tensor-parallel-size 4".to_string()]),
+                None,
+            ),
+        )
+        .await
+        .unwrap();
 
-            // Row 3: another valid row
-            let args3 = vec!["--tensor-parallel-size 4".to_string()];
-            let record3 = make_record(3, "test/good2", Some(args3), None);
-            upsert_model_config(&conn, &record3).unwrap();
-        }
+        backfill_vllm_config(pool).await.unwrap();
 
-        // Backfill must succeed (not abort on the corrupt row)
-        backfill_vllm_config(&db_dir).unwrap();
+        // Row 1: migrated
+        let row1 = get_record(pool, id1).await;
+        let vllm: crate::config::types::VllmConfig =
+            serde_json::from_str(row1.vllm_config.as_ref().unwrap()).unwrap();
+        assert_eq!(vllm.quantization, Some("fp8".to_string()));
 
-        // Verify — good rows migrated, corrupt row left as-is
-        {
-            let OpenResult { conn, .. } = crate::db::open(&db_dir).unwrap();
+        // Row 2: unchanged (corrupt args skipped)
+        let row2 = get_record(pool, id2).await;
+        assert_eq!(row2.args.as_deref(), Some("NOT VALID JSON --quantization"));
+        assert!(row2.vllm_config.is_none());
 
-            // Row 1: migrated
-            let row1: ModelConfigRecord = conn
-                .query_row(
-                    &format!(
-                        "SELECT {} FROM model_configs WHERE id = 1",
-                        ModelConfigRecord::COLUMNS
-                    ),
-                    [],
-                    ModelConfigRecord::from_row,
-                )
-                .unwrap();
-            let vllm: crate::config::types::VllmConfig =
-                serde_json::from_str(row1.vllm_config.as_ref().unwrap()).unwrap();
-            assert_eq!(vllm.quantization, Some("fp8".to_string()));
-
-            // Row 2: unchanged (corrupt args skipped)
-            let row2: (String, Option<String>) = conn
-                .query_row(
-                    "SELECT args, vllm_config FROM model_configs WHERE id = 2",
-                    [],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .unwrap();
-            assert_eq!(row2.0, "NOT VALID JSON --quantization");
-            assert!(row2.1.is_none());
-
-            // Row 3: migrated
-            let row3: ModelConfigRecord = conn
-                .query_row(
-                    &format!(
-                        "SELECT {} FROM model_configs WHERE id = 3",
-                        ModelConfigRecord::COLUMNS
-                    ),
-                    [],
-                    ModelConfigRecord::from_row,
-                )
-                .unwrap();
-            let vllm: crate::config::types::VllmConfig =
-                serde_json::from_str(row3.vllm_config.as_ref().unwrap()).unwrap();
-            assert_eq!(vllm.tensor_parallel_size, Some(4));
-        }
+        // Row 3: migrated
+        let row3 = get_record(pool, id3).await;
+        let vllm: crate::config::types::VllmConfig =
+            serde_json::from_str(row3.vllm_config.as_ref().unwrap()).unwrap();
+        assert_eq!(vllm.tensor_parallel_size, Some(4));
+        guard.finish().await;
     }
 
     /// Row with corrupt existing vllm_config → falls back to extracted config.
-    /// The corrupt value is overwritten (safe — it was unusable anyway).
-    #[test]
-    fn test_backfill_corrupt_existing_vllm_config_falls_back() {
-        let tmp = tempfile::tempdir().unwrap();
-        let db_dir = tmp.path().to_path_buf();
-
-        {
-            let OpenResult { conn, .. } = crate::db::open(&db_dir).unwrap();
-            let args = vec![
-                "--quantization fp8".to_string(),
-                "--tensor-parallel-size 2".to_string(),
-            ];
-            let record = make_record(1, "test/model", Some(args), None);
-            upsert_model_config(&conn, &record).unwrap();
-            // Overwrite vllm_config with corrupt JSON
-            conn.execute(
-                "UPDATE model_configs SET vllm_config = '{CORRUPT' WHERE id = 1",
-                [],
-            )
+    #[tokio::test]
+    async fn test_backfill_corrupt_existing_vllm_config_falls_back() {
+        let guard = crate::testing::postgres::with_schema().await;
+        let pool = &guard.pool;
+        let args = vec![
+            "--quantization fp8".to_string(),
+            "--tensor-parallel-size 2".to_string(),
+        ];
+        let id = upsert_model_config(pool, &make_record("test/model", Some(args), None))
+            .await
             .unwrap();
-        }
+        sqlx::query("UPDATE model_configs SET vllm_config = $1 WHERE id = $2")
+            .bind("{CORRUPT")
+            .bind(id)
+            .execute(pool)
+            .await
+            .unwrap();
 
-        // Backfill must succeed — corrupt vllm_config falls back to extracted
-        backfill_vllm_config(&db_dir).unwrap();
+        backfill_vllm_config(pool).await.unwrap();
 
-        // Verify — extracted values are used, corrupt value overwritten
-        {
-            let OpenResult { conn, .. } = crate::db::open(&db_dir).unwrap();
-            let row: ModelConfigRecord = conn
-                .query_row(
-                    &format!(
-                        "SELECT {} FROM model_configs WHERE id = 1",
-                        ModelConfigRecord::COLUMNS
-                    ),
-                    [],
-                    ModelConfigRecord::from_row,
-                )
-                .unwrap();
+        let row = get_record(pool, id).await;
+        let vllm: crate::config::types::VllmConfig =
+            serde_json::from_str(row.vllm_config.as_ref().unwrap()).unwrap();
+        assert_eq!(vllm.quantization, Some("fp8".to_string()));
+        assert_eq!(vllm.tensor_parallel_size, Some(2));
 
-            let vllm: crate::config::types::VllmConfig =
-                serde_json::from_str(row.vllm_config.as_ref().unwrap()).unwrap();
-            assert_eq!(vllm.quantization, Some("fp8".to_string()));
-            assert_eq!(vllm.tensor_parallel_size, Some(2));
-
-            // args should be stripped
-            let args: Vec<String> = serde_json::from_str(row.args.as_ref().unwrap()).unwrap();
-            assert!(args.is_empty());
-        }
+        let args: Vec<String> = serde_json::from_str(row.args.as_ref().unwrap()).unwrap();
+        assert!(args.is_empty());
+        guard.finish().await;
     }
 
     /// Row with hf_format != 'transformers' → skipped by backfill.
-    #[test]
-    fn test_backfill_non_transformers_skipped() {
-        let tmp = tempfile::tempdir().unwrap();
-        let db_dir = tmp.path().to_path_buf();
+    #[tokio::test]
+    async fn test_backfill_non_transformers_skipped() {
+        let guard = crate::testing::postgres::with_schema().await;
+        let pool = &guard.pool;
+        let mut record = make_record(
+            "test/model",
+            Some(vec!["--quantization fp8".to_string()]),
+            None,
+        );
+        record.hf_format = Some("gguf".to_string());
+        let id = upsert_model_config(pool, &record).await.unwrap();
 
-        {
-            let OpenResult { conn, .. } = crate::db::open(&db_dir).unwrap();
-            let args = vec!["--quantization fp8".to_string()];
-            let mut record = make_record(1, "test/model", Some(args), None);
-            record.hf_format = Some("gguf".to_string());
-            upsert_model_config(&conn, &record).unwrap();
-        }
+        backfill_vllm_config(pool).await.unwrap();
 
-        // Backfill runs
-        backfill_vllm_config(&db_dir).unwrap();
-
-        // Verify — row untouched because hf_format is not 'transformers'
-        {
-            let OpenResult { conn, .. } = crate::db::open(&db_dir).unwrap();
-            let row: (String, Option<String>) = conn
-                .query_row(
-                    "SELECT args, vllm_config FROM model_configs WHERE id = 1",
-                    [],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .unwrap();
-
-            assert!(row.1.is_none()); // vllm_config still NULL
-            let args: Vec<String> = serde_json::from_str(&row.0).unwrap();
-            assert_eq!(args, vec!["--quantization fp8"]); // args unchanged
-        }
+        let row = get_record(pool, id).await;
+        assert!(row.vllm_config.is_none()); // vllm_config still NULL
+        let args: Vec<String> = serde_json::from_str(row.args.as_deref().unwrap()).unwrap();
+        assert_eq!(args, vec!["--quantization fp8"]); // args unchanged
+        guard.finish().await;
     }
 
     /// Spec-level `attention_backend` in existing config wins over extracted.

@@ -76,52 +76,36 @@ pub async fn get_structured_config(State(state): State<Arc<ProxyState>>) -> impl
     Json(structured).into_response()
 }
 
-/// POST /api/config/structured — accept JSON Config, persist to SQLite DB.
+/// POST /api/config/structured — accept JSON Config, persist to Postgres DB.
 pub async fn save_structured_config(
     State(state): State<Arc<ProxyState>>,
     Json(body): Json<StructuredConfigBody>,
 ) -> impl IntoResponse {
-    // Resolve the correct DB path from state
-    let config_dir = match state
-        .db_dir()
-        .clone()
-        .or_else(|| tama_core::config::Config::config_dir().ok())
-    {
-        Some(d) => d,
-        None => {
-            return error_response(
-                StatusCode::NOT_FOUND,
-                "config directory not configured",
-                Some("NotFoundError"),
-            )
-        }
-    };
-    let db_path = config_dir.join("tama.db");
+    let pool = state.db_pool();
 
     // Convert mirror types back to tama_core::Config
     let new_config: tama_core::config::Config = body.into();
 
-    // Persist to SQLite DB (spawn_blocking for synchronous DB write)
-    let db_path_for_save = db_path.clone();
-    let new_config_for_save = new_config.clone();
-    match tokio::task::spawn_blocking(move || new_config_for_save.to_db(&db_path_for_save)).await {
-        Ok(Ok(_)) => {
+    // Persist to Postgres DB (plan-190 Task 3: async pool-based save)
+    match new_config.clone().save(&pool).await {
+        Ok(()) => {
             // Sync proxy config for hot-reload
             sync_proxy_config(&state, new_config).await;
             Json(OkResponse::OK).into_response()
         }
-        Ok(Err(e)) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
         Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     }
 }
 
 // ── Shared helpers (used by both model and non-model endpoints) ──────────────
 
-/// Load config from the config directory derived from Arc<ProxyState>.
-/// Returns (config, config_dir) on success.
+/// Load config from the Postgres pool (plan-190 Task 3), falling back to
+/// the in-memory snapshot when no pool is attached (test-only; production
+/// `main.rs` always creates the pool). Returns (config, config_dir).
 /// Prefer db_dir (set at startup to Config::config_dir()) to ensure we
-/// always open the correct database. Fall back to the system default
-/// when db_dir is None (e.g. in tests that create ProxyState without a db_dir).
+/// always resolve the correct config directory. Fall back to the system
+/// default when db_dir is None (e.g. in tests that create ProxyState
+/// without a db_dir).
 async fn load_config_from_state(
     proxy_state: &Arc<ProxyState>,
 ) -> Result<(tama_core::config::Config, std::path::PathBuf), (StatusCode, serde_json::Value)> {
@@ -135,19 +119,13 @@ async fn load_config_from_state(
                 error_body("config directory not configured", Some("NotFoundError")),
             )
         })?;
-    let db_path = config_dir.join("tama.db");
-    let cfg = tokio::task::spawn_blocking(move || tama_core::config::Config::from_db(&db_path))
+    let pool = proxy_state.db_pool();
+    let cfg = tama_core::config::Config::load_from_pool(&pool)
         .await
         .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                error_body(e.to_string(), None),
-            )
-        })?
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                error_body(e.to_string(), None),
+                error_body(format!("Failed to load config: {}", e).as_str(), None),
             )
         })?;
     Ok((cfg, config_dir))
@@ -374,7 +352,7 @@ pub async fn patch_structured_config(
     Json(body): Json<crate::types::config::ConfigPatchBody>,
 ) -> impl IntoResponse {
     // Load existing config from DB
-    let (existing_core, config_dir) = match load_config_from_state(&state).await {
+    let (existing_core, _config_dir) = match load_config_from_state(&state).await {
         Ok(result) => result,
         Err((status, err)) => return (status, Json(err)).into_response(),
     };
@@ -388,16 +366,14 @@ pub async fn patch_structured_config(
     // Convert merged mirror Config back to core
     let merged_core: tama_core::config::Config = merged_mirror.into();
 
-    // Persist to SQLite DB (spawn_blocking for synchronous DB write)
-    let db_path = config_dir.join("tama.db");
-    let merged_core_for_save = merged_core.clone();
-    match tokio::task::spawn_blocking(move || merged_core_for_save.to_db(&db_path)).await {
-        Ok(Ok(_)) => {
+    // Persist to Postgres DB (plan-190 Task 3: async pool-based save)
+    let pool = state.db_pool();
+    match merged_core.clone().save(&pool).await {
+        Ok(()) => {
             // Sync proxy config for hot-reload
             sync_proxy_config(&state, merged_core).await;
             Json(OkResponse::OK).into_response()
         }
-        Ok(Err(e)) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
         Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     }
 }
@@ -411,13 +387,10 @@ mod tests {
         CompactionConfig, Config, General, LangfuseConfig, Lifecycle, OAuth2Config, ProxyConfig,
         SamplingParams,
     };
-    use axum::body::Body;
-    use axum::extract::Request;
     use tama_core::config::{
         CompactionDevice as CoreCompactionDevice, LogLevel as CoreLogLevel,
         RestartPolicy as CoreRestartPolicy,
     };
-    use tower::ServiceExt;
 
     fn sample_config() -> Config {
         Config {
@@ -634,124 +607,6 @@ mod tests {
         assert_eq!(new_entry.top_k, Some(50));
     }
 
-    // ── Drift-guard: config save response round-trip ──────────────────────────
-
-    /// POST /tama/v1/config/structured must return a body that deserializes into
-    /// OkResponse with ok:true. The round-trip is lossless — no fields are
-    /// silently dropped or invented.
-    #[tokio::test]
-    async fn test_save_structured_config_response_deserializes_into_ok_response() {
-        let tmp_dir = tempfile::tempdir().expect("tempdir");
-        let db_path = tmp_dir.path().join("tama.db");
-
-        // Initialize the database so save_structured_config can write.
-        {
-            let config = tama_core::config::Config::default();
-            config.to_db(&db_path).unwrap();
-        }
-
-        let config = tama_core::config::Config::default();
-        let state = Arc::new(tama_core::proxy::ProxyState::new(
-            config,
-            Some(tmp_dir.path().to_path_buf()),
-        ));
-
-        let web_state = Arc::new(crate::web_types::WebState {
-            jobs: Some(Arc::new(crate::web_types::JobManager::new())),
-            capabilities: None,
-            update_checker: Arc::new(tama_core::updates::UpdateChecker::default()),
-            binary_version: "test".to_string(),
-            update_tx: Arc::new(tokio::sync::Mutex::new(None)),
-            upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-            repository: None,
-        });
-
-        let router = crate::router::build_web_routes(web_state.clone())
-            .with_state(state)
-            .layer(axum::extract::Extension(web_state.as_ref().clone()));
-
-        // Build a minimal valid StructuredConfigBody from the sample.
-        let body = serde_json::json!({
-            "general": {
-                "log_level": "info",
-                "models_dir": "/models",
-                "logs_dir": "/logs",
-                "update_check_interval": 12
-            },
-            "backends": {},
-            "lifecycle": {
-                "restart_policy": "always",
-                "max_restarts": 10,
-                "restart_delay_ms": 3000,
-                "health_check_interval_ms": 5000,
-                "health_check_timeout_ms": 30000,
-                "health_check_retries": 3
-            },
-            "sampling_templates": {},
-            "proxy": {
-                "host": "0.0.0.0",
-                "port": 18910,
-                "auto_unload": false,
-                "idle_timeout_secs": 300,
-                "startup_timeout_secs": 120,
-                "circuit_breaker_threshold": 3,
-                "circuit_breaker_cooldown_seconds": 60,
-                "metrics_retention_secs": 86400,
-                "pull_queue_poll_interval_secs": 2,
-                "max_loaded_models": 1
-            },
-            "compaction": {
-                "enabled": false
-            },
-            "langfuse": {
-                "enabled": false,
-                "public_key": "",
-                "secret_key": "",
-                "host": "",
-                "environment": "",
-                "capture_input": false,
-                "capture_output": false,
-                "capture_streaming": false,
-                "telemetry_max_bytes": 0,
-                "electricity_price_per_kwh": 0.0
-            }
-        });
-
-        let req = Request::builder()
-            .method("POST")
-            .uri("/tama/v1/config/structured")
-            .header("Content-Type", "application/json")
-            .body(Body::from(body.to_string()))
-            .unwrap();
-
-        let resp = router
-            .clone()
-            .oneshot(req)
-            .await
-            .expect("request should complete");
-        let status = resp.status();
-        let body_bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .expect("body must be readable");
-        assert_eq!(
-            status,
-            StatusCode::OK,
-            "response body: {}",
-            String::from_utf8_lossy(&body_bytes)
-        );
-
-        // Deserialize into OkResponse.
-        let parsed: OkResponse = serde_json::from_slice(&body_bytes)
-            .expect("config save response must deserialize into OkResponse");
-        assert!(parsed.ok, "ok must be true");
-
-        // Lossless round-trip.
-        let raw_value: serde_json::Value =
-            serde_json::from_slice(&body_bytes).expect("body must be valid JSON");
-        assert_eq!(
-            serde_json::to_value(parsed).expect("parsed must serialize"),
-            raw_value,
-            "OkResponse round-trip must be lossless — config save struct fields must match wire shape"
-        );
-    }
+    // The save-response drift-guard test lives in tests/config_structured_test.rs
+    // (needs a Postgres pool; plan-190 Task 3).
 }

@@ -2248,27 +2248,57 @@ fn test_validate_model_patch_invalid_reasoning_level_rejected() {
 }
 
 // ── Route-level tests ──────────────────────────────────────────────────────\n
-/// Regression test: DELETE /tama/v1/models/:id removes the DB row via
-/// Repository::delete_config (no raw SQL, no ModelManager).
-#[tokio::test]
-async fn test_delete_model_removes_db_row() {
-    use axum::body::Body;
-    use axum::http::Request;
-    use axum::http::StatusCode;
-    use std::sync::Arc;
-    use tower::ServiceExt;
+/// Build a WebState + ProxyState wired to the Postgres pool (plan-190 Task 5).
+fn crud_web_state(
+    pool: Arc<sqlx::PgPool>,
+    tmp_dir: &std::path::Path,
+) -> (
+    Arc<tama_core::proxy::ProxyState>,
+    Arc<crate::web_types::WebState>,
+) {
+    let config = tama_core::config::Config::default();
+    let state = Arc::new(tama_core::proxy::ProxyState::new(
+        config,
+        Some(tmp_dir.to_path_buf()),
+        pool.clone(),
+    ));
+    let web_state = Arc::new(crate::web_types::WebState {
+        jobs: Some(Arc::new(crate::web_types::JobManager::new())),
+        capabilities: None,
+        update_checker: Arc::new(tama_core::updates::UpdateChecker::default()),
+        binary_version: "test".to_string(),
+        update_tx: Arc::new(tokio::sync::Mutex::new(None)),
+        upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        db_pool: pool,
+    });
+    (state, web_state)
+}
 
-    let tmp_dir = tempfile::tempdir().expect("tempdir");
+fn crud_router(
+    state: Arc<tama_core::proxy::ProxyState>,
+    web_state: Arc<crate::web_types::WebState>,
+) -> axum::Router {
+    crate::router::build_web_routes(web_state.clone())
+        .with_state(state)
+        .layer(axum::extract::Extension(web_state.as_ref().clone()))
+}
 
-    // Seed a model config in the DB.
-    let open_result = tama_core::db::open(tmp_dir.path()).unwrap();
-    let model_id = tama_core::db::queries::upsert_model_config(
-        &open_result.conn,
+/// Seed a minimal model config row in Postgres and return its id.
+async fn seed_model_record(
+    pool: &sqlx::PgPool,
+    repo_id: &str,
+    backend: &str,
+    api_name: Option<&str>,
+    vllm_config: Option<String>,
+    reasoning_levels: Option<String>,
+) -> i64 {
+    tama_core::db::queries::upsert_model_config(
+        pool,
         &tama_core::db::queries::ModelConfigRecord {
             id: 0,
-            repo_id: "test-org/test-model".to_string(),
+            repo_id: repo_id.to_string(),
             display_name: None,
-            backend: "llama_cpp".to_string(),
+            backend: backend.to_string(),
             gpu_variant: None,
             gpu_device: None,
             enabled: true,
@@ -2286,7 +2316,7 @@ async fn test_delete_model_removes_db_row() {
             sampling: None,
             modalities: None,
             profile: None,
-            api_name: Some("test-org/test-model".to_string()),
+            api_name: api_name.map(str::to_string),
             health_check: None,
             hf_format: None,
             hf_base_model: None,
@@ -2298,42 +2328,45 @@ async fn test_delete_model_removes_db_row() {
             hf_num_layers: None,
             hf_last_modified: None,
             spec_decoding: None,
-
             n_batch: None,
-
             n_ubatch: None,
-            vllm_config: None,
+            vllm_config,
             created_at: "2024-01-01T00:00:00Z".to_string(),
             updated_at: "2024-01-01T00:00:00Z".to_string(),
             provider_name: None,
-            reasoning_levels: None,
+            reasoning_levels,
         },
     )
-    .unwrap();
+    .await
+    .unwrap()
+}
 
-    // Build the proxy state with the tempdir as db_dir.
-    let config = tama_core::config::Config::default();
-    let state = Arc::new(tama_core::proxy::ProxyState::new(
-        config,
-        Some(tmp_dir.path().to_path_buf()),
-    ));
+/// Regression test: DELETE /tama/v1/models/:id removes the DB row via
+/// the Postgres pool (no raw SQL, no ModelManager).
+#[tokio::test]
+async fn test_delete_model_removes_db_row() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use axum::http::StatusCode;
+    use tower::ServiceExt;
 
-    // Reuse the test WebState from backends/manage/tests.rs pattern.
-    let web_state = Arc::new(crate::web_types::WebState {
-        jobs: Some(Arc::new(crate::web_types::JobManager::new())),
-        capabilities: None,
-        update_checker: Arc::new(tama_core::updates::UpdateChecker::default()),
-        binary_version: "test".to_string(),
-        update_tx: Arc::new(tokio::sync::Mutex::new(None)),
-        upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-        repository: Some(Arc::new(std::sync::Mutex::new(
-            tama_core::db::repository::Repository::open(tmp_dir.path()).unwrap(),
-        ))),
-    });
+    let guard = crate::testing::postgres::with_schema().await;
+    let pool = guard.pool.clone();
+    let tmp_dir = tempfile::tempdir().expect("tempdir");
 
-    let router = crate::router::build_web_routes(web_state.clone())
-        .with_state(state)
-        .layer(axum::extract::Extension(web_state.as_ref().clone()));
+    // Seed a model config in the DB.
+    let model_id = seed_model_record(
+        &pool,
+        "test-org/test-model",
+        "llama_cpp",
+        Some("test-org/test-model"),
+        None,
+        None,
+    )
+    .await;
+
+    let (state, web_state) = crud_web_state(Arc::new(pool.clone()), tmp_dir.path());
+    let router = crud_router(state, web_state);
 
     // DELETE /tama/v1/models/:id — CSRF middleware allows DELETE without token.
     let req = Request::builder()
@@ -2350,9 +2383,12 @@ async fn test_delete_model_removes_db_row() {
     assert_eq!(resp.status(), StatusCode::OK);
 
     // Verify the DB row is gone.
-    let conn = tama_core::db::open(tmp_dir.path()).unwrap();
-    let record = tama_core::db::queries::get_model_config(&conn.conn, model_id).unwrap();
+    let record = tama_core::db::queries::get_model_config(&pool, model_id)
+        .await
+        .unwrap();
     assert!(record.is_none(), "model config should be deleted from DB");
+
+    guard.finish().await;
 }
 
 /// `context_length: Some(16384)` must override existing.
@@ -2372,82 +2408,15 @@ fn test_apply_model_patch_context_length_override() {
 /// ok && id > 0.
 #[tokio::test]
 async fn test_create_model_response_deserializes_into_mutation_response() {
+    let guard = crate::testing::postgres::with_schema().await;
+    let pool = guard.pool.clone();
     let tmp_dir = tempfile::tempdir().expect("tempdir");
 
     // Seed a model so we have a valid DB to create against.
-    {
-        let conn = tama_core::db::open(tmp_dir.path()).unwrap();
-        tama_core::db::queries::upsert_model_config(
-            &conn.conn,
-            &tama_core::db::queries::ModelConfigRecord {
-                id: 0,
-                repo_id: "test-org/seed".to_string(),
-                display_name: None,
-                backend: "llama_cpp".to_string(),
-                gpu_variant: None,
-                gpu_device: None,
-                enabled: true,
-                selected_quant: None,
-                selected_mmproj: None,
-                selected_mtp_model: None,
-                context_length: None,
-                num_parallel: None,
-                kv_unified: false,
-                gpu_layers: None,
-                cache_type_k: None,
-                cache_type_v: None,
-                port: None,
-                args: None,
-                sampling: None,
-                modalities: None,
-                profile: None,
-                api_name: None,
-                health_check: None,
-                hf_format: None,
-                hf_base_model: None,
-                hf_pipeline_tag: None,
-                hf_total_params: None,
-                hf_active_params: None,
-                hf_architecture_type: None,
-                hf_context_length: None,
-                hf_num_layers: None,
-                hf_last_modified: None,
-                spec_decoding: None,
+    seed_model_record(&pool, "test-org/seed", "llama_cpp", None, None, None).await;
 
-                n_batch: None,
-
-                n_ubatch: None,
-                vllm_config: None,
-                created_at: "2024-01-01T00:00:00Z".to_string(),
-                updated_at: "2024-01-01T00:00:00Z".to_string(),
-                provider_name: None,
-                reasoning_levels: None,
-            },
-        )
-        .unwrap();
-    }
-
-    let config = tama_core::config::Config::default();
-    let state = Arc::new(tama_core::proxy::ProxyState::new(
-        config,
-        Some(tmp_dir.path().to_path_buf()),
-    ));
-
-    let web_state = Arc::new(crate::web_types::WebState {
-        jobs: Some(Arc::new(crate::web_types::JobManager::new())),
-        capabilities: None,
-        update_checker: Arc::new(tama_core::updates::UpdateChecker::default()),
-        binary_version: "test".to_string(),
-        update_tx: Arc::new(tokio::sync::Mutex::new(None)),
-        upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-        repository: Some(Arc::new(std::sync::Mutex::new(
-            tama_core::db::repository::Repository::open(tmp_dir.path()).unwrap(),
-        ))),
-    });
-
-    let router = crate::router::build_web_routes(web_state.clone())
-        .with_state(state)
-        .layer(axum::extract::Extension(web_state.as_ref().clone()));
+    let (state, web_state) = crud_web_state(Arc::new(pool.clone()), tmp_dir.path());
+    let router = crud_router(state, web_state);
 
     // POST /tama/v1/models — create a new model.
     let body = serde_json::json!({
@@ -2488,92 +2457,23 @@ async fn test_create_model_response_deserializes_into_mutation_response() {
         raw_value,
         "ModelMutationResponse round-trip must be lossless"
     );
+
+    guard.finish().await;
 }
 
 /// Model delete response must deserialize into OkResponse with ok.
 #[tokio::test]
 async fn test_delete_model_response_deserializes_into_ok_response() {
+    let guard = crate::testing::postgres::with_schema().await;
+    let pool = guard.pool.clone();
     let tmp_dir = tempfile::tempdir().expect("tempdir");
 
     // Seed a model to delete.
-    {
-        let conn = tama_core::db::open(tmp_dir.path()).unwrap();
-        tama_core::db::queries::upsert_model_config(
-            &conn.conn,
-            &tama_core::db::queries::ModelConfigRecord {
-                id: 0,
-                repo_id: "org/delete-drift".to_string(),
-                display_name: None,
-                backend: "llama_cpp".to_string(),
-                gpu_variant: None,
-                gpu_device: None,
-                enabled: true,
-                selected_quant: None,
-                selected_mmproj: None,
-                selected_mtp_model: None,
-                context_length: None,
-                num_parallel: None,
-                kv_unified: false,
-                gpu_layers: None,
-                cache_type_k: None,
-                cache_type_v: None,
-                port: None,
-                args: None,
-                sampling: None,
-                modalities: None,
-                profile: None,
-                api_name: None,
-                health_check: None,
-                hf_format: None,
-                hf_base_model: None,
-                hf_pipeline_tag: None,
-                hf_total_params: None,
-                hf_active_params: None,
-                hf_architecture_type: None,
-                hf_context_length: None,
-                hf_num_layers: None,
-                hf_last_modified: None,
-                spec_decoding: None,
+    let model_id =
+        seed_model_record(&pool, "org/delete-drift", "llama_cpp", None, None, None).await;
 
-                n_batch: None,
-
-                n_ubatch: None,
-                vllm_config: None,
-                created_at: "2024-01-01T00:00:00Z".to_string(),
-                updated_at: "2024-01-01T00:00:00Z".to_string(),
-                provider_name: None,
-                reasoning_levels: None,
-            },
-        )
-        .unwrap();
-    }
-
-    let config = tama_core::config::Config::default();
-    let state = Arc::new(tama_core::proxy::ProxyState::new(
-        config,
-        Some(tmp_dir.path().to_path_buf()),
-    ));
-
-    let web_state = Arc::new(crate::web_types::WebState {
-        jobs: Some(Arc::new(crate::web_types::JobManager::new())),
-        capabilities: None,
-        update_checker: Arc::new(tama_core::updates::UpdateChecker::default()),
-        binary_version: "test".to_string(),
-        update_tx: Arc::new(tokio::sync::Mutex::new(None)),
-        upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-        repository: Some(Arc::new(std::sync::Mutex::new(
-            tama_core::db::repository::Repository::open(tmp_dir.path()).unwrap(),
-        ))),
-    });
-
-    let router = crate::router::build_web_routes(web_state.clone())
-        .with_state(state)
-        .layer(axum::extract::Extension(web_state.as_ref().clone()));
-
-    // Get the model id to delete.
-    let conn = tama_core::db::open(tmp_dir.path()).unwrap();
-    let record = tama_core::db::queries::get_model_config(&conn.conn, 1).expect("model exists");
-    let model_id = record.unwrap().id;
+    let (state, web_state) = crud_web_state(Arc::new(pool.clone()), tmp_dir.path());
+    let router = crud_router(state, web_state);
 
     // DELETE /tama/v1/models/:id.
     let req = Request::builder()
@@ -2606,6 +2506,8 @@ async fn test_delete_model_response_deserializes_into_ok_response() {
         raw_value,
         "OkResponse round-trip must be lossless"
     );
+
+    guard.finish().await;
 }
 
 // ── PUT /tama/v1/models/:id — vllm whole-replace contract ────────────────
@@ -2614,86 +2516,30 @@ async fn test_delete_model_response_deserializes_into_ok_response() {
 /// single vllm model row (with an optional stored `vllm_config` JSON) and
 /// returns the web router plus the seeded model id. Mirrors the sibling
 /// route-level tests above.
-fn vllm_put_harness(
+async fn vllm_put_harness(
+    pool: &sqlx::PgPool,
     tmp_dir: &tempfile::TempDir,
-    seed_vllm_config: Option<&str>,
+    seed_vllm_config: Option<String>,
 ) -> (axum::Router, i64) {
-    let model_id = tama_core::db::queries::upsert_model_config(
-        &tama_core::db::open(tmp_dir.path()).unwrap().conn,
-        &tama_core::db::queries::ModelConfigRecord {
-            id: 0,
-            repo_id: "test-org/vllm-model".to_string(),
-            display_name: None,
-            backend: "vllm".to_string(),
-            gpu_variant: None,
-            gpu_device: None,
-            enabled: true,
-            selected_quant: None,
-            selected_mmproj: None,
-            selected_mtp_model: None,
-            context_length: None,
-            num_parallel: None,
-            kv_unified: false,
-            gpu_layers: None,
-            cache_type_k: None,
-            cache_type_v: None,
-            port: None,
-            args: None,
-            sampling: None,
-            modalities: None,
-            profile: None,
-            api_name: Some("test-org/vllm-model".to_string()),
-            health_check: None,
-            hf_format: None,
-            hf_base_model: None,
-            hf_pipeline_tag: None,
-            hf_total_params: None,
-            hf_active_params: None,
-            hf_architecture_type: None,
-            hf_context_length: None,
-            hf_num_layers: None,
-            hf_last_modified: None,
-            spec_decoding: None,
-            n_batch: None,
-            n_ubatch: None,
-            vllm_config: seed_vllm_config.map(str::to_string),
-            created_at: "2024-01-01T00:00:00Z".to_string(),
-            updated_at: "2024-01-01T00:00:00Z".to_string(),
-            provider_name: None,
-            reasoning_levels: None,
-        },
+    let model_id = seed_model_record(
+        pool,
+        "test-org/vllm-model",
+        "vllm",
+        Some("test-org/vllm-model"),
+        seed_vllm_config,
+        None,
     )
-    .unwrap();
+    .await;
 
-    let config = tama_core::config::Config::default();
-    let state = Arc::new(tama_core::proxy::ProxyState::new(
-        config,
-        Some(tmp_dir.path().to_path_buf()),
-    ));
+    let (state, web_state) = crud_web_state(Arc::new(pool.clone()), tmp_dir.path());
 
-    let web_state = Arc::new(crate::web_types::WebState {
-        jobs: Some(Arc::new(crate::web_types::JobManager::new())),
-        capabilities: None,
-        update_checker: Arc::new(tama_core::updates::UpdateChecker::default()),
-        binary_version: "test".to_string(),
-        update_tx: Arc::new(tokio::sync::Mutex::new(None)),
-        upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-        repository: Some(Arc::new(std::sync::Mutex::new(
-            tama_core::db::repository::Repository::open(tmp_dir.path()).unwrap(),
-        ))),
-    });
-
-    let router = crate::router::build_web_routes(web_state.clone())
-        .with_state(state)
-        .layer(axum::extract::Extension(web_state.as_ref().clone()));
-
-    (router, model_id)
+    (crud_router(state, web_state), model_id)
 }
 
 /// Read the stored `vllm_config` column of a model row back into a VllmConfig.
-fn read_stored_vllm(tmp_dir: &tempfile::TempDir, model_id: i64) -> tama_core::config::VllmConfig {
-    let conn = tama_core::db::open(tmp_dir.path()).unwrap();
-    let record = tama_core::db::queries::get_model_config(&conn.conn, model_id)
+async fn read_stored_vllm(pool: &sqlx::PgPool, model_id: i64) -> tama_core::config::VllmConfig {
+    let record = tama_core::db::queries::get_model_config(pool, model_id)
+        .await
         .unwrap()
         .expect("model row must exist");
     serde_json::from_str(record.vllm_config.as_deref().expect("vllm_config stored"))
@@ -2710,6 +2556,8 @@ fn read_stored_vllm(tmp_dir: &tempfile::TempDir, model_id: i64) -> tama_core::co
 /// into the DB row unchanged.
 #[tokio::test]
 async fn test_update_model_vllm_body_with_advanced_fields_preserves_them() {
+    let guard = crate::testing::postgres::with_schema().await;
+    let pool = guard.pool.clone();
     let tmp_dir = tempfile::tempdir().expect("tempdir");
     let seed_vllm = serde_json::json!({
         "max_model_len": 32768,
@@ -2725,7 +2573,8 @@ async fn test_update_model_vllm_body_with_advanced_fields_preserves_them() {
             "draft_tensor_parallel_size": 1
         },
     });
-    let (router, model_id) = vllm_put_harness(&tmp_dir, Some(&seed_vllm.to_string()));
+    let seed_vllm = seed_vllm.to_string();
+    let (router, model_id) = vllm_put_harness(&pool, &tmp_dir, Some(seed_vllm)).await;
 
     // The wizard's overlay body: the stored vllm object with the five wizard
     // fields re-applied (the user lowered max_model_len, left the rest as-is).
@@ -2762,7 +2611,7 @@ async fn test_update_model_vllm_body_with_advanced_fields_preserves_them() {
     assert_eq!(resp.status(), StatusCode::OK);
 
     // The wizard edit is applied AND every advanced field survived.
-    let stored = read_stored_vllm(&tmp_dir, model_id);
+    let stored = read_stored_vllm(&pool, model_id).await;
     assert_eq!(
         stored.max_model_len,
         Some(16384),
@@ -2783,6 +2632,8 @@ async fn test_update_model_vllm_body_with_advanced_fields_preserves_them() {
         stored.enable_prefix_caching,
         "enable_prefix_caching must survive"
     );
+
+    guard.finish().await;
 }
 
 /// Documents the server's WHOLE-REPLACE contract for the `vllm` body field:
@@ -2794,6 +2645,8 @@ async fn test_update_model_vllm_body_with_advanced_fields_preserves_them() {
 /// would wipe `attention_backend`, `spec_decoding`, and `enable_prefix_caching`.
 #[tokio::test]
 async fn test_update_model_vllm_body_missing_advanced_fields_resets_them() {
+    let guard = crate::testing::postgres::with_schema().await;
+    let pool = guard.pool.clone();
     let tmp_dir = tempfile::tempdir().expect("tempdir");
     let seed_vllm = serde_json::json!({
         "max_model_len": 32768,
@@ -2801,7 +2654,8 @@ async fn test_update_model_vllm_body_missing_advanced_fields_resets_them() {
         "attention_backend": "flashinfer",
         "spec_decoding": { "method": "ngram", "num_speculative_tokens": 3 },
     });
-    let (router, model_id) = vllm_put_harness(&tmp_dir, Some(&seed_vllm.to_string()));
+    let seed_vllm = seed_vllm.to_string();
+    let (router, model_id) = vllm_put_harness(&pool, &tmp_dir, Some(seed_vllm)).await;
 
     // A bare 5-field-style body (what the wizard sent before the overlay
     // fix): the advanced fields are simply absent.
@@ -2828,7 +2682,7 @@ async fn test_update_model_vllm_body_missing_advanced_fields_resets_them() {
     assert_eq!(resp.status(), StatusCode::OK);
 
     // Whole-replace: the body wins, and omitted fields reset to defaults.
-    let stored = read_stored_vllm(&tmp_dir, model_id);
+    let stored = read_stored_vllm(&pool, model_id).await;
     assert_eq!(stored.max_model_len, Some(4096));
     assert_eq!(
         stored.attention_backend, None,
@@ -2842,6 +2696,8 @@ async fn test_update_model_vllm_body_missing_advanced_fields_resets_them() {
         !stored.enable_prefix_caching,
         "omitted bool must reset to false (whole-replace)"
     );
+
+    guard.finish().await;
 }
 
 // ── normalize_reasoning_levels unit tests ─────────────────────────────────
@@ -2910,80 +2766,24 @@ fn test_normalize_reasoning_levels_all_valid_single() {
 /// Route-level harness for reasoning-levels tests: seeds a single model row
 /// (optionally with a pre-set `reasoning_levels` JSON) and returns the web
 /// router plus the seeded model id. Mirrors `vllm_put_harness`.
-fn reasoning_levels_harness(
+async fn reasoning_levels_harness(
+    pool: &sqlx::PgPool,
     tmp_dir: &tempfile::TempDir,
-    seed_reasoning_levels: Option<&str>,
+    seed_reasoning_levels: Option<String>,
 ) -> (axum::Router, i64) {
-    let model_id = tama_core::db::queries::upsert_model_config(
-        &tama_core::db::open(tmp_dir.path()).unwrap().conn,
-        &tama_core::db::queries::ModelConfigRecord {
-            id: 0,
-            repo_id: "test-org/reasoning-model".to_string(),
-            display_name: None,
-            backend: "llama-cpp".to_string(),
-            gpu_variant: None,
-            gpu_device: None,
-            enabled: true,
-            selected_quant: None,
-            selected_mmproj: None,
-            selected_mtp_model: None,
-            context_length: None,
-            num_parallel: None,
-            kv_unified: false,
-            gpu_layers: None,
-            cache_type_k: None,
-            cache_type_v: None,
-            port: None,
-            args: None,
-            sampling: None,
-            modalities: None,
-            profile: None,
-            api_name: Some("test-org/reasoning-model".to_string()),
-            health_check: None,
-            hf_format: None,
-            hf_base_model: None,
-            hf_pipeline_tag: None,
-            hf_total_params: None,
-            hf_active_params: None,
-            hf_architecture_type: None,
-            hf_context_length: None,
-            hf_num_layers: None,
-            hf_last_modified: None,
-            spec_decoding: None,
-            n_batch: None,
-            n_ubatch: None,
-            vllm_config: None,
-            created_at: "2024-01-01T00:00:00Z".to_string(),
-            updated_at: "2024-01-01T00:00:00Z".to_string(),
-            provider_name: None,
-            reasoning_levels: seed_reasoning_levels.map(str::to_string),
-        },
+    let model_id = seed_model_record(
+        pool,
+        "test-org/reasoning-model",
+        "llama-cpp",
+        Some("test-org/reasoning-model"),
+        None,
+        seed_reasoning_levels,
     )
-    .unwrap();
+    .await;
 
-    let config = tama_core::config::Config::default();
-    let state = Arc::new(tama_core::proxy::ProxyState::new(
-        config,
-        Some(tmp_dir.path().to_path_buf()),
-    ));
+    let (state, web_state) = crud_web_state(Arc::new(pool.clone()), tmp_dir.path());
 
-    let web_state = Arc::new(crate::web_types::WebState {
-        jobs: Some(Arc::new(crate::web_types::JobManager::new())),
-        capabilities: None,
-        update_checker: Arc::new(tama_core::updates::UpdateChecker::default()),
-        binary_version: "test".to_string(),
-        update_tx: Arc::new(tokio::sync::Mutex::new(None)),
-        upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-        repository: Some(Arc::new(std::sync::Mutex::new(
-            tama_core::db::repository::Repository::open(tmp_dir.path()).unwrap(),
-        ))),
-    });
-
-    let router = crate::router::build_web_routes(web_state.clone())
-        .with_state(state)
-        .layer(axum::extract::Extension(web_state.as_ref().clone()));
-
-    (router, model_id)
+    (crud_router(state, web_state), model_id)
 }
 
 /// Fetch the model's detail JSON via `GET /tama/v1/models/:id`.
@@ -3009,8 +2809,10 @@ async fn get_model_detail(router: &axum::Router, model_id: i64) -> serde_json::V
 /// duplicate persists the normalized values (trim + lowercase + dedupe).
 #[tokio::test]
 async fn test_update_model_reasoning_levels_put_persists_normalized() {
+    let guard = crate::testing::postgres::with_schema().await;
+    let pool = guard.pool.clone();
     let tmp_dir = tempfile::tempdir().expect("tempdir");
-    let (router, model_id) = reasoning_levels_harness(&tmp_dir, None);
+    let (router, model_id) = reasoning_levels_harness(&pool, &tmp_dir, None).await;
 
     let body = serde_json::json!({
         "backend": "llama-cpp",
@@ -3037,6 +2839,8 @@ async fn test_update_model_reasoning_levels_put_persists_normalized() {
         serde_json::json!(["off", "low"]),
         "levels must be persisted normalized (trim + lowercase + dedupe)"
     );
+
+    guard.finish().await;
 }
 
 /// A PUT with an invalid level is rejected (422 ValidationError), the
@@ -3044,8 +2848,11 @@ async fn test_update_model_reasoning_levels_put_persists_normalized() {
 /// untouched.
 #[tokio::test]
 async fn test_update_model_reasoning_levels_put_invalid_rejected() {
+    let guard = crate::testing::postgres::with_schema().await;
+    let pool = guard.pool.clone();
     let tmp_dir = tempfile::tempdir().expect("tempdir");
-    let (router, model_id) = reasoning_levels_harness(&tmp_dir, Some(r#"["off","low"]"#));
+    let (router, model_id) =
+        reasoning_levels_harness(&pool, &tmp_dir, Some(r#"["off","low"]"#.to_string())).await;
 
     let body = serde_json::json!({
         "backend": "llama-cpp",
@@ -3090,6 +2897,8 @@ async fn test_update_model_reasoning_levels_put_invalid_rejected() {
         serde_json::json!(["off", "low"]),
         "rejected PUT must not modify stored levels"
     );
+
+    guard.finish().await;
 }
 
 /// A PUT sending `reasoningLevels: []` on a model that has levels clears
@@ -3097,8 +2906,11 @@ async fn test_update_model_reasoning_levels_put_invalid_rejected() {
 /// derived boolean is a client-endpoint concern, not a management one).
 #[tokio::test]
 async fn test_update_model_reasoning_levels_put_empty_clears() {
+    let guard = crate::testing::postgres::with_schema().await;
+    let pool = guard.pool.clone();
     let tmp_dir = tempfile::tempdir().expect("tempdir");
-    let (router, model_id) = reasoning_levels_harness(&tmp_dir, Some(r#"["off","low"]"#));
+    let (router, model_id) =
+        reasoning_levels_harness(&pool, &tmp_dir, Some(r#"["off","low"]"#.to_string())).await;
 
     let body = serde_json::json!({
         "backend": "llama-cpp",
@@ -3129,13 +2941,18 @@ async fn test_update_model_reasoning_levels_put_empty_clears() {
         detail.get("supportsReasoningEffort").is_none(),
         "management detail must not expose the derived boolean"
     );
+
+    guard.finish().await;
 }
 
 /// A PATCH that omits `reasoningLevels` leaves the stored levels unchanged.
 #[tokio::test]
 async fn test_patch_model_reasoning_levels_absent_preserves() {
+    let guard = crate::testing::postgres::with_schema().await;
+    let pool = guard.pool.clone();
     let tmp_dir = tempfile::tempdir().expect("tempdir");
-    let (router, model_id) = reasoning_levels_harness(&tmp_dir, Some(r#"["off","low"]"#));
+    let (router, model_id) =
+        reasoning_levels_harness(&pool, &tmp_dir, Some(r#"["off","low"]"#.to_string())).await;
 
     let body = serde_json::json!({
         "display_name": "Renamed",
@@ -3161,13 +2978,18 @@ async fn test_patch_model_reasoning_levels_absent_preserves() {
         serde_json::json!(["off", "low"]),
         "PATCH without the field must preserve stored levels"
     );
+
+    guard.finish().await;
 }
 
 /// A PATCH sending `reasoningLevels: []` clears the stored levels.
 #[tokio::test]
 async fn test_patch_model_reasoning_levels_empty_clears() {
+    let guard = crate::testing::postgres::with_schema().await;
+    let pool = guard.pool.clone();
     let tmp_dir = tempfile::tempdir().expect("tempdir");
-    let (router, model_id) = reasoning_levels_harness(&tmp_dir, Some(r#"["off","low"]"#));
+    let (router, model_id) =
+        reasoning_levels_harness(&pool, &tmp_dir, Some(r#"["off","low"]"#.to_string())).await;
 
     let body = serde_json::json!({
         "reasoningLevels": [],
@@ -3197,4 +3019,6 @@ async fn test_patch_model_reasoning_levels_empty_clears() {
         detail.get("supportsReasoningEffort").is_none(),
         "management detail must not expose the derived boolean"
     );
+
+    guard.finish().await;
 }

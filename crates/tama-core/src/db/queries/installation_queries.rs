@@ -1,12 +1,14 @@
 //! Backend installation database query functions.
+//!
+//! All functions take a `&PgPool` and are async (plan-190 Task 8).
 
 use anyhow::{Context, Result};
-use rusqlite::{Connection, OptionalExtension};
+use sqlx::{PgPool, Row};
 
 /// A stored installation record for a backend binary.
 #[derive(Debug, Clone)]
 pub struct InstallationRecord {
-    /// Set to 0 when constructing a record for INSERT (DB assigns the real id via AUTOINCREMENT).
+    /// Set to 0 when constructing a record for INSERT (DB assigns the real id).
     pub id: i64,
     pub name: String,
     pub backend_type: String,
@@ -23,47 +25,49 @@ pub struct InstallationRecord {
     pub logical_id: String,
 }
 
-/// Shared row-mapping closure for InstallationRecord queries.
-///
-/// Extracted to a function so it can be reused across multiple query_map
-/// calls without hitting Rust's "each closure has a unique type" issue.
-fn map_installation_record(row: &rusqlite::Row) -> rusqlite::Result<InstallationRecord> {
-    Ok(InstallationRecord {
-        id: row.get(0)?,
-        name: row.get(1)?,
-        backend_type: row.get(2)?,
-        version: row.get(3)?,
-        path: row.get(4)?,
-        installed_at: row.get(5)?,
-        gpu_variant: row.get(6)?,
-        source: row.get(7)?,
-        is_active: row.get::<_, i64>(8)? != 0,
-        docker_config: row.get(9)?,
-        logical_id: row.get(10)?,
-    })
+/// Decode a `provider_installations` row into an [`InstallationRecord`].
+fn decode_installation(row: &sqlx::postgres::PgRow) -> InstallationRecord {
+    InstallationRecord {
+        id: row.get("id"),
+        name: row.get("name"),
+        backend_type: row.get("backend_type"),
+        version: row.get("version"),
+        path: row.get("path"),
+        installed_at: row.get("installed_at"),
+        gpu_variant: row.get("gpu_variant"),
+        source: row.get("source"),
+        is_active: row.get("is_active"),
+        docker_config: row.get("docker_config"),
+        // Defensive: rows are always written with a non-empty logical_id,
+        // but treat a stray NULL as unassigned.
+        logical_id: row
+            .get::<Option<String>, _>("logical_id")
+            .unwrap_or_default(),
+    }
 }
 
 /// Insert or replace a backend installation record, marking it as active.
 ///
 /// In a single transaction:
-/// 1. Inserts (or replaces) the row with `is_active = 1`.
-/// 2. Sets `is_active = 0` for all other rows with the same name AND gpu_variant.
+/// 1. Inserts (or updates) the row with `is_active = TRUE` via
+///    `ON CONFLICT (name, gpu_variant, version)`.
+/// 2. Sets `is_active = FALSE` for all other rows with the same name AND
+///    gpu_variant.
 ///
-/// When a row with the same `(name, gpu_variant, version)` already exists, SQLite's `REPLACE`
-/// semantics delete the old row and re-insert (the row gets a new `id`). All other rows with
-/// the same name and gpu_variant are deactivated (different variants are unaffected).
-pub fn insert_installation(conn: &Connection, record: &InstallationRecord) -> Result<()> {
+/// When a row with the same `(name, gpu_variant, version)` already exists it is
+/// updated in place (the row keeps its `id`). All other rows with the same name
+/// and gpu_variant are deactivated (different variants are unaffected).
+pub async fn insert_installation(pool: &PgPool, record: &InstallationRecord) -> Result<()> {
     // Resolve the stable logical_id: reuse an existing one for this name if any
     // row already has one, otherwise generate a fresh UUID. This preserves the
     // same logical backend identity across renames and version installs.
-    let existing_logical: Option<String> = conn
-        .query_row(
-            "SELECT logical_id FROM provider_installations WHERE name = ?1
-             AND logical_id IS NOT NULL AND logical_id != '' LIMIT 1",
-            [&record.name],
-            |r| r.get(0),
-        )
-        .ok();
+    let existing_logical: Option<String> = sqlx::query_scalar(
+        "SELECT logical_id FROM provider_installations WHERE name = $1
+         AND logical_id IS NOT NULL AND logical_id != '' LIMIT 1",
+    )
+    .bind(&record.name)
+    .fetch_optional(pool)
+    .await?;
     let logical_id = if !record.logical_id.is_empty() {
         record.logical_id.clone()
     } else if let Some(existing) = existing_logical {
@@ -72,135 +76,175 @@ pub fn insert_installation(conn: &Connection, record: &InstallationRecord) -> Re
         uuid::Uuid::new_v4().to_string()
     };
 
-    let tx = conn.unchecked_transaction()?;
-    tx.execute(
-        "INSERT OR REPLACE INTO provider_installations
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "INSERT INTO provider_installations
              (name, backend_type, version, path, installed_at, gpu_variant, source, is_active, docker_config, logical_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?9)",
-        (
-            &record.name,
-            &record.backend_type,
-            &record.version,
-            &record.path,
-            record.installed_at,
-            &record.gpu_variant,
-            record.source.as_deref(),
-            record.docker_config.as_deref(),
-            &logical_id,
-        ),
-    )?;
+         VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE, $8, $9)
+         ON CONFLICT (name, gpu_variant, version) DO UPDATE SET
+             backend_type  = EXCLUDED.backend_type,
+             path          = EXCLUDED.path,
+             installed_at  = EXCLUDED.installed_at,
+             source        = EXCLUDED.source,
+             is_active     = TRUE,
+             docker_config = EXCLUDED.docker_config,
+             logical_id    = EXCLUDED.logical_id",
+    )
+    .bind(&record.name)
+    .bind(&record.backend_type)
+    .bind(&record.version)
+    .bind(&record.path)
+    .bind(record.installed_at)
+    .bind(&record.gpu_variant)
+    .bind(record.source.as_deref())
+    .bind(record.docker_config.as_deref())
+    .bind(&logical_id)
+    .execute(&mut *tx)
+    .await?;
     // Propagate the same logical_id to any other (older) rows of this name so a
     // rename or version rollback keeps them grouped under the same identity.
-    tx.execute(
-        "UPDATE provider_installations SET logical_id = ?1 WHERE name = ?2 AND (logical_id IS NULL OR logical_id = '')",
-        (&logical_id, &record.name),
-    )?;
+    sqlx::query(
+        "UPDATE provider_installations SET logical_id = $1
+         WHERE name = $2 AND (logical_id IS NULL OR logical_id = '')",
+    )
+    .bind(&logical_id)
+    .bind(&record.name)
+    .execute(&mut *tx)
+    .await?;
     // Stamp matching provider_configs rows with the same stable key so config
     // rows (e.g. created via default-args POST or TOML migration with an empty
     // logical_id) get their logical_id as soon as an installation exists.
-    tx.execute(
-        "UPDATE provider_configs SET logical_id = ?1 WHERE name = ?2 AND gpu_variant = ?3 AND (logical_id IS NULL OR logical_id = '')",
-        (&logical_id, &record.name, &record.gpu_variant),
-    )?;
-    tx.execute(
-        "UPDATE provider_installations SET is_active = 0 WHERE name = ?1 AND gpu_variant = ?2 AND version != ?3",
-        (&record.name, &record.gpu_variant, &record.version),
-    )?;
-    tx.commit()?;
+    sqlx::query(
+        "UPDATE provider_configs SET logical_id = $1
+         WHERE name = $2 AND gpu_variant = $3 AND (logical_id IS NULL OR logical_id = '')",
+    )
+    .bind(&logical_id)
+    .bind(&record.name)
+    .bind(&record.gpu_variant)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "UPDATE provider_installations SET is_active = FALSE
+         WHERE name = $1 AND gpu_variant = $2 AND version != $3",
+    )
+    .bind(&record.name)
+    .bind(&record.gpu_variant)
+    .bind(&record.version)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
     Ok(())
 }
 
 /// Get the active backend installation for a given name and gpu_variant.
-pub fn get_active_installation(
-    conn: &Connection,
+pub async fn get_active_installation(
+    pool: &PgPool,
     name: &str,
     gpu_variant: &str,
 ) -> Result<Option<InstallationRecord>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, name, backend_type, version, path, installed_at, gpu_variant, source, is_active, docker_config, logical_id
-         FROM provider_installations
-         WHERE name = ?1 AND gpu_variant = ?2 AND is_active = 1",
-    )?;
-    let mut rows = stmt.query_map((name, gpu_variant), map_installation_record)?;
-    match rows.next() {
-        Some(row) => Ok(Some(row?)),
-        None => Ok(None),
-    }
+    let row = sqlx::query(sqlx::AssertSqlSafe(concat!(
+        "SELECT ",
+        "id, name, backend_type, version, path, \
+         installed_at, gpu_variant, source, is_active, docker_config, logical_id",
+        " FROM provider_installations WHERE name = $1 AND gpu_variant = $2 AND is_active = TRUE"
+    )))
+    .bind(name)
+    .bind(gpu_variant)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| decode_installation(&r)))
 }
 
 /// Return all active backend installations (one per backend name/variant).
-pub fn list_active_installations(conn: &Connection) -> Result<Vec<InstallationRecord>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, name, backend_type, version, path, installed_at, gpu_variant, source, is_active, docker_config, logical_id
-         FROM provider_installations
-         WHERE is_active = 1",
-    )?;
-    let rows = stmt.query_map([], map_installation_record)?;
-    rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(Into::into)
+pub async fn list_active_installations(pool: &PgPool) -> Result<Vec<InstallationRecord>> {
+    let rows = sqlx::query(sqlx::AssertSqlSafe(concat!(
+        "SELECT ",
+        "id, name, backend_type, version, path, \
+         installed_at, gpu_variant, source, is_active, docker_config, logical_id",
+        " FROM provider_installations WHERE is_active = TRUE"
+    )))
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.iter().map(decode_installation).collect())
 }
 
 /// Return all versions of a backend, ordered by `installed_at DESC` (newest first).
 ///
 /// If `gpu_variant` is `Some`, only returns rows matching that variant.
 /// If `None`, returns all variants.
-pub fn list_installation_versions(
-    conn: &Connection,
+pub async fn list_installation_versions(
+    pool: &PgPool,
     name: &str,
     gpu_variant: Option<&str>,
 ) -> Result<Vec<InstallationRecord>> {
-    let sql = if let Some(_variant) = gpu_variant {
-        "SELECT id, name, backend_type, version, path, installed_at, gpu_variant, source, is_active, docker_config, logical_id
-         FROM provider_installations
-         WHERE name = ?1 AND gpu_variant = ?2
-         ORDER BY installed_at DESC"
-    } else {
-        "SELECT id, name, backend_type, version, path, installed_at, gpu_variant, source, is_active, docker_config, logical_id
-         FROM provider_installations
-         WHERE name = ?1
-         ORDER BY installed_at DESC"
+    let (sql, variant) = match gpu_variant {
+        Some(_) => (
+            sqlx::AssertSqlSafe(concat!(
+                "SELECT ",
+                "id, name, backend_type, version, path, \
+                 installed_at, gpu_variant, source, is_active, docker_config, logical_id",
+                " FROM provider_installations \
+                 WHERE name = $1 AND gpu_variant = $2 ORDER BY installed_at DESC"
+            )),
+            true,
+        ),
+        None => (
+            sqlx::AssertSqlSafe(concat!(
+                "SELECT ",
+                "id, name, backend_type, version, path, \
+                 installed_at, gpu_variant, source, is_active, docker_config, logical_id",
+                " FROM provider_installations \
+                 WHERE name = $1 ORDER BY installed_at DESC"
+            )),
+            false,
+        ),
     };
-    let mut stmt = conn.prepare(sql)?;
-    let rows = if let Some(variant) = gpu_variant {
-        stmt.query_map((name, variant), map_installation_record)?
-    } else {
-        stmt.query_map([name], map_installation_record)?
-    };
-    rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(Into::into)
+    let mut q = sqlx::query(sql).bind(name);
+    if variant {
+        q = q.bind(gpu_variant.unwrap_or(""));
+    }
+    let rows = q.fetch_all(pool).await?;
+    Ok(rows.iter().map(decode_installation).collect())
 }
 
 /// Get a specific backend installation by (name, gpu_variant, version).
 /// Returns Ok(None) if no row matches.
-pub fn get_installation_by_version(
-    conn: &Connection,
+pub async fn get_installation_by_version(
+    pool: &PgPool,
     name: &str,
     gpu_variant: &str,
     version: &str,
 ) -> Result<Option<InstallationRecord>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, name, backend_type, version, path, installed_at, gpu_variant, source, is_active, docker_config, logical_id
-         FROM provider_installations
-         WHERE name = ?1 AND gpu_variant = ?2 AND version = ?3",
-    )?;
-    let mut rows = stmt.query_map((name, gpu_variant, version), map_installation_record)?;
-    match rows.next() {
-        Some(row) => Ok(Some(row?)),
-        None => Ok(None),
-    }
+    let row = sqlx::query(sqlx::AssertSqlSafe(concat!(
+        "SELECT ",
+        "id, name, backend_type, version, path, \
+         installed_at, gpu_variant, source, is_active, docker_config, logical_id",
+        " FROM provider_installations \
+         WHERE name = $1 AND gpu_variant = $2 AND version = $3"
+    )))
+    .bind(name)
+    .bind(gpu_variant)
+    .bind(version)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| decode_installation(&r)))
 }
 
 /// Delete a specific `(name, gpu_variant, version)` backend installation row.
-pub fn delete_installation(
-    conn: &Connection,
+pub async fn delete_installation(
+    pool: &PgPool,
     name: &str,
     gpu_variant: &str,
     version: &str,
 ) -> Result<()> {
-    conn.execute(
-        "DELETE FROM provider_installations WHERE name = ?1 AND gpu_variant = ?2 AND version = ?3",
-        (name, gpu_variant, version),
-    )?;
+    sqlx::query(
+        "DELETE FROM provider_installations WHERE name = $1 AND gpu_variant = $2 AND version = $3",
+    )
+    .bind(name)
+    .bind(gpu_variant)
+    .bind(version)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -209,62 +253,76 @@ pub fn delete_installation(
 /// This is an atomic operation executed in a transaction:
 /// 1. Check if the target version exists
 /// 2. If not, return Ok(false) without any changes
-/// 3. SET is_active = 0 for all rows with the given name AND gpu_variant
-/// 4. SET is_active = 1 for the row matching (name, gpu_variant, version)
+/// 3. SET is_active = FALSE for all rows with the given name AND gpu_variant
+/// 4. SET is_active = TRUE for the row matching (name, gpu_variant, version)
 ///
 /// Returns Ok(true) if the version was found and activated, Ok(false) if no matching row exists.
-pub fn activate_installation_version(
-    conn: &Connection,
+pub async fn activate_installation_version(
+    pool: &PgPool,
     name: &str,
     gpu_variant: &str,
     version: &str,
 ) -> Result<bool> {
-    let tx = conn.unchecked_transaction()?;
+    let mut tx = pool.begin().await?;
 
     // Check if the target version exists before making any changes
-    let exists: i64 = tx.query_row(
-        "SELECT COUNT(*) FROM provider_installations WHERE name = ?1 AND gpu_variant = ?2 AND version = ?3",
-        (name, gpu_variant, version),
-        |row| row.get(0),
-    )?;
+    let exists: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM provider_installations WHERE name = $1 AND gpu_variant = $2 AND version = $3",
+    )
+    .bind(name)
+    .bind(gpu_variant)
+    .bind(version)
+    .fetch_one(&mut *tx)
+    .await?;
 
     if exists == 0 {
-        tx.commit()?;
+        tx.rollback().await?;
         return Ok(false);
     }
 
     // Deactivate all versions for this backend+variant
-    tx.execute(
-        "UPDATE provider_installations SET is_active = 0 WHERE name = ?1 AND gpu_variant = ?2",
-        (name, gpu_variant),
-    )?;
+    sqlx::query(
+        "UPDATE provider_installations SET is_active = FALSE WHERE name = $1 AND gpu_variant = $2",
+    )
+    .bind(name)
+    .bind(gpu_variant)
+    .execute(&mut *tx)
+    .await?;
 
     // Activate the requested version
-    let changes = tx.execute(
-        "UPDATE provider_installations SET is_active = 1 WHERE name = ?1 AND gpu_variant = ?2 AND version = ?3",
-        (name, gpu_variant, version),
-    )?;
+    let res = sqlx::query(
+        "UPDATE provider_installations SET is_active = TRUE WHERE name = $1 AND gpu_variant = $2 AND version = $3",
+    )
+    .bind(name)
+    .bind(gpu_variant)
+    .bind(version)
+    .execute(&mut *tx)
+    .await?;
 
-    tx.commit()?;
-    Ok(changes > 0)
+    tx.commit().await?;
+    Ok(res.rows_affected() > 0)
 }
 
 /// Delete all installation rows for a backend name (used by `backend remove`).
 ///
 /// If `gpu_variant` is `Some`, only deletes rows matching that variant.
 /// If `None`, deletes all variants.
-pub fn delete_all_installation_versions(
-    conn: &Connection,
+pub async fn delete_all_installation_versions(
+    pool: &PgPool,
     name: &str,
     gpu_variant: Option<&str>,
 ) -> Result<()> {
     if let Some(variant) = gpu_variant {
-        conn.execute(
-            "DELETE FROM provider_installations WHERE name = ?1 AND gpu_variant = ?2",
-            (name, variant),
-        )?;
+        sqlx::query("DELETE FROM provider_installations WHERE name = $1 AND gpu_variant = $2")
+            .bind(name)
+            .bind(variant)
+            .execute(pool)
+            .await?;
     } else {
-        conn.execute("DELETE FROM provider_installations WHERE name = ?1", [name])?;
+        sqlx::query("DELETE FROM provider_installations WHERE name = $1")
+            .bind(name)
+            .execute(pool)
+            .await?;
     }
     Ok(())
 }
@@ -272,17 +330,22 @@ pub fn delete_all_installation_versions(
 /// Update the `source` column on the active backend installation row.
 ///
 /// Fails with an error if no active row matches the given name and gpu_variant.
-pub fn update_installation_source(
-    conn: &Connection,
+pub async fn update_installation_source(
+    pool: &PgPool,
     name: &str,
     gpu_variant: &str,
     source_json: &str,
 ) -> Result<()> {
-    let rows = conn.execute(
-        "UPDATE provider_installations SET source = ?1 WHERE name = ?2 AND gpu_variant = ?3 AND is_active = 1",
-        (source_json, name, gpu_variant),
-    )?;
-    if rows == 0 {
+    let res = sqlx::query(
+        "UPDATE provider_installations SET source = $1
+         WHERE name = $2 AND gpu_variant = $3 AND is_active = TRUE",
+    )
+    .bind(source_json)
+    .bind(name)
+    .bind(gpu_variant)
+    .execute(pool)
+    .await?;
+    if res.rows_affected() == 0 {
         anyhow::bail!(
             "No active backend '{}' variant '{}' found",
             name,
@@ -325,16 +388,16 @@ struct RawBackendConfigRow {
     health_check_url: Option<String>,
 }
 
-fn map_raw_installation_config(row: &rusqlite::Row) -> rusqlite::Result<RawBackendConfigRow> {
-    Ok(RawBackendConfigRow {
-        id: row.get(0)?,
-        logical_id: row.get(1)?,
-        name: row.get(2)?,
-        gpu_variant: row.get(3)?,
-        default_args_raw: row.get(4)?,
-        default_env_raw: row.get(5)?,
-        health_check_url: row.get(6)?,
-    })
+fn map_raw_installation_config(row: &sqlx::postgres::PgRow) -> RawBackendConfigRow {
+    RawBackendConfigRow {
+        id: row.get("id"),
+        logical_id: row.get("logical_id"),
+        name: row.get("name"),
+        gpu_variant: row.get("gpu_variant"),
+        default_args_raw: row.get("default_args"),
+        default_env_raw: row.get("default_env"),
+        health_check_url: row.get("health_check_url"),
+    }
 }
 
 fn raw_to_record(raw: RawBackendConfigRow) -> Result<InstallationConfigRecord> {
@@ -364,31 +427,31 @@ fn raw_to_record(raw: RawBackendConfigRow) -> Result<InstallationConfigRecord> {
 
 /// Get the backend config for a backend, matching on the stable `logical_id`
 /// first and falling back to the (renameable) `name` for legacy rows.
-pub fn get_installation_config(
-    conn: &Connection,
+pub async fn get_installation_config(
+    pool: &PgPool,
     key: &str,
     gpu_variant: &str,
 ) -> Result<Option<InstallationConfigRecord>> {
-    let mut stmt = conn.prepare(
+    let row = sqlx::query(
         "SELECT id, logical_id, name, gpu_variant, default_args, default_env, health_check_url
          FROM provider_configs
-         WHERE (logical_id = ?1 OR name = ?1) AND gpu_variant = ?2
-         ORDER BY (logical_id = ?1) DESC, id ASC LIMIT 1",
-    )?;
-    let mut rows = stmt.query_map((key, gpu_variant), map_raw_installation_config)?;
-    match rows.next() {
-        Some(row) => {
-            let raw = row?;
-            Ok(Some(raw_to_record(raw)?))
-        }
+         WHERE (logical_id = $1 OR name = $1) AND gpu_variant = $2
+         ORDER BY (logical_id = $1) DESC, id ASC LIMIT 1",
+    )
+    .bind(key)
+    .bind(gpu_variant)
+    .fetch_optional(pool)
+    .await?;
+    match row {
+        Some(r) => Ok(Some(raw_to_record(map_raw_installation_config(&r))?)),
         None => Ok(None),
     }
 }
 
 /// Insert or replace a backend config record keyed by the stable `logical_id`.
 /// Returns the row's id.
-pub fn upsert_installation_config(
-    conn: &Connection,
+pub async fn upsert_installation_config(
+    pool: &PgPool,
     logical_id: &str,
     name: &str,
     gpu_variant: &str,
@@ -420,101 +483,104 @@ pub fn upsert_installation_config(
         Some(logical_id)
     };
     let updated = if let Some(lid) = key_logical {
-        conn.execute(
+        sqlx::query(
             "UPDATE provider_configs SET
-                name = ?1,
-                logical_id = ?6,
-                default_args = ?2,
-                default_env = ?3,
-                health_check_url = ?4
-             WHERE gpu_variant = ?5 AND (logical_id = ?6 OR name = ?7)",
-            (
-                name,
-                default_args_json.as_deref(),
-                default_env_json.as_deref(),
-                health_check_url,
-                gpu_variant,
-                lid,
-                name,
-            ),
-        )?
+                name = $1,
+                logical_id = $6,
+                default_args = $2,
+                default_env = $3,
+                health_check_url = $4
+             WHERE gpu_variant = $5 AND (logical_id = $6 OR name = $7)",
+        )
+        .bind(name)
+        .bind(default_args_json.as_deref())
+        .bind(default_env_json.as_deref())
+        .bind(health_check_url)
+        .bind(gpu_variant)
+        .bind(lid)
+        .bind(name)
+        .execute(pool)
+        .await?
+        .rows_affected()
     } else {
-        conn.execute(
+        sqlx::query(
             "UPDATE provider_configs SET
-                name = ?1,
-                default_args = ?2,
-                default_env = ?3,
-                health_check_url = ?4
-             WHERE gpu_variant = ?5 AND name = ?6",
-            (
-                name,
-                default_args_json.as_deref(),
-                default_env_json.as_deref(),
-                health_check_url,
-                gpu_variant,
-                name,
-            ),
-        )?
+                name = $1,
+                default_args = $2,
+                default_env = $3,
+                health_check_url = $4
+             WHERE gpu_variant = $5 AND name = $6",
+        )
+        .bind(name)
+        .bind(default_args_json.as_deref())
+        .bind(default_env_json.as_deref())
+        .bind(health_check_url)
+        .bind(gpu_variant)
+        .bind(name)
+        .execute(pool)
+        .await?
+        .rows_affected()
     };
 
     if updated == 0 {
-        conn.execute(
+        sqlx::query(
             "INSERT INTO provider_configs (logical_id, name, gpu_variant, default_args, default_env, health_check_url)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            (
-                key_logical,
-                name,
-                gpu_variant,
-                default_args_json.as_deref(),
-                default_env_json.as_deref(),
-                health_check_url,
-            ),
-        )?;
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(key_logical)
+        .bind(name)
+        .bind(gpu_variant)
+        .bind(default_args_json.as_deref())
+        .bind(default_env_json.as_deref())
+        .bind(health_check_url)
+        .execute(pool)
+        .await?;
     }
 
     // Fetch the id of the (possibly updated) row
     let id: i64 = if let Some(lid) = key_logical {
-        conn.query_row(
-            "SELECT id FROM provider_configs WHERE gpu_variant = ?1 AND (logical_id = ?2 OR name = ?3)",
-            (gpu_variant, lid, name),
-            |row| row.get(0),
-        )?
+        sqlx::query_scalar(
+            "SELECT id FROM provider_configs WHERE gpu_variant = $1 AND (logical_id = $2 OR name = $3)",
+        )
+        .bind(gpu_variant)
+        .bind(lid)
+        .bind(name)
+        .fetch_one(pool)
+        .await?
     } else {
-        conn.query_row(
-            "SELECT id FROM provider_configs WHERE gpu_variant = ?1 AND name = ?2",
-            (gpu_variant, name),
-            |row| row.get(0),
-        )?
+        sqlx::query_scalar("SELECT id FROM provider_configs WHERE gpu_variant = $1 AND name = $2")
+            .bind(gpu_variant)
+            .bind(name)
+            .fetch_one(pool)
+            .await?
     };
 
     Ok(id)
 }
 
 /// Return all backend config records.
-pub fn list_installation_configs(conn: &Connection) -> Result<Vec<InstallationConfigRecord>> {
-    let mut stmt = conn.prepare(
+pub async fn list_installation_configs(pool: &PgPool) -> Result<Vec<InstallationConfigRecord>> {
+    let rows = sqlx::query(
         "SELECT id, logical_id, name, gpu_variant, default_args, default_env, health_check_url
          FROM provider_configs",
-    )?;
-    let raw_rows = stmt.query_map([], map_raw_installation_config)?;
-    let records: Vec<InstallationConfigRecord> = raw_rows
-        .map(|row| raw_to_record(row?))
-        .collect::<Result<Vec<_>>>()?;
-    Ok(records)
+    )
+    .fetch_all(pool)
+    .await?;
+    rows.into_iter()
+        .map(|row| raw_to_record(map_raw_installation_config(&row)))
+        .collect()
 }
 
 /// Resolve the stable `logical_id` for a backend `name`.
 /// Returns `Ok(Some(id))` if any installation row (any version/variant) carries one.
-pub fn get_installation_logical_id(conn: &Connection, name: &str) -> Result<Option<String>> {
-    let logical_id: Option<String> = conn
-        .query_row(
-            "SELECT logical_id FROM provider_installations WHERE name = ?1
-             AND logical_id IS NOT NULL AND logical_id != '' LIMIT 1",
-            [name],
-            |r| r.get(0),
-        )
-        .optional()?;
-    Ok(logical_id)
+pub async fn get_installation_logical_id(pool: &PgPool, name: &str) -> Result<Option<String>> {
+    Ok(sqlx::query_scalar(
+        "SELECT logical_id FROM provider_installations WHERE name = $1
+         AND logical_id IS NOT NULL AND logical_id != '' LIMIT 1",
+    )
+    .bind(name)
+    .fetch_optional(pool)
+    .await?)
 }
 
 /// Atomically rename a backend across every table that carries its display name.
@@ -527,15 +593,15 @@ pub fn get_installation_logical_id(conn: &Connection, name: &str) -> Result<Opti
 /// `backend_id` references remain intact across the rename. Fails if the new
 /// name would collide with an existing backend (installation or config row)
 /// whose `logical_id` differs or is still unassigned.
-pub fn rename_installation(conn: &Connection, old_name: &str, new_name: &str) -> Result<bool> {
+pub async fn rename_installation(pool: &PgPool, old_name: &str, new_name: &str) -> Result<bool> {
     // Not-found: old_name must have at least one installation row. This check
     // runs before the same-name no-op so a nonexistent backend renamed to
     // its own name reports Ok(false) rather than a false success.
-    let old_exists: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM provider_installations WHERE name = ?1",
-        [old_name],
-        |r| r.get(0),
-    )?;
+    let old_exists: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM provider_installations WHERE name = $1")
+            .bind(old_name)
+            .fetch_one(pool)
+            .await?;
     if old_exists == 0 {
         return Ok(false);
     }
@@ -546,13 +612,13 @@ pub fn rename_installation(conn: &Connection, old_name: &str, new_name: &str) ->
 
     // Prevent silently merging two distinct logical backends (including the
     // case where the new name already exists as a backend).
-    let old_logical: Option<String> = get_installation_logical_id(conn, old_name)?;
-    let new_logical: Option<String> = get_installation_logical_id(conn, new_name)?;
-    let new_exists: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM provider_installations WHERE name = ?1",
-        [new_name],
-        |r| r.get(0),
-    )?;
+    let old_logical = get_installation_logical_id(pool, old_name).await?;
+    let new_logical = get_installation_logical_id(pool, new_name).await?;
+    let new_exists: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM provider_installations WHERE name = $1")
+            .bind(new_name)
+            .fetch_one(pool)
+            .await?;
     let merges_distinct = match (old_logical.as_deref(), new_logical.as_deref()) {
         (Some(old), Some(new)) => old != new,
         // If we cannot prove both sides are the same logical backend (old has no
@@ -571,50 +637,56 @@ pub fn rename_installation(conn: &Connection, old_name: &str, new_name: &str) ->
     // Guard against renaming onto a name that already owns provider_configs rows
     // under a NULL or DIFFERENT logical_id (for any gpu_variant). Such a row
     // would otherwise collide on the `(logical_id, gpu_variant)` uniqueness.
-    let config_conflicts: i64 = conn.query_row(
+    let config_conflicts: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM provider_configs
-         WHERE name = ?1 AND (logical_id IS NULL OR logical_id = '' OR logical_id != ?2)",
-        (new_name, old_logical.as_deref().unwrap_or("")),
-        |r| r.get(0),
-    )?;
+         WHERE name = $1 AND (logical_id IS NULL OR logical_id = '' OR logical_id != $2)",
+    )
+    .bind(new_name)
+    .bind(old_logical.as_deref().unwrap_or(""))
+    .fetch_one(pool)
+    .await?;
     if config_conflicts > 0 {
         anyhow::bail!("refusing to merge overlapping backend config/settings");
     }
 
-    let tx = conn.unchecked_transaction()?;
-    tx.execute(
-        "UPDATE provider_installations SET name = ?1 WHERE name = ?2",
-        (new_name, old_name),
-    )?;
-    tx.execute(
-        "UPDATE provider_configs SET name = ?1 WHERE name = ?2",
-        (new_name, old_name),
-    )?;
-    tx.execute(
-        "UPDATE model_configs SET backend = ?1 WHERE backend = ?2",
-        (new_name, old_name),
-    )?;
-    tx.execute(
-        "UPDATE active_models SET backend = ?1 WHERE backend = ?2",
-        (new_name, old_name),
-    )?;
-    tx.commit()?;
+    let mut tx = pool.begin().await?;
+    sqlx::query("UPDATE provider_installations SET name = $1 WHERE name = $2")
+        .bind(new_name)
+        .bind(old_name)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("UPDATE provider_configs SET name = $1 WHERE name = $2")
+        .bind(new_name)
+        .bind(old_name)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("UPDATE model_configs SET backend = $1 WHERE backend = $2")
+        .bind(new_name)
+        .bind(old_name)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("UPDATE active_models SET backend = $1 WHERE backend = $2")
+        .bind(new_name)
+        .bind(old_name)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
     Ok(true)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{open_in_memory, OpenResult};
+    use crate::testing::postgres::with_schema;
 
-    #[test]
-    fn test_upsert_installation_config_insert() {
-        let OpenResult { conn, .. } = open_in_memory().unwrap();
+    #[tokio::test]
+    async fn test_upsert_installation_config_insert() {
+        let guard = with_schema().await;
 
         let args = vec!["-fa 1".to_string(), "-b 2048".to_string()];
         let env = vec!["RADV_PERFTEST=nogttspill".to_string()];
         let id = upsert_installation_config(
-            &conn,
+            &guard.pool,
             "",
             "llama_cpp",
             "cpu",
@@ -622,10 +694,12 @@ mod tests {
             &env,
             Some("http://localhost:8080/health"),
         )
+        .await
         .unwrap();
         assert_eq!(id, 1);
 
-        let record = get_installation_config(&conn, "llama_cpp", "cpu")
+        let record = get_installation_config(&guard.pool, "llama_cpp", "cpu")
+            .await
             .unwrap()
             .unwrap();
         assert_eq!(record.id, 1);
@@ -637,15 +711,16 @@ mod tests {
             record.health_check_url,
             Some("http://localhost:8080/health".to_string())
         );
+        guard.finish().await;
     }
 
-    #[test]
-    fn test_upsert_installation_config_update() {
-        let OpenResult { conn, .. } = open_in_memory().unwrap();
+    #[tokio::test]
+    async fn test_upsert_installation_config_update() {
+        let guard = with_schema().await;
 
         // Insert initial row
         let id1 = upsert_installation_config(
-            &conn,
+            &guard.pool,
             "",
             "llama_cpp",
             "cpu",
@@ -653,11 +728,12 @@ mod tests {
             &[],
             Some("http://localhost:8080/health"),
         )
+        .await
         .unwrap();
 
         // Upsert with different values
         let id2 = upsert_installation_config(
-            &conn,
+            &guard.pool,
             "",
             "llama_cpp",
             "cpu",
@@ -665,12 +741,14 @@ mod tests {
             &["FOO=bar".to_string()],
             Some("http://localhost:9090/health"),
         )
+        .await
         .unwrap();
 
         // ID should be the same (updated, not re-inserted)
         assert_eq!(id1, id2);
 
-        let record = get_installation_config(&conn, "llama_cpp", "cpu")
+        let record = get_installation_config(&guard.pool, "llama_cpp", "cpu")
+            .await
             .unwrap()
             .unwrap();
         assert_eq!(record.default_args, vec!["-fa 1", "-b 2048"]);
@@ -679,22 +757,26 @@ mod tests {
             record.health_check_url,
             Some("http://localhost:9090/health".to_string())
         );
+        guard.finish().await;
     }
 
-    #[test]
-    fn test_get_installation_config_not_found() {
-        let OpenResult { conn, .. } = open_in_memory().unwrap();
+    #[tokio::test]
+    async fn test_get_installation_config_not_found() {
+        let guard = with_schema().await;
 
-        let result = get_installation_config(&conn, "nonexistent", "cpu").unwrap();
+        let result = get_installation_config(&guard.pool, "nonexistent", "cpu")
+            .await
+            .unwrap();
         assert!(result.is_none());
+        guard.finish().await;
     }
 
-    #[test]
-    fn test_list_installation_configs() {
-        let OpenResult { conn, .. } = open_in_memory().unwrap();
+    #[tokio::test]
+    async fn test_list_installation_configs() {
+        let guard = with_schema().await;
 
         upsert_installation_config(
-            &conn,
+            &guard.pool,
             "",
             "llama_cpp",
             "cpu",
@@ -702,11 +784,16 @@ mod tests {
             &[],
             Some("http://localhost:8080/health"),
         )
+        .await
         .unwrap();
-        upsert_installation_config(&conn, "", "llama_cpp", "vulkan", &[], &[], None).unwrap();
-        upsert_installation_config(&conn, "", "ik_llama", "cpu", &[], &[], None).unwrap();
+        upsert_installation_config(&guard.pool, "", "llama_cpp", "vulkan", &[], &[], None)
+            .await
+            .unwrap();
+        upsert_installation_config(&guard.pool, "", "ik_llama", "cpu", &[], &[], None)
+            .await
+            .unwrap();
 
-        let configs = list_installation_configs(&conn).unwrap();
+        let configs = list_installation_configs(&guard.pool).await.unwrap();
         assert_eq!(configs.len(), 3);
 
         // Verify each config
@@ -722,100 +809,113 @@ mod tests {
             .unwrap();
         assert!(vulkan.default_args.is_empty());
         assert!(vulkan.health_check_url.is_none());
+        guard.finish().await;
     }
 
-    #[test]
-    fn test_upsert_installation_config_empty_args() {
-        let OpenResult { conn, .. } = open_in_memory().unwrap();
+    #[tokio::test]
+    async fn test_upsert_installation_config_empty_args() {
+        let guard = with_schema().await;
 
         let id =
-            upsert_installation_config(&conn, "", "empty_backend", "cpu", &[], &[], None).unwrap();
+            upsert_installation_config(&guard.pool, "", "empty_backend", "cpu", &[], &[], None)
+                .await
+                .unwrap();
         assert_eq!(id, 1);
 
-        let record = get_installation_config(&conn, "empty_backend", "cpu")
+        let record = get_installation_config(&guard.pool, "empty_backend", "cpu")
+            .await
             .unwrap()
             .unwrap();
         assert!(record.default_args.is_empty());
         assert!(record.default_env.is_empty());
         assert!(record.health_check_url.is_none());
+        guard.finish().await;
     }
 
-    #[test]
-    fn test_update_installation_source_success() {
-        let OpenResult { conn, .. } = open_in_memory().unwrap();
+    fn active_record(name: &str, version: &str, gpu_variant: &str) -> InstallationRecord {
+        InstallationRecord {
+            id: 0,
+            name: name.to_string(),
+            backend_type: "llama_cpp".to_string(),
+            version: version.to_string(),
+            path: "/tmp/test/llama-server".to_string(),
+            installed_at: 0,
+            gpu_variant: gpu_variant.to_string(),
+            source: None,
+            is_active: true,
+            docker_config: None,
+            logical_id: String::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_update_installation_source_success() {
+        let guard = with_schema().await;
 
         // Insert a backend with no source
-        insert_installation(
-            &conn,
-            &InstallationRecord {
-                id: 0,
-                name: "llama_cpp".to_string(),
-                backend_type: "llama_cpp".to_string(),
-                version: "b8407".to_string(),
-                path: "/tmp/test/llama-server".to_string(),
-                installed_at: 0,
-                gpu_variant: "cpu".to_string(),
-                source: None,
-                is_active: true,
-                docker_config: None,
-                logical_id: String::new(),
-            },
-        )
-        .unwrap();
+        insert_installation(&guard.pool, &active_record("llama_cpp", "b8407", "cpu"))
+            .await
+            .unwrap();
 
         // Update the source column
         let new_source = r#"{"source":"SourceCode","content":{"version":"b8407","git_url":"https://github.com/ggml-org/llama.cpp.git"}}"#;
-        update_installation_source(&conn, "llama_cpp", "cpu", new_source).unwrap();
+        update_installation_source(&guard.pool, "llama_cpp", "cpu", new_source)
+            .await
+            .unwrap();
 
         // Verify the source was updated
-        let record = get_active_installation(&conn, "llama_cpp", "cpu")
+        let record = get_active_installation(&guard.pool, "llama_cpp", "cpu")
+            .await
             .unwrap()
             .unwrap();
         assert_eq!(record.source, Some(new_source.to_string()));
+        guard.finish().await;
     }
 
-    #[test]
-    fn test_update_installation_source_not_found() {
-        let OpenResult { conn, .. } = open_in_memory().unwrap();
+    #[tokio::test]
+    async fn test_update_installation_source_not_found() {
+        let guard = with_schema().await;
 
         let result = update_installation_source(
-            &conn,
+            &guard.pool,
             "nonexistent",
             "cpu",
             r#"{"source":"Prebuilt","content":{"version":"v1"}}"#,
-        );
+        )
+        .await;
         assert!(result.is_err());
+        guard.finish().await;
     }
 
     /// Renaming a backend preserves its default args/env (via logical_id) while
     /// syncing the display name everywhere.
-    #[test]
-    fn test_rename_installation_preserves_config_and_syncs_names() {
-        let OpenResult { conn, .. } = open_in_memory().unwrap();
+    #[tokio::test]
+    async fn test_rename_installation_preserves_config_and_syncs_names() {
+        let guard = with_schema().await;
+        let pool = &guard.pool;
 
         // Install a backend; insert assigns a stable logical_id.
         insert_installation(
-            &conn,
+            pool,
             &InstallationRecord {
-                id: 0,
                 name: "vllm".to_string(),
                 backend_type: "docker".to_string(),
                 version: "0.5.8".to_string(),
                 path: "n/a".to_string(),
-                installed_at: 0,
                 gpu_variant: "rocm".to_string(),
-                source: None,
-                is_active: true,
-                docker_config: None,
-                logical_id: String::new(),
+                ..active_record("vllm", "0.5.8", "rocm")
             },
         )
+        .await
         .unwrap();
-        let lid = get_installation_logical_id(&conn, "vllm").unwrap().unwrap();
+        let lid = get_installation_logical_id(pool, "vllm")
+            .await
+            .unwrap()
+            .unwrap();
 
         // Add config keyed by the logical id.
         upsert_installation_config(
-            &conn,
+            pool,
             &lid,
             "vllm",
             "rocm",
@@ -823,38 +923,50 @@ mod tests {
             &["A=1".into()],
             None,
         )
+        .await
         .unwrap();
 
         // A model and an active-model row reference the backend by name.
-        conn.execute(
-            "INSERT INTO model_configs (repo_id, backend) VALUES ('m/m', 'vllm')",
-            [],
+        sqlx::query("INSERT INTO model_configs (repo_id, backend) VALUES ($1, $2)")
+            .bind("m/m")
+            .bind("vllm")
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO active_models (server_name, model_name, backend, pid, port, backend_url)
+             VALUES ($1, $2, $3, $4, $5, $6)",
         )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO active_models (server_name, model_name, backend, pid, port, backend_url, loaded_at, last_accessed)
-             VALUES ('s1', 'm', 'vllm', 1, 8000, 'http://x', 't', 't')",
-            [],
-        )
+        .bind("s1")
+        .bind("m")
+        .bind("vllm")
+        .bind(1i64)
+        .bind(8000i64)
+        .bind("http://x")
+        .execute(pool)
+        .await
         .unwrap();
 
         // Pre-rename, config is found by name.
-        assert!(get_installation_config(&conn, "vllm", "rocm")
+        assert!(get_installation_config(pool, "vllm", "rocm")
+            .await
             .unwrap()
             .is_some());
 
-        assert!(rename_installation(&conn, "vllm", "radiance").unwrap());
+        assert!(rename_installation(pool, "vllm", "radiance").await.unwrap());
 
         // logical_id unchanged.
         assert_eq!(
-            get_installation_logical_id(&conn, "radiance")
+            get_installation_logical_id(pool, "radiance")
+                .await
                 .unwrap()
                 .unwrap(),
             lid
         );
 
         // Default args/env survive the rename, found by the new name.
-        let cfg = get_installation_config(&conn, "radiance", "rocm")
+        let cfg = get_installation_config(pool, "radiance", "rocm")
+            .await
             .unwrap()
             .unwrap();
         assert_eq!(cfg.default_args, vec!["-fa 1"]);
@@ -862,175 +974,153 @@ mod tests {
         assert_eq!(cfg.name, "radiance");
 
         // Models / runtime rows now point at the new name.
-        let backend: String = conn
-            .query_row(
-                "SELECT backend FROM model_configs WHERE repo_id='m/m'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
+        let backend: String =
+            sqlx::query_scalar("SELECT backend FROM model_configs WHERE repo_id = $1")
+                .bind("m/m")
+                .fetch_one(pool)
+                .await
+                .unwrap();
         assert_eq!(backend, "radiance");
-        let ab: String = conn
-            .query_row(
-                "SELECT backend FROM active_models WHERE server_name='s1'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
+        let ab: String =
+            sqlx::query_scalar("SELECT backend FROM active_models WHERE server_name = $1")
+                .bind("s1")
+                .fetch_one(pool)
+                .await
+                .unwrap();
         assert_eq!(ab, "radiance");
+        guard.finish().await;
     }
 
     /// Renaming onto an existing different backend is rejected.
-    #[test]
-    fn test_rename_installation_rejects_merging_distinct_backends() {
-        let OpenResult { conn, .. } = open_in_memory().unwrap();
+    #[tokio::test]
+    async fn test_rename_installation_rejects_merging_distinct_backends() {
+        let guard = with_schema().await;
 
         for (i, name) in ["vllm", "other"].iter().enumerate() {
             insert_installation(
-                &conn,
+                &guard.pool,
                 &InstallationRecord {
-                    id: 0,
                     name: name.to_string(),
                     backend_type: "docker".to_string(),
                     version: format!("v{i}"),
                     path: "n/a".to_string(),
-                    installed_at: 0,
                     gpu_variant: "rocm".to_string(),
-                    source: None,
-                    is_active: true,
-                    docker_config: None,
-                    logical_id: String::new(),
+                    ..active_record(name, "v0", "rocm")
                 },
             )
+            .await
             .unwrap();
         }
 
-        assert!(rename_installation(&conn, "vllm", "other").is_err());
+        assert!(rename_installation(&guard.pool, "vllm", "other")
+            .await
+            .is_err());
+        guard.finish().await;
     }
 
     /// Renaming a backend that has no installation row reports Ok(false).
-    #[test]
-    fn test_rename_installation_not_found_returns_false() {
-        let OpenResult { conn, .. } = open_in_memory().unwrap();
+    #[tokio::test]
+    async fn test_rename_installation_not_found_returns_false() {
+        let guard = with_schema().await;
 
-        assert!(!rename_installation(&conn, "ghost", "something").unwrap());
+        assert!(!rename_installation(&guard.pool, "ghost", "something")
+            .await
+            .unwrap());
+        guard.finish().await;
     }
 
     /// Renaming a nonexistent backend to its own name still reports Ok(false)
     /// (the existence check must run before the same-name no-op short-circuit).
-    #[test]
-    fn test_rename_installation_not_found_same_name_returns_false() {
-        let OpenResult { conn, .. } = open_in_memory().unwrap();
+    #[tokio::test]
+    async fn test_rename_installation_not_found_same_name_returns_false() {
+        let guard = with_schema().await;
 
-        assert!(!rename_installation(&conn, "ghost", "ghost").unwrap());
+        assert!(!rename_installation(&guard.pool, "ghost", "ghost")
+            .await
+            .unwrap());
+        guard.finish().await;
     }
 
     /// When two config rows share a (name, gpu_variant) but carry different
     /// logical_ids, the name-based fallback picks the lowest id deterministically.
-    #[test]
-    fn test_get_installation_config_deterministic_tiebreaker() {
-        let OpenResult { conn, .. } = open_in_memory().unwrap();
+    #[tokio::test]
+    async fn test_get_installation_config_deterministic_tiebreaker() {
+        let guard = with_schema().await;
 
-        conn.execute(
+        sqlx::query(
             "INSERT INTO provider_configs (id, logical_id, name, gpu_variant)
-             VALUES (100, 'l1', 'dup', 'cpu')",
-            [],
+             VALUES ($1, 'l1', 'dup', 'cpu')",
         )
+        .bind(100i64)
+        .execute(&guard.pool)
+        .await
         .unwrap();
-        conn.execute(
+        sqlx::query(
             "INSERT INTO provider_configs (id, logical_id, name, gpu_variant)
-             VALUES (101, 'l2', 'dup', 'cpu')",
-            [],
+             VALUES ($1, 'l2', 'dup', 'cpu')",
         )
+        .bind(101i64)
+        .execute(&guard.pool)
+        .await
         .unwrap();
 
         // Neither row matches by logical_id, so both match by name; the
         // tiebreaker must deterministically return the lowest id.
-        let record = get_installation_config(&conn, "dup", "cpu")
+        let record = get_installation_config(&guard.pool, "dup", "cpu")
+            .await
             .unwrap()
             .unwrap();
         assert_eq!(record.id, 100);
+        guard.finish().await;
     }
 
     /// Renaming onto a name that already owns a legacy (NULL logical_id)
     /// provider_configs row is refused, mirroring the BLOCKING UNIQUE-violation
     /// scenario: a config row created via default-args POST / TOML migration for
     /// name "other" would otherwise collide once backfill stamps it.
-    #[test]
-    fn test_rename_installation_rejects_provider_configs_conflict() {
-        let OpenResult { conn, .. } = open_in_memory().unwrap();
+    #[tokio::test]
+    async fn test_rename_installation_rejects_provider_configs_conflict() {
+        let guard = with_schema().await;
 
         // Legacy config row for "other"/cpu with an empty logical_id.
-        upsert_installation_config(&conn, "", "other", "cpu", &["--x".into()], &[], None).unwrap();
+        upsert_installation_config(&guard.pool, "", "other", "cpu", &["--x".into()], &[], None)
+            .await
+            .unwrap();
 
         // Install "vllm"/cpu; it gets a brand-new logical_id.
-        insert_installation(
-            &conn,
-            &InstallationRecord {
-                id: 0,
-                name: "vllm".to_string(),
-                backend_type: "docker".to_string(),
-                version: "v1".to_string(),
-                path: "n/a".to_string(),
-                installed_at: 0,
-                gpu_variant: "cpu".to_string(),
-                source: None,
-                is_active: true,
-                docker_config: None,
-                logical_id: String::new(),
-            },
-        )
-        .unwrap();
+        insert_installation(&guard.pool, &active_record("vllm", "v1", "cpu"))
+            .await
+            .unwrap();
 
         // Renaming vllm -> other would merge onto the NULL-config row: refused.
-        assert!(rename_installation(&conn, "vllm", "other").is_err());
+        assert!(rename_installation(&guard.pool, "vllm", "other")
+            .await
+            .is_err());
+        guard.finish().await;
     }
 
     /// Renaming onto a name that already has an installation is refused even
     /// when the old backend has no logical id yet (the new_name-exists case).
-    #[test]
-    fn test_rename_installation_rejects_existing_new_name() {
-        let OpenResult { conn, .. } = open_in_memory().unwrap();
+    #[tokio::test]
+    async fn test_rename_installation_rejects_existing_new_name() {
+        let guard = with_schema().await;
 
-        insert_installation(
-            &conn,
-            &InstallationRecord {
-                id: 0,
-                name: "radiance".to_string(),
-                backend_type: "docker".to_string(),
-                version: "v1".to_string(),
-                path: "n/a".to_string(),
-                installed_at: 0,
-                gpu_variant: "rocm".to_string(),
-                source: None,
-                is_active: true,
-                docker_config: None,
-                logical_id: String::new(),
-            },
-        )
-        .unwrap();
+        insert_installation(&guard.pool, &active_record("radiance", "v1", "rocm"))
+            .await
+            .unwrap();
         // Strip the logical id so old_name has an installation but no logical id.
-        conn.execute("UPDATE provider_installations SET logical_id = ''", [])
+        sqlx::query("UPDATE provider_installations SET logical_id = ''")
+            .execute(&guard.pool)
+            .await
             .unwrap();
         // A distinct backend already exists under the target name.
-        insert_installation(
-            &conn,
-            &InstallationRecord {
-                id: 0,
-                name: "vllm".to_string(),
-                backend_type: "docker".to_string(),
-                version: "v2".to_string(),
-                path: "n/a".to_string(),
-                installed_at: 0,
-                gpu_variant: "cuda".to_string(),
-                source: None,
-                is_active: true,
-                docker_config: None,
-                logical_id: String::new(),
-            },
-        )
-        .unwrap();
+        insert_installation(&guard.pool, &active_record("vllm", "v2", "cuda"))
+            .await
+            .unwrap();
 
-        assert!(rename_installation(&conn, "radiance", "vllm").is_err());
+        assert!(rename_installation(&guard.pool, "radiance", "vllm")
+            .await
+            .is_err());
+        guard.finish().await;
     }
 }

@@ -1,4 +1,4 @@
-.PHONY: build install update test check fmt clippy clean build-web build-web-dev wasm-target coverage dev run
+.PHONY: build install update test check fmt clippy clean build-web build-web-dev wasm-target coverage dev run docker-clean
 
 # Run tama in dev mode: proxy (:11434) + web UI (:11435) as a single foreground process
 run: build-frontend-dev
@@ -39,6 +39,13 @@ update: build-frontend
 test: build-frontend-dev
 	cargo test --workspace
 	cargo test --package tama --features ssr
+
+# Remove the shared Postgres test container (tama-test-pg) and orphaned
+testcontainers. Tests share ONE container on 127.0.0.1:5433 — point tests at
+your own Postgres instead with TAMA_TEST_PG_DSN (TAMA_TEST_PG_PORT overrides the port).
+docker-clean:
+	docker ps -aq --filter "name=tama-test-pg" | xargs -r docker rm -f
+	docker system prune -f
 
 check: fmt-check clippy test
 

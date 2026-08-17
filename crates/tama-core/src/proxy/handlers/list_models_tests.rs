@@ -269,7 +269,7 @@ async fn test_handle_list_models_merges_backend_responses_with_meta() {
 #[tokio::test]
 async fn test_handle_list_models_unloaded_from_config() {
     let config = Config::default();
-    let state = ProxyState::new(config, None);
+    let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
     // Add model configs — all enabled, none loaded
     {
@@ -387,7 +387,7 @@ async fn test_handle_list_models_backend_failure_fallback() {
 #[tokio::test]
 async fn test_handle_list_models_response_shape() {
     let config = Config::default();
-    let state = ProxyState::new(config, None);
+    let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
     let state_arc = Arc::new(state);
     let state = State(state_arc.clone());
 
@@ -434,7 +434,7 @@ async fn test_handle_list_models_alias_deduplication() {
         .await;
 
     let config = Config::default();
-    let state = ProxyState::new(config, None);
+    let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
     // Config has api_name matching the alias
     {
@@ -533,7 +533,7 @@ async fn test_handle_list_models_no_alias_no_normalization() {
         .await;
 
     let config = Config::default();
-    let state = ProxyState::new(config, None);
+    let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
     {
         let mut mc = state.registry.model_configs.write().await;
@@ -684,7 +684,7 @@ fn test_find_model_in_entries_single_entry() {
 #[tokio::test]
 async fn test_handle_list_models_unloaded_with_reasoning_levels() {
     let config = Config::default();
-    let state = ProxyState::new(config, None);
+    let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
     {
         let mut mc = state.registry.model_configs.write().await;
@@ -737,7 +737,7 @@ async fn test_handle_list_models_unloaded_with_reasoning_levels() {
 #[tokio::test]
 async fn test_handle_list_models_unloaded_without_reasoning_levels_unchanged() {
     let config = Config::default();
-    let state = ProxyState::new(config, None);
+    let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
     {
         let mut mc = state.registry.model_configs.write().await;
@@ -888,7 +888,7 @@ async fn test_handle_list_models_loaded_with_reasoning_levels() {
 #[tokio::test]
 async fn test_handle_list_models_alias_inherits_reasoning_levels() {
     let config = Config::default();
-    let state = ProxyState::new(config, None);
+    let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
     {
         let mut mc = state.registry.model_configs.write().await;

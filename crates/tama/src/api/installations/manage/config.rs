@@ -33,44 +33,27 @@ pub async fn rename_installation(
         }
     };
 
-    let config_dir = match crate::api::helpers::resolve_config_dir(&state) {
-        Ok(d) => d,
-        Err(resp) => return resp,
-    };
+    let pool = state.db_pool();
+    let mgr = tama_core::installations::InstallationManager::new(pool);
 
-    let mgr = match tama_core::installations::InstallationManager::open(&config_dir) {
-        Ok(m) => m,
+    let rename_to = new_name.clone();
+    let renamed = match mgr.rename(&backend_name, &rename_to).await {
+        Ok(renamed) => renamed,
         Err(e) => {
             return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to open backend manager: {}", e),
+                StatusCode::CONFLICT,
+                format!("Failed to rename backend: {}", e),
                 None,
             );
         }
     };
 
-    let backend_name = backend_name.clone();
-    let rename_to = new_name.clone();
-    let result = tokio::task::spawn_blocking(move || mgr.rename(&backend_name, &rename_to)).await;
-
-    match result {
-        Ok(Ok(true)) => {
-            Json(serde_json::json!({ "success": true, "name": new_name })).into_response()
-        }
-        Ok(Ok(false)) => error_response(
+    match renamed {
+        true => Json(serde_json::json!({ "success": true, "name": new_name })).into_response(),
+        false => error_response(
             StatusCode::NOT_FOUND,
             "Backend not found".to_string(),
             Some("NotFoundError"),
-        ),
-        Ok(Err(e)) => error_response(
-            StatusCode::CONFLICT,
-            format!("Failed to rename backend: {}", e),
-            None,
-        ),
-        Err(e) => error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to rename backend: {}", e),
-            None,
         ),
     }
 }
@@ -109,34 +92,27 @@ pub async fn update_installation_default_args(
         return resp;
     }
 
-    let config_dir = match crate::api::helpers::resolve_config_dir(&state) {
-        Ok(d) => d,
-        Err(resp) => return resp,
-    };
+    let pool = state.db_pool();
+    let mgr = tama_core::installations::InstallationManager::new(pool);
 
-    let backend_name = backend_name.clone();
     let gpu_variant = query.gpu_variant.clone();
     let default_args = req.default_args.clone();
 
-    let result: Result<(), anyhow::Error> = tokio::task::spawn_blocking(move || {
-        let mgr = tama_core::installations::InstallationManager::open(&config_dir)?;
-        // Preserve existing default_env when updating default_args
-        let existing_env = mgr.get_default_env(&backend_name, &gpu_variant);
-        mgr.save_config(
+    // Preserve existing default_env when updating default_args
+    let existing_env = mgr.get_default_env(&backend_name, &gpu_variant).await;
+    let result = mgr
+        .save_config(
             &backend_name,
             &gpu_variant,
             &default_args,
             &existing_env,
             None,
-        )?;
-        Ok(())
-    })
-    .await
-    .map_err(|e| anyhow::anyhow!("spawn error: {}", e))
-    .and_then(|r| r);
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e));
 
     match result {
-        Ok(()) => Json(serde_json::json!({"success": true})).into_response(),
+        Ok(_) => Json(serde_json::json!({"success": true})).into_response(),
         Err(e) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Failed to update backend config: {}", e),
@@ -158,34 +134,27 @@ pub async fn update_installation_default_env(
         return resp;
     }
 
-    let config_dir = match crate::api::helpers::resolve_config_dir(&state) {
-        Ok(d) => d,
-        Err(resp) => return resp,
-    };
+    let pool = state.db_pool();
+    let mgr = tama_core::installations::InstallationManager::new(pool);
 
-    let backend_name = backend_name.clone();
     let gpu_variant = query.gpu_variant.clone();
     let default_env = req.default_env.clone();
 
-    let result: Result<(), anyhow::Error> = tokio::task::spawn_blocking(move || {
-        let mgr = tama_core::installations::InstallationManager::open(&config_dir)?;
-        // Preserve existing default_args when updating default_env
-        let existing_args = mgr.get_default_args(&backend_name, &gpu_variant);
-        mgr.save_config(
+    // Preserve existing default_args when updating default_env
+    let existing_args = mgr.get_default_args(&backend_name, &gpu_variant).await;
+    let result = mgr
+        .save_config(
             &backend_name,
             &gpu_variant,
             &existing_args,
             &default_env,
             None,
-        )?;
-        Ok(())
-    })
-    .await
-    .map_err(|e| anyhow::anyhow!("spawn error: {}", e))
-    .and_then(|r| r);
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e));
 
     match result {
-        Ok(()) => Json(serde_json::json!({"success": true})).into_response(),
+        Ok(_) => Json(serde_json::json!({"success": true})).into_response(),
         Err(e) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Failed to update backend config: {}", e),
@@ -207,46 +176,38 @@ pub async fn patch_installation(
         return resp;
     }
 
-    let config_dir = match crate::api::helpers::resolve_config_dir(&state) {
-        Ok(d) => d,
-        Err(resp) => return resp,
-    };
+    let pool = state.db_pool();
+    let mgr = tama_core::installations::InstallationManager::new(pool);
 
-    let backend_name = backend_name.clone();
     let gpu_variant = query.gpu_variant.clone();
     let patch_args = body.default_args.clone();
     let patch_env = body.default_env.clone();
     let patch_health = body.health_check_url;
 
-    let result: Result<(), anyhow::Error> = tokio::task::spawn_blocking(move || {
-        let mgr = tama_core::installations::InstallationManager::open(&config_dir)?;
+    // Load existing values to preserve unpatched fields
+    let existing_args = mgr.get_default_args(&backend_name, &gpu_variant).await;
+    let existing_env = mgr.get_default_env(&backend_name, &gpu_variant).await;
+    let existing_health = mgr.get_health_check_url(&backend_name, &gpu_variant).await;
 
-        // Load existing values to preserve unpatched fields
-        let existing_args = mgr.get_default_args(&backend_name, &gpu_variant);
-        let existing_env = mgr.get_default_env(&backend_name, &gpu_variant);
-        let existing_health = mgr.get_health_check_url(&backend_name, &gpu_variant);
+    // Merge: use patched value if present, otherwise preserve existing
+    let default_args = patch_args.unwrap_or(existing_args);
+    let default_env = patch_env.unwrap_or(existing_env);
+    // health_check_url: None=preserve, Some(value)=set
+    let health_check_url = patch_health.as_deref().or(existing_health.as_deref());
 
-        // Merge: use patched value if present, otherwise preserve existing
-        let default_args = patch_args.unwrap_or(existing_args);
-        let default_env = patch_env.unwrap_or(existing_env);
-        // health_check_url: None=preserve, Some(value)=set
-        let health_check_url = patch_health.as_deref().or(existing_health.as_deref());
-
-        mgr.save_config(
+    let result = mgr
+        .save_config(
             &backend_name,
             &gpu_variant,
             &default_args,
             &default_env,
             health_check_url,
-        )?;
-        Ok(())
-    })
-    .await
-    .map_err(|e| anyhow::anyhow!("spawn error: {}", e))
-    .and_then(|r| r);
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e));
 
     match result {
-        Ok(()) => Json(serde_json::json!({"success": true})).into_response(),
+        Ok(_) => Json(serde_json::json!({"success": true})).into_response(),
         Err(e) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Failed to update backend config: {}", e),

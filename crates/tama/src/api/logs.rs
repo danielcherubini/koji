@@ -112,7 +112,11 @@ mod tests {
     #[tokio::test]
     async fn test_get_backend_logs_rejects_invalid_name() {
         let config = Config::default();
-        let state = Arc::new(ProxyState::new(config, None));
+        let state = Arc::new(ProxyState::new(
+            config,
+            None,
+            tama_test_support::test_dummy_pool(),
+        ));
 
         let web_state = Arc::new(crate::web_types::WebState {
             jobs: Some(Arc::new(crate::web_types::JobManager::new())),
@@ -121,7 +125,7 @@ mod tests {
             binary_version: "test".to_string(),
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-            repository: None,
+            db_pool: tama_test_support::test_dummy_pool(),
         });
 
         let router = crate::router::build_web_routes(web_state.clone())
@@ -147,7 +151,11 @@ mod tests {
     async fn test_get_backend_logs_missing_file_404() {
         let tmp_dir = tempfile::tempdir().expect("tempdir");
         let config = Config::default();
-        let state = Arc::new(ProxyState::new(config, Some(tmp_dir.path().to_path_buf())));
+        let state = Arc::new(ProxyState::new(
+            config,
+            Some(tmp_dir.path().to_path_buf()),
+            tama_test_support::test_dummy_pool(),
+        ));
 
         let web_state = Arc::new(crate::web_types::WebState {
             jobs: Some(Arc::new(crate::web_types::JobManager::new())),
@@ -156,7 +164,7 @@ mod tests {
             binary_version: "test".to_string(),
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-            repository: None,
+            db_pool: tama_test_support::test_dummy_pool(),
         });
 
         let router = crate::router::build_web_routes(web_state.clone())
@@ -191,7 +199,11 @@ mod tests {
 
         let mut config = Config::default();
         config.general.logs_dir = Some(logs_dir.to_string_lossy().to_string());
-        let state = Arc::new(ProxyState::new(config, Some(tmp_dir.path().to_path_buf())));
+        let state = Arc::new(ProxyState::new(
+            config,
+            Some(tmp_dir.path().to_path_buf()),
+            tama_test_support::test_dummy_pool(),
+        ));
 
         let web_state = Arc::new(crate::web_types::WebState {
             jobs: Some(Arc::new(crate::web_types::JobManager::new())),
@@ -200,7 +212,7 @@ mod tests {
             binary_version: "test".to_string(),
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-            repository: None,
+            db_pool: tama_test_support::test_dummy_pool(),
         });
 
         let router = crate::router::build_web_routes(web_state.clone())

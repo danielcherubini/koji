@@ -17,14 +17,15 @@ pub async fn run_benchmark(
     (StatusCode::ACCEPTED, Json(BenchmarkRunResponse { job_id })).into_response()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_benchmark_inner(
     jobs: Arc<JobManager>,
     job: Arc<crate::web_types::Job>,
     req: BenchmarkRunRequest,
-    db_path: std::path::PathBuf,
+    _db_path: std::path::PathBuf,
     proxy_base_url: String,
     client: reqwest::Client,
-    repo_handle: std::sync::Arc<std::sync::Mutex<tama_core::db::repository::Repository>>,
+    db_pool: std::sync::Arc<sqlx::PgPool>,
 ) -> Result<()> {
     use tama_core::bench::llama_bench::{self, LlamaBenchConfig};
 
@@ -53,13 +54,9 @@ pub async fn run_benchmark_inner(
     let tg_sizes_for_serial = tg_sizes_for_trace.clone();
     let threads_for_trace = req.threads.clone();
 
-    // Load config - clone db_path for the blocking task
-    let db_path_for_load = db_path.clone();
-
-    let config = tokio::task::spawn_blocking(move || {
-        tama_core::config::Config::load_from(&db_path_for_load)
-    })
-    .await??;
+    // Load the global config from Postgres (plan-190 Task 3).
+    let pool = db_pool.as_ref();
+    let config = tama_core::config::Config::load_from_pool(pool).await?;
 
     // Create progress sink
     let sink = BenchmarkProgressSink {
@@ -97,6 +94,7 @@ pub async fn run_benchmark_inner(
     // Run benchmark
     let report = llama_bench::run_llama_bench(
         &config,
+        pool,
         &model_id,
         quant.as_deref(),
         backend_name.as_deref(),
@@ -106,15 +104,10 @@ pub async fn run_benchmark_inner(
     )
     .await?;
 
-    // Store results in database — pool the blocking SQLite calls.
-    // Segment 1: load model configs for display-name lookup.
-    let repo_handle_for_load = repo_handle.clone();
+    // Store results in database — load model configs for display-name lookup
+    // from Postgres (plan-190 Task 5).
     let model_configs: std::collections::HashMap<String, tama_core::config::ModelConfig> =
-        tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
-            let repo = repo_handle_for_load.lock().unwrap();
-            repo.load_model_configs_for_benchmarks()
-        })
-        .await??;
+        tama_core::db::load_model_configs(pool).await?;
 
     // Get model display name from config. The request carries the db_id as a
     // string (e.g. "4") because that's what the model dropdown submits, so we
@@ -157,39 +150,33 @@ pub async fn run_benchmark_inner(
     // Get VRAM info
     let vram = query_vram();
 
-    // Clone values before moving into the spawn_blocking closure.
+    // Clone values used for tracing after the insert.
     let display_name_for_trace = display_name.clone();
     let backend_for_trace = report.model_info.backend.clone();
-    let run_status_for_insert = run_status.to_string();
 
-    // Segment 2: insert benchmark record on the blocking pool.
-    let repo_for_insert = repo_handle.clone();
-    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let repo = repo_for_insert.lock().unwrap();
-        repo.insert_benchmark(&tama_core::db::repository::BenchmarkParams {
-            model_id: req.model_id.clone(),
-            display_name: display_name.clone(),
-            quant: report.model_info.quant.clone(),
-            backend: report.model_info.backend.clone(),
-            engine: "llama_bench".to_string(),
-            pp_sizes_json,
-            tg_sizes_json,
-            threads_json,
-            ngl_range: ngl_range_for_insert,
-            runs: req.runs,
-            warmup: req.warmup,
-            results_json,
-            load_time_ms: Some(report.load_time_ms),
-            vram_used_mib: vram.as_ref().map(|v| v.used_mib as i64),
-            vram_total_mib: vram.as_ref().map(|v| v.total_mib as i64),
-            duration_seconds: 0.0, // duration tracked by job system
-            status: run_status_for_insert,
-            benchmark_type: benchmark_type.clone(),
-            suite_id: req.suite_id,
-        })?;
-        Ok(())
-    })
-    .await??;
+    // Insert the benchmark record into Postgres (plan-190 Task 8).
+    let params = tama_core::db::queries::BenchmarkInsertParams {
+        model_id: &req.model_id,
+        display_name: display_name.as_deref(),
+        quant: report.model_info.quant.as_deref(),
+        backend: &report.model_info.backend,
+        engine: "llama_bench",
+        pp_sizes_json: &pp_sizes_json,
+        tg_sizes_json: &tg_sizes_json,
+        threads_json: threads_json.as_deref(),
+        ngl_range: ngl_range_for_insert.as_deref(),
+        runs: req.runs,
+        warmup: req.warmup,
+        results_json: &results_json,
+        load_time_ms: Some(report.load_time_ms),
+        vram_used_mib: vram.as_ref().map(|v| v.used_mib as i64),
+        vram_total_mib: vram.as_ref().map(|v| v.total_mib as i64),
+        duration_seconds: 0.0, // duration tracked by job system
+        status: run_status,
+        benchmark_type: benchmark_type.as_deref(),
+        suite_id: req.suite_id.as_deref(),
+    };
+    tama_core::db::queries::insert_benchmark(pool, &params).await?;
 
     tracing::info!(
         job_id = %job.id,
@@ -236,12 +223,12 @@ pub(super) async fn unload_model_before_benchmark(
     }
 }
 
-/// Resolve a model's file path from config and database.
+/// Resolve a model's file path from config and database (Postgres, plan-190 Task 5).
 /// `quant_override` takes priority over `mc.quant` when resolving the target file.
-pub(super) fn resolve_model_path(
+pub(super) async fn resolve_model_path(
     config: &tama_core::config::Config,
     db_dir: &std::path::Path,
-    repo: &tama_core::db::repository::Repository,
+    pool: &sqlx::PgPool,
     model_configs: &std::collections::HashMap<String, tama_core::config::ModelConfig>,
     resolved_id: &str,
     quant_override: Option<&str>,
@@ -250,10 +237,10 @@ pub(super) fn resolve_model_path(
         .get(resolved_id)
         .with_context(|| format!("Model config '{}' not found", resolved_id))?;
     let rec_id = mc.db_id.context("Model config has no db_id")?;
-    let record = repo
-        .get_model_config(rec_id)?
+    let record = tama_core::db::queries::get_model_config(pool, rec_id)
+        .await?
         .with_context(|| format!("Model config record (id={}) not found in database", rec_id))?;
-    let files = repo.get_model_files(record.id)?;
+    let files = tama_core::db::queries::get_model_files(pool, record.id).await?;
 
     // Resolve the target filename: prefer quant_override, then mc.quant from config,
     // falling back to the first .gguf if quants map is empty (legacy configs).

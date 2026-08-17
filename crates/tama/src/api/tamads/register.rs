@@ -10,7 +10,6 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::api::error::{error_body, error_response};
-use crate::api::helpers::shared_repository;
 use crate::web_types::WebState;
 use tama_core::proxy::ProxyState;
 
@@ -64,81 +63,65 @@ pub async fn create_tamad(
         }
     };
 
-    let repo = match shared_repository(&web_state) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
+    let pool = web_state.db_pool.as_ref();
 
     // Auto-generate UUID for tamad id
     let tamad_id = Uuid::new_v4().to_string();
 
-    // Capture fields for spawn_blocking closure
     let name = req.name.clone();
     let url = req.url.clone();
     let token = req.token.clone();
-    let repo = repo.clone();
 
-    let result =
-        tokio::task::spawn_blocking(move || -> Result<_, (StatusCode, serde_json::Value)> {
-            let repo = repo.lock().unwrap();
+    if let Err(e) = tama_core::db::queries::insert_tamad(
+        pool,
+        &tamad_id,
+        &name,
+        &url,
+        protocol,
+        token.as_deref(),
+    )
+    .await
+    {
+        // Map unique-constraint violations (id / name) to 409
+        let msg = e.to_string();
+        let is_unique = msg.to_lowercase().contains("unique");
+        let status = if is_unique {
+            StatusCode::CONFLICT
+        } else {
+            StatusCode::INTERNAL_SERVER_ERROR
+        };
+        return (status, Json(error_body(msg, Some("DatabaseError")))).into_response();
+    }
 
-            repo.insert_tamad(&tamad_id, &name, &url, protocol, token.as_deref())
-                .map_err(|e: anyhow::Error| {
-                    // Walk the error chain to check for UNIQUE constraint violations
-                    let is_unique = e
-                        .chain()
-                        .any(|c| c.to_string().to_lowercase().contains("unique"));
-                    let msg = e.to_string();
-                    let status = if is_unique {
-                        StatusCode::CONFLICT
-                    } else {
-                        StatusCode::INTERNAL_SERVER_ERROR
-                    };
-                    (status, error_body(msg, Some("DatabaseError")))
-                })?;
-
-            // Fetch the created tamad
-            repo.get_tamad(&tamad_id).ok().flatten().ok_or_else(|| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    error_body("Failed to retrieve created tamad", None),
-                )
-            })
-        })
-        .await;
-
-    let tamad = match result {
-        Ok(Ok(t)) => t,
-        Ok(Err((s, b))) => return (s, Json(b)).into_response(),
-        Err(e) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Task panicked: {}", e),
-                None,
-            )
-        }
-    };
-
-    // Return the created tamad
-    (StatusCode::CREATED, Json(tamad)).into_response()
+    // Fetch the created tamad
+    match tama_core::db::queries::get_tamad(pool, &tamad_id).await {
+        Ok(Some(tamad)) => (StatusCode::CREATED, Json(tamad)).into_response(),
+        Ok(None) => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to retrieve created tamad",
+            None,
+        ),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use axum::body::Body;
     use axum::http::Request;
-    use std::sync::{Arc, Mutex};
-    use tama_core::db::repository::Repository;
+    use std::sync::Arc;
     use tama_core::proxy::ProxyState;
     use tower::ServiceExt;
 
-    fn build_test_state(
-        tmp_dir: &std::path::Path,
-    ) -> (Arc<ProxyState>, Arc<crate::web_types::WebState>) {
+    async fn build_test_state() -> (
+        Arc<ProxyState>,
+        Arc<crate::web_types::WebState>,
+        crate::testing::postgres::SchemaGuard,
+    ) {
+        let guard = crate::testing::postgres::with_schema().await;
+        let pool = Arc::new(guard.pool.clone());
         let config = tama_core::config::Config::default();
-        let state = Arc::new(ProxyState::new(config, Some(tmp_dir.to_path_buf())));
-
-        let repo = Repository::open(tmp_dir).unwrap();
+        let state = Arc::new(ProxyState::new(config, None, pool.clone()));
 
         let web_state = Arc::new(crate::web_types::WebState {
             jobs: Some(Arc::new(crate::web_types::JobManager::new())),
@@ -147,17 +130,16 @@ mod tests {
             binary_version: "test".to_string(),
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-            repository: Some(Arc::new(Mutex::new(repo))),
+            db_pool: pool,
         });
 
-        (state, web_state)
+        (state, web_state, guard)
     }
 
     /// POST /tama/v1/tamads with invalid protocol → 400.
     #[tokio::test]
     async fn test_create_tamad_invalid_protocol_returns_400() {
-        let tmp_dir = tempfile::tempdir().expect("tempdir");
-        let (state, web_state) = build_test_state(tmp_dir.path());
+        let (state, web_state, guard) = build_test_state().await;
         let router = crate::router::build_web_routes(web_state.clone())
             .with_state(state)
             .layer(axum::extract::Extension(web_state.as_ref().clone()));
@@ -180,13 +162,13 @@ mod tests {
             axum::http::StatusCode::BAD_REQUEST,
             "invalid protocol should return 400"
         );
+        guard.finish().await;
     }
 
     /// POST /tama/v1/tamads with empty name → 400.
     #[tokio::test]
     async fn test_create_tamad_empty_name_returns_400() {
-        let tmp_dir = tempfile::tempdir().expect("tempdir");
-        let (state, web_state) = build_test_state(tmp_dir.path());
+        let (state, web_state, guard) = build_test_state().await;
         let router = crate::router::build_web_routes(web_state.clone())
             .with_state(state)
             .layer(axum::extract::Extension(web_state.as_ref().clone()));
@@ -209,13 +191,13 @@ mod tests {
             axum::http::StatusCode::BAD_REQUEST,
             "empty name should return 400"
         );
+        guard.finish().await;
     }
 
     /// POST /tama/v1/tamads with empty url → 400.
     #[tokio::test]
     async fn test_create_tamad_empty_url_returns_400() {
-        let tmp_dir = tempfile::tempdir().expect("tempdir");
-        let (state, web_state) = build_test_state(tmp_dir.path());
+        let (state, web_state, guard) = build_test_state().await;
         let router = crate::router::build_web_routes(web_state.clone())
             .with_state(state)
             .layer(axum::extract::Extension(web_state.as_ref().clone()));
@@ -238,13 +220,13 @@ mod tests {
             axum::http::StatusCode::BAD_REQUEST,
             "empty url should return 400"
         );
+        guard.finish().await;
     }
 
     /// POST /tama/v1/tamads with grpc protocol → 201 with auto-generated id.
     #[tokio::test]
     async fn test_create_tamad_grpc_success() {
-        let tmp_dir = tempfile::tempdir().expect("tempdir");
-        let (state, web_state) = build_test_state(tmp_dir.path());
+        let (state, web_state, guard) = build_test_state().await;
         let router = crate::router::build_web_routes(web_state.clone())
             .with_state(state)
             .layer(axum::extract::Extension(web_state.as_ref().clone()));
@@ -280,13 +262,13 @@ mod tests {
             json["id"].is_string(),
             "id should be auto-generated UUID string"
         );
+        guard.finish().await;
     }
 
     /// POST /tama/v1/tamads with http protocol → 201.
     #[tokio::test]
     async fn test_create_tamad_http_success() {
-        let tmp_dir = tempfile::tempdir().expect("tempdir");
-        let (state, web_state) = build_test_state(tmp_dir.path());
+        let (state, web_state, guard) = build_test_state().await;
         let router = crate::router::build_web_routes(web_state.clone())
             .with_state(state)
             .layer(axum::extract::Extension(web_state.as_ref().clone()));
@@ -316,13 +298,13 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body_str).unwrap();
         assert_eq!(json["name"], "my-http-tamad");
         assert_eq!(json["protocol"], "http");
+        guard.finish().await;
     }
 
     /// POST /tama/v1/tamads with duplicate name → 409.
     #[tokio::test]
     async fn test_create_tamad_duplicate_name_returns_409() {
-        let tmp_dir = tempfile::tempdir().expect("tempdir");
-        let (state, web_state) = build_test_state(tmp_dir.path());
+        let (state, web_state, guard) = build_test_state().await;
         let router = crate::router::build_web_routes(web_state.clone())
             .with_state(state)
             .layer(axum::extract::Extension(web_state.as_ref().clone()));
@@ -356,5 +338,6 @@ mod tests {
             axum::http::StatusCode::CONFLICT,
             "duplicate name should return 409"
         );
+        guard.finish().await;
     }
 }

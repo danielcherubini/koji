@@ -72,8 +72,10 @@ pub struct LlamaBenchConfig {
 ///
 /// This function is designed to be called from a background job — it streams
 /// progress via the provided ProgressSink.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_llama_bench(
     config: &Config,
+    pool: &sqlx::PgPool,
     model_id: &str,
     quant: Option<&str>,
     backend_name: Option<&str>,
@@ -84,6 +86,7 @@ pub async fn run_llama_bench(
     let db_dir = Config::config_dir()?;
     run_llama_bench_with_dir(
         config,
+        pool,
         &db_dir,
         model_id,
         quant,
@@ -102,6 +105,7 @@ pub async fn run_llama_bench(
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_llama_bench_with_dir(
     config: &Config,
+    pool: &sqlx::PgPool,
     db_dir: &std::path::Path,
     model_id: &str,
     quant: Option<&str>,
@@ -110,10 +114,7 @@ pub(crate) async fn run_llama_bench_with_dir(
     bench_config: &LlamaBenchConfig,
     progress: &dyn ProgressSink,
 ) -> Result<BenchReport> {
-    use crate::db::OpenResult;
-
-    let OpenResult { conn, .. } = crate::db::open(db_dir)?;
-    let model_configs = crate::db::load_model_configs(&conn)?;
+    let model_configs = crate::db::load_model_configs(pool).await?;
 
     // If model_id is an integer db_id, resolve it to the config key first.
     let resolved_id = if let Ok(db_id) = model_id.parse::<i64>() {
@@ -130,14 +131,17 @@ pub(crate) async fn run_llama_bench_with_dir(
         .resolve_backend(&model_configs, resolved_id)
         .context("Failed to resolve server config for benchmark")?;
 
-    let model_path = resolve_model_path(config, db_dir, &conn, &model_configs, resolved_id, quant)?;
+    let model_path =
+        resolve_model_path(config, pool, db_dir, &model_configs, resolved_id, quant).await?;
 
     let target_backend = backend_name.unwrap_or(&model_config.backend);
     // CRITICAL: gpu_variant from the request takes priority; fall back to the
     // model config's own gpu_variant (preserving Auto behavior when None).
     let variant = gpu_variant.as_ref().or(model_config.gpu_variant.as_ref());
-    let manager = crate::installations::InstallationManager::open(db_dir)?;
-    let backend_path = config.resolve_backend_path(target_backend, variant, &manager)?;
+    let manager = crate::installations::InstallationManager::new(std::sync::Arc::new(pool.clone()));
+    let backend_path = config
+        .resolve_backend_path(target_backend, variant, Some(&manager))
+        .await?;
 
     let bench_binary = discovery::find_llama_bench(&backend_path).context(format!(
         "llama-bench not found for backend '{}'. Install llama.cpp from source or set LLAMA_BENCH_PATH",
@@ -257,10 +261,10 @@ pub(crate) async fn run_llama_bench_with_dir(
 /// `quant_override` takes priority over `mc.quant` when resolving the target file.
 /// Falls back to the legacy `<db_dir>/models/` location if the configured
 /// `models_dir` doesn't hold the file.
-fn resolve_model_path(
+async fn resolve_model_path(
     config: &Config,
+    pool: &sqlx::PgPool,
     db_dir: &std::path::Path,
-    conn: &rusqlite::Connection,
     model_configs: &std::collections::HashMap<String, crate::config::ModelConfig>,
     resolved_id: &str,
     quant_override: Option<&str>,
@@ -269,9 +273,10 @@ fn resolve_model_path(
         .get(resolved_id)
         .with_context(|| format!("Model config '{}' not found", resolved_id))?;
     let rec_id = mc.db_id.context("Model config has no db_id")?;
-    let record = crate::db::queries::get_model_config(conn, rec_id)?
+    let record = crate::db::queries::get_model_config(pool, rec_id)
+        .await?
         .with_context(|| format!("Model config record (id={}) not found in database", rec_id))?;
-    let files = crate::db::queries::get_model_files(conn, record.id)?;
+    let files = crate::db::queries::get_model_files(pool, record.id).await?;
 
     // Resolve the target filename: prefer quant_override, then mc.quant from config,
     // falling back to the first .gguf if quants map is empty (legacy configs).
@@ -316,8 +321,8 @@ fn resolve_model_path(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, LogLevel, ModelConfig};
-    use crate::db::queries::{insert_installation, upsert_general, upsert_installation_config};
+    use crate::config::{Config, ModelConfig};
+    use crate::db::queries::{insert_installation, upsert_installation_config};
     use std::collections::BTreeMap;
     use std::os::unix::fs::PermissionsExt;
     use std::sync::{Mutex, MutexGuard};
@@ -357,39 +362,24 @@ mod tests {
         }
     }
 
-    /// Helper to set up a minimal test database with a backend config,
-    /// an installation record, and a model config + file entry.
-    fn seed_test_db(temp_dir: &tempfile::TempDir) -> anyhow::Result<(std::path::PathBuf, String)> {
-        let db_path = temp_dir.path().join("tama.db");
-
-        // Open the database and run migrations
-        let conn = rusqlite::Connection::open(&db_path)?;
-        crate::db::migrations::run(&conn)?;
-
-        // Seed defaults so Config::from_db works
-        crate::db::queries::seed_defaults(&conn)?;
-
-        // Set models_dir to point to our temp dir's models subdirectory
-        let models_dir = temp_dir.path().join("models");
-        upsert_general(
-            &conn,
-            &LogLevel::Info,
-            Some(models_dir.to_string_lossy().as_ref()),
-            None, // logs_dir
-            None, // hf_token
-            60,   // update_check_interval
-        )?;
-
+    /// Helper to set up the test backend config + installation in Postgres
+    /// (plan-190 Task 8 — the installation domain lives in Postgres) and a
+    /// fake llama-server binary on disk. Returns the config directory.
+    async fn seed_test_db(
+        temp_dir: &tempfile::TempDir,
+        pool: &sqlx::PgPool,
+    ) -> anyhow::Result<std::path::PathBuf> {
         // 1. Insert a backend config (llama_cpp, cpu)
         upsert_installation_config(
-            &conn,
+            pool,
             "",
             "llama_cpp",
             "cpu",
             &[],
             &[],
             Some("http://localhost:8080/health"),
-        )?;
+        )
+        .await?;
 
         // 2. Create a fake llama-server binary in the temp dir
         let backend_dir = temp_dir
@@ -406,7 +396,7 @@ mod tests {
 
         // 3. Insert a backend installation record pointing to the fake binary
         insert_installation(
-            &conn,
+            pool,
             &crate::db::queries::InstallationRecord {
                 id: 0,
                 name: "llama_cpp".to_string(),
@@ -420,9 +410,14 @@ mod tests {
                 docker_config: None,
                 logical_id: String::new(),
             },
-        )?;
+        )
+        .await?;
 
-        // 4. Insert a model config using the high-level API
+        Ok(temp_dir.path().to_path_buf())
+    }
+    /// Seed a model config + file entry in Postgres (plan-190 Task 5 —
+    /// the model domain lives in Postgres). Returns the GGUF filename.
+    async fn seed_test_model(pool: &sqlx::PgPool) -> anyhow::Result<String> {
         let mut quants = BTreeMap::new();
         quants.insert(
             "Q4_K_M".to_string(),
@@ -476,27 +471,25 @@ mod tests {
             reasoning_levels: None,
         };
 
-        let config_key = "test--test-model";
-        crate::db::save_model_config(&conn, config_key, &model_config)?;
-
-        // 5. Insert a model file record
+        let model_id =
+            crate::db::save_model_config(pool, "test--test-model", &model_config).await?;
+        // Record the pulled file so `resolve_model_path` can find the GGUF.
         crate::db::queries::upsert_model_file(
-            &conn,
-            1, // model_id
+            pool,
+            model_id,
             "test/test-model",
             "test-model-Q4_K_M.gguf",
             Some("Q4_K_M"),
-            None,                // lfs_oid
-            Some(4_294_967_296), // size_bytes
-        )?;
-
-        let config_dir = temp_dir.path().to_path_buf();
-
-        Ok((config_dir, "test-model-Q4_K_M.gguf".to_string()))
+            None,
+            Some(4_294_967_296),
+        )
+        .await?;
+        Ok("test-model-Q4_K_M.gguf".to_string())
     }
 
     /// Verifies that `run_llama_bench_with_dir` executes llama-bench via a stub
     /// script, parses the JSON output, and streams progress through the sink.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn test_run_llama_bench_with_stub_binary() {
         let _env_guard = ENV_GUARD.lock().unwrap();
@@ -505,9 +498,13 @@ mod tests {
         std::env::remove_var("LLAMA_BENCH_PATH");
 
         let temp_dir = tempfile::tempdir().unwrap();
+        let config_dir = temp_dir.path().to_path_buf();
 
-        // Seed the database with backend + model entries
-        let (config_dir, gguf_filename) = seed_test_db(&temp_dir).unwrap();
+        // Seed the model domain (Postgres, plan-190 Task 5) and the backend
+        // installation (Postgres, plan-190 Task 8) immediately before the call
+        // under test.
+        let guard = crate::testing::postgres::with_schema().await;
+        let gguf_filename = seed_test_model(&guard.pool).await.unwrap();
 
         // Create models directory with a dummy GGUF file
         let models_dir = config_dir.join("models");
@@ -534,8 +531,14 @@ exit 0
         // Set LLAMA_BENCH_PATH
         std::env::set_var("LLAMA_BENCH_PATH", stub_script.to_string_lossy().as_ref());
 
-        // Load Config from the seeded database
-        let config = Config::load_from(&config_dir.join("tama.db")).unwrap();
+        // Seed the backend/installation record now (immediately before the
+        // call under test).
+        let config_dir = seed_test_db(&temp_dir, &guard.pool).await.unwrap();
+
+        // Build an in-memory Config (plan-190 Task 3: the app config no
+        // longer lives in the per-test SQLite file) with models_dir set.
+        let mut config = Config::default();
+        config.general.models_dir = Some(config_dir.join("models").to_string_lossy().to_string());
 
         // Create a bench config with PP and TG tests
         let bench_config = LlamaBenchConfig {
@@ -561,6 +564,7 @@ exit 0
         // Call the function under test (model_id must be the config key format)
         let result = run_llama_bench_with_dir(
             &config,
+            &guard.pool,
             &config_dir,
             "test--test-model",
             None,
@@ -604,6 +608,7 @@ exit 0
 
     /// Verifies that when llama-bench exits with a non-zero status, the error
     /// message contains the stderr output.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn test_run_llama_bench_stub_failure_surfaces_stderr() {
         let _env_guard = ENV_GUARD.lock().unwrap();
@@ -611,9 +616,13 @@ exit 0
         std::env::remove_var("LLAMA_BENCH_PATH");
 
         let temp_dir = tempfile::tempdir().unwrap();
+        let config_dir = temp_dir.path().to_path_buf();
 
-        // Seed the database
-        let (config_dir, gguf_filename) = seed_test_db(&temp_dir).unwrap();
+        // Seed the model domain (Postgres, plan-190 Task 5) and the backend
+        // installation (Postgres, plan-190 Task 8) immediately before the call
+        // under test.
+        let guard = crate::testing::postgres::with_schema().await;
+        let gguf_filename = seed_test_model(&guard.pool).await.unwrap();
 
         // Create models directory with a dummy GGUF file (needed for path resolution)
         let models_dir = config_dir.join("models");
@@ -638,8 +647,9 @@ exit 1
 
         std::env::set_var("LLAMA_BENCH_PATH", stub_script.to_string_lossy().as_ref());
 
-        let config_dir = temp_dir.path().to_path_buf();
-        let config = Config::load_from(&config_dir.join("tama.db")).unwrap();
+        // Build an in-memory Config with models_dir set (plan-190 Task 3).
+        let mut config = Config::default();
+        config.general.models_dir = Some(config_dir.join("models").to_string_lossy().to_string());
 
         let bench_config = LlamaBenchConfig {
             pp_sizes: vec![512],
@@ -661,8 +671,13 @@ exit 1
         // Drop the env guard before calling the async function
         drop(_env_guard);
 
+        // Seed the backend/installation record now (immediately before the
+        // call under test).
+        let config_dir = seed_test_db(&temp_dir, &guard.pool).await.unwrap();
+
         let result = run_llama_bench_with_dir(
             &config,
+            &guard.pool,
             &config_dir,
             "test--test-model",
             None,

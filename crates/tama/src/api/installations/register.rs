@@ -23,7 +23,7 @@ use tama_core::proxy::ProxyState;
 /// Validates docker availability and docker_config before inserting into DB.
 pub async fn register_installation(
     Extension(_web_state): Extension<WebState>,
-    _state: State<Arc<ProxyState>>,
+    state: State<Arc<ProxyState>>,
     Json(req): Json<RegisterBackendRequest>,
 ) -> impl IntoResponse {
     // Validate name (non-empty, no path traversal)
@@ -104,17 +104,8 @@ pub async fn register_installation(
         }
     };
 
-    // Open manager and insert into DB
-    let config_dir = match tama_core::config::Config::config_dir() {
-        Ok(d) => d,
-        Err(e) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to get config dir: {}", e),
-                None,
-            );
-        }
-    };
+    let pool = state.db_pool();
+    let mgr = tama_core::installations::InstallationManager::new(pool);
 
     let info = tama_core::installations::InstallationInfo {
         name: req.name.clone(),
@@ -140,19 +131,9 @@ pub async fn register_installation(
         docker_config: req.docker_config,
     };
 
-    let mgr_result = tokio::task::spawn_blocking({
-        let config_dir = config_dir.clone();
-        let info_clone = info.clone();
-        move || {
-            let mgr = tama_core::installations::InstallationManager::open(&config_dir)?;
-            mgr.add_installation(&info_clone)
-        }
-    })
-    .await
-    .map_err(|e| anyhow::anyhow!("spawn error: {}", e))
-    .and_then(|r| r);
+    let add_result = mgr.add_installation(&info).await;
 
-    match mgr_result {
+    match add_result {
         Ok(()) => {
             let response = RegisterBackendResponse::from(info);
             (StatusCode::CREATED, Json(response)).into_response()
@@ -183,7 +164,7 @@ mod tests {
             binary_version: "test".to_string(),
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
-            repository: None,
+            db_pool: tama_test_support::test_dummy_pool(),
         }
     }
 
@@ -191,7 +172,11 @@ mod tests {
     #[tokio::test]
     async fn test_register_docker_without_config_returns_400() {
         let config = Config::default();
-        let state = Arc::new(ProxyState::new(config, None));
+        let state = Arc::new(ProxyState::new(
+            config,
+            None,
+            tama_test_support::test_dummy_pool(),
+        ));
 
         let web_state = Arc::new(test_web_state());
         let router = crate::router::build_web_routes(web_state.clone())
@@ -235,7 +220,11 @@ mod tests {
     #[tokio::test]
     async fn test_register_non_docker_with_config_returns_400() {
         let config = Config::default();
-        let state = Arc::new(ProxyState::new(config, None));
+        let state = Arc::new(ProxyState::new(
+            config,
+            None,
+            tama_test_support::test_dummy_pool(),
+        ));
 
         let web_state = Arc::new(test_web_state());
         let router = crate::router::build_web_routes(web_state.clone())
@@ -286,7 +275,11 @@ mod tests {
     #[tokio::test]
     async fn test_register_empty_name_returns_400() {
         let config = Config::default();
-        let state = Arc::new(ProxyState::new(config, None));
+        let state = Arc::new(ProxyState::new(
+            config,
+            None,
+            tama_test_support::test_dummy_pool(),
+        ));
 
         let web_state = Arc::new(test_web_state());
         let router = crate::router::build_web_routes(web_state.clone())
@@ -326,7 +319,11 @@ mod tests {
     #[tokio::test]
     async fn test_register_invalid_docker_config_returns_400() {
         let config = Config::default();
-        let state = Arc::new(ProxyState::new(config, None));
+        let state = Arc::new(ProxyState::new(
+            config,
+            None,
+            tama_test_support::test_dummy_pool(),
+        ));
 
         let web_state = Arc::new(test_web_state());
         let router = crate::router::build_web_routes(web_state.clone())

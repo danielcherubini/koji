@@ -48,20 +48,20 @@ impl ProxyState {
         model_configs.insert(new_name.to_string(), old_config.clone());
 
         // Attempt to save config to DB instead of TOML
-        if let Some(mgr) = self.model_mgr() {
-            if let Some(mc) = model_configs.get(new_name) {
-                if let Err(e) = mgr.save_model_config(new_name, mc) {
-                    tracing::error!(name = %new_name, error = %e, "Failed to save renamed model config to DB");
-                    // We don't rollback here because the in-memory state is updated,
-                    // and DB update is best-effort.
-                } else {
-                    // Successfully saved new name, now remove the old config entry to avoid orphans
-                    // Convert old_name (double-dash config key) to repo_id, then look up model_id
-                    let old_repo_id = crate::models::config_key_to_repo_id(old_name);
-                    if let Some(record) = mgr.get_config_by_repo_id(&old_repo_id).ok().flatten() {
-                        if let Err(e) = mgr.delete_config(record.id) {
-                            tracing::error!(name = %old_name, error = %e, "Failed to delete old model config after rename");
-                        }
+        let mgr = self.model_mgr();
+        if let Some(mc) = model_configs.get(new_name) {
+            let mc = mc.clone();
+            if let Err(e) = mgr.save_model_config(new_name, &mc).await {
+                tracing::error!(name = %new_name, error = %e, "Failed to save renamed model config to DB");
+                // We don't rollback here because the in-memory state is updated,
+                // and DB update is best-effort.
+            } else {
+                // Successfully saved new name, now remove the old config entry to avoid orphans
+                // Convert old_name (double-dash config key) to repo_id, then look up model_id
+                let old_repo_id = crate::models::config_key_to_repo_id(old_name);
+                if let Some(record) = mgr.get_config_by_repo_id(&old_repo_id).await.ok().flatten() {
+                    if let Err(e) = mgr.delete_config(record.id).await {
+                        tracing::error!(name = %old_name, error = %e, "Failed to delete old model config after rename");
                     }
                 }
             }
@@ -86,9 +86,7 @@ impl ProxyState {
         });
 
         // Best-effort DB update
-        if let Some(mgr) = self.model_mgr() {
-            let _ = mgr.rename_active(old_name, new_name);
-        }
+        let _ = self.model_mgr().rename_active(old_name, new_name).await;
 
         Ok(())
     }

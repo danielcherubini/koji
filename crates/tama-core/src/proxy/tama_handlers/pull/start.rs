@@ -44,14 +44,16 @@ pub async fn start_pull_from_queue(
         }
         drop(jobs);
         if let Some(ref svc) = state_clone.pull_queue() {
-            let _ = svc.update_status(
-                &job_id_clone,
-                "failed",
-                0,
-                None,
-                Some("Invalid filename"),
-                None,
-            );
+            let _ = svc
+                .update_status(
+                    &job_id_clone,
+                    "failed",
+                    0,
+                    None,
+                    Some("Invalid filename"),
+                    None,
+                )
+                .await;
         }
         return;
     }
@@ -63,14 +65,16 @@ pub async fn start_pull_from_queue(
         }
         drop(jobs);
         if let Some(ref svc) = state_clone.pull_queue() {
-            let _ = svc.update_status(
-                &job_id_clone,
-                "failed",
-                0,
-                None,
-                Some("Invalid repo_id"),
-                None,
-            );
+            let _ = svc
+                .update_status(
+                    &job_id_clone,
+                    "failed",
+                    0,
+                    None,
+                    Some("Invalid repo_id"),
+                    None,
+                )
+                .await;
         }
         return;
     }
@@ -102,14 +106,16 @@ pub async fn start_pull_from_queue(
             }
             drop(jobs);
             if let Some(ref svc) = state_clone.pull_queue() {
-                let _ = svc.update_status(
-                    &job_id_clone,
-                    "failed",
-                    0,
-                    None,
-                    Some(&format!("Failed to get models dir: {}", e)),
-                    None,
-                );
+                let _ = svc
+                    .update_status(
+                        &job_id_clone,
+                        "failed",
+                        0,
+                        None,
+                        Some(&format!("Failed to get models dir: {}", e)),
+                        None,
+                    )
+                    .await;
             }
             return;
         }
@@ -125,14 +131,16 @@ pub async fn start_pull_from_queue(
         }
         drop(jobs);
         if let Some(ref svc) = state_clone.pull_queue() {
-            let _ = svc.update_status(
-                &job_id_clone,
-                "failed",
-                0,
-                None,
-                Some(&format!("Failed to create dest dir: {}", e)),
-                None,
-            );
+            let _ = svc
+                .update_status(
+                    &job_id_clone,
+                    "failed",
+                    0,
+                    None,
+                    Some(&format!("Failed to create dest dir: {}", e)),
+                    None,
+                )
+                .await;
         }
         return;
     }
@@ -150,14 +158,16 @@ pub async fn start_pull_from_queue(
             }
             drop(jobs);
             if let Some(ref svc) = state_clone.pull_queue() {
-                let _ = svc.update_status(
-                    &job_id_clone,
-                    "failed",
-                    0,
-                    None,
-                    Some(&format!("Failed to create destination subdirectory: {}", e)),
-                    None,
-                );
+                let _ = svc
+                    .update_status(
+                        &job_id_clone,
+                        "failed",
+                        0,
+                        None,
+                        Some(&format!("Failed to create destination subdirectory: {}", e)),
+                        None,
+                    )
+                    .await;
             }
             return;
         }
@@ -179,17 +189,19 @@ pub async fn start_pull_from_queue(
             }
             drop(jobs);
             if let Some(ref svc) = state_clone.pull_queue() {
-                let _ = svc.update_status(
-                    &job_id_clone,
-                    "failed",
-                    0,
-                    None,
-                    Some(&format!(
-                        "Another pull of '{}' is already in progress",
-                        filename_clone
-                    )),
-                    None,
-                );
+                let _ = svc
+                    .update_status(
+                        &job_id_clone,
+                        "failed",
+                        0,
+                        None,
+                        Some(&format!(
+                            "Another pull of '{}' is already in progress",
+                            filename_clone
+                        )),
+                        None,
+                    )
+                    .await;
             }
             return;
         }
@@ -250,11 +262,13 @@ pub async fn start_pull_from_queue(
                                 last_progress_pct = pct;
                                 drop(jobs);
                                 if let Some(ref svc) = poll_pull_queue {
-                                    let _ = svc.update_progress(
-                                        &poll_job_id,
-                                        bytes_pulled as i64,
-                                        Some(total as i64),
-                                    );
+                                    let _ = svc
+                                        .update_progress(
+                                            &poll_job_id,
+                                            bytes_pulled as i64,
+                                            Some(total as i64),
+                                        )
+                                        .await;
                                 }
                             }
                         }
@@ -280,9 +294,14 @@ pub async fn start_pull_from_queue(
                     }
                 }
             }
-            // Emit SSE progress event directly
-            if let Some(ref svc) = progress_queue {
-                let _ = svc.update_progress(&job_id, pulled as i64, Some(total as i64));
+            // Emit SSE progress event directly (async — spawn to keep the callback sync)
+            if let Some(svc) = progress_queue.clone() {
+                let job_id = job_id.clone();
+                tokio::spawn(async move {
+                    let _ = svc
+                        .update_progress(&job_id, pulled as i64, Some(total as i64))
+                        .await;
+                });
             }
         });
 
@@ -312,14 +331,16 @@ pub async fn start_pull_from_queue(
             poll_handle.abort();
             in_flight_clone.lock().await.remove(&dest_path);
             if let Some(ref svc) = state_clone.pull_queue() {
-                let _ = svc.update_status(
-                    &job_id_clone,
-                    "failed",
-                    0,
-                    None,
-                    Some(&format!("Failed to build HTTP client: {}", e)),
-                    None,
-                );
+                let _ = svc
+                    .update_status(
+                        &job_id_clone,
+                        "failed",
+                        0,
+                        None,
+                        Some(&format!("Failed to build HTTP client: {}", e)),
+                        None,
+                    )
+                    .await;
             }
             return;
         }
@@ -347,14 +368,16 @@ pub async fn start_pull_from_queue(
             poll_handle.abort();
             in_flight_clone.lock().await.remove(&dest_path);
             if let Some(ref svc) = state_clone.pull_queue() {
-                let _ = svc.update_status(
-                    &job_id_clone,
-                    "failed",
-                    0,
-                    None,
-                    Some(&format!("Pull failed: {}", e)),
-                    None,
-                );
+                let _ = svc
+                    .update_status(
+                        &job_id_clone,
+                        "failed",
+                        0,
+                        None,
+                        Some(&format!("Pull failed: {}", e)),
+                        None,
+                    )
+                    .await;
             }
             return;
         }
@@ -497,16 +520,20 @@ pub async fn start_pull_from_queue(
         // the parent model_configs row exists. Use the id returned by
         // setup_model_after_pull so there's no case-sensitive lookup in
         // between that could miss.
-        match (state_clone.model_mgr(), model_id) {
-            (Some(mgr), Some(mid)) => {
-                if let Err(e) = mgr.upsert_file(
+        match model_id {
+            Some(mid) => {
+                let pool = state_clone.db_pool();
+                if let Err(e) = crate::db::queries::upsert_model_file(
+                    &pool,
                     mid,
                     &repo_id_clone,
                     &filename_clone,
                     spec_clone.quant.as_deref(),
                     outcome.expected_sha.as_deref(),
                     Some(total_size as i64),
-                ) {
+                )
+                .await
+                {
                     tracing::error!(
                         job_id = %job_id_clone,
                         model_id = mid,
@@ -524,8 +551,8 @@ pub async fn start_pull_from_queue(
                 }
                 // Tag the model_files row with the file kind so downstream
                 // consumers can distinguish MTP draft models from regular
-                // GGUF quants. `upsert_file` does not currently accept a
-                // `kind` parameter, so we issue a follow-up UPDATE. Mirrors
+                // GGUF quants. `upsert_model_file` does not currently accept
+                // a `kind` parameter, so we issue a follow-up UPDATE. Mirrors
                 // the `QuantKind::from_filename` logic used to drive the
                 // card's `kind` field.
                 let db_kind = match crate::config::QuantKind::from_filename(&filename_clone) {
@@ -534,11 +561,14 @@ pub async fn start_pull_from_queue(
                     crate::config::QuantKind::Mtp => "mtp",
                 };
                 if db_kind != "model" {
-                    if let Err(e) = mgr.conn().execute(
-                        "UPDATE model_files SET kind = ?1
-                          WHERE model_id = ?2 AND filename = ?3",
-                        rusqlite::params![db_kind, mid, filename_clone],
-                    ) {
+                    if let Err(e) = crate::db::queries::update_model_file_kind(
+                        &pool,
+                        mid,
+                        &filename_clone,
+                        db_kind,
+                    )
+                    .await
+                    {
                         tracing::warn!(
                             job_id = %job_id_clone,
                             model_id = mid,
@@ -549,12 +579,15 @@ pub async fn start_pull_from_queue(
                         );
                     }
                 }
-                if let Err(e) = mgr.update_verification(
+                if let Err(e) = crate::db::queries::update_verification(
+                    &pool,
                     mid,
                     &filename_clone,
                     outcome.ok,
                     outcome.err.as_deref(),
-                ) {
+                )
+                .await
+                {
                     tracing::warn!(
                         job_id = %job_id_clone,
                         model_id = mid,
@@ -564,13 +597,7 @@ pub async fn start_pull_from_queue(
                     );
                 }
             }
-            (None, _) => {
-                tracing::warn!(
-                    job_id = %job_id_clone,
-                    "db_dir not configured — model_files row skipped"
-                );
-            }
-            (Some(_), None) => {
+            None => {
                 tracing::info!(
                     job_id = %job_id_clone,
                     repo = %repo_id_clone,
@@ -597,14 +624,16 @@ pub async fn start_pull_from_queue(
     };
 
     if let Some(ref svc) = state_clone.pull_queue() {
-        let _ = svc.update_status(
-            &job_id_clone,
-            final_status,
-            total_size as i64,
-            Some(total_size as i64),
-            error_msg,
-            duration_ms,
-        );
+        let _ = svc
+            .update_status(
+                &job_id_clone,
+                final_status,
+                total_size as i64,
+                Some(total_size as i64),
+                error_msg,
+                duration_ms,
+            )
+            .await;
     }
 
     // Update in-memory PullJob with duration

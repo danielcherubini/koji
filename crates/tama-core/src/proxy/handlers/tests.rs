@@ -9,7 +9,7 @@ use std::sync::Arc;
 /// Create a default ProxyState for testing.
 pub fn create_test_state() -> ProxyState {
     let config = Config::default();
-    ProxyState::new(config, None)
+    ProxyState::new(config, None, crate::db::pool::test_dummy_pool())
 }
 
 /// Create a POST request with the given body for testing forward handlers.
@@ -30,7 +30,7 @@ pub async fn create_state_with_two_backends(
     backend2_url: &str,
 ) -> Arc<ProxyState> {
     let config = Config::default();
-    let state = ProxyState::new(config, None);
+    let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
     // Add model configs
     {

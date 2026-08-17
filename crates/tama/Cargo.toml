@@ -44,10 +44,16 @@ tracing-subscriber = { workspace = true, optional = true }
 tracing-appender = { workspace = true, optional = true }
 async-stream = { version = "0.3", optional = true }
 tama-core = { path = "../tama-core", optional = true }
+sqlx = { workspace = true, optional = true }
 toml = { workspace = true, optional = true }
 thiserror = { workspace = true, optional = true }
 nix = { workspace = true, optional = true }
 regex = { workspace = true, optional = true }
+clap = { workspace = true, optional = true }
+toml_edit = { workspace = true, optional = true }
+percent-encoding = { workspace = true, optional = true }
+time = { workspace = true, optional = true }
+rusqlite = { workspace = true, optional = true }
 uuid = { version = "1", features = ["v4", "js"] }
 urlencoding = "2.1"
 chrono = "0.4.44"
@@ -59,15 +65,25 @@ csr = []
 ssr = [
   "dep:axum", "dep:tokio", "dep:async-stream", "dep:anyhow", "dep:include_dir",
   "dep:reqwest", "dep:mime_guess", "dep:tracing", "dep:tracing-subscriber", "dep:tracing-appender",
-  "dep:tama-core", "dep:toml", "dep:tower-http", "dep:thiserror",
+  "dep:tama-core", "dep:sqlx", "dep:toml", "dep:tower-http", "dep:thiserror",
   "dep:nix",
   "dep:regex",
+  "dep:clap",
+  "dep:toml_edit",
+  "dep:percent-encoding",
+  "dep:time",
+  "dep:rusqlite",
   "tama-core/web-ui",
 ]
 
 [[test]]
 name = "server_test"
 path = "tests/server_test.rs"
+required-features = ["ssr"]
+
+[[test]]
+name = "backup_restore"
+path = "tests/backup_restore.rs"
 required-features = ["ssr"]
 
 [[test]]
@@ -85,6 +101,11 @@ name = "router_ownership_test"
 path = "tests/router_ownership_test.rs"
 required-features = ["ssr"]
 
+[[test]]
+name = "migrate"
+path = "tests/migrate.rs"
+required-features = ["ssr"]
+
 [dev-dependencies]
 tokio = { workspace = true }
 reqwest = { workspace = true }
@@ -92,7 +113,7 @@ serde_json = { workspace = true }
 axum = { workspace = true }
 tempfile = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
-rusqlite = { workspace = true }
+tama-test-support.workspace = true
 wiremock = "0.6"
 
 [package.metadata.deb]

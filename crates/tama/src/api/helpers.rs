@@ -5,7 +5,6 @@ use serde::Serialize;
 use std::sync::Arc;
 
 use crate::api::error::{error_response, error_response_simple};
-use tama_core::db::repository::Repository;
 use tama_core::installations::InstallationManager;
 use tama_core::proxy::ProxyState;
 
@@ -29,43 +28,15 @@ pub fn resolve_config_dir(
         })
 }
 
-/// Resolve the config dir and open a Repository on the blocking pool.
-pub async fn open_repository(state: &ProxyState) -> Result<Repository, axum::response::Response> {
-    let config_dir = resolve_config_dir(state)?;
-    tokio::task::spawn_blocking(move || Repository::open(&config_dir))
-        .await
-        .map_err(|e| {
-            error_response_simple(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("spawn error: {}", e),
-            )
-        })?
-        .map_err(|e| {
-            error_response_simple(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Database not configured: {}", e),
-            )
-        })
-}
-
 /// Default status code for successful CRUD operations.
 pub const DEFAULT_CRUD_STATUS: StatusCode = StatusCode::OK;
 
-/// Open a InstallationManager from Arc<ProxyState>, returning an error response on failure.
+/// Build an InstallationManager from the shared Postgres pool held in
+/// ProxyState.
 pub async fn open_backend_manager(
     proxy_state: &Arc<ProxyState>,
 ) -> Result<InstallationManager, axum::response::Response> {
-    let config_dir = resolve_config_dir(proxy_state)?;
-    let config_dir_clone = config_dir.clone();
-    tokio::task::spawn_blocking(move || InstallationManager::open(&config_dir_clone))
-        .await
-        .map_err(|e| {
-            error_response_simple(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("spawn error: {}", e),
-            )
-        })?
-        .map_err(|e| error_response_simple(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+    Ok(InstallationManager::new(proxy_state.db_pool()))
 }
 
 /// Run a closure in spawn_blocking, handle the Result, trigger proxy reload on success.
@@ -88,20 +59,6 @@ where
         Ok(Err((status, body))) => (status, Json(body)).into_response(),
         Err(e) => error_response_simple(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
-}
-
-/// Clone the shared Repository handle from WebState, or an error response
-/// when the database is not configured.
-#[allow(clippy::result_large_err)]
-pub fn shared_repository(
-    web_state: &crate::web_types::WebState,
-) -> Result<
-    std::sync::Arc<std::sync::Mutex<tama_core::db::repository::Repository>>,
-    axum::response::Response,
-> {
-    web_state.repository.clone().ok_or_else(|| {
-        error_response_simple(StatusCode::SERVICE_UNAVAILABLE, "Database not configured")
-    })
 }
 
 /// Trigger the proxy to reload its model registry from the database.
@@ -133,7 +90,11 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_config_dir_prefers_db_dir() {
         let tmp_dir = tempfile::tempdir().expect("tempdir");
-        let state = ProxyState::new(Config::default(), Some(tmp_dir.path().to_path_buf()));
+        let state = ProxyState::new(
+            Config::default(),
+            Some(tmp_dir.path().to_path_buf()),
+            tama_test_support::test_dummy_pool(),
+        );
 
         let resolved = resolve_config_dir(&state).unwrap();
         assert_eq!(resolved, tmp_dir.path());
@@ -143,9 +104,13 @@ mod tests {
     /// is not set. The 404 branch (both db_dir and system config unavailable)
     /// is unreachable in practice on well-configured systems, so we only test
     /// the fallback path here.
-    #[test]
-    fn test_resolve_config_dir_falls_back_to_system_dir() {
-        let state = ProxyState::new(Config::default(), None);
+    #[tokio::test]
+    async fn test_resolve_config_dir_falls_back_to_system_dir() {
+        let state = ProxyState::new(
+            Config::default(),
+            None,
+            tama_test_support::test_dummy_pool(),
+        );
 
         let resolved = resolve_config_dir(&state).unwrap();
         let system_dir = Config::config_dir().expect("system config dir should be available");

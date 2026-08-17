@@ -140,20 +140,22 @@ pub fn verify_one(filename: &str, path: &Path, expected_lfs_oid: Option<&str>) -
 /// Verify every tracked file for a repo against its stored LFS hash, writing
 /// results to the `model_files` verification columns.
 ///
-/// Blocking (DB + hashing). Wrap in `spawn_blocking` from async callers.
-/// Runs files **sequentially** to keep disk I/O predictable on HDDs.
-pub fn verify_model(
-    repo: &crate::db::repository::Repository,
+/// Postgres-based (plan-190 Task 5). Runs files **sequentially** to keep disk
+/// I/O predictable on HDDs; the CPU-bound hashing is pushed to the blocking
+/// threadpool.
+pub async fn verify_model(
+    pool: &sqlx::PgPool,
     model_id: i64,
     _repo_id: &str,
     model_dir: &Path,
 ) -> Result<Vec<FileVerification>> {
-    let records = repo.get_files(model_id)?;
+    let records = crate::db::queries::get_model_files(pool, model_id).await?;
     let mut results = Vec::with_capacity(records.len());
 
     for rec in records {
-        let result = verify_record(&rec, model_dir);
-        write_verification(repo, model_id, &result)?;
+        let dir = model_dir.to_path_buf();
+        let result = tokio::task::spawn_blocking(move || verify_record(&rec, &dir)).await?;
+        write_verification(pool, model_id, &result).await?;
         results.push(result);
     }
 
@@ -167,17 +169,19 @@ pub fn verify_record(rec: &ModelFileRecord, model_dir: &Path) -> FileVerificatio
 }
 
 /// Persist a verification result into the `model_files` verification columns.
-pub fn write_verification(
-    repo: &crate::db::repository::Repository,
+pub async fn write_verification(
+    pool: &sqlx::PgPool,
     model_id: i64,
     result: &FileVerification,
 ) -> Result<()> {
-    repo.update_verification(
+    crate::db::queries::update_verification(
+        pool,
         model_id,
         &result.filename,
         result.ok,
         result.error.as_deref(),
     )
+    .await
 }
 
 /// Lowercase-hex encode a digest. Avoids pulling in the `hex` crate.
@@ -286,9 +290,10 @@ mod tests {
 
     /// `verify_model` loops through stored files, writes verification results to
     /// the DB, and returns one `FileVerification` per tracked file.
-    #[test]
-    fn test_verify_model_writes_results_to_db() {
-        let repo = crate::db::repository::Repository::open_in_memory().unwrap();
+    #[tokio::test]
+    async fn test_verify_model_writes_results_to_db() {
+        let guard = crate::testing::postgres::with_schema().await;
+        let pool = &guard.pool;
         let tmp = tempfile::tempdir().unwrap();
         let repo_id = "test/repo";
 
@@ -298,11 +303,14 @@ mod tests {
             ..Default::default()
         };
         let config_key = crate::models::ConfigKey::from_repo_id(repo_id);
-        let model_id = repo.save_model_config(config_key.as_str(), &mc).unwrap();
+        let model_id = crate::db::save_model_config(pool, config_key.as_str(), &mc)
+            .await
+            .unwrap();
 
         // File with correct hash
         write_tmp(tmp.path(), "good.gguf", b"hello");
-        repo.upsert_file(
+        crate::db::queries::upsert_model_file(
+            pool,
             model_id,
             repo_id,
             "good.gguf",
@@ -310,11 +318,13 @@ mod tests {
             Some(HELLO_SHA256),
             Some(5),
         )
+        .await
         .unwrap();
 
         // File with wrong stored hash
         write_tmp(tmp.path(), "bad.gguf", b"hello");
-        repo.upsert_file(
+        crate::db::queries::upsert_model_file(
+            pool,
             model_id,
             repo_id,
             "bad.gguf",
@@ -322,18 +332,32 @@ mod tests {
             Some("deadbeef"),
             Some(5),
         )
+        .await
         .unwrap();
 
         // File with no upstream hash
         write_tmp(tmp.path(), "unknown.gguf", b"hello");
-        repo.upsert_file(model_id, repo_id, "unknown.gguf", None, None, Some(5))
-            .unwrap();
+        crate::db::queries::upsert_model_file(
+            pool,
+            model_id,
+            repo_id,
+            "unknown.gguf",
+            None,
+            None,
+            Some(5),
+        )
+        .await
+        .unwrap();
 
-        let results = verify_model(&repo, model_id, repo_id, tmp.path()).unwrap();
+        let results = verify_model(pool, model_id, repo_id, tmp.path())
+            .await
+            .unwrap();
         assert_eq!(results.len(), 3);
 
         // Re-read from DB and assert the verification columns were written.
-        let files = repo.get_files(model_id).unwrap();
+        let files = crate::db::queries::get_model_files(pool, model_id)
+            .await
+            .unwrap();
         let good = files.iter().find(|f| f.filename == "good.gguf").unwrap();
         assert_eq!(good.verified_ok, Some(true));
         assert!(good.last_verified_at.is_some());
@@ -345,5 +369,7 @@ mod tests {
         let unknown = files.iter().find(|f| f.filename == "unknown.gguf").unwrap();
         assert_eq!(unknown.verified_ok, None);
         assert_eq!(unknown.verify_error.as_deref(), Some("no upstream hash"));
+
+        guard.finish().await;
     }
 }

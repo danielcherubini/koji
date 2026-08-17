@@ -273,10 +273,9 @@ pub(crate) async fn fetch_completion_metadata(repo_id: &str) -> HfModelMetadata 
     }
 }
 
-/// Sync part of repo-pull completion: apply merged metadata to the model row.
+/// Async part of repo-pull completion: apply merged metadata to the model row.
 ///
-/// MUST be synchronous — `rusqlite::Connection` is `!Sync` and this runs on an
-/// owned, short-lived connection. Precedence: existing DB values survive
+/// Precedence: existing DB values survive
 /// (COALESCE inside `update_model_config_hf_metadata`); where the DB and `base`
 /// (HF metadata) are both NULL, `meta_tf` (config.json) fills the gap, with
 /// `base` winning over `meta_tf`. `hf_format` defaults to "transformers" when
@@ -284,8 +283,8 @@ pub(crate) async fn fetch_completion_metadata(repo_id: &str) -> HfModelMetadata 
 ///
 /// Returns the context length from config.json (for the job's
 /// `context_length` field), if any.
-pub(crate) fn apply_repo_pull_completion_with_meta(
-    conn: &rusqlite::Connection,
+pub(crate) async fn apply_repo_pull_completion_with_meta(
+    pool: &sqlx::PgPool,
     model_id: i64,
     base: &HfModelMetadata,
     meta_tf: Option<&crate::models::transformers::TransformersMetadata>,
@@ -309,10 +308,10 @@ pub(crate) fn apply_repo_pull_completion_with_meta(
         meta.hf_format = Some("transformers".to_string());
     }
 
-    crate::models::update::update_model_config_hf_metadata(conn, model_id, &meta)?;
+    crate::models::update::update_model_config_hf_metadata(pool, model_id, &meta).await?;
 
     if let Some(qm) = meta_tf.and_then(|tf| tf.quantization_method.as_deref()) {
-        crate::models::update::update_model_config_quant(conn, model_id, qm)?;
+        crate::models::update::update_model_config_quant(pool, model_id, qm).await?;
     }
 
     Ok(meta_tf.and_then(|tf| tf.max_position_embeddings))
@@ -329,13 +328,12 @@ pub(crate) fn apply_repo_pull_completion_with_meta(
 /// (hf writes it early, before the weights), and must not mark the model
 /// row as configured. Non-Completed jobs skip the network fetch entirely.
 ///
-/// Order matters — `rusqlite::Connection` is `!Sync`, so no `&Connection` may
-/// cross an `.await`:
+/// Order matters so the network/DB awaits never hold the job lock:
 /// 1. re-read the job fields under a brief lock,
 /// 2. compute the terminal decision (status + error),
 /// 3. (Completed only) parse config.json (sync fs, soft-fail — a repo without
-///    it completes), fetch HF metadata (network — no connection open), then
-///    update the model row on an OWNED, short-lived connection (sync),
+///    it completes), fetch HF metadata (network), then update the model row
+///    on the Postgres pool,
 /// 4. write the terminal status under a brief lock.
 ///
 /// DB errors are logged but never fail the job — metadata is informational,
@@ -384,31 +382,23 @@ pub(crate) async fn finish_repo_pull(
         // Network — no connection open yet.
         let base = fetch_completion_metadata(&repo_id).await;
 
-        // DB step — owned connection, used synchronously, dropped at end of scope.
+        // DB step — Postgres pool (plan-190 Task 5).
         if let Some(model_id) = model_id {
-            match state.open_db() {
-                Some(conn) => {
-                    match apply_repo_pull_completion_with_meta(
-                        &conn,
-                        model_id,
-                        &base,
-                        meta_tf.as_ref(),
-                        &dest,
-                    ) {
-                        Ok(context_length_tf) => context_length = context_length_tf,
-                        Err(e) => {
-                            // Metadata is informational — the job still completes.
-                            tracing::warn!(
-                                "repo-pull completion: DB update failed for '{}': {e}",
-                                repo_id
-                            );
-                        }
-                    }
-                }
-                None => {
+            let pool = state.db_pool();
+            match apply_repo_pull_completion_with_meta(
+                &pool,
+                model_id,
+                &base,
+                meta_tf.as_ref(),
+                &dest,
+            )
+            .await
+            {
+                Ok(context_length_tf) => context_length = context_length_tf,
+                Err(e) => {
+                    // Metadata is informational — the job still completes.
                     tracing::warn!(
-                        "repo-pull completion: no database available for '{}', \
-                         skipping model row update",
+                        "repo-pull completion: DB update failed for '{}': {e}",
                         repo_id
                     );
                 }
@@ -553,215 +543,13 @@ pub(crate) async fn start_repo_pull(
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use crate::db::{open_in_memory, OpenResult};
-    use crate::models::pull::HfModelMetadata;
     use crate::proxy::state::pull::PullState;
     use std::os::unix::fs::PermissionsExt;
 
-    /// Helper: open a migrated in-memory DB and insert a model_configs row,
-    /// returning the (conn, model_id) pair.
-    fn conn_with_model_row(extra_sql: &str) -> (rusqlite::Connection, i64) {
-        let OpenResult { conn, .. } = open_in_memory().unwrap();
-        conn.execute(
-            "INSERT INTO model_configs (repo_id, backend) VALUES ('test/repo', 'llama_cpp')",
-            [],
-        )
-        .unwrap();
-        let model_id: i64 = conn
-            .query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
-            .unwrap();
-        if !extra_sql.is_empty() {
-            conn.execute(extra_sql, []).unwrap();
-        }
-        (conn, model_id)
-    }
-
-    /// Completion-relevant columns of a model_configs row.
-    #[derive(Debug, PartialEq)]
-    struct CompletionRow {
-        hf_format: Option<String>,
-        hf_architecture_type: Option<String>,
-        hf_context_length: Option<i64>,
-        hf_num_layers: Option<i64>,
-        selected_quant: Option<String>,
-    }
-
-    /// Helper: read the completion-relevant columns for `model_id`.
-    fn completion_columns(conn: &rusqlite::Connection, model_id: i64) -> CompletionRow {
-        conn.query_row(
-            "SELECT hf_format, hf_architecture_type, hf_context_length, hf_num_layers, \
-             selected_quant FROM model_configs WHERE id = ?",
-            [model_id],
-            |r| {
-                Ok(CompletionRow {
-                    hf_format: r.get(0)?,
-                    hf_architecture_type: r.get(1)?,
-                    hf_context_length: r.get(2)?,
-                    hf_num_layers: r.get(3)?,
-                    selected_quant: r.get(4)?,
-                })
-            },
-        )
-        .unwrap()
-    }
-
-    /// Helper: tempdir dest with a config.json fixture.
-    fn dest_with_config(json: &str) -> tempfile::TempDir {
-        let dest = tempfile::tempdir().unwrap();
-        std::fs::write(dest.path().join("config.json"), json).unwrap();
-        dest
-    }
-
-    /// Test the SYNC completion seam: with a config.json present, transformers
-    /// metadata fills gaps in the base HF metadata, the model row is updated
-    /// (COALESCE), quant is set from quantization_method, and the context
-    /// length is returned. No network, no async.
-    #[test]
-    fn test_apply_repo_pull_completion_with_meta() {
-        let (conn, model_id) = conn_with_model_row("");
-        let dest = dest_with_config(
-            r#"{"architectures": ["Qwen3ForCausalLM"], "max_position_embeddings": 32768, "num_hidden_layers": 48, "quantization_config": {"quant_method": "fp8"}}"#,
-        );
-        let meta_tf =
-            crate::models::transformers::parse_transformers_metadata(dest.path()).unwrap();
-
-        let context_length = apply_repo_pull_completion_with_meta(
-            &conn,
-            model_id,
-            &HfModelMetadata::default(),
-            Some(&meta_tf),
-            dest.path(),
-        )
-        .unwrap();
-
-        assert_eq!(context_length, Some(32768));
-
-        let row = completion_columns(&conn, model_id);
-        assert_eq!(row.hf_format.as_deref(), Some("transformers"));
-        assert_eq!(
-            row.hf_architecture_type.as_deref(),
-            Some("Qwen3ForCausalLM")
-        );
-        assert_eq!(row.hf_context_length, Some(32768));
-        assert_eq!(row.hf_num_layers, Some(48));
-        assert_eq!(row.selected_quant.as_deref(), Some("fp8"));
-    }
-
-    /// Test that a repo WITHOUT config.json still completes: no transformers
-    /// metadata, only hf_format='transformers' is written, no quant, and the
-    /// context length is None.
-    #[test]
-    fn test_apply_repo_pull_completion_with_meta_no_config_json() {
-        let (conn, model_id) = conn_with_model_row("");
-        let dest = tempfile::tempdir().unwrap(); // no config.json
-
-        let context_length = apply_repo_pull_completion_with_meta(
-            &conn,
-            model_id,
-            &HfModelMetadata::default(),
-            None,
-            dest.path(),
-        )
-        .unwrap();
-
-        assert_eq!(context_length, None);
-
-        let row = completion_columns(&conn, model_id);
-        assert_eq!(row.hf_format.as_deref(), Some("transformers"));
-        assert!(row.hf_architecture_type.is_none());
-        assert!(row.hf_context_length.is_none());
-        assert!(row.hf_num_layers.is_none());
-        assert!(row.selected_quant.is_none());
-    }
-
-    /// Test COALESCE semantics: existing non-NULL DB values are preserved when
-    /// the incoming (merged) metadata has them as NULL, while NULL DB columns
-    /// are filled from transformers metadata.
-    ///
-    /// config.json omits `architectures` and `max_position_embeddings` so the
-    /// merged incoming value for those fields stays NULL.
-    #[test]
-    fn test_apply_repo_pull_completion_preserves_existing_db_values() {
-        let (conn, model_id) = conn_with_model_row(
-            "UPDATE model_configs SET hf_base_model = 'existing-base', \
-             hf_architecture_type = 'ExistingArch', hf_context_length = 555 \
-             WHERE repo_id = 'test/repo'",
-        );
-        let dest = dest_with_config(r#"{"num_hidden_layers": 48}"#);
-        let meta_tf =
-            crate::models::transformers::parse_transformers_metadata(dest.path()).unwrap();
-
-        let context_length = apply_repo_pull_completion_with_meta(
-            &conn,
-            model_id,
-            &HfModelMetadata::default(),
-            Some(&meta_tf),
-            dest.path(),
-        )
-        .unwrap();
-        assert_eq!(context_length, None);
-
-        let row = completion_columns(&conn, model_id);
-        // Existing non-NULL DB values survive (incoming is NULL).
-        assert_eq!(row.hf_architecture_type.as_deref(), Some("ExistingArch"));
-        assert_eq!(row.hf_context_length, Some(555));
-        // NULL DB columns are filled.
-        assert_eq!(row.hf_format.as_deref(), Some("transformers"));
-        assert_eq!(row.hf_num_layers, Some(48));
-    }
-
-    /// Test that a non-NULL incoming value overwrites the existing DB value
-    /// (COALESCE picks the first non-NULL). Here config.json supplies an
-    /// architecture that replaces the stored one.
-    #[test]
-    fn test_apply_repo_pull_completion_incoming_overwrites_db() {
-        let (conn, model_id) = conn_with_model_row(
-            "UPDATE model_configs SET hf_architecture_type = 'ExistingArch' \
-             WHERE repo_id = 'test/repo'",
-        );
-        let dest =
-            dest_with_config(r#"{"architectures": ["TfArch"], "max_position_embeddings": 100}"#);
-        let meta_tf =
-            crate::models::transformers::parse_transformers_metadata(dest.path()).unwrap();
-
-        apply_repo_pull_completion_with_meta(
-            &conn,
-            model_id,
-            &HfModelMetadata::default(),
-            Some(&meta_tf),
-            dest.path(),
-        )
-        .unwrap();
-
-        let row = completion_columns(&conn, model_id);
-        assert_eq!(row.hf_architecture_type.as_deref(), Some("TfArch"));
-        assert_eq!(row.hf_context_length, Some(100));
-    }
-
-    /// Test that base (HF) metadata takes precedence over transformers metadata
-    /// when both supply the same field.
-    #[test]
-    fn test_apply_repo_pull_completion_base_meta_wins_over_transformers() {
-        let (conn, model_id) = conn_with_model_row("");
-        let dest = dest_with_config(
-            r#"{"architectures": ["TfArch"], "max_position_embeddings": 100, "num_hidden_layers": 7}"#,
-        );
-        let meta_tf =
-            crate::models::transformers::parse_transformers_metadata(dest.path()).unwrap();
-        let base = HfModelMetadata {
-            hf_architecture_type: Some("BaseArch".to_string()),
-            ..Default::default()
-        };
-
-        apply_repo_pull_completion_with_meta(&conn, model_id, &base, Some(&meta_tf), dest.path())
-            .unwrap();
-
-        let row = completion_columns(&conn, model_id);
-        assert_eq!(row.hf_architecture_type.as_deref(), Some("BaseArch"));
-        assert_eq!(row.hf_context_length, Some(100));
-        assert_eq!(row.hf_num_layers, Some(7));
-    }
-
+    /// The DB-backed completion-merge tests moved to the Postgres harness
+    /// (plan-190 Task 5): `crates/tama-core/tests/repo_pull_completion.rs`. They
+    /// exercise `update_model_config_hf_metadata` (COALESCE) and
+    /// `update_model_config_quant` (direct set) directly.
     /// Write an executable shell stub to `dir` and return its path.
     fn write_stub(dir: &Path, name: &str, body: &str) -> PathBuf {
         let path = dir.join(name);
@@ -1214,6 +1002,7 @@ mod tests {
         let state = Arc::new(crate::proxy::ProxyState::new(
             crate::config::Config::default(),
             None,
+            crate::db::pool::test_dummy_pool(),
         ));
 
         let err = start_repo_pull(&state, "../evil", None)
@@ -1232,6 +1021,7 @@ mod tests {
         let state = Arc::new(crate::proxy::ProxyState::new(
             crate::config::Config::default(),
             None,
+            crate::db::pool::test_dummy_pool(),
         ));
         let child_arc: Arc<Mutex<Option<tokio::process::Child>>> = Arc::new(Mutex::new(None));
         state
@@ -1267,6 +1057,7 @@ mod tests {
         let state = Arc::new(crate::proxy::ProxyState::new(
             crate::config::Config::default(),
             None,
+            crate::db::pool::test_dummy_pool(),
         ));
         let empty_path = tempfile::tempdir().unwrap();
         {
@@ -1305,6 +1096,7 @@ mod tests {
         let state = Arc::new(crate::proxy::ProxyState::new(
             crate::config::Config::default(),
             None,
+            crate::db::pool::test_dummy_pool(),
         ));
         let bin_dir = tempfile::tempdir().unwrap();
         let _stub = write_stub(bin_dir.path(), "hf", "#!/bin/sh\nexit 0\n");
@@ -1372,21 +1164,26 @@ printf 'fake-weights' > \"$dest/model.safetensors\"\nexit 0\n",
         let db_dir = tempfile::tempdir().unwrap();
         let mut config = crate::config::Config::default();
         config.general.models_dir = Some(models_root.path().to_string_lossy().to_string());
+
+        // Model domain is Postgres (plan-190 Task 5): the completion step
+        // updates the model row through the pool.
+        let guard = crate::testing::postgres::with_schema().await;
+        let pool = std::sync::Arc::new(guard.pool.clone());
         let state = Arc::new(crate::proxy::ProxyState::new(
             config,
             Some(db_dir.path().to_path_buf()),
+            pool.clone(),
         ));
 
         // The wizard pre-creates the stub model row before starting the pull.
         let model_id: i64 = {
-            let conn = state.open_db().expect("db must be available");
-            conn.execute(
-                "INSERT INTO model_configs (repo_id, backend) \
-                 VALUES ('happy/repo', 'llama_cpp')",
-                [],
-            )
-            .unwrap();
-            conn.query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
+            let record = crate::db::queries::ModelConfigRecord {
+                repo_id: "happy/repo".to_string(),
+                backend: "llama_cpp".to_string(),
+                ..Default::default()
+            };
+            crate::db::queries::upsert_model_config(&pool, &record)
+                .await
                 .unwrap()
         };
 
@@ -1434,17 +1231,21 @@ printf 'fake-weights' > \"$dest/model.safetensors\"\nexit 0\n",
         assert!(dest.join("config.json").exists());
         assert!(dest.join("model.safetensors").exists());
 
-        // The model row got the merged completion metadata + quant.
-        let conn = state.open_db().expect("db must be available");
-        let row = completion_columns(&conn, model_id);
-        assert_eq!(row.hf_format.as_deref(), Some("transformers"));
+        // The model row got the merged completion metadata + quant (Postgres).
+        let record = crate::db::queries::get_model_config(&pool, model_id)
+            .await
+            .unwrap()
+            .expect("model row should exist");
+        assert_eq!(record.hf_format.as_deref(), Some("transformers"));
         assert_eq!(
-            row.hf_architecture_type.as_deref(),
+            record.hf_architecture_type.as_deref(),
             Some("Qwen3ForCausalLM")
         );
-        assert_eq!(row.hf_context_length, Some(32768));
-        assert_eq!(row.hf_num_layers, Some(48));
-        assert_eq!(row.selected_quant.as_deref(), Some("fp8"));
+        assert_eq!(record.hf_context_length, Some(32768));
+        assert_eq!(record.hf_num_layers, Some(48));
+        assert_eq!(record.selected_quant.as_deref(), Some("fp8"));
+
+        guard.finish().await;
     }
 
     /// Test that a non-zero exit with a non-empty stderr tail produces a
@@ -1460,7 +1261,11 @@ printf 'fake-weights' > \"$dest/model.safetensors\"\nexit 0\n",
             let _guard = ENV_GUARD.lock().unwrap();
             std::env::set_var("HF_ENDPOINT", server.uri());
         }
-        let state = crate::proxy::ProxyState::new(crate::config::Config::default(), None);
+        let state = crate::proxy::ProxyState::new(
+            crate::config::Config::default(),
+            None,
+            crate::db::pool::test_dummy_pool(),
+        );
         let sink: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(b"boom\n".to_vec()));
         let child_arc: Arc<Mutex<Option<tokio::process::Child>>> = Arc::new(Mutex::new(None));
         state
@@ -1508,7 +1313,11 @@ printf 'fake-weights' > \"$dest/model.safetensors\"\nexit 0\n",
             let _guard = ENV_GUARD.lock().unwrap();
             std::env::set_var("HF_ENDPOINT", server.uri());
         }
-        let state = crate::proxy::ProxyState::new(crate::config::Config::default(), None);
+        let state = crate::proxy::ProxyState::new(
+            crate::config::Config::default(),
+            None,
+            crate::db::pool::test_dummy_pool(),
+        );
         let child_arc: Arc<Mutex<Option<tokio::process::Child>>> = Arc::new(Mutex::new(None));
         state
             .pull
@@ -1559,7 +1368,11 @@ printf 'fake-weights' > \"$dest/model.safetensors\"\nexit 0\n",
             let _guard = ENV_GUARD.lock().unwrap();
             std::env::set_var("HF_ENDPOINT", server.uri());
         }
-        let state = crate::proxy::ProxyState::new(crate::config::Config::default(), None);
+        let state = crate::proxy::ProxyState::new(
+            crate::config::Config::default(),
+            None,
+            crate::db::pool::test_dummy_pool(),
+        );
         let child_arc: Arc<Mutex<Option<tokio::process::Child>>> = Arc::new(Mutex::new(None));
         state
             .pull
@@ -1637,21 +1450,23 @@ exit 3\n",
         let db_dir = tempfile::tempdir().unwrap();
         let mut config = crate::config::Config::default();
         config.general.models_dir = Some(models_root.path().to_string_lossy().to_string());
+        let guard = crate::testing::postgres::with_schema().await;
+        let pool = std::sync::Arc::new(guard.pool.clone());
         let state = Arc::new(crate::proxy::ProxyState::new(
             config,
             Some(db_dir.path().to_path_buf()),
+            pool.clone(),
         ));
 
         // The wizard pre-creates the stub model row before starting the pull.
         let model_id: i64 = {
-            let conn = state.open_db().expect("db must be available");
-            conn.execute(
-                "INSERT INTO model_configs (repo_id, backend) \
-                 VALUES ('fail/repo', 'llama_cpp')",
-                [],
-            )
-            .unwrap();
-            conn.query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
+            let record = crate::db::queries::ModelConfigRecord {
+                repo_id: "fail/repo".to_string(),
+                backend: "llama_cpp".to_string(),
+                ..Default::default()
+            };
+            crate::db::queries::upsert_model_config(&pool, &record)
+                .await
                 .unwrap()
         };
 
@@ -1704,19 +1519,20 @@ exit 3\n",
 
         // …but the model row must be UNCHANGED: no format, no quant, no
         // context length — a failed download is not a configured model.
-        let conn = state.open_db().expect("db must be available");
-        let row = completion_columns(&conn, model_id);
-        assert_eq!(
-            row,
-            CompletionRow {
-                hf_format: None,
-                hf_architecture_type: None,
-                hf_context_length: None,
-                hf_num_layers: None,
-                selected_quant: None,
-            },
+        let record = crate::db::queries::get_model_config(&pool, model_id)
+            .await
+            .unwrap()
+            .expect("model row should exist");
+        assert!(record.hf_format.is_none());
+        assert!(record.hf_architecture_type.is_none());
+        assert!(record.hf_context_length.is_none());
+        assert!(record.hf_num_layers.is_none());
+        assert!(
+            record.selected_quant.is_none(),
             "failed pull must not touch the model row"
         );
+
+        guard.finish().await;
     }
 
     /// Regression: a CANCELLED pull must also skip the completion step, even
@@ -1736,19 +1552,21 @@ exit 3\n",
         }
 
         let db_dir = tempfile::tempdir().unwrap();
+        let guard = crate::testing::postgres::with_schema().await;
+        let pool = std::sync::Arc::new(guard.pool.clone());
         let state = crate::proxy::ProxyState::new(
             crate::config::Config::default(),
             Some(db_dir.path().to_path_buf()),
+            pool.clone(),
         );
         let model_id: i64 = {
-            let conn = state.open_db().expect("db must be available");
-            conn.execute(
-                "INSERT INTO model_configs (repo_id, backend) \
-                 VALUES ('owner/repo', 'llama_cpp')",
-                [],
-            )
-            .unwrap();
-            conn.query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
+            let record = crate::db::queries::ModelConfigRecord {
+                repo_id: "owner/repo".to_string(),
+                backend: "llama_cpp".to_string(),
+                ..Default::default()
+            };
+            crate::db::queries::upsert_model_config(&pool, &record)
+                .await
                 .unwrap()
         };
 
@@ -1790,19 +1608,19 @@ exit 3\n",
         assert!(job.context_length.is_none());
 
         // The model row must be UNCHANGED despite the config.json in dest.
-        let conn = state.open_db().expect("db must be available");
-        let row = completion_columns(&conn, model_id);
-        assert_eq!(
-            row,
-            CompletionRow {
-                hf_format: None,
-                hf_architecture_type: None,
-                hf_context_length: None,
-                hf_num_layers: None,
-                selected_quant: None,
-            },
+        let record = crate::db::queries::get_model_config(&pool, model_id)
+            .await
+            .unwrap()
+            .expect("model row should exist");
+        assert!(record.hf_format.is_none());
+        assert!(record.hf_architecture_type.is_none());
+        assert!(record.hf_context_length.is_none());
+        assert!(record.hf_num_layers.is_none());
+        assert!(
+            record.selected_quant.is_none(),
             "cancelled pull must not touch the model row"
         );
+        guard.finish().await;
         {
             let _guard = ENV_GUARD.lock().unwrap();
             std::env::remove_var("HF_ENDPOINT");
@@ -1814,7 +1632,11 @@ exit 3\n",
     /// with the "exited abnormally" fallback message.
     #[tokio::test]
     async fn test_finish_repo_pull_signal_death_message() {
-        let state = crate::proxy::ProxyState::new(crate::config::Config::default(), None);
+        let state = crate::proxy::ProxyState::new(
+            crate::config::Config::default(),
+            None,
+            crate::db::pool::test_dummy_pool(),
+        );
         let child_arc: Arc<Mutex<Option<tokio::process::Child>>> = Arc::new(Mutex::new(None));
         state
             .pull
@@ -1871,6 +1693,7 @@ exit 3\n",
         let state = crate::proxy::ProxyState::new(
             crate::config::Config::default(),
             Some(db_dir.path().to_path_buf()),
+            crate::db::pool::test_dummy_pool(),
         );
 
         // dest holds a config.json, but with model_id = None nothing may be
@@ -1936,6 +1759,7 @@ exit 3\n",
         let state = Arc::new(crate::proxy::ProxyState::new(
             crate::config::Config::default(),
             None,
+            crate::db::pool::test_dummy_pool(),
         ));
         let bin_dir = tempfile::tempdir().unwrap();
         let _stub = write_stub(bin_dir.path(), "hf", "#!/bin/sh\nexit 0\n");

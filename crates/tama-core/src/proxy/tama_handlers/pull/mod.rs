@@ -21,7 +21,7 @@ pub(crate) use verify::_setup_model_after_pull_with_config;
 /// Creates a `pull_queue` DB row with status='queued' and returns immediately.
 /// Does NOT start the pull — the queue processor picks it up and starts it.
 /// If `pull_queue` is None (no DB configured), this is a no-op.
-pub fn enqueue_pull(
+pub async fn enqueue_pull(
     state: &Arc<ProxyState>,
     job_id: String,
     repo_id: String,
@@ -39,7 +39,8 @@ pub fn enqueue_pull(
             "model",
             quant,
             context_length,
-        )?;
+        )
+        .await?;
     }
     Ok(())
 }

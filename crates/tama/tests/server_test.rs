@@ -1,18 +1,14 @@
+mod common;
+
 #[cfg(feature = "ssr")]
 mod tests {
+    use sqlx::PgPool;
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    /// Create a minimal WebState for tests.
-    fn test_web_state(db_dir: Option<std::path::PathBuf>) -> tama_web::web_types::WebState {
-        let repository = db_dir.and_then(|dir| {
-            tama_core::db::repository::Repository::open(&dir)
-                .ok()
-                .map(|r| {
-                    Arc::new(std::sync::Mutex::new(r))
-                        as Arc<std::sync::Mutex<tama_core::db::repository::Repository>>
-                })
-        });
+    /// Create a minimal WebState for tests (dummy pool when none supplied —
+    /// it never connects).
+    fn test_web_state(pool: Option<Arc<PgPool>>) -> tama_web::web_types::WebState {
         tama_web::web_types::WebState {
             jobs: Some(Arc::new(tama_web::web_types::JobManager::new())),
             capabilities: None,
@@ -20,7 +16,7 @@ mod tests {
             binary_version: "test".to_string(),
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
-            repository,
+            db_pool: pool.unwrap_or_else(tama_test_support::test_dummy_pool),
         }
     }
 
@@ -29,7 +25,11 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
             let config = tama_core::config::Config::default();
-            let state = Arc::new(tama_core::proxy::ProxyState::new(config, None));
+            let state = Arc::new(tama_core::proxy::ProxyState::new(
+                config,
+                None,
+                tama_test_support::test_dummy_pool(),
+            ));
             axum::serve(
                 listener,
                 tama_web::router::build_web_routes(Arc::new(test_web_state(None)))
@@ -136,10 +136,9 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let config_dir = temp_dir.path().to_path_buf();
 
-        // Seed the DB with defaults.
-        {
-            let _open_result = tama_core::db::open(&config_dir).unwrap();
-        }
+        // Model CRUD is Postgres-backed; use an isolated migrated schema.
+        let guard = crate::common::with_schema().await;
+        let pool = Arc::new(guard.pool.clone());
 
         let initial_config = tama_core::config::Config::default();
 
@@ -152,20 +151,22 @@ mod tests {
         {
             let proxy_config_server = proxy_config.clone();
             let config_dir_server = config_dir.clone();
+            let pool_server = pool.clone();
             tokio::spawn(async move {
                 let config = (*proxy_config_server.read().await).clone();
                 let state = Arc::new(tama_core::proxy::ProxyState::new(
                     config,
                     Some(config_dir_server.clone()),
+                    pool_server.clone(),
                 ));
                 axum::serve(
                     listener,
                     tama_web::router::build_web_routes(Arc::new(test_web_state(Some(
-                        config_dir_server.clone(),
+                        pool_server.clone(),
                     ))))
                     .with_state(state)
                     .layer(axum::extract::Extension(test_web_state(Some(
-                        config_dir_server.clone(),
+                        pool_server.clone(),
                     )))),
                 )
                 .await
@@ -343,69 +344,58 @@ mod tests {
                 "proxy config should contain 'hot-reload-model' after POST /tama/v1/models"
             );
         }
-
-        // Keep temp_dir alive until all assertions are done so the files aren't removed early.
-        drop(temp_dir);
     }
 
     /// End-to-end test: POST default_args with gpu_variant saves to DB,
     /// GET backends returns per-variant args.
     #[tokio::test]
     async fn test_installation_default_args_db_roundtrip() {
-        // Create temp dir for DB
-        let temp_dir = tempfile::tempdir().unwrap();
-        let config_dir = temp_dir.path().to_path_buf();
-
-        // Initialize DB (runs migrations)
-        {
-            let _open_result = tama_core::db::open(&config_dir).unwrap();
-        }
+        // Postgres harness (plan-190 Task 8)
+        let guard = crate::common::with_schema().await;
+        let pool = Arc::new(guard.pool.clone());
 
         // Seed provider_configs with test data for llama_cpp:cpu
-        {
-            let open_result = tama_core::db::open(&config_dir).unwrap();
-            tama_core::db::queries::upsert_installation_config(
-                &open_result.conn,
-                "",
-                "llama_cpp",
-                "cpu",
-                &["--threads".to_string(), "4".to_string()],
-                &[],
-                None,
-            )
-            .unwrap();
-            tama_core::db::queries::upsert_installation_config(
-                &open_result.conn,
-                "",
-                "llama_cpp",
-                "vulkan",
-                &["--flash-attn".to_string()],
-                &[],
-                None,
-            )
-            .unwrap();
-        }
+        tama_core::db::queries::upsert_installation_config(
+            &pool,
+            "",
+            "llama_cpp",
+            "cpu",
+            &["--threads".to_string(), "4".to_string()],
+            &[],
+            None,
+        )
+        .await
+        .unwrap();
+        tama_core::db::queries::upsert_installation_config(
+            &pool,
+            "",
+            "llama_cpp",
+            "vulkan",
+            &["--flash-attn".to_string()],
+            &[],
+            None,
+        )
+        .await
+        .unwrap();
 
         // Start server
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         {
-            let config_dir_server = config_dir.clone();
+            let pool_server = Arc::new(guard.pool.clone());
+            let pool_server_ext = Arc::new(guard.pool.clone());
             tokio::spawn(async move {
                 let config = tama_core::config::Config::default();
-                let state = Arc::new(tama_core::proxy::ProxyState::new(
-                    config,
-                    Some(config_dir_server.clone()),
-                ));
+                let state = Arc::new(tama_core::proxy::ProxyState::new(config, None, pool_server));
                 axum::serve(
                     listener,
                     tama_web::router::build_web_routes(Arc::new(test_web_state(Some(
-                        config_dir_server.clone(),
+                        pool_server_ext,
                     ))))
                     .with_state(state)
-                    .layer(axum::extract::Extension(test_web_state(Some(
-                        config_dir_server.clone(),
-                    )))),
+                    .layer(axum::extract::Extension(test_web_state(Some(Arc::new(
+                        guard.pool.clone(),
+                    ))))),
                 )
                 .await
                 .unwrap();
@@ -438,14 +428,11 @@ mod tests {
 
         // Verify the DB was updated
         {
-            let open_result = tama_core::db::open(&config_dir).unwrap();
-            let config = tama_core::db::queries::get_installation_config(
-                &open_result.conn,
-                "llama_cpp",
-                "vulkan",
-            )
-            .unwrap()
-            .expect("vulkan config should exist");
+            let config =
+                tama_core::db::queries::get_installation_config(&pool, "llama_cpp", "vulkan")
+                    .await
+                    .unwrap()
+                    .expect("vulkan config should exist");
             assert_eq!(
                 config.default_args,
                 vec!["--vulkan-devices".to_string(), "0".to_string()],
@@ -453,13 +440,11 @@ mod tests {
             );
 
             // cpu variant should be unchanged
-            let cpu_config = tama_core::db::queries::get_installation_config(
-                &open_result.conn,
-                "llama_cpp",
-                "cpu",
-            )
-            .unwrap()
-            .expect("cpu config should exist");
+            let cpu_config =
+                tama_core::db::queries::get_installation_config(&pool, "llama_cpp", "cpu")
+                    .await
+                    .unwrap()
+                    .expect("cpu config should exist");
             assert_eq!(
                 cpu_config.default_args,
                 vec!["--threads".to_string(), "4".to_string()],
@@ -488,8 +473,6 @@ mod tests {
             "POST without gpu_variant should return client error, got {}",
             resp.status()
         );
-
-        drop(temp_dir);
     }
 
     /// GET /tama/v1/system/health returns JSON (not HTML from SPA wildcard).

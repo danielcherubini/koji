@@ -260,6 +260,7 @@ impl Clone for ProxyState {
             langfuse_client: Arc::clone(&self.langfuse_client),
             remote_forwarder: self.remote_forwarder.clone(),
             tamad_clients: Arc::clone(&self.tamad_clients),
+            db_pool: self.db_pool.clone(),
         }
     }
 }
@@ -299,20 +300,16 @@ pub struct ProxyState {
     /// Uses Arc<RwLock> so mutable access (lazy client creation) works across clones.
     pub(crate) tamad_clients:
         Arc<tokio::sync::RwLock<HashMap<String, crate::tamad::client::TamadClient>>>,
+    /// Postgres pool (plan-190 Task 9: always present). `main.rs` is the
+    /// single owner of the pool and hands the same `Arc<PgPool>` to both
+    /// `ProxyState` and `WebState`.
+    pub(crate) db_pool: Arc<sqlx::PgPool>,
 }
 
 impl ProxyState {
-    /// Open a DB connection for a quick sync operation.
-    /// Returns None if db_dir is not configured (e.g., in tests).
-    ///
-    /// Crate-internal connection factory for proxy services (API-key validation,
-    /// metrics persistence, auth). The management API in the `tama` crate uses
-    /// the shared `Repository` from `WebState` (plan-160) instead — do NOT add
-    /// new callers there.
-    pub(crate) fn open_db(&self) -> Option<rusqlite::Connection> {
-        self.db_dir
-            .as_ref()
-            .and_then(|dir| crate::db::open(dir).ok().map(|r| r.conn))
+    /// The Postgres pool (always present; plan-190 Task 9).
+    pub fn db_pool(&self) -> Arc<sqlx::PgPool> {
+        self.db_pool.clone()
     }
 
     /// Start a whole-repo `hf` CLI pull.
@@ -429,10 +426,9 @@ impl ProxyState {
         }
 
         // Slow path: load from DB and create client
-        let conn = self
-            .open_db()
-            .with_context(|| "Database not available for tamad lookup")?;
-        let tamad_record = crate::db::queries::get_tamad(&conn, tamad_id)
+        let pool = self.db_pool();
+        let tamad_record = crate::db::queries::get_tamad(pool.as_ref(), tamad_id)
+            .await
             .with_context(|| "Failed to look up tamad in database")?
             .ok_or_else(|| anyhow::anyhow!("tamad '{}' not found in registry", tamad_id))?;
 
@@ -456,7 +452,11 @@ mod tests {
     /// unknown job id yields None.
     #[tokio::test]
     async fn test_get_repo_pull_status_dto() {
-        let state = Arc::new(ProxyState::new(crate::config::Config::default(), None));
+        let state = Arc::new(ProxyState::new(
+            crate::config::Config::default(),
+            None,
+            crate::db::pool::test_dummy_pool(),
+        ));
         let dest = tempfile::tempdir().unwrap();
         std::fs::write(dest.path().join("a.bin"), vec![0u8; 100]).unwrap();
         let nested = dest.path().join("nested");
@@ -500,7 +500,11 @@ mod tests {
     /// ("not found" / "already finished") and flags a running job.
     #[tokio::test]
     async fn test_cancel_repo_pull_delegate() {
-        let state = Arc::new(ProxyState::new(crate::config::Config::default(), None));
+        let state = Arc::new(ProxyState::new(
+            crate::config::Config::default(),
+            None,
+            crate::db::pool::test_dummy_pool(),
+        ));
 
         assert_eq!(
             state.cancel_repo_pull("missing").await,
@@ -548,7 +552,11 @@ mod tests {
     /// validates the repo id before any other work.
     #[tokio::test]
     async fn test_start_repo_pull_delegate_invalid_id() {
-        let state = Arc::new(ProxyState::new(crate::config::Config::default(), None));
+        let state = Arc::new(ProxyState::new(
+            crate::config::Config::default(),
+            None,
+            crate::db::pool::test_dummy_pool(),
+        ));
         let err = state
             .start_repo_pull("a/b\\c", None)
             .await
@@ -561,9 +569,13 @@ mod tests {
 
     /// Verify the public surface exposes service handles and sub-struct
     /// composition — not lock guards.
-    #[test]
-    fn test_proxy_state_public_surface() {
-        let state = ProxyState::new(crate::config::Config::default(), None);
+    #[tokio::test]
+    async fn test_proxy_state_public_surface() {
+        let state = ProxyState::new(
+            crate::config::Config::default(),
+            None,
+            crate::db::pool::test_dummy_pool(),
+        );
         let _: &reqwest::Client = state.client();
         let _: &Option<std::path::PathBuf> = state.db_dir();
         let _: &Option<Arc<PullQueueService>> = state.pull_queue();

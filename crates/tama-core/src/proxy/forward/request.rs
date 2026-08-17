@@ -6,7 +6,6 @@ use super::langfuse::{
 };
 use super::sse::process_sse_line;
 use super::stats::extract_inference_stats;
-use crate::proxy::api_keys::ApiKeyStore;
 use crate::proxy::{api_keys::AuthSubject, BackendState, ProxyState};
 use axum::{body::Body, http::request::Parts, response::IntoResponse};
 use bytes::{Bytes, BytesMut};
@@ -49,9 +48,8 @@ pub async fn forward_request(
             state.metrics.modify_inference_stats(|map| {
                 map.remove(backend_name);
             });
-            if let Some(mgr) = state.model_mgr() {
-                let _ = mgr.remove_active(backend_name);
-            }
+            let pool = state.db_pool();
+            let _ = crate::db::queries::remove_active_model(&pool, backend_name).await;
             return (
                 axum::http::StatusCode::BAD_GATEWAY,
                 axum::response::Json(serde_json::json!({
@@ -181,16 +179,14 @@ pub async fn forward_request(
     let auth_user_id: Option<String> = match auth_subject {
         Some(AuthSubject::User { username }) => Some(username),
         Some(AuthSubject::Key { key_id, .. }) => {
-            // DB lookup for key name — spawn_blocking since rusqlite is synchronous.
+            // DB lookup for key name (async Postgres pool).
             // Only done when langfuse is enabled (checked via langfuse_cfg below,
             // but we always resolve here to keep the logic simple).
-            let db = state.open_db();
-            match db {
-                Some(conn) => tokio::task::block_in_place(|| {
-                    ApiKeyStore::new(&conn).get_key_name(key_id).ok().flatten()
-                }),
-                None => None,
-            }
+            crate::proxy::api_keys::ApiKeyStore::new(state.db_pool())
+                .get_key_name(key_id)
+                .await
+                .ok()
+                .flatten()
         }
         None => None,
     };
@@ -605,9 +601,8 @@ pub async fn forward_request(
                     map.remove(backend_name);
                 });
                 // Best-effort DB cleanup
-                if let Some(mgr) = state.model_mgr() {
-                    let _ = mgr.remove_active(backend_name);
-                }
+                let pool = state.db_pool();
+                let _ = crate::db::queries::remove_active_model(&pool, backend_name).await;
             } else {
                 // Process is alive — this is a transient error (timeout, busy, etc.)
                 // Increment the circuit breaker counter.

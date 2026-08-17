@@ -10,18 +10,17 @@ use crate::proxy::ProxyState;
 #[allow(dead_code)]
 pub(crate) static ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// ProxyState on a tempdir DB with a PullQueueService, mirroring
-/// crates/tama/tests/downloads_api.rs create_test_state.
-/// Returns (state, db TempDir — keep alive).
-pub(crate) fn create_test_state() -> (Arc<ProxyState>, tempfile::TempDir) {
-    let tmp = tempfile::tempdir().unwrap();
-    let db_dir = tmp.path().to_path_buf();
-    let mgr = crate::models::ModelManager::open(&db_dir).unwrap();
-    let svc = PullQueueService::new(mgr, 2);
+/// ProxyState with a PullQueueService backed by an isolated Postgres test
+/// schema. Returns (state, guard — call `guard.finish().await` at test end).
+pub(crate) async fn create_test_state() -> (Arc<ProxyState>, crate::testing::postgres::SchemaGuard)
+{
+    let guard = crate::testing::postgres::with_schema().await;
+    let pool = Arc::new(guard.pool.clone());
+    let svc = PullQueueService::new(pool.clone(), 2);
     let config = crate::config::Config::default();
-    let mut state = ProxyState::new(config, Some(db_dir));
+    let mut state = ProxyState::new(config, None, pool);
     state.pull.pull_queue = Some(Arc::new(svc));
-    (Arc::new(state), tmp)
+    (Arc::new(state), guard)
 }
 
 /// Mount a RepoInfo listing for `GET /api/models/<repo_path>/revision/main`

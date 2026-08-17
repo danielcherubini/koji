@@ -34,7 +34,6 @@ async-stream = "0.3"
 async-trait.workspace = true
 libc = "0.2.183"
 langfuse-ergonomic = "0.6.3"
-rusqlite.workspace = true
 uuid = { version = "1", features = ["v4"] }
 self_update = { version = "0.44", default-features = false, features = ["archive-tar", "compression-flate2", "rustls", "ureq"] }
 http = "1"
@@ -56,6 +55,7 @@ cookie.workspace = true
 percent-encoding = "2"
 tonic.workspace = true
 prost.workspace = true
+sqlx.workspace = true
 
 [features]
 web-ui = ["dep:nix"]
@@ -65,7 +65,9 @@ tonic-build = "0.12"
 protoc-bin-vendored = "3"
 
 [dev-dependencies]
+rusqlite.workspace = true
 serde_json = "1.0.149"
 tempfile.workspace = true
 wiremock = "0.6"
 tower = { version = "0.5", features = ["util"] }
+tama-test-support.workspace = true

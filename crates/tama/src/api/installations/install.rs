@@ -16,7 +16,7 @@ use tama_core::proxy::ProxyState;
 /// POST /tama/v1/backends/install
 pub async fn install_installation(
     Extension(web_state): Extension<WebState>,
-    State(_state): State<Arc<ProxyState>>,
+    State(state): State<Arc<ProxyState>>,
     Json(req): Json<InstallRequest>,
 ) -> impl IntoResponse {
     // Validate backend_type: non-empty and <= 64 chars
@@ -141,17 +141,8 @@ pub async fn install_installation(
             }
         };
 
-        // Capture config_dir for the background task
-        let config_dir = match tama_core::config::Config::config_dir() {
-            Ok(d) => d,
-            Err(e) => {
-                return error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("config_dir: {}", e),
-                    None,
-                )
-            }
-        };
+        // Capture the Postgres pool for the background task
+        let pool = state.db_pool();
 
         let jobs_clone = jobs.clone();
         let job_clone = job.clone();
@@ -162,32 +153,8 @@ pub async fn install_installation(
                 job: job_clone.clone(),
             };
 
-            // Open manager and run TTS installer
-            let config_dir_clone = config_dir.clone();
-            let reg_result = tokio::task::spawn_blocking(move || {
-                tama_core::installations::InstallationManager::open(&config_dir_clone)
-            })
-            .await
-            .map_err(|e| anyhow::anyhow!("spawn error: {}", e))
-            .and_then(|r| r);
-
-            let mgr = match reg_result {
-                Ok(r) => r,
-                Err(e) => {
-                    // Log the error and finish the job as failed
-                    jobs_clone
-                        .append_log(&job_clone, format!("Error: {}", e))
-                        .await;
-                    let _ = jobs_clone
-                        .finish(
-                            &job_clone,
-                            crate::web_types::JobStatus::Failed,
-                            Some("Failed to open manager".to_string()),
-                        )
-                        .await;
-                    return;
-                }
-            };
+            // Build the manager from the shared Postgres pool and run the TTS installer.
+            let mgr = tama_core::installations::InstallationManager::new(pool);
 
             let progress = Box::new(adapter);
             match bt {
@@ -426,6 +393,7 @@ pub async fn install_installation(
     };
 
     // Spawn the install task
+    let db_pool = state.db_pool();
     let jobs_clone = jobs.clone();
     let job_clone = job.clone();
     tokio::spawn(async move {
@@ -448,30 +416,26 @@ pub async fn install_installation(
         match result {
             Ok(binary_path) => {
                 // Register the installation in the DB so `resolve_backend_path` can find it.
-                if let Ok(config_dir) = tama_core::config::Config::config_dir() {
-                    let installed_at = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_secs() as i64)
-                        .unwrap_or(0);
-                    let reg_result = tokio::task::spawn_blocking(move || {
-                        let mgr = tama_core::installations::InstallationManager::open(&config_dir)?;
-                        mgr.add_installation(&tama_core::installations::InstallationInfo {
-                            name: reg_backend_name,
-                            backend_type: reg_backend_type,
-                            version: reg_version,
-                            path: binary_path,
-                            installed_at,
-                            gpu_variant: reg_gpu_variant,
-                            source: Some(reg_source),
-                            docker_config: None,
-                        })
+                let pool = db_pool;
+                let installed_at = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                let mgr = tama_core::installations::InstallationManager::new(pool);
+                let reg_result = mgr
+                    .add_installation(&tama_core::installations::InstallationInfo {
+                        name: reg_backend_name,
+                        backend_type: reg_backend_type,
+                        version: reg_version,
+                        path: binary_path,
+                        installed_at,
+                        gpu_variant: reg_gpu_variant,
+                        source: Some(reg_source),
+                        docker_config: None,
                     })
-                    .await
-                    .map_err(|e| anyhow::anyhow!("spawn error: {}", e))
-                    .and_then(|r| r);
-                    if let Err(e) = reg_result {
-                        tracing::warn!("Failed to register backend in DB: {}", e);
-                    }
+                    .await;
+                if let Err(e) = reg_result {
+                    tracing::warn!("Failed to register backend in DB: {}", e);
                 }
                 let _ = jobs_clone
                     .finish(&job_clone, crate::web_types::JobStatus::Succeeded, None)
@@ -537,56 +501,51 @@ pub async fn remove_installation(
     };
 
     // If gpu_variant is provided, only remove that variant (all its versions);
-    // otherwise remove all variants. Block 1: pooled list_versions + return mgr.
-    let name_for_block = name.clone();
-    let gpu_variant_for_block = gpu_variant.clone();
-    let (mgr, backends_to_remove): (_, Vec<tama_core::installations::InstallationInfo>) =
-        match tokio::task::spawn_blocking(move || {
-            let mgr = mgr;
-            let name = name_for_block;
-            if let Some(variant) = &gpu_variant_for_block {
-                // Specific variant requested — get ALL versions of that variant
-                match mgr.list_versions(&name, Some(variant.as_str())) {
-                    Ok(Some(versions)) if !versions.is_empty() => Ok((mgr, versions)),
-                    Ok(Some(_)) | Ok(None) => Err((
+    // otherwise remove all variants.
+    let backends_to_remove: Vec<tama_core::installations::InstallationInfo> =
+        if let Some(variant) = &gpu_variant {
+            // Specific variant requested — get ALL versions of that variant
+            match mgr.list_versions(&name, Some(variant.as_str())).await {
+                Ok(Some(versions)) if !versions.is_empty() => versions,
+                Ok(Some(_)) | Ok(None) => {
+                    return (
                         StatusCode::NOT_FOUND,
-                        error_body(
+                        Json(error_body(
                             format!("Backend '{}' not found", name),
                             Some("NotFoundError"),
-                        ),
-                    )),
-                    Err(e) => Err((
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        error_body(format!("Failed to get backend: {}", e), None),
-                    )),
+                        )),
+                    )
+                        .into_response()
                 }
-            } else {
-                // No variant specified — iterate ALL variants
-                match mgr.list_versions(&name, None) {
-                    Ok(Some(versions)) => Ok((mgr, versions)),
-                    Ok(None) => Err((
-                        StatusCode::NOT_FOUND,
-                        error_body(
-                            format!("Backend '{}' not found", name),
-                            Some("NotFoundError"),
-                        ),
-                    )),
-                    Err(e) => Err((
+                Err(e) => {
+                    return (
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        error_body(format!("Failed to get backend: {}", e), None),
-                    )),
+                        Json(error_body(format!("Failed to get backend: {}", e), None)),
+                    )
+                        .into_response()
                 }
             }
-        })
-        .await
-        {
-            Ok(Ok(v)) => v,
-            Ok(Err((s, b))) => return (s, Json(b)).into_response(),
-            Err(e) => {
-                return error_response_simple(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("spawn error: {}", e),
-                )
+        } else {
+            // No variant specified — iterate ALL variants
+            match mgr.list_versions(&name, None).await {
+                Ok(Some(versions)) => versions,
+                Ok(None) => {
+                    return (
+                        StatusCode::NOT_FOUND,
+                        Json(error_body(
+                            format!("Backend '{}' not found", name),
+                            Some("NotFoundError"),
+                        )),
+                    )
+                        .into_response()
+                }
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(error_body(format!("Failed to get backend: {}", e), None)),
+                    )
+                        .into_response()
+                }
             }
         };
 
@@ -606,10 +565,7 @@ pub async fn remove_installation(
         }
     }
 
-    // Block 2: pooled remove — safe_remove_installation loop + delete_all_versions
-    // + update-check cleanup, all on the blocking pool.
-    let name_for_block2 = name.clone();
-    let gpu_variant_for_block2 = gpu_variant.clone();
+    // Block 2: remove files on the blocking pool, then delete the DB rows.
     let backends_for_block2 = backends_to_remove.clone();
     #[allow(clippy::result_large_err)]
     match tokio::task::spawn_blocking(move || -> Result<(), axum::response::Response> {
@@ -632,23 +588,6 @@ pub async fn remove_installation(
             }
         }
 
-        // Remove from DB (Some = remove specific variant, None = remove all variants)
-        let variant_to_remove = gpu_variant_for_block2.as_deref();
-        if let Err(e) = mgr.delete_all_versions(&name_for_block2, variant_to_remove) {
-            return Err(error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to remove: {}", e),
-                None,
-            ));
-        }
-
-        // Clean up update_check records — use LIKE pattern to match all variants
-        // (e.g., "llama_cpp:cpu", "llama_cpp:cuda") plus legacy format.
-        if let Ok(repo_handle) = crate::api::helpers::shared_repository(&web_state) {
-            let repo = repo_handle.lock().unwrap();
-            let _ = repo.delete_update_checks_for_backend(&name_for_block2);
-        }
-
         Ok(())
     })
     .await
@@ -662,6 +601,21 @@ pub async fn remove_installation(
             )
         }
     }
+
+    // Remove from DB (Some = remove specific variant, None = remove all variants)
+    if let Err(e) = mgr.delete_all_versions(&name, gpu_variant.as_deref()).await {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to remove: {}", e),
+            None,
+        );
+    }
+
+    // Clean up update_check records — use LIKE pattern to match all variants
+    // (e.g., "llama_cpp:cpu", "llama_cpp:cuda") plus legacy format.
+    // (Postgres, plan-190 Task 4; best-effort.)
+    let pool = state.db_pool();
+    let _ = tama_core::db::queries::delete_update_checks_for_backend(&pool, &name).await;
 
     Json(DeleteResponse { removed: true }).into_response()
 }

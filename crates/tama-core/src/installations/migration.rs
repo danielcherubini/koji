@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
-use rusqlite::Connection;
+use sqlx::{PgPool, Row};
 
 use crate::installations::get_backend_install_path;
 use crate::installations::types::InstallationType;
@@ -11,7 +11,7 @@ const MIGRATION_MARKER: &str = ".tama-migration-v2-done";
 
 /// Migrate legacy backend installations from flat structure to variant structure.
 /// Idempotent: safe to call multiple times, already-migrated records are skipped.
-pub fn migrate_legacy_backends(conn: &Connection, backends_dir: &Path) -> anyhow::Result<()> {
+pub async fn migrate_legacy_backends(pool: &PgPool, backends_dir: &Path) -> anyhow::Result<()> {
     // Check marker file - if migration already completed, skip
     let marker_path = backends_dir.join(MIGRATION_MARKER);
     if marker_path.exists() {
@@ -23,7 +23,7 @@ pub fn migrate_legacy_backends(conn: &Connection, backends_dir: &Path) -> anyhow
     fs::create_dir_all(backends_dir).context("Failed to create backends_dir")?;
 
     // Get all backend records from DB
-    let all_versions = list_all_backend_records(conn)?;
+    let all_versions = list_all_backend_records(pool).await?;
 
     if all_versions.is_empty() {
         // No backends to migrate, still write marker
@@ -76,11 +76,12 @@ pub fn migrate_legacy_backends(conn: &Connection, backends_dir: &Path) -> anyhow
         )? {
             // Update DB record
             update_backend_path_and_variant(
-                conn,
+                pool,
                 record.id,
                 &gpu_variant,
                 &new_binary_path.to_string_lossy(),
             )
+            .await
             .context("Failed to update DB record")?;
             migrated_count += 1;
         }
@@ -96,46 +97,46 @@ pub fn migrate_legacy_backends(conn: &Connection, backends_dir: &Path) -> anyhow
     Ok(())
 }
 
-fn list_all_backend_records(conn: &Connection) -> anyhow::Result<Vec<BackendRecord>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, name, backend_type, version, path, installed_at, \
-         COALESCE(gpu_variant, 'cpu'), \
-         COALESCE(source, ''), is_active \
+async fn list_all_backend_records(pool: &PgPool) -> anyhow::Result<Vec<BackendRecord>> {
+    let rows = sqlx::query(
+        "SELECT id, name, backend_type, version, path, installed_at, gpu_variant, source, is_active \
          FROM provider_installations",
-    )?;
+    )
+    .fetch_all(pool)
+    .await?;
 
-    let rows = stmt.query_map([], |row| {
-        Ok(BackendRecord {
-            id: row.get(0)?,
-            name: row.get(1)?,
-            backend_type: row.get(2)?,
-            version: row.get(3)?,
-            path: row.get(4)?,
-            _installed_at: row.get(5)?,
-            _gpu_variant: row.get(6)?,
-            _source: row.get(7)?,
-            _is_active: row.get::<_, i64>(8)? != 0,
+    Ok(rows
+        .into_iter()
+        .map(|row| BackendRecord {
+            id: row.get("id"),
+            name: row.get("name"),
+            backend_type: row.get("backend_type"),
+            version: row.get("version"),
+            path: row.get("path"),
+            _installed_at: row.get("installed_at"),
+            _gpu_variant: row.get("gpu_variant"),
+            _source: row.get::<Option<String>, _>("source").unwrap_or_default(),
+            _is_active: row.get("is_active"),
         })
-    })?;
-
-    let records: Vec<BackendRecord> = rows
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|e| anyhow::anyhow!(e))?;
-    Ok(records)
+        .collect())
 }
 
-fn update_backend_path_and_variant(
-    conn: &Connection,
+async fn update_backend_path_and_variant(
+    pool: &PgPool,
     id: i64,
     gpu_variant: &str,
     new_path: &str,
 ) -> anyhow::Result<()> {
-    conn.execute(
+    sqlx::query(
         "UPDATE provider_installations \
-         SET path = ?, gpu_variant = ? \
-         WHERE id = ?",
-        (new_path, gpu_variant, id),
-    )?;
+         SET path = $1, gpu_variant = $2 \
+         WHERE id = $3",
+    )
+    .bind(new_path)
+    .bind(gpu_variant)
+    .bind(id)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 

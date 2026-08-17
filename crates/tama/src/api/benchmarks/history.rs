@@ -1,6 +1,5 @@
 use super::*;
 use crate::api::error::error_response;
-use crate::api::helpers::shared_repository;
 use crate::web_types::WebState;
 use tama_core::proxy::tama_handlers::OkResponse;
 use tama_core::proxy::ProxyState;
@@ -103,21 +102,10 @@ pub async fn list_benchmark_history(
     State(_state): State<Arc<ProxyState>>,
     Extension(web_state): Extension<WebState>,
 ) -> impl IntoResponse {
-    let repo_handle = match shared_repository(&web_state) {
-        Ok(h) => h,
-        Err(resp) => return resp,
-    };
+    let pool = web_state.db_pool.as_ref();
 
-    let entries = match tokio::task::spawn_blocking(move || {
-        let repo = repo_handle.lock().unwrap();
-        repo.list_benchmarks()
-    })
-    .await
-    {
-        Ok(Ok(entries)) => entries,
-        Ok(Err(e)) => {
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None)
-        }
+    let entries = match tama_core::db::queries::list_benchmarks(pool).await {
+        Ok(entries) => entries,
         Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     };
 
@@ -167,19 +155,10 @@ pub async fn delete_benchmark(
     Extension(web_state): Extension<WebState>,
     Path(id): Path<i64>,
 ) -> impl IntoResponse {
-    let repo_handle = match shared_repository(&web_state) {
-        Ok(h) => h,
-        Err(resp) => return resp,
-    };
+    let pool = web_state.db_pool.as_ref();
 
-    match tokio::task::spawn_blocking(move || {
-        let repo = repo_handle.lock().unwrap();
-        repo.delete_benchmark(id)
-    })
-    .await
-    {
-        Ok(Ok(())) => Json(OkResponse::OK).into_response(),
-        Ok(Err(e)) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
+    match tama_core::db::queries::delete_benchmark(pool, id).await {
+        Ok(()) => Json(OkResponse::OK).into_response(),
         Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     }
 }
@@ -642,7 +621,11 @@ mod tests {
     #[tokio::test]
     async fn test_get_benchmark_result_not_found_error_shape() {
         let config = Config::default();
-        let state = Arc::new(ProxyState::new(config, None));
+        let state = Arc::new(ProxyState::new(
+            config,
+            None,
+            tama_test_support::test_dummy_pool(),
+        ));
 
         let web_state = Arc::new(crate::web_types::WebState {
             jobs: Some(Arc::new(crate::web_types::JobManager::new())),
@@ -651,7 +634,7 @@ mod tests {
             binary_version: "test".to_string(),
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-            repository: None,
+            db_pool: tama_test_support::test_dummy_pool(),
         });
 
         let router = crate::router::build_web_routes(web_state.clone())

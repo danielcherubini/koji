@@ -5,7 +5,7 @@ use super::oauth2::CSRF_STATE_COOKIE_NAME;
 use super::oauth2::{build_oauth2_client_from_config, fetch_userinfo};
 use super::oauth2::{handle_login, handle_login_callback, handle_logout};
 use super::session::{SessionClaims, SESSION_COOKIE_NAME};
-use crate::proxy::api_keys::{self, ApiKeyStore, Scope};
+use crate::proxy::api_keys::{self, Scope};
 use axum::body::Body;
 use axum::middleware;
 use axum::{
@@ -32,7 +32,11 @@ fn make_app(auth_url: Option<String>, skip_paths: Vec<String>) -> Router {
         },
         ..Default::default()
     };
-    let proxy_state = Arc::new(crate::proxy::ProxyState::new(config, None));
+    let proxy_state = Arc::new(crate::proxy::ProxyState::new(
+        config,
+        None,
+        crate::db::pool::test_dummy_pool(),
+    ));
 
     Router::new()
         .route("/", get(test_handler))
@@ -435,7 +439,11 @@ fn make_app_oauth2(auth_url: Option<String>) -> (Router, Arc<crate::proxy::Proxy
         },
         ..Default::default()
     };
-    let proxy_state = Arc::new(crate::proxy::ProxyState::new(config, None));
+    let proxy_state = Arc::new(crate::proxy::ProxyState::new(
+        config,
+        None,
+        crate::db::pool::test_dummy_pool(),
+    ));
 
     let app = Router::new()
         .route("/", get(test_handler))
@@ -474,7 +482,11 @@ fn make_login_flow_state(
         },
         ..Default::default()
     };
-    Arc::new(crate::proxy::ProxyState::new(config, None))
+    Arc::new(crate::proxy::ProxyState::new(
+        config,
+        None,
+        crate::db::pool::test_dummy_pool(),
+    ))
 }
 
 /// Helper: minimal router mounting the login-flow handlers directly
@@ -633,7 +645,11 @@ async fn test_handle_login_disabled_returns_503() {
         },
         ..Default::default()
     };
-    let state = Arc::new(crate::proxy::ProxyState::new(config, None));
+    let state = Arc::new(crate::proxy::ProxyState::new(
+        config,
+        None,
+        crate::db::pool::test_dummy_pool(),
+    ));
     let app = login_flow_app(state);
 
     let resp = app
@@ -651,29 +667,26 @@ async fn test_handle_login_disabled_returns_503() {
 
 // ── API key authentication tests ────────────────────────────────────
 
-/// Helper: create a temporary directory with a DB containing an API key.
-/// Returns the temp dir (kept alive by the returned TempDir) and the proxy state.
-fn make_app_with_api_key(
+/// Helper: build an app with a seeded Postgres API key (plan-190 Task 6).
+/// Returns the router, the proxy state, the schema guard (kept alive),
+/// and the raw key.
+async fn make_app_with_api_key(
     api_keys_enabled: bool,
 ) -> (
     Router,
     std::sync::Arc<crate::proxy::ProxyState>,
-    tempfile::TempDir,
+    crate::testing::postgres::SchemaGuard,
+    String,
 ) {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let db_path = temp_dir.path().join("tama.db");
-    let db_dir = temp_dir.path().to_path_buf();
-
-    // Initialize DB with migrations and seed
-    let conn = rusqlite::Connection::open(&db_path).unwrap();
-    crate::db::migrations::run(&conn).unwrap();
-    crate::db::queries::seed_defaults(&conn).unwrap();
+    let guard = crate::testing::postgres::with_schema().await;
 
     // Create an API key
     let key = api_keys::generate_key();
     let scopes = vec![Scope::Inference];
-    ApiKeyStore::new(&conn)
+    let store = crate::proxy::api_keys::ApiKeyStore::new(Arc::new(guard.pool.clone()));
+    store
         .create_key("test-key", &key, &scopes, "admin", None)
+        .await
         .unwrap();
 
     // Build config with api_keys_enabled
@@ -691,7 +704,11 @@ fn make_app_with_api_key(
         },
         ..Default::default()
     };
-    let proxy_state = Arc::new(crate::proxy::ProxyState::new(config, Some(db_dir)));
+    let proxy_state = Arc::new(crate::proxy::ProxyState::new(
+        config,
+        None,
+        Arc::new(guard.pool.clone()),
+    ));
 
     let app = Router::new()
         .route("/", get(test_handler))
@@ -704,18 +721,13 @@ fn make_app_with_api_key(
         ))
         .with_state(proxy_state.clone());
 
-    // Store the key in a file so the test can read it
-    let key_path = temp_dir.path().join("test_key.txt");
-    std::fs::write(&key_path, &key).unwrap();
-
-    (app, proxy_state, temp_dir)
+    (app, proxy_state, guard, key)
 }
 
 /// Test that a valid tama_ bearer token authenticates successfully.
 #[tokio::test]
 async fn test_tama_key_auth_passes() {
-    let (_app, state, temp_dir) = make_app_with_api_key(true);
-    let key = std::fs::read_to_string(temp_dir.path().join("test_key.txt")).unwrap();
+    let (_app, state, _guard, key) = make_app_with_api_key(true).await;
 
     let app = Router::new()
         .route("/", get(test_handler))
@@ -741,7 +753,7 @@ async fn test_tama_key_auth_passes() {
 /// Test that an invalid tama_ bearer token returns 401.
 #[tokio::test]
 async fn test_tama_key_auth_invalid_returns_401() {
-    let (_app, state, _temp_dir) = make_app_with_api_key(true);
+    let (_app, state, _guard, _key) = make_app_with_api_key(true).await;
 
     let app = Router::new()
         .route("/", get(test_handler))
@@ -777,17 +789,13 @@ async fn test_tama_key_auth_invalid_returns_401() {
 #[tokio::test]
 async fn test_tama_key_disabled_returns_401() {
     // Set up with Authentik configured but api_keys_enabled=false
-    let temp_dir = tempfile::tempdir().unwrap();
-    let db_path = temp_dir.path().join("tama.db");
-    let db_dir = temp_dir.path().to_path_buf();
-
-    let conn = rusqlite::Connection::open(&db_path).unwrap();
-    crate::db::migrations::run(&conn).unwrap();
-    crate::db::queries::seed_defaults(&conn).unwrap();
+    let guard = crate::testing::postgres::with_schema().await;
 
     let key = api_keys::generate_key();
-    ApiKeyStore::new(&conn)
+    let store = crate::proxy::api_keys::ApiKeyStore::new(Arc::new(guard.pool.clone()));
+    store
         .create_key("test-key", &key, &[Scope::Inference], "admin", None)
+        .await
         .unwrap();
 
     let config = crate::config::Config {
@@ -799,7 +807,11 @@ async fn test_tama_key_disabled_returns_401() {
         },
         ..Default::default()
     };
-    let proxy_state = Arc::new(crate::proxy::ProxyState::new(config, Some(db_dir)));
+    let proxy_state = Arc::new(crate::proxy::ProxyState::new(
+        config,
+        None,
+        Arc::new(guard.pool.clone()),
+    ));
 
     let app = Router::new()
         .route("/", get(test_handler))
@@ -847,7 +859,11 @@ async fn test_non_tama_bearer_still_validates_authentik() {
         },
         ..Default::default()
     };
-    let proxy_state = Arc::new(crate::proxy::ProxyState::new(config, None));
+    let proxy_state = Arc::new(crate::proxy::ProxyState::new(
+        config,
+        None,
+        crate::db::pool::test_dummy_pool(),
+    ));
 
     let app = Router::new()
         .route("/", get(test_handler))
@@ -881,7 +897,11 @@ async fn test_auth_not_configured_open_mode() {
         },
         ..Default::default()
     };
-    let proxy_state = Arc::new(crate::proxy::ProxyState::new(config, None));
+    let proxy_state = Arc::new(crate::proxy::ProxyState::new(
+        config,
+        None,
+        crate::db::pool::test_dummy_pool(),
+    ));
 
     let app = Router::new()
         .route("/", get(test_handler))
@@ -902,8 +922,7 @@ async fn test_auth_not_configured_open_mode() {
 /// Test that API keys-only auth (no OAuth2, no Authentik) works.
 #[tokio::test]
 async fn test_auth_configured_with_api_keys_only() {
-    let (_app, state, temp_dir) = make_app_with_api_key(true);
-    let key = std::fs::read_to_string(temp_dir.path().join("test_key.txt")).unwrap();
+    let (_app, state, _guard, key) = make_app_with_api_key(true).await;
 
     let app = Router::new()
         .route("/", get(test_handler))
@@ -938,7 +957,7 @@ async fn test_auth_configured_with_api_keys_only() {
 /// Test that session cookie auth still works alongside API keys.
 #[tokio::test]
 async fn test_session_cookie_still_works() {
-    let (_app, state, _temp_dir) = make_app_with_api_key(true);
+    let (_app, state, _guard, _key) = make_app_with_api_key(true).await;
 
     let claims = SessionClaims::new(
         "cookieuser".to_string(),
@@ -982,17 +1001,13 @@ async fn test_tama_prefix_case_sensitive() {
     tokio::spawn(async { axum::serve(listener, mock).await.unwrap() });
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let temp_dir = tempfile::tempdir().unwrap();
-    let db_path = temp_dir.path().join("tama.db");
-    let db_dir = temp_dir.path().to_path_buf();
-
-    let conn = rusqlite::Connection::open(&db_path).unwrap();
-    crate::db::migrations::run(&conn).unwrap();
-    crate::db::queries::seed_defaults(&conn).unwrap();
+    let guard = crate::testing::postgres::with_schema().await;
 
     let key = api_keys::generate_key();
-    ApiKeyStore::new(&conn)
+    let store = crate::proxy::api_keys::ApiKeyStore::new(Arc::new(guard.pool.clone()));
+    store
         .create_key("test-key", &key, &[Scope::Inference], "admin", None)
+        .await
         .unwrap();
 
     let config = crate::config::Config {
@@ -1004,7 +1019,11 @@ async fn test_tama_prefix_case_sensitive() {
         },
         ..Default::default()
     };
-    let proxy_state = Arc::new(crate::proxy::ProxyState::new(config, Some(db_dir)));
+    let proxy_state = Arc::new(crate::proxy::ProxyState::new(
+        config,
+        None,
+        Arc::new(guard.pool.clone()),
+    ));
 
     let app = Router::new()
         .route("/", get(test_handler))
@@ -1503,7 +1522,11 @@ async fn test_logout_redirects_to_configured_logout_url() {
         },
         ..Default::default()
     };
-    let state = Arc::new(crate::proxy::ProxyState::new(config, None));
+    let state = Arc::new(crate::proxy::ProxyState::new(
+        config,
+        None,
+        crate::db::pool::test_dummy_pool(),
+    ));
     let app = login_flow_app(state);
 
     let resp = app

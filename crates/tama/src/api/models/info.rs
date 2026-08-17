@@ -1,5 +1,4 @@
 use crate::api::error::{error_body, error_response};
-use crate::api::helpers::shared_repository;
 use axum::{
     extract::{Extension, Path, State},
     http::StatusCode,
@@ -13,56 +12,39 @@ use tama_core::proxy::ProxyState;
 
 use crate::api::load_config_from_state;
 use crate::web_types::WebState;
+use sqlx::PgPool;
 use tama_core::db::queries::{ModelConfigRecord, ModelFileRecord};
-use tama_core::db::repository::Repository;
 use tama_core::installations::InstallationOption;
 
 /// Build the list of available backend options by querying installed variants from the DB.
-async fn build_backend_options(
-    _cfg: &tama_core::config::Config,
-    config_dir: &std::path::Path,
-) -> Vec<InstallationOption> {
-    let config_dir = config_dir.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        let mgr = tama_core::installations::InstallationManager::open(&config_dir).ok()?;
-        mgr.available_installations().ok()
-    })
-    .await
-    .ok()
-    .flatten()
-    .unwrap_or_default()
+async fn build_backend_options(pool: &Arc<PgPool>) -> Vec<InstallationOption> {
+    let mgr = tama_core::installations::InstallationManager::new(pool.clone());
+    mgr.available_installations().await.unwrap_or_default()
 }
 
 /// Resolve a model identifier string (integer DB id or config_key) to the integer DB id.
-pub(crate) fn resolve_db_id(id_str: &str, repo: &Repository) -> anyhow::Result<Option<i64>> {
+pub(crate) async fn resolve_db_id(pool: &PgPool, id_str: &str) -> anyhow::Result<Option<i64>> {
     // Try parsing as integer id first
     if let Ok(id) = id_str.parse::<i64>() {
         return Ok(Some(id));
     }
     // Otherwise treat as config_key (double-dash format) → convert to repo_id and look up
     let repo_id = tama_core::models::config_key_to_repo_id(id_str);
-    let record = repo.get_model_config_by_repo_id(&repo_id)?;
+    let record = tama_core::db::queries::get_model_config_by_repo_id(pool, &repo_id).await?;
     Ok(record.map(|r| r.id))
 }
 
-/// Open the Repository at `config_dir`, resolve `id_str` (integer id or
-/// config_key) to a model id, and load its config record.
+/// Resolve `id_str` (integer id or config_key) to the model id and load its
+/// config record.
 ///
-/// The Repository is returned so callers with follow-up queries reuse the
-/// same connection. Error mapping matches the historical per-handler chains:
-/// open failure → 500, unresolvable id → 400 ValidationError,
-/// unknown id → 404 NotFoundError.
-pub(crate) fn resolve_model_record(
-    config_dir: &std::path::Path,
+/// Error mapping matches the historical per-handler chains:
+/// unresolvable id → 400 ValidationError, unknown id → 404 NotFoundError.
+pub(crate) async fn resolve_model_record(
+    pool: &PgPool,
     id_str: &str,
-) -> Result<(Repository, i64, ModelConfigRecord), (StatusCode, serde_json::Value)> {
-    let repo = Repository::open(config_dir).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            error_body(e.to_string(), None),
-        )
-    })?;
-    let model_id = resolve_db_id(id_str, &repo)
+) -> Result<(i64, ModelConfigRecord), (StatusCode, serde_json::Value)> {
+    let model_id = resolve_db_id(pool, id_str)
+        .await
         .map_err(|e| {
             (
                 StatusCode::BAD_REQUEST,
@@ -75,8 +57,8 @@ pub(crate) fn resolve_model_record(
                 error_body("Model not found", Some("NotFoundError")),
             )
         })?;
-    let record = repo
-        .get_model_config(model_id)
+    let record = tama_core::db::queries::get_model_config(pool, model_id)
+        .await
         .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -89,7 +71,7 @@ pub(crate) fn resolve_model_record(
                 error_body("Model not found", Some("NotFoundError")),
             )
         })?;
-    Ok((repo, model_id, record))
+    Ok((model_id, record))
 }
 
 /// Per-file DB metadata enrichment loaded from the `model_files` / `model_pulls`
@@ -104,15 +86,15 @@ struct RepoDbMeta {
     files: std::collections::HashMap<String, ModelFileRecord>,
 }
 
-/// Load per-repo DB metadata for a model using Repository.
-fn load_repo_db_meta_from_repo(repo: &Repository, model_id: i64) -> RepoDbMeta {
+/// Load per-repo DB metadata for a model using the Postgres pool.
+async fn load_repo_db_meta(pool: &PgPool, model_id: i64) -> RepoDbMeta {
     let mut meta = RepoDbMeta::default();
     // Pull metadata (commit SHA + pull timestamp)
-    if let Ok(Some(pull)) = repo.get_pull(model_id) {
+    if let Ok(Some(pull)) = tama_core::db::queries::get_model_pull(pool, model_id).await {
         meta.commit_sha = Some(pull.commit_sha);
         meta.pulled_at = Some(pull.pulled_at);
     }
-    if let Ok(files) = repo.get_model_files(model_id) {
+    if let Ok(files) = tama_core::db::queries::get_model_files(pool, model_id).await {
         for f in files {
             meta.files.insert(f.filename.clone(), f);
         }
@@ -212,7 +194,7 @@ pub async fn list_models(
     match load_config_from_state(&state).await {
         Ok((cfg, config_dir)) => {
             let configs_dir = config_dir.join("configs");
-            let backend_options = build_backend_options(&cfg, &config_dir).await;
+            let backend_options = build_backend_options(&web_state.db_pool).await;
 
             // Collect current runtime state for each model (idle/ready/etc.)
             // Keyed by db_id so we can look up by the integer ID from the DB record.
@@ -223,47 +205,66 @@ pub async fn list_models(
                 .filter_map(|s| s.db_id.map(|db_id| (db_id, s.state)))
                 .collect();
 
-            // Load models from DB using shared Repository
-            let repo = match shared_repository(&web_state) {
-                Ok(r) => r,
-                Err(resp) => return resp,
-            };
-            let repo = repo.clone();
+            // Load models from the Postgres pool.
+            let pool = web_state.db_pool.as_ref();
             let configs_dir_clone = configs_dir.clone();
-            let models = tokio::task::spawn_blocking(move || {
-                let repo = repo.lock().unwrap();
-                let configs = repo.load_model_configs().unwrap_or_default();
-                let mut result = Vec::new();
-                for config_record in configs.values() {
-                    let meta = load_repo_db_meta_from_repo(&repo, config_record.id);
-                    let m = tama_core::config::ModelConfig::from_db_record(config_record);
-                    let mut model_config = m.clone();
-                    for f in meta.files.values() {
-                        let quant_key = f.quant.clone().unwrap_or_else(|| f.filename.clone());
-                        model_config.quants.insert(
-                            quant_key,
-                            tama_core::config::QuantEntry {
-                                file: f.filename.clone(),
-                                kind: tama_core::config::QuantKind::from_filename(&f.filename),
-                                size_bytes: f.size_bytes.map(|s| s as u64),
-                                context_length: None,
-                            },
-                        );
-                    }
-                    let model_state = model_states.get(&config_record.id).cloned();
-                    result.push(model_entry_json(
-                        config_record.id,
-                        config_record,
-                        &model_config,
-                        &configs_dir_clone,
-                        Some(&meta),
-                        model_state,
-                    ));
+            let records = match tama_core::db::queries::get_all_model_configs(pool).await {
+                Ok(r) => r,
+                Err(e) => {
+                    return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None)
                 }
-                result
-            })
-            .await
-            .unwrap_or_default();
+            };
+            let ids: Vec<i64> = records.iter().map(|r| r.id).collect();
+            let all_files = match tama_core::db::queries::get_model_files_by_ids(pool, &ids).await {
+                Ok(f) => f,
+                Err(e) => {
+                    return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None)
+                }
+            };
+            let files_by_model: HashMap<i64, Vec<ModelFileRecord>> =
+                all_files.into_iter().fold(HashMap::new(), |mut map, file| {
+                    map.entry(file.model_id).or_default().push(file);
+                    map
+                });
+
+            let mut models = Vec::new();
+            for record in &records {
+                let mut meta = RepoDbMeta::default();
+                if let Ok(Some(pull)) =
+                    tama_core::db::queries::get_model_pull(pool, record.id).await
+                {
+                    meta.commit_sha = Some(pull.commit_sha);
+                    meta.pulled_at = Some(pull.pulled_at);
+                }
+                if let Some(files) = files_by_model.get(&record.id) {
+                    for f in files {
+                        meta.files.insert(f.filename.clone(), f.clone());
+                    }
+                }
+                let m = tama_core::config::ModelConfig::from_db_record(record);
+                let mut model_config = m.clone();
+                for f in meta.files.values() {
+                    let quant_key = f.quant.clone().unwrap_or_else(|| f.filename.clone());
+                    model_config.quants.insert(
+                        quant_key,
+                        tama_core::config::QuantEntry {
+                            file: f.filename.clone(),
+                            kind: tama_core::config::QuantKind::from_filename(&f.filename),
+                            size_bytes: f.size_bytes.map(|s| s as u64),
+                            context_length: None,
+                        },
+                    );
+                }
+                let model_state = model_states.get(&record.id).cloned();
+                models.push(model_entry_json(
+                    record.id,
+                    record,
+                    &model_config,
+                    &configs_dir_clone,
+                    Some(&meta),
+                    model_state,
+                ));
+            }
 
             let sampling_templates: serde_json::Value =
                 serde_json::to_value(&cfg.sampling_templates).unwrap_or_default();
@@ -286,9 +287,9 @@ pub async fn get_model(
     Path(id_str): Path<String>,
 ) -> impl IntoResponse {
     match load_config_from_state(&state).await {
-        Ok((cfg, config_dir)) => {
+        Ok((_cfg, config_dir)) => {
             let configs_dir = config_dir.join("configs");
-            let backend_options = build_backend_options(&cfg, &config_dir).await;
+            let backend_options = build_backend_options(&web_state.db_pool).await;
 
             // Collect current runtime state for model lookup
             // Keyed by db_id so we can look up by the integer ID from the DB record.
@@ -299,75 +300,16 @@ pub async fn get_model(
                 .filter_map(|s| s.db_id.map(|db_id| (db_id, s.state)))
                 .collect();
 
-            // Resolve model: open repo, resolve id, load config record — all pooled.
+            // Resolve + load the model from the Postgres pool.
+            let pool = web_state.db_pool.as_ref();
             let configs_dir_clone = configs_dir.clone();
             let backend_options_clone = backend_options.clone();
-            let resolved = tokio::task::spawn_blocking(
-                move || -> Result<_, (StatusCode, serde_json::Value)> {
-                    let repo = match shared_repository(&web_state) {
-                        Ok(r) => r,
-                        Err(resp) => {
-                            return Err((
-                                resp.status(),
-                                serde_json::json!({ "error": "Database not configured" }),
-                            ))
-                        }
-                    };
-                    let repo = repo.lock().unwrap();
-
-                    // Resolve id (integer or config_key) to model_id
-                    let model_id = match resolve_db_id(&id_str, &repo) {
-                        Ok(Some(id)) => id,
-                        Ok(None) => {
-                            return Err((
-                                StatusCode::NOT_FOUND,
-                                error_body("Model not found", Some("NotFoundError")),
-                            ))
-                        }
-                        Err(e) => {
-                            return Err((
-                                StatusCode::BAD_REQUEST,
-                                error_body(e.to_string(), Some("ValidationError")),
-                            ))
-                        }
-                    };
-
-                    // Load model from DB — use resolve_model_record pattern to avoid
-                    // mislabeling DB errors as "not found" (the old .ok().flatten()
-                    // swallowed real errors).
-                    let record = repo
-                        .get_model_config(model_id)
-                        .map_err(|e| {
-                            (
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                error_body(e.to_string(), None),
-                            )
-                        })?
-                        .ok_or_else(|| {
-                            (
-                                StatusCode::NOT_FOUND,
-                                error_body("Model not found", Some("NotFoundError")),
-                            )
-                        })?;
-                    let m = tama_core::config::ModelConfig::from_db_record(&record);
-                    let meta = load_repo_db_meta_from_repo(&repo, record.id);
-                    Ok((record, m, meta))
-                },
-            )
-            .await;
-            let (record, m, meta) = match resolved {
-                Ok(Ok(v)) => v,
-                Ok(Err((s, b))) => return (s, Json(b)).into_response(),
-                Err(e) => {
-                    return error_response(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("spawn error: {}", e),
-                        None,
-                    )
-                }
+            let (model_id, record) = match resolve_model_record(pool, &id_str).await {
+                Ok(v) => v,
+                Err((s, b)) => return (s, Json(b)).into_response(),
             };
-
-            // Populate quants from DB metadata (pure computation, stays async context).
+            let meta = load_repo_db_meta(pool, model_id).await;
+            let m = tama_core::config::ModelConfig::from_db_record(&record);
             let mut config = m.clone();
             for f in meta.files.values() {
                 let quant_key = f.quant.clone().unwrap_or_else(|| f.filename.clone());
@@ -381,9 +323,9 @@ pub async fn get_model(
                     },
                 );
             }
-            let model_state = model_states.get(&record.id).cloned();
+            let model_state = model_states.get(&model_id).cloned();
             let mut val = model_entry_json(
-                record.id,
+                model_id,
                 &record,
                 &config,
                 &configs_dir_clone,
@@ -572,69 +514,80 @@ mod tests {
 
     // ── resolve_model_record integration tests ────────────────────────────────
 
-    /// Helper: insert a test model into a tempdir and return the manager + id.
-    fn insert_test_model(tmp: &std::path::Path) -> (tama_core::models::ModelManager, i64) {
-        let mgr = tama_core::models::ModelManager::open(tmp).unwrap();
-        let id = mgr
-            .save_model_config(
-                "org--test-model",
-                &tama_core::config::ModelConfig {
-                    backend: "llama-cpp".into(),
-                    model: Some("org/test-model".into()),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-        (mgr, id)
+    /// Seed a test model in Postgres and return its id.
+    async fn insert_test_model(pool: &sqlx::PgPool) -> i64 {
+        tama_core::db::save_model_config(
+            pool,
+            "org--test-model",
+            &tama_core::config::ModelConfig {
+                backend: "llama-cpp".into(),
+                model: Some("org/test-model".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
     }
 
-    #[test]
-    fn test_resolve_model_record_by_config_key() {
-        let tmp = tempfile::tempdir().unwrap();
-        let (_mgr, expected_id) = insert_test_model(tmp.path());
+    #[tokio::test]
+    async fn test_resolve_model_record_by_config_key() {
+        let guard = crate::testing::postgres::with_schema().await;
+        let pool = guard.pool.clone();
+        let expected_id = insert_test_model(&pool).await;
 
-        let result = resolve_model_record(tmp.path(), "org--test-model");
+        let result = resolve_model_record(&pool, "org--test-model").await;
         assert!(
             result.is_ok(),
             "resolve_model_record should succeed for valid config_key"
         );
-        let (_, id, record) = result.unwrap();
+        let (id, record) = result.unwrap();
         assert_eq!(id, expected_id);
         assert_eq!(record.repo_id, "org/test-model");
+
+        guard.finish().await;
     }
 
-    #[test]
-    fn test_resolve_model_record_by_integer_id() {
-        let tmp = tempfile::tempdir().unwrap();
-        let (_mgr, expected_id) = insert_test_model(tmp.path());
+    #[tokio::test]
+    async fn test_resolve_model_record_by_integer_id() {
+        let guard = crate::testing::postgres::with_schema().await;
+        let pool = guard.pool.clone();
+        let expected_id = insert_test_model(&pool).await;
 
-        let result = resolve_model_record(tmp.path(), &expected_id.to_string());
+        let result = resolve_model_record(&pool, &expected_id.to_string()).await;
         assert!(
             result.is_ok(),
             "resolve_model_record should succeed for valid integer id"
         );
-        let (_, id, record) = result.unwrap();
+        let (id, record) = result.unwrap();
         assert_eq!(id, expected_id);
         assert_eq!(record.repo_id, "org/test-model");
+
+        guard.finish().await;
     }
 
-    #[test]
-    fn test_resolve_model_record_unknown_config_key_404() {
-        let tmp = tempfile::tempdir().unwrap();
+    #[tokio::test]
+    async fn test_resolve_model_record_unknown_config_key_404() {
+        let guard = crate::testing::postgres::with_schema().await;
+        let pool = guard.pool.clone();
         // No models inserted — any lookup should 404.
-        let result = resolve_model_record(tmp.path(), "no--such-model");
+        let result = resolve_model_record(&pool, "no--such-model").await;
         assert!(result.is_err(), "should return Err for unknown config_key");
         let (status, _) = result.unwrap_err();
         assert_eq!(status, StatusCode::NOT_FOUND);
+
+        guard.finish().await;
     }
 
-    #[test]
-    fn test_resolve_model_record_unknown_integer_404() {
-        let tmp = tempfile::tempdir().unwrap();
+    #[tokio::test]
+    async fn test_resolve_model_record_unknown_integer_404() {
+        let guard = crate::testing::postgres::with_schema().await;
+        let pool = guard.pool.clone();
         // No models inserted — integer parse succeeds but record is missing.
-        let result = resolve_model_record(tmp.path(), "999");
+        let result = resolve_model_record(&pool, "999").await;
         assert!(result.is_err(), "should return Err for unknown integer id");
         let (status, _) = result.unwrap_err();
         assert_eq!(status, StatusCode::NOT_FOUND);
+
+        guard.finish().await;
     }
 }

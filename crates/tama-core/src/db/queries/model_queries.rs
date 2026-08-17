@@ -1,61 +1,88 @@
-//! Model-related database query functions.
+//! Model pull/file database query functions (Postgres, plan-190 Task 5).
+//!
+//! All functions are async and take a `&PgPool` — the caller owns the pool.
+//!
+//! Timestamps are `TIMESTAMPTZ`; the shared record types store them as
+//! `String` in the v2 format, so reads project with
+//! `to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`.
 
 use anyhow::Result;
-use rusqlite::Connection;
+use sqlx::{PgPool, Row};
 
 use super::types::{ModelFileRecord, ModelPullRecord, PullLogEntry};
 
+/// v2-format `to_char` projection of a `TIMESTAMPTZ` column.
+const TS: &str = "YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"";
+
 /// Insert or update the pull record for a model.
-/// Uses INSERT ... ON CONFLICT(model_id) DO UPDATE.
-/// Timestamp generated via SQLite's strftime('%Y-%m-%dT%H:%M:%fZ', 'now').
-pub fn upsert_model_pull(
-    conn: &Connection,
+/// Uses `INSERT ... ON CONFLICT (model_id) DO UPDATE`.
+pub async fn upsert_model_pull(
+    pool: &PgPool,
     model_id: i64,
     repo_id: &str,
     commit_sha: &str,
 ) -> Result<()> {
-    conn.execute(
+    sqlx::query(
         "INSERT INTO model_pulls (model_id, repo_id, commit_sha, pulled_at)
-         VALUES (?1, ?2, ?3, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-         ON CONFLICT(model_id) DO UPDATE SET
-             repo_id     = excluded.repo_id,
-             commit_sha  = excluded.commit_sha,
-             pulled_at   = excluded.pulled_at",
-        (model_id, repo_id, commit_sha),
-    )?;
+         VALUES ($1, $2, $3, now())
+         ON CONFLICT (model_id) DO UPDATE SET
+             repo_id     = EXCLUDED.repo_id,
+             commit_sha  = EXCLUDED.commit_sha,
+             pulled_at   = EXCLUDED.pulled_at",
+    )
+    .bind(model_id)
+    .bind(repo_id)
+    .bind(commit_sha)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
 /// Get the stored pull record for a model. Returns None if never pulled.
-pub fn get_model_pull(conn: &Connection, model_id: i64) -> Result<Option<ModelPullRecord>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, model_id, repo_id, commit_sha, pulled_at
-         FROM model_pulls WHERE model_id = ?1",
-    )?;
-    let mut rows = stmt.query_map([model_id], |row| {
-        Ok(ModelPullRecord {
-            id: row.get(0)?,
-            model_id: row.get(1)?,
-            repo_id: row.get(2)?,
-            commit_sha: row.get(3)?,
-            pulled_at: row.get(4)?,
+pub async fn get_model_pull(pool: &PgPool, model_id: i64) -> Result<Option<ModelPullRecord>> {
+    const PULL_SQL: &str = "SELECT id, model_id, repo_id, commit_sha, \
+         to_char(pulled_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') AS pulled_at \
+         FROM model_pulls WHERE model_id = $1";
+    let row = sqlx::query(PULL_SQL)
+        .bind(model_id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.map(|r| ModelPullRecord {
+        id: r.get("id"),
+        model_id: r.get("model_id"),
+        repo_id: r.get("repo_id"),
+        commit_sha: r.get("commit_sha"),
+        pulled_at: r.get("pulled_at"),
+    }))
+}
+
+/// Get all stored pull records (backup manifest, plan-190 Task 9).
+pub async fn get_all_model_pulls(pool: &PgPool) -> Result<Vec<ModelPullRecord>> {
+    const PULL_SQL: &str = "SELECT id, model_id, repo_id, commit_sha, \
+         to_char(pulled_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') AS pulled_at \
+         FROM model_pulls ORDER BY repo_id";
+    let rows = sqlx::query(PULL_SQL).fetch_all(pool).await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| ModelPullRecord {
+            id: r.get("id"),
+            model_id: r.get("model_id"),
+            repo_id: r.get("repo_id"),
+            commit_sha: r.get("commit_sha"),
+            pulled_at: r.get("pulled_at"),
         })
-    })?;
-    match rows.next() {
-        Some(row) => Ok(Some(row?)),
-        None => Ok(None),
-    }
+        .collect())
 }
 
 /// Insert or update a file record for a pulled GGUF.
-/// Uses INSERT ... ON CONFLICT(model_id, filename) DO UPDATE.
-/// Timestamp generated via SQLite's strftime('%Y-%m-%dT%H:%M:%fZ', 'now').
+/// Uses `INSERT ... ON CONFLICT (model_id, filename) DO UPDATE`.
 ///
-/// **Verification state preservation:** if a row already exists and the incoming
-/// `lfs_oid` equals the stored one, the existing verification fields are preserved.
-/// If the hash changed the verification columns are cleared so the file will be re-verified.
-pub fn upsert_model_file(
-    conn: &Connection,
+/// **Verification state preservation:** if a row already exists and the
+/// incoming `lfs_oid` equals the stored one, the existing verification fields
+/// are preserved. If the hash changed the verification columns are cleared so
+/// the file will be re-verified.
+pub async fn upsert_model_file(
+    pool: &PgPool,
     model_id: i64,
     repo_id: &str,
     filename: &str,
@@ -63,28 +90,129 @@ pub fn upsert_model_file(
     lfs_oid: Option<&str>,
     size_bytes: Option<i64>,
 ) -> Result<()> {
-    conn.execute(
+    sqlx::query(
         "INSERT INTO model_files
              (model_id, repo_id, filename, quant, lfs_oid, size_bytes, pulled_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-         ON CONFLICT(model_id, filename) DO UPDATE SET
-             repo_id       = excluded.repo_id,
-             quant         = excluded.quant,
-             lfs_oid       = excluded.lfs_oid,
-             size_bytes    = excluded.size_bytes,
-             pulled_at = excluded.pulled_at,
+         VALUES ($1, $2, $3, $4, $5, $6, now())
+         ON CONFLICT (model_id, filename) DO UPDATE SET
+             repo_id       = EXCLUDED.repo_id,
+             quant         = EXCLUDED.quant,
+             lfs_oid       = EXCLUDED.lfs_oid,
+             size_bytes    = EXCLUDED.size_bytes,
+             pulled_at     = EXCLUDED.pulled_at,
              -- Only clear verification when the hash actually changed.
              last_verified_at = CASE
-                 WHEN model_files.lfs_oid IS NOT excluded.lfs_oid THEN NULL
+                 WHEN model_files.lfs_oid IS DISTINCT FROM EXCLUDED.lfs_oid THEN NULL
                  ELSE model_files.last_verified_at END,
              verified_ok = CASE
-                 WHEN model_files.lfs_oid IS NOT excluded.lfs_oid THEN NULL
+                 WHEN model_files.lfs_oid IS DISTINCT FROM EXCLUDED.lfs_oid THEN NULL
                  ELSE model_files.verified_ok END,
              verify_error = CASE
-                 WHEN model_files.lfs_oid IS NOT excluded.lfs_oid THEN NULL
+                 WHEN model_files.lfs_oid IS DISTINCT FROM EXCLUDED.lfs_oid THEN NULL
                  ELSE model_files.verify_error END",
-        (model_id, repo_id, filename, quant, lfs_oid, size_bytes),
-    )?;
+    )
+    .bind(model_id)
+    .bind(repo_id)
+    .bind(filename)
+    .bind(quant)
+    .bind(lfs_oid)
+    .bind(size_bytes)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+const FILE_SELECT: &str = "id, model_id, repo_id, filename, quant, lfs_oid, size_bytes, \
+     to_char(pulled_at AT TIME ZONE 'UTC', '{TS}') AS pulled_at, \
+     to_char(last_verified_at AT TIME ZONE 'UTC', '{TS}') AS last_verified_at, \
+     verified_ok, verify_error";
+
+/// Decode a row selected in `FILE_SELECT` order into a record.
+fn decode_model_file(row: &sqlx::postgres::PgRow) -> ModelFileRecord {
+    ModelFileRecord {
+        id: row.get("id"),
+        model_id: row.get("model_id"),
+        repo_id: row.get("repo_id"),
+        filename: row.get("filename"),
+        quant: row.get("quant"),
+        lfs_oid: row.get("lfs_oid"),
+        size_bytes: row.get("size_bytes"),
+        pulled_at: row.get("pulled_at"),
+        last_verified_at: row.get("last_verified_at"),
+        // Tri-state: Some(true) hash matched, Some(false) mismatch,
+        // None never verified / no upstream hash.
+        verified_ok: row.get("verified_ok"),
+        verify_error: row.get("verify_error"),
+    }
+}
+
+/// Get all stored file records for a model.
+pub async fn get_model_files(pool: &PgPool, model_id: i64) -> Result<Vec<ModelFileRecord>> {
+    let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT {} FROM model_files WHERE model_id = $1",
+        FILE_SELECT.replace("{TS}", TS)
+    )))
+    .bind(model_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.iter().map(decode_model_file).collect())
+}
+
+/// Get file records for a batch of models in one round trip
+/// (`WHERE model_id = ANY($1)`), used by `db::load_model_configs` to avoid
+/// the v2 per-model N+1 pattern.
+pub async fn get_model_files_by_ids(
+    pool: &PgPool,
+    model_ids: &[i64],
+) -> Result<Vec<ModelFileRecord>> {
+    if model_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT {} FROM model_files WHERE model_id = ANY($1)",
+        FILE_SELECT.replace("{TS}", TS)
+    )))
+    .bind(model_ids.to_vec())
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.iter().map(decode_model_file).collect())
+}
+
+/// Get all stored file records across all models.
+pub async fn get_all_model_files(pool: &PgPool) -> Result<Vec<ModelFileRecord>> {
+    let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT {} FROM model_files",
+        FILE_SELECT.replace("{TS}", TS)
+    )))
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.iter().map(decode_model_file).collect())
+}
+
+/// Delete a single model file record by (model_id, filename).
+/// Does NOT touch model_pulls — the pull record stays.
+pub async fn delete_model_file(pool: &PgPool, model_id: i64, filename: &str) -> Result<()> {
+    sqlx::query("DELETE FROM model_files WHERE model_id = $1 AND filename = $2")
+        .bind(model_id)
+        .bind(filename)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Update the `kind` column on a model file (model / mmproj / mtp).
+pub async fn update_model_file_kind(
+    pool: &PgPool,
+    model_id: i64,
+    filename: &str,
+    kind: &str,
+) -> Result<()> {
+    sqlx::query("UPDATE model_files SET kind = $1 WHERE model_id = $2 AND filename = $3")
+        .bind(kind)
+        .bind(model_id)
+        .bind(filename)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -93,30 +221,32 @@ pub fn upsert_model_file(
 /// - `verified_ok = Some(true)`: hash matched; `verify_error` cleared.
 /// - `verified_ok = Some(false)`: hash mismatch; caller should supply a short `verify_error`.
 /// - `verified_ok = None`: no upstream hash available.
-///
-/// `last_verified_at` is set to the current time via SQLite's `strftime`.
-pub fn update_verification(
-    conn: &Connection,
+pub async fn update_verification(
+    pool: &PgPool,
     model_id: i64,
     filename: &str,
     verified_ok: Option<bool>,
     verify_error: Option<&str>,
 ) -> Result<()> {
-    let verified_ok_int = verified_ok.map(|b| b as i64);
     let verify_error_param = if verified_ok == Some(true) {
         None
     } else {
         verify_error
     };
-    let affected = conn.execute(
+    let result = sqlx::query(
         "UPDATE model_files SET
-              last_verified_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-              verified_ok      = ?3,
-              verify_error     = ?4
-          WHERE model_id = ?1 AND filename = ?2",
-        (model_id, filename, verified_ok_int, verify_error_param),
-    )?;
-    if affected == 0 {
+              last_verified_at = now(),
+              verified_ok      = $3,
+              verify_error     = $4
+          WHERE model_id = $1 AND filename = $2",
+    )
+    .bind(model_id)
+    .bind(filename)
+    .bind(verified_ok)
+    .bind(verify_error_param)
+    .execute(pool)
+    .await?;
+    if result.rows_affected() == 0 {
         anyhow::bail!(
             "update_verification: no row found for model_id={} filename={}",
             model_id,
@@ -126,139 +256,23 @@ pub fn update_verification(
     Ok(())
 }
 
-/// Get all stored file records for a model.
-pub fn get_model_files(conn: &Connection, model_id: i64) -> Result<Vec<ModelFileRecord>> {
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {} FROM model_files WHERE model_id = ?1",
-        ModelFileRecord::COLUMNS
-    ))?;
-    let rows = stmt.query_map([model_id], ModelFileRecord::from_row)?;
-    rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(Into::into)
-}
-
-/// Get all stored file records across all models.
-pub fn get_all_model_files(conn: &Connection) -> Result<Vec<ModelFileRecord>> {
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {} FROM model_files",
-        ModelFileRecord::COLUMNS
-    ))?;
-    let rows = stmt.query_map([], ModelFileRecord::from_row)?;
-    rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(Into::into)
-}
-
-/// Delete a single model file record by (model_id, filename).
-/// Does NOT touch model_pulls — the pull record stays.
-pub fn delete_model_file(conn: &Connection, model_id: i64, filename: &str) -> Result<()> {
-    conn.execute(
-        "DELETE FROM model_files WHERE model_id = ?1 AND filename = ?2",
-        (model_id, filename),
-    )?;
-    Ok(())
-}
-
 /// Log a pull event (append-only).
-pub fn log_pull(conn: &Connection, entry: &PullLogEntry) -> Result<()> {
-    conn.execute(
+pub async fn log_pull(pool: &PgPool, entry: &PullLogEntry) -> Result<()> {
+    let _ = sqlx::query(
         "INSERT INTO pull_log
              (repo_id, filename, started_at, completed_at,
               size_bytes, duration_ms, success, error_message)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        (
-            &entry.repo_id,
-            &entry.filename,
-            &entry.started_at,
-            entry.completed_at.as_deref(),
-            entry.size_bytes,
-            entry.duration_ms,
-            entry.success as i64,
-            entry.error_message.as_deref(),
-        ),
-    )?;
+         VALUES ($1, $2, COALESCE(NULLIF($3, '')::timestamptz, now()), NULLIF($4, '')::timestamptz, $5, $6, $7, $8)",
+    )
+    .bind(&entry.repo_id)
+    .bind(&entry.filename)
+    .bind(&entry.started_at)
+    .bind(&entry.completed_at)
+    .bind(entry.size_bytes)
+    .bind(entry.duration_ms)
+    .bind(entry.success)
+    .bind(&entry.error_message)
+    .execute(pool)
+    .await?;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::db;
-    use crate::db::OpenResult;
-
-    #[test]
-    fn test_delete_model_file() {
-        let OpenResult { conn, .. } = db::open_in_memory().unwrap();
-
-        // Insert a model config first (required for FK)
-        db::save_model_config(&conn, "test-repo", &Default::default()).unwrap();
-
-        // Insert a model file record via upsert
-        upsert_model_file(
-            &conn,
-            1,
-            "test-repo",
-            "test-model.Q4_K_M.gguf",
-            Some("Q4_K_M"),
-            Some("sha256-abc123"),
-            Some(1_000_000),
-        )
-        .unwrap();
-
-        // Verify it exists
-        let files_before = get_model_files(&conn, 1).unwrap();
-        assert_eq!(files_before.len(), 1);
-        assert_eq!(files_before[0].filename, "test-model.Q4_K_M.gguf");
-
-        // Delete the file record
-        delete_model_file(&conn, 1, "test-model.Q4_K_M.gguf").unwrap();
-
-        // Verify it's gone
-        let files_after = get_model_files(&conn, 1).unwrap();
-        assert_eq!(files_after.len(), 0);
-    }
-
-    #[test]
-    fn test_delete_model_file_preserves_other_files() {
-        let OpenResult { conn, .. } = db::open_in_memory().unwrap();
-
-        db::save_model_config(&conn, "test-repo", &Default::default()).unwrap();
-
-        upsert_model_file(
-            &conn,
-            1,
-            "test-repo",
-            "model.Q4_K_M.gguf",
-            Some("Q4_K_M"),
-            None,
-            None,
-        )
-        .unwrap();
-        upsert_model_file(
-            &conn,
-            1,
-            "test-repo",
-            "model.Q8_0.gguf",
-            Some("Q8_0"),
-            None,
-            None,
-        )
-        .unwrap();
-
-        delete_model_file(&conn, 1, "model.Q4_K_M.gguf").unwrap();
-
-        let files = get_model_files(&conn, 1).unwrap();
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0].filename, "model.Q8_0.gguf");
-    }
-
-    #[test]
-    fn test_delete_model_file_nonexistent() {
-        let OpenResult { conn, .. } = db::open_in_memory().unwrap();
-        db::save_model_config(&conn, "test-repo", &Default::default()).unwrap();
-
-        // Should succeed (no-op)
-        delete_model_file(&conn, 1, "nonexistent.gguf").unwrap();
-        let files = get_model_files(&conn, 1).unwrap();
-        assert_eq!(files.len(), 0);
-    }
 }

@@ -2,6 +2,12 @@
 pub mod app_state;
 
 #[cfg(feature = "ssr")]
+pub mod cli;
+
+#[cfg(feature = "ssr")]
+pub mod migrate;
+
+#[cfg(feature = "ssr")]
 pub mod web_types;
 
 #[cfg(feature = "ssr")]
@@ -9,6 +15,9 @@ pub mod router;
 
 #[cfg(feature = "ssr")]
 pub mod api;
+
+#[cfg(all(test, feature = "ssr"))]
+pub mod testing;
 
 #[cfg(feature = "ssr")]
 pub mod gpu;

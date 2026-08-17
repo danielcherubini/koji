@@ -1,8 +1,15 @@
-//! Model alias database query functions.
+//! Model alias database query functions (Postgres, plan-190 Task 5).
+//!
+//! All functions are async and take a `&PgPool` — the caller owns the pool.
+//!
+//! Case-insensitive parity: v2 used `COLLATE NOCASE` on `model_aliases.name`
+//! (the v1 squashed migration intentionally has no case-insensitive index).
+//! Duplicate detection is therefore made explicit with `lower()` in
+//! [`insert_alias`] / [`update_alias`].
 
-use anyhow::Result;
-use rusqlite::{params, params_from_iter, Connection};
+use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
+use sqlx::{PgPool, Row};
 
 /// Response type for alias queries that include the resolved model name.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -17,27 +24,36 @@ pub struct AliasResponse {
     pub updated_at: String,
 }
 
-impl AliasResponse {
-    /// Select list including the computed `model_name` column. Requires the `FROM_JOIN` clause.
-    pub(crate) const COLUMNS: &str = "a.id, a.name, a.model_id, COALESCE(m.api_name, m.repo_id), \
-         a.description, a.enabled, a.created_at, a.updated_at";
+/// SELECT list for [`AliasResponse`] rows (joined with `model_configs`).
+const CACHE_SQL: &str = "SELECT a.name, COALESCE(m.api_name, m.repo_id) AS model_name \
+     FROM model_aliases a JOIN model_configs m ON m.id = a.model_id \
+     WHERE a.enabled ORDER BY a.name ASC";
+const ALL_SQL: &str =
+    "SELECT a.id, a.name, a.model_id, COALESCE(m.api_name, m.repo_id) AS model_name, \
+     a.description, a.enabled, \
+     to_char(a.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') AS created_at, \
+     to_char(a.updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') AS updated_at \
+     FROM model_aliases a JOIN model_configs m ON m.id = a.model_id \
+     ORDER BY a.name ASC";
+const BY_ID_SQL: &str =
+    "SELECT a.id, a.name, a.model_id, COALESCE(m.api_name, m.repo_id) AS model_name, \
+     a.description, a.enabled, \
+     to_char(a.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') AS created_at, \
+     to_char(a.updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') AS updated_at \
+     FROM model_aliases a JOIN model_configs m ON m.id = a.model_id \
+     WHERE a.id = $1";
 
-    /// Shared FROM/JOIN clause every `AliasResponse` query uses.
-    pub(crate) const FROM_JOIN: &str =
-        "FROM model_aliases a JOIN model_configs m ON m.id = a.model_id";
-
-    /// Map a row selected with `COLUMNS` order into a response.
-    pub(crate) fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Self> {
-        Ok(AliasResponse {
-            id: row.get(0)?,
-            name: row.get(1)?,
-            model_id: row.get(2)?,
-            model_name: row.get(3)?,
-            description: row.get(4)?,
-            enabled: row.get::<_, i32>(5)? != 0,
-            created_at: row.get(6)?,
-            updated_at: row.get(7)?,
-        })
+/// Decode an alias row selected with `ALIAS_SELECT` order.
+fn decode_alias(row: &sqlx::postgres::PgRow) -> AliasResponse {
+    AliasResponse {
+        id: row.get("id"),
+        name: row.get("name"),
+        model_id: row.get("model_id"),
+        model_name: row.get("model_name"),
+        description: row.get("description"),
+        enabled: row.get("enabled"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
     }
 }
 
@@ -45,65 +61,59 @@ impl AliasResponse {
 /// Used by ProxyState to populate the in-memory cache.
 /// Returns (alias_name, resolved_model_name) pairs.
 /// resolved_model_name = COALESCE(api_name, repo_id)
-pub fn load_aliases_for_cache(conn: &Connection) -> Result<Vec<(String, String)>> {
-    let mut stmt = conn.prepare(
-        "SELECT a.name, COALESCE(m.api_name, m.repo_id)
-         FROM model_aliases a
-         JOIN model_configs m ON m.id = a.model_id
-         WHERE a.enabled = 1
-         ORDER BY a.name ASC",
-    )?;
-
-    let rows = stmt.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(Into::into)
+pub async fn load_aliases_for_cache(pool: &PgPool) -> Result<Vec<(String, String)>> {
+    let rows = sqlx::query(CACHE_SQL).fetch_all(pool).await?;
+    Ok(rows
+        .iter()
+        .map(|r| (r.get("name"), r.get("model_name")))
+        .collect())
 }
 
 /// Load all aliases with model names for the web API.
-pub fn get_all_aliases(conn: &Connection) -> Result<Vec<AliasResponse>> {
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {} {} ORDER BY a.name ASC",
-        AliasResponse::COLUMNS,
-        AliasResponse::FROM_JOIN
-    ))?;
-
-    let rows = stmt.query_map([], AliasResponse::from_row)?;
-    rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(Into::into)
+pub async fn get_all_aliases(pool: &PgPool) -> Result<Vec<AliasResponse>> {
+    let rows = sqlx::query(ALL_SQL).fetch_all(pool).await?;
+    Ok(rows.iter().map(decode_alias).collect())
 }
 
 /// Get a single alias by integer id.
-pub fn get_alias_by_id(conn: &Connection, id: i64) -> Result<Option<AliasResponse>> {
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {} {} WHERE a.id = ?1",
-        AliasResponse::COLUMNS,
-        AliasResponse::FROM_JOIN
-    ))?;
-
-    let mut rows = stmt.query_map([id], AliasResponse::from_row)?;
-    match rows.next() {
-        Some(row) => Ok(Some(row?)),
-        None => Ok(None),
-    }
+pub async fn get_alias_by_id(pool: &PgPool, id: i64) -> Result<Option<AliasResponse>> {
+    let row = sqlx::query(BY_ID_SQL).bind(id).fetch_optional(pool).await?;
+    Ok(row.map(|r| decode_alias(&r)))
 }
 
 /// Insert a new alias. Returns the new row's id.
-pub fn insert_alias(
-    conn: &Connection,
+///
+/// Case-insensitive duplicate check (v2 `COLLATE NOCASE` parity): a name that
+/// differs from an existing alias only in case is rejected.
+pub async fn insert_alias(
+    pool: &PgPool,
     name: &str,
     model_id: i64,
     description: Option<&str>,
 ) -> Result<i64> {
-    let id: i64 = conn.query_row(
+    let dup: Option<i64> =
+        sqlx::query("SELECT id FROM model_aliases WHERE lower(name) = lower($1)")
+            .bind(name)
+            .fetch_optional(pool)
+            .await?
+            .map(|r| r.get("id"));
+    if dup.is_some() {
+        return Err(anyhow!(
+            "alias name '{}' already exists (case-insensitive)",
+            name
+        ));
+    }
+    let row = sqlx::query(
         "INSERT INTO model_aliases (name, model_id, description)
-         VALUES (?1, ?2, ?3)
+         VALUES ($1, $2, $3)
          RETURNING id",
-        params![name, model_id, description],
-        |row| row.get(0),
-    )?;
-    Ok(id)
+    )
+    .bind(name)
+    .bind(model_id)
+    .bind(description)
+    .fetch_one(pool)
+    .await?;
+    Ok(row.get("id"))
 }
 
 /// Fields to update on an alias. `None` leaves the column unchanged;
@@ -117,214 +127,72 @@ pub struct AliasUpdate<'a> {
 }
 
 /// Update an existing alias. Only updates fields that are Some.
-pub fn update_alias(conn: &Connection, id: i64, update: AliasUpdate) -> Result<()> {
-    let mut sets = Vec::new();
-    let mut bind_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+///
+/// When `name` is provided, a case-insensitive duplicate check (v2 parity)
+/// rejects it if another alias already holds the name modulo case.
+pub async fn update_alias(pool: &PgPool, id: i64, update: AliasUpdate<'_>) -> Result<()> {
+    if let Some(name) = update.name {
+        let dup: Option<i64> =
+            sqlx::query("SELECT id FROM model_aliases WHERE lower(name) = lower($1) AND id <> $2")
+                .bind(name)
+                .bind(id)
+                .fetch_optional(pool)
+                .await?
+                .map(|r| r.get("id"));
+        if dup.is_some() {
+            return Err(anyhow!(
+                "alias name '{}' already exists (case-insensitive)",
+                name
+            ));
+        }
+    }
 
+    let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new("UPDATE model_aliases SET ");
+    let mut first = true;
     if let Some(n) = update.name {
-        sets.push("name = ?".to_string());
-        bind_params.push(Box::new(n));
+        if !first {
+            qb.push(", ");
+        }
+        qb.push("name = ").push_bind(n);
+        first = false;
     }
     if let Some(m) = update.model_id {
-        sets.push("model_id = ?".to_string());
-        bind_params.push(Box::new(m));
+        if !first {
+            qb.push(", ");
+        }
+        qb.push("model_id = ").push_bind(m);
+        first = false;
     }
     if let Some(desc) = update.description {
-        sets.push("description = ?".to_string());
-        bind_params.push(Box::new(desc));
+        if !first {
+            qb.push(", ");
+        }
+        qb.push("description = ").push_bind(desc);
+        first = false;
     }
     if let Some(e) = update.enabled {
-        sets.push("enabled = ?".to_string());
-        bind_params.push(Box::new(if e { 1i32 } else { 0i32 }));
+        if !first {
+            qb.push(", ");
+        }
+        qb.push("enabled = ").push_bind(e);
+        first = false;
     }
 
-    if sets.is_empty() {
+    if first {
+        // Nothing to update.
         return Ok(());
     }
 
-    sets.push("updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')".to_string());
-
-    let sql = format!("UPDATE model_aliases SET {} WHERE id = ?", sets.join(", "));
-
-    let mut params_vec: Vec<&dyn rusqlite::ToSql> =
-        bind_params.iter().map(|p| p.as_ref()).collect();
-    params_vec.push(&id);
-
-    conn.execute(&sql, params_from_iter(params_vec))?;
+    qb.push(", updated_at = now() WHERE id = ").push_bind(id);
+    qb.build().execute(pool).await?;
     Ok(())
 }
 
 /// Delete an alias by id.
-pub fn delete_alias(conn: &Connection, id: i64) -> Result<()> {
-    conn.execute("DELETE FROM model_aliases WHERE id = ?", [id])?;
+pub async fn delete_alias(pool: &PgPool, id: i64) -> Result<()> {
+    sqlx::query("DELETE FROM model_aliases WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await?;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use rusqlite::Connection;
-
-    /// Set up an in-memory database with model_aliases and model_configs tables.
-    fn setup_test_db() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            r#"
-            CREATE TABLE model_configs (
-                id            INTEGER PRIMARY KEY AUTOINCREMENT,
-                repo_id       TEXT NOT NULL UNIQUE COLLATE NOCASE,
-                display_name  TEXT,
-                backend       TEXT NOT NULL DEFAULT 'llama_cpp',
-                enabled       INTEGER NOT NULL DEFAULT 1,
-                api_name      TEXT,
-                created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-                updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-            );
-
-            CREATE TABLE model_aliases (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE COLLATE NOCASE,
-                model_id INTEGER NOT NULL REFERENCES model_configs(id) ON DELETE CASCADE,
-                description TEXT,
-                enabled INTEGER NOT NULL DEFAULT 1,
-                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-                updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-            );
-            CREATE INDEX IF NOT EXISTS idx_model_aliases_model_id ON model_aliases(model_id);
-            CREATE INDEX IF NOT EXISTS idx_model_aliases_enabled ON model_aliases(enabled);
-            "#,
-        )
-        .unwrap();
-        conn
-    }
-
-    /// Insert a model config and return its id.
-    fn insert_model(conn: &Connection, repo_id: &str, api_name: Option<&str>) -> i64 {
-        conn.query_row(
-            "INSERT INTO model_configs (repo_id, api_name) VALUES (?1, ?2) RETURNING id",
-            params![repo_id, api_name],
-            |row| row.get(0),
-        )
-        .unwrap()
-    }
-
-    /// Empty table returns empty vec.
-    #[test]
-    fn test_load_aliases_for_cache_empty() {
-        let conn = setup_test_db();
-        let result = load_aliases_for_cache(&conn).unwrap();
-        assert!(result.is_empty());
-    }
-
-    /// Correct JOIN with COALESCE.
-    #[test]
-    fn test_load_aliases_for_cache_with_data() {
-        let conn = setup_test_db();
-
-        // Model with api_name
-        let model1_id = insert_model(&conn, "org/model1", Some("my-api-name"));
-        // Model without api_name (falls back to repo_id)
-        let model2_id = insert_model(&conn, "org/model2", None);
-
-        insert_alias(&conn, "fast", model1_id, None).unwrap();
-        insert_alias(&conn, "slow", model2_id, None).unwrap();
-        // Disabled alias
-        let disabled_id = insert_model(&conn, "org/model3", Some("disabled-api"));
-        insert_alias(&conn, "off", disabled_id, None).unwrap();
-        update_alias(
-            &conn,
-            3,
-            AliasUpdate {
-                enabled: Some(false),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-
-        let result = load_aliases_for_cache(&conn).unwrap();
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0], ("fast".to_string(), "my-api-name".to_string()));
-        assert_eq!(result[1], ("slow".to_string(), "org/model2".to_string()));
-    }
-
-    /// Round-trip insert + get by id.
-    #[test]
-    fn test_insert_and_get_alias() {
-        let conn = setup_test_db();
-        let model_id = insert_model(&conn, "org/test-model", Some("test-api"));
-
-        let alias_id = insert_alias(&conn, "my-alias", model_id, Some("A test alias")).unwrap();
-        assert_eq!(alias_id, 1);
-
-        let alias = get_alias_by_id(&conn, alias_id).unwrap().unwrap();
-        assert_eq!(alias.name, "my-alias");
-        assert_eq!(alias.model_id, model_id);
-        assert_eq!(alias.model_name, "test-api");
-        assert_eq!(alias.description, Some("A test alias".to_string()));
-        assert!(alias.enabled);
-    }
-
-    /// Partial update works.
-    #[test]
-    fn test_update_alias() {
-        let conn = setup_test_db();
-        let model_id = insert_model(&conn, "org/test-model", Some("test-api"));
-
-        let alias_id = insert_alias(&conn, "original", model_id, Some("Old desc")).unwrap();
-
-        // Update only the name
-        update_alias(
-            &conn,
-            alias_id,
-            AliasUpdate {
-                name: Some("renamed"),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-
-        let alias = get_alias_by_id(&conn, alias_id).unwrap().unwrap();
-        assert_eq!(alias.name, "renamed");
-        assert_eq!(alias.description, Some("Old desc".to_string())); // unchanged
-
-        // Update description to None (clear)
-        update_alias(
-            &conn,
-            alias_id,
-            AliasUpdate {
-                description: Some(None),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-
-        let alias = get_alias_by_id(&conn, alias_id).unwrap().unwrap();
-        assert_eq!(alias.description, None);
-    }
-
-    /// Delete removes row.
-    #[test]
-    fn test_delete_alias() {
-        let conn = setup_test_db();
-        let model_id = insert_model(&conn, "org/test-model", None);
-
-        let alias_id = insert_alias(&conn, "to-delete", model_id, None).unwrap();
-        assert!(get_alias_by_id(&conn, alias_id).unwrap().is_some());
-
-        delete_alias(&conn, alias_id).unwrap();
-        assert!(get_alias_by_id(&conn, alias_id).unwrap().is_none());
-    }
-
-    /// UNIQUE constraint fires (case-insensitive via NOCASE).
-    #[test]
-    fn test_duplicate_name_rejected() {
-        let conn = setup_test_db();
-        let model_id = insert_model(&conn, "org/test-model", None);
-
-        insert_alias(&conn, "unique-name", model_id, None).unwrap();
-
-        // Case-variant should also be rejected
-        let result = insert_alias(&conn, "Unique-Name", model_id, None);
-        assert!(result.is_err());
-    }
 }

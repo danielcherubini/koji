@@ -4,6 +4,7 @@ members = [
     "crates/tama-mock",
     "crates/tama",
     "crates/tamad",
+    "crates/tama-test-support",
 ]
 resolver = "2"
 
@@ -40,6 +41,10 @@ axum-server = { version = "0.7", features = ["tls-rustls"] }
 tower-http = { version = "0.5", features = ["cors", "trace", "catch-panic"] }
 bytes = "1.0"
 rusqlite = { version = "0.34", features = ["bundled"] }
+clap = { version = "4", features = ["derive"] }
+toml_edit = "0.22"
+percent-encoding = "2"
+time = "0.3"
 leptos = { version = "0.7", default-features = false }
 leptos_router = { version = "0.7" }
 wasm-bindgen = "0.2"
@@ -53,6 +58,10 @@ nix = { version = "0.29", features = ["process"] }
 regex = "1"
 log = "0.4"
 rand = "0.9"
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "time", "migrate", "macros"] }
+testcontainers = { version = "0.23", features = ["blocking"] }
+testcontainers-modules = { version = "0.12", features = ["postgres"] }
+tama-test-support = { path = "crates/tama-test-support" }
 oauth2 = { version = "5", features = ["reqwest"] }
 cookie = { version = "0.18", features = ["secure", "percent-encode", "signed"] }
 tonic = "0.12"

@@ -114,7 +114,9 @@ mod tests {
         let result = get_server_entrypoint(&config, &tmp_dir);
         assert!(result.is_ok(), "expected Ok, got {:?}", result.err());
         assert!(result.unwrap().ends_with("main.py"));
-        // Clean up
-        let _ = std::fs::remove_dir_all(tmp_dir.parent().unwrap());
+        // Clean up the scratch dir itself — NOT its parent (which is the
+        // system temp dir; removing that would delete every concurrent
+        // test's tempfiles out from under it).
+        let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 }

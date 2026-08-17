@@ -9,11 +9,10 @@ use std::sync::Arc;
 
 use super::check::CheckSingleQuery;
 use crate::api::error::{error_body, error_response};
-use crate::api::helpers::shared_repository;
 use crate::web_types::WebState;
 use tama_core::installations::{
-    check_latest_version, get_backend_install_path, InstallOptions, InstallationManager,
-    InstallationSource, InstallationType,
+    check_latest_version, get_backend_install_path, InstallOptions, InstallationSource,
+    InstallationType,
 };
 use tama_core::proxy::ProxyState;
 
@@ -40,56 +39,42 @@ pub async fn apply_backend_update(
     Path(name): Path<String>,
     axum::extract::Query(query): axum::extract::Query<CheckSingleQuery>,
 ) -> impl axum::response::IntoResponse {
-    let config_dir = match crate::api::helpers::resolve_config_dir(&state) {
-        Ok(d) => d,
-        Err(resp) => return resp,
-    };
+    let pool = state.db_pool();
+    let mgr = tama_core::installations::InstallationManager::new(pool.clone());
 
     // Load backend info from DB — discover gpu_variant dynamically
     let requested_variant = query.gpu_variant.clone();
-    let bt_result = tokio::task::spawn_blocking({
-        let config_dir = config_dir.clone();
-        let name = name.clone();
-        let requested_variant = requested_variant.clone();
-        move || -> anyhow::Result<(Option<InstallationType>, Option<String>)> {
-            let mgr = tama_core::installations::InstallationManager::open(&config_dir)?;
-            let versions = mgr.list_versions(&name, None)?;
-
-            // If a specific variant is requested, find that variant
-            // Otherwise, fall back to the active variant (legacy behavior)
-            let versions = match versions {
-                Some(v) => v,
-                None => return Ok((None, None)),
-            };
-
-            let record = if let Some(ref variant) = requested_variant {
-                versions.iter().find(|v| v.gpu_variant == *variant)
-            } else {
-                // No is_active field on InstallationInfo; use first as fallback
-                versions.first()
-            };
-
-            Ok(record
-                .map(|r| {
-                    let bt = match r.backend_type {
-                        InstallationType::LlamaCpp => InstallationType::LlamaCpp,
-                        InstallationType::IkLlama => InstallationType::IkLlama,
-                        _ => InstallationType::Custom,
-                    };
-                    (Some(bt), Some(r.gpu_variant.clone()))
-                })
-                .unwrap_or((None, None)))
-        }
-    })
-    .await;
-
-    let (backend_type, current_version) = match bt_result {
-        Ok(Ok(res)) => res,
-        Ok(Err(e)) => {
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None)
+    let versions = match mgr.list_versions(&name, None).await {
+        Ok(Some(v)) => v,
+        Ok(None) => {
+            return error_response(
+                StatusCode::NOT_FOUND,
+                "Backend not found",
+                Some("NotFoundError"),
+            )
         }
         Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     };
+
+    // If a specific variant is requested, find that variant
+    // Otherwise, fall back to the active variant (legacy behavior)
+    let record = if let Some(ref variant) = requested_variant {
+        versions.iter().find(|v| v.gpu_variant == *variant)
+    } else {
+        // No is_active field on InstallationInfo; use first as fallback
+        versions.first()
+    };
+
+    let (backend_type, current_version) = record
+        .map(|r| {
+            let bt = match r.backend_type {
+                InstallationType::LlamaCpp => InstallationType::LlamaCpp,
+                InstallationType::IkLlama => InstallationType::IkLlama,
+                _ => InstallationType::Custom,
+            };
+            (Some(bt), Some(r.gpu_variant.clone()))
+        })
+        .unwrap_or((None, None));
 
     let (Some(backend_type), Some(_version)) = (backend_type, current_version) else {
         return error_response(
@@ -149,38 +134,22 @@ pub async fn apply_backend_update(
     let jobs_clone = jobs.clone();
     let job_clone = job.clone();
     let name_clone = name.clone();
-    let config_dir_clone = config_dir.clone();
+    let pool_clone = pool.clone();
     tokio::spawn(async move {
-        let config_dir = config_dir_clone;
         let name_for_prep = name_clone.clone();
-        let prep = tokio::task::spawn_blocking(
-            move || -> Result<(InstallationManager, Option<Vec<_>>), String> {
-                let mgr = match InstallationManager::open(&config_dir) {
-                    Ok(m) => m,
-                    Err(e) => return Err(format!("Failed to open backend manager: {}", e)),
-                };
-                match mgr.list_versions(&name_for_prep, None) {
-                    Ok(v) => Ok((mgr, v)),
-                    Err(e) => Err(format!(
-                        "Failed to list versions for backend '{}': {}",
-                        name_for_prep, e
-                    )),
-                }
-            },
-        )
-        .await;
-        let (mgr, all_versions) = match prep {
-            Ok(Ok((m, Some(v)))) => (m, v),
-            Ok(Ok((_, None))) => {
+        let mgr = tama_core::installations::InstallationManager::new(pool_clone);
+        let all_versions = match mgr.list_versions(&name_for_prep, None).await {
+            Ok(Some(v)) => v,
+            Ok(None) => {
                 tracing::error!("Backend '{}' not found during update", name_clone);
                 return;
             }
-            Ok(Err(msg)) => {
-                tracing::error!("{}", msg);
-                return;
-            }
             Err(e) => {
-                tracing::error!("spawn error: {}", e);
+                tracing::error!(
+                    "Failed to list versions for backend '{}': {}",
+                    name_for_prep,
+                    e
+                );
                 return;
             }
         };
@@ -266,51 +235,32 @@ pub async fn apply_model_update(
     Path(id): Path<i64>,
     Json(req): Json<ModelUpdateRequest>,
 ) -> impl axum::response::IntoResponse {
-    let repo_handle = match shared_repository(&web_state) {
-        Ok(h) => h,
-        Err(resp) => return resp,
-    };
-
     // 1. Resolve model: get repo_id and model files for requested quant keys
+    //    (Postgres, plan-190 Task 5).
+    let pool = web_state.db_pool.as_ref();
+
     let req_quants = req.quants.clone();
-    let res_result = tokio::task::spawn_blocking({
-        let repo_handle = repo_handle.clone();
-        move || -> anyhow::Result<(String, Vec<(String, String)>)> {
-            let repo = repo_handle.lock().unwrap();
-            let model_record = repo
-                .get_model_config(id)?
-                .ok_or_else(|| anyhow::anyhow!("Model not found"))?;
-            let repo_id = model_record.repo_id;
-
-            // Get model files for this model
-            let model_files = repo.get_model_files(id)?;
-
-            // Filter to only the requested quant keys (where quant column matches).
-            // Skip files with NULL/None quant — they won't match any requested key.
-            let files_to_update: Vec<(String, String)> = model_files
-                .into_iter()
-                .filter(|f| f.quant.as_ref().is_some_and(|q| req_quants.contains(q)))
-                .map(|f| (f.quant.clone().unwrap_or_default(), f.filename))
-                .collect();
-
-            Ok((repo_id, files_to_update))
-        }
-    })
-    .await;
-
-    let (repo_id, files_to_update) = match res_result {
-        Ok(Ok(val)) => val,
-        Ok(Err(e)) => {
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None)
-        }
-        Err(e) => {
+    let model_record = match tama_core::db::queries::get_model_config(pool, id).await {
+        Ok(Some(r)) => r,
+        Ok(None) => {
             return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Join error: {}", e),
-                None,
+                StatusCode::NOT_FOUND,
+                "Model not found",
+                Some("NotFoundError"),
             )
         }
+        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
     };
+    let repo_id = model_record.repo_id;
+    let model_files = match tama_core::db::queries::get_model_files(pool, id).await {
+        Ok(f) => f,
+        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
+    };
+    let files_to_update: Vec<(String, String)> = model_files
+        .into_iter()
+        .filter(|f| f.quant.as_ref().is_some_and(|q| req_quants.contains(q)))
+        .map(|f| (f.quant.clone().unwrap_or_default(), f.filename))
+        .collect();
 
     // 2. Validate: ensure all requested quants exist for this model
     let valid_keys: std::collections::HashSet<&str> =
@@ -335,7 +285,7 @@ pub async fn apply_model_update(
         .filter(|(_, fn_)| seen_filenames.insert(fn_.clone()))
         .collect();
 
-    // 4. Pre-check for duplicate enqueues and enqueue each quant — all in one spawn_blocking.
+    // 4. Pre-check for duplicate enqueues and enqueue each quant.
     let svc = match state.pull_queue().as_ref() {
         Some(s) => s.clone(),
         None => {
@@ -347,81 +297,63 @@ pub async fn apply_model_update(
         }
     };
 
-    let enqueue_result = tokio::task::spawn_blocking(
-        move || -> Result<Vec<String>, (StatusCode, serde_json::Value)> {
-            let repo = shared_repository(&web_state).map_err(|resp| {
-                (
-                    resp.status(),
-                    serde_json::json!({ "error": "Database not configured" }),
+    // Phase 1: Preflight — check all items for duplicates before creating any jobs.
+    for (quant_key, filename) in &unique_files {
+        let existing = match tama_core::db::queries::get_active_item_by_repo_filename(
+            pool, &repo_id, filename,
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "error": format!("Queue check failed for '{}': {}", filename, e)
+                    })),
                 )
-            })?;
-            let repo = repo.lock().unwrap();
-
-            // Phase 1: Preflight — check all items for duplicates before creating any jobs.
-            for (quant_key, filename) in &unique_files {
-                match repo.get_active_pull_by_filename(&repo_id, filename) {
-                    Ok(Some(existing)) => {
-                        let mut body = error_body(
-                            format!(
-                                "Download already in progress for quant '{}' ({})",
-                                quant_key, filename
-                            ),
-                            Some("ConflictError"),
-                        );
-                        body["existing_job_id"] = serde_json::json!(existing.job_id);
-                        return Err((StatusCode::CONFLICT, body));
-                    }
-                    Ok(None) => {}
-                    Err(e) => {
-                        return Err((
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            serde_json::json!({
-                                "error": format!("Queue check failed for '{}': {}", filename, e)
-                            }),
-                        ));
-                    }
-                }
+                    .into_response()
             }
+        };
+        if let Some(existing) = existing {
+            let mut body = error_body(
+                format!(
+                    "Download already in progress for quant '{}' ({})",
+                    quant_key, filename
+                ),
+                Some("ConflictError"),
+            );
+            body["existing_job_id"] = serde_json::json!(existing.job_id);
+            return (StatusCode::CONFLICT, Json(body)).into_response();
+        }
+    }
 
-            // Phase 2: All preflight checks passed — generate job IDs and enqueue.
-            let mut job_ids = Vec::new();
-            for (quant_key, filename) in &unique_files {
-                let job_id = uuid::Uuid::new_v4().to_string();
+    // Phase 2: All preflight checks passed — generate job IDs and enqueue.
+    let mut job_ids = Vec::new();
+    for (quant_key, filename) in &unique_files {
+        let job_id = uuid::Uuid::new_v4().to_string();
 
-                if let Err(e) = svc.enqueue(
-                    &job_id,
-                    &repo_id,
-                    filename,
-                    Some(quant_key.as_str()),
-                    "model",
-                    Some(quant_key.as_str()),
-                    None,
-                ) {
-                    return Err((
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        serde_json::json!({ "error": e.to_string() }),
-                    ));
-                }
-
-                job_ids.push(job_id);
-            }
-
-            Ok(job_ids)
-        },
-    )
-    .await;
-
-    let job_ids = match enqueue_result {
-        Ok(Ok(ids)) => ids,
-        Ok(Err((s, b))) => return (s, Json(b)).into_response(),
-        Err(e) => {
+        if let Err(e) = svc
+            .enqueue(
+                &job_id,
+                &repo_id,
+                filename,
+                Some(quant_key.as_str()),
+                "model",
+                Some(quant_key.as_str()),
+                None,
+            )
+            .await
+        {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": format!("spawn error: {}", e) })),
+                Json(serde_json::json!({ "error": e.to_string() })),
             )
-                .into_response()
+                .into_response();
         }
-    };
+
+        job_ids.push(job_id);
+    }
 
     let total = job_ids.len();
     Json(ModelUpdateResponse { job_ids, total }).into_response()

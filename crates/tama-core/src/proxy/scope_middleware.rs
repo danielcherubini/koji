@@ -510,26 +510,21 @@ mod tests {
 
     // ── Integration tests: full auth → scope flow ─────────────────────────
 
-    /// Helper: create a temporary directory with a DB containing an API key.
-    /// Returns the proxy state and the temp dir (kept alive).
-    fn make_test_db(
+    /// Helper: create a Postgres schema with a seeded API key.
+    /// Returns the proxy state, the schema guard (kept alive), and the raw key.
+    async fn make_test_db(
         scopes: &[Scope],
     ) -> (
         std::sync::Arc<crate::proxy::ProxyState>,
-        tempfile::TempDir,
+        crate::testing::postgres::SchemaGuard,
         String,
     ) {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let db_path = temp_dir.path().join("tama.db");
-        let db_dir = temp_dir.path().to_path_buf();
-
-        let conn = rusqlite::Connection::open(&db_path).unwrap();
-        crate::db::migrations::run(&conn).unwrap();
-        crate::db::queries::seed_defaults(&conn).unwrap();
+        let guard = crate::testing::postgres::with_schema().await;
 
         let key = crate::proxy::api_keys::generate_key();
-        crate::proxy::api_keys::ApiKeyStore::new(&conn)
+        crate::proxy::api_keys::ApiKeyStore::new(Arc::new(guard.pool.clone()))
             .create_key("test-key", &key, scopes, "admin", None)
+            .await
             .unwrap();
 
         let config = crate::config::Config {
@@ -546,16 +541,20 @@ mod tests {
             },
             ..Default::default()
         };
-        let proxy_state = std::sync::Arc::new(crate::proxy::ProxyState::new(config, Some(db_dir)));
+        let proxy_state = Arc::new(crate::proxy::ProxyState::new(
+            config,
+            None,
+            Arc::new(guard.pool.clone()),
+        ));
 
-        (proxy_state, temp_dir, key)
+        (proxy_state, guard, key)
     }
 
     /// Integration test: auth with valid key → scope check → handler passes.
     /// Key with `inference` scope → POST /v1/chat/completions → 200
     #[tokio::test]
     async fn test_full_auth_then_scope_flow_inference_key() {
-        let (state, _temp_dir, key) = make_test_db(&[Scope::Inference]);
+        let (state, _guard, key) = make_test_db(&[Scope::Inference]).await;
 
         let app = Router::new()
             .route("/v1/chat/completions", post(post_handler).get(test_handler))
@@ -609,7 +608,7 @@ mod tests {
     /// Key with `management:write` scope → POST /tama/v1/models/test/load → 200
     #[tokio::test]
     async fn test_full_auth_then_scope_flow_management_write_key() {
-        let (state, _temp_dir, key) = make_test_db(&[Scope::ManagementWrite]);
+        let (state, _guard, key) = make_test_db(&[Scope::ManagementWrite]).await;
 
         let app = Router::new()
             .route("/v1/chat/completions", post(post_handler).get(test_handler))
@@ -671,7 +670,7 @@ mod tests {
     /// Integration test: skip paths bypass both auth and scope middlewares.
     #[tokio::test]
     async fn test_full_auth_then_scope_flow_skip_paths() {
-        let (state, _temp_dir, _key) = make_test_db(&[Scope::Inference]);
+        let (state, _guard, _key) = make_test_db(&[Scope::Inference]).await;
 
         let app = Router::new()
             .route("/v1/chat/completions", post(post_handler).get(test_handler))

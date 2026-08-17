@@ -71,6 +71,7 @@ pub async fn run_mtp_benchmark(
     (StatusCode::ACCEPTED, Json(BenchmarkRunResponse { job_id })).into_response()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_mtp_benchmark_inner(
     jobs: Arc<JobManager>,
     job: Arc<crate::web_types::Job>,
@@ -78,7 +79,7 @@ pub async fn run_mtp_benchmark_inner(
     db_path: std::path::PathBuf,
     proxy_base_url: String,
     client: reqwest::Client,
-    repo_handle: std::sync::Arc<std::sync::Mutex<tama_core::db::repository::Repository>>,
+    db_pool: std::sync::Arc<sqlx::PgPool>,
 ) -> Result<()> {
     use tama_core::bench::llama_cli_mtp;
 
@@ -100,68 +101,48 @@ pub async fn run_mtp_benchmark_inner(
     let benchmark_type = req.benchmark_type.clone();
     let draft_max_for_trace = req.draft_max_values.clone();
 
-    // Load config - clone db_path for the blocking task
-    let db_path_for_load = db_path.clone();
+    // Load the global config from Postgres (plan-190 Task 3).
+    let pool = db_pool.as_ref();
+    let config = tama_core::config::Config::load_from_pool(pool).await?;
 
-    let config = tokio::task::spawn_blocking(move || {
-        tama_core::config::Config::load_from(&db_path_for_load)
-    })
-    .await??;
-
-    // Resolve model path — pool the blocking SQLite calls.
+    // Resolve model path — model configs and files come from Postgres.
     let db_dir = db_path.parent().context("db_path has no parent")?;
-    // Clone values before moving into the spawn_blocking closure.
-    let model_id_for_pool = model_id.clone();
-    let quant_for_pool = quant.clone();
-    let config_for_pool = config.clone();
-    let db_dir_for_pool = db_dir.to_path_buf();
-    let repo_handle_for_pool = repo_handle.clone();
-    let (model_path, target_backend, display_name, resolved_id_owned) =
-        tokio::task::spawn_blocking(
-            move || -> anyhow::Result<(std::path::PathBuf, String, Option<String>, String)> {
-                let model_configs = {
-                    let repo = repo_handle_for_pool.lock().unwrap();
-                    repo.load_model_configs_for_benchmarks()
-                }?;
+    let model_configs = tama_core::db::load_model_configs(pool).await?;
 
-                // If model_id is an integer db_id, resolve it to the config key first.
-                let resolved_id = if let Ok(db_id) = model_id_for_pool.parse::<i64>() {
-                    model_configs
-                        .iter()
-                        .find(|(_, mc)| mc.db_id == Some(db_id))
-                        .map(|(key, _)| key.clone())
-                        .unwrap_or(model_id_for_pool.clone())
-                } else {
-                    model_id_for_pool.clone()
-                };
+    // If model_id is an integer db_id, resolve it to the config key first.
+    let resolved_id = if let Ok(db_id) = model_id.parse::<i64>() {
+        model_configs
+            .iter()
+            .find(|(_, mc)| mc.db_id == Some(db_id))
+            .map(|(key, _)| key.clone())
+            .unwrap_or(model_id.clone())
+    } else {
+        model_id.clone()
+    };
 
-                let (model_config, _) = config_for_pool
-                    .resolve_backend(&model_configs, &resolved_id)
-                    .context("Failed to resolve server config for benchmark")?;
-
-                let repo = repo_handle_for_pool.lock().unwrap();
-                let model_path = resolve_model_path(
-                    &config_for_pool,
-                    &db_dir_for_pool,
-                    &repo,
-                    &model_configs,
-                    &resolved_id,
-                    quant_for_pool.as_deref(),
-                )?;
-                let display_name = model_configs.get(&resolved_id).and_then(|mc| {
-                    mc.display_name
-                        .clone()
-                        .or_else(|| mc.api_name.clone())
-                        .or_else(|| mc.model.clone())
-                });
-                let target_backend = backend_name
-                    .as_deref()
-                    .unwrap_or(&model_config.backend)
-                    .to_string();
-                Ok((model_path, target_backend, display_name, resolved_id))
-            },
-        )
-        .await??;
+    let (model_config, _) = config
+        .resolve_backend(&model_configs, &resolved_id)
+        .context("Failed to resolve server config for benchmark")?;
+    let model_path = resolve_model_path(
+        &config,
+        db_dir,
+        pool,
+        &model_configs,
+        &resolved_id,
+        quant.as_deref(),
+    )
+    .await?;
+    let display_name = model_configs.get(&resolved_id).and_then(|mc| {
+        mc.display_name
+            .clone()
+            .or_else(|| mc.api_name.clone())
+            .or_else(|| mc.model.clone())
+    });
+    let target_backend = backend_name
+        .as_deref()
+        .unwrap_or(&model_config.backend)
+        .to_string();
+    let resolved_id_owned = resolved_id;
 
     // Build MtpBenchConfig
     let mtp_config = llama_cli_mtp::MtpBenchConfig {
@@ -180,19 +161,11 @@ pub async fn run_mtp_benchmark_inner(
         jobs: jobs.clone(),
     });
 
-    // Resolve backend path — pool the blocking SQLite calls.
-    let db_dir_for_pm = db_dir.to_path_buf();
-    let target_backend_for_pm = target_backend.clone();
-    let gpu_variant_for_pm = gpu_variant.clone();
-    let backend_path = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
-        let manager = tama_core::installations::InstallationManager::open(&db_dir_for_pm)?;
-        config.resolve_backend_path(
-            &target_backend_for_pm,
-            gpu_variant_for_pm.as_ref(),
-            &manager,
-        )
-    })
-    .await??;
+    // Resolve backend path via the Postgres-backed InstallationManager.
+    let manager = tama_core::installations::InstallationManager::new(db_pool.clone());
+    let backend_path = config
+        .resolve_backend_path(&target_backend, gpu_variant.as_ref(), Some(&manager))
+        .await?;
 
     // Discover llama-server binary
     // The resolved path may be a file (llama-server) rather than the backend directory.
@@ -229,41 +202,29 @@ pub async fn run_mtp_benchmark_inner(
     // Get VRAM info
     let vram = query_vram();
 
-    // Clone values before moving into the spawn_blocking closure.
-    let display_name_for_trace = display_name.clone();
-    let model_id_for_trace = model_id.clone();
-    let quant_for_trace = quant.clone();
-    let target_backend_for_trace = target_backend.clone();
-    let run_status_for_insert = run_status.to_string();
-
-    // Insert into database — pool the blocking SQLite call.
-    let repo_handle_for_insert = repo_handle.clone();
-    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let repo = repo_handle_for_insert.lock().unwrap();
-        repo.insert_benchmark(&tama_core::db::repository::BenchmarkParams {
-            model_id: model_id_for_trace,
-            display_name: display_name_for_trace,
-            quant: quant_for_trace,
-            backend: target_backend_for_trace.to_string(),
-            engine: "llama_cli_mtp".to_string(),
-            pp_sizes_json: pp_sizes_json.to_string(),
-            tg_sizes_json: tg_sizes_json.to_string(),
-            threads_json: None,
-            ngl_range: None,
-            runs: 1,
-            warmup: 0,
-            results_json,
-            load_time_ms: None,
-            vram_used_mib: vram.as_ref().map(|v| v.used_mib as i64),
-            vram_total_mib: vram.as_ref().map(|v| v.total_mib as i64),
-            duration_seconds: 0.0,
-            status: run_status_for_insert,
-            benchmark_type: benchmark_type.clone(),
-            suite_id: req.suite_id,
-        })?;
-        Ok(())
-    })
-    .await??;
+    // Insert into Postgres (plan-190 Task 8).
+    let params = tama_core::db::queries::BenchmarkInsertParams {
+        model_id: &model_id,
+        display_name: display_name.as_deref(),
+        quant: quant.as_deref(),
+        backend: &target_backend,
+        engine: "llama_cli_mtp",
+        pp_sizes_json,
+        tg_sizes_json,
+        threads_json: None,
+        ngl_range: None,
+        runs: 1,
+        warmup: 0,
+        results_json: &results_json,
+        load_time_ms: None,
+        vram_used_mib: vram.as_ref().map(|v| v.used_mib as i64),
+        vram_total_mib: vram.as_ref().map(|v| v.total_mib as i64),
+        duration_seconds: 0.0,
+        status: run_status,
+        benchmark_type: benchmark_type.as_deref(),
+        suite_id: req.suite_id.as_deref(),
+    };
+    tama_core::db::queries::insert_benchmark(pool, &params).await?;
 
     tracing::info!(
         job_id = %job.id,

@@ -1,4 +1,5 @@
 //! POST /tama/v1/providers — Create a new provider.
+//! (Postgres, plan-190 Task 5.)
 
 use axum::{
     extract::{Extension, State},
@@ -9,7 +10,6 @@ use axum::{
 use std::sync::Arc;
 
 use crate::api::error::{error_body, error_response};
-use crate::api::helpers::shared_repository;
 use crate::web_types::WebState;
 use tama_core::proxy::ProxyState;
 
@@ -84,88 +84,74 @@ pub async fn create_provider(
         }
     }
 
-    let repo = match shared_repository(&web_state) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
+    let pool = web_state.db_pool.as_ref();
 
-    // Capture fields for spawn_blocking closure
-    let name = req.name.clone();
-    let engine = req.engine.clone();
-    let tamad_id = req.tamad_id.clone();
-    let base_url = req.base_url.clone();
-    let api_key = req.api_key.clone();
-    let repo = repo.clone();
+    let name = req.name;
+    let engine = req.engine;
+    let tamad_id = req.tamad_id;
+    let base_url = req.base_url;
+    let api_key = req.api_key;
 
-    let result =
-        tokio::task::spawn_blocking(move || -> Result<_, (StatusCode, serde_json::Value)> {
-            let repo = repo.lock().unwrap();
-
-            let _id = repo
-                .insert_provider(
-                    &name,
-                    provider_type,
-                    &engine,
-                    tamad_id.as_deref(),
-                    base_url.as_deref(),
-                    api_key.as_deref(),
-                )
-                .map_err(|e: anyhow::Error| {
-                    // Walk the error chain to check for UNIQUE constraint violations
-                    let is_unique = e
-                        .chain()
-                        .any(|c| c.to_string().to_lowercase().contains("unique"));
-                    let msg = e.to_string();
-                    let status = if is_unique {
-                        StatusCode::CONFLICT
-                    } else {
-                        StatusCode::INTERNAL_SERVER_ERROR
-                    };
-                    (status, error_body(msg, Some("DatabaseError")))
-                })?;
-
-            // Fetch the created provider
-            repo.get_provider(&name).ok().flatten().ok_or_else(|| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    error_body("Failed to retrieve created provider", None),
-                )
-            })
-        })
-        .await;
-
-    let provider = match result {
-        Ok(Ok(p)) => p,
-        Ok(Err((s, b))) => return (s, Json(b)).into_response(),
+    match tama_core::db::queries::insert_provider(
+        pool,
+        &name,
+        provider_type,
+        &engine,
+        tamad_id.as_deref(),
+        base_url.as_deref(),
+        api_key.as_deref(),
+    )
+    .await
+    {
+        Ok(_) => {}
         Err(e) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Task panicked: {}", e),
-                None,
+            // Walk the error chain to check for UNIQUE constraint violations
+            let is_unique = e
+                .chain()
+                .any(|c| c.to_string().to_lowercase().contains("unique"));
+            let status = if is_unique {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            return (
+                status,
+                Json(error_body(e.to_string(), Some("DatabaseError"))),
             )
+                .into_response();
         }
-    };
+    }
 
-    // Return the created provider
-    (StatusCode::CREATED, Json(provider)).into_response()
+    // Fetch the created provider
+    match tama_core::db::queries::get_provider(pool, &name).await {
+        Ok(Some(p)) => (StatusCode::CREATED, Json(p)).into_response(),
+        Ok(None) => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to retrieve created provider",
+            None,
+        ),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use axum::body::Body;
     use axum::http::Request;
-    use std::sync::{Arc, Mutex};
-    use tama_core::db::repository::Repository;
+    use std::sync::Arc;
     use tama_core::proxy::ProxyState;
     use tower::ServiceExt;
 
     fn build_test_state(
+        pool: Arc<sqlx::PgPool>,
         tmp_dir: &std::path::Path,
     ) -> (Arc<ProxyState>, Arc<crate::web_types::WebState>) {
         let config = tama_core::config::Config::default();
-        let state = Arc::new(ProxyState::new(config, Some(tmp_dir.to_path_buf())));
-
-        let repo = Repository::open(tmp_dir).unwrap();
+        let state = Arc::new(ProxyState::new(
+            config,
+            Some(tmp_dir.to_path_buf()),
+            pool.clone(),
+        ));
 
         let web_state = Arc::new(crate::web_types::WebState {
             jobs: Some(Arc::new(crate::web_types::JobManager::new())),
@@ -174,7 +160,7 @@ mod tests {
             binary_version: "test".to_string(),
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-            repository: Some(Arc::new(Mutex::new(repo))),
+            db_pool: pool,
         });
 
         (state, web_state)
@@ -183,8 +169,10 @@ mod tests {
     /// POST /tama/v1/providers with local type but no tamad_id → 400.
     #[tokio::test]
     async fn test_create_local_without_tamad_id_returns_400() {
+        let guard = crate::testing::postgres::with_schema().await;
+        let pool = Arc::new(guard.pool.clone());
         let tmp_dir = tempfile::tempdir().expect("tempdir");
-        let (state, web_state) = build_test_state(tmp_dir.path());
+        let (state, web_state) = build_test_state(pool, tmp_dir.path());
         let router = crate::router::build_web_routes(web_state.clone())
             .with_state(state)
             .layer(axum::extract::Extension(web_state.as_ref().clone()));
@@ -207,13 +195,17 @@ mod tests {
             axum::http::StatusCode::BAD_REQUEST,
             "local provider without tamad_id should return 400"
         );
+
+        guard.finish().await;
     }
 
     /// POST /tama/v1/providers with remote type but no base_url → 400.
     #[tokio::test]
     async fn test_create_remote_without_base_url_returns_400() {
+        let guard = crate::testing::postgres::with_schema().await;
+        let pool = Arc::new(guard.pool.clone());
         let tmp_dir = tempfile::tempdir().expect("tempdir");
-        let (state, web_state) = build_test_state(tmp_dir.path());
+        let (state, web_state) = build_test_state(pool, tmp_dir.path());
         let router = crate::router::build_web_routes(web_state.clone())
             .with_state(state)
             .layer(axum::extract::Extension(web_state.as_ref().clone()));
@@ -236,13 +228,17 @@ mod tests {
             axum::http::StatusCode::BAD_REQUEST,
             "remote provider without base_url should return 400"
         );
+
+        guard.finish().await;
     }
 
     /// POST /tama/v1/providers with invalid provider_type → 400.
     #[tokio::test]
     async fn test_create_invalid_provider_type_returns_400() {
+        let guard = crate::testing::postgres::with_schema().await;
+        let pool = Arc::new(guard.pool.clone());
         let tmp_dir = tempfile::tempdir().expect("tempdir");
-        let (state, web_state) = build_test_state(tmp_dir.path());
+        let (state, web_state) = build_test_state(pool, tmp_dir.path());
         let router = crate::router::build_web_routes(web_state.clone())
             .with_state(state)
             .layer(axum::extract::Extension(web_state.as_ref().clone()));
@@ -266,13 +262,17 @@ mod tests {
             axum::http::StatusCode::BAD_REQUEST,
             "invalid provider_type should return 400"
         );
+
+        guard.finish().await;
     }
 
     /// POST /tama/v1/providers with empty name → 400.
     #[tokio::test]
     async fn test_create_empty_name_returns_400() {
+        let guard = crate::testing::postgres::with_schema().await;
+        let pool = Arc::new(guard.pool.clone());
         let tmp_dir = tempfile::tempdir().expect("tempdir");
-        let (state, web_state) = build_test_state(tmp_dir.path());
+        let (state, web_state) = build_test_state(pool, tmp_dir.path());
         let router = crate::router::build_web_routes(web_state.clone())
             .with_state(state)
             .layer(axum::extract::Extension(web_state.as_ref().clone()));
@@ -296,13 +296,17 @@ mod tests {
             axum::http::StatusCode::BAD_REQUEST,
             "empty name should return 400"
         );
+
+        guard.finish().await;
     }
 
     /// POST /tama/v1/providers with duplicate name → 409.
     #[tokio::test]
     async fn test_create_duplicate_name_returns_409() {
+        let guard = crate::testing::postgres::with_schema().await;
+        let pool = Arc::new(guard.pool.clone());
         let tmp_dir = tempfile::tempdir().expect("tempdir");
-        let (state, web_state) = build_test_state(tmp_dir.path());
+        let (state, web_state) = build_test_state(pool, tmp_dir.path());
         let router = crate::router::build_web_routes(web_state.clone())
             .with_state(state)
             .layer(axum::extract::Extension(web_state.as_ref().clone()));
@@ -337,5 +341,7 @@ mod tests {
             axum::http::StatusCode::CONFLICT,
             "duplicate name should return 409"
         );
+
+        guard.finish().await;
     }
 }

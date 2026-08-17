@@ -157,7 +157,7 @@ fn feed_sample(
 
 /// Start the system metrics collection background task.
 ///
-/// Creates an in-memory history buffer seeded from SQLite, then spawns
+/// Creates an in-memory history buffer seeded from Postgres, then spawns
 /// a task that periodically collects system metrics, persists them,
 /// updates the buffer, and broadcasts to subscribers.
 ///
@@ -165,26 +165,26 @@ fn feed_sample(
 pub fn start_metrics_collector(
     state: Arc<crate::proxy::ProxyState>,
 ) -> tokio::task::JoinHandle<()> {
-    // Seed in-memory bucket accumulator from SQLite. Replay the most recent
-    // raw rows through the same feed_sample() path used by the live loop so
-    // the seeded buckets have identical structure to live ones.
     let mut frozen_buckets: VecDeque<crate::gpu::MetricBucket> =
         VecDeque::with_capacity(MAX_FROZEN_BUCKETS + 1);
     let mut accum: Option<BucketAccumulator> = None;
-    if let Some(seed_conn) = state.open_db() {
-        if let Ok(rows) = crate::db::queries::get_recent_system_metrics(&seed_conn, 450) {
+
+    // Spawn background task to refresh system metrics every 2s.
+    // Each tick: collect metrics, build unified sample (system + inference),
+    // persist to Postgres, update in-memory buffer, broadcast full buffer.
+    let metrics_state = Arc::clone(&state);
+    tokio::spawn(async move {
+        // Seed in-memory bucket accumulator from Postgres. Replay the most
+        // recent raw rows through the same feed_sample() path used by the
+        // live loop so the seeded buckets have identical structure to live ones.
+        let pool = metrics_state.db_pool();
+        if let Ok(rows) = crate::db::queries::get_recent_system_metrics(&pool, 450).await {
             for row in rows {
                 let sample = row_into_sample(&row);
                 feed_sample(&mut frozen_buckets, &mut accum, &sample);
             }
         }
-    }
 
-    // Spawn background task to refresh system metrics every 2s.
-    // Each tick: collect metrics, build unified sample (system + inference),
-    // persist to SQLite, update in-memory buffer, broadcast full buffer.
-    let metrics_state = Arc::clone(&state);
-    tokio::spawn(async move {
         let mut sys = sysinfo::System::new();
 
         // Network detection — done once before the loop
@@ -302,7 +302,7 @@ pub fn start_metrics_collector(
                 network: network_stats.clone(),
             };
 
-            // 5. Persist to SQLite (include inference fields in SystemMetricsRow)
+            // 5. Persist to Postgres (include inference fields in SystemMetricsRow)
             let row = crate::db::queries::SystemMetricsRow {
                 ts_unix_ms: sample.ts_unix_ms,
                 cpu_usage_pct: sample.cpu_usage_pct,
@@ -319,7 +319,7 @@ pub fn start_metrics_collector(
                 net_rx_bytes: Some(cum_rx as i64),
                 net_tx_bytes: Some(cum_tx as i64),
             };
-            // Persist (spawn_blocking, unchanged pattern)
+            // Persist (non-fatal — a DB hiccup must not kill the collector)
             let retention_secs = metrics_state
                 .config
                 .read()
@@ -327,16 +327,10 @@ pub fn start_metrics_collector(
                 .proxy
                 .metrics_retention_secs;
             let cutoff_ms = sample.ts_unix_ms - (retention_secs as i128 * 1000) as i64;
-            let db_state = Arc::clone(&metrics_state);
-            let _ = tokio::task::spawn_blocking(move || {
-                if let Some(conn) = db_state.open_db() {
-                    if let Err(e) = crate::db::queries::insert_system_metric(&conn, &row, cutoff_ms)
-                    {
-                        tracing::warn!("failed to persist system metric: {}", e);
-                    }
-                }
-            })
-            .await;
+            let pool = metrics_state.db_pool();
+            if let Err(e) = crate::db::queries::insert_system_metric(&pool, &row, cutoff_ms).await {
+                tracing::warn!("failed to persist system metric: {}", e);
+            }
 
             // 6. Feed this sample into the bucket accumulator. This freezes
             // the previous bucket when the sample crosses a 30s boundary,
@@ -364,7 +358,7 @@ pub fn start_metrics_collector(
     })
 }
 
-/// Convert a `SystemMetricsRow` from SQLite into a `MetricSample`.
+/// Convert a `SystemMetricsRow` from Postgres into a `MetricSample`.
 /// Used to seed the in-memory history buffer on startup.
 fn row_into_sample(row: &crate::db::queries::SystemMetricsRow) -> crate::gpu::MetricSample {
     crate::gpu::MetricSample {
