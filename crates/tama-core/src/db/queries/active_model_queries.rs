@@ -3,9 +3,8 @@
 //! All functions are async and take a `&PgPool` — the caller owns the pool.
 //!
 //! `loaded_at`/`last_accessed` are `TIMESTAMPTZ`; the shared
-//! [`ActiveModelRecord`] type (still used by the transitional SQLite machinery
-//! until Task 9) stores them as `String` in the v2 format, so reads project
-//! with `to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`.
+//! [`ActiveModelRecord`] type stores them as `String` in the v2 format, so
+//! reads project with `to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`.
 
 use anyhow::Result;
 use sqlx::{PgPool, Row};

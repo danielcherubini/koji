@@ -2,9 +2,8 @@
 //!
 //! All functions are async and take a `&PgPool` — the caller owns the pool.
 //!
-//! Timestamps are `TIMESTAMPTZ`; the shared record types (still used by the
-//! transitional SQLite machinery until Task 9) store them as `String` in the
-//! v2 format, so reads project with
+//! Timestamps are `TIMESTAMPTZ`; the shared record types store them as
+//! `String` in the v2 format, so reads project with
 //! `to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`.
 
 use anyhow::Result;

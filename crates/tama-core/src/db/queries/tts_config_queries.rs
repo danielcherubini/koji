@@ -1,6 +1,12 @@
 //! TTS configuration database query functions (Postgres, plan-190 Task 4).
 //!
 //! All functions are async and take a `&PgPool` — the caller owns the pool.
+//!
+//! Case-insensitive parity gap: v2's `tts_configs.engine` was `COLLATE NOCASE`,
+//! but the Postgres `UNIQUE (engine)` is case-sensitive, so 'Kokoro' and
+//! 'kokoro' are distinct rows. There are no runtime callers today; when TTS
+//! config gains runtime callers, a `lower(engine)` (or citext) guard must be
+//! added to restore v2 parity.
 
 use anyhow::Result;
 use sqlx::{PgPool, Row};

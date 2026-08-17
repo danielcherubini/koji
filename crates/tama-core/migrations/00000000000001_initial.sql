@@ -347,6 +347,7 @@ CREATE INDEX idx_benchmarks_model_id ON benchmarks(model_id);
 CREATE INDEX idx_dq_status ON pull_queue(status);
 CREATE INDEX idx_model_aliases_enabled ON model_aliases(enabled);
 CREATE INDEX idx_model_aliases_model_id ON model_aliases(model_id);
+CREATE UNIQUE INDEX idx_model_configs_repo_id_lower ON model_configs (lower(repo_id));
 CREATE UNIQUE INDEX idx_model_files_model_id_filename ON model_files(model_id, filename);
 CREATE UNIQUE INDEX idx_model_pulls_model_id ON model_pulls(model_id);
 CREATE INDEX idx_provider_configs_logical_variant ON provider_configs(logical_id, gpu_variant);

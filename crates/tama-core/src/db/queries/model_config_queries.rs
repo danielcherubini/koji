@@ -3,15 +3,16 @@
 //! All functions are async and take a `&PgPool` — the caller owns the pool.
 //!
 //! Timestamps: `created_at`/`updated_at` are `TIMESTAMPTZ` in Postgres but the
-//! shared [`ModelConfigRecord`] type (still used by the transitional SQLite
-//! machinery until Task 9) stores them as `String` in the v2 format
+//! shared [`ModelConfigRecord`] type stores them as `String` in the v2 format
 //! `%Y-%m-%dT%H:%M:%fZ`. Reads therefore project the columns with
 //! `to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')` so the
 //! wire format is byte-identical to v2.
 //!
-//! Case-insensitive parity: v2 used `COLLATE NOCASE` on `repo_id` (the v1
-//! squashed migration intentionally has no case-insensitive index). Lookup
-//! and upsert duplicate logic are therefore made explicit with `lower()`.
+//! Case-insensitive parity: v2 used `COLLATE NOCASE` on `repo_id`. The
+//! Postgres schema enforces the same uniqueness with a unique expression
+//! index on `lower(repo_id)`; lookup and upsert duplicate logic are made
+//! explicit with `lower()` (the upsert's `ON CONFLICT` targets the
+//! expression index so concurrent case-variant inserts cannot dupe).
 
 use anyhow::Result;
 use sqlx::{PgPool, Row};
@@ -152,7 +153,7 @@ fn push_record_values(qb: &mut sqlx::QueryBuilder<sqlx::Postgres>, record: &Mode
     qb.push(", ").push_bind(&record.reasoning_levels);
 }
 
-/// Build `INSERT ... VALUES (record) ON CONFLICT (repo_id) DO UPDATE SET ...`.
+/// Build `INSERT ... VALUES (record) ON CONFLICT (lower(repo_id)) DO UPDATE SET ...`.
 ///
 /// The `id` column is omitted so the identity sequence assigns it for new
 /// rows (explicit-id inserts do not advance sequences — v2 parity).
@@ -161,7 +162,7 @@ fn push_repo_upsert(qb: &mut sqlx::QueryBuilder<sqlx::Postgres>, record: &ModelC
         .push(COLS)
         .push(") VALUES (");
     push_record_values(qb, record);
-    qb.push(") ON CONFLICT (repo_id) DO UPDATE SET ")
+    qb.push(") ON CONFLICT (lower(repo_id)) DO UPDATE SET ")
         .push(UPSERT_SET);
 }
 
@@ -252,10 +253,12 @@ fn push_id_update(
 /// Insert or update the model configuration.
 ///
 /// v2 parity notes:
-/// - `repo_id` was `COLLATE NOCASE` in SQLite. The Postgres unique index is
-///   case-sensitive, so a row whose `repo_id` differs only in case is found
-///   with an explicit `lower()` pre-check and updated in place (keeping the
-///   stored case), instead of creating a duplicate row.
+/// - `repo_id` was `COLLATE NOCASE` in SQLite. The Postgres schema enforces
+///   the same uniqueness with a unique expression index on `lower(repo_id)`;
+///   a row whose `repo_id` differs only in case is found with an explicit
+///   `lower()` pre-check and updated in place (keeping the stored case),
+///   and the upsert's `ON CONFLICT (lower(repo_id))` covers concurrent
+///   case-variant inserts.
 /// - `updated_at` is refreshed to `now()` on conflict.
 ///
 /// Returns the model id (either existing or newly created).
@@ -285,7 +288,7 @@ pub async fn upsert_model_config(pool: &PgPool, record: &ModelConfigRecord) -> R
             let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new("");
             push_repo_upsert(&mut qb, record);
             qb.build().execute(pool).await?;
-            let row = sqlx::query("SELECT id FROM model_configs WHERE repo_id = $1")
+            let row = sqlx::query("SELECT id FROM model_configs WHERE lower(repo_id) = lower($1)")
                 .bind(&record.repo_id)
                 .fetch_one(pool)
                 .await?;
