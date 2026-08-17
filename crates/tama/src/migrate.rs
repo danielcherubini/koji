@@ -108,6 +108,44 @@ fn is_identity_table(table: &str) -> bool {
     !matches!(table, "active_models" | "tamad_registry")
 }
 
+/// Legacy source-table alias for a canonical [`TABLES`] entry.
+///
+/// `pull_log` was renamed from `download_log` in plan-150, but that rename
+/// edited migration _0001 in place instead of adding a new migration, so real
+/// v2 production DBs built by older binaries have `download_log` and no
+/// `pull_log` (fresh DBs have `pull_log`). The two tables have identical
+/// columns, so either name is a valid source; rows always land in the
+/// canonical Postgres table.
+fn table_alias(table: &str) -> &'static str {
+    match table {
+        "pull_log" => "download_log",
+        _ => "",
+    }
+}
+
+/// Resolve the actual SQLite source table for a canonical [`TABLES`] entry.
+///
+/// Prefers the canonical name, falls back to its legacy alias, and returns
+/// `None` when neither exists (so the caller can soft-skip the table instead
+/// of erroring on a `no such table`).
+fn source_table_name(db: &Connection, canonical: &str, alias: &str) -> Result<Option<String>> {
+    let exists = |name: &str| -> Result<bool> {
+        let n: i64 = db.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            [name],
+            |r| r.get(0),
+        )?;
+        Ok(n > 0)
+    };
+    if exists(canonical)? {
+        return Ok(Some(canonical.to_string()));
+    }
+    if !alias.is_empty() && exists(alias)? {
+        return Ok(Some(alias.to_string()));
+    }
+    Ok(None)
+}
+
 /// Options for [`run`].
 #[derive(Debug, Clone)]
 pub struct MigrateOpts {
@@ -291,7 +329,16 @@ pub async fn run(opts: MigrateOpts) -> Result<MigrationReport> {
     //    schema — a dry run has no side effects).
     if opts.dry_run {
         for table in TABLES {
-            let s = sqlite_count(&sqlite, table)?;
+            let source = match source_table_name(&sqlite, table, table_alias(table))? {
+                Some(s) => s,
+                None => {
+                    println!("skipping {table} (not present in source)");
+                    let p = pg_count(&pool, table).await?;
+                    report.counts.insert(table.to_string(), [0, p]);
+                    continue;
+                }
+            };
+            let s = sqlite_count(&sqlite, &source)?;
             let p = pg_count(&pool, table).await?;
             report.counts.insert(table.to_string(), [s, p]);
             println!("{table:<24} sqlite={s:<8} postgres={p}");
@@ -338,10 +385,20 @@ pub async fn run(opts: MigrateOpts) -> Result<MigrationReport> {
         .context("beginning the migration transaction")?;
     let mut failed = false;
     for table in TABLES {
-        let sqlite_n = sqlite_count(&sqlite, table)?;
+        let source = match source_table_name(&sqlite, table, table_alias(table))? {
+            Some(s) => s,
+            None => {
+                println!("skipping {table} (not present in source)");
+                let p = pg_count(&pool, table).await?;
+                report.counts.insert(table.to_string(), [0, p]);
+                report.inserted.insert(table.to_string(), 0);
+                continue;
+            }
+        };
+        let sqlite_n = sqlite_count(&sqlite, &source)?;
         let pg_n = pg_count(&pool, table).await?;
         report.counts.insert(table.to_string(), [sqlite_n, pg_n]);
-        match copy_table(&mut tx, &sqlite, table, &mut report.skipped).await {
+        match copy_table(&mut tx, &sqlite, table, &source, &mut report.skipped).await {
             Ok(n) => {
                 report.inserted.insert(table.to_string(), n);
                 println!("{table:<24} {n} row(s)");
@@ -543,6 +600,7 @@ async fn copy_table(
     tx: &mut Transaction<'_, sqlx::Postgres>,
     sqlite: &Connection,
     table: &str,
+    source: &str,
     skipped: &mut Vec<SkippedRow>,
 ) -> Result<u64> {
     let pk = pk_column(table);
@@ -566,7 +624,7 @@ async fn copy_table(
         .map(|(name, dt, nullable)| (name.as_str(), (dt.as_str(), nullable == "YES")))
         .collect();
 
-    let sql = format!("SELECT * FROM {table} ORDER BY {pk}");
+    let sql = format!("SELECT * FROM {source} ORDER BY {pk}");
     let mut stmt = sqlite
         .prepare(&sql)
         .with_context(|| format!("preparing {sql}"))?;

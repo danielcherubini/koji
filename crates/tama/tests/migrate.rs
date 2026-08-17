@@ -233,6 +233,18 @@ INSERT INTO model_files (id, model_id, repo_id, filename, quant, lfs_oid, size_b
     }
 }
 
+async fn pg_table_exists(pool: &sqlx::PgPool, table: &str) -> bool {
+    let n: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM information_schema.tables \
+         WHERE table_schema = current_schema() AND table_name = $1",
+    )
+    .bind(table)
+    .fetch_one(pool)
+    .await
+    .expect("information_schema query");
+    n > 0
+}
+
 async fn pg_count(pool: &sqlx::PgPool, table: &str) -> u64 {
     sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(format!("SELECT count(*) FROM {table}")))
         .fetch_one(pool)
@@ -416,6 +428,102 @@ async fn test_full_migration_copies_all_tables() {
     assert_eq!(cfg["database"]["name"].as_str(), Some("tama"));
     assert_eq!(cfg["database"]["user"].as_str(), Some("tama"));
 
+    guard.finish().await;
+}
+
+#[tokio::test]
+async fn test_legacy_download_log_renamed_table_migrates() {
+    let guard = common::with_schema().await;
+    let tmp = TempDir::new().unwrap();
+    let (db, _bytes) = build_fixture(tmp.path(), 49, false);
+
+    // Simulate a production v2 db built by a pre-rename binary (predating
+    // plan-150, which edited migration _0001 in place): the pull history
+    // table is still called download_log with identical columns.
+    {
+        let conn = Connection::open(&db).expect("reopen fixture db");
+        conn.execute_batch(
+            "ALTER TABLE pull_log RENAME TO download_log;
+             INSERT INTO download_log (id, repo_id, filename, started_at, completed_at,
+                                       size_bytes, duration_ms, success, error_message)
+             VALUES (2, 'org/beta', 'beta-FP8.gguf', '2024-02-01T10:00:00.000Z',
+                     '2024-02-01T11:00:00.000Z', 8000000000, 3600000, 1, NULL);",
+        )
+        .expect("rename pull_log -> download_log and seed a row");
+    }
+    // Bytes after our own fixture tweak — migrate must leave them untouched.
+    let tweaked_bytes = std::fs::read(&db).unwrap();
+
+    let config_dir = tmp.path().join("config");
+    let report = tama_web::migrate::run(opts_for(db, &guard.schema, config_dir, false, false))
+        .await
+        .expect("migration succeeds with the legacy download_log table");
+    assert_eq!(
+        report.inserted["pull_log"], 2,
+        "both download_log rows must land in PG pull_log"
+    );
+
+    // The rows landed in PG's pull_log with their original ids...
+    let ids: Vec<i64> = sqlx::query_scalar("SELECT id FROM pull_log ORDER BY id")
+        .fetch_all(&guard.pool)
+        .await
+        .unwrap();
+    assert_eq!(ids, vec![1, 2]);
+    let (repo, filename): (String, String) =
+        sqlx::query_as("SELECT repo_id, filename FROM pull_log WHERE id = 2")
+            .fetch_one(&guard.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        (repo.as_str(), filename.as_str()),
+        ("org/beta", "beta-FP8.gguf")
+    );
+
+    // ...and no download_log table exists in Postgres.
+    assert!(
+        !pg_table_exists(&guard.pool, "download_log").await,
+        "download_log must not exist in Postgres"
+    );
+    // SQLite untouched (compared to the bytes after our own fixture tweak).
+    assert_eq!(
+        std::fs::read(tmp.path().join("tama.db")).unwrap(),
+        tweaked_bytes
+    );
+    guard.finish().await;
+}
+
+#[tokio::test]
+async fn test_dry_run_soft_skips_absent_pull_log() {
+    let guard = common::with_schema().await;
+    let tmp = TempDir::new().unwrap();
+    let (db, _bytes) = build_fixture(tmp.path(), 49, false);
+
+    // A db where pull_log was never created and no download_log alias
+    // exists either: the dry run must skip it, not error.
+    {
+        let conn = Connection::open(&db).expect("reopen fixture db");
+        conn.execute_batch("DROP TABLE pull_log;")
+            .expect("drop pull_log");
+    }
+    // Bytes after our own fixture tweak — migrate must leave them untouched.
+    let tweaked_bytes = std::fs::read(&db).unwrap();
+
+    let config_dir = tmp.path().join("config");
+    let report = tama_web::migrate::run(opts_for(db, &guard.schema, config_dir, false, true))
+        .await
+        .expect("dry run succeeds with pull_log absent");
+    assert_eq!(
+        report.counts["pull_log"],
+        [0, 0],
+        "absent table must count 0, not error"
+    );
+    // Nothing was written to Postgres.
+    assert_eq!(pg_count(&guard.pool, "model_configs").await, 0);
+    // SQLite untouched (compared to the bytes after our own fixture tweak).
+    assert_eq!(
+        std::fs::read(tmp.path().join("tama.db")).unwrap(),
+        tweaked_bytes
+    );
     guard.finish().await;
 }
 
