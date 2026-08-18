@@ -19,8 +19,10 @@ pub mod api;
 #[cfg(all(test, feature = "ssr"))]
 pub mod testing;
 
+/// Proxy-side convergence loop: desired (DB) vs actual (tamad process
+/// snapshots) — spawned by main.rs when the server runs.
 #[cfg(feature = "ssr")]
-pub mod gpu;
+pub mod reconciler;
 
 pub mod types;
 

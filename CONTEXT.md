@@ -1,6 +1,6 @@
 # Tama
 
-Tama is a local AI server written in Rust that provides an OpenAI-compatible API on a single port. The proxy (tama) is the central control plane — routing, model resolution, and configuration. All self-hosted concerns (backend lifecycle, installs, pulls, benchmarks, host stats) live in **tamad** daemons on the inference hosts (ADR-0010). The web control plane is SvelteKit.
+Tama is a local AI server written in Rust that provides an OpenAI-compatible API on a single port. The proxy (tama) is the central control plane — routing, model resolution, and configuration. All self-hosted concerns (backend lifecycle, installs, pulls, benchmarks, host stats) live in **tamad** daemons on the inference hosts (ADR-0010). The web control plane is Leptos/WASM (compiled via Trunk and embedded in the binary).
 
 ## Language
 
@@ -33,7 +33,7 @@ The core Tama component — an Axum HTTP server that listens on a single port, a
 _Avoid_: Gateway, router, control plane (use "proxy")
 
 **gpu_variant**:
-The GPU compilation target a backend binary was built for: `cuda`, `rocm`, `vulkan`, `metal`, or `cpu`. A single backend name (e.g. `llama.cpp`) can have multiple gpu_variants installed. Determines which env var (`CUDA_VISIBLE_DEVICES`, `ROCR_VISIBLE_DEVICES`, etc.) the proxy sets at spawn time.
+The GPU compilation target a backend binary was built for: `cuda`, `rocm`, `vulkan`, `metal`, or `cpu`. A single backend name (e.g. `llama.cpp`) can have multiple gpu_variants installed. Determines which isolation env var (`CUDA_VISIBLE_DEVICES`, `ROCR_VISIBLE_DEVICES`, etc.) the *tamad* maps to the model's configured GPU device at spawn time (the proxy never samples hardware — ADR-0010).
 _Avoid_: GPU type, backend variant, accelerator
 
 **Alias**:
@@ -41,11 +41,11 @@ A user-created name-to-model mapping stored in `model_aliases`. When a request a
 _Avoid_: Shortcut, nickname, virtual model
 
 **Compaction**:
-Prompt compression via Microsoft's LLMLingua-2 model. Reduces token count before prompts hit the main LLM. Runs as a Python FastAPI subprocess managed by the proxy's backend lifecycle.
+Prompt compression via Microsoft's LLMLingua-2 model. Reduces token count before prompts hit the main LLM. Runs as a Python FastAPI subprocess owned by the host **tamad's** backend lifecycle (the proxy only requests the load/unload; the tamad spawns and manages the process).
 _Avoid_: Prompt compression, summarization
 
 **Backend lifecycle**:
-The tamad's system for managing backend processes: spawn, health poll, idle timeout unload, dead PID detection, auto-restart (with max restarts limit), and graceful shutdown. Applies to LLM backends, Kokoro TTS, and compaction servers. The proxy requests lifecycle operations; the tamad executes them on its host.
+The tamad's system for managing backend processes: spawn, health poll, idle timeout unload, dead PID detection, auto-restart (with max restarts limit), and graceful shutdown. Applies to LLM backends, Kokoro TTS, and compaction servers. The proxy requests lifecycle operations; the tamad executes them on its host. On tamad shutdown (SIGTERM/SIGINT) the daemon kills the process groups of *all* loaded backends, so no backend outlives the daemon that owns it.
 _Avoid_: Process management, backend supervisor
 
 **ModelState**:
@@ -57,7 +57,7 @@ The process of downloading a model from HuggingFace — includes API lookup, par
 _Avoid_: Download, fetch
 
 **Repo pull**:
-A whole-repository download of a safetensors (transformers) model, executed by shelling out to the `hf` CLI (`hf download <repo> --local-dir <models_dir>/<org>/<repo>`) as a tracked subprocess. No per-file selection, verification, or `model_files` rows (see ADR-0007). Wizard-scoped, polled for progress.
+A whole-repository download of a safetensors (transformers) model, executed by the *tamad* shelling out to the `hf` CLI (`hf download <repo> --local-dir …`) as a tracked subprocess; the proxy relays progress/cancel (no per-file selection, verification, or `model_files` rows — see ADR-0007). Wizard-scoped, polled for progress.
 _Avoid_: hf pull, CLI download, whole-repo pull
 
 **Transformers model**:

@@ -74,8 +74,9 @@ async fn ensure_tts_server(state: &ProxyState, model_name: &str) -> anyhow::Resu
         return Ok(url);
     }
 
-    // Not loaded — try to load it
-    state.load_tts_backend(backend_name, &(), &(), &()).await?;
+    // Not loaded — try to load it (the tamad spawns the uvicorn process,
+    // plan-191 Task 10).
+    crate::proxy::lifecycle::spec::load_tts_on_tamad(state, backend_name).await?;
 
     // After loading, get the backend URL from models map
     get_backend_url(state, backend_name)

@@ -102,6 +102,33 @@ pub fn directory_prefix(filename: &str) -> Option<&str> {
     filename.rfind('/').map(|pos| &filename[..pos])
 }
 
+/// Determine whether `filename` is the primary shard of a (possibly sharded)
+/// quant, given the full set of blob rfilenames from the HF API.
+///
+/// - Single-file quants (no `/` in the filename) are always primary.
+/// - For sharded quants (filename contains `/`), the primary shard is the
+///   first file by sorted order within the same directory prefix.
+///
+/// Shared by the proxy's pull verification (plan-191 Task 6) and the
+/// tamad's `run_pull`, which performs verification on its own disk.
+/// This is a pure function so it can be unit-tested without network calls.
+pub fn determine_primary_shard(filename: &str, blobs: &HashMap<String, super::BlobInfo>) -> bool {
+    // Single-file quant (no directory) is always primary
+    let dir_prefix = match directory_prefix(filename) {
+        Some(prefix) => prefix,
+        None => return true,
+    };
+    // Find all blobs in the exact same directory (not nested subdirs),
+    // sort, and check if current is first. Uses the shared directory_prefix
+    // helper for consistent directory-prefix extraction.
+    let mut siblings: Vec<&String> = blobs
+        .keys()
+        .filter(|k| directory_prefix(k) == Some(dir_prefix))
+        .collect();
+    siblings.sort();
+    siblings.first().map(|f| *f == filename).unwrap_or(true)
+}
+
 /// Look up per-file blob metadata from HuggingFace using the blobs API.
 ///
 /// Uses `hf_hub`'s authenticated client to call the HF API with `?blobs=true`,

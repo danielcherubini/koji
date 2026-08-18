@@ -170,6 +170,22 @@ async fn run_server() -> Result<()> {
         db_pool.clone(),
     ));
 
+    // Load registered tamads into the pool and start a per-tamad stats
+    // stream task for each (plan-191 Task 4). Failures are logged, never
+    // fatal: stream tasks reconnect on their own, and the management API
+    // re-upserts connections on register/update.
+    if let Err(e) = proxy_state.tamad_pool().load_all().await {
+        tracing::error!("Failed to load tamad pool at startup: {}", e);
+    }
+
+    // Spawn the desired-vs-actual reconciler (plan-191 Task 5): every
+    // second it converges each online tamad's process table to the
+    // `desired_models` set — loading missing/dead desired models (bounded
+    // restarts) and unloading models that are no longer desired. The
+    // first tick doubles as startup reconciliation.
+    #[cfg(feature = "ssr")]
+    tokio::spawn(tama_web::reconciler::run(proxy_state.clone()));
+
     #[cfg(feature = "ssr")]
     {
         // Create WebState separately from ProxyState.
@@ -202,20 +218,13 @@ async fn run_server() -> Result<()> {
         let server = ProxyServer::new(proxy_state.clone()).await;
         let app = server.into_unified_router(web_routes).await;
 
-        // Clone app state for shutdown cleanup (unloads TTS backends + kills job children)
+        // Clone app state for shutdown cleanup (unloads TTS backends)
         let cleanup_state = Arc::clone(&app_state);
         let on_shutdown = async move {
-            // Kill children of any active backend job
-            if let Some(jobs) = &cleanup_state.web_state.jobs {
-                if let Some(active_job) = jobs.active().await {
-                    tracing::info!("Killing children of active job {}...", active_job.id);
-                    jobs.kill_children(&active_job).await;
-                }
-            }
             // Unload TTS backends
             let tts_backends: Vec<String> = cleanup_state.state.tts_backend_names().await;
             for name in tts_backends {
-                if let Err(e) = cleanup_state.state.unload_tts_backend(&name).await {
+                if let Err(e) = cleanup_state.state.unload_model(&name).await {
                     tracing::warn!("Failed to unload TTS backend '{}': {}", name, e);
                 }
             }

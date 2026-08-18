@@ -2,6 +2,22 @@ use anyhow::{anyhow, Result};
 
 use crate::installations::types::InstallationType;
 
+// E2E seam: when `TAMA_E2E_GITHUB_BASE` is set (integration/E2E harnesses
+// only), GitHub release hosts are rewritten to that local base so a local
+// server can serve mock release data + archives. Production (env unset)
+// is unaffected.
+fn apply_e2e_base(url: &str) -> Option<String> {
+    match std::env::var("TAMA_E2E_GITHUB_BASE") {
+        Ok(base) if !base.is_empty() => {
+            let base = base.trim_end_matches('/');
+            url.strip_prefix("https://github.com/")
+                .or_else(|| url.strip_prefix("https://api.github.com/"))
+                .map(|rest| format!("{}/{}", base, rest))
+        }
+        _ => None,
+    }
+}
+
 /// Construct the GitHub release download URL for a pre-built binary.
 ///
 /// The `gpu_variant` parameter is a folder name string (e.g. "cpu", "cuda",
@@ -48,7 +64,8 @@ pub fn get_prebuilt_url(
                 _ => return Err(anyhow!("Unsupported platform: {} {}", os, arch)),
             };
 
-            Ok(format!("{}{}", base, filename))
+            let url = format!("{}{}", base, filename);
+            Ok(apply_e2e_base(&url).unwrap_or(url))
         }
         InstallationType::IkLlama => {
             Err(anyhow!(
@@ -72,6 +89,42 @@ pub fn get_prebuilt_url(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// E2E seam: when `TAMA_E2E_GITHUB_BASE` is set (integration/E2E
+    /// harnesses only), the release download host is rewritten to that
+    /// base so a local server can serve mock release archives. Production
+    /// (env unset) is unaffected.
+    #[test]
+    fn test_prebuilt_url_e2e_base_redirect() {
+        std::env::set_var("TAMA_E2E_GITHUB_BASE", "http://127.0.0.1:8991/");
+        let url = get_prebuilt_url(
+            &InstallationType::LlamaCpp,
+            "b8407",
+            "linux",
+            "x86_64",
+            "cpu",
+        )
+        .unwrap();
+        assert_eq!(
+            url,
+            "http://127.0.0.1:8991/ggml-org/llama.cpp/releases/download/b8407/llama-b8407-bin-ubuntu-x64.tar.gz"
+        );
+        std::env::remove_var("TAMA_E2E_GITHUB_BASE");
+
+        // Unset → the real GitHub URL.
+        let url = get_prebuilt_url(
+            &InstallationType::LlamaCpp,
+            "b8407",
+            "linux",
+            "x86_64",
+            "cuda",
+        )
+        .unwrap();
+        assert_eq!(
+            url,
+            "https://github.com/ggml-org/llama.cpp/releases/download/b8407/llama-b8407-bin-ubuntu-x64.tar.gz"
+        );
+    }
 
     #[test]
     fn test_llama_cpp_download_url_linux_cpu() {

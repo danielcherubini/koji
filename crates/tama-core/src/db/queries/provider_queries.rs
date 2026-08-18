@@ -148,3 +148,87 @@ pub async fn delete_provider(pool: &PgPool, name: &str) -> Result<bool> {
         .await?;
     Ok(result.rows_affected() > 0)
 }
+
+/// Null out `tamad_id` on every provider pointing at the given (deleted)
+/// tamad, so providers don't keep a dangling reference. Returns the names
+/// of the affected providers (plan-191 review fix).
+pub async fn clear_tamad_id_for_tamad(pool: &PgPool, tamad_id: &str) -> Result<Vec<String>> {
+    let rows: Vec<String> = sqlx::query_scalar(
+        "UPDATE provider_registry SET tamad_id = NULL WHERE tamad_id = $1 RETURNING name",
+    )
+    .bind(tamad_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+// ─── Tests ──────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testing::postgres::with_schema;
+
+    /// clear_tamad_id_for_tamad nulls only that tamad's providers and
+    /// returns their names; a second clear affects nothing.
+    #[tokio::test]
+    async fn test_clear_tamad_id_for_tamad() {
+        let guard = with_schema().await;
+        let pool = &guard.pool;
+        insert_provider(
+            pool,
+            "clr-a",
+            "local",
+            "llama_cpp",
+            Some("tamad-x"),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        insert_provider(
+            pool,
+            "clr-b",
+            "local",
+            "llama_cpp",
+            Some("tamad-y"),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        insert_provider(
+            pool,
+            "clr-c",
+            "remote",
+            "openai",
+            None,
+            Some("https://x"),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let names = clear_tamad_id_for_tamad(pool, "tamad-x").await.unwrap();
+        assert_eq!(names, vec!["clr-a".to_string()]);
+
+        let a = get_provider(pool, "clr-a").await.unwrap().unwrap();
+        assert_eq!(a.tamad_id, None, "affected provider must be nulled");
+        let b = get_provider(pool, "clr-b").await.unwrap().unwrap();
+        assert_eq!(
+            b.tamad_id,
+            Some("tamad-y".to_string()),
+            "other providers must be untouched"
+        );
+
+        assert!(
+            clear_tamad_id_for_tamad(pool, "tamad-x")
+                .await
+                .unwrap()
+                .is_empty(),
+            "second clear must affect no rows"
+        );
+
+        guard.finish().await;
+    }
+}

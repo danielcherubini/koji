@@ -131,6 +131,7 @@ mod tests {
                 "metrics_retention_secs": 172_800,
                 "max_loaded_models": 2,
                 "pull_queue_poll_interval_secs": 3,
+                "pull_backend": "tamad-123",
                 "authenticator_url": "https://auth.example.com",
                 "authenticator_skip_paths": ["/health", "/metrics"],
                 "oauth2": {

@@ -1,5 +1,5 @@
 use super::*;
-use crate::api::benchmarks::{derive_status, BenchmarkProgressSink};
+use crate::api::benchmarks::derive_status;
 use anyhow::Context;
 
 // ── Handler: Submit benchmark job ─────────────────────────────────────
@@ -26,8 +26,10 @@ pub async fn run_benchmark_inner(
     proxy_base_url: String,
     client: reqwest::Client,
     db_pool: std::sync::Arc<sqlx::PgPool>,
+    tamad_pool: std::sync::Arc<tama_core::tamad::pool::TamadPool>,
 ) -> Result<()> {
-    use tama_core::bench::llama_bench::{self, LlamaBenchConfig};
+    use tama_core::bench::llama_bench::{LlamaBenchConfig, LlamaBenchConfigJson};
+    use tama_core::bench::{BenchReport, ModelInfo};
 
     // Unload any active server for this model before running the benchmark.
     // This prevents GPU memory conflicts when the model is already loaded.
@@ -46,6 +48,7 @@ pub async fn run_benchmark_inner(
     let backend_name = req.backend_name.clone();
     let quant = req.quant.clone();
     let benchmark_type = req.benchmark_type.clone();
+    let suite_id = req.suite_id.clone();
     let ngl_range = req.ngl_range.clone();
     let ngl_range_for_insert = ngl_range.clone();
     let pp_sizes_for_trace = req.pp_sizes.clone();
@@ -54,58 +57,10 @@ pub async fn run_benchmark_inner(
     let tg_sizes_for_serial = tg_sizes_for_trace.clone();
     let threads_for_trace = req.threads.clone();
 
-    // Load the global config from Postgres (plan-190 Task 3).
+    // Load the global config from Postgres (plan-190 Task 3) and the model
+    // configs for key/display resolution (plan-190 Task 5).
     let pool = db_pool.as_ref();
     let config = tama_core::config::Config::load_from_pool(pool).await?;
-
-    // Create progress sink
-    let sink = BenchmarkProgressSink {
-        name: "llama-bench",
-        job: job.clone(),
-        jobs: jobs.clone(),
-    };
-
-    // Build llama-bench config
-    let bench_config = LlamaBenchConfig {
-        pp_sizes: req.pp_sizes,
-        tg_sizes: req.tg_sizes,
-        runs: req.runs,
-        warmup: req.warmup,
-        threads: req.threads,
-        ngl_range,
-        ctx_override: req.ctx_override,
-        batch_sizes: req.batch_sizes,
-        ubatch_sizes: req.ubatch_sizes,
-        kv_cache_type: req.kv_cache_type,
-        depth: req.depth,
-        flash_attn: req.flash_attn,
-    };
-
-    tracing::info!(
-        job_id = %job.id,
-        model_id = %model_id,
-        backend = ?backend_name,
-        pp_sizes = ?pp_sizes_for_trace,
-        tg_sizes = ?tg_sizes_for_trace,
-        runs = req.runs,
-        "Starting llama-bench benchmark",
-    );
-
-    // Run benchmark
-    let report = llama_bench::run_llama_bench(
-        &config,
-        pool,
-        &model_id,
-        quant.as_deref(),
-        backend_name.as_deref(),
-        gpu_variant,
-        &bench_config,
-        &sink,
-    )
-    .await?;
-
-    // Store results in database — load model configs for display-name lookup
-    // from Postgres (plan-190 Task 5).
     let model_configs: std::collections::HashMap<String, tama_core::config::ModelConfig> =
         tama_core::db::load_model_configs(pool).await?;
 
@@ -127,10 +82,88 @@ pub async fn run_benchmark_inner(
             .or_else(|| mc.api_name.clone())
             .or_else(|| mc.model.clone())
     });
+    let model_config = config
+        .resolve_backend(&model_configs, &resolved_key)?
+        .0
+        .clone();
+    let target_backend = backend_name.unwrap_or_else(|| model_config.backend.clone());
+
+    // Resolve the execution host (plan-191 Task 8, ADR-0010: the proxy
+    // spawns nothing): the model's provider's tamad + host-relative paths.
+    let ctx = super::bench_ctx(&db_pool, tamad_pool);
+    let host = super::tamad::resolve_benchmark_host(
+        &ctx,
+        &config,
+        &model_configs,
+        &resolved_key,
+        &target_backend,
+        gpu_variant.as_ref(),
+    )
+    .await?;
+
+    // Build llama-bench config + the proxy-resolved model metadata
+    // envelope (the tamad has no DB — it fills the report from this).
+    let bench_config = LlamaBenchConfig {
+        pp_sizes: req.pp_sizes,
+        tg_sizes: req.tg_sizes,
+        runs: req.runs,
+        warmup: req.warmup,
+        threads: req.threads,
+        ngl_range,
+        ctx_override: req.ctx_override,
+        batch_sizes: req.batch_sizes,
+        ubatch_sizes: req.ubatch_sizes,
+        kv_cache_type: req.kv_cache_type,
+        depth: req.depth,
+        flash_attn: req.flash_attn,
+    };
+    let model_name_for_host = display_name.clone().unwrap_or_else(|| model_id.clone());
+    let envelope = LlamaBenchConfigJson {
+        bench: bench_config,
+        model_info: ModelInfo {
+            name: model_name_for_host.clone(),
+            model_id: model_config.model.clone(),
+            // Request quant override, else the model config's selected quant.
+            quant: quant.clone().or_else(|| model_config.quant.clone()),
+            backend: target_backend.clone(),
+            // The host derives the label from the binary path on its disk.
+            gpu_variant: String::new(),
+            context_length: model_config.context_length,
+            gpu_layers: None,
+        },
+    };
+    let config_json =
+        serde_json::to_string(&envelope).context("Failed to serialize llama_bench config")?;
+
+    tracing::info!(
+        job_id = %job.id,
+        model_id = %model_id,
+        backend = %target_backend,
+        pp_sizes = ?pp_sizes_for_trace,
+        tg_sizes = ?tg_sizes_for_trace,
+        tamad = %host.handle.connection.name,
+        "Starting llama-bench benchmark on tamad",
+    );
+
+    // Dispatch to the tamad host and relay progress into this job.
+    let bench_req = tama_core::tamad::RunBenchmarkRequest {
+        model_name: model_name_for_host,
+        kind: "llama_bench".to_string(),
+        config_json,
+        model_path_rel: host.model_path_rel.clone(),
+        binary_path_rel: host.binary_path_rel.clone(),
+    };
+    let result_json = super::tamad::dispatch_and_relay(&jobs, &job, &host, &bench_req).await?;
+
+    // The tamad ran the same runner as before — parse the report back into
+    // the persistence struct.
+    let report: BenchReport = serde_json::from_str(&result_json)
+        .context("tamad returned an invalid llama_bench result")?;
 
     // Serialize the full report for storage so history can reconstruct model
     // metadata (backend, GPU, VRAM, load time, batch/ubatch/KV cache choices),
-    // not just the per-test summary rows.
+    // not just the per-test summary rows. Re-serializing the parsed struct
+    // keeps the stored JSON shape identical to pre-Task-8 runs.
     let results_json =
         serde_json::to_string(&report).context("Failed to serialize benchmark report")?;
     let pp_sizes_json =
@@ -147,16 +180,18 @@ pub async fn run_benchmark_inner(
     // successful tests and failed runs bail! before insert. Always derive success.
     let run_status = derive_status(report.summaries.len(), 0, false);
 
-    // Get VRAM info
-    let vram = query_vram();
+    // VRAM as reported by the execution host (the tamad sampled its own
+    // GPUs — ADR-0010, the proxy no longer samples host hardware here).
+    let vram = report.vram.clone();
 
     // Clone values used for tracing after the insert.
     let display_name_for_trace = display_name.clone();
     let backend_for_trace = report.model_info.backend.clone();
+    let suite_id_cloned = suite_id.clone();
 
     // Insert the benchmark record into Postgres (plan-190 Task 8).
     let params = tama_core::db::queries::BenchmarkInsertParams {
-        model_id: &req.model_id,
+        model_id: &model_id,
         display_name: display_name.as_deref(),
         quant: report.model_info.quant.as_deref(),
         backend: &report.model_info.backend,
@@ -174,7 +209,7 @@ pub async fn run_benchmark_inner(
         duration_seconds: 0.0, // duration tracked by job system
         status: run_status,
         benchmark_type: benchmark_type.as_deref(),
-        suite_id: req.suite_id.as_deref(),
+        suite_id: suite_id_cloned.as_deref(),
     };
     tama_core::db::queries::insert_benchmark(pool, &params).await?;
 

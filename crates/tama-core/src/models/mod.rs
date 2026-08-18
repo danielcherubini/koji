@@ -46,6 +46,26 @@ pub fn is_valid_repo_id(repo_id: &str) -> bool {
     })
 }
 
+/// Validate a relative file path (e.g. a pull `filename` like
+/// `"UD-Q4_K_XL/Laguna-S-2.1-UD-Q4_K_XL-00001-of-00003.gguf"`).
+///
+/// Returns `false` if the relative path contains traversal sequences, backslash
+/// separators, or null bytes. Unlike `is_safe_path_component`, this allows `/`
+/// to support subdirectory paths (e.g. sharded GGUF files). Backslashes are
+/// still blocked to prevent Windows path traversal, and `..`/`.` segments are
+/// rejected to prevent escaping the models directory.
+///
+/// Shared by the proxy's pull handlers and the tamad's `run_pull` (plan-191
+/// Task 6), which writes to the tamad's own models dir.
+pub fn is_safe_relative_path(s: &str) -> bool {
+    if s.is_empty() || s.contains('\\') || s.contains('\0') {
+        return false;
+    }
+    // Reject any `..` or `.` segment, and empty components — split on '/' and check each
+    s.split('/')
+        .all(|component| component != ".." && component != "." && !component.is_empty())
+}
+
 /// Convert a config key (double-dash format, e.g. `unsloth--gemma-4-26b-a4b-it-gguf`)
 /// back to the original repo_id stored in the DB (e.g. `unsloth/gemma-4-26b-a4b-it-gguf`).
 ///

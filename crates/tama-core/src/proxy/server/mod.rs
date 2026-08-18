@@ -109,14 +109,10 @@ impl ProxyServer {
             });
         }
 
-        // Reap any managed Docker containers left behind from crashed Tama instances.
-        // Must run before cleanup_stale_processes so that stale containers are removed
-        // before the process reaper tries to adopt them as native Ready backends.
-        if let Err(e) = crate::installations::docker::reconcile::startup_reconcile().await {
-            tracing::warn!("Startup reconciliation failed: {}", e);
-        }
-
-        Self::cleanup_stale_processes(&state).await;
+        // Note: dead-process cleanup and Docker container reconciliation were
+        // removed in plan-191 Task 10 — the proxy no longer sees local backends
+        // (ADR-0010). The reconciler converges each tamad's process table to
+        // the desired set, and the idle checker cleans up Failed mirror entries.
         let idle_timeout_handle = Self::start_idle_timeout_checker(state.clone());
 
         // Spawn background task to refresh system metrics every 2s.
@@ -126,69 +122,6 @@ impl ProxyServer {
             state,
             idle_timeout_handle: Some(idle_timeout_handle),
             metrics_handle: Some(metrics_handle),
-        }
-    }
-
-    async fn cleanup_stale_processes(state: &ProxyState) {
-        let pool = state.db_pool();
-        let active = match crate::db::queries::get_active_models(&pool).await {
-            Ok(a) => a,
-            Err(_) => return,
-        };
-
-        for entry in &active {
-            let pid = entry.pid as u32;
-            if !crate::process::is_process_alive(pid) {
-                tracing::info!(
-                    "Cleaning up stale process entry: {} (pid {})",
-                    entry.server_name,
-                    pid
-                );
-                let _ = crate::db::queries::remove_active_model(&pool, &entry.server_name).await;
-                continue;
-            }
-
-            // Process is alive — try to reconnect by health-checking it
-            let health_url = format!("http://127.0.0.1:{}/health", entry.port);
-            let healthy = match crate::process::check_health(&health_url, Some(5)).await {
-                Ok(resp) => resp.status().is_success(),
-                Err(_) => false,
-            };
-
-            if healthy {
-                tracing::info!(
-                    "Reconnecting to existing backend: {} (pid {}, port {})",
-                    entry.server_name,
-                    pid,
-                    entry.port
-                );
-                let mut models = state.registry.models.write().await;
-                models.insert(
-                    entry.server_name.clone(),
-                    super::types::BackendState::Ready {
-                        model_name: entry.model_name.clone(),
-                        backend: entry.backend.clone(),
-                        backend_pid: pid,
-                        backend_url: entry.backend_url.clone(),
-                        load_time: std::time::SystemTime::now(),
-                        last_accessed: std::time::Instant::now(),
-                        consecutive_failures: std::sync::Arc::new(
-                            std::sync::atomic::AtomicU32::new(0),
-                        ),
-                        failure_timestamp: None,
-                        restart_count: 0,
-                        is_docker: false,
-                    },
-                );
-            } else {
-                tracing::warn!(
-                    "Orphaned backend process detected: {} (pid {}). Killing.",
-                    entry.server_name,
-                    pid
-                );
-                let _ = crate::process::kill_process(pid).await;
-                let _ = crate::db::queries::remove_active_model(&pool, &entry.server_name).await;
-            }
         }
     }
 
@@ -213,7 +146,7 @@ impl ProxyServer {
                 };
                 tokio::time::sleep(interval).await;
                 // Always called — cleans up Failed backends even when auto_unload is off.
-                let _ = state.check_idle_timeouts(&()).await;
+                let _ = state.check_idle_timeouts().await;
             }
         })
     }
@@ -264,7 +197,7 @@ impl ProxyServer {
                 .collect();
             drop(models);
             for name in tts_backends {
-                if let Err(e) = cleanup_state.unload_tts_backend(&name).await {
+                if let Err(e) = cleanup_state.unload_model(&name).await {
                     tracing::warn!("Failed to unload TTS backend '{}': {}", name, e);
                 }
             }

@@ -77,6 +77,10 @@ pub struct ProxyConfig {
     /// Whether API key authentication is enabled.
     #[serde(default)]
     pub api_keys_enabled: bool,
+    /// Registered tamad connection id that executes queued model pulls
+    /// (plan-191 Task 6). `None` → the proxy downloads locally.
+    #[serde(default)]
+    pub pull_backend: Option<String>,
 }
 
 /// Default helper functions for ProxyConfig fields.
@@ -139,6 +143,7 @@ mod tests {
             authenticator_skip_paths: Vec::new(),
             oauth2: OAuth2Config::default(),
             api_keys_enabled: false,
+            pull_backend: None,
         };
 
         let json = serde_json::to_string(&proxy).unwrap();

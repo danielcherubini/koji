@@ -80,13 +80,68 @@ pub struct MetricCurrent {
 /// Full metrics snapshot broadcast over SSE every 2s. `buckets` carries
 /// ~31 pre-aggregated 30s windows for the bar charts; `current` carries
 /// instantaneous values + point-in-time state for the big-number displays
-/// and detail cards.
+/// and detail cards; `hosts` carries per-tamad host stats (plan-191
+/// Task 9 — the proxy's own CPU/RAM stay in `current` for its own card).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MetricsSnapshot {
     #[serde(default)]
     pub buckets: Vec<MetricBucket>,
     #[serde(default)]
     pub current: MetricCurrent,
+    /// One entry per registered tamad (freshest stats snapshot, ~1s fresh).
+    #[serde(default)]
+    pub hosts: Vec<HostStats>,
+}
+
+/// Additive per-tamad host entry in the metrics stream (plan-191 Task 4
+/// shape + `version` from the cached HealthCheck).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HostStats {
+    #[serde(default)]
+    pub tamad_id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub online: bool,
+    /// The tamad's self-reported version (last successful health check).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub cpu_percent: f64,
+    #[serde(default)]
+    pub memory: HostMemory,
+    #[serde(default)]
+    pub gpus: Vec<HostGpu>,
+}
+
+/// Host RAM bytes (total + used).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HostMemory {
+    #[serde(default)]
+    pub total_bytes: u64,
+    #[serde(default)]
+    pub used_bytes: u64,
+}
+
+/// One GPU on a tamad host (from its `SystemStats` stream).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HostGpu {
+    #[serde(default)]
+    pub index: i32,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub driver_version: String,
+    #[serde(default)]
+    pub vram_total_bytes: i64,
+    #[serde(default)]
+    pub vram_used_bytes: i64,
+    #[serde(default)]
+    pub utilization_percent: f64,
+    #[serde(default)]
+    pub temperature_c: f64,
+    #[serde(default)]
+    pub power_w: f64,
 }
 
 /// Frontend mirror of `tama_core::gpu::GpuDeviceStats`.
@@ -188,6 +243,51 @@ pub fn active_models(models: &[ModelStateSnapshot]) -> Vec<ModelStateSnapshot> {
         })
         .cloned()
         .collect()
+}
+
+/// Format a byte count as a compact GiB string, e.g. `3.2 GiB`.
+pub fn format_bytes_gib(bytes: u64) -> String {
+    if bytes == 0 {
+        return "0 GiB".to_string();
+    }
+    let gib = bytes as f64 / 1024.0 / 1024.0 / 1024.0;
+    if gib >= 100.0 {
+        format!("{gib:.0} GiB")
+    } else {
+        format!("{gib:.1} GiB")
+    }
+}
+
+/// Format a byte count as GiB rounded to whole strings, e.g. `24 GiB`
+/// (for card subtitles where one decimal is noise).
+pub fn format_bytes_gib_rounded(bytes: u64) -> String {
+    if bytes == 0 {
+        return "0 GiB".to_string();
+    }
+    let gib = bytes as f64 / 1024.0 / 1024.0 / 1024.0;
+    let rounded = (gib + 0.5) as u64;
+    format!("{} GiB", rounded.max(1))
+}
+
+/// Format a duration in seconds for the proxy uptime display, e.g.
+/// `3d 4h`, `2h 13m`, `45m`, `12s`.
+pub fn format_uptime(total_seconds: f64) -> String {
+    if total_seconds < 0.0 {
+        return "0s".to_string();
+    }
+    let secs = total_seconds as i64;
+    let (days, hours, minutes, seconds) = (
+        secs / 86_400,
+        (secs % 86_400) / 3600,
+        (secs % 3600) / 60,
+        secs % 60,
+    );
+    match () {
+        _ if days > 0 => format!("{}d {}h", days, hours),
+        _ if hours > 0 => format!("{}h {}m", hours, minutes),
+        _ if minutes > 0 => format!("{}m", minutes),
+        _ => format!("{}s", seconds),
+    }
 }
 
 /// Returns models whose state is NOT one of the "active" states.

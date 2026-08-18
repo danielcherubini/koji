@@ -11,6 +11,9 @@ pub enum PullJobStatus {
     Verifying,
     Completed,
     Failed,
+    /// The pull was cancelled (host-side `CancelJob` / relayed terminal
+    /// `cancelled` job event, plan-191 follow-up B).
+    Cancelled,
 }
 
 /// A pull job for pulling a model from HuggingFace.
@@ -57,6 +60,10 @@ pub struct PullJob {
     /// Used by the wizard for subsequent PUT calls.
     #[serde(default)]
     pub model_id: Option<u32>,
+    /// The tamad-side job id for pulls hosted on a tamad (plan-191 follow-up
+    /// B). Used by the cancel endpoint to dispatch `CancelJob` to the host.
+    #[serde(skip)]
+    pub tamad_job_id: Option<String>,
 }
 
 impl Default for PullJob {
@@ -78,6 +85,7 @@ impl Default for PullJob {
             gguf_metadata: None,
             gguf_context_length: None,
             model_id: None,
+            tamad_job_id: None,
         }
     }
 }

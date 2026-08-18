@@ -8,10 +8,11 @@ use crate::config::default_num_parallel;
 use crate::config::ModelConfig;
 use crate::config::QuantKind;
 use crate::models::card::ModelToml;
+pub(crate) use crate::models::pull::determine_primary_shard;
 use crate::models::pull::infer_quant_from_filename;
 use crate::models::pull::metadata::lookup_community_toml;
-use crate::models::pull::BlobInfo;
 use crate::models::pull::GgufMetadata;
+use crate::models::pull::TamadGgufPullResult;
 use crate::models::transformers::TransformersMetadata;
 use crate::models::QuantInfo;
 use crate::proxy::pull_jobs::{PullJob, PullJobStatus};
@@ -35,31 +36,6 @@ pub(super) struct VerificationOutcome {
     pub is_primary_shard: bool,
 }
 
-/// Determine whether `filename` is the primary shard of a (possibly sharded)
-/// quant, given the full set of blob rfilenames from the HF API.
-///
-/// - Single-file quants (no `/` in the filename) are always primary.
-/// - For sharded quants (filename contains `/`), the primary shard is the
-///   first file by sorted order within the same directory prefix.
-///
-/// This is a pure function so it can be unit-tested without network calls.
-fn determine_primary_shard(filename: &str, blobs: &HashMap<String, BlobInfo>) -> bool {
-    // Single-file quant (no directory) is always primary
-    let dir_prefix = match crate::models::pull::directory_prefix(filename) {
-        Some(prefix) => prefix,
-        None => return true,
-    };
-    // Find all blobs in the exact same directory (not nested subdirs),
-    // sort, and check if current is first. Uses the shared directory_prefix
-    // helper for consistent directory-prefix extraction.
-    let mut siblings: Vec<&String> = blobs
-        .keys()
-        .filter(|k| crate::models::pull::directory_prefix(k) == Some(dir_prefix))
-        .collect();
-    siblings.sort();
-    siblings.first().map(|f| *f == filename).unwrap_or(true)
-}
-
 /// Run the post-pull verification phase for a pull job.
 ///
 /// Hashes the file at `dest_path` directly (file is already pulled there),
@@ -69,6 +45,8 @@ fn determine_primary_shard(filename: &str, blobs: &HashMap<String, BlobInfo>) ->
 ///   Returns `passed = false`.
 ///
 /// `None` upstream hash is treated as a pass (HF had no LFS SHA to compare).
+/// Kept for the retained local path — tamad-routed pulls consume the host's
+/// SHA-256 verdict from the result payload instead (ADR-0010).
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_verification(
     pull_jobs: Arc<tokio::sync::RwLock<HashMap<String, PullJob>>>,
@@ -270,6 +248,7 @@ pub(crate) async fn _setup_model_after_pull_with_config(
     gguf_metadata: Option<&GgufMetadata>,
     transformers_metadata: Option<&TransformersMetadata>,
     is_primary_shard: bool,
+    size_bytes_override: Option<u64>,
 ) -> Option<String> {
     let repo_slug = crate::models::card_slug(repo_id);
     let card_path = configs_dir.join(format!("{}.toml", repo_slug));
@@ -322,10 +301,14 @@ pub(crate) async fn _setup_model_after_pull_with_config(
         .or(transformers_metadata.and_then(|m| m.max_position_embeddings))
         .or(spec.context_length);
 
-    // Get actual file size from disk
-    let size_bytes = std::fs::metadata(dest_dir.join(&spec.filename))
-        .ok()
-        .map(|m| m.len());
+    // Get actual file size: an explicit override wins (tamad-routed pull —
+    // the file lives on the host's disk, so a local stat would report 0);
+    // otherwise stat the destination (the file lands next to this process).
+    let size_bytes = size_bytes_override.or_else(|| {
+        std::fs::metadata(dest_dir.join(&spec.filename))
+            .ok()
+            .map(|m| m.len())
+    });
 
     // Insert/update quant entry in model_toml — only for the primary shard of a
     // sharded quant. Non-primary shards are tracked via model_files (upsert_file)
@@ -607,6 +590,12 @@ pub(crate) async fn _setup_model_after_pull_with_config(
 /// Returns the integer model_configs id when the row was (re)saved, so the
 /// caller can persist related rows (model_files) against it without a second
 /// lookup that could miss due to case or key drift.
+///
+/// `size_bytes_override` feeds the card's `QuantInfo.size_bytes` from the
+/// host's pull result instead of a local stat — tamad-routed pulls pass the
+/// host-reported size (the file is not on this machine in a remote-host
+/// layout); local paths pass `None` to keep statting the destination.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn setup_model_after_pull(
     state: Arc<ProxyState>,
     repo_id: &str,
@@ -615,6 +604,7 @@ pub(crate) async fn setup_model_after_pull(
     gguf_metadata: Option<GgufMetadata>,
     transformers_metadata: Option<TransformersMetadata>,
     is_primary_shard: bool,
+    size_bytes_override: Option<u64>,
 ) -> Option<i64> {
     let _permit = state.config_write_semaphore.acquire().await.ok()?;
     // Clone needed data from config before awaiting — don't hold the read guard
@@ -635,6 +625,7 @@ pub(crate) async fn setup_model_after_pull(
         gguf_metadata.as_ref(),
         transformers_metadata.as_ref(),
         is_primary_shard,
+        size_bytes_override,
     )
     .await;
 
@@ -660,6 +651,553 @@ pub(crate) async fn setup_model_after_pull(
     saved_id
     // _guard dropped here, releasing the lock
     // config write guard also dropped here, making the new model entry visible immediately
+}
+
+/// Run the post-pull completion phase for the (retained) LOCAL download
+/// path: proxy-side disk verification of a file that lands next door.
+///
+/// ADR-0010 (plan-191 Task 6/10): the proxy no longer downloads — queued
+/// pulls are executed by the pull host and completed from its result
+/// payload via [`complete_pull_from_tamad_result`]. This function (and
+/// [`run_verification`]) is kept intact as the disk-side half of the
+/// post-download pipeline in case a local path is ever reintroduced; no
+/// production path calls it on this branch, hence the allow.
+///
+/// Stops the file-size poll task (if any), runs verification
+/// ([`run_verification`]), parses GGUF/transformers metadata from the local
+/// file, registers the model (model card + `model_configs`), persists the
+/// `model_files` row and verification state, releases the in-flight guard,
+/// and updates the DB queue item with the final status.
+#[allow(dead_code, clippy::too_many_arguments)]
+pub(super) async fn complete_pull_after_download(
+    pull_jobs: &Arc<tokio::sync::RwLock<HashMap<String, PullJob>>>,
+    state: &Arc<ProxyState>,
+    in_flight: &Arc<tokio::sync::Mutex<std::collections::HashSet<PathBuf>>>,
+    job_id: &str,
+    repo_id: &str,
+    filename: &str,
+    spec: &QuantPullSpec,
+    dest_dir: &std::path::Path,
+    dest_path: &PathBuf,
+    total_size: u64,
+    pull_start: Instant,
+    poll_handle: Option<tokio::task::JoinHandle<()>>,
+) {
+    let pull_duration = pull_start.elapsed();
+    tracing::info!(
+        job_id = %job_id,
+        bytes = total_size,
+        duration = ?pull_duration,
+        "Pull phase complete, entering verify phase"
+    );
+
+    // The file-size poll task is stopped in the shared registry tail
+    // (finalize_pull), after verification.
+
+    // Record final pulled byte count.
+    {
+        let mut jobs = pull_jobs.write().await;
+        if let Some(job) = jobs.get_mut(job_id) {
+            job.bytes_pulled = total_size;
+            job.total_bytes = Some(total_size);
+        }
+    }
+
+    // Verify the file at its destination. On failure the file is deleted
+    // so no corrupt data lingers.
+    let outcome = run_verification(
+        Arc::clone(pull_jobs),
+        state.db_dir.clone(),
+        state.pull_queue().clone(),
+        job_id.to_string(),
+        repo_id.to_string(),
+        filename.to_string(),
+        spec.quant.clone(),
+        dest_path.clone(),
+        total_size,
+    )
+    .await;
+
+    // Parse GGUF metadata (soft failure — don't fail the pull)
+    // Skip mmproj files — they're vision projectors, not LLM models.
+    // Skip MTP files too — they're draft models for speculative decoding,
+    // not the main LLM, and their architecture metadata is not what we
+    // want to record on the parent model config.
+    let skip_gguf_parse = matches!(
+        crate::config::QuantKind::from_filename(filename),
+        crate::config::QuantKind::Mmproj | crate::config::QuantKind::Mtp
+    );
+    let gguf_metadata = if outcome.passed && !skip_gguf_parse {
+        match crate::models::gguf::parse_gguf_metadata(dest_path) {
+            Ok(meta) => {
+                tracing::info!(
+                    job_id = %job_id,
+                    architecture = ?meta.architecture,
+                    context_length = ?meta.context_length,
+                    "GGUF metadata parsed"
+                );
+                Some(meta)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    job_id = %job_id,
+                    error = %e,
+                    "GGUF metadata parsing failed — using defaults"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // Parse transformers metadata from config.json (soft failure).
+    // Only attempt if GGUF parsing failed — GGUF succeeds on .gguf files
+    // and fails on .safetensors, so this targets Safetensors/transformers models.
+    let transformers_metadata = if outcome.passed && !skip_gguf_parse && gguf_metadata.is_none() {
+        let config_path = dest_dir.join("config.json");
+        if !config_path.exists() {
+            tracing::debug!(
+                job_id = %job_id,
+                path = %config_path.display(),
+                "Transformers metadata skipped — config.json not found"
+            );
+            None
+        } else {
+            match crate::models::transformers::parse_transformers_metadata(dest_dir) {
+                Ok(meta) => {
+                    tracing::info!(
+                        job_id = %job_id,
+                        architectures = ?meta.architectures,
+                        hidden_size = ?meta.hidden_size,
+                        "Transformers metadata parsed"
+                    );
+                    Some(meta)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        job_id = %job_id,
+                        error = %e,
+                        "Transformers metadata parse failed — config.json exists but is invalid"
+                    );
+                    None
+                }
+            }
+        }
+    } else {
+        None
+    };
+
+    // Both disk-side reads (GGUF header parse, transformers config.json)
+    // are local-file dependent — the shared registry tail consumes the
+    // outcomes built here.
+    finalize_pull(
+        pull_jobs,
+        state,
+        in_flight,
+        job_id,
+        repo_id,
+        filename,
+        spec,
+        dest_dir,
+        dest_path,
+        total_size,
+        None, // card size: the file lands next door, so a local stat is right
+        &outcome,
+        gguf_metadata.as_ref(),
+        transformers_metadata.as_ref(),
+        pull_start,
+        poll_handle,
+    )
+    .await;
+}
+
+/// Post-pull completion for a TAMD-ROUTED pull (ADR-0010): consumes the
+/// host's terminal `result_json` instead of [`run_verification`] + the
+/// local metadata parses. The file was verified on the host's disk — on a
+/// remote host it does not even exist on this machine — so the host's
+/// SHA-256 verdict, sizes, `is_primary_shard`, and parsed metadata are
+/// authoritative; the proxy persists the registry rows straight from the
+/// payload (plan-191 Task 6: "registry-side stays in the proxy and is fed
+/// by the enriched result").
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn complete_pull_from_tamad_result(
+    pull_jobs: &Arc<tokio::sync::RwLock<HashMap<String, PullJob>>>,
+    state: &Arc<ProxyState>,
+    in_flight: &Arc<tokio::sync::Mutex<std::collections::HashSet<PathBuf>>>,
+    job_id: &str,
+    repo_id: &str,
+    filename: &str,
+    spec: &QuantPullSpec,
+    dest_dir: &std::path::Path,
+    dest_path: &PathBuf,
+    pull_start: Instant,
+    result_json: &str,
+) {
+    let duration_ms = Some(pull_start.elapsed().as_millis() as u64);
+
+    // The host reported success above; a missing/malformed payload is a
+    // contract violation. Fail loud — inferring registry data from
+    // proxy-local disk would persist wrong rows on a remote host.
+    let parsed: TamadGgufPullResult = match serde_json::from_str(result_json) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!(
+                job_id = %job_id,
+                repo = %repo_id,
+                error = %e,
+                "tamad pull result payload malformed"
+            );
+            fail_pull_completion(
+                pull_jobs,
+                state,
+                in_flight,
+                job_id,
+                dest_path,
+                duration_ms,
+                format!("tamad pull returned a malformed result payload: {e}"),
+            )
+            .await;
+            return;
+        }
+    };
+    let Some(file) = parsed.file(filename) else {
+        tracing::error!(
+            job_id = %job_id,
+            repo = %repo_id,
+            file = %filename,
+            "tamad pull result payload misses the requested file"
+        );
+        fail_pull_completion(
+            pull_jobs,
+            state,
+            in_flight,
+            job_id,
+            dest_path,
+            duration_ms,
+            format!("tamad pull result payload has no entry for requested file '{filename}'"),
+        )
+        .await;
+        return;
+    };
+
+    // Consume the host's disk-side verdict (a "succeeded" terminal event
+    // implies verified = true; the else branch is defensive). Preserve the
+    // tri-state from `run_verification`: `ok = None` means "no upstream hash
+    // to compare" (the host then reports verified = true as a best-effort
+    // pass), while `Some(true)` / `Some(false)` means a hash was present and
+    // matched / didn't match. Setting `ok = Some(true)` whenever verified
+    // would falsely claim "hash matched" for never-hash-verified files.
+    let ok = file.expected_sha.as_ref().map(|_| file.verified);
+    let outcome = VerificationOutcome {
+        passed: file.verified,
+        expected_sha: file.expected_sha.clone(),
+        ok,
+        err: if file.verified {
+            None
+        } else {
+            file.verify_error
+                .clone()
+                .filter(|e| !e.is_empty())
+                .or_else(|| Some("verification failed".to_string()))
+        },
+        is_primary_shard: file.is_primary_shard,
+    };
+    let file_size = file.size;
+
+    // Mirror the local path's verification → terminal status flow so the
+    // dashboard/SSE see the same states (no disk involvement — the host
+    // already hashed the file).
+    {
+        let mut jobs = pull_jobs.write().await;
+        if let Some(job) = jobs.get_mut(job_id) {
+            job.status = crate::proxy::pull_jobs::PullJobStatus::Verifying;
+            job.verify_bytes_hashed = file_size;
+            job.verify_total_bytes = Some(file_size);
+            job.bytes_pulled = file_size;
+            job.total_bytes = Some(file_size);
+        }
+    }
+    if let Some(ref svc) = state.pull_queue() {
+        let _ = svc
+            .update_status(
+                job_id,
+                "verifying",
+                file_size as i64,
+                Some(file_size as i64),
+                None,
+                None,
+            )
+            .await;
+    }
+
+    let passed = outcome.passed;
+    {
+        let mut jobs = pull_jobs.write().await;
+        if let Some(job) = jobs.get_mut(job_id) {
+            job.status = if passed {
+                crate::proxy::pull_jobs::PullJobStatus::Completed
+            } else {
+                crate::proxy::pull_jobs::PullJobStatus::Failed
+            };
+            job.verified_ok = outcome.ok;
+            job.verify_error = outcome.err.clone();
+            job.error = outcome.err.clone();
+            job.completed_at = Some(Instant::now());
+            tracing::info!(
+                job_id = %job_id,
+                verified_ok = ?outcome.ok,
+                bytes_pulled = job.bytes_pulled,
+                "Job completed from host result payload"
+            );
+        }
+    }
+
+    // Metadata shipped by the host (None on the failure path — the local
+    // path skips parsing when verification fails as well).
+    let gguf_metadata_ = if passed {
+        parsed.gguf_metadata.clone()
+    } else {
+        None
+    };
+    let transformers_metadata_ = if passed {
+        parsed.transformers_metadata.clone()
+    } else {
+        None
+    };
+
+    finalize_pull(
+        pull_jobs,
+        state,
+        in_flight,
+        job_id,
+        repo_id,
+        filename,
+        spec,
+        dest_dir,
+        dest_path,
+        file_size,
+        Some(file_size), // card size from the host payload, never a local stat
+        &outcome,
+        gguf_metadata_.as_ref(),
+        transformers_metadata_.as_ref(),
+        pull_start,
+        None,
+    )
+    .await;
+}
+
+/// Fail a tamad-routed pull at the completion phase (unusable result
+/// payload): PullJob + queue row + in-flight guard, no registry rows.
+#[allow(clippy::too_many_arguments)]
+async fn fail_pull_completion(
+    pull_jobs: &Arc<tokio::sync::RwLock<HashMap<String, PullJob>>>,
+    state: &Arc<ProxyState>,
+    in_flight: &Arc<tokio::sync::Mutex<std::collections::HashSet<PathBuf>>>,
+    job_id: &str,
+    dest_path: &PathBuf,
+    duration_ms: Option<u64>,
+    error: String,
+) {
+    {
+        let mut jobs = pull_jobs.write().await;
+        if let Some(job) = jobs.get_mut(job_id) {
+            job.status = crate::proxy::pull_jobs::PullJobStatus::Failed;
+            job.error = Some(error.clone());
+            job.verify_error = Some(error.clone());
+            job.completed_at = Some(Instant::now());
+            job.duration_ms = duration_ms;
+        }
+    }
+    in_flight.lock().await.remove(dest_path);
+    if let Some(ref svc) = state.pull_queue() {
+        let _ = svc
+            .update_status(job_id, "failed", 0, None, Some(&error), duration_ms)
+            .await;
+    }
+}
+
+/// The registry + queue tail shared by both completion paths (local disk
+/// verification in [`complete_pull_after_download`] and the host result
+/// payload in [`complete_pull_from_tamad_result`]): GGUF metadata on the
+/// job, model registration (card + `model_configs`), the `model_files` row
+/// + verification state, the in-flight release, and the final queue status.
+#[allow(clippy::too_many_arguments)]
+async fn finalize_pull(
+    pull_jobs: &Arc<tokio::sync::RwLock<HashMap<String, PullJob>>>,
+    state: &Arc<ProxyState>,
+    in_flight: &Arc<tokio::sync::Mutex<std::collections::HashSet<PathBuf>>>,
+    job_id: &str,
+    repo_id: &str,
+    filename: &str,
+    spec: &QuantPullSpec,
+    dest_dir: &std::path::Path,
+    dest_path: &PathBuf,
+    file_size: u64,
+    size_bytes_override: Option<u64>,
+    outcome: &VerificationOutcome,
+    gguf_metadata: Option<&GgufMetadata>,
+    transformers_metadata: Option<&TransformersMetadata>,
+    pull_start: Instant,
+    poll_handle: Option<tokio::task::JoinHandle<()>>,
+) {
+    let duration_ms = Some(pull_start.elapsed().as_millis() as u64);
+
+    // Stop the file size polling task (local download path; None for host
+    // pulls — the relay's byte counters are the progress source).
+    if let Some(h) = poll_handle {
+        h.abort();
+    }
+
+    // Store GGUF metadata in PullJob for SSE streaming
+    {
+        let mut jobs = pull_jobs.write().await;
+        if let Some(job) = jobs.get_mut(job_id) {
+            job.gguf_metadata = gguf_metadata.cloned();
+            // Also set the serialized field for SSE events (frontend reads this)
+            job.gguf_context_length = gguf_metadata.and_then(|m| m.context_length);
+        }
+    }
+
+    // Only register the model in config/card once the file is at its
+    // destination and known-good. setup_model_after_pull creates the
+    // matching model_configs row, which the model_files row below FKs to.
+    if outcome.passed {
+        let model_id = setup_model_after_pull(
+            Arc::clone(state),
+            repo_id,
+            spec,
+            dest_dir,
+            gguf_metadata.cloned(),
+            transformers_metadata.cloned(),
+            outcome.is_primary_shard,
+            size_bytes_override,
+        )
+        .await;
+
+        // Persist the hash + verification state to model_files now that
+        // the parent model_configs row exists. Use the id returned by
+        // setup_model_after_pull so there's no case-sensitive lookup in
+        // between that could miss.
+        match model_id {
+            Some(mid) => {
+                let pool = state.db_pool();
+                if let Err(e) = crate::db::queries::upsert_model_file(
+                    &pool,
+                    mid,
+                    repo_id,
+                    filename,
+                    spec.quant.as_deref(),
+                    outcome.expected_sha.as_deref(),
+                    Some(file_size as i64),
+                )
+                .await
+                {
+                    tracing::error!(
+                        job_id = %job_id,
+                        model_id = mid,
+                        file = %filename,
+                        error = %e,
+                        "upsert_model_file failed"
+                    );
+                } else {
+                    tracing::info!(
+                        job_id = %job_id,
+                        model_id = mid,
+                        file = %filename,
+                        "model_files row written"
+                    );
+                }
+                // Tag the model_files row with the file kind so downstream
+                // consumers can distinguish MTP draft models from regular
+                // GGUF quants. `upsert_model_file` does not currently accept
+                // a `kind` parameter, so we issue a follow-up UPDATE. Mirrors
+                // the `QuantKind::from_filename` logic used to drive the
+                // card's `kind` field.
+                let db_kind = match crate::config::QuantKind::from_filename(filename) {
+                    crate::config::QuantKind::Model => "model",
+                    crate::config::QuantKind::Mmproj => "mmproj",
+                    crate::config::QuantKind::Mtp => "mtp",
+                };
+                if db_kind != "model" {
+                    if let Err(e) =
+                        crate::db::queries::update_model_file_kind(&pool, mid, filename, db_kind)
+                            .await
+                    {
+                        tracing::warn!(
+                            job_id = %job_id,
+                            model_id = mid,
+                            file = %filename,
+                            kind = db_kind,
+                            error = %e,
+                            "model_files kind UPDATE failed"
+                        );
+                    }
+                }
+                if let Err(e) = crate::db::queries::update_verification(
+                    &pool,
+                    mid,
+                    filename,
+                    outcome.ok,
+                    outcome.err.as_deref(),
+                )
+                .await
+                {
+                    tracing::warn!(
+                        job_id = %job_id,
+                        model_id = mid,
+                        file = %filename,
+                        error = %e,
+                        "update_verification failed"
+                    );
+                }
+            }
+            None => {
+                tracing::info!(
+                    job_id = %job_id,
+                    repo = %repo_id,
+                    "non-primary shard — model_files row skipped (expected for non-primary shards)"
+                );
+            }
+        }
+    }
+
+    // Release the in-flight lock after setup and verification complete
+    // to prevent concurrent retries from starting mid-processing.
+    in_flight.lock().await.remove(dest_path);
+
+    // Update DB queue item with final status
+    let final_status = if outcome.passed {
+        "completed"
+    } else {
+        "failed"
+    };
+    let error_msg = if !outcome.passed {
+        outcome.err.as_deref()
+    } else {
+        None
+    };
+
+    if let Some(ref svc) = state.pull_queue() {
+        let _ = svc
+            .update_status(
+                job_id,
+                final_status,
+                file_size as i64,
+                Some(file_size as i64),
+                error_msg,
+                duration_ms,
+            )
+            .await;
+    }
+
+    // Update in-memory PullJob with duration
+    {
+        let mut jobs = pull_jobs.write().await;
+        if let Some(job) = jobs.get_mut(job_id) {
+            job.duration_ms = duration_ms;
+        }
+    }
 }
 
 #[cfg(test)]

@@ -1,4 +1,14 @@
-pub mod docker;
+//! Backend installation management (plan-191 Task 10 split).
+//!
+//! Stays here (proxy-side): the `InstallationManager` (central Postgres rows,
+//! single-writer rule), shared types (`InstallationType`, `InstallationSource`,
+//! `DockerConfig`, ...), the DB migration, prebuilt URL construction, and the
+//! network update *checkers*.
+//!
+//! Moved to the tamad crate (`host_installs`): download/build execution,
+//! docker container execution, and the Kokoro TTS install — the proxy
+//! never downloads or builds backends (ADR-0010).
+
 pub mod installer;
 pub mod log_stream;
 pub mod manager;
@@ -7,21 +17,20 @@ pub mod tts_kokoro;
 pub mod types;
 pub mod updater;
 
-pub use docker::{DockerConfig, DockerVolume};
-
-pub use installer::{install_installation, install_installation_with_progress, InstallOptions};
+pub use installer::urls::get_prebuilt_url;
 pub use manager::{InstallationManager, InstallationOption};
-pub use tts_kokoro::install_tts_kokoro;
-pub use types::{InstallationInfo, InstallationSource, InstallationType};
+pub use types::{
+    DockerConfig, DockerVolume, InstallationInfo, InstallationSource, InstallationType,
+};
 pub use updater::{
-    check_installation_updates, check_latest_version, update_installation,
-    update_installation_with_progress, UpdateCheck,
+    check_installation_updates, check_latest_version, has_update, supports_update_check,
+    UpdateCheck,
 };
 
 use std::path::{Path, PathBuf};
 
 use crate::config::Config;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 
 /// Trait for logging progress during backend installation.
 pub trait ProgressSink: Send + Sync {
@@ -65,49 +74,6 @@ pub fn get_backend_install_path(
         .join(backend_type.to_string())
         .join(gpu_variant)
         .join(version)
-}
-
-/// Safely removes a backend installation by validating the path is within the managed backends directory.
-///
-/// This function canonicalizes both the target path and the backends directory, then verifies
-/// the target is within the managed directory before deletion. This prevents directory traversal
-/// attacks and accidental deletion of files outside the backends directory.
-pub fn safe_remove_installation(info: &InstallationInfo) -> Result<()> {
-    // Determine what to remove:
-    // - If path is a directory (TTS backends), remove the path itself
-    // - If path is a binary file (llama_cpp, ik_llama), remove its parent directory
-    let target = if info.path.is_dir() {
-        info.path.clone()
-    } else {
-        info.path
-            .parent()
-            .ok_or_else(|| anyhow!("Failed to get parent directory of backend path"))?
-            .to_path_buf()
-    };
-
-    let canonical_target = std::fs::canonicalize(&target)
-        .with_context(|| format!("Failed to canonicalize backend path: {}", target.display()))?;
-
-    let managed = backends_dir().with_context(|| "Failed to get backends directory")?;
-    let canonical_managed = std::fs::canonicalize(&managed).with_context(|| {
-        format!(
-            "Failed to canonicalize backends directory: {}",
-            managed.display()
-        )
-    })?;
-
-    if !canonical_target.starts_with(&canonical_managed) {
-        return Err(anyhow!("path is outside the managed backends directory"));
-    }
-
-    // remove_dir_all will fail if directory is in use
-    {
-        std::fs::remove_dir_all(&target)
-            .with_context(|| format!("Failed to remove backend directory: {}", target.display()))?;
-        tracing::info!("Files removed.");
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]
@@ -164,122 +130,9 @@ mod tests {
     }
 
     #[test]
-    fn test_safe_remove_installation_rejects_outside_path() {
-        // Use a real temp directory path that exists on all platforms.
-        // Keep the TempDir alive so the path remains valid during the test.
-        let _outside_dir = tempfile::tempdir().expect("tempdir");
-        let outside_path = _outside_dir.path().join("llama-server");
-        let outside_info = InstallationInfo {
-            name: "test".to_string(),
-            backend_type: InstallationType::LlamaCpp,
-            version: "test".to_string(),
-            path: outside_path,
-            installed_at: 0,
-            gpu_variant: "cpu".to_string(),
-            source: None,
-            docker_config: None,
-        };
-
-        let result = safe_remove_installation(&outside_info);
-        assert!(
-            result.is_err(),
-            "safe_remove_installation should reject paths outside backends_dir()"
-        );
-        let err_msg = result.unwrap_err().to_string();
-        assert!(
-            err_msg.contains("outside the managed backends directory"),
-            "Error message should mention 'outside the managed backends directory', got: {}",
-            err_msg
-        );
-    }
-
-    #[test]
     fn test_progress_sink_trait() {
         // NullSink should implement ProgressSink
         let sink: NullSink = NullSink;
         sink.log("test line"); // Should not panic
-    }
-
-    /// Verify that `safe_remove_installation` removes the entire tts_kokoro directory
-    /// when the InstallationInfo path points to a directory (the base_dir).
-    ///
-    /// This simulates the new layout where:
-    ///   backends/tts_kokoro/       <- info.path (base_dir, is_dir)
-    ///     kokoro-fastapi/         <- git clone target
-    ///       api/src/main.py
-    ///     venv/                   <- virtualenv
-    ///
-    /// safe_remove_installation should detect that info.path is a directory and remove
-    /// it entirely (including all nested files and subdirectories).
-    #[test]
-    fn test_safe_remove_tts_kokoro_directory() {
-        // Create the structure inside the real backends_dir so canonicalization passes.
-        let managed_backends = backends_dir().expect("backends_dir should exist");
-
-        // Simulate: <backends>/tts_kokoro_test/kokoro-fastapi/api/src/main.py
-        let test_base = managed_backends.join("tts_kokoro_test");
-        std::fs::create_dir_all(test_base.join("kokoro-fastapi").join("api").join("src"))
-            .expect("create kokoro-fastapi dir structure");
-        std::fs::write(
-            test_base
-                .join("kokoro-fastapi")
-                .join("api")
-                .join("src")
-                .join("main.py"),
-            "# mock",
-        )
-        .expect("write main.py");
-
-        // Simulate: <backends>/tts_kokoro_test/venv/bin/python
-        std::fs::create_dir_all(test_base.join("venv").join("bin"))
-            .expect("create venv dir structure");
-        std::fs::write(
-            test_base.join("venv").join("bin").join("python"),
-            "#!/bin/sh",
-        )
-        .expect("write python mock");
-
-        // Verify the structure exists before removal
-        assert!(test_base.is_dir(), "tts_kokoro_test base_dir should exist");
-        assert!(
-            test_base
-                .join("kokoro-fastapi")
-                .join("api")
-                .join("src")
-                .join("main.py")
-                .exists(),
-            "main.py should exist before removal"
-        );
-        assert!(
-            test_base.join("venv").join("bin").join("python").exists(),
-            "venv python should exist before removal"
-        );
-
-        // Create InstallationInfo with path pointing to the directory (base_dir)
-        let info = InstallationInfo {
-            name: "tts_kokoro".to_string(),
-            backend_type: InstallationType::TtsKokoro,
-            version: "v0.3.0".to_string(),
-            path: test_base.clone(), // This is a directory, not a binary
-            installed_at: 0,
-            gpu_variant: "cpu".to_string(),
-            source: None,
-            docker_config: None,
-        };
-
-        // Call safe_remove_installation — since info.path is a directory,
-        // it should remove the entire tts_kokoro_test/ directory.
-        let result = safe_remove_installation(&info);
-        assert!(
-            result.is_ok(),
-            "safe_remove_installation should succeed for TTS backend dir, got: {:?}",
-            result
-        );
-
-        // Verify the entire tts_kokoro_test directory is gone
-        assert!(
-            !test_base.exists(),
-            "tts_kokoro_test base_dir should be removed after safe_remove_installation"
-        );
     }
 }

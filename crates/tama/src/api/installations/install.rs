@@ -8,12 +8,20 @@ use serde::Deserialize;
 use std::sync::Arc;
 
 use super::types::*;
-use crate::api::error::{error_body, error_response, error_response_simple};
+use crate::api::error::{error_body, error_response};
 use crate::api::helpers::open_backend_manager;
+use crate::api::installations::tamad_job;
 use crate::web_types::WebState;
+use tama_core::installations::{InstallationSource, InstallationType};
 use tama_core::proxy::ProxyState;
 
 /// POST /tama/v1/backends/install
+///
+/// Installations are executed on the *tamad* of the provider that resolves
+/// the backend (plan-191 Task 7 / ADR-0010). The proxy validates the
+/// request, submits a JobManager job (same UX as before), dispatches
+/// `InstallProvider` to the tamad, and persists the installation row when
+/// the tamad job succeeds (proxy = single DB writer).
 pub async fn install_installation(
     Extension(web_state): Extension<WebState>,
     State(state): State<Arc<ProxyState>>,
@@ -70,9 +78,9 @@ pub async fn install_installation(
 
     // Parse backend type
     let backend_type = match req.backend_type.as_str() {
-        "llama_cpp" => tama_core::installations::InstallationType::LlamaCpp,
-        "ik_llama" => tama_core::installations::InstallationType::IkLlama,
-        "tts_kokoro" => tama_core::installations::InstallationType::TtsKokoro,
+        "llama_cpp" => InstallationType::LlamaCpp,
+        "ik_llama" => InstallationType::IkLlama,
+        "tts_kokoro" => InstallationType::TtsKokoro,
         "docker" => {
             return error_response(
                 StatusCode::BAD_REQUEST,
@@ -96,117 +104,58 @@ pub async fn install_installation(
         }
     };
 
-    // TTS backends use a dedicated installer (downloads model files from HuggingFace).
-    // They skip the normal prebuilt/source install flow entirely.
-    let is_tts = matches!(
-        backend_type,
-        tama_core::installations::InstallationType::TtsKokoro
-    );
-
-    if is_tts {
-        // For TTS backends: submit job first, then spawn the install task.
-        let job = match jobs
-            .submit(
-                crate::web_types::JobKind::Install,
-                Some(backend_type.clone()),
+    // Backend name (the installation registry key).
+    let backend_name = match &backend_type {
+        InstallationType::LlamaCpp => "llama_cpp",
+        InstallationType::IkLlama => "ik_llama",
+        InstallationType::TtsKokoro => "tts_kokoro",
+        _ => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                format!("Unsupported backend type: {}", backend_type),
+                Some("ValidationError"),
             )
-            .await
-        {
+        }
+    }
+    .to_string();
+
+    // TTS backends use a dedicated source install (Kokoro-FastAPI at a
+    // pinned tag). Dispatched to the tamad like any other install; the
+    // version is always the pinned tag (resolved on the host).
+    if matches!(backend_type, InstallationType::TtsKokoro) {
+        let job = match submit_install_job(&jobs, &backend_type).await {
             Ok(j) => j,
-            Err(crate::web_types::JobError::AlreadyRunning(existing_id)) => {
-                let mut body = error_body(
-                    "another backend job is already running",
-                    Some("ConflictError"),
-                );
-                body["job_id"] = serde_json::json!(existing_id);
-                return (StatusCode::CONFLICT, Json(body)).into_response();
-            }
-            Err(_) => {
-                return error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "failed to create job",
-                    None,
-                )
-            }
+            Err(resp) => return resp,
         };
 
-        let backend_name = match &backend_type {
-            tama_core::installations::InstallationType::TtsKokoro => "tts_kokoro",
-            _ => {
-                return error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Unsupported backend type for TTS install",
-                    None,
-                )
-            }
+        let dispatch = tamad_job::InstallDispatch {
+            backend_type,
+            name: backend_name,
+            version: String::new(), // host installs the pinned KOKORO_FASTAPI_TAG
+            gpu_variant: "cpu".to_string(),
+            git_url: String::new(),
+            force: req.force,
+            source: InstallationSource::SourceCode {
+                version: tama_core::installations::tts_kokoro::paths::KOKORO_FASTAPI_TAG
+                    .to_string(),
+                git_url: tama_core::installations::tts_kokoro::paths::KOKORO_FASTAPI_URL
+                    .to_string(),
+                commit: None,
+            },
         };
-
-        // Capture the Postgres pool for the background task
-        let pool = state.db_pool();
-
-        let jobs_clone = jobs.clone();
-        let job_clone = job.clone();
-        let bt = backend_type.clone();
-        tokio::spawn(async move {
-            let adapter = JobAdapter {
-                jobs: jobs_clone.clone(),
-                job: job_clone.clone(),
-            };
-
-            // Build the manager from the shared Postgres pool and run the TTS installer.
-            let mgr = tama_core::installations::InstallationManager::new(pool);
-
-            let progress = Box::new(adapter);
-            match bt {
-                tama_core::installations::InstallationType::TtsKokoro => {
-                    match tama_core::installations::install_tts_kokoro(mgr, progress).await {
-                        Ok(()) => {}
-                        Err(e) => {
-                            jobs_clone
-                                .append_log(&job_clone, format!("Error: {}", e))
-                                .await;
-                            let _ = jobs_clone
-                                .finish(
-                                    &job_clone,
-                                    crate::web_types::JobStatus::Failed,
-                                    Some(e.to_string()),
-                                )
-                                .await;
-                            return;
-                        }
-                    }
-                }
-                _ => {
-                    jobs_clone
-                        .append_log(
-                            &job_clone,
-                            "Error: Unsupported backend type for TTS install".to_string(),
-                        )
-                        .await;
-                    let _ = jobs_clone
-                        .finish(
-                            &job_clone,
-                            crate::web_types::JobStatus::Failed,
-                            Some("Unsupported backend type for TTS install".to_string()),
-                        )
-                        .await;
-                    return;
-                }
-            }
-
-            let _ = jobs_clone
-                .finish(&job_clone, crate::web_types::JobStatus::Succeeded, None)
-                .await;
-        });
+        spawn_tamad_job(
+            &state,
+            &jobs,
+            &job,
+            "Dispatching TTS install to backend host…".to_string(),
+            dispatch,
+        );
 
         return Json(InstallResponse {
             job_id: job.id.to_string(),
             kind: "install".to_string(),
             backend_type: req.backend_type,
-            notices: vec![format!(
-                "Downloading {} model files from HuggingFace...",
-                backend_name
-            )],
+            notices: vec!["TTS backend installs from source at a pinned tag".to_string()],
         })
         .into_response();
     }
@@ -214,10 +163,7 @@ pub async fn install_installation(
     // Compute effective build_from_source
     let is_linux = std::env::consts::OS == "linux";
     let is_cuda = matches!(req.gpu_variant, tama_core::gpu::GpuVariant::Cuda { .. });
-    let is_ik_llama = matches!(
-        backend_type,
-        tama_core::installations::InstallationType::IkLlama
-    );
+    let is_ik_llama = matches!(backend_type, InstallationType::IkLlama);
 
     let mut notices: Vec<String> = Vec::new();
     let effective_build_from_source = if is_ik_llama {
@@ -230,7 +176,15 @@ pub async fn install_installation(
         req.build_from_source
     };
 
-    // Check prerequisites if source build
+    // Quick-fail on build prerequisites for source builds. This probe runs
+    // on the PROXY host, so the 400 reflects the *reporting* host's
+    // toolchain — accurate for single-host deployments (tamad on the same
+    // box); on multi-host topologies the build runs on the provider's
+    // tamad, which is authoritative and re-probes its own host at build
+    // time (tamad `install_from_source` — a missing tool there fails the
+    // job with an actionable error instead).
+    // (plan-191 Task 9: the local CUDA-version probe was removed — builds
+    // execute on the tamad host.)
     if effective_build_from_source {
         let cache = match web_state.capabilities.as_ref() {
             Some(c) => c.clone(),
@@ -244,10 +198,7 @@ pub async fn install_installation(
         };
 
         let caps = match cache
-            .get_or_compute(
-                tama_core::gpu::detect_build_prerequisites,
-                tama_core::gpu::detect_cuda_version,
-            )
+            .get_or_compute(tama_core::gpu::detect_build_prerequisites)
             .await
         {
             Ok(c) => c,
@@ -284,174 +235,59 @@ pub async fn install_installation(
     }
 
     // Submit job
-    let job = match jobs
-        .submit(
-            crate::web_types::JobKind::Install,
-            Some(backend_type.clone()),
-        )
-        .await
-    {
+    let job = match submit_install_job(&jobs, &backend_type).await {
         Ok(j) => j,
-        Err(crate::web_types::JobError::AlreadyRunning(existing_id)) => {
-            let mut body = error_body(
-                "another backend job is already running",
-                Some("ConflictError"),
-            );
-            body["job_id"] = serde_json::json!(existing_id);
-            return (StatusCode::CONFLICT, Json(body)).into_response();
-        }
-        Err(_) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "failed to create job",
-                None,
-            )
-        }
+        Err(resp) => return resp,
     };
 
-    // Build install options
+    // Resolve the install source (for the tamad dispatch + the DB row that
+    // is written when the tamad job succeeds).
     let version = req.version.unwrap_or_else(|| "latest".to_string());
-    let git_url = match backend_type {
-        tama_core::installations::InstallationType::LlamaCpp => {
-            "https://github.com/ggml-org/llama.cpp.git"
-        }
-        tama_core::installations::InstallationType::IkLlama => {
-            "https://github.com/ikawrakow/ik_llama.cpp.git"
-        }
-        _ => {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                format!("Unsupported backend type: {}", backend_type),
-                Some("ValidationError"),
-            )
-        }
-    };
-
-    let source = if effective_build_from_source {
-        tama_core::installations::InstallationSource::SourceCode {
-            version: version.clone(),
-            git_url: git_url.to_string(),
-            commit: None,
-        }
-    } else {
-        tama_core::installations::InstallationSource::Prebuilt {
-            version: version.clone(),
-        }
-    };
-
-    // Compute the versioned target directory
-    let gpu_variant = req.gpu_variant.to_string();
-
-    let target_dir = match tama_core::installations::backends_dir() {
-        Ok(d) => {
-            if !matches!(
-                backend_type,
-                tama_core::installations::InstallationType::LlamaCpp
-                    | tama_core::installations::InstallationType::IkLlama
-            ) {
+    // Source-code git URL (empty → the tamad downloads a prebuilt binary).
+    let git_url = if effective_build_from_source {
+        match &backend_type {
+            InstallationType::LlamaCpp => "https://github.com/ggml-org/llama.cpp.git",
+            InstallationType::IkLlama => "https://github.com/ikawrakow/ik_llama.cpp.git",
+            other => {
                 return error_response(
                     StatusCode::BAD_REQUEST,
-                    format!("Unsupported backend type: {}", backend_type),
+                    format!("Unsupported backend type: {}", other),
                     Some("ValidationError"),
-                );
+                )
             }
-            tama_core::installations::get_backend_install_path(
-                &d,
-                &backend_type,
-                &gpu_variant,
-                &version,
-            )
         }
-        Err(e) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to get backends dir: {}", e),
-                None,
-            )
+        .to_string()
+    } else {
+        String::new()
+    };
+    let source = if git_url.is_empty() {
+        InstallationSource::Prebuilt {
+            version: version.clone(),
+        }
+    } else {
+        InstallationSource::SourceCode {
+            version: version.clone(),
+            git_url: git_url.clone(),
+            commit: None,
         }
     };
 
-    // Capture values needed for DB registration before source is moved
-    let reg_backend_type = backend_type.clone();
-    let reg_version = version.clone();
-    let reg_gpu_variant = gpu_variant.clone();
-    let reg_source = source.clone();
-    let reg_backend_name = match backend_type {
-        tama_core::installations::InstallationType::LlamaCpp => "llama_cpp",
-        tama_core::installations::InstallationType::IkLlama => "ik_llama",
-        _ => "custom",
-    }
-    .to_string();
-    // config_dir obtained inside the spawn closure via Config::config_dir()
-
-    let options = tama_core::installations::InstallOptions {
-        backend_type: backend_type.clone(),
+    let dispatch = tamad_job::InstallDispatch {
+        backend_type,
+        name: backend_name,
+        version,
+        gpu_variant: req.gpu_variant.to_string(),
+        git_url,
+        force: req.force,
         source,
-        target_dir,
-        gpu_variant,
-        allow_overwrite: req.force,
     };
-
-    // Spawn the install task
-    let db_pool = state.db_pool();
-    let jobs_clone = jobs.clone();
-    let job_clone = job.clone();
-    tokio::spawn(async move {
-        let adapter = Arc::new(JobAdapter {
-            jobs: jobs_clone.clone(),
-            job: job_clone.clone(),
-        });
-
-        let result = match tama_core::installations::installer::install_installation_with_progress(
-            options,
-            Some(adapter),
-            None, // No registry client available in background job
-        )
-        .await
-        {
-            Ok(binary_path) => Ok(binary_path),
-            Err(e) => Err(e.to_string()),
-        };
-
-        match result {
-            Ok(binary_path) => {
-                // Register the installation in the DB so `resolve_backend_path` can find it.
-                let pool = db_pool;
-                let installed_at = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs() as i64)
-                    .unwrap_or(0);
-                let mgr = tama_core::installations::InstallationManager::new(pool);
-                let reg_result = mgr
-                    .add_installation(&tama_core::installations::InstallationInfo {
-                        name: reg_backend_name,
-                        backend_type: reg_backend_type,
-                        version: reg_version,
-                        path: binary_path,
-                        installed_at,
-                        gpu_variant: reg_gpu_variant,
-                        source: Some(reg_source),
-                        docker_config: None,
-                    })
-                    .await;
-                if let Err(e) = reg_result {
-                    tracing::warn!("Failed to register backend in DB: {}", e);
-                }
-                let _ = jobs_clone
-                    .finish(&job_clone, crate::web_types::JobStatus::Succeeded, None)
-                    .await;
-            }
-            Err(e) => {
-                // Emit the error as a log line so it appears in the build log panel.
-                jobs_clone
-                    .append_log(&job_clone, format!("Error: {}", e))
-                    .await;
-                let _ = jobs_clone
-                    .finish(&job_clone, crate::web_types::JobStatus::Failed, Some(e))
-                    .await;
-            }
-        }
-    });
+    spawn_tamad_job(
+        &state,
+        &jobs,
+        &job,
+        "Dispatching install to backend host…".to_string(),
+        dispatch,
+    );
 
     Json(InstallResponse {
         job_id: job.id.to_string(),
@@ -460,6 +296,52 @@ pub async fn install_installation(
         notices,
     })
     .into_response()
+}
+
+/// Submit an install job, mapping JobErrors to HTTP responses.
+async fn submit_install_job(
+    jobs: &crate::web_types::JobManager,
+    backend_type: &InstallationType,
+) -> Result<Arc<crate::web_types::Job>, axum::response::Response> {
+    match jobs
+        .submit(
+            crate::web_types::JobKind::Install,
+            Some(backend_type.clone()),
+        )
+        .await
+    {
+        Ok(j) => Ok(j),
+        Err(crate::web_types::JobError::AlreadyRunning(existing_id)) => {
+            let mut body = error_body(
+                "another backend job is already running",
+                Some("ConflictError"),
+            );
+            body["job_id"] = serde_json::json!(existing_id);
+            Err((StatusCode::CONFLICT, Json(body)).into_response())
+        }
+        Err(_) => Err(error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to create job",
+            None,
+        )),
+    }
+}
+
+/// Spawn a tamad-executed backend job bridged to the JobManager.
+fn spawn_tamad_job(
+    state: &Arc<ProxyState>,
+    jobs: &Arc<crate::web_types::JobManager>,
+    job: &Arc<crate::web_types::Job>,
+    dispatch_line: String,
+    dispatch: tamad_job::InstallDispatch,
+) {
+    let state = state.clone();
+    let jobs_clone = jobs.clone();
+    let job_clone = job.clone();
+    tokio::spawn(async move {
+        jobs_clone.append_log(&job_clone, dispatch_line).await;
+        tamad_job::execute_install(&state, &jobs_clone, &job_clone, &dispatch).await;
+    });
 }
 
 /// Query params for DELETE /tama/v1/backends/:name
@@ -471,6 +353,14 @@ pub struct RemoveQuery {
 }
 
 /// DELETE /tama/v1/backends/:name
+///
+/// Removes a backend (or one of its variants) from the system:
+/// 1. `RemoveProvider` on the backend's tamad — kills any running backend
+///    processes and deletes the versioned install directories on the host.
+/// 2. Cleans the proxy DB rows (proxy = single DB writer).
+///
+/// Tamad failure fails the request with 500; nothing is deleted from the
+/// DB in that case (fail loud).
 pub async fn remove_installation(
     Extension(web_state): Extension<WebState>,
     State(state): State<Arc<ProxyState>>,
@@ -565,44 +455,25 @@ pub async fn remove_installation(
         }
     }
 
-    // Block 2: remove files on the blocking pool, then delete the DB rows.
-    let backends_for_block2 = backends_to_remove.clone();
-    #[allow(clippy::result_large_err)]
-    match tokio::task::spawn_blocking(move || -> Result<(), axum::response::Response> {
-        // Remove files for each variant
-        for info in &backends_for_block2 {
-            if let Err(e) = tama_core::installations::safe_remove_installation(info) {
-                let err_msg = e.to_string();
-                if err_msg.contains("outside the managed backends directory") {
-                    return Err(error_response(
-                        StatusCode::CONFLICT,
-                        "path is outside the managed backends directory; remove manually",
-                        Some("ConflictError"),
-                    ));
-                }
-                return Err(error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Failed to remove files: {}", e),
-                    None,
-                ));
-            }
-        }
-
-        Ok(())
-    })
+    // Step 1: remove on the backend host (kill processes + delete dirs).
+    if let Err(e) = tamad_job::remove_on_tamad(
+        &state,
+        &backends_to_remove[0].backend_type,
+        &name,
+        gpu_variant.as_deref(),
+        None,
+    )
     .await
     {
-        Ok(Ok(())) => {}
-        Ok(Err(resp)) => return resp,
-        Err(e) => {
-            return error_response_simple(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("spawn error: {}", e),
-            )
-        }
+        tracing::warn!(backend = %name, error = %e, "tamad removal failed");
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to remove backend on host: {}", e),
+            None,
+        );
     }
 
-    // Remove from DB (Some = remove specific variant, None = remove all variants)
+    // Step 2: remove DB rows (Some = remove specific variant, None = all).
     if let Err(e) = mgr.delete_all_versions(&name, gpu_variant.as_deref()).await {
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,

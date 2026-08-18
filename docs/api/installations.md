@@ -2,6 +2,20 @@
 
 Manage inference backends (llama.cpp, ik_llama, kokoro TTS).
 
+**Execution host:** `install`, `update`, and `remove` execute on the *tamad*
+assigned to the Local provider that resolves the backend type
+(ADR-0010: the proxy spawns nothing). The proxy stays the system of record:
+it dispatches the operation to the host, bridges the job's progress into the
+job manager (jobs API + SSE UX unchanged), and persists the central DB rows
+when the host job succeeds. Backend binaries live under the tamad's
+`<data-dir>/install/<backend_type>/<gpu_variant>/<version>/`.
+
+Resolution picks the Local provider whose engine matches the backend type
+(single-node fallback: the sole Local provider with a tamad). Fail-loud:
+no local provider with a tamad, or the tamad unreachable → the job fails
+with an actionable error; nothing is removed from or written to the DB on
+failure.
+
 ## GET /tama/v1/installations
 
 List all installed backends grouped by type + GPU variant, plus available (not yet installed) backend types.
@@ -160,7 +174,8 @@ List all installed versions for a specific backend.
 
 ## POST /tama/v1/installations/install
 
-Install a backend. Runs asynchronously — track via the returned `jobId`.
+Install a backend. Runs asynchronously **on the backend's tamad** — track
+via the returned `jobId` (job log carries the host's installer output).
 
 **Request body:**
 
@@ -194,12 +209,17 @@ Install a backend. Runs asynchronously — track via the returned `jobId`.
 ```
 
 **Errors:**
-- `400 Bad Request` — Invalid backend type, missing build prerequisites (git, cmake, compiler)
+- `400 Bad Request` — Invalid backend type, or missing build prerequisites (git, cmake, compiler). The prerequisite check probes the **proxy** (reporting) host; the install itself runs on the backend's tamad, which probes its **own** host (a tamad-side miss fails the job with an actionable error instead of a 400).
 - `409 Conflict` — Another backend job is already running
+
+The install job reaches `failed` (with an actionable `error`) when no Local
+provider with a tamad resolves the backend type, the tamad is unreachable,
+or the host-side install fails.
 
 ## POST /tama/v1/installations/:name/update
 
-Update a backend to its latest version. Runs asynchronously.
+Update a backend to its latest version. Runs asynchronously (executed on the
+backend's tamad; track via the returned `jobId`).
 
 **Query params:**
 - `gpu_variant` — Optional GPU variant (default: active variant)
@@ -231,7 +251,11 @@ Switch the active version for a backend.
 
 ## DELETE /tama/v1/installations/:name
 
-Remove all versions of a backend (or a specific GPU variant). Deletes files and database records.
+Remove all versions of a backend (or a specific GPU variant). Synchronous:
+the backend's tamad kills any running processes for the backend and deletes
+the versioned install directories on the host, then the proxy deletes the DB
+records together; on host failure the request returns `500` and **no DB rows
+are deleted**.
 
 **Query params:**
 - `gpu_variant` — Optional. If omitted, removes all variants.
@@ -243,8 +267,10 @@ Remove all versions of a backend (or a specific GPU variant). Deletes files and 
 ```
 
 **Errors:**
+- `400 Bad Request` — Name with path separators / traversal sequences
 - `404 Not Found` — Backend not found
-- `409 Conflict` — A job is running for this backend, or path is outside managed directory
+- `409 Conflict` — A job is running for this backend
+- `500 Internal Server Error` — Host-side removal failed (no DB rows deleted)
 
 ## PATCH /tama/v1/installations/:name
 
@@ -309,7 +335,9 @@ survive the rename intact. Use this endpoint instead of editing the name by hand
 
 ## DELETE /tama/v1/installations/:name/versions/:version
 
-Remove a specific version. If multiple variants share the same version, `gpu_variant` is required.
+Remove a specific version (executed on the backend's tamad; DB row deleted
+by the proxy afterwards on success, `500` on host failure). If multiple
+variants share the same version, `gpu_variant` is required.
 
 **Query params:**
 - `gpu_variant` — Optional, required when version exists in multiple variants

@@ -1,7 +1,26 @@
 pub use crate::types::gpu::{GpuVendor, ModelState};
 use serde::{Deserialize, Serialize};
 
-use super::vram::VramInfo;
+/// VRAM usage in MiB.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct VramInfo {
+    /// Currently used VRAM in MiB
+    pub used_mib: u64,
+    /// Total VRAM in MiB
+    pub total_mib: u64,
+}
+
+impl VramInfo {
+    /// Available VRAM in MiB
+    pub fn available_mib(&self) -> u64 {
+        self.total_mib.saturating_sub(self.used_mib)
+    }
+
+    /// Total VRAM in bytes
+    pub fn total_bytes(&self) -> u64 {
+        self.total_mib * 1024 * 1024
+    }
+}
 
 /// Per-GPU device statistics for a single tick. One entry per detected
 /// device (NVIDIA or AMD). Order is stable per-tick: NVIDIA devices

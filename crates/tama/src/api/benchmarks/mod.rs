@@ -8,6 +8,7 @@ mod mtp;
 mod run;
 mod spec;
 mod suite;
+mod tamad;
 
 // ── Shared imports (re-exported for sub-modules) ─────────────────────
 
@@ -24,11 +25,11 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::api::error::error_response;
-use crate::gpu::query_vram;
 use crate::web_types::{JobEvent, JobKind, JobManager, JobStatus, WebState};
 use tama_core::bench::llama_cli_spec::{SpecBenchConfig, SpecType};
 use tama_core::installations::ProgressSink;
 use tama_core::proxy::ProxyState;
+use tama_core::tamad::pool::TamadPool;
 
 // ── Request/Response DTOs ─────────────────────────────────────────────
 
@@ -202,6 +203,9 @@ pub struct BenchmarkJobContext {
     pub client: reqwest::Client,
     /// Postgres pool for loading the global app config (plan-190 Task 3).
     pub db_pool: std::sync::Arc<sqlx::PgPool>,
+    /// Per-tamad stream pool for benchmark dispatch to the execution
+    /// host (plan-191 Task 8).
+    pub tamad_pool: std::sync::Arc<TamadPool>,
 }
 
 /// Resolve shared context needed for benchmark execution.
@@ -221,6 +225,7 @@ pub async fn resolve_benchmark_context(
         proxy_base_url,
         client,
         db_pool: state.db_pool(),
+        tamad_pool: state.tamad_pool(),
     })
 }
 
@@ -287,6 +292,7 @@ where
             String,
             reqwest::Client,
             std::sync::Arc<sqlx::PgPool>,
+            std::sync::Arc<TamadPool>,
         ) -> Fut
         + Send
         + Clone
@@ -309,11 +315,29 @@ where
                 ctx.proxy_base_url,
                 ctx.client,
                 ctx.db_pool,
+                ctx.tamad_pool,
             )
             .await
         }
     })
     .await
+}
+
+/// Build the dispatch-side context from the inner-function arguments
+/// (plan-191 Task 8): only the DB pool and the tamad pool are used by the
+/// benchmark host resolution / relay — the db path, proxy URL and client
+/// placeholders are unused there.
+fn bench_ctx(
+    db_pool: &std::sync::Arc<sqlx::PgPool>,
+    tamad_pool: std::sync::Arc<TamadPool>,
+) -> BenchmarkJobContext {
+    BenchmarkJobContext {
+        db_path: std::path::PathBuf::new(),
+        proxy_base_url: String::new(),
+        client: reqwest::Client::new(),
+        db_pool: std::sync::Arc::clone(db_pool),
+        tamad_pool,
+    }
 }
 
 /// Build the shared error response for job manager unavailability.

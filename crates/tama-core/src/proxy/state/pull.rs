@@ -53,24 +53,13 @@ impl PullState {
             .unwrap_or_default()
     }
 
-    /// Clear the pull jobs map and the in-flight pulls set, and kill any
-    /// running whole-repo pull children (best-effort) before clearing them.
+    /// Clear the pull jobs map and the in-flight pulls set, and drop the
+    /// whole-repo pull job entries (relayed tamad jobs — no local children
+    /// to kill; a relayed download on the pull host keeps running and the
+    /// relay converges to its terminal state or times out).
     pub(crate) async fn clear(&self) {
         self.pull_jobs.write().await.clear();
         self.in_flight_pulls.lock().await.clear();
-        // Kill running repo-pull children before dropping their job entries.
-        // (Child handles are cloned out first so no lock is held across kills.)
-        let children = {
-            let map = self.repo_pulls.lock().await;
-            map.values()
-                .map(|job| job.child.clone())
-                .collect::<Vec<_>>()
-        };
-        for child_arc in children {
-            if let Some(child) = child_arc.lock().await.as_mut() {
-                let _ = child.kill().await;
-            }
-        }
         self.repo_pulls.lock().await.clear();
     }
 
@@ -87,6 +76,18 @@ impl PullState {
         self.repo_pulls.lock().await.get(job_id).cloned()
     }
 
+    /// Run `f` over the mutable in-flight job under a brief job-map lock
+    /// hold (no `.await` inside — the concurrency model above).
+    pub(crate) async fn with_repo_pull<R>(
+        &self,
+        job_id: &str,
+        f: impl FnOnce(&mut RepoPullJob) -> R,
+    ) -> Option<R> {
+        let mut map = self.repo_pulls.lock().await;
+        let job = map.get_mut(job_id)?;
+        Some(f(job))
+    }
+
     /// Whether any whole-repo pull for `repo_id` is currently running.
     pub(crate) async fn repo_pull_running_for(&self, repo_id: &str) -> bool {
         self.repo_pulls
@@ -99,36 +100,26 @@ impl PullState {
     /// Cancel a running whole-repo pull job.
     ///
     /// Validates and flags the job under a brief job-map lock hold (no
-    /// `.await` inside), then kills the child under a brief lock on the
-    /// shared child handle, then marks the job cancelled. Kill errors are
-    /// ignored — the process may have just exited.
+    /// `.await` inside). The `CancelJob` dispatch to the pull host happens
+    /// in the public `ProxyState::cancel_repo_pull` wrapper BEFORE this
+    /// flag is set; the relay converges the in-memory state when the tamad
+    /// sends its terminal `cancelled` event.
     ///
     /// Returns `Err("not found")` for unknown ids and `Err("already finished")`
     /// for jobs in a terminal state.
     pub(crate) async fn cancel_repo_pull(&self, job_id: &str) -> Result<(), String> {
-        // Brief lock hold: validate state, flag cancellation, and clone the
-        // child handle — all without any `.await` inside the guard.
-        let child_arc = {
-            let mut map = self.repo_pulls.lock().await;
-            let job = map.get_mut(job_id).ok_or_else(|| "not found".to_string())?;
-            if job.status != RepoPullStatus::Running {
-                return Err("already finished".to_string());
-            }
-            // Flag BEFORE killing so the wait-loop's final status decision
-            // can distinguish "killed by user" from "crashed".
-            job.cancel_requested = true;
-            job.child.clone()
-        };
-
-        // Brief lock on the shared child handle; kill errors are ignored.
-        if let Some(child) = child_arc.lock().await.as_mut() {
-            let _ = child.kill().await;
+        // Brief lock hold: validate state and flag cancellation (no
+        // `.await` inside the guard).
+        let mut map = self.repo_pulls.lock().await;
+        let job = map.get_mut(job_id).ok_or_else(|| "not found".to_string())?;
+        if job.status != RepoPullStatus::Running {
+            return Err("already finished".to_string());
         }
-
-        // Brief lock hold: mark the job cancelled now that the kill has run.
-        if let Some(job) = self.repo_pulls.lock().await.get_mut(job_id) {
-            job.status = RepoPullStatus::Cancelled;
-        }
+        // Flag BEFORE the host RPC (see the public wrapper) so the relay's
+        // final status decision can distinguish "killed by user" from
+        // "crashed".
+        job.cancel_requested = true;
+        job.status = RepoPullStatus::Cancelled;
 
         Ok(())
     }

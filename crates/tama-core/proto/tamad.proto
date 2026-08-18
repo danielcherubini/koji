@@ -4,13 +4,19 @@ package tamad;
 
 service TamadService {
   rpc ListProviders(Empty) returns (ListProvidersResponse);
-  rpc InstallProvider(InstallProviderRequest) returns (InstallProviderResponse);
+  rpc InstallProvider(InstallProviderRequest) returns (JobIdResponse);
   rpc LoadModel(LoadModelRequest) returns (LoadModelResponse);
   rpc UnloadModel(UnloadModelRequest) returns (Empty);
-  rpc UpdateProvider(UpdateProviderRequest) returns (UpdateProviderResponse);
+  rpc UpdateProvider(UpdateProviderRequest) returns (JobIdResponse);
   rpc RemoveProvider(RemoveProviderRequest) returns (Empty);
   rpc Logs(LogsRequest) returns (stream LogEntry);
   rpc HealthCheck(Empty) returns (HealthResponse);
+  rpc StreamStats(StatsRequest) returns (stream SystemStats);
+  rpc StreamJob(JobRequest) returns (stream JobEvent);
+  rpc RestartProvider(RestartProviderRequest) returns (Empty);
+  rpc PullModel(PullModelRequest) returns (JobIdResponse);
+  rpc RunBenchmark(RunBenchmarkRequest) returns (JobIdResponse);
+  rpc CancelJob(CancelJobRequest) returns (CancelJobResponse);
 }
 
 message Empty {}
@@ -20,6 +26,17 @@ message LoadModelRequest {
   string model_path = 2;
   string gpu_variant = 3;
   map<string, string> params = 4;
+  string model_name = 5;
+  string command = 6;
+  repeated string args = 7;
+  map<string, string> env = 8;
+  string health_url = 9;
+  int64 health_timeout_ms = 10;
+  // plan-191 Task 10: the model's configured GPU device (e.g. "GPU1") or
+  // empty. The proxy never samples local hardware (ADR-0010), so device→env
+  // resolution (CUDA_VISIBLE_DEVICES & co.) happens on the tamad, which owns
+  // the hardware. Empty = GPU auto-assign / CPU only.
+  string gpu_device = 11;
 }
 
 message LoadModelResponse {
@@ -43,6 +60,7 @@ message ProviderInfo {
   string version = 3;
   string status = 4;
   string gpu_variant = 5;
+  repeated ProcessInfo loaded_models = 6;
 }
 
 message InstallProviderRequest {
@@ -50,23 +68,26 @@ message InstallProviderRequest {
   string engine = 2;
   string version = 3;
   string gpu_variant = 4;
-}
-
-message InstallProviderResponse {
-  string status = 1;
+  // plan-191 Task 7: installation parameters (append-only extension)
+  bool force = 5;             // allow overwriting an existing version dir
+  string git_url = 6;         // empty = prebuilt download; non-empty = source build
 }
 
 message UpdateProviderRequest {
   string name = 1;
-  string version = 2;
-}
-
-message UpdateProviderResponse {
-  string status = 1;
+  string version = 2;         // the (already resolved) new version
+  // plan-191 Task 7: update parameters (append-only extension)
+  string engine = 3;
+  string gpu_variant = 4;
+  string git_url = 5;         // empty = prebuilt download; non-empty = source build
 }
 
 message RemoveProviderRequest {
   string name = 1;
+  // plan-191 Task 7: remove scope (append-only extension)
+  string engine = 2;          // backend type string (install-dir key)
+  string gpu_variant = 3;     // empty = all variants of the backend
+  string version = 4;         // empty = all versions
 }
 
 message LogsRequest {
@@ -82,4 +103,94 @@ message LogEntry {
 message HealthResponse {
   string status = 1;
   string version = 2;
+}
+
+// v2 additions (plan-191)
+
+message StatsRequest {}
+
+message GpuInfo {
+  int32 index = 1;
+  string name = 2;
+  string driver_version = 3;
+  int64 vram_total_bytes = 4;
+  int64 vram_used_bytes = 5;
+  double utilization_percent = 6;
+  double temperature_c = 7;
+  double power_w = 8;
+}
+
+message ProcessInfo {
+  string model_name = 1;     // unique key for a loaded model's process
+  string provider_name = 2;  // backend name, e.g. "llama.cpp"
+  int32 pid = 3;
+  bool alive = 4;
+  string endpoint_url = 5;
+  string status = 6;          // "starting" | "ready" | "failed" | "unloading"
+}
+
+message SystemStats {
+  double cpu_usage_percent = 1;
+  int64 memory_total_bytes = 2;
+  int64 memory_used_bytes = 3;
+  int64 swap_total_bytes = 4;
+  int64 swap_used_bytes = 5;
+  int64 disk_total_bytes = 6; // models dir filesystem
+  int64 disk_free_bytes = 7;
+  repeated GpuInfo gpus = 8;
+  repeated ProcessInfo processes = 9;  // full snapshot of running backends
+}
+
+message JobIdResponse { string job_id = 1; }
+
+message JobRequest { string job_id = 1; }
+
+message JobEvent {
+  string job_id = 1;
+  string kind = 2;            // "install" | "update" | "pull" | "benchmark"
+  int32 progress = 3;         // 0-100
+  string message = 4;
+  string status = 5;          // "running" | "succeeded" | "failed"
+  string result_json = 6;     // terminal-event payload (results, file list, ...)
+  string error = 7;
+  int64 bytes_downloaded = 8; // pull jobs: bytes written so far
+  int64 total_bytes = 9;      // pull jobs: expected total (0 = unknown)
+}
+
+message RestartProviderRequest { string model_name = 1; }
+
+message CancelJobRequest { string job_id = 1; }
+
+message CancelJobResponse {
+  // True when the job was running and its runner was asked to stop; false
+  // when the job id was unknown (idempotent cancel).
+  bool cancelled = 1;
+}
+
+message PullModelRequest {
+  string repo_id = 1;
+  repeated string quants = 2;
+  string model_name = 3;
+  string backend = 4;
+  string hf_token = 5;        // user's HF token for gated repos, may be empty
+  bool repo_pull = 6;         // true = whole-repo safetensors pull via hf CLI
+  // Absolute directory the repo's files must land in. When set, the host
+  // writes here directly (instead of composing its own models_dir layout)
+  // so the proxy finds the file at the exact path it expects. Empty = the
+  // host composes the path from its own config.
+  string dest_dir = 7;
+}
+
+message RunBenchmarkRequest {
+  string model_name = 1;
+  string kind = 2;            // "llama_bench" | "spec" | "mtp"
+  string config_json = 3;     // serialized per-kind config
+  // plan-191 Task 8: execution-host paths (append-only extension).
+  // Both are RELATIVE to the tamad's own roots, because the proxy does not
+  // know the tamad's --models-dir/--data-dir:
+  //   model_path_rel   — model file, relative to the tamad's models dir
+  //   binary_path_rel  — backend (llama-server) binary, relative to the
+  //                      tamad's install dir (<data-dir>/install)
+  string model_path_rel = 4;
+  string binary_path_rel = 5;
 }

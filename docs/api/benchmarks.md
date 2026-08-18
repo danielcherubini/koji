@@ -2,6 +2,17 @@
 
 Run llama-bench benchmarks and manage benchmark history. All runs are asynchronous — track via job IDs.
 
+> **Execution host (plan-191):** Benchmarks measure the *tamad's* hardware,
+> so the runners execute on the inference host, never on the proxy
+> (ADR-0010: the proxy spawns nothing). The proxy resolves the model's
+> provider → its registered tamad, dispatches a `RunBenchmark` job
+> (carrying the model/binary paths *relative* to that tamad's own models
+> and install roots), and relays the tamad's job progress into the proxy
+> job log. On success the proxy persists the benchmark history row
+> (it remains the sole DB writer). If no live tamad is available for the
+> model's provider, the run fails fast with an actionable job error —
+> there is no local fallback.
+
 ## POST /tama/v1/benchmarks/run
 
 Run a standard llama-bench benchmark.

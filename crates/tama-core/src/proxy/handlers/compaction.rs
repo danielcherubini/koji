@@ -102,8 +102,9 @@ async fn ensure_compaction_backend(state: &ProxyState) -> anyhow::Result<String>
     if let Some(url) = get_backend_url(state, COMPACTION_BACKEND_NAME).await? {
         return Ok(url);
     }
-    // Not loaded — try to load it
-    state.load_compaction_backend(&(), &(), &()).await?;
+    // Not loaded — try to load it (the tamad spawns the embedded Python
+    // server, plan-191 Task 10).
+    crate::proxy::lifecycle::spec::load_compaction_on_tamad(state).await?;
     // After loading, get the server URL from models map
     get_backend_url(state, COMPACTION_BACKEND_NAME)
         .await?

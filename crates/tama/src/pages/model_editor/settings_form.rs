@@ -420,10 +420,17 @@ pub fn ModelEditorSettingsForm(
                     gpu_devices.get().into_iter().enumerate().map(|(i, dev)| {
                         let gpu_id = format!("GPU{i}");
                         let selected = current == gpu_id;
+                        // Disambiguate across tamad hosts (two hosts can each
+                        // report GPU0 — the host tag names the section).
+                        let host_suffix = dev
+                            .tamad
+                            .as_deref()
+                            .map(|t| format!(" · {t}"))
+                            .unwrap_or_default();
                         let label = if dev.vram_total_mib.is_some() {
-                            format!("{} — {} ({} MiB)", gpu_id, dev.name, dev.vram_total_mib.unwrap_or(0))
+                            format!("{} — {} ({} MiB) {}", gpu_id, dev.name, dev.vram_total_mib.unwrap_or(0), host_suffix)
                         } else {
-                            format!("{} — {}", gpu_id, dev.name)
+                            format!("{} — {}{}", gpu_id, dev.name, host_suffix)
                         };
                         view! { <option value=gpu_id.clone() selected=selected>{label}</option> }
                     }).collect::<Vec<_>>()

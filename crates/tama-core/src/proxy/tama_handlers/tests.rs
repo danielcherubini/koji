@@ -41,6 +41,7 @@ async fn test_setup_model_creates_card() {
         None,
         None, // transformers_metadata
         true,
+        None, // size_bytes_override (local stat)
     )
     .await;
 
@@ -109,6 +110,7 @@ async fn test_mmproj_pull_auto_enables_vision_on_parent() {
         None,
         None, // transformers_metadata
         true,
+        None, // size_bytes_override (local stat)
     )
     .await;
 
@@ -131,6 +133,7 @@ async fn test_mmproj_pull_auto_enables_vision_on_parent() {
         None,
         None, // transformers_metadata
         true,
+        None, // size_bytes_override (local stat)
     )
     .await;
 
@@ -182,6 +185,7 @@ async fn test_mmproj_pull_before_parent_creates_stub_then_promotes() {
         None,
         None, // transformers_metadata
         true,
+        None, // size_bytes_override (local stat)
     )
     .await;
 
@@ -210,6 +214,7 @@ async fn test_mmproj_pull_before_parent_creates_stub_then_promotes() {
         None,
         None, // transformers_metadata
         true,
+        None, // size_bytes_override (local stat)
     )
     .await;
 
@@ -274,6 +279,7 @@ async fn test_non_primary_shard_does_not_create_model_config() {
         None,
         None, // transformers_metadata
         false,
+        None, // size_bytes_override (local stat)
     )
     .await;
 
@@ -392,7 +398,9 @@ fn test_quant_entry_serializes() {
     assert_eq!(value["kind"], "model");
 }
 
-/// Verifies that `SystemHealthResponse` serializes to JSON with all expected fields.
+/// Verifies that `SystemHealthResponse` serializes to JSON with all expected
+/// fields (legacy proxy fields + additive per-tamad `hosts`, version, uptime —
+/// plan-191 Task 9).
 #[test]
 fn test_system_health_response_serializes() {
     let response = super::system::SystemHealthResponse {
@@ -402,11 +410,20 @@ fn test_system_health_response_serializes() {
         cpu_usage_pct: 42.5,
         ram_used_mib: 1024,
         ram_total_mib: 8192,
-        gpu_utilization_pct: Some(75),
-        vram: Some(crate::gpu::VramInfo {
-            used_mib: 4000,
-            total_mib: 8000,
-        }),
+        // The proxy no longer samples local GPUs (plan-191) — always null.
+        gpu_utilization_pct: None,
+        vram: None,
+        version: "2.1.0".to_string(),
+        uptime_seconds: 123.4,
+        hosts: vec![super::system::SystemHostHealth {
+            tamad_id: "uuid-1".to_string(),
+            name: "host-a".to_string(),
+            online: true,
+            version: Some("9.9.9".to_string()),
+            cpu_percent: 12.5,
+            memory_used_pct: 33.3,
+            gpus_online: 2,
+        }],
     };
 
     let value = serde_json::to_value(&response).expect("serialization failed");
@@ -424,6 +441,18 @@ fn test_system_health_response_serializes() {
         "missing gpu_utilization_pct"
     );
     assert!(value.get("vram").is_some(), "missing vram");
+    // Additive per-tamad fields (plan-191 Task 9)
+    assert_eq!(value["version"], "2.1.0");
+    assert!(value["uptime_seconds"].as_f64().unwrap() > 0.0);
+    assert_eq!(value["hosts"].as_array().unwrap().len(), 1);
+    let host = &value["hosts"][0];
+    assert_eq!(host["tamad_id"], "uuid-1");
+    assert_eq!(host["name"], "host-a");
+    assert_eq!(host["online"], true);
+    assert_eq!(host["version"], "9.9.9");
+    assert_eq!(host["cpu_percent"], 12.5);
+    assert_eq!(host["memory_used_pct"], 33.3);
+    assert_eq!(host["gpus_online"], 2);
 }
 
 /// Transformers metadata quantization_method replaces junk filename-derived
@@ -470,6 +499,7 @@ async fn test_transformers_metadata_replaces_junk_quant() {
         None, // gguf_metadata
         Some(&transformers_meta),
         true,
+        None, // size_bytes_override (local stat)
     )
     .await;
 
@@ -523,6 +553,7 @@ async fn test_transformers_metadata_gap_fills_hf_fields() {
         None, // gguf_metadata is None
         Some(&transformers_meta),
         true,
+        None, // size_bytes_override (local stat)
     )
     .await;
 
@@ -598,6 +629,7 @@ async fn test_gguf_metadata_takes_priority_over_transformers() {
         Some(&gguf_meta),
         Some(&transformers_meta),
         true,
+        None, // size_bytes_override (local stat)
     )
     .await;
 
@@ -662,6 +694,7 @@ async fn test_transformers_context_beats_spec_context_length() {
         None, // gguf_metadata is None
         Some(&transformers_meta),
         true,
+        None, // size_bytes_override (local stat)
     )
     .await;
 

@@ -12,7 +12,6 @@
 
 pub mod backup;
 pub mod bench;
-pub mod compaction_server;
 pub mod config;
 pub mod db;
 pub mod gpu;

@@ -17,6 +17,28 @@ fn bucket_start(ts_ms: i64) -> i64 {
     (ts_ms / BUCKET_MS) * BUCKET_MS
 }
 
+/// Collect a CPU/RAM-only system snapshot from the persistent
+/// [`sysinfo::System`].
+///
+/// The proxy card reports the host the proxy process itself runs on — the
+/// one host fact the proxy may keep sampling (ADR-0010, plan-191 Task 10):
+/// no GPU fields, no subprocesses. Per-host GPU facts come from the tamad
+/// stats streams (Task 9).
+fn collect_system_metrics_cpu_ram(sys: &mut sysinfo::System) -> crate::gpu::SystemMetrics {
+    sys.refresh_cpu_usage();
+    sys.refresh_memory();
+
+    crate::gpu::SystemMetrics {
+        cpu_usage_pct: sys.global_cpu_info().cpu_usage(),
+        ram_used_mib: sys.used_memory() / 1024 / 1024,
+        ram_total_mib: sys.total_memory() / 1024 / 1024,
+        gpu_utilization_pct: None,
+        vram: None,
+        gpus: Vec::new(),
+        network: None,
+    }
+}
+
 /// Accumulator for the in-progress 30s bucket. Sums each 2s sample's fields
 /// and produces a [`MetricBucket`] with averaged values when frozen or polled.
 ///
@@ -211,9 +233,12 @@ pub fn start_metrics_collector(
         }
 
         loop {
-            // 1. Collect system metrics (spawn_blocking, unchanged pattern)
+            // 1. Collect system metrics (spawn_blocking, unchanged pattern).
+            // CPU/RAM only: the proxy samples its own process host for its
+            // dashboard card — never local GPUs (ADR-0010; per-host GPU
+            // facts come from the tamad stats streams, plan-191 Task 9).
             let (snapshot, returned_sys) = tokio::task::spawn_blocking(move || {
-                let snapshot = crate::gpu::collect_system_metrics_with(&mut sys);
+                let snapshot = collect_system_metrics_cpu_ram(&mut sys);
                 (snapshot, sys)
             })
             .await

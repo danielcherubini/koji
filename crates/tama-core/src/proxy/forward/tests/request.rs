@@ -72,12 +72,16 @@ fn test_state() -> Arc<ProxyState> {
 
 // ── Tests ───────────────────────────────────────────────────────────────
 
-/// Dead PID at request entry → 502 + `BackendCrashedError`, model removal, inference_stats cleanup.
+/// Crashed backend (nothing listening) surfaces as a connection error at
+/// forward time → 502 + `BadGatewayError`, model removal, inference_stats
+/// cleanup. (Plan-191 Task 10: the proxy never pings local pids — liveness
+/// converged via connection errors + the reconciler mirror.)
 #[tokio::test]
-async fn test_forward_request_dead_pid_returns_502_and_cleans_up() {
+async fn test_forward_request_conn_error_returns_502_and_cleans_up() {
     let state = test_state();
 
-    // Insert a model with a definitely-dead PID (99999999 is the repo convention).
+    // Insert a model whose backend URL is not listening (simulates a crash;
+    // the recorded pid is irrelevant — the proxy no longer inspects pids).
     state.registry.models.write().await.insert(
         "test-model".to_string(),
         make_ready_state("http://127.0.0.1:1".into(), 99999999, 0, None),
@@ -102,11 +106,11 @@ async fn test_forward_request_dead_pid_returns_502_and_cleans_up() {
 
     // Status + error type + message
     assert_eq!(status, StatusCode::BAD_GATEWAY);
-    assert_eq!(body["error"]["type"], "BackendCrashedError");
+    assert_eq!(body["error"]["type"], "BadGatewayError");
     assert!(body["error"]["message"]
         .as_str()
         .unwrap()
-        .contains("has crashed, reloading"));
+        .contains("Backend error"),);
 
     // Model removed from state.models()
     assert!(state
@@ -124,12 +128,14 @@ async fn test_forward_request_dead_pid_returns_502_and_cleans_up() {
         .contains_key("test-model"));
 }
 
-/// Dead PID crash path increments only `total_requests`, not `failed_requests`.
+/// Connection-error path counts exactly one `failed_request` and one
+/// `total_request` (no cooldown counter is involved — the model state is
+/// removed immediately instead of accumulating failures).
 #[tokio::test]
-async fn test_forward_request_dead_pid_increments_only_total_requests() {
+async fn test_forward_request_conn_error_counts_failed_and_removes_model() {
     let state = test_state();
 
-    // Insert model with dead PID.
+    // Insert a model whose backend is not listening.
     state.registry.models.write().await.insert(
         "test-model".to_string(),
         make_ready_state("http://127.0.0.1:1".into(), 99999999, 0, None),
@@ -144,7 +150,7 @@ async fn test_forward_request_dead_pid_increments_only_total_requests() {
     )
     .await;
 
-    // Crash-detection short-circuit increments total_requests only.
+    // Connection-error path: total=1, successful=0, failed=1.
     assert_eq!(
         state
             .metrics
@@ -167,8 +173,17 @@ async fn test_forward_request_dead_pid_increments_only_total_requests() {
             .counters
             .failed_requests
             .load(Ordering::Relaxed),
-        0
+        1
     );
+
+    // Model state removed immediately (no breaker accumulation).
+    assert!(state
+        .registry
+        .models
+        .read()
+        .await
+        .get("test-model")
+        .is_none());
 }
 
 /// Model not loaded (no entry in `state.models()`) → 502 + `BackendUrlError`.
@@ -249,8 +264,12 @@ async fn test_forward_request_circuit_breaker_cooldown_returns_503_without_unloa
         .get("test-model")
         .is_some());
 
-    // Process still alive — proves no SIGTERM was sent.
-    assert!(crate::process::is_process_alive(pid));
+    // Process still alive — proves no SIGTERM was sent (the proxy must
+    // never signal backend pids; they belong to the tamad).
+    assert!(
+        child.try_wait().expect("poll fixture child").is_none(),
+        "fixture process must still be running"
+    );
 
     // failed_requests NOT incremented (short-circuit bypasses failure counters).
     assert_eq!(
@@ -267,8 +286,9 @@ async fn test_forward_request_circuit_breaker_cooldown_returns_503_without_unloa
 }
 
 /// Circuit breaker trip after cooldown elapsed (failures == threshold,
-/// stale timestamp) → SIGTERMs the backend, removes the model,
-/// bumps `models_unloaded`, returns distinct "currently unavailable" 503.
+/// Failures == threshold (with a stale timestamp) → SIGTERMs the backend
+/// on its tamad, removes the model, bumps `models_unloaded`, returns a
+/// distinct "currently unavailable" 503.
 #[tokio::test]
 async fn test_forward_request_circuit_breaker_trips_and_unloads_after_cooldown() {
     let (mut child, pid) = spawn_live_pid();
@@ -308,7 +328,11 @@ async fn test_forward_request_circuit_breaker_trips_and_unloads_after_cooldown()
         .unwrap()
         .contains("currently unavailable"));
 
-    // Model removed from state.models() by unload_model.
+    // Model removed from state.models() by unload_model. The physical
+    // kill happens on the model's provider tamad (plan-191 Task 5) — the
+    // proxy only clears its local mirror (this unit test has no tamad,
+    // so the best-effort RPC is skipped and the mirror is cleared
+    // anyway).
     assert!(state
         .registry
         .models
@@ -317,30 +341,10 @@ async fn test_forward_request_circuit_breaker_trips_and_unloads_after_cooldown()
         .get("test-model")
         .is_none());
 
-    // Process should be dead — SIGTERM/SIGKILL landed via unload_model.
-    // Use child.try_wait() instead of is_process_alive() because some test
-    // environments (tokio/nextest) have signal delivery quirks with libc::kill.
-    let mut killed_by_test = false;
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    loop {
-        match child.try_wait().unwrap() {
-            Some(_) => break, // Process exited (from unload_model's signals)
-            None => {
-                if std::time::Instant::now() >= deadline {
-                    killed_by_test = true;
-                    let _ = child.kill();
-                    // Wait for the fallback kill to take effect
-                    let _ = child.wait();
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-        }
-    }
-    assert!(
-        !killed_by_test,
-        "unload_model should have killed the process (it was still alive after 5s)"
-    );
+    // Clean up the fixture process (the proxy must not signal it — pids
+    // in the mirror are owned by the tamad, not the proxy).
+    let _ = child.kill();
+    let _ = child.wait();
 
     // models_unloaded incremented exactly once.
     assert_eq!(
@@ -353,11 +357,20 @@ async fn test_forward_request_circuit_breaker_trips_and_unloads_after_cooldown()
     );
 }
 
-/// Failures below threshold → request passes through to backend,
-/// gets a transport error (502 BadGatewayError), and consecutive_failures
-/// increments to the threshold.
+/// Failures below threshold + a backend 5xx (the backend answered) → the
+/// response passes through (500), the model stays loaded, and
+/// consecutive_failures increments up to the threshold.
+///
+/// (Plan-191 Task 10: a *connection-level* error instead cleans the model up
+/// immediately — see `test_forward_request_conn_error_counts_failed_and_removes_model`.)
 #[tokio::test]
 async fn test_forward_request_below_threshold_passes_circuit_breaker() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("backend exploded"))
+        .mount(&server)
+        .await;
+
     let state = test_state();
 
     let threshold = state.config.read().await.proxy.circuit_breaker_threshold;
@@ -366,8 +379,8 @@ async fn test_forward_request_below_threshold_passes_circuit_breaker() {
     state.registry.models.write().await.insert(
         "test-model".to_string(),
         make_ready_state(
-            "http://127.0.0.1:1".into(), // nothing listening → transport error
-            std::process::id(),          // safe: below-threshold path never signals pid
+            server.uri(),
+            std::process::id(), // safe: the below-threshold path never signals pid
             threshold - 1,
             Some(SystemTime::now()),
         ),
@@ -383,13 +396,20 @@ async fn test_forward_request_below_threshold_passes_circuit_breaker() {
     .await;
 
     let status = resp.status();
-    let body = body_json(resp).await;
 
-    // 502 (transport error) — NOT 503, proving the breaker did NOT short-circuit.
-    assert_eq!(status, StatusCode::BAD_GATEWAY);
-    assert_eq!(body["error"]["type"], "BadGatewayError");
+    // 500 passes through — NOT 503, proving the breaker did NOT short-circuit.
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
 
-    // consecutive_failures incremented to threshold by the transport-error path.
+    // Model stays loaded (a 5xx is a transient backend failure, not a crash).
+    assert!(state
+        .registry
+        .models
+        .read()
+        .await
+        .get("test-model")
+        .is_some());
+
+    // consecutive_failures incremented to threshold by the 5xx-response path.
     assert_eq!(
         state
             .get_model_state("test-model")

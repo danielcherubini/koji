@@ -389,6 +389,7 @@ pub async fn handle_tama_get_pull_job(
                 crate::proxy::pull_jobs::PullJobStatus::Verifying => "verifying",
                 crate::proxy::pull_jobs::PullJobStatus::Completed => "completed",
                 crate::proxy::pull_jobs::PullJobStatus::Failed => "failed",
+                crate::proxy::pull_jobs::PullJobStatus::Cancelled => "cancelled",
             };
             tracing::info!(
                 job_id = %job_id,

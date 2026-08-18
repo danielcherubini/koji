@@ -48,6 +48,8 @@ Update config with deep recursive field-level merge. Only provided fields change
 
 Note: `backends` section is omitted (read-only — managed through [Backends API](backends.md)).
 
+Note: when `proxy.pull_backend` is set, its value must be the id of a tamad registered via [POST /tama/v1/tamads](tamads.md); saving an unregistered id is rejected with a foreign-key error ("not a registered tamad"). Register the tamad first, then set `pull_backend`.
+
 **Response (200 OK):**
 
 ```json

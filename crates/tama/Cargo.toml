@@ -47,7 +47,6 @@ tama-core = { path = "../tama-core", optional = true }
 sqlx = { workspace = true, optional = true }
 toml = { workspace = true, optional = true }
 thiserror = { workspace = true, optional = true }
-nix = { workspace = true, optional = true }
 regex = { workspace = true, optional = true }
 clap = { workspace = true, optional = true }
 toml_edit = { workspace = true, optional = true }
@@ -66,7 +65,6 @@ ssr = [
   "dep:axum", "dep:tokio", "dep:async-stream", "dep:anyhow", "dep:include_dir",
   "dep:reqwest", "dep:mime_guess", "dep:tracing", "dep:tracing-subscriber", "dep:tracing-appender",
   "dep:tama-core", "dep:sqlx", "dep:toml", "dep:tower-http", "dep:thiserror",
-  "dep:nix",
   "dep:regex",
   "dep:clap",
   "dep:toml_edit",
@@ -75,6 +73,21 @@ ssr = [
   "dep:rusqlite",
   "tama-core/web-ui",
 ]
+
+[[test]]
+name = "tamad_installs_e2e"
+path = "tests/tamad_installs_e2e.rs"
+required-features = ["ssr"]
+
+[[test]]
+name = "reconciler_e2e"
+path = "tests/reconciler_e2e.rs"
+required-features = ["ssr"]
+
+[[test]]
+name = "tamad_bench_e2e"
+path = "tests/tamad_bench_e2e.rs"
+required-features = ["ssr"]
 
 [[test]]
 name = "server_test"
@@ -115,6 +128,12 @@ tempfile = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
 tama-test-support.workspace = true
 wiremock = "0.6"
+# Test stubs for the tamad gRPC side (exercises the proxy-side bridge).
+tama-core = { path = "../tama-core", features = ["test-stubs"] }
+# Full-stack install/update/remove E2E builds marker release archives.
+tar = "0.4"
+flate2 = "1.0"
+
 
 [package.metadata.deb]
 maintainer = "Daniel Cherubini <daniel@cherubini.casa>"

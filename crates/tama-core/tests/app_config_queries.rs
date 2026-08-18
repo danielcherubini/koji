@@ -10,8 +10,9 @@ use common::with_schema;
 use tama_core::config::{CompactionDevice, LogLevel, RestartPolicy};
 use tama_core::db::queries::{
     delete_all_sampling_templates, get_all_sampling_templates, get_compaction, get_general,
-    get_langfuse, get_lifecycle, get_proxy, seed_defaults, upsert_compaction, upsert_general,
-    upsert_langfuse, upsert_lifecycle, upsert_proxy, upsert_sampling_template, LangfuseRecord,
+    get_langfuse, get_lifecycle, get_proxy, insert_tamad, seed_defaults, upsert_compaction,
+    upsert_general, upsert_langfuse, upsert_lifecycle, upsert_proxy, upsert_sampling_template,
+    LangfuseRecord,
 };
 
 /// Helper: an isolated schema with migrations applied.
@@ -168,6 +169,7 @@ async fn test_proxy_roundtrip() {
         &[],
         0,
         false,
+        None,
     )
     .await
     .unwrap();
@@ -215,6 +217,7 @@ async fn test_proxy_roundtrip() {
         &[],
         0,
         false,
+        None,
     )
     .await
     .unwrap();
@@ -516,6 +519,7 @@ async fn test_oauth2_proxy_roundtrip() {
         &scopes,
         3600,  // session_ttl_secs
         false, // api_keys_enabled
+        None,
     )
     .await
     .unwrap();
@@ -567,6 +571,7 @@ async fn test_oauth2_proxy_roundtrip() {
         &["openid".to_string(), "profile".to_string()],
         86400,
         false, // api_keys_enabled
+        None,
     )
     .await
     .unwrap();
@@ -575,6 +580,45 @@ async fn test_oauth2_proxy_roundtrip() {
     assert!(!proxy.oauth2_enabled);
     assert_eq!(proxy.oauth2_scopes, vec!["openid", "profile"]);
     assert_eq!(proxy.oauth2_session_ttl_secs, 86400);
+
+    guard.finish().await;
+}
+
+// ── proxy pull_backend FK ─────────────────────────────────
+
+/// `pull_backend` references `tamad_registry(id)`: an unregistered tamad id
+/// must fail loudly instead of persisting, and a real tamad round-trips.
+#[tokio::test]
+async fn test_pull_backend_fk_rejects_unknown_tamad() {
+    let guard = test_schema().await;
+    seed_defaults(&guard.pool).await.unwrap();
+
+    let ghost = sqlx::query("UPDATE app_proxy SET pull_backend = $1 WHERE id = 1")
+        .bind("ghost-tamad")
+        .execute(&guard.pool)
+        .await;
+    assert!(
+        ghost.is_err(),
+        "pull_backend must not accept an unregistered tamad (FK to tamad_registry)"
+    );
+
+    insert_tamad(
+        &guard.pool,
+        "pk-tamad-fk-1",
+        "puller",
+        "grpc://host:50051",
+        "grpc",
+        None,
+    )
+    .await
+    .unwrap();
+    sqlx::query("UPDATE app_proxy SET pull_backend = $1 WHERE id = 1")
+        .bind("pk-tamad-fk-1")
+        .execute(&guard.pool)
+        .await
+        .unwrap();
+    let proxy = get_proxy(&guard.pool).await.unwrap().unwrap();
+    assert_eq!(proxy.pull_backend, Some("pk-tamad-fk-1".to_string()));
 
     guard.finish().await;
 }

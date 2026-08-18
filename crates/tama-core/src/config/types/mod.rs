@@ -132,6 +132,7 @@ impl Config {
                 session_ttl_secs: proxy_row.oauth2_session_ttl_secs,
             },
             api_keys_enabled,
+            pull_backend: proxy_row.pull_backend,
         };
 
         // Resolve env var references in OAuth2 config
@@ -301,6 +302,7 @@ impl Config {
             &self.proxy.oauth2.scopes,
             self.proxy.oauth2.session_ttl_secs,
             api_keys_enabled,
+            self.proxy.pull_backend.as_deref(),
         )
         .await?;
 

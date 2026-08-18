@@ -123,6 +123,13 @@ pub struct ProxyConfig {
     /// When true, bearer tokens starting with "tama_" are validated against the database.
     #[serde(default)]
     pub api_keys_enabled: bool,
+    /// Registered tamad connection id that executes queued model pulls
+    /// (plan-191 Task 6). When set, `start_pull_from_queue` dispatches the
+    /// download to that tamad (the file lands on the tamad's disk) and the
+    /// proxy relays job events into its existing pull progress/SSE
+    /// tracking. `None` (default) → the proxy downloads locally.
+    #[serde(default)]
+    pub pull_backend: Option<String>,
 }
 
 impl Default for ProxyConfig {
@@ -142,6 +149,7 @@ impl Default for ProxyConfig {
             authenticator_skip_paths: vec!["/health".to_string(), "/metrics".to_string()],
             oauth2: OAuth2Config::default(),
             api_keys_enabled: false,
+            pull_backend: None,
         }
     }
 }

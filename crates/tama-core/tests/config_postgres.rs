@@ -158,6 +158,7 @@ async fn test_config_roundtrip() {
                 session_ttl_secs: 3600,
             },
             api_keys_enabled: false,
+            pull_backend: None,
         },
         compaction: tama_core::config::CompactionConfig {
             enabled: true,
@@ -528,6 +529,60 @@ async fn test_should_check_uses_db_interval() {
     .await
     .unwrap();
     assert!(checker.should_check(&guard.pool).await.unwrap());
+
+    guard.finish().await;
+}
+
+// ── pull_backend FK ordering (register tamad before setting pull_backend) ─────
+
+/// `pull_backend` names a tamad with no `tamad_registry` row: the FK
+/// rejects the save. The surfaced error must be the actionable friendly
+/// message (register the tamad first), not raw Postgres FK text.
+#[tokio::test]
+async fn test_save_pull_backend_unregistered_fails_friendly() {
+    let guard = with_schema().await;
+    let mut config = Config::load_from_pool(&guard.pool).await.unwrap();
+    config.proxy.pull_backend = Some("no-such-tamad".to_string());
+
+    let err = config
+        .save(&guard.pool)
+        .await
+        .expect_err("save must reject an unregistered pull_backend");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("not a registered tamad"),
+        "expected the friendly FK message, got: {msg}"
+    );
+    assert!(
+        !msg.contains("violates foreign key constraint"),
+        "raw Postgres FK text must not leak to the caller, got: {msg}"
+    );
+
+    guard.finish().await;
+}
+
+/// A `pull_backend` naming a REGISTERED tamad saves and round-trips intact
+/// (the happy ordering the docs require: register first, then set).
+#[tokio::test]
+async fn test_save_pull_backend_registered_round_trips() {
+    let guard = with_schema().await;
+    sqlx::query(
+        "INSERT INTO tamad_registry (id, name, url, protocol) \
+         VALUES ('tamad-x', 'tamad-x', 'grpc://127.0.0.1:1', 'grpc')",
+    )
+    .execute(&guard.pool)
+    .await
+    .unwrap();
+
+    let mut config = Config::load_from_pool(&guard.pool).await.unwrap();
+    config.proxy.pull_backend = Some("tamad-x".to_string());
+    config
+        .save(&guard.pool)
+        .await
+        .expect("registered pull_backend must save");
+
+    let back = Config::load_from_pool(&guard.pool).await.unwrap();
+    assert_eq!(back.proxy.pull_backend.as_deref(), Some("tamad-x"));
 
     guard.finish().await;
 }

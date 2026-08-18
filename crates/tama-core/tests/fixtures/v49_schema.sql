@@ -74,7 +74,7 @@ CREATE TABLE app_proxy (
             max_loaded_models INTEGER NOT NULL DEFAULT 1,
             authenticator_url TEXT,
             authenticator_skip_paths TEXT NOT NULL DEFAULT '["/health","/metrics"]'
-        , oauth2_enabled INTEGER NOT NULL DEFAULT 0, oauth2_client_id TEXT NOT NULL DEFAULT '', oauth2_client_secret TEXT NOT NULL DEFAULT '', oauth2_authorize_url TEXT NOT NULL DEFAULT '', oauth2_token_url TEXT NOT NULL DEFAULT '', oauth2_userinfo_url TEXT, oauth2_logout_url TEXT, oauth2_redirect_uri TEXT NOT NULL DEFAULT '', oauth2_scopes TEXT NOT NULL DEFAULT '["openid","profile","email"]', oauth2_session_ttl_secs INTEGER NOT NULL DEFAULT 86400, api_keys_enabled INTEGER NOT NULL DEFAULT 0);
+        , oauth2_enabled INTEGER NOT NULL DEFAULT 0, oauth2_client_id TEXT NOT NULL DEFAULT '', oauth2_client_secret TEXT NOT NULL DEFAULT '', oauth2_authorize_url TEXT NOT NULL DEFAULT '', oauth2_token_url TEXT NOT NULL DEFAULT '', oauth2_userinfo_url TEXT, oauth2_logout_url TEXT, oauth2_redirect_uri TEXT NOT NULL DEFAULT '', oauth2_scopes TEXT NOT NULL DEFAULT '["openid","profile","email"]', oauth2_session_ttl_secs INTEGER NOT NULL DEFAULT 86400, api_keys_enabled INTEGER NOT NULL DEFAULT 0, pull_backend TEXT);
 CREATE TABLE benchmarks (
             id                  INTEGER PRIMARY KEY AUTOINCREMENT,
             created_at          INTEGER NOT NULL,           -- Unix timestamp (seconds)

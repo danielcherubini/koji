@@ -655,18 +655,18 @@ Staging note (top of plan): through Tasks 5–9 the host machinery physically li
 4. Update `crates/tama-core/src/lib.rs` module list + run the workspace to surface every dangling reference.
 
 **Steps:**
-- [ ] Move modules; fix compile errors; `cargo build --workspace` green.
-- [ ] Run the grep sweep; record justified exceptions in the commit message.
-- [ ] `cargo nextest run --workspace` — the full suite, including the `tama` integration tests, must pass unchanged in *behavior* (adjust only test files that referenced moved internal paths).
-- [ ] Update CONTEXT.md + docs; re-read `docs/api/tamads.md` end-to-end for consistency.
-- [ ] Full validation gate. Commit with message: "refactor: move all host machinery into the tamad crate (ADR-0010 enforced by dependency graph)"
+- [x] Move modules; fix compile errors; `cargo build --workspace` green.
+- [x] Run the grep sweep; record justified exceptions in the commit message.
+- [x] `cargo nextest run --workspace` — the full suite, including the `tama` integration tests, must pass unchanged in *behavior* (adjust only test files that referenced moved internal paths).
+- [x] Update CONTEXT.md + docs; re-read `docs/api/tamads.md` end-to-end for consistency.
+- [x] Full validation gate. Commit with message: "refactor: move all host machinery into the tamad crate (ADR-0010 enforced by dependency graph)"
 
 **Acceptance criteria:**
-- [ ] `crates/tama-core` contains no code that spawns backend processes, downloads model files, runs benchmarks, or samples local GPUs (grep sweep evidence in commit message).
-- [ ] `crates/tama` builds and the full test suite passes with zero test *behavior* changes.
-- [ ] `cargo udeps`-style check: no orphaned dependencies in tama-core (or documented reason).
-- [ ] Docs + CONTEXT.md consistent with the final architecture.
-- [ ] Full gate green.
+- [x] `crates/tama-core` contains no code that spawns backend processes, downloads model files, runs benchmarks, or samples local GPUs (grep sweep evidence in commit message).
+- [x] `crates/tama` builds and the full test suite passes with zero test *behavior* changes.
+- [x] `cargo udeps`-style check: no orphaned dependencies in tama-core (or documented reason).
+- [x] Docs + CONTEXT.md consistent with the final architecture.
+- [x] Full gate green.
 
 ---
 

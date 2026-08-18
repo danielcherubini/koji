@@ -1,8 +1,11 @@
-//! Postgres support: the squashed embedded migration and its runner.
+//! Postgres support: the embedded migrations and their runner.
 //!
-//! The single `00000000000001_initial.sql` migration is the final state of
-//! all 49 SQLite migrations (plan-190), mapped to Postgres types. sqlx
-//! manages the `_sqlx_migrations` bookkeeping table.
+//! `00000000000001_initial.sql` is the squashed final state of all 49
+//! SQLite migrations (plan-190), mapped to Postgres types. Later schema
+//! additions land as new numbered migration files — the initial migration
+//! is never rewritten (sqlx checksum-validates applied migrations on
+//! already-migrated databases). sqlx manages the `_sqlx_migrations`
+//! bookkeeping table.
 
 use anyhow::Context;
 use sqlx::PgPool;

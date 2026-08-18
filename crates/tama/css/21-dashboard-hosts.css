@@ -1,0 +1,139 @@
+/* Dashboard Hosts section — per-tamad host cards (plan-191 Task 9) */
+
+.dashboard-hosts {
+  margin: 1.5rem 0;
+}
+
+/* Grid of host cards (proxy + one per tamad) */
+.host-card-grid {
+  display: grid;
+  grid-template-columns: 1fr; /* stacked default */
+  gap: 12px;
+}
+
+/* 2+ cards -> multi-column */
+.host-card-grid:has(> :nth-child(2)) {
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+}
+
+/* Card container */
+.host-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+/* Header: name + online badge */
+.host-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.host-card__title {
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.host-card__info {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+/* CPU/RAM stat rows */
+.host-card__stats {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin-top: 0.25rem;
+}
+
+.host-card__stat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.host-card__stat-label {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.host-card__stat-value {
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.host-card__stat .progress-bar {
+  height: 6px;
+}
+
+/* GPU list inside a host card */
+.host-card__gpus {
+  margin-top: 0.5rem;
+  border-top: 1px solid var(--border-color);
+  padding-top: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.host-card__gpus-title {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* One GPU telemetry row: name | vram | bar | util% | temp */
+.host-gpu-row {
+  display: grid;
+  grid-template-columns: minmax(60px, 1.3fr) minmax(50px, 1fr) 1.2fr 40px 44px;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+}
+
+.host-gpu-row__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.host-gpu-row__vram {
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.host-gpu-row__util-bar {
+  height: 6px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 3px;
+}
+
+.host-gpu-row__util-bar .progress-bar-fill {
+  height: 100%;
+  background: var(--accent-green);
+}
+
+.host-gpu-row__value,
+.host-gpu-row__temp {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.host-gpu-row__temp {
+  color: var(--text-muted);
+}
+
+/* Offline placeholder */
+.host-card__offline {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  font-style: italic;
+  margin-top: 0.25rem;
+}

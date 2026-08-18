@@ -158,6 +158,7 @@ impl From<tama_core::config::ProxyConfig> for ProxyConfig {
                 session_ttl_secs: p.oauth2.session_ttl_secs,
             },
             api_keys_enabled: p.api_keys_enabled,
+            pull_backend: p.pull_backend,
         }
     }
 }
@@ -191,6 +192,7 @@ impl From<ProxyConfig> for tama_core::config::ProxyConfig {
                 session_ttl_secs: p.oauth2.session_ttl_secs,
             },
             api_keys_enabled: p.api_keys_enabled,
+            pull_backend: p.pull_backend,
         }
     }
 }

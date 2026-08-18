@@ -145,13 +145,11 @@ pub struct ListModelsResponse {
 ///
 /// Backslashes are still blocked to prevent Windows path traversal, and `..`
 /// segments are rejected to prevent escaping the models directory.
+///
+/// Delegates to [`crate::models::is_safe_relative_path`] — the canonical
+/// home shared with the tamad's `run_pull` (plan-191 Task 6).
 pub(super) fn is_safe_relative_path(s: &str) -> bool {
-    if s.is_empty() || s.contains('\\') || s.contains('\0') {
-        return false;
-    }
-    // Reject any `..` or `.` segment, and empty components — split on '/' and check each
-    s.split('/')
-        .all(|component| component != ".." && component != "." && !component.is_empty())
+    crate::models::is_safe_relative_path(s)
 }
 
 #[cfg(test)]

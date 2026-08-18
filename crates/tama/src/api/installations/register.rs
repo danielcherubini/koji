@@ -80,16 +80,10 @@ pub async fn register_installation(
         }
     }
 
-    // Check docker availability for docker backends
-    if is_docker {
-        if let Err(e) = tama_core::installations::docker::docker_available().await {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                format!("Docker is not available: {}", e),
-                Some("ValidationError"),
-            );
-        }
-    }
+    // NOTE (plan-191 Task 10 / ADR-0010): the local `docker_available()`
+    // probe was removed — the proxy no longer inspects host tooling. Docker
+    // backends are registry records; container execution happens on the
+    // docker host (tamad) at spawn time.
 
     // Parse backend_type string to InstallationType enum
     let backend_type = match tama_core::installations::InstallationType::from_str(&req.backend_type)

@@ -10,8 +10,6 @@ use axum::{
 
 use super::utils::resolve_config_key;
 use crate::gpu::ModelState;
-use crate::installations::docker::{remove_container, stop_container};
-use crate::process::{force_kill_process_group, is_process_group_alive, kill_process_group};
 use crate::proxy::tama_handlers::{ListModelsResponse, ListedModelResponse, ModelResponse};
 use crate::proxy::{BackendState, ProxyState};
 use tracing::{info, warn};
@@ -177,189 +175,103 @@ pub async fn handle_tama_get_model(
 }
 
 /// Handle loading a model (Tama management API).
+///
+/// plan-191 Task 5: the load goes through the model's provider tamad
+/// (`LoadModel` RPC); the proxy records desired state and mirrors the
+/// result in its BackendState cache.
 pub async fn handle_tama_load_model(
     state: State<Arc<ProxyState>>,
     Path(model_id): Path<String>,
 ) -> Response {
     let model_id = resolve_config_key(&state, &model_id).await;
-    let model_toml = state.get_model_toml(&model_id).await;
-    let target_gpu = state
-        .resolve_model_gpu_device(&model_id, model_toml.as_ref())
-        .await;
-    let _ = state.evict_lru_if_needed(target_gpu).await;
-    match state.load_model(&model_id, model_toml.as_ref(), &()).await {
-        Ok(backend_name) => {
-            let model_state = state.get_model_state(&backend_name).await;
-            let loaded = model_state.as_ref().is_some_and(|ms| ms.is_ready());
-            Json(ModelResponse {
-                id: model_id,
-                loaded,
-            })
-            .into_response()
+
+    match crate::proxy::lifecycle::spec::load_model_on_tamad(&state, &model_id).await {
+        Ok(_) => Json(ModelResponse {
+            id: model_id,
+            loaded: true,
+        })
+        .into_response(),
+        Err(e) => {
+            tracing::warn!("Failed to load model {}: {}", model_id, e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": {
+                        "message": format!("Failed to load model: {}", e),
+                        "type": "LoadModelError"
+                    }
+                })),
+            )
+                .into_response()
         }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({
-                "error": {
-                    "message": format!("Failed to load model: {}", e),
-                    "type": "LoadModelError"
-                }
-            })),
-        )
-            .into_response(),
     }
 }
 
 /// Handle cancelling a loading model (Tama management API).
 ///
-/// Kills a loading backend process and returns the model to idle. The handler
-/// uses a read-write lock double-check pattern to avoid races with the
-/// load_model path.
-///
-/// There is a narrow race window where load_model's health check succeeds after
-/// cancel removes the entry, and load_model then calls mgr.insert_active()
-/// unconditionally. A future fix would add a re-check in load_model before
-/// insert_active under the write lock.
+/// plan-191 Task 5: operates on **desired state**, not on a local process.
+/// Cancelling clears the desired row and issues `UnloadModel` to the
+/// provider's tamad. If the load RPC is still in flight, the reconciler's
+/// next tick unloads the model once it appears in the tamad's snapshot
+/// (loads are short; a cancel is therefore best-effort for in-flight
+/// loads).
 pub async fn handle_tama_cancel_load(
     state: State<Arc<ProxyState>>,
     Path(model_id): Path<String>,
 ) -> Response {
     let model_id = resolve_config_key(&state, &model_id).await;
 
-    // ── Step b: read lock — initial check ──────────────────────────────
-    let (backend_name, pid, is_docker) = {
-        let models = state.registry.models.read().await;
-        let entry = match models.get(&model_id) {
-            Some(e) => e,
-            None => {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(serde_json::json!({
-                        "error": {
-                            "message": "Model is not currently loading",
-                            "type": "ModelNotLoadingError"
-                        }
-                    })),
-                )
-                    .into_response();
-            }
+    // Is the model desired, mirrored, or running on its tamad?
+    let pool = state.db_pool();
+    let desired = crate::db::queries::get_desired(&pool, &model_id)
+        .await
+        .ok()
+        .flatten();
+    let mirrored = state
+        .get_available_backend_for_model(&model_id)
+        .await
+        .is_some();
+    let on_tamad =
+        match crate::proxy::lifecycle::spec::resolve_provider_for_model(&state, &model_id)
+            .await
+            .ok()
+        {
+            Some(p) => match p.tamad_id.as_ref() {
+                Some(tamad_id) => state.tamad_pool().get(tamad_id).await.is_some(),
+                None => false,
+            },
+            None => false,
         };
 
-        match entry {
-            BackendState::Starting {
-                backend_pid,
-                is_docker,
-                ..
-            } => (model_id.clone(), *backend_pid, *is_docker),
-            BackendState::Ready { .. } => {
-                return (
-                    StatusCode::CONFLICT,
-                    Json(serde_json::json!({
-                        "error": {
-                            "message": "Model is already loaded",
-                            "type": "ModelAlreadyLoadedError"
-                        }
-                    })),
-                )
-                    .into_response();
-            }
-            _ => {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(serde_json::json!({
-                        "error": {
-                            "message": "Model is not currently loading",
-                            "type": "ModelNotLoadingError"
-                        }
-                    })),
-                )
-                    .into_response();
-            }
-        }
-    }; // read lock dropped
-
-    // ── Step c+d: write lock — re-validate and remove ──────────────────
-    {
-        let mut models = state.registry.models.write().await;
-        match models.get(&backend_name) {
-            Some(BackendState::Starting { .. }) => {
-                // TODO: race with load_model's mgr.insert_active() — if health check
-                // succeeds between here and the kill below, load_model may insert a
-                // stale active_models DB row. A future fix would add a re-check in
-                // load_model before insert_active under the write lock.
-                models.remove(&backend_name);
-            }
-            Some(BackendState::Ready { .. }) => {
-                return (
-                    StatusCode::CONFLICT,
-                    Json(serde_json::json!({
-                        "error": {
-                            "message": "Model is already loaded",
-                            "type": "ModelAlreadyLoadedError"
-                        }
-                    })),
-                )
-                    .into_response();
-            }
-            _ => {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(serde_json::json!({
-                        "error": {
-                            "message": "Model is not currently loading",
-                            "type": "ModelNotLoadingError"
-                        }
-                    })),
-                )
-                    .into_response();
-            }
-        }
-    } // write lock dropped
-
-    // ── Step f: kill process or container ──────────────────────────────
-    if pid > 0 {
-        if is_docker {
-            // Docker path: stop + remove container
-            let container_name = format!("tama-{}", backend_name);
-            let _ = stop_container(&container_name).await;
-            let _ = remove_container(&container_name).await;
-        } else {
-            // Native path: kill process group
-            if let Err(e) = kill_process_group(pid).await {
-                warn!("Cancel kill failed for '{}': {}", backend_name, e);
-            }
-
-            // Poll up to 2s for the group to die (every 250ms)
-            for _ in 0..8 {
-                tokio::time::sleep(Duration::from_millis(250)).await;
-                if !is_process_group_alive(pid) {
-                    break;
+    if desired.is_none() && !mirrored && !on_tamad {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": {
+                    "message": "Model is not currently loading",
+                    "type": "ModelNotLoadingError"
                 }
-            }
-
-            // Escalate: SIGKILL if still alive
-            if is_process_group_alive(pid) {
-                if let Err(e) = force_kill_process_group(pid).await {
-                    warn!("Cancel force kill failed for '{}': {}", backend_name, e);
-                }
-                tokio::time::sleep(Duration::from_millis(500)).await;
-            }
-        }
+            })),
+        )
+            .into_response();
     }
 
-    // ── Step g: clean up DB (Postgres, plan-190 Task 5) ────────────────
-    let pool = state.db_pool();
-    if let Err(e) = crate::db::queries::remove_active_model(&pool, &backend_name).await {
-        warn!(
-            "Failed to remove active entry for '{}': {}",
-            backend_name, e
-        );
+    // Clear desired state (best-effort: the row may not exist).
+    if let Err(e) = crate::db::queries::clear_desired(&pool, &model_id).await {
+        warn!("cancel: clear_desired for '{}' failed: {}", model_id, e);
     }
 
-    // ── Step h: log ────────────────────────────────────────────────────
-    info!("Model '{}' cancel completed", backend_name);
+    // Best-effort unload on the tamad (may be not-loaded yet: the
+    // reconciler unloads it on its next tick).
+    if let Err(e) = crate::proxy::lifecycle::spec::unload_model_on_tamad(&state, &model_id).await {
+        warn!("cancel: unload RPC for '{}' failed: {}", model_id, e);
+    }
 
-    // ── Step i: return response ────────────────────────────────────────
+    // Remove the local mirror entry, if any.
+    state.remove_mirror_by_model(&model_id).await;
+
+    info!("Model '{}' cancel completed", model_id);
+
     Json(ModelResponse {
         id: model_id,
         loaded: false,
@@ -368,48 +280,59 @@ pub async fn handle_tama_cancel_load(
 }
 
 /// Handle unloading a model (Tama management API).
+///
+/// plan-191 Task 5: clearing the model's **desired** state is the primary
+/// action — once it is no longer desired, the reconciler unloads it on the
+/// provider's tamad (this is the safety net if the RPC below can't reach
+/// the tamad). The `UnloadModel` RPC is issued best-effort for immediate
+/// convergence; a failure to reach the tamad (offline, no provider) is
+/// logged, not an error, because the reconciler will converge the tamad's
+/// process table to the desired set on its next tick.
+/// Unloading a model that is not loaded on the tamad is a no-op
+/// (idempotent).
 pub async fn handle_tama_unload_model(
     state: State<Arc<ProxyState>>,
     Path(model_id): Path<String>,
 ) -> Response {
     let model_id = resolve_config_key(&state, &model_id).await;
-    // Get the server name for this model
-    let backend_name = state.get_available_backend_for_model(&model_id).await;
 
-    match backend_name {
-        Some(backend_name) => {
-            // Unload the model
-            match state.unload_model(&backend_name).await {
-                Ok(_) => {
-                    let model_state = state.get_model_state(&model_id).await;
-                    let loaded = model_state.as_ref().is_some_and(|ms| ms.is_ready());
-                    Json(ModelResponse {
-                        id: model_id,
-                        loaded,
-                    })
-                    .into_response()
-                }
-                Err(e) => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({
-                        "error": {
-                            "message": format!("Failed to unload model: {}", e),
-                            "type": "UnloadModelError"
-                        }
-                    })),
-                )
-                    .into_response(),
-            }
+    // Configured at all?
+    {
+        let model_configs = state.registry.model_configs.read().await;
+        if !model_configs.contains_key(&model_id) {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "error": {
+                        "message": "Model not configured or not loaded",
+                        "type": "NotFoundError"
+                    }
+                })),
+            )
+                .into_response();
         }
-        None => (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "error": {
-                    "message": "Model not configured or not loaded",
-                    "type": "NotFoundError"
-                }
-            })),
-        )
-            .into_response(),
     }
+
+    let pool = state.db_pool();
+
+    // Primary action: clear desired state (best-effort: the row may not
+    // exist, and the reconciler uses it to decide convergence).
+    if let Err(e) = crate::db::queries::clear_desired(&pool, &model_id).await {
+        warn!("unload: clear_desired for '{}' failed: {}", model_id, e);
+    }
+
+    // Best-effort immediate physical unload on the tamad. The reconciler
+    // retries on its next tick if this can't reach the tamad.
+    if let Err(e) = crate::proxy::lifecycle::spec::unload_model_on_tamad(&state, &model_id).await {
+        warn!("unload: RPC for '{}' failed: {}", model_id, e);
+    }
+
+    // Drop the local mirror.
+    state.remove_mirror_by_model(&model_id).await;
+
+    Json(ModelResponse {
+        id: model_id,
+        loaded: false,
+    })
+    .into_response()
 }

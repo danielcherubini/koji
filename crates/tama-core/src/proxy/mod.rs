@@ -2,7 +2,7 @@ pub mod api_keys;
 pub mod auth;
 pub mod forward;
 mod handlers;
-mod lifecycle;
+pub mod lifecycle;
 pub mod pull_jobs;
 pub mod pull_queue;
 mod remote;
@@ -14,9 +14,7 @@ pub mod status;
 pub mod tama_handlers;
 mod types;
 
-pub use crate::process::{
-    check_health, force_kill_process, is_process_alive, kill_process, override_arg,
-};
+pub use crate::process::override_arg;
 pub use api_keys::{ApiKeyRecord, AuthSubject, Scope};
 pub use forward::forward_request;
 pub use handlers::chat::{handle_chat_completions, handle_stream_chat_completions};

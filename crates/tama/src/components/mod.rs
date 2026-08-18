@@ -1,9 +1,12 @@
 pub mod activity_panel;
 pub mod alert_banner;
 pub mod gpu_device_card;
+pub mod host_card;
 pub mod installation_card;
 #[allow(unused_imports)]
 pub use gpu_device_card::*;
+#[allow(unused_imports)]
+pub use host_card::*;
 pub mod model_card;
 
 pub mod bar_chart;

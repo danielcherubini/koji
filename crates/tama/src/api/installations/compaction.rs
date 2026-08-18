@@ -58,7 +58,9 @@ pub async fn update_compaction(
         // If enabling and not already running, try to start
         if req.enabled && !was_enabled {
             // Try to load compaction backend (best effort — don't fail the toggle)
-            if let Err(e) = state.load_compaction_backend(&(), &(), &()).await {
+            if let Err(e) =
+                tama_core::proxy::lifecycle::spec::load_compaction_on_tamad(&state).await
+            {
                 tracing::warn!("Failed to start compaction backend: {}", e);
             }
         }

@@ -5,16 +5,21 @@
 //! - Token generation speed (TG tokens/s)
 //! - Time to first token (TTFT)
 //! - Total request latency
+//!
+//! plan-191 Task 10 (ADR-0010): the runners (llama-bench execution, spec/MTP
+//! server launches, HTTP measurement) moved to the tamad crate — this tree
+//! keeps only the shared config/result types, sweep validation, and the
+//! pure helpers the proxy uses to build `config_json` payloads and parse
+//! reports.
+//!
 
 pub mod display;
 pub mod llama_bench;
 pub mod llama_cli_mtp;
 pub mod llama_cli_spec;
-pub mod measure;
-pub mod runner;
 
 /// Configuration for benchmark runs
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BenchConfig {
     /// Prompt token counts to test (default: [512])
     pub pp_sizes: Vec<u32>,
@@ -135,7 +140,10 @@ pub struct BenchSummary {
 }
 
 /// Model metadata for display
-#[derive(Debug, Clone, serde::Serialize)]
+///
+/// `Deserialize` is required by the tamad-side deserialization of
+/// benchmark result/config payloads (plan-191 Task 8).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ModelInfo {
     /// Server config name
     pub name: String,
@@ -154,7 +162,10 @@ pub struct ModelInfo {
 }
 
 /// Complete benchmark report
-#[derive(Debug, Clone, serde::Serialize)]
+///
+/// `Deserialize` is required by the proxy-side round-trip of the result
+/// JSON the tamad produces (plan-191 Task 8).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BenchReport {
     /// Model metadata
     pub model_info: ModelInfo,
@@ -170,7 +181,7 @@ pub struct BenchReport {
 
 /// Compute mean and population stddev from a slice of f64 values.
 /// Returns (0.0, 0.0) for an empty slice; stddev is 0.0 for a single value.
-pub(crate) fn mean_stddev(values: &[f64]) -> (f64, f64) {
+pub fn mean_stddev(values: &[f64]) -> (f64, f64) {
     let count = values.len();
     if count == 0 {
         return (0.0, 0.0);
@@ -264,14 +275,6 @@ pub fn compute_summary(
     }
 }
 
-/// Find an available port by binding to port 0.
-pub async fn find_available_port() -> anyhow::Result<u16> {
-    use std::net::TcpListener;
-    let listener = TcpListener::bind("127.0.0.1:0")?;
-    let addr = listener.local_addr()?;
-    Ok(addr.port())
-}
-
 /// Build a user message string of approximately `target_tokens` tokens.
 ///
 /// Uses the ~4 chars/token heuristic for English text with common BPE tokenizers.
@@ -286,6 +289,9 @@ pub async fn find_available_port() -> anyhow::Result<u16> {
 ///
 /// # Returns
 /// A plain text string suitable for use as the `content` of a user message.
+///
+/// Plan-191 Task 10: pure helper, shared by the tamad spec/MTP runners and the
+/// proxy's report tests — stays in `tama_core::bench` (ADR-0010: no host work).
 pub fn build_prompt(target_tokens: u32) -> String {
     let repeat_text = "The quick brown fox jumps over the lazy dog. ";
     let chars_per_token = 4.0;

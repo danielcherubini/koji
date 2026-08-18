@@ -132,40 +132,59 @@ async fn run_suite(
     });
     let quant = req.quant.clone();
 
-    // Resolve model path.
-    let db_dir = db_path.parent().context("db_path has no parent")?;
-    let model_path = super::run::resolve_model_path(
-        &config,
-        db_dir,
-        pool,
-        &model_configs,
-        &resolved_id,
-        quant.as_deref(),
-    )
-    .await?;
     let resolved_id_owned = resolved_id.clone();
 
-    // Parse GGUF metadata for authoritative MTP check.
-    let nextn_value = tokio::task::spawn_blocking({
-        let model_path_for_parse = model_path.clone();
-        move || tama_core::models::gguf::parse_gguf_metadata(&model_path_for_parse)
-    })
-    .await
-    .unwrap_or_else(|e| {
-        tracing::warn!(job_id = %job.id, error = %e, "Failed to parse GGUF metadata (proceeding without nextn)");
-        Err(anyhow::anyhow!("Failed to parse GGUF metadata: {}", e))
-    });
-
-    let nextn_value = match nextn_value {
-        Ok(meta) => meta.nextn_predict_count,
-        Err(e) => {
-            tracing::warn!(
-                job_id = %job.id,
-                model_id = %resolved_id_owned,
-                error = %e,
-                "GGUF parse failed — falling back to heuristic capabilities",
-            );
-            None
+    // Resolve the model path + parse GGUF metadata for the authoritative MTP
+    // check — best-effort local parse (plan-191 Task 8: benchmarks now run on
+    // the tamad, so the file need not exist on the proxy; the runner derives
+    // nextn heuristically when no metadata is available).
+    let nextn_value = {
+        let maybe_path = super::run::resolve_model_path(
+            &config,
+            db_path.parent().context("db_path has no parent")?,
+            pool,
+            &model_configs,
+            &resolved_id,
+            quant.as_deref(),
+        )
+        .await;
+        match maybe_path {
+            Ok(model_path) => {
+                match tokio::task::spawn_blocking({
+                    let model_path_for_parse = model_path.clone();
+                    move || tama_core::models::gguf::parse_gguf_metadata(&model_path_for_parse)
+                })
+                .await
+                {
+                    Ok(Ok(meta)) => meta.nextn_predict_count,
+                    Ok(Err(e)) => {
+                        tracing::warn!(
+                            job_id = %job.id,
+                            model_id = %resolved_id_owned,
+                            error = %e,
+                            "GGUF parse failed — falling back to heuristic capabilities",
+                        );
+                        None
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            job_id = %job.id,
+                            error = %e,
+                            "GGUF parse task panicked — falling back to heuristic capabilities",
+                        );
+                        None
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::info!(
+                    job_id = %job.id,
+                    model_id = %resolved_id_owned,
+                    error = %e,
+                    "model file not available locally — falling back to heuristic capabilities",
+                );
+                None
+            }
         }
     };
 
@@ -409,6 +428,7 @@ async fn run_suite_llama_bench(
         ctx.proxy_base_url.clone(),
         ctx.client.clone(),
         ctx.db_pool.clone(),
+        ctx.tamad_pool.clone(),
     )
     .await
 }
@@ -476,6 +496,7 @@ async fn run_suite_spec(
         ctx.proxy_base_url.clone(),
         ctx.client.clone(),
         ctx.db_pool.clone(),
+        ctx.tamad_pool.clone(),
     )
     .await
 }
@@ -523,6 +544,7 @@ async fn run_suite_mtp(
         ctx.proxy_base_url.clone(),
         ctx.client.clone(),
         ctx.db_pool.clone(),
+        ctx.tamad_pool.clone(),
     )
     .await
 }
@@ -758,5 +780,204 @@ mod tests {
         // Verify spec type count includes DraftMtp when MTP is supported
         assert_eq!(expected_types.len(), 5);
         assert!(expected_types.contains(&SpecType::DraftMtp));
+    }
+
+    // ── Tamad dispatch tests (plan-191 Task 7) ────────────────────────────
+
+    use std::collections::HashMap;
+
+    use crate::api::benchmarks::tamad::tests::{
+        bench_report_json, seed_bench_host, spec_result_json, stub_with_events, TAMAD_ID,
+    };
+    use tama_core::tamad::pool::test_support::{
+        grpc_conn, job_event, job_event_failed, start_stub, terminal_success,
+    };
+    use tama_core::tamad::JobEvent;
+
+    /// Stub tamad + a BenchmarkJobContext pointed at it + the seeded data.
+    async fn suite_fix(
+        events: HashMap<String, Vec<JobEvent>>,
+    ) -> (
+        tama_core::tamad::pool::test_support::StubTamad,
+        super::super::BenchmarkJobContext,
+        std::sync::Arc<tama_core::proxy::ProxyState>,
+        crate::testing::postgres::SchemaGuard,
+        i64,
+        tempfile::TempDir,
+    ) {
+        let guard = crate::testing::postgres::with_schema().await;
+        let model_id = seed_bench_host(&guard, true).await;
+        let stub = stub_with_events(events);
+        let addr = start_stub(stub.clone()).await;
+        let conn = grpc_conn(TAMAD_ID, "bench-tamad", &format!("grpc://{addr}"));
+        let pool = std::sync::Arc::new(guard.pool.clone());
+        let state = std::sync::Arc::new(tama_core::proxy::ProxyState::new(
+            tama_core::config::Config::default(),
+            None,
+            pool.clone(),
+        ));
+        state
+            .tamad_pool()
+            .upsert_connection(&conn)
+            .await
+            .expect("pool upsert");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ctx = super::super::BenchmarkJobContext {
+            db_path: temp.path().join("tama.db"),
+            proxy_base_url: "http://127.0.0.1:9".to_string(),
+            client: reqwest::Client::new(),
+            db_pool: pool,
+            tamad_pool: state.tamad_pool(),
+        };
+        (stub, ctx, state, guard, model_id, temp)
+    }
+
+    fn suite_req(model_id: i64) -> BenchmarkSuiteRequest {
+        BenchmarkSuiteRequest {
+            model_id: model_id.to_string(),
+            quant: None,
+            backend_name: None,
+            gpu_variant: None,
+            types: Some(vec!["llama_bench".to_string(), "spec".to_string()]),
+            pp_sizes: None,
+            tg_sizes: None,
+            runs: Some(1),
+            warmup: None,
+            threads: None,
+            batch_sizes: None,
+            ubatch_sizes: None,
+            kv_cache_type: None,
+            depth: None,
+            flash_attn: None,
+        }
+    }
+
+    /// Suite dispatches each sub-benchmark sequentially to the tamad
+    /// (llama_bench first, spec second) and persists one history row per
+    /// sub-run sharing the suite_id.
+    #[tokio::test]
+    async fn test_suite_dispatches_to_tamad_in_order_persisting_suite_rows() {
+        let events: HashMap<String, Vec<JobEvent>> = [
+            (
+                "job-bench-1".to_string(),
+                vec![
+                    job_event("job-bench-1", 10, "loading model", "running"),
+                    terminal_success("job-bench-1", &bench_report_json()),
+                ],
+            ),
+            (
+                "job-bench-2".to_string(),
+                vec![terminal_success("job-bench-2", &spec_result_json())],
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let (stub, ctx, state, guard, model_id, _temp) = suite_fix(events).await;
+
+        let jobs = std::sync::Arc::new(crate::web_types::JobManager::new());
+        let job = jobs
+            .submit(crate::web_types::JobKind::Benchmark, None)
+            .await
+            .expect("job submit");
+
+        run_suite(
+            jobs.clone(),
+            job.clone(),
+            ctx,
+            "suite-42".to_string(),
+            suite_req(model_id),
+        )
+        .await
+        .expect("suite");
+        jobs.finish(&job, crate::web_types::JobStatus::Succeeded, None)
+            .await;
+
+        // One dispatch per sub-run, in request order.
+        let reqs = stub.bench_requests.lock().await;
+        assert_eq!(reqs.len(), 2, "one dispatch per sub-run");
+        assert_eq!(reqs[0].kind, "llama_bench");
+        assert_eq!(reqs[1].kind, "spec");
+        assert_eq!(reqs[0].model_path_rel, "test/bench/bench-model-Q4_K_M.gguf");
+        assert_eq!(reqs[0].binary_path_rel, "llama_cpp/cpu/b9901/llama-server");
+        drop(reqs);
+
+        // Both history rows carry the shared suite_id; one per engine.
+        let pool = state.db_pool();
+        let rows = tama_core::db::queries::list_benchmarks(pool.as_ref())
+            .await
+            .expect("rows");
+        let suite_rows: Vec<_> = rows
+            .iter()
+            .filter(|r| r.suite_id.as_deref() == Some("suite-42"))
+            .collect();
+        assert_eq!(suite_rows.len(), 2, "one row per sub-run");
+        let engines: Vec<&str> = suite_rows.iter().map(|r| r.engine.as_str()).collect();
+        assert!(
+            engines.contains(&"llama_bench") && engines.contains(&"llama_cli_spec"),
+            "engines: {engines:?}"
+        );
+        let _ = guard;
+    }
+
+    /// A failed sub-run does NOT abort the suite: the next type is still
+    /// dispatched, the run surfaced as a partial success, and only the
+    /// succeeded sub-run is persisted.
+    #[tokio::test]
+    async fn test_suite_continues_after_sub_run_failure() {
+        let events: HashMap<String, Vec<JobEvent>> = [
+            (
+                "job-bench-1".to_string(),
+                vec![job_event_failed(
+                    "job-bench-1",
+                    "llama-bench: simulated crash",
+                )],
+            ),
+            (
+                "job-bench-2".to_string(),
+                vec![terminal_success("job-bench-2", &spec_result_json())],
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let (stub, ctx, state, guard, model_id, _temp) = suite_fix(events).await;
+
+        let jobs = std::sync::Arc::new(crate::web_types::JobManager::new());
+        let job = jobs
+            .submit(crate::web_types::JobKind::Benchmark, None)
+            .await
+            .expect("job submit");
+
+        run_suite(
+            jobs.clone(),
+            job.clone(),
+            ctx,
+            "suite-fail".to_string(),
+            suite_req(model_id),
+        )
+        .await
+        .expect("suite continues after one failure");
+        jobs.finish(&job, crate::web_types::JobStatus::Succeeded, None)
+            .await;
+
+        let reqs = stub.bench_requests.lock().await;
+        assert_eq!(reqs.len(), 2, "second sub-run still dispatched");
+        assert_eq!(reqs[1].kind, "spec");
+        drop(reqs);
+
+        let pool = state.db_pool();
+        let rows = tama_core::db::queries::list_benchmarks(pool.as_ref())
+            .await
+            .expect("rows");
+        let suite_rows: Vec<_> = rows
+            .iter()
+            .filter(|r| r.suite_id.as_deref() == Some("suite-fail"))
+            .collect();
+        assert_eq!(
+            suite_rows.len(),
+            1,
+            "only the succeeded sub-run is persisted"
+        );
+        assert_eq!(suite_rows[0].engine, "llama_cli_spec");
+        let _ = guard;
     }
 }

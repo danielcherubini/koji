@@ -30,38 +30,10 @@ pub async fn forward_request(
 
     let model_state = state.get_model_state(backend_name).await;
     if let Some(ms) = &model_state {
-        // If the backend process has died, clean up immediately and let the
-        // caller's auto-load logic restart it. Skip the circuit breaker
-        // entirely — it is meant for live backends returning errors, not
-        // crashed processes.
-        let process_dead = ms
-            .backend_pid()
-            .map(|pid| !crate::process::is_process_alive(pid))
-            .unwrap_or(false);
-        if process_dead {
-            info!(
-                "Backend process for backend '{}' is dead (detected at request entry), cleaning up",
-                backend_name
-            );
-            let mut models = state.registry.models.write().await;
-            models.remove(backend_name);
-            state.metrics.modify_inference_stats(|map| {
-                map.remove(backend_name);
-            });
-            let pool = state.db_pool();
-            let _ = crate::db::queries::remove_active_model(&pool, backend_name).await;
-            return (
-                axum::http::StatusCode::BAD_GATEWAY,
-                axum::response::Json(serde_json::json!({
-                    "error": {
-                        "message": format!("Backend process for backend '{}' has crashed, reloading", backend_name),
-                        "type": "BackendCrashedError"
-                    }
-                })),
-            )
-                .into_response();
-        }
-
+        // The proxy cannot inspect backend processes (ADR-0010): the mirror's
+        // liveness is converging toward the truth via the reconciler (~1s
+        // tick). A crashed backend surfaces as a connection error below,
+        // which cleans up the same state.
         let failures = ms
             .consecutive_failures()
             .map(|f| f.load(std::sync::atomic::Ordering::Relaxed))
@@ -580,20 +552,19 @@ pub async fn forward_request(
                 .failed_requests
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-            // Check if the backend process is still alive. If it crashed,
-            // clean up immediately instead of letting the circuit breaker
-            // accumulate failures and impose a cooldown. The next request
-            // will trigger a fresh auto-load.
-            let process_dead = model_state
-                .as_ref()
-                .and_then(|ms| ms.backend_pid())
-                .map(|pid| !crate::process::is_process_alive(pid))
-                .unwrap_or(false);
+            // The proxy cannot inspect the (remote) backend process
+            // (ADR-0010). A connection-level failure (refused/reset) or a
+            // timeout means the backend is not accepting traffic — clean up
+            // immediately instead of letting the circuit breaker accumulate
+            // failures; the reconciler + auto-load re-establish it. Any other
+            // error (the backend answered, e.g. 5xx) is a transient failure
+            // counted by the circuit breaker.
+            let backend_unreachable = e.is_connect() || e.is_timeout();
 
-            if process_dead {
+            if backend_unreachable {
                 info!(
-                    "Backend process for backend '{}' is dead, cleaning up model state",
-                    backend_name
+                    "Backend for backend '{}' is unreachable (request error = {}), cleaning up model state",
+                    backend_name, e
                 );
                 let mut models = state.registry.models.write().await;
                 models.remove(backend_name);

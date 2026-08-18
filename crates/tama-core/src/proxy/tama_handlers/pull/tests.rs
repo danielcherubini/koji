@@ -7,4 +7,5 @@
 mod helpers;
 mod jobs_stream;
 mod orchestration;
+mod tamad_pull;
 mod validation;

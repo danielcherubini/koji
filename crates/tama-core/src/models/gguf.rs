@@ -1,11 +1,16 @@
 use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
 
 /// Metadata extracted from a GGUF file header.
 /// Only reads the header (~100KB), never loads tensor data.
-#[derive(Debug, Clone, Default)]
+///
+/// Serialized across the proxy↔tamad boundary (plan-191 Task 6): the tamad
+/// parses the header on its own disk and ships the result in the pull job's
+/// terminal `result_json`; the proxy deserializes it into the model config.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GgufMetadata {
     pub architecture: Option<String>, // general.architecture (e.g. "llama")
     pub context_length: Option<u64>,  // {arch}.context_length

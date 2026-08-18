@@ -1,4 +1,7 @@
-//! POST /tama/v1/tamads — Register a new tamad connection.
+//! POST /tama/v1/tamads — Register (or re-register) a tamad connection.
+//!
+//! Idempotent upsert keyed by name: a new name creates the row (201), an
+//! existing name updates its url/protocol/token (200).
 
 use axum::{
     extract::{Extension, State},
@@ -9,7 +12,7 @@ use axum::{
 use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::api::error::{error_body, error_response};
+use crate::api::error::error_response;
 use crate::web_types::WebState;
 use tama_core::proxy::ProxyState;
 
@@ -23,9 +26,11 @@ pub struct CreateTamadRequest {
 }
 
 /// POST /tama/v1/tamads
-/// Registers a new tamad connection. Auto-generates a UUID for the tamad id.
+/// Idempotently registers a tamad connection by name. A new name creates
+/// the row and returns 201 with an auto-generated UUID; an existing name
+/// updates url/protocol/token and returns 200 with the stored id.
 pub async fn create_tamad(
-    State(_state): State<Arc<ProxyState>>,
+    State(state): State<Arc<ProxyState>>,
     Extension(web_state): Extension<WebState>,
     Json(req): Json<CreateTamadRequest>,
 ) -> impl IntoResponse {
@@ -65,14 +70,15 @@ pub async fn create_tamad(
 
     let pool = web_state.db_pool.as_ref();
 
-    // Auto-generate UUID for tamad id
+    // Auto-generate candidate UUID for tamad id; on a name conflict the
+    // stored id is returned (upsert is idempotent by name).
     let tamad_id = Uuid::new_v4().to_string();
 
     let name = req.name.clone();
     let url = req.url.clone();
     let token = req.token.clone();
 
-    if let Err(e) = tama_core::db::queries::insert_tamad(
+    let (stored_id, created) = match tama_core::db::queries::upsert_tamad_by_name(
         pool,
         &tamad_id,
         &name,
@@ -82,20 +88,31 @@ pub async fn create_tamad(
     )
     .await
     {
-        // Map unique-constraint violations (id / name) to 409
-        let msg = e.to_string();
-        let is_unique = msg.to_lowercase().contains("unique");
-        let status = if is_unique {
-            StatusCode::CONFLICT
-        } else {
-            StatusCode::INTERNAL_SERVER_ERROR
-        };
-        return (status, Json(error_body(msg, Some("DatabaseError")))).into_response();
-    }
+        Ok(v) => v,
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                e.to_string(),
+                Some("DatabaseError"),
+            )
+        }
+    };
 
-    // Fetch the created tamad
-    match tama_core::db::queries::get_tamad(pool, &tamad_id).await {
-        Ok(Some(tamad)) => (StatusCode::CREATED, Json(tamad)).into_response(),
+    // Fetch the stored tamad
+    match tama_core::db::queries::get_tamad(pool, &stored_id).await {
+        Ok(Some(tamad)) => {
+            // Refresh the pool so the stream task picks up the new or
+            // updated connection immediately (plan-191 Task 4).
+            if let Err(e) = state.tamad_pool().upsert_connection(&tamad).await {
+                tracing::warn!("failed to refresh tamad pool for '{}': {}", tamad.name, e);
+            }
+            let status = if created {
+                StatusCode::CREATED
+            } else {
+                StatusCode::OK
+            };
+            (status, Json(tamad)).into_response()
+        }
         Ok(None) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Failed to retrieve created tamad",
@@ -301,43 +318,65 @@ mod tests {
         guard.finish().await;
     }
 
-    /// POST /tama/v1/tamads with duplicate name → 409.
+    /// POST /tama/v1/tamads with duplicate name → 200 (idempotent upsert)
+    /// returning the same id as the first registration.
     #[tokio::test]
-    async fn test_create_tamad_duplicate_name_returns_409() {
+    async fn test_create_tamad_duplicate_name_upserts() {
         let (state, web_state, guard) = build_test_state().await;
         let router = crate::router::build_web_routes(web_state.clone())
             .with_state(state)
             .layer(axum::extract::Extension(web_state.as_ref().clone()));
 
-        // First creation
-        let body = serde_json::json!({
+        let first_body = serde_json::json!({
             "name": "my-tamad",
             "url": "grpc://localhost:50051",
-            "protocol": "grpc"
+            "protocol": "grpc",
+            "token": "tok-old"
         })
         .to_string();
         let req = Request::builder()
             .method("POST")
             .uri("/tama/v1/tamads")
             .header(axum::http::header::CONTENT_TYPE, "application/json")
-            .body(Body::from(body.clone()))
+            .body(Body::from(first_body))
             .unwrap();
         let resp = router.clone().oneshot(req).await.unwrap();
         assert_eq!(resp.status(), axum::http::StatusCode::CREATED);
+        let body_str = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let first: serde_json::Value = serde_json::from_slice(&body_str).unwrap();
 
-        // Duplicate creation with same name
+        // Same name, different url/token → 200 with the same id, updated values.
+        let dup_body = serde_json::json!({
+            "name": "my-tamad",
+            "url": "grpc://localhost:50052",
+            "protocol": "grpc",
+            "token": "tok-new"
+        })
+        .to_string();
         let req = Request::builder()
             .method("POST")
             .uri("/tama/v1/tamads")
             .header(axum::http::header::CONTENT_TYPE, "application/json")
-            .body(Body::from(body))
+            .body(Body::from(dup_body))
             .unwrap();
         let resp = router.oneshot(req).await.unwrap();
         assert_eq!(
             resp.status(),
-            axum::http::StatusCode::CONFLICT,
-            "duplicate name should return 409"
+            axum::http::StatusCode::OK,
+            "duplicate name should upsert and return 200"
         );
+        let body_str = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let second: serde_json::Value = serde_json::from_slice(&body_str).unwrap();
+        assert_eq!(
+            second["id"], first["id"],
+            "upsert must return the originally stored id"
+        );
+        assert_eq!(second["url"], "grpc://localhost:50052");
+        assert_eq!(second["token"], "tok-new");
         guard.finish().await;
     }
 }

@@ -1,6 +1,6 @@
 use super::*;
-use crate::api::benchmarks::run::{resolve_model_path, unload_model_before_benchmark};
-use crate::api::benchmarks::{derive_status, BenchmarkProgressSink};
+use crate::api::benchmarks::derive_status;
+use crate::api::benchmarks::run::unload_model_before_benchmark;
 use anyhow::Context;
 
 // ── Handler: Submit spec benchmark job ────────────────────────────────
@@ -67,12 +67,13 @@ pub async fn run_spec_benchmark_inner(
     jobs: Arc<JobManager>,
     job: Arc<crate::web_types::Job>,
     req: SpecBenchmarkRunRequest,
-    db_path: std::path::PathBuf,
+    _db_path: std::path::PathBuf,
     proxy_base_url: String,
     client: reqwest::Client,
     db_pool: std::sync::Arc<sqlx::PgPool>,
+    tamad_pool: std::sync::Arc<tama_core::tamad::pool::TamadPool>,
 ) -> Result<()> {
-    use tama_core::bench::llama_cli_spec;
+    use tama_core::bench::llama_cli_spec::SpecBenchResult;
 
     // Unload any active server for this model before running the benchmark.
     unload_model_before_benchmark(&client, &proxy_base_url, &req.model_id, &job.id).await;
@@ -94,17 +95,17 @@ pub async fn run_spec_benchmark_inner(
     let draft_max_for_trace = req.draft_max_values.clone();
     let ngram_n_for_trace = req.ngram_n_values.clone();
     let ngram_m_for_trace = req.ngram_m_values.clone();
+    let suite_id = req.suite_id.clone();
 
     // Load the global config from Postgres (plan-190 Task 3).
     let pool = db_pool.as_ref();
     let config = tama_core::config::Config::load_from_pool(pool).await?;
 
-    // Resolve model path — model configs and files come from Postgres.
-    let db_dir = db_path.parent().context("db_path has no parent")?;
+    // Resolve model key + metadata — model configs come from Postgres.
     let model_configs = tama_core::db::load_model_configs(pool).await?;
 
     // If model_id is an integer db_id, resolve it to the config key first.
-    let resolved_id = if let Ok(db_id) = model_id.parse::<i64>() {
+    let resolved_key = if let Ok(db_id) = model_id.parse::<i64>() {
         model_configs
             .iter()
             .find(|(_, mc)| mc.db_id == Some(db_id))
@@ -115,36 +116,39 @@ pub async fn run_spec_benchmark_inner(
     };
 
     let (model_config, _) = config
-        .resolve_backend(&model_configs, &resolved_id)
+        .resolve_backend(&model_configs, &resolved_key)
         .context("Failed to resolve server config for benchmark")?;
-    let model_path = resolve_model_path(
-        &config,
-        db_dir,
-        pool,
-        &model_configs,
-        &resolved_id,
-        quant.as_deref(),
-    )
-    .await?;
-    let display_name = model_configs.get(&resolved_id).and_then(|mc| {
+    let display_name = model_configs.get(&resolved_key).and_then(|mc| {
         mc.display_name
             .clone()
             .or_else(|| mc.api_name.clone())
             .or_else(|| mc.model.clone())
     });
-    let target_backend = backend_name
-        .as_deref()
-        .unwrap_or(&model_config.backend)
-        .to_string();
-    let resolved_id_owned = resolved_id;
+    let target_backend = backend_name.unwrap_or_else(|| model_config.backend.clone());
+
+    // Resolve the execution host (plan-191 Task 8, ADR-0010): the
+    // model's provider's tamad + host-relative paths. The host resolves
+    // its own model file/binary; the config's model_path is a placeholder
+    // the tamad overwrites with its resolved path.
+    let ctx = super::bench_ctx(&db_pool, tamad_pool);
+    let host = super::tamad::resolve_benchmark_host(
+        &ctx,
+        &config,
+        &model_configs,
+        &resolved_key,
+        &target_backend,
+        gpu_variant.as_ref(),
+    )
+    .await?;
 
     // Apply minimum guards
     let runs = req.runs.max(1);
     let gen_tokens = req.gen_tokens.max(1);
 
-    // Build SpecBenchConfig
+    // Build SpecBenchConfig (model_path is host-relative on the wire; the
+    // tamad re-anchors it to its own models dir).
     let spec_config = SpecBenchConfig {
-        model_path: model_path.clone(),
+        model_path: std::path::PathBuf::new(),
         spec_types: req.spec_types,
         draft_max_values: req.draft_max_values,
         ngram_n_values: req.ngram_n_values,
@@ -157,32 +161,12 @@ pub async fn run_spec_benchmark_inner(
         ngl: req.ngl,
         flash_attn: req.flash_attn,
     };
+    let config_json =
+        serde_json::to_string(&spec_config).context("Failed to serialize spec config")?;
 
-    // Create progress sink
-    let sink = Arc::new(BenchmarkProgressSink {
-        name: "spec-bench",
-        job: job.clone(),
-        jobs: jobs.clone(),
-    });
-
-    // Resolve backend path via the Postgres-backed InstallationManager.
-    let manager = tama_core::installations::InstallationManager::new(db_pool.clone());
-    let backend_path = config
-        .resolve_backend_path(&target_backend, gpu_variant.as_ref(), Some(&manager))
-        .await?;
-
-    // Discover llama-server binary
-    // The resolved path may be a file (llama-server) rather than the backend directory.
-    // Use its parent as the search base for llama-server.
-    let backend_dir = backend_path.parent().unwrap_or(&backend_path);
-    tracing::info!(job_id = %job.id, backend_dir = %backend_dir.display(), "Resolving llama-server for benchmark");
-    let server_binary = llama_cli_spec::find_llama_server(backend_dir).context(format!(
-        "llama-server not found for backend '{}'. Install llama.cpp from source or set LLAMA_SERVER_PATH",
-        target_backend
-    ))?;
     tracing::info!(
         job_id = %job.id,
-        model = %resolved_id_owned,
+        model = %resolved_key,
         backend = %target_backend,
         spec_types = ?spec_types_for_trace,
         draft_max = ?draft_max_for_trace,
@@ -190,13 +174,24 @@ pub async fn run_spec_benchmark_inner(
         ngram_m = ?ngram_m_for_trace,
         gen_tokens = gen_tokens,
         runs = runs,
-        "Starting speculative decoding benchmark",
+        tamad = %host.handle.connection.name,
+        "Starting speculative decoding benchmark on tamad",
     );
-    tracing::info!(job_id = %job.id, llama_server = %server_binary.display(), "Using llama-server binary");
 
-    // Run spec benchmark
-    let result =
-        llama_cli_spec::run_spec_bench(&spec_config, Some(server_binary), sink.clone()).await?;
+    // Dispatch to the tamad host and relay progress into this job.
+    let bench_req = tama_core::tamad::RunBenchmarkRequest {
+        model_name: display_name.clone().unwrap_or_else(|| model_id.clone()),
+        kind: "spec".to_string(),
+        config_json,
+        model_path_rel: host.model_path_rel.clone(),
+        binary_path_rel: host.binary_path_rel.clone(),
+    };
+    let result_json = super::tamad::dispatch_and_relay(&jobs, &job, &host, &bench_req).await?;
+
+    // The tamad ran the same runner as before — parse the result back into
+    // the persistence struct.
+    let result: SpecBenchResult =
+        serde_json::from_str(&result_json).context("tamad returned an invalid spec result")?;
 
     // Serialize the full result for storage
     let results_json =
@@ -213,8 +208,8 @@ pub async fn run_spec_benchmark_inner(
         .count();
     let run_status = derive_status(result.entries.len() - entries_failed, entries_failed, false);
 
-    // Get VRAM info
-    let vram = query_vram();
+    // VRAM: the execution host (tamad) sampled it — plan-191 Task 10.
+    let vram = result.vram.clone();
 
     // Insert into Postgres (plan-190 Task 8).
     let params = tama_core::db::queries::BenchmarkInsertParams {
@@ -236,7 +231,7 @@ pub async fn run_spec_benchmark_inner(
         duration_seconds: 0.0,
         status: run_status,
         benchmark_type: benchmark_type.as_deref(),
-        suite_id: req.suite_id.as_deref(),
+        suite_id: suite_id.as_deref(),
     };
     tama_core::db::queries::insert_benchmark(pool, &params).await?;
 

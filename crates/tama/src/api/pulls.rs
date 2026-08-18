@@ -186,10 +186,20 @@ pub async fn cancel_pull(
     };
 
     match svc.cancel(&job_id).await {
-        Ok(()) => Json(PullCancelResponse {
-            ok: true,
-            message: None,
-        }),
+        Ok(()) => {
+            // Best-effort: hand the cancel to the host running the pull
+            // (plan-191 follow-up B: `CancelJob` RPC; the relay converges
+            // the job state when the terminal `cancelled` event arrives).
+            {
+                if let Some(tamad_job_id) = state.pull_job_tamad_job_id(&job_id).await {
+                    state.cancel_pull_host_job(&tamad_job_id).await;
+                }
+            }
+            Json(PullCancelResponse {
+                ok: true,
+                message: None,
+            })
+        }
         Err(e) => Json(PullCancelResponse {
             ok: false,
             message: Some(e.to_string()),

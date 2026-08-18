@@ -1,4 +1,4 @@
-use super::vram::VramInfo;
+use super::types::VramInfo;
 
 /// GPU variant / backend compilation target.
 ///
@@ -106,104 +106,6 @@ impl<'de> serde::Deserialize<'de> for GpuVariant {
 
 /// Default CUDA version used when auto-detection fails.
 pub const DEFAULT_CUDA_VERSION: &str = "12.4";
-
-/// Detect the installed CUDA toolkit version.
-///
-/// Tries `nvcc --version` first (most reliable), then falls back to
-/// `nvidia-smi` driver-reported CUDA version. Returns `None` if neither
-/// is available.
-pub fn detect_cuda_version() -> Option<String> {
-    // Try nvcc first — this reports the actual toolkit version
-    if let Some(ver) = detect_cuda_version_nvcc() {
-        return Some(ver);
-    }
-    // Fall back to nvidia-smi — reports the max supported CUDA version
-    detect_cuda_version_nvidia_smi()
-}
-
-/// Parse CUDA version from `nvcc --version` output.
-fn detect_cuda_version_nvcc() -> Option<String> {
-    let output = std::process::Command::new("nvcc")
-        .arg("--version")
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    // nvcc output contains a line like: "Cuda compilation tools, release 12.4, V12.4.131"
-    // or "Cuda compilation tools, release 13.1, V13.1.105"
-    for line in stdout.lines() {
-        if let Some(pos) = line.find("release ") {
-            let after = &line[pos + 8..];
-            // Take "12.4" from "12.4, V12.4.131"
-            let version = after.split(',').next()?.trim();
-            if !version.is_empty() {
-                return Some(version.to_string());
-            }
-        }
-    }
-    None
-}
-
-/// Parse CUDA version from `nvidia-smi` output.
-fn detect_cuda_version_nvidia_smi() -> Option<String> {
-    let output = std::process::Command::new("nvidia-smi").output().ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    // nvidia-smi header contains: "CUDA Version: 12.4"
-    for line in stdout.lines() {
-        if let Some(pos) = line.find("CUDA Version:") {
-            let after = &line[pos + 13..];
-            let version = after.split_whitespace().next()?;
-            if !version.is_empty() {
-                return Some(version.to_string());
-            }
-        }
-    }
-    None
-}
-
-/// Detect AMD GPU architectures suitable for `-DAMDGPU_TARGETS=...`.
-///
-/// Honors `TAMA_AMDGPU_TARGETS` as an override (accepts `;` or `,` as
-/// separators; whitespace trimmed; empty entries dropped). Otherwise runs
-/// `rocminfo` and parses `Name:\s+gfx[0-9a-f]+` lines. Returns the
-/// deduplicated list in first-seen order. Returns an empty `Vec` if
-/// detection fails, `rocminfo` is unavailable, or no gfx entries are found.
-///
-/// This function is Linux-oriented but compiles on all platforms — on
-/// non-Linux hosts it returns `Vec::new()` unless the env override is set.
-pub fn detect_amdgpu_targets() -> Vec<String> {
-    if let Ok(raw) = std::env::var("TAMA_AMDGPU_TARGETS") {
-        let trimmed = raw.trim();
-        if !trimmed.is_empty() {
-            return trimmed
-                .split([',', ';'])
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
-        }
-    }
-
-    let output = match std::process::Command::new("rocminfo").output() {
-        Ok(o) => o,
-        Err(_) => return Vec::new(),
-    };
-
-    if !output.status.success() {
-        return Vec::new();
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    parse_rocminfo_gfx_names(&stdout)
-}
 
 /// Parse `rocminfo` stdout and extract unique `gfxNNNN` architecture names.
 ///
@@ -350,9 +252,6 @@ pub fn suggest_context_sizes(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_parse_rocminfo_gfx_names_single_gpu() {
@@ -404,111 +303,11 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_amdgpu_targets_env_override_semicolons() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::remove_var("TAMA_AMDGPU_TARGETS");
-        std::env::set_var("TAMA_AMDGPU_TARGETS", "gfx1100;gfx1201");
-        let result = detect_amdgpu_targets();
-        std::env::remove_var("TAMA_AMDGPU_TARGETS");
-        assert_eq!(result, vec!["gfx1100", "gfx1201"]);
-    }
-
-    #[test]
-    fn test_detect_amdgpu_targets_env_override_commas_and_whitespace() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::remove_var("TAMA_AMDGPU_TARGETS");
-        std::env::set_var("TAMA_AMDGPU_TARGETS", "  gfx942 , gfx90a ");
-        let result = detect_amdgpu_targets();
-        std::env::remove_var("TAMA_AMDGPU_TARGETS");
-        assert_eq!(result, vec!["gfx942", "gfx90a"]);
-    }
-
-    #[test]
-    fn test_detect_amdgpu_targets_env_override_empty_is_ignored() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::remove_var("TAMA_AMDGPU_TARGETS");
-        std::env::set_var("TAMA_AMDGPU_TARGETS", "");
-        let result = detect_amdgpu_targets();
-        std::env::remove_var("TAMA_AMDGPU_TARGETS");
-        assert!(result.is_empty() || result.iter().all(|s| s.starts_with("gfx")));
-    }
-
-    #[test]
-    fn test_detect_amdgpu_targets_env_override_single_value() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::remove_var("TAMA_AMDGPU_TARGETS");
-        std::env::set_var("TAMA_AMDGPU_TARGETS", "gfx1100");
-        let result = detect_amdgpu_targets();
-        std::env::remove_var("TAMA_AMDGPU_TARGETS");
-        assert_eq!(result, vec!["gfx1100"]);
-    }
-
-    #[test]
     fn test_detect_build_prerequisites() {
         let caps = detect_build_prerequisites();
         assert!(!caps.os.is_empty());
         assert!(!caps.arch.is_empty());
         // No gpu field — that's the point
-    }
-
-    #[test]
-    fn test_detect_cuda_version_nvcc_parsing() {
-        // Simulate nvcc output parsing
-        let sample = "nvcc: NVIDIA (R) Cuda compiler driver\n\
-                       Copyright (c) 2005-2024 NVIDIA Corporation\n\
-                       Built on Thu_Mar_28_02:18:24_PDT_2024\n\
-                       Cuda compilation tools, release 12.4, V12.4.131\n\
-                       Build cuda_12.4.r12.4/compiler.34097967_0";
-
-        let mut version = None;
-        for line in sample.lines() {
-            if let Some(pos) = line.find("release ") {
-                let after = &line[pos + 8..];
-                if let Some(v) = after.split(',').next() {
-                    let v = v.trim();
-                    if !v.is_empty() {
-                        version = Some(v.to_string());
-                    }
-                }
-            }
-        }
-        assert_eq!(version, Some("12.4".to_string()));
-    }
-
-    #[test]
-    fn test_detect_cuda_version_nvcc_parsing_v13() {
-        let sample = "Cuda compilation tools, release 13.1, V13.1.105";
-        let mut version = None;
-        for line in sample.lines() {
-            if let Some(pos) = line.find("release ") {
-                let after = &line[pos + 8..];
-                if let Some(v) = after.split(',').next() {
-                    let v = v.trim();
-                    if !v.is_empty() {
-                        version = Some(v.to_string());
-                    }
-                }
-            }
-        }
-        assert_eq!(version, Some("13.1".to_string()));
-    }
-
-    #[test]
-    fn test_detect_cuda_version_nvidia_smi_parsing() {
-        let sample =
-            "| NVIDIA-SMI 550.54.14    Driver Version: 550.54.14    CUDA Version: 12.4     |";
-        let mut version = None;
-        for line in sample.lines() {
-            if let Some(pos) = line.find("CUDA Version:") {
-                let after = &line[pos + 13..];
-                if let Some(v) = after.split_whitespace().next() {
-                    if !v.is_empty() {
-                        version = Some(v.to_string());
-                    }
-                }
-            }
-        }
-        assert_eq!(version, Some("12.4".to_string()));
     }
 
     #[test]

@@ -41,13 +41,14 @@ pub struct RepoPullStartResponse {
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
 
-/// POST /tama/v1/pulls/repo — start a whole-repo `hf` CLI pull.
+/// POST /tama/v1/pulls/repo — start a whole-repo `hf` CLI pull (executed on
+/// the pull host — `proxy.pull_backend`'s tamad — per ADR-0010).
 ///
 /// `model_id` is the pre-created stub model row (the wizard creates it before
 /// starting so completion can update the row). Errors map to the canonical
-/// shape: invalid repo id / missing `hf` CLI / repo not found → 422
-/// `ValidationError`, duplicate → 409 `ConflictError`, upstream → 502
-/// `UpstreamError`.
+/// shape: invalid repo id / repo not found / no pull host configured / tamad
+/// unreachable → 422 `ValidationError` or 502 `UpstreamError`; duplicate →
+/// 409 `ConflictError`.
 pub async fn start_repo_pull(
     State(state): State<Arc<ProxyState>>,
     Json(body): Json<RepoPullStartBody>,
@@ -66,11 +67,6 @@ pub async fn start_repo_pull(
         Err(e) => {
             let (status, error_type, message) = match &e {
                 RepoPullError::InvalidRepoId(_) => (
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    "ValidationError",
-                    e.to_string(),
-                ),
-                RepoPullError::HfBinaryMissing(_) => (
                     StatusCode::UNPROCESSABLE_ENTITY,
                     "ValidationError",
                     e.to_string(),
@@ -168,15 +164,26 @@ mod tests {
             .layer(axum::extract::Extension(web_state.as_ref().clone()))
     }
 
-    /// POST /tama/v1/pulls/repo — when the `hf` CLI is missing from the host
-    /// PATH, start fails with 422 ValidationError (message carries the pip
-    /// install hint). Guard-skipped on hosts where `hf` is installed.
+    /// POST /tama/v1/pulls/repo — ADR-0010: with no pull host
+    /// (`proxy.pull_backend`) configured, start fails loudly with 502
+    /// UpstreamError. The proxy never downloads locally (and there is no
+    /// local `hf` binary check anymore — execution is on the pull host).
     #[tokio::test]
-    async fn test_start_repo_pull_missing_hf_binary_422() {
-        let probe = std::process::Command::new("hf").arg("--version").output();
-        if probe.map(|o| o.status.success()).unwrap_or(false) {
-            return;
-        }
+    async fn test_start_repo_pull_no_pull_host_502() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(
+                "/api/models/foo/bar/revision/main",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "sha": "abc123",
+                    "siblings": []
+                })),
+            )
+            .mount(&server)
+            .await;
+        std::env::set_var("HF_ENDPOINT", server.uri());
 
         let router = test_router();
 
@@ -190,22 +197,23 @@ mod tests {
             .unwrap();
 
         let resp = router.oneshot(req).await.expect("request should complete");
+        std::env::remove_var("HF_ENDPOINT");
 
         assert_eq!(
             resp.status(),
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "missing hf binary should return 422"
+            StatusCode::BAD_GATEWAY,
+            "no pull host should return 502"
         );
 
         let detail = assert_error_shape(resp).await;
         assert_eq!(
             detail.r#type,
-            Some("ValidationError".to_string()),
-            "missing hf binary should return ValidationError type"
+            Some("UpstreamError".to_string()),
+            "no pull host should return UpstreamError type"
         );
         assert!(
-            detail.message.contains("pip install"),
-            "message should carry the install hint: {}",
+            detail.message.contains("no pull host configured"),
+            "message should name the fix: {}",
             detail.message
         );
     }

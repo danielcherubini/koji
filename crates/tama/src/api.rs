@@ -258,6 +258,10 @@ fn merge_proxy(
             .unwrap_or(existing.authenticator_skip_paths),
         oauth2,
         api_keys_enabled: patch.api_keys_enabled.unwrap_or(existing.api_keys_enabled),
+        pull_backend: match &patch.pull_backend {
+            Some(v) => v.clone(),
+            None => existing.pull_backend,
+        },
     }
 }
 
@@ -426,6 +430,7 @@ mod tests {
                 authenticator_skip_paths: Vec::new(),
                 oauth2: OAuth2Config::default(),
                 api_keys_enabled: false,
+                pull_backend: None,
             },
             compaction: CompactionConfig {
                 enabled: false,

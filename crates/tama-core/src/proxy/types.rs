@@ -1,16 +1,10 @@
-use anyhow::Context;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::task::JoinSet;
 
 use super::pull_queue::PullQueueService;
 use super::state::repo_pull::{RepoPullError, RepoPullStart, RepoPullStatusDto};
 use super::state::{MetricsState, PullState, RegistryState};
-
-/// Cache entry for discovered GPU devices: (discovered_at, devices).
-type GpuDeviceCacheEntry = (Instant, Vec<crate::gpu::GpuDeviceInfo>);
 
 /// State for a model backend lifecycle.
 #[derive(Debug, Clone)]
@@ -254,12 +248,11 @@ impl Clone for ProxyState {
             db_dir: self.db_dir.clone(),
             config_write_semaphore: Arc::clone(&self.config_write_semaphore),
             backend_logs: self.backend_logs.clone(),
-            gpu_devices_cache: Arc::clone(&self.gpu_devices_cache),
-            model_tasks: tokio::sync::RwLock::new(std::collections::HashMap::new()),
             cookie_key: self.cookie_key.clone(),
             langfuse_client: Arc::clone(&self.langfuse_client),
             remote_forwarder: self.remote_forwarder.clone(),
-            tamad_clients: Arc::clone(&self.tamad_clients),
+            tamad_pool: Arc::clone(&self.tamad_pool),
+            started_at: self.started_at,
             db_pool: self.db_pool.clone(),
         }
     }
@@ -281,13 +274,6 @@ pub struct ProxyState {
     pub(crate) config_write_semaphore: Arc<tokio::sync::Semaphore>,
     /// Backend log stream manager — broadcasts backend stdout/stderr via SSE.
     pub(crate) backend_logs: crate::installations::log_stream::BackendLogManager,
-    /// Cache for discovered GPU devices, keyed by backend name.
-    /// Value is (discovered_at_instant, list_of_devices).
-    #[allow(clippy::type_complexity)]
-    pub(crate) gpu_devices_cache: Arc<tokio::sync::RwLock<HashMap<String, GpuDeviceCacheEntry>>>,
-    /// Per-model JoinSets tracking spawned tasks (stdout/stderr readers, reaper).
-    /// Used for clean cancellation on unload.
-    pub(crate) model_tasks: tokio::sync::RwLock<HashMap<String, JoinSet<()>>>,
     /// Signing key for session cookies (OAuth2 OIDC login).
     pub(crate) cookie_key: cookie::Key,
     /// Langfuse observability client, initialized from config at startup.
@@ -296,10 +282,13 @@ pub struct ProxyState {
         Arc<tokio::sync::RwLock<Option<Arc<crate::proxy::forward::langfuse::LangfuseClient>>>>,
     /// HTTP forwarder for remote OpenAI-compatible providers.
     pub(crate) remote_forwarder: crate::proxy::remote::RemoteForwarder,
-    /// Pool of tamad clients, keyed by tamad ID.
-    /// Uses Arc<RwLock> so mutable access (lazy client creation) works across clones.
-    pub(crate) tamad_clients:
-        Arc<tokio::sync::RwLock<HashMap<String, crate::tamad::client::TamadClient>>>,
+    /// Pool of live per-tamad stats streams, keyed by tamad ID (plan-191
+    /// Task 4). Replaces the old lazy `tamad_clients` cache — the pool owns
+    /// one reconnecting `StreamStats` connection per registered tamad.
+    pub(crate) tamad_pool: Arc<crate::tamad::pool::TamadPool>,
+    /// When this proxy process started (uptime for the health endpoint,
+    /// plan-191 Task 9).
+    pub(crate) started_at: std::time::Instant,
     /// Postgres pool (plan-190 Task 9: always present). `main.rs` is the
     /// single owner of the pool and hands the same `Arc<PgPool>` to both
     /// `ProxyState` and `WebState`.
@@ -310,6 +299,13 @@ impl ProxyState {
     /// The Postgres pool (always present; plan-190 Task 9).
     pub fn db_pool(&self) -> Arc<sqlx::PgPool> {
         self.db_pool.clone()
+    }
+
+    /// The tamad stats-stream pool (plan-191 Task 4). Used by the proxy
+    /// startup sequence (`load_all`), the management API (register/update/
+    /// delete refresh), and the dashboard fan-out in `tama_handlers`.
+    pub fn tamad_pool(&self) -> Arc<crate::tamad::pool::TamadPool> {
+        Arc::clone(&self.tamad_pool)
     }
 
     /// Start a whole-repo `hf` CLI pull.
@@ -328,16 +324,19 @@ impl ProxyState {
     /// Live status snapshot of a whole-repo pull job, or `None` if the job id
     /// is unknown.
     ///
-    /// `bytes_done` is computed here (inside tama-core) via `scan_dir_bytes`,
-    /// wrapped in `spawn_blocking` so the recursive fs walk doesn't block a
-    /// web worker thread.
+    /// `bytes_done` prefers the relay-mirrored counter (the pull runs on the
+    /// pull host, ADR-0010 — the files may not be local to the proxy); a
+    /// local directory scan (`scan_dir_bytes`, wrapped in `spawn_blocking` so
+    /// the recursive walk never blocks a web worker) covers jobs without a
+    /// relay counter yet and single-host setups where both views agree.
     pub async fn get_repo_pull_status(&self, job_id: &str) -> Option<RepoPullStatusDto> {
         let job = self.pull.get_repo_pull(job_id).await?;
         let dest = job.dest.clone();
-        let bytes_done =
+        let scanned =
             tokio::task::spawn_blocking(move || super::state::repo_pull::scan_dir_bytes(&dest))
                 .await
                 .unwrap_or(0);
+        let bytes_done = job.bytes_done.max(scanned);
         Some(RepoPullStatusDto {
             job_id: job.job_id.clone(),
             status: job.status.to_string(),
@@ -348,10 +347,69 @@ impl ProxyState {
         })
     }
 
+    /// The host-side job id for an in-memory pull job (plan-191 follow-up
+    /// B); the cancel endpoint uses it to route `CancelJob` to the pull
+    /// host (`None` when unknown or when no host id has been recorded yet).
+    pub async fn pull_job_tamad_job_id(&self, job_id: &str) -> Option<String> {
+        self.pull
+            .pull_jobs
+            .read()
+            .await
+            .get(job_id)
+            .and_then(|j| j.tamad_job_id.clone())
+    }
+
+    /// Best-effort dispatch of `CancelJob` to the pull host (plan-191
+    /// follow-up B). The remote call is idempotent; every failure path is
+    /// logged and swallowed — best-effort by design (the relay converges to
+    /// the terminal state regardless).
+    pub async fn cancel_pull_host_job(&self, tamad_job_id: &str) {
+        let Some(backend) = self.config.read().await.proxy.pull_backend.clone() else {
+            return;
+        };
+        let Some(handle) = self.tamad_pool.get(&backend).await else {
+            return;
+        };
+        match handle.cancel_job(tamad_job_id).await {
+            Ok(true) => {
+                tracing::info!(
+                    tamad = %backend,
+                    tamad_job_id,
+                    "host job cancel dispatched"
+                );
+            }
+            Ok(false) => {
+                tracing::debug!(
+                    tamad = %backend,
+                    tamad_job_id,
+                    "host job already terminal (no-op cancel)"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    tamad = %backend,
+                    tamad_job_id,
+                    error = %e,
+                    "host job cancel failed (best-effort)"
+                );
+            }
+        }
+    }
+
     /// Cancel + kill a running whole-repo pull job.
     ///
     /// Err message is user-facing: "not found" / "already finished".
     pub async fn cancel_repo_pull(&self, job_id: &str) -> Result<(), String> {
+        // Hand the cancel to the pull host before we mark the local job
+        // cancelled (the relay will converge the in-memory state to
+        // `cancelled` when the tamad sends its terminal event).
+        if let Some(job) = self.pull.get_repo_pull(job_id).await {
+            if let Some(tamad_job_id) = job.tamad_job_id.clone() {
+                if job.status == crate::proxy::state::RepoPullStatus::Running {
+                    self.cancel_pull_host_job(&tamad_job_id).await;
+                }
+            }
+        }
         self.pull.cancel_repo_pull(job_id).await
     }
 
@@ -372,12 +430,6 @@ impl ProxyState {
         // Clear all loaded models
         let mut models = self.registry.models.write().await;
         models.clear();
-
-        // Abort all per-model task JoinSets (stdout/stderr readers, reapers)
-        let mut all_tasks = self.model_tasks.write().await;
-        for (_backend, mut tasks) in all_tasks.drain() {
-            tasks.abort_all();
-        }
 
         // Clear inference stats
         self.metrics.clear_inference_stats();
@@ -411,41 +463,12 @@ impl ProxyState {
     pub fn backend_logs(&self) -> &crate::installations::log_stream::BackendLogManager {
         &self.backend_logs
     }
-
-    /// Perform a health check against a tamad instance.
-    ///
-    /// Looks up the tamad in the client pool, creating it lazily from the DB
-    /// if not yet cached. Returns `true` if the tamad reports status "ok".
-    /// Connection errors (network unreachable, refused, etc.) propagate as `Err`.
-    pub async fn tamad_health_check(&self, tamad_id: &str) -> anyhow::Result<bool> {
-        let mut clients = self.tamad_clients.write().await;
-
-        // Fast path: client already cached
-        if let Some(client) = clients.get_mut(tamad_id) {
-            return client.health_check().await;
-        }
-
-        // Slow path: load from DB and create client
-        let pool = self.db_pool();
-        let tamad_record = crate::db::queries::get_tamad(pool.as_ref(), tamad_id)
-            .await
-            .with_context(|| "Failed to look up tamad in database")?
-            .ok_or_else(|| anyhow::anyhow!("tamad '{}' not found in registry", tamad_id))?;
-
-        let client = crate::tamad::client::TamadClient::new(&tamad_record);
-        clients.insert(tamad_id.to_string(), client);
-
-        clients
-            .get_mut(tamad_id)
-            .ok_or_else(|| anyhow::anyhow!("Failed to get newly inserted tamad client"))?
-            .health_check()
-            .await
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     /// Test that the get_repo_pull_status delegate builds a DTO with a
     /// computed bytes_done (recursive file sizes under dest) and that an
@@ -463,8 +486,6 @@ mod tests {
         std::fs::create_dir(&nested).unwrap();
         std::fs::write(nested.join("b.bin"), vec![1u8; 50]).unwrap();
 
-        let child_arc: Arc<tokio::sync::Mutex<Option<tokio::process::Child>>> =
-            Arc::new(tokio::sync::Mutex::new(None));
         state
             .pull
             .upsert_repo_pull(crate::proxy::state::RepoPullJob {
@@ -478,7 +499,8 @@ mod tests {
                 cancel_requested: false,
                 context_length: None,
                 stderr_tail: Arc::new(tokio::sync::Mutex::new(Vec::new())),
-                child: child_arc,
+                tamad_job_id: None,
+                bytes_done: 0,
             })
             .await;
 
@@ -511,8 +533,6 @@ mod tests {
             Err("not found".to_string())
         );
 
-        let child_arc: Arc<tokio::sync::Mutex<Option<tokio::process::Child>>> =
-            Arc::new(tokio::sync::Mutex::new(None));
         state
             .pull
             .upsert_repo_pull(crate::proxy::state::RepoPullJob {
@@ -526,7 +546,8 @@ mod tests {
                 cancel_requested: false,
                 context_length: None,
                 stderr_tail: Arc::new(tokio::sync::Mutex::new(Vec::new())),
-                child: child_arc,
+                tamad_job_id: None,
+                bytes_done: 0,
             })
             .await;
 

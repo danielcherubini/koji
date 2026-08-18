@@ -2,6 +2,31 @@
 
 Monitor file pull progress for model GGUF files.
 
+## Tamad-hosted pulls
+
+When the proxy config's `proxy.pull_backend` is set to a registered tamad
+connection id, queued model pulls (the per-file queue below) are executed on
+that tamad instead of the proxy: the proxy dispatches `PullModel` over gRPC,
+the download runs on the tamad's disk (the file is written to the proxy's own
+`models_dir/<repo_id>` path), and the proxy relays the tamad's job progress
+into the same PullJob / queue-item / SSE tracking used for local pulls. The
+post-download verification (SHA-256 vs upstream LFS hash, GGUF/transformers
+metadata parse, model registration) runs proxy-side either way.
+
+This is an internal routing detail — the endpoints, response shapes, and SSE
+events above are unchanged. Failure semantics (fail loud, no silent local
+fallback):
+
+- `pull_backend` names an unregistered tamad → the pull fails with
+  `pull_backend '<id>' is not a registered tamad`.
+- The tamad is unreachable or rejects the dispatch → the pull fails with the
+  transport error.
+- The job stream ends before a terminal event (tamad died) → the pull fails
+  with `tamad disconnected mid-pull (no terminal job event)`.
+- No progress event for 120 s → the pull fails with `pull stalled`.
+- Tamad-side verification mismatch → the tamad deletes the corrupt file and
+  fails the job; the proxy relay fails the pull with the tamad's error.
+
 ## GET /tama/v1/pulls/active
 
 List currently active pull items.
@@ -58,9 +83,11 @@ Cancel an active pull.
 
 ## Repo pulls (safetensors / transformers)
 
-Whole-repo pulls run through the `hf` CLI (huggingface_hub ≥ 1.x) and are
-tracked in memory — they do not appear in the per-file pulls queue above. Jobs
-live until the server restarts.
+Whole-repo pulls run through the `hf` CLI (huggingface_hub ≥ 1.x) **on the
+pull host** (the tamad named by `proxy.pull_backend`); the proxy relays
+dispatch, progress, and cancellation — it never runs the CLI itself
+(ADR-0010). Jobs are tracked in memory on the proxy — they do not appear in
+the per-file pulls queue above. Jobs live until the server restarts.
 
 ### POST /tama/v1/pulls/repo
 
@@ -93,9 +120,10 @@ Start a whole-repo `hf` CLI pull into `<models_dir>/<repo_id>`.
 
 | Status | Type | Meaning |
 |--------|------|---------|
-| `422` | `ValidationError` | Invalid `repo_id` (charset / path traversal), missing `hf` CLI (message includes `pip install -U huggingface_hub`), or repo not found on HuggingFace |
+| `422` | `ValidationError` | Invalid `repo_id` (charset / path traversal) |
+| `404` | `NotFoundError` | Model id not found (when `model_id` given) |
 | `409` | `ConflictError` | A repo pull for this repo is already running |
-| `502` | `UpstreamError` | HF API / network / spawn failure |
+| `502` | `UpstreamError` | No pull host configured (`proxy.pull_backend` missing/offline), HF API / network failure, or the host rejected the dispatch (e.g. missing `hf` CLI on the host) |
 
 ### GET /tama/v1/pulls/repo/:job_id
 

@@ -50,6 +50,9 @@ pub struct ProxyRecord {
     pub oauth2_scopes: Vec<String>,
     pub oauth2_session_ttl_secs: u64,
     pub api_keys_enabled: bool,
+    /// Registered tamad connection id that executes queued model pulls
+    /// (plan-191 Task 6). NULL → proxy downloads locally.
+    pub pull_backend: Option<String>,
 }
 
 /// A row from the `app_lifecycle` table.
@@ -184,6 +187,7 @@ pub async fn upsert_proxy(
     oauth2_scopes: &[String],
     oauth2_session_ttl_secs: u64,
     api_keys_enabled: bool,
+    pull_backend: Option<&str>,
 ) -> Result<()> {
     let skip_paths_json = serde_json::to_string(authenticator_skip_paths)
         .context("Failed to serialize authenticator_skip_paths to JSON")?;
@@ -196,8 +200,8 @@ pub async fn upsert_proxy(
             pull_queue_poll_interval_secs, max_loaded_models, authenticator_url, authenticator_skip_paths,
             oauth2_enabled, oauth2_client_id, oauth2_client_secret, oauth2_authorize_url, oauth2_token_url,
             oauth2_userinfo_url, oauth2_logout_url, oauth2_redirect_uri, oauth2_scopes, oauth2_session_ttl_secs,
-            api_keys_enabled)
-         VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
+            api_keys_enabled, pull_backend)
+         VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
          ON CONFLICT (id) DO UPDATE SET
              host = EXCLUDED.host,
              port = EXCLUDED.port,
@@ -221,7 +225,8 @@ pub async fn upsert_proxy(
              oauth2_redirect_uri = EXCLUDED.oauth2_redirect_uri,
              oauth2_scopes = EXCLUDED.oauth2_scopes,
              oauth2_session_ttl_secs = EXCLUDED.oauth2_session_ttl_secs,
-             api_keys_enabled = EXCLUDED.api_keys_enabled",
+             api_keys_enabled = EXCLUDED.api_keys_enabled,
+             pull_backend = EXCLUDED.pull_backend",
     )
     .bind(host)
     .bind(i64::from(port))
@@ -246,9 +251,23 @@ pub async fn upsert_proxy(
     .bind(scopes_json)
     .bind(oauth2_session_ttl_secs as i64)
     .bind(api_keys_enabled)
+    .bind(pull_backend)
     .execute(pool)
     .await
-    .context("Failed to upsert app_proxy")?;
+    .map_err(|e| {
+        // `app_proxy` has exactly one FK (`pull_backend →
+        // tamad_registry(id)`). Map that violation to an actionable
+        // message instead of surfacing raw Postgres FK text.
+        if e.as_database_error()
+            .is_some_and(|db| matches!(db.code().as_deref(), Some("23503")))
+        {
+            return anyhow!(
+                "pull_backend '{}' is not a registered tamad — register it first (POST /tama/v1/tamads), then set pull_backend to that id",
+                pull_backend.unwrap_or("???")
+            );
+        }
+        anyhow!("Failed to upsert app_proxy: {e}")
+    })?;
     Ok(())
 }
 
@@ -263,7 +282,7 @@ pub async fn get_proxy(pool: &PgPool) -> Result<Option<ProxyRecord>> {
                 oauth2_enabled, oauth2_client_id, oauth2_client_secret,
                 oauth2_authorize_url, oauth2_token_url, oauth2_userinfo_url,
                 oauth2_logout_url, oauth2_redirect_uri, oauth2_scopes, oauth2_session_ttl_secs,
-                api_keys_enabled
+                api_keys_enabled, pull_backend
          FROM app_proxy WHERE id = 1",
     )
     .fetch_optional(pool)
@@ -317,7 +336,20 @@ pub async fn get_proxy(pool: &PgPool) -> Result<Option<ProxyRecord>> {
         oauth2_session_ttl_secs: u64::try_from(row.get::<i64, _>("oauth2_session_ttl_secs"))
             .context("app_proxy.oauth2_session_ttl_secs out of range")?,
         api_keys_enabled: row.get("api_keys_enabled"),
+        pull_backend: row.get("pull_backend"),
     }))
+}
+
+/// Clear `pull_backend` if it points at the given (about-to-be-deleted)
+/// tamad. Called by the tamad delete path before the registry row is
+/// removed, since the FK to `tamad_registry(id)` would otherwise block
+/// the deletion (plan-191 review fix).
+pub async fn clear_pull_backend_for_tamad(pool: &PgPool, tamad_id: &str) -> Result<()> {
+    sqlx::query("UPDATE app_proxy SET pull_backend = NULL WHERE pull_backend = $1")
+        .bind(tamad_id)
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 /// Insert or replace the lifecycle config row (id=1).

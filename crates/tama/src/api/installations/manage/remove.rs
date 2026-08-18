@@ -8,11 +8,16 @@ use std::sync::Arc;
 
 use super::types::RemoveVersionQuery;
 use crate::api::error::error_response;
+use crate::api::installations::tamad_job;
 use crate::api::installations::types::DeleteResponse;
 use crate::web_types::WebState;
 use tama_core::proxy::ProxyState;
 
 /// DELETE /tama/v1/backends/:name/versions/:version
+///
+/// Removes one version of a backend: `RemoveProvider` on the backend's
+/// tamad (versioned directory deletion), then the DB row cleanup.
+/// Tamad failure → 500 with nothing removed from the DB (fail loud).
 pub async fn remove_installation_version(
     Extension(web_state): Extension<WebState>,
     State(state): State<Arc<ProxyState>>,
@@ -81,19 +86,8 @@ pub async fn remove_installation_version(
         }
     };
 
-    // Delete files FIRST (before any DB changes)
-    let info_to_remove = tama_core::installations::InstallationInfo {
-        name: info.name.clone(),
-        backend_type: info.backend_type.clone(),
-        version: info.version.clone(),
-        path: std::path::PathBuf::from(&info.path),
-        installed_at: info.installed_at,
-        gpu_variant: info.gpu_variant.clone(),
-        source: None,
-        docker_config: None,
-    };
-
-    // Check if a job is running for this backend
+    // Block the removal if a backend job is currently running for this
+    // backend type (same guard as before tamad dispatch).
     if let Some(jobs) = web_state.jobs.as_ref() {
         if let Some(active_job) = jobs.active().await {
             let active_type = active_job
@@ -111,22 +105,24 @@ pub async fn remove_installation_version(
         }
     }
 
-    if info_to_remove.path.exists() {
-        if let Err(e) = tama_core::installations::safe_remove_installation(&info_to_remove) {
-            let err_msg = e.to_string();
-            if err_msg.contains("outside the managed backends directory") {
-                return error_response(
-                    StatusCode::CONFLICT,
-                    "path is outside the managed backends directory; remove manually",
-                    Some("ConflictError"),
-                );
-            }
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to remove files: {}", e),
-                None,
-            );
-        }
+    // Delete the installation on the backend host FIRST (before any DB
+    // changes): tamad RemoveProvider removes the versioned directory for
+    // this backend/variant/version (idempotent if already gone).
+    if let Err(e) = tamad_job::remove_on_tamad(
+        &state,
+        &info.backend_type,
+        &name,
+        Some(info.gpu_variant.as_str()),
+        Some(version.as_str()),
+    )
+    .await
+    {
+        tracing::warn!(backend = %name, version = %version, error = %e, "tamad version removal failed");
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to remove version on host: {}", e),
+            None,
+        );
     }
 
     // Remove from DB (activates another version if this was active)

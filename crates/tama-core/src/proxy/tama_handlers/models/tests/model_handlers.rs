@@ -325,9 +325,11 @@ async fn test_handle_tama_cancel_load_starting() {
     );
 }
 
-/// POST /tama/v1/models/:id/cancel for a Ready model → 409 ModelAlreadyLoadedError.
+/// POST /tama/v1/models/:id/cancel for a Ready model → 200: cancel now
+/// operates on desired state (plan-191 Task 5) — a loaded model is
+/// cleared + unloaded, not rejected with 409.
 #[tokio::test]
-async fn test_handle_tama_cancel_load_ready_conflict() {
+async fn test_handle_tama_cancel_load_ready_unloads() {
     let state = create_state_with_model(ModelConfig {
         backend: "llama_cpp".to_string(),
         api_name: Some("test-model".to_string()),
@@ -368,14 +370,27 @@ async fn test_handle_tama_cancel_load_ready_conflict() {
         .unwrap();
 
     let response = app.oneshot(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(response.status(), StatusCode::OK);
 
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    assert_eq!(json["error"]["type"], "ModelAlreadyLoadedError");
+    assert_eq!(json["loaded"], false);
+
+    // The local mirror entry is removed (the physical unload happens on
+    // the tamad; best-effort RPC — no tamad in this unit test).
+    assert!(
+        state
+            .registry
+            .models
+            .read()
+            .await
+            .get("test-model")
+            .is_none(),
+        "Ready mirror should be removed after cancel"
+    );
 }
 
 /// POST /tama/v1/models/:id/cancel for an unknown model → 404 ModelNotLoadingError.

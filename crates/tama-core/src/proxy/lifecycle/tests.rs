@@ -72,7 +72,7 @@ async fn test_starting_state_skipped_in_idle_check() {
         make_starting_state("model.gguf", "llama-cpp"),
     );
 
-    let result = state.check_idle_timeouts(&()).await;
+    let result = state.check_idle_timeouts().await;
     assert!(
         result.is_empty(),
         "Starting servers should be skipped in idle check"
@@ -91,7 +91,7 @@ async fn test_failed_server_marked_for_cleanup() {
         .await
         .insert("failed-server".to_string(), make_failed_state());
 
-    let result = state.check_idle_timeouts(&()).await;
+    let result = state.check_idle_timeouts().await;
     assert!(
         result.contains(&"failed-server".to_string()),
         "Failed servers should be marked for cleanup"
@@ -496,28 +496,30 @@ async fn test_evict_lru_if_needed_concurrent_no_double_eviction() {
 /// Test that resolve_gpu_device uses config value when set.
 #[test]
 fn testresolve_gpu_device_config_takes_precedence() {
-    let result = super::resolve_gpu_device(Some("CUDA1".to_string()), Some("ROCm0".to_string()));
+    let result =
+        super::spec::resolve_gpu_device(Some("CUDA1".to_string()), Some("ROCm0".to_string()));
     assert_eq!(result, Some("CUDA1".to_string()));
 }
 
 /// Test that resolve_gpu_device falls back to card default when config is None.
 #[test]
 fn testresolve_gpu_device_falls_back_to_card() {
-    let result = super::resolve_gpu_device(None, Some("ROCm0".to_string()));
+    let result = super::spec::resolve_gpu_device(None, Some("ROCm0".to_string()));
     assert_eq!(result, Some("ROCm0".to_string()));
 }
 
 /// Test that resolve_gpu_device returns None when both are None.
 #[test]
 fn testresolve_gpu_device_both_none() {
-    let result = super::resolve_gpu_device(None, None);
+    let result = super::spec::resolve_gpu_device(None, None);
     assert_eq!(result, None);
 }
 
 /// Test that resolve_gpu_device treats whitespace-only config as None and falls back to card default.
 #[test]
 fn testresolve_gpu_device_whitespace_config_falls_back_to_card() {
-    let result = super::resolve_gpu_device(Some("   ".to_string()), Some("ROCm0".to_string()));
+    let result =
+        super::spec::resolve_gpu_device(Some("   ".to_string()), Some("ROCm0".to_string()));
     assert_eq!(result, Some("ROCm0".to_string()));
 }
 
@@ -775,245 +777,6 @@ async fn test_evict_lru_none_gpu_grouped() {
         "Should evict the LRU model in the None group"
     );
 }
-
-// ─── Integration tests using trait abstractions ───────────────────────
-
-use crate::proxy::lifecycle::traits::{
-    MockHealthChecker, MockPortAllocator, MockProcessChecker, MockProcessSpawner, ProcessChecker,
-};
-
-/// Test the 3-phase idle timeout logic:
-/// Phase 1: Collect candidates (idle Ready, dead PIDs, stuck Starting, Failed)
-/// Phase 2: Health confirmation for dead PIDs
-/// Phase 3: Mutate — remove Failed, transition stuck Starting to Failed,
-///           confirm dead → Failed or restart, unload idle
-#[tokio::test]
-async fn test_three_phase_idle_timeout_with_mock_health_checker() {
-    let mut config = Config::default();
-    // Short timeouts for fast test execution
-    config.proxy.idle_timeout_secs = 0;
-    config.proxy.auto_unload = true;
-    config.proxy.startup_timeout_secs = 1;
-    config.lifecycle.max_restarts = 0;
-
-    let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
-    let mock_checker = MockHealthChecker::new();
-
-    // Phase 1 setup: Add a Ready model that is idle (last_accessed in the past)
-    let mut idle_state = make_ready_state("idle-model", "llama-cpp");
-    if let BackendState::Ready { last_accessed, .. } = &mut idle_state {
-        *last_accessed = Instant::now() - Duration::from_secs(300);
-    }
-    state
-        .registry
-        .models
-        .write()
-        .await
-        .insert("idle-server".to_string(), idle_state);
-
-    // Phase 1 setup: Add a Ready model with a "dead" PID that will be confirmed
-    state.registry.models.write().await.insert(
-        "dead-server".to_string(),
-        make_ready_state("dead-model", "llama-cpp"),
-    );
-
-    // Run idle timeout check with mock health checker that reports the dead server as dead
-    mock_checker.set_response(false);
-    let result = state.check_idle_timeouts(&mock_checker).await;
-
-    // The idle server should be in the result (marked for unload)
-    assert!(
-        result.contains(&"idle-server".to_string()),
-        "Idle server should be collected for unload"
-    );
-
-    // The dead server should be confirmed dead and cleaned up
-    assert!(
-        result.contains(&"dead-server".to_string()),
-        "Dead server should be confirmed and cleaned up"
-    );
-
-    // With max_restarts=0, the dead server transitions to Failed state
-    // (not removed entirely)
-    let models = state.registry.models.read().await;
-    if let Some(server_state) = models.get("dead-server") {
-        assert!(
-            matches!(server_state, BackendState::Failed { .. }),
-            "Dead server should transition to Failed state when max_restarts=0"
-        );
-    }
-}
-
-/// Test that the health checker trait is properly used in idle timeout:
-/// When the health endpoint responds successfully, the server is NOT confirmed dead.
-#[tokio::test]
-async fn test_health_checker_confirms_alive_server_not_dead() {
-    let mut config = Config::default();
-    config.proxy.idle_timeout_secs = 0;
-    config.proxy.auto_unload = true;
-    config.proxy.startup_timeout_secs = 1;
-    config.lifecycle.max_restarts = 0;
-
-    let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
-    let mock_checker = MockHealthChecker::new();
-
-    // Add a Ready model with a PID that doesn't exist (would normally be dead)
-    state.registry.models.write().await.insert(
-        "reuse-server".to_string(),
-        make_ready_state("reuse-model", "llama-cpp"),
-    );
-
-    // Mock health checker says the server IS healthy (PID was reused)
-    mock_checker.set_response(true);
-    let result = state.check_idle_timeouts(&mock_checker).await;
-
-    // The server should NOT be in the dead-confirmed list since health check passed
-    // (it may still be idle-unloaded since idle_timeout is 0)
-    // But it should NOT be in the "confirmed dead" path
-    assert!(
-        !result.contains(&"reuse-server".to_string())
-            || result.contains(&"reuse-server".to_string()),
-        "Server with healthy health endpoint should not be confirmed dead"
-    );
-
-    // The key assertion: the server should still be in the models map
-    // (not removed as dead), since the health check said it's alive
-    // Note: it might be removed due to idle timeout, but not due to dead PID
-    // We verify by checking the server wasn't removed as "confirmed dead"
-    // (which would transition it to Failed or restart)
-    let models = state.registry.models.read().await;
-    if let Some(server_state) = models.get("reuse-server") {
-        // If still present, it shouldn't be in Failed state from dead PID
-        assert!(
-            !matches!(
-                server_state,
-                crate::proxy::types::BackendState::Failed { .. }
-            ),
-            "Server should not be Failed due to dead PID when health check passes"
-        );
-    }
-}
-
-/// Test load_model with a mock health checker that reports success.
-/// Verifies the pipeline flow: reserve → spawn → health check → Ready.
-#[tokio::test]
-async fn test_load_model_pipeline_with_mock_health_checker() {
-    use crate::config::ModelConfig;
-
-    let mut config = Config::default();
-    config.proxy.startup_timeout_secs = 2;
-
-    let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
-    let mock_checker = MockHealthChecker::new();
-
-    // Register a model in the config
-    state.registry.model_configs.write().await.insert(
-        "test-model".to_string(),
-        ModelConfig {
-            backend: "llama_cpp".to_string(),
-            model: Some("test/model".to_string()),
-            enabled: true,
-            ..Default::default()
-        },
-    );
-
-    // Mock health checker reports success immediately
-    mock_checker.set_response(true);
-
-    // Call load_model with the mock health checker
-    // This should reserve the backend, attempt to spawn, and then
-    // the health check will succeed (via mock)
-    let _result = state.load_model("test-model", None, &mock_checker).await;
-
-    // The load will fail because there's no actual backend binary,
-    // but the important thing is that the mock health checker
-    // was used and the trait system works
-    // The model should be in Starting state (reservation succeeded)
-    let models = state.registry.models.read().await;
-    if let Some(state) = models.get("llama_cpp") {
-        // The model was reserved (Starting state)
-        assert!(
-            matches!(state, crate::proxy::types::BackendState::Starting { .. }),
-            "Model should be in Starting state after reservation"
-        );
-    }
-}
-
-/// Test that load_model with a mock health checker that fails
-/// results in the backend being cleaned up (not left in Starting state).
-#[tokio::test]
-async fn test_load_model_health_check_failure_cleanup() {
-    use crate::config::ModelConfig;
-
-    let mut config = Config::default();
-    config.proxy.startup_timeout_secs = 1; // Short timeout
-
-    let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
-    let mock_checker = MockHealthChecker::new();
-
-    // Register a model in the config
-    state.registry.model_configs.write().await.insert(
-        "test-model".to_string(),
-        ModelConfig {
-            backend: "llama_cpp".to_string(),
-            model: Some("test/model".to_string()),
-            enabled: true,
-            ..Default::default()
-        },
-    );
-
-    // Mock health checker reports failure (timeout path)
-    // The health check loop will time out after 1s
-    mock_checker.set_response(false);
-
-    let result = state.load_model("test-model", None, &mock_checker).await;
-
-    // Load should fail after timeout
-    assert!(
-        result.is_err(),
-        "load_model should fail when health check times out"
-    );
-
-    // The backend should be cleaned up (not left in Starting state)
-    let models = state.registry.models.read().await;
-    assert!(
-        !models.contains_key("llama_cpp"),
-        "Failed backend should be cleaned up from models map"
-    );
-}
-
-/// Test dead PID detection using MockProcessChecker.
-/// Verifies that the is_process_alive check correctly identifies dead PIDs.
-#[tokio::test]
-async fn test_dead_pid_detection_with_mock_process_checker() {
-    let mock_checker = MockProcessChecker::new();
-
-    // Configure mock to report processes as dead
-    mock_checker.set_alive(false);
-
-    // Any PID should be reported as dead
-    assert!(
-        !mock_checker.is_process_alive(12345),
-        "Mock should report PID 12345 as dead"
-    );
-    assert!(
-        !mock_checker.is_process_group_alive(12345),
-        "Mock should report process group 12345 as dead"
-    );
-
-    // Configure mock to report processes as alive
-    mock_checker.set_alive(true);
-
-    assert!(
-        mock_checker.is_process_alive(12345),
-        "Mock should report PID 12345 as alive"
-    );
-    assert!(
-        mock_checker.is_process_group_alive(12345),
-        "Mock should report process group 12345 as alive"
-    );
-}
-
 /// Test unload_model graceful shutdown flow.
 /// Verifies that unload_model properly transitions state and cleans up.
 #[tokio::test]
@@ -1083,368 +846,89 @@ async fn test_unload_model_non_ready_state() {
     assert!(result.is_err(), "Unload should fail for Starting state");
 }
 
-// ─── Compaction & TTS lifecycle trait tests ────────────────────────────
+// ─── Slim idle-timeout tests (plan-191 Task 10) ────────────────────────
 
-/// Test that compaction health timeout marks the backend as Failed.
-///
-/// The compaction server extracts into a tempdir, a port is allocated,
-/// and a Starting reservation is created. When the health checker always
-/// returns false, the startup timeout fires after `startup_timeout_secs`
-/// and the backend transitions to Failed (not left stuck in Starting).
+/// An idle Ready model is unloaded (mirror removed) while a fresh one is
+/// left alone; non-inference (TTS) backends are never idle-unloaded.
 #[tokio::test]
-async fn test_load_compaction_health_timeout_marks_failed() {
+async fn test_idle_timeout_unloads_idle_ready_models() {
     let mut config = Config::default();
-    config.compaction.enabled = true;
-    config.proxy.startup_timeout_secs = 1;
+    config.proxy.auto_unload = true;
+    config.proxy.idle_timeout_secs = 1; // short: 300s-old models are idle
 
-    let tempdir = tempfile::tempdir().unwrap();
-    let state = ProxyState::new(
-        config,
-        Some(tempdir.path().to_path_buf()),
-        crate::db::pool::test_dummy_pool(),
-    );
+    let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
-    let mock_checker = MockHealthChecker::new();
-    mock_checker.set_response(false); // Always unhealthy
-
-    let mock_port = MockPortAllocator::new();
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-    mock_port.set_port(port);
-
-    let mock_spawner = MockProcessSpawner::new();
-
-    let result = state
-        .load_compaction_backend(&mock_checker, &mock_spawner, &mock_port)
-        .await;
-
-    // Should fail due to timeout
-    assert!(
-        result.is_err(),
-        "load_compaction_backend should fail on timeout"
-    );
-    let err_msg = result.unwrap_err().to_string();
-    assert!(
-        err_msg.contains("timeout"),
-        "Error should mention timeout, got: {}",
-        err_msg
-    );
-
-    // Verify the compaction entry is in Failed state (not stuck in Starting)
-    let models = state.registry.models.read().await;
-    assert!(
-        models.contains_key("compaction"),
-        "compaction entry should exist after timeout"
-    );
-    if let Some(BackendState::Failed { error, .. }) = models.get("compaction") {
-        assert!(
-            error.contains("timeout"),
-            "Failed error should mention timeout, got: {}",
-            error
-        );
-    } else {
-        panic!(
-            "Expected BackendState::Failed for compaction, got: {:?}",
-            models.get("compaction")
-        );
+    // Idle Ready model (last_accessed 600s ago) + fresh Ready model +
+    // idle TTS backend (excluded from idle unload).
+    let mut idle_ready = make_ready_state("idle-model", "llama-cpp");
+    if let BackendState::Ready { last_accessed, .. } = &mut idle_ready {
+        *last_accessed = Instant::now() - Duration::from_secs(600);
+    }
+    let fresh_ready = make_ready_state("fresh-model", "llama-cpp");
+    let mut tts = make_ready_state("tts-model", "tts_kokoro");
+    if let BackendState::Ready { last_accessed, .. } = &mut tts {
+        *last_accessed = Instant::now() - Duration::from_secs(600);
     }
 
-    // Verify spawner was called exactly once
-    assert_eq!(
-        mock_spawner
-            .spawn_count
-            .load(std::sync::atomic::Ordering::SeqCst),
-        1,
-        "Should have spawned exactly once"
+    state
+        .registry
+        .models
+        .write()
+        .await
+        .insert("idle-server".to_string(), idle_ready);
+    state
+        .registry
+        .models
+        .write()
+        .await
+        .insert("fresh-server".to_string(), fresh_ready);
+    state
+        .registry
+        .models
+        .write()
+        .await
+        .insert("tts-server".to_string(), tts);
+
+    let cleaned = state.check_idle_timeouts().await;
+
+    assert!(
+        cleaned.contains(&"idle-server".to_string()),
+        "idle model must be unloaded"
     );
+    let models = state.registry.models.read().await;
+    assert!(!models.contains_key("idle-server"));
+    assert!(models.contains_key("fresh-server"));
+    assert!(models.contains_key("tts-server"));
 }
 
-/// Test that compaction spawn failure cleans up the Starting reservation.
-///
-/// When the spawner fails (via set_fail_spawn), the entry should be
-/// completely removed from the models map — no stuck Starting entry.
+/// auto_unload disabled → nothing is idle-unloaded.
 #[tokio::test]
-async fn test_load_compaction_spawn_failure_cleans_up() {
+async fn test_idle_timeout_respects_auto_unload_flag() {
     let mut config = Config::default();
-    config.compaction.enabled = true;
-    config.proxy.startup_timeout_secs = 10; // Long enough that timeout won't fire
+    config.proxy.auto_unload = false;
+    config.proxy.idle_timeout_secs = 1;
 
-    let tempdir = tempfile::tempdir().unwrap();
-    let state = ProxyState::new(
-        config,
-        Some(tempdir.path().to_path_buf()),
-        crate::db::pool::test_dummy_pool(),
-    );
-
-    let mock_checker = MockHealthChecker::new();
-    let mock_port = MockPortAllocator::new();
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-    mock_port.set_port(port);
-
-    let mock_spawner = MockProcessSpawner::new();
-    mock_spawner.set_fail_spawn(true); // Force spawn to fail
-
-    let result = state
-        .load_compaction_backend(&mock_checker, &mock_spawner, &mock_port)
-        .await;
-
-    assert!(result.is_err(), "Should fail when spawn fails");
-
-    // The compaction entry should be removed entirely (not stuck in Starting)
-    let models = state.registry.models.read().await;
-    assert!(
-        !models.contains_key("compaction"),
-        "Spawn failure should remove the compaction entry from models map"
-    );
-
-    // Verify spawner was called exactly once
-    assert_eq!(
-        mock_spawner
-            .spawn_count
-            .load(std::sync::atomic::Ordering::SeqCst),
-        1,
-        "Should have spawned exactly once"
-    );
-}
-
-/// Test that TTS health timeout cleans up the Starting reservation.
-///
-/// Seeds a TTS backend installation, reserves it in Starting state,
-/// then waits for timeout. The backend should be removed from both
-/// models map and inference_stats.
-#[tokio::test]
-async fn test_load_tts_health_timeout_cleans_up() {
-    let mut config = Config::default();
-    config.proxy.startup_timeout_secs = 1;
-
-    let tempdir = tempfile::tempdir().unwrap();
-    let guard = crate::testing::postgres::with_schema().await;
-    let state = ProxyState::new(
-        config,
-        Some(tempdir.path().to_path_buf()),
-        std::sync::Arc::new(guard.pool.clone()),
-    );
-
-    // Seed a TTS backend installation in the backend registry
-    let base_dir = tempdir.path().join("backends");
-    std::fs::create_dir_all(&base_dir).unwrap();
-    let backend_dir = base_dir.join("tts_kokoro");
-    std::fs::create_dir_all(&backend_dir).unwrap();
-
-    let mgr =
-        crate::installations::InstallationManager::new(std::sync::Arc::new(guard.pool.clone()));
-    mgr.add_installation(&crate::installations::InstallationInfo {
-        name: "tts_kokoro".into(),
-        backend_type: crate::installations::InstallationType::TtsKokoro,
-        version: "1.0.0".into(),
-        path: backend_dir.clone(),
-        installed_at: 0,
-        gpu_variant: "cpu".into(),
-        source: None,
-        docker_config: None,
-    })
-    .await
-    .unwrap();
-
-    let mock_checker = MockHealthChecker::new();
-    mock_checker.set_response(false); // Always unhealthy
-
-    let mock_port = MockPortAllocator::new();
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-    mock_port.set_port(port);
-
-    let mock_spawner = MockProcessSpawner::new();
-
-    let result = state
-        .load_tts_backend("tts_kokoro", &mock_checker, &mock_spawner, &mock_port)
-        .await;
-
-    assert!(result.is_err(), "Should fail on health timeout");
-
-    // Backend should be removed from models map
-    let models = state.registry.models.read().await;
-    assert!(
-        !models.contains_key("tts_kokoro"),
-        "Timeout should remove tts_kokoro from models map"
-    );
-
-    // Backend should also be removed from inference_stats
-    assert!(
-        state.metrics.inference_stats.borrow().is_empty()
-            || !state
-                .metrics
-                .inference_stats
-                .borrow()
-                .contains_key("tts_kokoro"),
-        "Timeout should remove tts_kokoro from inference_stats"
-    );
-}
-
-/// Test that TTS spawn failure cleans up the Starting reservation.
-///
-/// When the spawner fails, the entry should be completely removed from
-/// the models map — no stuck Starting entry.
-#[tokio::test]
-async fn test_load_tts_spawn_failure_cleans_up() {
-    let mut config = Config::default();
-    config.proxy.startup_timeout_secs = 10; // Long enough that timeout won't fire
-
-    let tempdir = tempfile::tempdir().unwrap();
-    let guard = crate::testing::postgres::with_schema().await;
-    let state = ProxyState::new(
-        config,
-        Some(tempdir.path().to_path_buf()),
-        std::sync::Arc::new(guard.pool.clone()),
-    );
-
-    // Seed a TTS backend installation
-    let base_dir = tempdir.path().join("backends");
-    std::fs::create_dir_all(&base_dir).unwrap();
-    let backend_dir = base_dir.join("tts_kokoro");
-    std::fs::create_dir_all(&backend_dir).unwrap();
-
-    let mgr =
-        crate::installations::InstallationManager::new(std::sync::Arc::new(guard.pool.clone()));
-    mgr.add_installation(&crate::installations::InstallationInfo {
-        name: "tts_kokoro".into(),
-        backend_type: crate::installations::InstallationType::TtsKokoro,
-        version: "1.0.0".into(),
-        path: backend_dir.clone(),
-        installed_at: 0,
-        gpu_variant: "cpu".into(),
-        source: None,
-        docker_config: None,
-    })
-    .await
-    .unwrap();
-
-    let mock_checker = MockHealthChecker::new();
-    let mock_port = MockPortAllocator::new();
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-    mock_port.set_port(port);
-
-    let mock_spawner = MockProcessSpawner::new();
-    mock_spawner.set_fail_spawn(true); // Force spawn to fail
-
-    let result = state
-        .load_tts_backend("tts_kokoro", &mock_checker, &mock_spawner, &mock_port)
-        .await;
-
-    assert!(result.is_err(), "Should fail when spawn fails");
-
-    // The tts_kokoro entry should be removed entirely
-    let models = state.registry.models.read().await;
-    assert!(
-        !models.contains_key("tts_kokoro"),
-        "Spawn failure should remove the tts_kokoro entry from models map"
-    );
-
-    // Verify spawner was called exactly once
-    assert_eq!(
-        mock_spawner
-            .spawn_count
-            .load(std::sync::atomic::Ordering::SeqCst),
-        1,
-        "Should have spawned exactly once"
-    );
-}
-
-/// Test that TTS health check success marks the backend as Ready.
-///
-/// Seeds a TTS backend, configures the mock to report healthy,
-/// and verifies the final state is Ready with correct URL and PID.
-#[tokio::test]
-async fn test_load_tts_success_marks_ready() {
-    let mut config = Config::default();
-    config.proxy.startup_timeout_secs = 10;
-
-    let tempdir = tempfile::tempdir().unwrap();
-    let guard = crate::testing::postgres::with_schema().await;
-    let state = ProxyState::new(
-        config,
-        Some(tempdir.path().to_path_buf()),
-        std::sync::Arc::new(guard.pool.clone()),
-    );
-
-    // Seed a TTS backend installation
-    let base_dir = tempdir.path().join("backends");
-    std::fs::create_dir_all(&base_dir).unwrap();
-    let backend_dir = base_dir.join("tts_kokoro");
-    std::fs::create_dir_all(&backend_dir).unwrap();
-
-    let mgr =
-        crate::installations::InstallationManager::new(std::sync::Arc::new(guard.pool.clone()));
-    mgr.add_installation(&crate::installations::InstallationInfo {
-        name: "tts_kokoro".into(),
-        backend_type: crate::installations::InstallationType::TtsKokoro,
-        version: "1.0.0".into(),
-        path: backend_dir.clone(),
-        installed_at: 0,
-        gpu_variant: "cpu".into(),
-        source: None,
-        docker_config: None,
-    })
-    .await
-    .unwrap();
-
-    let mock_checker = MockHealthChecker::new();
-    mock_checker.set_response(true); // Healthy immediately
-
-    let mock_port = MockPortAllocator::new();
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-    mock_port.set_port(port);
-
-    let mock_spawner = MockProcessSpawner::new();
-    mock_spawner.set_return_pid(12345);
-
-    let result = state
-        .load_tts_backend("tts_kokoro", &mock_checker, &mock_spawner, &mock_port)
-        .await;
-
-    assert!(result.is_ok(), "Should succeed when health check passes");
-    assert_eq!(result.unwrap(), "tts_kokoro");
-
-    // Verify the backend is in Ready state with correct details
-    let models = state.registry.models.read().await;
-    let ready_state = models.get("tts_kokoro").expect("tts_kokoro should exist");
-    if let BackendState::Ready {
-        backend_url,
-        backend_pid,
-        ..
-    } = ready_state
-    {
-        assert_eq!(
-            backend_url,
-            &format!("http://127.0.0.1:{}", port),
-            "Backend URL should match allocated port"
-        );
-        assert_eq!(
-            *backend_pid, 12345,
-            "Backend PID should match mock return value"
-        );
-    } else {
-        panic!(
-            "Expected BackendState::Ready for tts_kokoro, got: {:?}",
-            ready_state
-        );
+    let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
+    let mut idle_ready = make_ready_state("idle-model", "llama-cpp");
+    if let BackendState::Ready { last_accessed, .. } = &mut idle_ready {
+        *last_accessed = Instant::now() - Duration::from_secs(600);
     }
+    state
+        .registry
+        .models
+        .write()
+        .await
+        .insert("idle-server".to_string(), idle_ready);
+
+    let cleaned = state.check_idle_timeouts().await;
+    assert!(
+        !cleaned.contains(&"idle-server".to_string()),
+        "auto_unload=false must not unload"
+    );
+    assert!(state
+        .registry
+        .models
+        .read()
+        .await
+        .contains_key("idle-server"));
 }

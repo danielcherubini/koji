@@ -9,11 +9,17 @@ use std::sync::Arc;
 use super::types::UpdateQuery;
 use crate::api::error::{error_body, error_response};
 use crate::api::helpers::open_backend_manager;
-use crate::api::installations::types::{InstallResponse, JobAdapter};
+use crate::api::installations::tamad_job;
+use crate::api::installations::types::InstallResponse;
 use crate::web_types::WebState;
 use tama_core::proxy::ProxyState;
 
 /// POST /tama/v1/backends/:name/update
+///
+/// Updates an installed backend to the latest released version. The update
+/// is executed on the backend's tamad (plan-191 Task 7 / ADR-0010); the
+/// proxy relays job events into the JobManager (unchanged UX) and applies
+/// the DB version change when the tamad job succeeds.
 pub async fn update_installation(
     Extension(web_state): Extension<WebState>,
     State(state): State<Arc<ProxyState>>,
@@ -152,131 +158,52 @@ pub async fn update_installation(
         }
     };
 
-    // Use versioned path structure for the update target
-    let target_dir = match tama_core::installations::backends_dir() {
-        Ok(d) => tama_core::installations::get_backend_install_path(
-            &d,
-            &backend_type,
-            &backend_info.gpu_variant,
-            &latest_version,
-        ),
-        Err(e) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to get backends dir: {}", e),
-                None,
-            )
+    // Resolve the update source: preserve the installation's recorded
+    // source type (prebuilt ↔ source code) for the new version.
+    let git_url = match backend_info.source.clone() {
+        Some(tama_core::installations::InstallationSource::SourceCode { git_url, .. }) => git_url,
+        Some(_) | None => {
+            // Prebuilt (or none recorded): download the latest prebuilt.
+            String::new()
+        }
+    };
+    let new_version_str = latest_version.clone();
+    let new_source = if git_url.is_empty() {
+        tama_core::installations::InstallationSource::Prebuilt {
+            version: new_version_str.clone(),
+        }
+    } else {
+        tama_core::installations::InstallationSource::SourceCode {
+            version: new_version_str.clone(),
+            git_url: git_url.clone(),
+            commit: None,
         }
     };
 
-    // Build update options — always use latest_version, not the old version from the registry.
-    let source = match backend_info.source.clone() {
-        Some(src) => match src {
-            tama_core::installations::InstallationSource::Prebuilt { .. } => {
-                tama_core::installations::InstallationSource::Prebuilt {
-                    version: latest_version.clone(),
-                }
-            }
-            tama_core::installations::InstallationSource::SourceCode { git_url, .. } => {
-                tama_core::installations::InstallationSource::SourceCode {
-                    version: latest_version.clone(),
-                    git_url,
-                    commit: None,
-                }
-            }
-        },
-        None => {
-            // Fallback: use source code if no source recorded
-            tama_core::installations::InstallationSource::SourceCode {
-                version: latest_version.clone(),
-                git_url: match &backend_type {
-                    tama_core::installations::InstallationType::LlamaCpp => {
-                        "https://github.com/ggml-org/llama.cpp.git"
-                    }
-                    tama_core::installations::InstallationType::IkLlama => {
-                        "https://github.com/ikawrakow/ik_llama.cpp.git"
-                    }
-                    other => {
-                        tracing::warn!(
-                            "No source URL configured for backend type {:?}, using llama.cpp fallback",
-                            other
-                        );
-                        "https://github.com/ggml-org/llama.cpp.git"
-                    }
-                }
-                .to_string(),
-                commit: None,
-            }
-        }
-    };
-
-    let options = tama_core::installations::InstallOptions {
+    // Spawn the update as a tamad-hosted job bridged to the JobManager:
+    // dispatch UpdateProvider to the backend's tamad, relay job events
+    // into the job log, and apply the DB version change when it succeeds.
+    let dispatch = tamad_job::UpdateDispatch {
         backend_type: backend_type.clone(),
-        source,
-        target_dir,
+        name: name.clone(),
         gpu_variant: backend_info.gpu_variant.clone(),
-        allow_overwrite: true,
+        version: new_version_str,
+        git_url,
+        source: new_source,
     };
-
-    // Clone variables needed for the post-update check
-    let checker = web_state.update_checker.clone();
-    let backend_type_clone = backend_type.clone();
-    let pool = state.db_pool();
-
-    // Spawn the update task
     let jobs_clone = jobs.clone();
     let job_clone = job.clone();
-    let name_clone = name.clone();
-    let latest_version_clone = latest_version.clone();
-    let gpu_variant_clone = backend_info.gpu_variant.clone();
-    tokio::spawn(async move {
-        let adapter = Arc::new(JobAdapter {
-            jobs: jobs_clone.clone(),
-            job: job_clone.clone(),
-        });
-
-        let client = reqwest::Client::builder()
-            .user_agent("tama-backend-manager")
-            .timeout(std::time::Duration::from_secs(300))
-            .connect_timeout(std::time::Duration::from_secs(30))
-            .build()
-            .expect("failed to build HTTP client");
-
-        let result = match tama_core::installations::update_installation_with_progress(
-            mgr,
-            &client,
-            &name_clone,
-            &gpu_variant_clone,
-            options,
-            latest_version_clone,
-            Some(adapter),
-        )
-        .await
-        {
-            Ok(_) => Ok(()),
-            Err(e) => Err(e.to_string()),
-        };
-
-        match result {
-            Ok(_) => {
-                let _ = jobs_clone
-                    .finish(&job_clone, crate::web_types::JobStatus::Succeeded, None)
-                    .await;
-                // Refresh the update check record so the Updates Center reflects the new version
-                let _ = checker
-                    .check_backend(
-                        pool.as_ref(),
-                        &name_clone,
-                        &backend_type_clone,
-                        &gpu_variant_clone,
-                    )
-                    .await;
-            }
-            Err(e) => {
-                let _ = jobs_clone
-                    .finish(&job_clone, crate::web_types::JobStatus::Failed, Some(e))
-                    .await;
-            }
+    tokio::spawn({
+        let state = state.clone();
+        let checker = web_state.update_checker.clone();
+        async move {
+            jobs_clone
+                .append_log(
+                    &job_clone,
+                    "Dispatching update to backend host…".to_string(),
+                )
+                .await;
+            tamad_job::execute_update(&state, &jobs_clone, &job_clone, &dispatch, checker).await;
         }
     });
 

@@ -31,7 +31,11 @@ Get a single tamad connection by its UUID.
 
 ## POST /tama/v1/tamads
 
-Register a new tamad connection. Auto-generates a UUID for the tamad id.
+Register a tamad connection. This is an **idempotent upsert keyed by name**:
+the first call with a new name creates the row (auto-generated UUID, `201`);
+calling again with the same name updates its `url`/`protocol`/`token` and
+returns the stored id (`200`). Tamads use this endpoint for self-registration
+at startup and periodically, so repeated calls are expected.
 
 **Request body:**
 
@@ -46,16 +50,17 @@ Register a new tamad connection. Auto-generates a UUID for the tamad id.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `name` | string | **Yes** | Human-readable name (unique) |
+| `name` | string | **Yes** | Human-readable name (unique, upsert key) |
 | `url` | string | **Yes** | Server address with scheme (`grpc://` or `http://`) |
 | `protocol` | string | **Yes** | `"grpc"` or `"http"` |
-| `token` | string | No | Authentication token for the tamad |
+| `token` | string | No | Bearer token the proxy must send to this tamad |
 
-**Response (201 Created):** The created tamad connection object with auto-generated `id`.
+**Response:**
+- `201 Created` — Name did not exist; the connection object with the auto-generated `id`.
+- `200 OK` — Name already existed; the same connection object (original `id`, updated `url`/`protocol`/`token`).
 
 **Errors:**
 - `400 Bad Request` — Empty name, empty url, or invalid protocol
-- `409 Conflict` — Tamad name already exists
 
 ## PATCH /tama/v1/tamads/:id
 
@@ -92,17 +97,23 @@ Unregister a tamad connection.
 
 ## POST /tama/v1/tamads/:id/health
 
-Trigger a health check for a tamad connection.
-
-**Note:** This is currently a stub endpoint. It verifies the tamad exists and returns `{"status": "unknown"}`. Real health check logic will be implemented when the tamad client is wired up.
+Trigger a real health check: the proxy calls the tamad's `HealthCheck`
+RPC (gRPC) or `/health` endpoint (http) using the stored connection
+token, and reports the result.
 
 **Response (200 OK):**
 
 ```json
-{
-  "status": "unknown",
-  "message": "Health check not yet implemented — tamad client not wired"
-}
+{ "status": "online" }
 ```
+
+`"offline"` (with an `error` message when the tamad could not be reached):
+
+```json
+{ "status": "offline", "error": "connection refused" }
+```
+
+Unreachability is reported as `offline`, not a server error — it is the
+normal state of a tamad whose box is powered off.
 
 **Errors:** `404 Not Found` — Tamad does not exist.

@@ -56,6 +56,41 @@ pub async fn insert_tamad(
     Ok(())
 }
 
+/// Idempotently register a tamad by name.
+///
+/// `id` is a candidate UUID generated in Rust (the `id` column is `TEXT`;
+/// on a name conflict the *stored* id is returned, not the candidate).
+/// Returns `(stored_id, created)` where `created` is `true` only when the
+/// row was freshly inserted.
+pub async fn upsert_tamad_by_name(
+    pool: &PgPool,
+    id: &str,
+    name: &str,
+    url: &str,
+    protocol: &str,
+    token: Option<&str>,
+) -> Result<(String, bool)> {
+    let row = sqlx::query(
+        "INSERT INTO tamad_registry (id, name, url, protocol, token)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (name) DO UPDATE
+             SET url = EXCLUDED.url,
+                 protocol = EXCLUDED.protocol,
+                 token = EXCLUDED.token
+         RETURNING id, (xmax = 0) AS created",
+    )
+    .bind(id)
+    .bind(name)
+    .bind(url)
+    .bind(protocol)
+    .bind(token)
+    .fetch_one(pool)
+    .await?;
+    let stored_id: String = row.get("id");
+    let created: bool = row.get("created");
+    Ok((stored_id, created))
+}
+
 /// Get a tamad connection by id.
 pub async fn get_tamad(pool: &PgPool, id: &str) -> Result<Option<TamadConnection>> {
     let row = sqlx::query(GET_BY_ID_SQL)
@@ -417,6 +452,52 @@ mod tests {
 
         let tamad = get_tamad(pool, "uuid-001").await.unwrap().unwrap();
         assert!(tamad.status.is_offline());
+
+        guard.finish().await;
+    }
+
+    // ── upsert_tamad_by_name ──
+
+    /// First upsert creates the row (created=true, candidate id stored);
+    /// second upsert with the same name updates url/token and returns
+    /// the *stored* id with created=false.
+    #[tokio::test]
+    async fn test_upsert_tamad_by_name() {
+        let guard = with_schema().await;
+        let pool = &guard.pool;
+
+        let (id, created) = upsert_tamad_by_name(
+            pool,
+            "candidate-1",
+            "gpu-box",
+            "grpc://localhost:50051",
+            "grpc",
+            Some("tok1"),
+        )
+        .await
+        .unwrap();
+        assert!(created, "first upsert should create");
+        assert_eq!(id, "candidate-1");
+
+        let (id2, created2) = upsert_tamad_by_name(
+            pool,
+            "candidate-2",
+            "gpu-box",
+            "grpc://localhost:50052",
+            "grpc",
+            Some("tok2"),
+        )
+        .await
+        .unwrap();
+        assert!(!created2, "second upsert should update, not create");
+        assert_eq!(
+            id2, "candidate-1",
+            "stored id must be returned, not the candidate"
+        );
+
+        let tamad = get_tamad(pool, "candidate-1").await.unwrap().unwrap();
+        assert_eq!(tamad.url, "grpc://localhost:50052");
+        assert_eq!(tamad.token, Some("tok2".to_string()));
 
         guard.finish().await;
     }

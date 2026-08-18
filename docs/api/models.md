@@ -316,3 +316,67 @@ Recompute SHA-256 for every tracked file and compare against stored LFS hashes. 
   "files": [ /* same file format as refresh */ ]
 }
 ```
+
+## Model Lifecycle (Load / Unload / Cancel)
+
+Local (self-hosted) model processes are owned by a **tamad** (ADR-0010): the
+proxy never spawns or kills a backend process itself. These endpoints resolve
+the model's owning provider, build the fully resolved launch spec from the
+central database (installation args/env, binary path, model file path, GPU
+isolation env, health URL), and dispatch `LoadModel` / `UnloadModel` RPCs to
+the provider's tamad.
+
+### POST /tama/v1/models/:id/load
+
+Load a model on its provider's tamad. The model is marked **desired** in the
+proxy database; the reconciler (see below) keeps it alive.
+
+- If the model's provider has no tamad assigned, the request fails with a
+  clear error (`Provider "<name>" has no tamad assigned`).
+- The load fails fast when the target tamad reports all of its GPUs ≥ 95%
+  VRAM used and the model needs a GPU.
+- LRU eviction (`max_loaded_models`) operates on the proxy's mirror of the
+  tamads' process tables before the load.
+
+**Response (200 OK):** `{ "id": "<model>", "loaded": true }`
+
+**Errors:** `500` with `LoadModelError` (provider/tamad resolution, RPC, or
+health-check failure on the tamad).
+
+### POST /tama/v1/models/:id/unload
+
+Clear the model's **desired** state and issue `UnloadModel` to the
+provider's tamad. Unloading a model that is not loaded on the tamad is a
+no-op (idempotent).
+
+**Response (200 OK):** `{ "id": "<model>", "loaded": false }`
+
+### POST /tama/v1/models/:id/cancel
+
+Cancel a load: clears the **desired** state and issues a best-effort
+`UnloadModel` to the tamad. Cancelling a load that is still in flight (the
+tamad is still health-polling) is best-effort — the reconciler unloads the
+model on its next tick (~1s) once it appears in the tamad's process
+snapshot.
+
+**Response (200 OK):** `{ "id": "<model>", "loaded": false }`
+
+**Errors:** `404` with `ModelNotLoadingError` when the model is neither
+desired nor loaded anywhere.
+
+## Desired vs Actual Model State
+
+- **Desired state** is the proxy's intent, stored in the central database
+  (`desired_models`): which models should be loaded on which tamad. It
+  survives proxy *and* tamad restarts.
+- **Actual state** is each tamad's in-memory process table, streamed to the
+  proxy in the per-second stats snapshot (`SystemStats.processes`).
+- A proxy-side **reconciler loop** (1s tick) converges actual to desired:
+  - desired but missing or dead → re-issue `LoadModel` (bounded by
+    `max_restarts` within a 5-minute window per model),
+  - running but no longer desired → `UnloadModel`.
+- Consequences: a killed backend process is respawned within ~2s; after a
+  tamad restart its desired models auto-load; after a proxy restart the
+  reconciler's first tick converges from the persisted desired set.
+- The proxy keeps a short-lived local mirror of the tamads' process tables
+  so the forward path and `GET /tama/v1/models` report live endpoints.

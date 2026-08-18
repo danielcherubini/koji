@@ -12,6 +12,14 @@ use sqlx::types::time::{OffsetDateTime, UtcOffset};
 /// The committed v49 SQLite DDL fixture (ground truth for table/column sets).
 const V49_FIXTURE: &str = include_str!("fixtures/v49_schema.sql");
 
+/// Postgres-native tables added after the v49 SQLite baseline (plan-191
+/// Task 5). These have no SQLite counterpart, so the v49-fixture
+/// cross-checks account for them explicitly. They are applied by a
+/// separate numbered migration — the shipped
+/// `00000000000001_initial.sql` is never rewritten (sqlx
+/// checksum-validates it on already-migrated databases).
+const POST_V49_TABLES: &[&str] = &["desired_models"];
+
 /// Parse the table names declared in a chunk of SQL DDL.
 ///
 /// Handles both `CREATE TABLE foo` and `CREATE TABLE "foo"` forms.
@@ -60,7 +68,7 @@ async fn postgres_columns(guard: &common::SchemaGuard) -> Vec<(String, Vec<Strin
 }
 
 #[tokio::test]
-async fn test_run_migrations_ok_single_success_row() {
+async fn test_run_migrations_ok_re_run_is_noop() {
     let guard = with_schema().await;
 
     // Re-running against an already-migrated schema is a successful no-op.
@@ -76,8 +84,8 @@ async fn test_run_migrations_ok_single_success_row() {
     .await
     .expect("query _sqlx_migrations");
     assert_eq!(
-        row.0, 1,
-        "exactly one migration should be recorded as successful"
+        row.0, 3,
+        "one success row per migration file (initial + post-v49 desired_models + pull_backend)"
     );
 
     let _ = guard.finish().await;
@@ -88,6 +96,7 @@ async fn test_all_squashed_tables_exist() {
     let guard = with_schema().await;
 
     let mut expected: Vec<String> = table_names_in(V49_FIXTURE);
+    expected.extend(POST_V49_TABLES.iter().map(|t| t.to_string()));
     expected.sort();
 
     let rows: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
@@ -103,6 +112,27 @@ async fn test_all_squashed_tables_exist() {
     assert_eq!(
         rows, expected,
         "every table from the squashed schema must exist in the test schema"
+    );
+
+    let _ = guard.finish().await;
+}
+
+#[tokio::test]
+async fn test_desired_models_tamad_index_exists() {
+    let guard = with_schema().await;
+
+    let rows: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT indexname FROM pg_indexes \
+         WHERE schemaname = '{}' AND tablename = 'desired_models' ORDER BY indexname",
+        guard.schema
+    )))
+    .fetch_all(&guard.pool)
+    .await
+    .expect("query pg_indexes");
+
+    assert!(
+        rows.contains(&"idx_desired_models_tamad".to_string()),
+        "idx_desired_models_tamad must exist on desired_models(tamad_id); found: {rows:?}"
     );
 
     let _ = guard.finish().await;
@@ -281,10 +311,22 @@ async fn test_pg_schema_matches_v49_fixture() {
     drop(conn);
 
     // (table -> ordered columns) from the migrated Postgres schema.
-    let mut pg = postgres_columns(&guard).await;
+    // Drop the post-v49 Postgres-native tables (no SQLite counterpart) so
+    // the comparison is strictly against the v49 baseline; assert those
+    // tables exist separately.
+    let all_pg: Vec<(String, Vec<String>)> = postgres_columns(&guard).await;
+    let mut pg = all_pg.clone();
+    pg.retain(|(t, _)| !POST_V49_TABLES.contains(&t.as_str()));
     pg.sort_by(|a, b| a.0.cmp(&b.0));
     let mut pg_table_names: Vec<String> = pg.iter().map(|(t, _)| t.clone()).collect();
     pg_table_names.sort();
+
+    for t in POST_V49_TABLES {
+        assert!(
+            all_pg.iter().any(|(name, _)| name == t),
+            "post-v49 table '{t}' must exist in the migrated schema"
+        );
+    }
 
     assert_eq!(
         pg_table_names, sqlite_tables,

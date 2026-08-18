@@ -1,24 +1,26 @@
-pub mod amd;
-pub mod detect;
-pub mod discover;
-pub mod env;
-pub mod nvidia;
-pub mod system;
-#[cfg(test)]
-mod tests;
-pub mod types;
-pub mod vram;
+//! Shared GPU types + pure helpers (plan-191 Task 10).
+//!
+//! Host-side GPU sampling — `nvidia-smi`/`rocm-smi` subprocesses, sysinfo
+//! GPU enumeration, VRAM queries, `--list-devices` discovery — moved to the
+//! tamad crate (`tama::gpu` in `crates/tamad/src/gpu/`). ADR-0010: the proxy
+//! never samples local hardware, and the dependency graph now enforces it.
+//!
+//! What remains here is what both binaries legitimately share:
+//! - wire/data types (per-GPU stats, system metrics snapshots, model state);
+//! - `GpuVariant` and its (de)serialization (the `gpu_variant` folder name
+//!   stored in the central DB);
+//! - pure heuristics (context-size suggestions, rocminfo output parsing);
+//! - the toolchain probe used by the install-wizard capabilities endpoint
+//!   (cmake/git/compiler availability — never backend or GPU sampling).
 
-// Re-export all public items for backward compatibility
+pub mod detect;
+pub mod types;
+
 pub use detect::{
-    detect_amdgpu_targets, detect_build_prerequisites, detect_cuda_version,
-    parse_rocminfo_gfx_names, suggest_context_sizes, BuildPrerequisites, ContextSuggestion,
-    GpuVariant, DEFAULT_CUDA_VERSION,
+    detect_build_prerequisites, parse_rocminfo_gfx_names, suggest_context_sizes,
+    BuildPrerequisites, ContextSuggestion, GpuVariant, DEFAULT_CUDA_VERSION,
 };
-pub use discover::{discover_devices_via_binary, parse_llama_list_devices_output, GpuDeviceInfo};
-pub use system::{collect_system_metrics, collect_system_metrics_with};
 pub use types::{
     GpuDeviceStats, GpuVendor, MetricBucket, MetricCurrent, MetricSample, MetricsSnapshot,
-    ModelState, SystemMetrics,
+    ModelState, SystemMetrics, VramInfo,
 };
-pub use vram::{query_vram, query_vram_per_device, VramInfo};

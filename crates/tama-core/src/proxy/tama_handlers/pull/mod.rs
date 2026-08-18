@@ -6,6 +6,7 @@ use crate::proxy::ProxyState;
 
 pub mod handlers;
 pub mod start;
+pub(super) mod start_tamad;
 mod verify;
 
 #[cfg(test)]

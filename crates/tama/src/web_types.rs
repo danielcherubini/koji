@@ -73,7 +73,6 @@ pub struct Job {
     pub log_tx: broadcast::Sender<JobEvent>,
     /// Benchmark results JSON (set when benchmark completes)
     pub benchmark_results: RwLock<Option<String>>,
-    pub child_pids: RwLock<Vec<u32>>,
 }
 
 impl std::fmt::Debug for Job {
@@ -90,7 +89,6 @@ impl std::fmt::Debug for Job {
                 &self.log_dropped.load(std::sync::atomic::Ordering::Relaxed),
             )
             .field("benchmark_results", &self.benchmark_results.try_read().ok())
-            .field("child_pids", &self.child_pids.try_read().ok())
             .finish()
     }
 }
@@ -154,7 +152,6 @@ impl JobManager {
             log_tail: RwLock::new(VecDeque::new()),
             log_dropped: AtomicU64::new(0),
             log_tx: broadcast::channel(LOG_BROADCAST_CAP).0,
-            child_pids: RwLock::new(Vec::new()),
             benchmark_results: RwLock::new(None),
         });
 
@@ -184,19 +181,11 @@ impl JobManager {
     }
 
     /// Append a log line to the job.
+    ///
+    /// Lines are plain log content: the proxy tracks no local child
+    /// processes (post-ADR-0010 jobs execute on tamad hosts, and their
+    /// relayed log lines may carry PIDs belonging to the *tamad* host).
     pub async fn append_log(&self, job: &Job, line: String) {
-        if line.contains("pid=") {
-            if let Some(start) = line.find("pid=") {
-                let pid_str = &line[start + 4..];
-                let end = pid_str
-                    .find(|c: char| !c.is_ascii_digit())
-                    .unwrap_or(pid_str.len());
-                if let Ok(pid) = pid_str[..end].parse::<u32>() {
-                    self.register_child(job, pid).await;
-                }
-            }
-        }
-
         let mut head = job.log_head.write().await;
 
         if head.len() < LOG_HEAD_CAP {
@@ -219,57 +208,6 @@ impl JobManager {
         drop(tail);
 
         let _ = job.log_tx.send(JobEvent::Log(line));
-    }
-
-    /// Register a child process PID for this job.
-    pub async fn register_child(&self, job: &Job, pid: u32) {
-        let mut pids = job.child_pids.write().await;
-        if !pids.contains(&pid) {
-            pids.push(pid);
-        }
-    }
-
-    /// Kill all child processes for a job.
-    pub async fn kill_children(&self, job: &Job) {
-        let pids = job.child_pids.read().await;
-        if pids.is_empty() {
-            return;
-        }
-
-        {
-            let mut sigterm_futures = Vec::new();
-            for &pid in pids.iter() {
-                sigterm_futures.push(tokio::task::spawn_blocking(move || {
-                    let _ = std::process::Command::new("kill")
-                        .arg("-SIGTERM")
-                        .arg(pid.to_string())
-                        .status();
-                }));
-            }
-
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(2),
-                futures_util::future::join_all(sigterm_futures),
-            )
-            .await;
-
-            for &pid in pids.iter() {
-                let _ = tokio::task::spawn_blocking(move || {
-                    let _ = std::process::Command::new("kill")
-                        .arg("-SIGKILL")
-                        .arg(pid.to_string())
-                        .status();
-                    #[cfg(unix)]
-                    {
-                        let _ =
-                            nix::sys::wait::waitpid(nix::unistd::Pid::from_raw(pid as i32), None);
-                    }
-                })
-                .await;
-            }
-        }
-
-        tracing::info!("Killed {} child process(es) for job {}", pids.len(), job.id);
     }
 
     /// Mark the job terminal, broadcast the status event, release the active slot,
@@ -308,6 +246,40 @@ impl Default for JobManager {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression test for the ADR-0010 removal: proxy jobs track no local
+    /// child processes (installs/benchmarks/pulls execute on tamad hosts), so
+    /// log lines containing a bare `pid=` token — including lines relayed
+    /// from tamad streams — must be treated as plain logs. The old parser
+    /// registered those PIDs in `Job` and `kill_children` would have
+    /// `kill`ed matching-but-unrelated processes on the PROXY host.
+    #[tokio::test]
+    async fn test_append_log_treats_pid_token_as_plain_log() {
+        let mgr = JobManager::new();
+        let job = mgr
+            .submit(JobKind::Install, None)
+            .await
+            .expect("submit on empty manager should succeed");
+
+        let line = "llama-server -m model.gguf (pid=12345)".to_string();
+        mgr.append_log(&job, line.clone()).await;
+
+        // The line is stored verbatim with no special handling.
+        let head = job.log_head.read().await;
+        assert_eq!(head.len(), 1);
+        assert_eq!(head[0], line);
+        drop(head);
+
+        // Job state is untouched by the pid= token.
+        let state = job.state.read().await;
+        assert_eq!(state.status, JobStatus::Running);
+        assert!(state.error.is_none());
+    }
+}
+
 // ── Capabilities types ───────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -335,10 +307,16 @@ impl CapabilitiesCache {
         }
     }
 
+    /// Compute (or return cached) toolchain capabilities for the proxy host.
+    ///
+    /// `detect_prereqs` probes non-hardware toolchain facts (git/cmake/
+    /// compiler + os/arch) used by the install wizard as build-from-source
+    /// hints. Local GPU hardware probing (`detect_cuda_version`) was removed
+    /// in plan-191 Task 9 — installs execute on a tamad, and
+    /// `detected_cuda_version` is now always `None`.
     pub async fn get_or_compute(
         &self,
         detect_prereqs: fn() -> BuildPrerequisites,
-        detect_cuda: fn() -> Option<String>,
     ) -> anyhow::Result<CapabilitiesDto> {
         use std::time::Duration;
 
@@ -353,14 +331,15 @@ impl CapabilitiesCache {
 
         let result = tokio::task::spawn_blocking(move || {
             let caps = detect_prereqs();
-            let cuda = detect_cuda();
             CapabilitiesDto {
                 os: caps.os,
                 arch: caps.arch,
                 git_available: caps.git_available,
                 cmake_available: caps.cmake_available,
                 compiler_available: caps.compiler_available,
-                detected_cuda_version: cuda,
+                // No local GPU probe (plan-191 Task 9): backend installs run
+                // on a tamad host, so the proxy host's CUDA is irrelevant.
+                detected_cuda_version: None,
                 supported_cuda_versions: vec![
                     "11.1".to_string(),
                     "12.4".to_string(),

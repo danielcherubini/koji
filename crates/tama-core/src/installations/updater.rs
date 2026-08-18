@@ -1,12 +1,8 @@
 use anyhow::{anyhow, Context, Result};
 use reqwest::Client;
 use serde::Deserialize;
-use std::sync::Arc;
 
-use super::installer::{install_installation_with_progress, InstallOptions};
-use super::manager::InstallationManager;
 use super::types::{InstallationInfo, InstallationType};
-use super::ProgressSink;
 
 /// Check for GitHub token for authenticated API requests (5000 req/hour vs 60 unauth)
 fn github_token() -> Option<String> {
@@ -58,7 +54,11 @@ pub async fn check_latest_version(
             .build()
             .context("Failed to create HTTP client for version check")?,
     };
-    let base_url = base_url.unwrap_or("https://api.github.com");
+    let default_base = std::env::var("TAMA_E2E_GITHUB_BASE")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "https://api.github.com".to_string());
+    let base_url = base_url.unwrap_or(&default_base);
 
     let token = github_token();
 
@@ -137,79 +137,6 @@ pub async fn check_installation_updates(backend_info: &InstallationInfo) -> Resu
         latest_version: latest.clone(),
         update_available: latest != backend_info.version,
     })
-}
-
-/// Update a backend with progress tracking.
-pub async fn update_installation_with_progress(
-    manager: InstallationManager,
-    client: &reqwest::Client,
-    backend_name: &str,
-    gpu_variant: &str,
-    options: InstallOptions,
-    latest_version: String,
-    progress: Option<Arc<dyn ProgressSink>>,
-) -> Result<()> {
-    // Validate backend exists before installing to prevent orphaned files
-    manager
-        .get_active(backend_name, gpu_variant)
-        .await?
-        .ok_or_else(|| anyhow!("Backend '{}' not found", backend_name))?;
-
-    // Clone source before install_backend moves options
-    let source = options.source.clone();
-    // Clone backend_type before install_backend moves options
-    let backend_type = options.backend_type.clone();
-
-    // Install the new version with progress
-    let new_binary_path =
-        install_installation_with_progress(options, progress, Some(client)).await?;
-
-    // Resolve "latest" to actual tag before storing in registry
-    let resolved_version = if latest_version.to_lowercase() == "latest" {
-        // Fetch the actual latest tag
-        let actual_latest = check_latest_version(&backend_type, None, None).await?;
-        tracing::info!("Resolved 'latest' to actual tag: {}", actual_latest);
-        actual_latest
-    } else {
-        latest_version
-    };
-
-    manager
-        .update_version(
-            backend_name,
-            gpu_variant,
-            resolved_version,
-            new_binary_path,
-            Some(source),
-        )
-        .await?;
-
-    tracing::info!("Update complete!");
-    Ok(())
-}
-
-/// Update a backend (no progress tracking).
-///
-/// This is a thin wrapper around `update_installation_with_progress` that passes `None`
-/// for the progress sink, preserving the original CLI behavior.
-pub async fn update_installation(
-    manager: InstallationManager,
-    client: &reqwest::Client,
-    backend_name: &str,
-    gpu_variant: &str,
-    options: InstallOptions,
-    latest_version: String,
-) -> Result<()> {
-    update_installation_with_progress(
-        manager,
-        client,
-        backend_name,
-        gpu_variant,
-        options,
-        latest_version,
-        None,
-    )
-    .await
 }
 
 /// Check if a GitHub API response indicates rate limiting.
@@ -531,7 +458,28 @@ mod tests {
             .contains("Cannot check updates"));
     }
 
-    /// Test that `check_latest_version` returns an error for custom backends.
+    /// E2E seam: `TAMA_E2E_GITHUB_BASE` redirects the GitHub API host to a
+    /// local test server (used by the tamad installs E2E to mock releases).
+    #[tokio::test]
+    async fn test_check_latest_version_e2e_base_env() {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/ggml-org/llama.cpp/releases"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"tag_name": "b9902", "prerelease": false},
+                {"tag_name": "b9901", "prerelease": true},
+            ])))
+            .expect(1)
+            .mount(&mock)
+            .await;
+        std::env::set_var("TAMA_E2E_GITHUB_BASE", mock.uri());
+        let v = check_latest_version(&InstallationType::LlamaCpp, None, None)
+            .await
+            .unwrap();
+        std::env::remove_var("TAMA_E2E_GITHUB_BASE");
+        assert_eq!(v, "b9902");
+    }
+
     #[tokio::test]
     async fn test_check_latest_version_custom_backend() {
         let result = check_latest_version(&InstallationType::Custom, None, None).await;

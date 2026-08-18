@@ -1,6 +1,6 @@
 use super::*;
 use crate::components::gpu_device_card::{
-    device_display_label, find_device_index, format_vram_short, model_gpu_label,
+    device_display_label, find_device_index, model_gpu_label,
 };
 use crate::core_mirrors::{GpuVendor, ModelState};
 
@@ -524,15 +524,6 @@ fn test_model_gpu_label_resolves_to_position() {
     assert_eq!(model_gpu_label(&gpus, &model), Some("GPU 0".to_string()));
 }
 
-#[test]
-fn test_format_vram_short() {
-    let vram = VramInfo {
-        used_mib: 22937,
-        total_mib: 24576,
-    };
-    assert_eq!(format_vram_short(&vram), "22.4 / 24.0 GB");
-}
-
 // ── Sort/Group helper tests ────────────────────────────────────────────────
 
 fn make_sort_model(
@@ -768,4 +759,94 @@ fn test_sort_models_by_gpu_numeric_order() {
     assert_eq!(models[0].gpu_device, Some("CUDA0".to_string()));
     assert_eq!(models[1].gpu_device, Some("CUDA1".to_string()));
     assert_eq!(models[2].gpu_device, Some("CUDA10".to_string()));
+}
+
+/// `MetricsSnapshot` must deserialize a payload with no `hosts` field at all
+/// (old backend builds between deploys) by defaulting to an empty array —
+/// same back-compat contract as the `models`/`network` defaults.
+#[test]
+fn test_metrics_snapshot_deserializes_without_hosts_field() {
+    let json = r#"{ "buckets": [], "current": { "models_loaded": 0 } }"#;
+    let snap: MetricsSnapshot = serde_json::from_str(json).expect("snapshot deserializes");
+    assert!(
+        snap.hosts.is_empty(),
+        "`hosts` must default to an empty Vec"
+    );
+}
+
+/// A full per-tamad `HostStats` payload (the SSE `hosts[]` wire shape,
+/// plan-191 Task 9) deserializes, with `version` optional.
+#[test]
+fn test_host_stats_deserializes_sse_shape() {
+    let json = r#"{
+        "tamad_id": "uuid-1",
+        "name": "gpu-box",
+        "online": true,
+        "version": "2.1.0",
+        "cpu_percent": 12.5,
+        "memory": { "total_bytes": 32768, "used_bytes": 10240 },
+        "gpus": [
+            {
+                "index": 0,
+                "name": "gfx9",
+                "driver_version": "",
+                "vram_total_bytes": 17179869184,
+                "vram_used_bytes": 4294967296,
+                "utilization_percent": 55.0,
+                "temperature_c": 61.0,
+                "power_w": 120.0
+            }
+        ]
+    }"#;
+    let host: HostStats = serde_json::from_str(json).expect("HostStats deserializes");
+    assert_eq!(host.tamad_id, "uuid-1");
+    assert_eq!(host.name, "gpu-box");
+    assert!(host.online);
+    assert_eq!(host.version.as_deref(), Some("2.1.0"));
+    assert_eq!(host.memory.total_bytes, 32768);
+    assert_eq!(host.gpus.len(), 1);
+    assert_eq!(host.gpus[0].utilization_percent, 55.0);
+
+    // Offline host without a health check yet: version absent.
+    let json2 = r#"{ "tamad_id": "uuid-2", "name": "cpu-box", "online": false }"#;
+    let host2: HostStats = serde_json::from_str(json2).expect("section-2 deserializes");
+    assert!(!host2.online);
+    assert!(host2.version.is_none());
+    assert!(host2.gpus.is_empty());
+}
+
+/// `format_uptime` renders human durations for the proxy card.
+#[test]
+fn test_format_uptime() {
+    assert_eq!(format_uptime(30.0), "30s");
+    assert_eq!(format_uptime(59.0), "59s");
+    assert_eq!(format_uptime(60.0), "1m");
+    assert_eq!(format_uptime(7_530.0), "2h 5m");
+    assert_eq!(format_uptime(90_061.0), "1d 1h");
+    assert_eq!(format_uptime(-5.0), "0s");
+}
+
+/// `format_bytes_gib` renders compact GiB for host RAM/VRAM values.
+#[test]
+fn test_format_bytes_gib() {
+    assert_eq!(format_bytes_gib(0), "0 GiB");
+    assert_eq!(
+        format_bytes_gib(32 * 1024 * 1024 * 1024),
+        "32.0 GiB",
+        "32 GiB"
+    );
+    assert_eq!(
+        format_bytes_gib(32768),
+        "0.0 GiB",
+        "32 KiB rounds to 0.0 GiB"
+    );
+    assert_eq!(format_bytes_gib(512 * 1024 * 1024 * 1024), "512 GiB");
+}
+
+/// `format_bytes_gib_rounded` renders whole-GiB subtitles (min 1 GiB).
+#[test]
+fn test_format_bytes_gib_rounded() {
+    assert_eq!(format_bytes_gib_rounded(0), "0 GiB");
+    assert_eq!(format_bytes_gib_rounded(16 * 1024 * 1024 * 1024), "16 GiB");
+    assert_eq!(format_bytes_gib_rounded(1024), "1 GiB");
 }

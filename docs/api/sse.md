@@ -74,3 +74,65 @@ Stream real-time log lines for a specific backend. On connect, replays the log s
 | Event | Data |
 |-------|------|
 | `log` | `{ line: "..." }` |
+
+## GET /tama/v1/system/metrics/stream
+
+Stream proxy metrics snapshots (~2s cadence). Each event carries the legacy
+local snapshot (CPU/RAM/network gauges + `current`) plus an additive `hosts`
+array — one entry per registered tamad with its freshest stats snapshot:
+
+```json
+{
+  "buckets": [ /* ~31 pre-aggregated 30s windows for the bar charts */ ],
+  "current": {
+    "cpu_usage_pct": 3.1,
+    "ram_used_mib": 812,
+    "ram_total_mib": 16384,
+    "gpus": [],
+    "models": [ /* actual model state — see below */ ]
+  },
+  "hosts": [
+    {
+      "tamad_id": "uuid",
+      "name": "gpu-box",
+      "online": true,
+      "version": "1.4.2",
+      "cpu_percent": 12.5,
+      "memory": { "total_bytes": 17179869184, "used_bytes": 8589934592 },
+      "gpus": [
+        {
+          "index": 0,
+          "name": "NVIDIA RTX 4090",
+          "driver_version": "560.35",
+          "vram_total_bytes": 25769803776,
+          "vram_used_bytes": 4294967296,
+          "utilization_percent": 78.0,
+          "temperature_c": 63.0,
+          "power_w": 320.0
+        }
+      ]
+    }
+  ]
+}
+```
+
+Field notes:
+
+- `current.gpus` (legacy, proxy-local): **always empty** since the tamad
+  split (plan-191) — the proxy samples no local hardware; per-host GPU
+  data lives on `hosts[].gpus`.
+- `hosts[]` (additive): the dashboard's **Hosts** section renders one card
+  per entry — name, online badge, version, CPU%, RAM, and per-GPU
+  VRAM/utilization/temperature. Built from the pool's latest stats snapshot
+  (~1s fresh) for each registered tamad:
+  - `online` — the tamad's stats stream is currently connected
+  - `version` — the tamad's self-reported version from its last
+    `HealthCheck` (cached by the pool; `null` until the first check)
+  - `memory`, `gpus` — from the latest stats snapshot, zeroed/empty when
+    the host has never streamed
+  - zero-tamad deployments: `hosts: []`
+- `current.models` — the **actual** model state (one entry per
+  tamad-hosted backend process, with `model_name`, `provider_name`,
+  `gpu_device`, `state` in `starting | ready | failed | unloading`),
+  converged toward the **desired** state from the proxy database by the
+  reconciler loop (see `models.md`, "Desired vs Actual Model State").

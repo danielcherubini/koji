@@ -18,7 +18,7 @@ All endpoints are prefixed with `/tama/v1/`. The API uses JSON request/response 
 | [Updates](updates.md) | `updates.md` | Check and apply updates for backends and models |
 | [Backup & Restore](backup.md) | `backup.md` | Archive and restore configurations |
 | [Self-Update](self-update.md) | `self-update.md` | Update the TAMA binary itself |
-| [System](system.md) | `system.md` | System capabilities and compaction backend |
+| [System](system.md) | `system.md` | System capabilities, health, and GPU devices |
 | [Logs](logs.md) | `logs.md` | Retrieve TAMA and backend log output |
 
 ## Shared Resources

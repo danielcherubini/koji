@@ -5,6 +5,7 @@ pub mod jobs;
 pub mod list;
 pub mod manage;
 pub mod register;
+pub mod tamad_job;
 pub mod types;
 
 // Re-export all public types and functions for backward compatibility

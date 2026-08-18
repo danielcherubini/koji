@@ -292,6 +292,10 @@ pub struct GpuDeviceInfo {
     #[serde(default)]
     #[allow(dead_code)] // Deserialized from API but not displayed
     pub vram_free_mib: Option<u64>,
+    /// The tamad host that owns this GPU (plan-191 Task 9). `None` for
+    /// local devices (pre-split backends).
+    #[serde(default)]
+    pub tamad: Option<String>,
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

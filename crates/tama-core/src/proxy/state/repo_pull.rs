@@ -1,19 +1,22 @@
 //! In-memory job state for whole-repo `hf` CLI pulls (see ADR-0007).
 //!
-//! Whole-repo safetensors downloads are tracked as in-memory jobs (no DB rows,
-//! not in the Downloads Center). The child process is shared through
-//! `Arc<Mutex<Option<Child>>>` with BRIEF lock holds only: the wait-loop uses
-//! non-blocking `try_wait` and sleeps outside the lock, and cancellation takes
-//! a brief lock only for `kill()`. No code path holds the child lock or the
-//! job-map lock across a long `.await`.
+//! Whole-repo safetensors downloads are dispatched to the pull host (a
+//! tamad) via `PullModel`/`StreamJob` (ADR-0010: the proxy never downloads
+//! or spawns children itself). The jobs are tracked as in-memory state (no
+//! DB rows, not in the Downloads Center); the relay task mirrors the
+//! tamad's job events into [`RepoPullJob`] and finalizes the model row on
+//! success. Job-map lock holds are brief: the relay never holds the map
+//! lock across an `.await`.
 
-use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
-use crate::models::pull::HfModelMetadata;
+use crate::models::pull::hf_cli; // shared hf-CLI helpers (plan-191 Task 6)
+use crate::models::pull::{HfModelMetadata, TamadRepoPullResult};
+
+pub(crate) use hf_cli::{scan_dir_bytes, stderr_tail_str};
 
 /// Status of a whole-repo pull job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -55,150 +58,22 @@ pub(crate) struct RepoPullJob {
     /// the reader task. Raw bytes so the cap can drain at any byte offset
     /// (`Vec::drain` never panics, unlike `String::drain` mid-character);
     /// decoded lossy, once, at read time in `stderr_tail_str`.
+    /// Relayed host pulls reuse this sink to render the tamad's error text
+    /// through the existing error path.
     pub(crate) stderr_tail: Arc<Mutex<Vec<u8>>>,
-    /// Shared child handle (see the concurrency model above).
-    pub(crate) child: Arc<Mutex<Option<tokio::process::Child>>>,
-}
-
-/// Recursively sum the sizes of all regular files under `dir`.
-///
-/// Symlinks are skipped entirely — never counted, never descended into —
-/// which also makes the walk immune to symlink cycles (e.g. a directory
-/// symlink pointing at an ancestor). Returns 0 if the directory does not
-/// exist.
-pub(crate) fn scan_dir_bytes(dir: &Path) -> u64 {
-    let mut total = 0u64;
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(path) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&path) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            // Never follow symlinks (file_type does not): a symlinked dir to
-            // an ancestor would loop forever, and `hf download` writes only
-            // regular files.
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            if file_type.is_symlink() {
-                continue;
-            }
-            let path = entry.path();
-            let Ok(metadata) = path.metadata() else {
-                continue;
-            };
-            if metadata.is_dir() {
-                stack.push(path);
-            } else if metadata.is_file() {
-                total = total.saturating_add(metadata.len());
-            }
-        }
-    }
-    total
-}
-
-/// Check that the `hf` CLI is available on the host.
-///
-/// Returns an install hint when the binary is missing or errors.
-pub(crate) async fn check_hf_binary() -> Result<(), String> {
-    const INSTALL_HINT: &str = "hf CLI not found. Install with: pip install -U huggingface_hub";
-    match tokio::process::Command::new("hf")
-        .arg("--version")
-        .output()
-        .await
-    {
-        Ok(output) if output.status.success() => Ok(()),
-        _ => Err(INSTALL_HINT.to_string()),
-    }
-}
-
-/// Spawn the `hf` CLI to download a whole repo into `dest`.
-///
-/// `binary` is injected (dependency injection) so unit tests can pass a stub
-/// executable instead of requiring a real `hf` install. When `hf_token` is
-/// `Some`, it is passed to the child via the `HF_TOKEN` environment variable.
-pub(crate) async fn spawn_hf_download(
-    binary: &str,
-    repo_id: &str,
-    dest: &Path,
-    hf_token: Option<&str>,
-) -> Result<tokio::process::Child, String> {
-    let mut cmd = tokio::process::Command::new(binary);
-    cmd.args([
-        "download",
-        repo_id,
-        "--local-dir",
-        dest.to_string_lossy().as_ref(),
-    ]);
-    if let Some(token) = hf_token {
-        cmd.env("HF_TOKEN", token);
-    }
-    cmd.stdout(Stdio::null()).stderr(Stdio::piped());
-    cmd.spawn()
-        .map_err(|e| format!("failed to spawn hf CLI: {e}"))
-}
-
-/// Spawn a task that reads the child's stderr in bounded 4 KiB chunks and
-/// keeps only the last 4096 raw bytes in `sink`. The task self-terminates
-/// when stderr hits EOF.
-///
-/// The sink holds RAW BYTES: the cap drains from the front of a `Vec<u8>` at
-/// arbitrary byte offsets (always safe — `Vec::drain` cannot panic on a
-/// mid-character offset the way `String::drain` can), and decoding happens
-/// exactly once at read time (`stderr_tail_str`), so a multi-byte char
-/// straddling a chunk boundary stays whole instead of becoming one U+FFFD
-/// per chunk. A char straddling the CAP boundary loses at most its leading
-/// byte and decodes to a single U+FFFD.
-///
-/// Chunks (not lines) are the unit of accumulation: the tail is capped after
-/// every chunk, so a single huge line — or `\r`-only progress output without
-/// newlines — can never grow an unbounded per-line buffer.
-pub(crate) fn start_stderr_reader(
-    stderr: tokio::process::ChildStderr,
-    sink: Arc<Mutex<Vec<u8>>>,
-) -> tokio::task::JoinHandle<()> {
-    const TAIL_CAP: usize = 4096;
-    tokio::spawn(async move {
-        use tokio::io::AsyncReadExt;
-        let mut reader = tokio::io::BufReader::new(stderr);
-        let mut buf = [0u8; TAIL_CAP];
-        loop {
-            match reader.read(&mut buf).await {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    let mut tail = sink.lock().await;
-                    tail.extend_from_slice(&buf[..n]);
-                    let overflow = tail.len().saturating_sub(TAIL_CAP);
-                    if overflow > 0 {
-                        tail.drain(0..overflow);
-                    }
-                }
-            }
-        }
-    })
-}
-
-/// Return the captured stderr tail (trailing newlines stripped) if non-empty.
-///
-/// The capped raw bytes are decoded exactly once, here, at read time — a
-/// multi-byte char split by the cap boundary yields at most one U+FFFD.
-pub(crate) async fn stderr_tail_str(sink: &Arc<Mutex<Vec<u8>>>) -> Option<String> {
-    let tail = sink.lock().await;
-    let decoded = String::from_utf8_lossy(&tail);
-    let trimmed = decoded.trim_end_matches(['\n', '\r']);
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
+    /// The tamad-side job id when the pull is hosted on a tamad via
+    /// `PullModel`/`StreamJob` (plan-191 follow-up B). Used by the cancel
+    /// endpoint to dispatch `CancelJob`.
+    pub(crate) tamad_job_id: Option<String>,
+    /// Bytes downloaded, mirrored from the tamad's job events (plan-191
+    /// follow-up B) — the relay is the single source for progress; the
+    /// directory-size scan is only a fallback.
+    pub(crate) bytes_done: u64,
 }
 
 /// Error for starting a whole-repo `hf` CLI pull.
 #[derive(Debug, thiserror::Error)]
 pub enum RepoPullError {
-    /// The `hf` CLI binary is missing. Payload is the install hint.
-    #[error("{0}")]
-    HfBinaryMissing(String),
     /// A whole-repo pull for this repo is already running.
     #[error("a whole-repo pull for this repo is already running")]
     DuplicatePull,
@@ -376,7 +251,12 @@ pub(crate) async fn finish_repo_pull(
     //    model row behind. `context_length` stays None in that case.
     let mut context_length: Option<u32> = None;
     if status == RepoPullStatus::Completed {
-        // Sync fs read — soft-fail.
+        // Best-effort local read: in a single-host layout the repo (incl.
+        // config.json) lands next door and the parse supplies the context
+        // length + transformers metadata. In a remote-host layout nothing
+        // exists at `dest` on this machine — the parse soft-fails and the
+        // completion proceeds from the HF metadata fetch alone. The relay
+        // never requires proxy-local files.
         let meta_tf = crate::models::transformers::parse_transformers_metadata(&dest).ok();
 
         // Network — no connection open yet.
@@ -413,14 +293,16 @@ pub(crate) async fn finish_repo_pull(
     state.pull.upsert_repo_pull(job).await;
 }
 
-/// Start a whole-repo `hf` CLI pull job.
+/// Start a whole-repo `hf` CLI pull job (ADR-0010: execution on the pull
+/// host).
 ///
-/// Validation order: repo id → duplicate → `hf` binary → repo existence →
-/// (soft) byte totals → destination → spawn → register → wait-loop.
+/// Validation order: repo id → duplicate → repo existence →
+/// (soft) byte totals → destination → dispatch `PullModel(repo_pull=true)`
+/// to `proxy.pull_backend`'s tamad → register → relay `StreamJob` events.
 ///
-/// `state` is an `Arc` so the spawned wait-loop can clone it and outlive the
-/// caller. `model_id` is the pre-created stub row (`None` = API-only caller,
-/// no DB update on completion).
+/// `state` is an `Arc` so the spawned relay task can clone it and outlive
+/// the caller. `model_id` is the pre-created stub row (`None` = API-only
+/// caller, no DB update on completion).
 pub(crate) async fn start_repo_pull(
     state: &Arc<crate::proxy::ProxyState>,
     repo_id: &str,
@@ -436,13 +318,9 @@ pub(crate) async fn start_repo_pull(
         return Err(RepoPullError::DuplicatePull);
     }
 
-    // The host must have the `hf` CLI.
-    if let Err(hint) = check_hf_binary().await {
-        return Err(RepoPullError::HfBinaryMissing(hint));
-    }
-
     // The repo must exist on HuggingFace. A 404 / "not found" is a missing
-    // repo; anything else is an upstream/network error.
+    // repo; anything else is an upstream/network error. (Proxy-side HTTP
+    // metadata only — the download itself runs on the pull host, ADR-0010.)
     let api = crate::models::pull::hf_api()
         .await
         .map_err(|e| RepoPullError::Upstream(e.to_string()))?;
@@ -480,24 +358,50 @@ pub(crate) async fn start_repo_pull(
         .await
         .map_err(|e| RepoPullError::Upstream(e.to_string()))?;
 
-    // Spawn the child (stderr piped into a capped tail).
-    let mut child = spawn_hf_download(
-        "hf",
-        repo_id,
-        &dest,
-        crate::models::pull::get_hf_token().as_deref(),
-    )
-    .await
-    .map_err(RepoPullError::Upstream)?;
+    // ── Dispatch the whole-repo pull to the pull host (plan-191 follow-up
+    // B; ADR-0010) ── the `hf` CLI runs on the tamad (`repo_pull = true`);
+    // this process only relays `StreamJob` progress into the in-memory
+    // job and finalizes the metadata on success.
+    let pull_backend = state
+        .config
+        .read()
+        .await
+        .proxy
+        .pull_backend
+        .clone()
+        .ok_or_else(|| {
+            RepoPullError::Upstream(
+                "no pull host configured: set proxy.pull_backend (the proxy itself never downloads — ADR-0010)"
+                    .to_string(),
+            )
+        })?;
+    let handle = state.tamad_pool.get(&pull_backend).await.ok_or_else(|| {
+        RepoPullError::Upstream(format!(
+            "pull_backend '{pull_backend}' is not a registered tamad"
+        ))
+    })?;
 
-    let sink: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
-    if let Some(stderr) = child.stderr.take() {
-        let _reader = start_stderr_reader(stderr, sink.clone());
-    }
+    let hf_token = crate::models::pull::get_hf_token().unwrap_or_default();
+    let request = crate::tamad::PullModelRequest {
+        repo_id: repo_id.to_string(),
+        quants: Vec::new(),
+        model_name: String::new(),
+        backend: String::new(),
+        hf_token,
+        repo_pull: true,
+        dest_dir: dest.to_string_lossy().to_string(),
+    };
+    tracing::info!(
+        repo = repo_id,
+        tamad = %pull_backend,
+        "dispatching whole-repo pull to tamad"
+    );
+    let tamad_job_id = handle
+        .pull_model(&request)
+        .await
+        .map_err(|e| RepoPullError::Upstream(format!("tamad pull dispatch failed: {e:#}")))?;
 
-    let child_handle = Arc::new(Mutex::new(Some(child)));
     let job_id = format!("hfrepo-{}", uuid::Uuid::new_v4().hyphenated());
-
     state
         .pull
         .upsert_repo_pull(RepoPullJob {
@@ -510,28 +414,16 @@ pub(crate) async fn start_repo_pull(
             error: None,
             cancel_requested: false,
             context_length: None,
-            stderr_tail: sink,
-            child: child_handle.clone(),
+            stderr_tail: Arc::new(Mutex::new(Vec::new())),
+            tamad_job_id: Some(tamad_job_id.clone()),
+            bytes_done: 0,
         })
         .await;
 
-    // Wait-loop: brief try_wait under the lock, 500 ms sleep OUTSIDE it.
-    // Spawned with clones of the Arcs it needs; the stderr reader task
-    // self-terminates on stderr EOF (no JoinHandle bookkeeping here).
     let state_clone = Arc::clone(state);
-    let wait_job_id = job_id.clone();
+    let relay_job_id = job_id.clone();
     tokio::spawn(async move {
-        let exit_status = loop {
-            let got = {
-                let mut g = child_handle.lock().await;
-                g.as_mut().and_then(|c| c.try_wait().ok()).flatten()
-            };
-            if let Some(status) = got {
-                break status;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        };
-        finish_repo_pull(&state_clone, &wait_job_id, exit_status.code()).await;
+        relay_repo_pull(&state_clone, &relay_job_id, &handle, &tamad_job_id).await;
     });
 
     Ok(RepoPullStart {
@@ -540,22 +432,268 @@ pub(crate) async fn start_repo_pull(
     })
 }
 
-#[cfg(all(test, unix))]
+/// Relay a whole-repo `PullModel` job until it reaches a terminal state,
+/// mirroring progress into the in-memory [`RepoPullJob`] and finalizing
+/// (metadata + model row) on success. Shared by every relayed host pull
+/// (plan-191 follow-up B).
+pub(crate) async fn relay_repo_pull(
+    state: &crate::proxy::ProxyState,
+    job_id: &str,
+    handle: &Arc<crate::tamad::pool::TamadHandle>,
+    tamad_job_id: &str,
+) {
+    const EVENT_TIMEOUT_SECS: u64 = 120;
+    let stream = match handle.stream_job(tamad_job_id).await {
+        Ok(s) => s,
+        Err(e) => {
+            finalize_failed(state, job_id, format!("tamad job stream failed: {e:#}")).await;
+            return;
+        }
+    };
+
+    let mut stream = stream;
+    loop {
+        let next = tokio::time::timeout(
+            std::time::Duration::from_secs(EVENT_TIMEOUT_SECS),
+            stream.message(),
+        )
+        .await;
+        let ev = match next {
+            Err(_elapsed) => {
+                finalize_failed(
+                    state,
+                    job_id,
+                    format!("pull stalled: no tamad progress for {EVENT_TIMEOUT_SECS}s"),
+                )
+                .await;
+                return;
+            }
+            Ok(Err(e)) => {
+                finalize_failed(state, job_id, format!("tamad job stream error: {e:?}")).await;
+                return;
+            }
+            Ok(Ok(None)) => {
+                finalize_failed(
+                    state,
+                    job_id,
+                    "tamad disconnected mid-pull (no terminal job event)".to_string(),
+                )
+                .await;
+                return;
+            }
+            Ok(Ok(Some(e))) => e,
+        };
+
+        // Mirror progress into the in-memory job (brief lock hold, no
+        // `.await` inside).
+        state
+            .pull
+            .with_repo_pull(job_id, |job| {
+                if ev.total_bytes > 0 {
+                    job.total_bytes = Some(ev.total_bytes as u64);
+                }
+                if ev.bytes_downloaded > 0 {
+                    job.bytes_done = ev.bytes_downloaded as u64;
+                }
+            })
+            .await;
+
+        match ev.status.as_str() {
+            "succeeded" => {
+                // Consume the host's terminal payload (`{"dir","ok"}`): a
+                // payload that explicitly declares failure is a contract
+                // violation — fail the job rather than trusting the status
+                // flag alone. An empty/legacy payload is tolerated: the
+                // "succeeded" status is the source of truth.
+                if let Some(false) = parse_repo_result_ok(&ev.result_json) {
+                    finalize_failed(
+                        state,
+                        job_id,
+                        "tamad repo pull result payload reported ok=false".to_string(),
+                    )
+                    .await;
+                    return;
+                }
+                finish_repo_pull(state, job_id, Some(0)).await;
+                return;
+            }
+            "cancelled" => {
+                // The user cancelled from the UI; the cancel endpoint has
+                // already flagged `cancel_requested` — the final decision
+                // (cancel wins) happens in finish_repo_pull.
+                finish_repo_pull(state, job_id, None).await;
+                return;
+            }
+            "failed" => {
+                // Mirror the host error into the capped stderr tail so the
+                // existing error-path logic renders it. Clone the sink Arc
+                // under a brief job-guard, then lock the sink (no map-lock
+                // held across the await).
+                let sink_arc = state
+                    .pull
+                    .with_repo_pull(job_id, |job| job.stderr_tail.clone())
+                    .await;
+                if let Some(sink_arc) = sink_arc {
+                    let cap: usize = 4096;
+                    let mut bytes = ev.error.trim().to_string().into_bytes();
+                    if bytes.len() > cap {
+                        bytes.drain(0..(bytes.len() - cap));
+                    }
+                    let mut sink = sink_arc.lock().await;
+                    sink.clear();
+                    sink.extend_from_slice(&bytes);
+                }
+                finish_repo_pull(state, job_id, Some(1)).await;
+                return;
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The `ok` flag of the host's terminal repo-pull payload
+/// (`{"dir","ok"}`), when the payload is present and parseable.
+fn parse_repo_result_ok(result_json: &str) -> Option<bool> {
+    if result_json.trim().is_empty() {
+        return None;
+    }
+    let result: TamadRepoPullResult = serde_json::from_str(result_json).ok()?;
+    Some(result.ok)
+}
+
+/// Finalize a relayed host pull as FAILED before/at stream teardown:
+/// mirror the error into the capped stderr tail (so the existing render
+/// logic picks it up) and run the normal terminal decision (cancel still
+/// wins if the user cancelled in the meantime).
+async fn finalize_failed(state: &crate::proxy::ProxyState, job_id: &str, error: String) {
+    // Mirror the relay error into the capped stderr tail, then run the
+    // normal terminal decision (cancel still wins if the user cancelled in
+    // the meantime).
+    if let Some(sink_arc) = state
+        .pull
+        .with_repo_pull(job_id, |job| job.stderr_tail.clone())
+        .await
+    {
+        let mut sink = sink_arc.lock().await;
+        sink.clear();
+        sink.extend_from_slice(&error.into_bytes());
+    }
+    finish_repo_pull(state, job_id, None).await;
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::proxy::state::pull::PullState;
-    use std::os::unix::fs::PermissionsExt;
+    use crate::tamad::pool::test_support::{
+        grpc_conn, job_event_bytes, job_event_failed, start_stub, terminal_success, StubTamad,
+    };
 
-    /// The DB-backed completion-merge tests moved to the Postgres harness
-    /// (plan-190 Task 5): `crates/tama-core/tests/repo_pull_completion.rs`. They
-    /// exercise `update_model_config_hf_metadata` (COALESCE) and
-    /// `update_model_config_quant` (direct set) directly.
-    /// Write an executable shell stub to `dir` and return its path.
-    fn write_stub(dir: &Path, name: &str, body: &str) -> PathBuf {
-        let path = dir.join(name);
-        std::fs::write(&path, body).unwrap();
-        std::fs::set_permissions(&path, PermissionsExt::from_mode(0o755)).unwrap();
-        path
+    const TAMAD_ID: &str = "uuid-repo-tamad";
+    const JOB_ID: &str = "job-repo";
+
+    /// StubTamad with scripted pull events (repo-pull relay tests).
+    fn make_stub(
+        events: Vec<crate::tamad::JobEvent>,
+        pull_model_fail: bool,
+    ) -> (StubTamad, Arc<tokio::sync::watch::Sender<bool>>) {
+        let (down, _) = tokio::sync::watch::channel(false);
+        let stub = StubTamad {
+            fail_first_n: 0,
+            succeed_until: usize::MAX,
+            down: Arc::new(down.clone()),
+            calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            successes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            pull_requests: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            pull_job_id: JOB_ID.to_string(),
+            pull_model_fail: Arc::new(tokio::sync::Mutex::new(pull_model_fail)),
+            install_requests: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            install_job_id: "job-install".to_string(),
+            install_dispatch_fail: Arc::new(tokio::sync::Mutex::new(false)),
+            update_requests: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            update_job_id: "job-update".to_string(),
+            update_dispatch_fail: Arc::new(tokio::sync::Mutex::new(false)),
+            remove_requests: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            remove_dispatch_fail: Arc::new(tokio::sync::Mutex::new(false)),
+            stream_job_events: Arc::new(tokio::sync::Mutex::new(events)),
+            stream_job_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            stream_job_events_by_id: Arc::new(tokio::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
+            bench_requests: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            bench_job_id: "job-bench".to_string(),
+            bench_dispatch_fail: Arc::new(tokio::sync::Mutex::new(false)),
+            stats_gpus: vec![],
+            load_requests: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            load_delays: std::collections::HashMap::new(),
+            load_model_fail: Arc::new(tokio::sync::Mutex::new(false)),
+        };
+        (stub, Arc::new(down))
+    }
+
+    /// ProxyState with `pull_backend` pointing at the stub tamad, an isolated
+    /// models dir, an in-memory config home, and a fresh Postgres schema
+    /// (the completion step writes the model row through the pool).
+    async fn state_with_stub(
+        models_tmp: &tempfile::TempDir,
+        xdg_tmp: &tempfile::TempDir,
+        stub_addr: std::net::SocketAddr,
+    ) -> (
+        Arc<crate::proxy::ProxyState>,
+        crate::testing::postgres::SchemaGuard,
+    ) {
+        std::env::set_var("XDG_CONFIG_HOME", xdg_tmp.path().to_str().unwrap());
+        std::env::set_var("HOME", xdg_tmp.path().to_str().unwrap());
+        std::env::remove_var("HF_TOKEN");
+
+        let mut config = crate::config::Config::default();
+        config.general.models_dir = Some(models_tmp.path().to_string_lossy().to_string());
+        config.proxy.pull_backend = Some(TAMAD_ID.to_string());
+
+        let guard = crate::testing::postgres::with_schema().await;
+        let pool = std::sync::Arc::new(guard.pool.clone());
+        let state = crate::proxy::ProxyState::new(config, Some(xdg_tmp.path().to_path_buf()), pool);
+        let conn = grpc_conn(TAMAD_ID, "stub", &format!("grpc://{stub_addr}"));
+        state.tamad_pool.upsert_connection(&conn).await.unwrap();
+        (Arc::new(state), guard)
+    }
+
+    fn restore_env() {
+        std::env::remove_var("HF_ENDPOINT");
+        std::env::remove_var("XDG_CONFIG_HOME");
+        std::env::remove_var("HOME");
+    }
+
+    /// Insert a pre-created stub model row (the wizard does this before
+    /// starting a repo pull) and return its id.
+    async fn insert_stub_model(state: &crate::proxy::ProxyState, repo_id: &str) -> i64 {
+        let pool = state.db_pool();
+        let record = crate::db::queries::ModelConfigRecord {
+            repo_id: repo_id.to_string(),
+            backend: "llama_cpp".to_string(),
+            ..Default::default()
+        };
+        crate::db::queries::upsert_model_config(&pool, &record)
+            .await
+            .unwrap()
+    }
+
+    /// Poll the job until it reaches a terminal state (the relay task is
+    /// spawned by start_repo_pull and runs concurrently).
+    async fn wait_terminal(state: &crate::proxy::ProxyState, job_id: &str) -> RepoPullJob {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            if let Some(job) = state.pull.get_repo_pull(job_id).await {
+                if job.status != RepoPullStatus::Running {
+                    return job;
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "job did not reach a terminal state in time"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
     }
 
     /// Test that RepoPullStatus serializes to lowercase strings.
@@ -610,247 +748,12 @@ mod tests {
         assert_eq!(scan_dir_bytes(tmp.path()), 100);
     }
 
-    /// Test that spawn_hf_download returns Err when the binary does not exist.
-    #[tokio::test]
-    async fn test_spawn_hf_download_missing_binary() {
-        let tmp = tempfile::tempdir().unwrap();
-        let result = spawn_hf_download(
-            "definitely-not-a-real-binary-xyz",
-            "foo/bar",
-            tmp.path(),
-            None,
-        )
-        .await;
-        assert!(
-            result.is_err(),
-            "spawning a missing binary should fail, got: {result:?}"
-        );
-    }
-
-    /// Test that the stub runs with the expected args, HF_TOKEN is injected
-    /// only when provided, and the stderr tail captures stderr (not stdout).
-    #[tokio::test]
-    async fn test_spawn_hf_download_runs_stub_and_captures_stderr() {
-        let tmp = tempfile::tempdir().unwrap();
-        // CLI argv is `hf download <repo> --local-dir <dest>` → dest is $4.
-        let stub = write_stub(
-            tmp.path(),
-            "hf-stub",
-            "#!/bin/sh\necho \"line1\"\necho \"err\" 1>&2\necho \"$HF_TOKEN\" > \"$4/.hf_token_check\"\nexit 0\n",
-        );
-        let dest = tmp.path().join("dest");
-        std::fs::create_dir(&dest).unwrap();
-        let stub_str = stub.to_str().unwrap().to_string();
-
-        // Run 1: with an explicit token.
-        let mut child = spawn_hf_download(&stub_str, "foo/bar", &dest, Some("tok123"))
-            .await
-            .expect("stub should spawn");
-        let sink: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
-        let stderr = child.stderr.take().expect("stderr must be piped");
-        let reader = start_stderr_reader(stderr, sink.clone());
-        let status = child.wait().await.unwrap();
-        reader.await.expect("stderr reader must finish");
-        assert!(status.success());
-
-        let tail = stderr_tail_str(&sink)
-            .await
-            .expect("stderr should be captured");
-        assert!(
-            tail.contains("err"),
-            "stderr tail should contain 'err': {tail}"
-        );
-        assert!(
-            !tail.contains("line1"),
-            "stdout must not leak into the stderr tail: {tail}"
-        );
-        let marker = std::fs::read_to_string(dest.join(".hf_token_check")).unwrap();
-        assert_eq!(
-            marker.trim(),
-            "tok123",
-            "HF_TOKEN env must be injected when provided"
-        );
-
-        // Run 2: without a token — HF_TOKEN must not be set by us, only
-        // inherited from the test process environment (if present there).
-        let mut child = spawn_hf_download(&stub_str, "foo/bar", &dest, None)
-            .await
-            .expect("stub should spawn");
-        let sink2: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
-        let stderr = child.stderr.take().expect("stderr must be piped");
-        let reader = start_stderr_reader(stderr, sink2.clone());
-        let status = child.wait().await.unwrap();
-        reader.await.expect("stderr reader must finish");
-        assert!(status.success());
-
-        let marker = std::fs::read_to_string(dest.join(".hf_token_check")).unwrap();
-        let inherited = std::env::var("HF_TOKEN").unwrap_or_default();
-        assert_eq!(
-            marker.trim(),
-            inherited,
-            "HF_TOKEN must only be inherited, never injected"
-        );
-    }
-
-    /// Test that a non-zero exit code is observable and stderr is captured.
-    #[tokio::test]
-    async fn test_spawn_hf_download_nonzero_exit() {
-        let tmp = tempfile::tempdir().unwrap();
-        let stub = write_stub(
-            tmp.path(),
-            "hf-stub",
-            "#!/bin/sh\necho \"boom\" 1>&2\nexit 3\n",
-        );
-        let dest = tmp.path().join("dest");
-        std::fs::create_dir(&dest).unwrap();
-
-        let mut child = spawn_hf_download(stub.to_str().unwrap(), "foo/bar", &dest, None)
-            .await
-            .expect("stub should spawn");
-        let sink: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
-        let stderr = child.stderr.take().expect("stderr must be piped");
-        let reader = start_stderr_reader(stderr, sink.clone());
-        let status = child.wait().await.unwrap();
-        reader.await.expect("stderr reader must finish");
-        assert_eq!(status.code(), Some(3));
-        let tail = stderr_tail_str(&sink)
-            .await
-            .expect("stderr should be captured");
-        assert!(
-            tail.contains("boom"),
-            "stderr tail should contain 'boom': {tail}"
-        );
-    }
-
-    /// Test that a single huge stderr line (> 8 KiB) is capped to the 4096-byte
-    /// tail: the sink holds exactly the LAST 4096 bytes of the stream (the
-    /// tail of the line, not its head), with no unbounded per-line buffering.
-    #[tokio::test]
-    async fn test_stderr_reader_caps_huge_line() {
-        let tmp = tempfile::tempdir().unwrap();
-        // One 9000-byte line of 'x' followed by a single newline — far larger
-        // than the 4096-byte cap, written as a single line to the child's
-        // stderr.
-        let stub = write_stub(
-            tmp.path(),
-            "hf-stub",
-            "#!/bin/sh\nhead -c 9000 /dev/zero | tr '\\0' 'x' 1>&2\necho '' 1>&2\nexit 0\n",
-        );
-        let dest = tmp.path().join("dest");
-        std::fs::create_dir(&dest).unwrap();
-
-        let mut child = spawn_hf_download(stub.to_str().unwrap(), "foo/bar", &dest, None)
-            .await
-            .expect("stub should spawn");
-        let sink: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
-        let stderr = child.stderr.take().expect("stderr must be piped");
-        let reader = start_stderr_reader(stderr, sink.clone());
-        let status = child.wait().await.unwrap();
-        reader.await.expect("stderr reader must finish");
-        assert!(status.success());
-
-        let tail = sink.lock().await;
-        // 9000 'x' + 1 newline = 9001 bytes → capped to the last 4096.
-        assert_eq!(
-            tail.len(),
-            4096,
-            "sink must be capped at exactly 4096, got {}",
-            tail.len()
-        );
-        assert!(
-            tail.ends_with(b"\n"),
-            "cap must keep the TAIL of the line, not the head"
-        );
-        assert!(
-            tail[..tail.len() - 1].iter().all(|&b| b == b'x'),
-            "capped tail must be all 'x' (the tail of the line)"
-        );
-    }
-
-    /// Regression: a multi-byte UTF-8 character straddling the 4096-byte cap
-    /// must survive intact. 4094 'a' + "é" (2 bytes) + 'b' = 4097 bytes, so
-    /// the cap drops exactly one byte — the first 'a' — and the é (bytes 4095–4096
-    /// of the stream) lands right on the cap boundary. Decoding happens once
-    /// at read time, so the é stays a single character (the old per-chunk
-    /// `from_utf8_lossy` split it into one U+FFFD per 4 KiB chunk).
-    #[tokio::test]
-    async fn test_stderr_reader_multibyte_char_on_cap_boundary() {
-        let tmp = tempfile::tempdir().unwrap();
-        let stub = write_stub(
-            tmp.path(),
-            "hf-stub",
-            "#!/bin/sh\n{ head -c 4094 /dev/zero | tr '\\0' 'a'; printf '\\303\\251b'; } 1>&2\nexit 0\n",
-        );
-        let dest = tmp.path().join("dest");
-        std::fs::create_dir(&dest).unwrap();
-
-        let mut child = spawn_hf_download(stub.to_str().unwrap(), "foo/bar", &dest, None)
-            .await
-            .expect("stub should spawn");
-        let sink: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
-        let stderr = child.stderr.take().expect("stderr must be piped");
-        let reader = start_stderr_reader(stderr, sink.clone());
-        let status = child.wait().await.unwrap();
-        reader.await.expect("stderr reader must finish");
-        assert!(status.success());
-
-        let tail = stderr_tail_str(&sink)
-            .await
-            .expect("stderr should be captured");
-        assert_eq!(
-            tail,
-            format!("{}éb", "a".repeat(4093)),
-            "a multi-byte char on the cap boundary must stay whole, not split into U+FFFD"
-        );
-    }
-
-    /// Regression: capping the sink must never panic. The old code capped a
-    /// `String` with `drain(0..overflow)` where `overflow` was a BYTE offset —
-    /// when that offset landed mid-character, `String::drain` PANICKED and
-    /// killed the detached reader task. Here "é" opens the stream, so the
-    /// first drain offset (1) lands inside the 2-byte char: the reader must
-    /// survive, and the dropped leading byte decodes to at most one U+FFFD.
-    #[tokio::test]
-    async fn test_stderr_reader_cap_drain_mid_char_no_panic() {
-        let tmp = tempfile::tempdir().unwrap();
-        let stub = write_stub(
-            tmp.path(),
-            "hf-stub",
-            "#!/bin/sh\n{ printf '\\303\\251'; head -c 4095 /dev/zero | tr '\\0' 'a'; } 1>&2\nexit 0\n",
-        );
-        let dest = tmp.path().join("dest");
-        std::fs::create_dir(&dest).unwrap();
-
-        let mut child = spawn_hf_download(stub.to_str().unwrap(), "foo/bar", &dest, None)
-            .await
-            .expect("stub should spawn");
-        let sink: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
-        let stderr = child.stderr.take().expect("stderr must be piped");
-        let reader = start_stderr_reader(stderr, sink.clone());
-        let status = child.wait().await.unwrap();
-        reader
-            .await
-            .expect("stderr reader must not panic on a mid-char cap");
-        assert!(status.success());
-
-        let tail = stderr_tail_str(&sink)
-            .await
-            .expect("stderr should be captured");
-        // 4097 bytes → 1 dropped: the leading byte of the é. The orphaned
-        // trailing byte decodes to a single U+FFFD, then 4095 'a'.
-        assert_eq!(
-            tail,
-            format!("\u{FFFD}{}", "a".repeat(4095)),
-            "mid-char cap must drop bytes, not panic"
-        );
-    }
-
     /// Test the full repo-pull job lifecycle on PullState: upsert, get,
-    /// running check, cancel (childless), double cancel, unknown id.
+    /// running check, cancel, double cancel, unknown id. The relay is the
+    /// single host-side executions path, so jobs are childless.
     #[tokio::test]
     async fn test_pull_state_repo_pull_lifecycle() {
         let state = PullState::new(None);
-        let child_arc: Arc<Mutex<Option<tokio::process::Child>>> = Arc::new(Mutex::new(None));
         let job_stderr_arc: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
         let job = RepoPullJob {
             job_id: "job-1".to_string(),
@@ -863,7 +766,8 @@ mod tests {
             cancel_requested: false,
             context_length: None,
             stderr_tail: job_stderr_arc.clone(),
-            child: child_arc.clone(),
+            tamad_job_id: None,
+            bytes_done: 0,
         };
         state.upsert_repo_pull(job).await;
 
@@ -881,10 +785,6 @@ mod tests {
         assert!(!got.cancel_requested);
         assert!(got.context_length.is_none());
         assert!(
-            Arc::ptr_eq(&got.child, &child_arc),
-            "cloned job must share the child handle Arc"
-        );
-        assert!(
             Arc::ptr_eq(&got.stderr_tail, &job_stderr_arc),
             "cloned job must share the stderr sink Arc"
         );
@@ -892,7 +792,6 @@ mod tests {
         assert!(state.repo_pull_running_for("owner/repo").await);
         assert!(!state.repo_pull_running_for("other/repo").await);
 
-        // Childless Running job: cancel must tolerate the empty child handle.
         state
             .cancel_repo_pull("job-1")
             .await
@@ -915,88 +814,10 @@ mod tests {
         );
     }
 
-    /// Test that the try_wait-based wait-loop and cancel do not deadlock:
-    /// the wait-loop polls non-blocking and sleeps outside the lock, so
-    /// cancel's brief `kill()` lock acquisition succeeds while the loop runs,
-    /// and the loop terminates promptly once the child is killed.
-    #[tokio::test]
-    async fn test_wait_loop_cancel_race() {
-        let tmp = tempfile::tempdir().unwrap();
-        let stub = write_stub(tmp.path(), "hf-stub", "#!/bin/sh\nsleep 30\n");
-        let mut child = spawn_hf_download(stub.to_str().unwrap(), "foo/bar", tmp.path(), None)
-            .await
-            .expect("stub should spawn");
-        let sink: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
-        if let Some(stderr) = child.stderr.take() {
-            let _reader = start_stderr_reader(stderr, sink.clone());
-        }
-        let child_arc: Arc<Mutex<Option<tokio::process::Child>>> =
-            Arc::new(Mutex::new(Some(child)));
+    // ── start_repo_pull validation tests (no pull host, no network) ────────
 
-        let state = PullState::new(None);
-        state
-            .upsert_repo_pull(RepoPullJob {
-                job_id: "job-x".to_string(),
-                repo_id: "owner/repo".to_string(),
-                model_id: None,
-                dest: tmp.path().to_path_buf(),
-                total_bytes: None,
-                status: RepoPullStatus::Running,
-                error: None,
-                cancel_requested: false,
-                context_length: None,
-                stderr_tail: sink,
-                child: child_arc.clone(),
-            })
-            .await;
-
-        // Wait-loop logic: brief try_wait under the lock, sleep OUTSIDE it.
-        let loop_state = state.clone();
-        let wait_handle = tokio::spawn(async move {
-            loop {
-                let got = {
-                    let mut g = child_arc.lock().await;
-                    g.as_mut().and_then(|c| c.try_wait().ok()).flatten()
-                };
-                if let Some(exit) = got {
-                    let job = loop_state
-                        .get_repo_pull("job-x")
-                        .await
-                        .expect("job must still exist");
-                    return (job.cancel_requested, exit.code());
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            }
-        });
-
-        // Let the child start, then cancel through the real cancel path
-        // (brief job-map lock + brief child lock + kill).
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        state
-            .cancel_repo_pull("job-x")
-            .await
-            .expect("cancel should acquire the child lock without deadlocking");
-
-        let started = std::time::Instant::now();
-        let (cancel_requested, _code) = wait_handle.await.expect("wait loop must finish");
-        let elapsed = started.elapsed();
-        assert!(
-            cancel_requested,
-            "wait loop must observe the cancel flag for its final decision"
-        );
-        assert!(
-            elapsed < std::time::Duration::from_secs(5),
-            "wait loop should terminate within a tick of the kill, took {elapsed:?}"
-        );
-    }
-
-    // ── start_repo_pull / finish_repo_pull orchestration tests ────────────
-
-    /// Serializes env-var mutations (PATH, HF_ENDPOINT) across tests.
-    static ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    /// Test that an invalid repo id is rejected before any network or spawn
-    /// work happens.
+    /// Test that an invalid repo id is rejected before any network or
+    /// dispatch work happens.
     #[tokio::test]
     async fn test_start_repo_pull_rejects_invalid_repo_id() {
         let state = Arc::new(crate::proxy::ProxyState::new(
@@ -1023,7 +844,6 @@ mod tests {
             None,
             crate::db::pool::test_dummy_pool(),
         ));
-        let child_arc: Arc<Mutex<Option<tokio::process::Child>>> = Arc::new(Mutex::new(None));
         state
             .pull
             .upsert_repo_pull(RepoPullJob {
@@ -1037,7 +857,8 @@ mod tests {
                 cancel_requested: false,
                 context_length: None,
                 stderr_tail: Arc::new(Mutex::new(Vec::new())),
-                child: child_arc,
+                tamad_job_id: Some("job-tamad".to_string()),
+                bytes_done: 0,
             })
             .await;
 
@@ -1050,38 +871,86 @@ mod tests {
         );
     }
 
-    /// Test that a missing `hf` binary (PATH pointed at an empty dir) yields
-    /// HfBinaryMissing with an install hint.
+    /// ADR-0010: with a valid repo but no pull host configured, the start
+    /// must fail loudly (the proxy never downloads locally, and no local
+    /// `hf` binary check remains). HF is mocked so the test is offline.
     #[tokio::test]
-    async fn test_start_repo_pull_missing_binary() {
+    async fn test_start_repo_pull_no_pull_host_configured() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(
+                "/api/models/owner/repo/revision/main",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "sha": "abc123",
+                    "siblings": []
+                })),
+            )
+            .mount(&server)
+            .await;
+        std::env::set_var("HF_ENDPOINT", server.uri());
+
+        let models_tmp = tempfile::tempdir().unwrap();
+        let mut config = crate::config::Config::default();
+        config.general.models_dir = Some(models_tmp.path().to_string_lossy().to_string());
         let state = Arc::new(crate::proxy::ProxyState::new(
-            crate::config::Config::default(),
+            config,
             None,
             crate::db::pool::test_dummy_pool(),
         ));
-        let empty_path = tempfile::tempdir().unwrap();
-        {
-            let _guard = ENV_GUARD.lock().unwrap();
-            std::env::set_var("PATH", empty_path.path());
-        }
 
         let err = start_repo_pull(&state, "owner/repo", None)
             .await
-            .expect_err("missing binary must be rejected");
-        {
-            let _guard = ENV_GUARD.lock().unwrap();
-            std::env::remove_var("PATH");
-        }
+            .expect_err("no pull host → must fail");
+        std::env::remove_var("HF_ENDPOINT");
 
         assert!(
-            matches!(err, RepoPullError::HfBinaryMissing(ref hint)
-                if hint.contains("pip install")),
-            "expected HfBinaryMissing with install hint, got: {err:?}"
+            matches!(err, RepoPullError::Upstream(ref msg)
+                if msg.contains("no pull host configured")),
+            "expected 'no pull host configured', got: {err:?}"
         );
     }
 
-    /// Test that a repo that 404s on HF is reported as RepoNotFound (the `hf`
-    /// stub on PATH makes the binary check pass deterministically).
+    /// Tamad unreachable at dispatch → clean, actionable failure
+    /// (fail-loud: no local fallback, ADR-0010).
+    #[tokio::test]
+    async fn test_start_repo_pull_tamad_offline_dispatch_fails() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(
+                "/api/models/happy/repo/revision/main",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "sha": "abc123",
+                    "siblings": [{"rfilename": "model.safetensors"}]
+                })),
+            )
+            .mount(&server)
+            .await;
+
+        let (stub, _down) = make_stub(Vec::new(), true);
+        let addr = start_stub(stub).await;
+        let models_tmp = tempfile::tempdir().unwrap();
+        let xdg_tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("HF_ENDPOINT", server.uri());
+
+        let (state, _guard) = state_with_stub(&models_tmp, &xdg_tmp, addr).await;
+
+        let err = start_repo_pull(&state, "happy/repo", None)
+            .await
+            .expect_err("offline tamad must fail dispatch");
+        restore_env();
+
+        assert!(
+            matches!(err, RepoPullError::Upstream(ref msg)
+                if msg.contains("tamad pull dispatch failed")),
+            "expected dispatch failure, got: {err:?}"
+        );
+    }
+
+    /// Test that a repo that 404s on HF is reported as RepoNotFound.
     #[tokio::test]
     async fn test_start_repo_pull_repo_not_found() {
         let server = wiremock::MockServer::start().await;
@@ -1098,22 +967,12 @@ mod tests {
             None,
             crate::db::pool::test_dummy_pool(),
         ));
-        let bin_dir = tempfile::tempdir().unwrap();
-        let _stub = write_stub(bin_dir.path(), "hf", "#!/bin/sh\nexit 0\n");
-        {
-            let _guard = ENV_GUARD.lock().unwrap();
-            std::env::set_var("PATH", bin_dir.path());
-            std::env::set_var("HF_ENDPOINT", server.uri());
-        }
+        std::env::set_var("HF_ENDPOINT", server.uri());
 
         let err = start_repo_pull(&state, "owner/missing", None)
             .await
             .expect_err("unknown repo must be rejected");
-        {
-            let _guard = ENV_GUARD.lock().unwrap();
-            std::env::remove_var("PATH");
-            std::env::remove_var("HF_ENDPOINT");
-        }
+        restore_env();
 
         assert!(
             matches!(err, RepoPullError::RepoNotFound(ref msg)
@@ -1122,12 +981,47 @@ mod tests {
         );
     }
 
-    /// Full lifecycle: start a pull against a wiremock HF endpoint with a stub
-    /// `hf` binary that writes a config.json + weights file, wait for the
-    /// wait-loop to finish, and assert the job completes with the context
-    /// length and the model row gets the merged metadata + quant.
+    /// Test that a non-404 (500) error from the HF info endpoint maps to
+    /// `RepoPullError::Upstream` (not `RepoNotFound`).
     #[tokio::test]
-    async fn test_start_repo_pull_full_lifecycle() {
+    async fn test_start_repo_pull_non_404_info_error_upstream() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(
+                "/api/models/broken/repo/revision/main",
+            ))
+            .respond_with(wiremock::ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let state = Arc::new(crate::proxy::ProxyState::new(
+            crate::config::Config::default(),
+            None,
+            crate::db::pool::test_dummy_pool(),
+        ));
+        std::env::set_var("HF_ENDPOINT", server.uri());
+
+        let err = start_repo_pull(&state, "broken/repo", None)
+            .await
+            .expect_err("a 500 from info() must surface as an error");
+        restore_env();
+
+        assert!(
+            matches!(err, RepoPullError::Upstream(_)),
+            "expected Upstream for a non-404 info error, got: {err:?}"
+        );
+    }
+
+    // ── relay tests (dispatch + StreamJob convergence, pull host) ──────────
+
+    /// Full relayed lifecycle: the proxy dispatches `PullModel(repo_pull=true)`
+    /// to the pull host and relays `StreamJob` progress + terminal success;
+    /// the completion phase (config.json parse + HF metadata + model row)
+    /// runs PROXY-side from the files the pull host placed in
+    /// `<models_dir>/<repo>` (single-host layout). The `hf` CLI call happens
+    /// on the host — the proxy never spawns it.
+    #[tokio::test]
+    async fn test_repo_pull_relay_success_updates_model_row() {
         let server = wiremock::MockServer::start().await;
         // blobs endpoint (tama's own URL helper) 404s → total_bytes soft-fails
         // to None (indeterminate).
@@ -1151,87 +1045,81 @@ mod tests {
             .await;
 
         let models_root = tempfile::tempdir().unwrap();
-        let bin_dir = tempfile::tempdir().unwrap();
-        let _stub = write_stub(
-            bin_dir.path(),
-            "hf",
-            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then exit 0; fi\n\
-dest=\"$4\"\n\
-printf '{\"architectures\": [\"Qwen3ForCausalLM\"], \"max_position_embeddings\": 32768, \"num_hidden_layers\": 48, \"quantization_config\": {\"quant_method\": \"fp8\"}}' > \"$dest/config.json\"\n\
-printf 'fake-weights' > \"$dest/model.safetensors\"\nexit 0\n",
-        );
+        let xdg_tmp = tempfile::tempdir().unwrap();
 
-        let db_dir = tempfile::tempdir().unwrap();
-        let mut config = crate::config::Config::default();
-        config.general.models_dir = Some(models_root.path().to_string_lossy().to_string());
+        // The "pull host" (stub tamad) has already written the repo contents
+        // into <models_dir>/<repo> before the terminal success event —
+        // the relay only relays; it never downloads.
+        let dest = crate::models::repo_path(models_root.path(), "happy/repo");
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(
+            dest.join("config.json"),
+            r#"{"architectures": ["Qwen3ForCausalLM"], "max_position_embeddings": 32768, "num_hidden_layers": 48, "quantization_config": {"quant_method": "fp8"}}"#,
+        )
+        .unwrap();
+        std::fs::write(dest.join("model.safetensors"), b"fake-weights").unwrap();
 
-        // Model domain is Postgres (plan-190 Task 5): the completion step
-        // updates the model row through the pool.
-        let guard = crate::testing::postgres::with_schema().await;
-        let pool = std::sync::Arc::new(guard.pool.clone());
-        let state = Arc::new(crate::proxy::ProxyState::new(
-            config,
-            Some(db_dir.path().to_path_buf()),
-            pool.clone(),
-        ));
+        std::env::set_var("HF_ENDPOINT", server.uri());
+
+        let events = vec![
+            job_event_bytes(JOB_ID, 40, "downloading", "running", 50_000, 120_000),
+            job_event_bytes(JOB_ID, 90, "downloading", "running", 108_000, 120_000),
+            terminal_success(JOB_ID, r#"{"dir": "ok", "ok": true}"#),
+        ];
+        let (stub, _down) = make_stub(events, false);
+        let addr = start_stub(stub.clone()).await;
+
+        let (state, guard) = state_with_stub(&models_root, &xdg_tmp, addr).await;
 
         // The wizard pre-creates the stub model row before starting the pull.
-        let model_id: i64 = {
-            let record = crate::db::queries::ModelConfigRecord {
-                repo_id: "happy/repo".to_string(),
-                backend: "llama_cpp".to_string(),
-                ..Default::default()
-            };
-            crate::db::queries::upsert_model_config(&pool, &record)
-                .await
-                .unwrap()
-        };
+        let model_id = insert_stub_model(&state, "happy/repo").await;
 
-        {
-            let _guard = ENV_GUARD.lock().unwrap();
-            std::env::set_var("PATH", bin_dir.path());
-            std::env::set_var("HF_ENDPOINT", server.uri());
-        }
         let start = start_repo_pull(&state, "happy/repo", Some(model_id))
             .await
             .expect("start should succeed");
-        {
-            let _guard = ENV_GUARD.lock().unwrap();
-            std::env::remove_var("PATH");
-            std::env::remove_var("HF_ENDPOINT");
-        }
-
         assert!(start.job_id.starts_with("hfrepo-"));
         assert!(
             start.total_bytes.is_none(),
             "stats endpoint 404s → indeterminate total"
         );
 
-        // Poll until the wait loop takes the job to a terminal state.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-        let final_job = loop {
-            if let Some(job) = state.pull.get_repo_pull(&start.job_id).await {
-                if job.status != RepoPullStatus::Running {
-                    break job;
-                }
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "job did not reach a terminal state in time"
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        };
+        // The dispatch must carry the repo-pull shape.
+        let requests = stub.pull_requests.lock().await;
+        assert_eq!(requests.len(), 1, "exactly one PullModel dispatch");
+        let req = &requests[0];
+        assert!(req.repo_pull, "dispatch must be a whole-repo pull");
+        assert_eq!(req.repo_id, "happy/repo");
+        assert_eq!(
+            req.dest_dir,
+            dest.to_string_lossy().to_string(),
+            "dest is the proxy's models layout (single-host convention)"
+        );
 
+        let final_job = wait_terminal(&state, &start.job_id).await;
         assert_eq!(final_job.status, RepoPullStatus::Completed);
         assert_eq!(final_job.context_length, Some(32768));
         assert!(final_job.error.is_none());
+        assert_eq!(
+            final_job.bytes_done, 108_000,
+            "progress bytes must be mirrored from the relay"
+        );
+        assert_eq!(final_job.total_bytes, Some(120_000));
 
-        // The stub wrote the repo contents into <models_dir>/<repo_id>.
-        let dest = crate::models::repo_path(models_root.path(), "happy/repo");
-        assert!(dest.join("config.json").exists());
-        assert!(dest.join("model.safetensors").exists());
+        // The status DTO serves the relay-mirrored progress (single host:
+        // the local scan sees the same bytes and the max wins).
+        let dto = state
+            .get_repo_pull_status(&start.job_id)
+            .await
+            .expect("status DTO must exist");
+        assert_eq!(dto.status, "completed");
+        assert_eq!(
+            dto.bytes_done, 108_000,
+            "relayed progress (108k) beats the local scan (162 bytes)"
+        );
+        assert_eq!(dto.context_length, Some(32768));
 
         // The model row got the merged completion metadata + quant (Postgres).
+        let pool = state.db_pool();
         let record = crate::db::queries::get_model_config(&pool, model_id)
             .await
             .unwrap()
@@ -1245,182 +1133,23 @@ printf 'fake-weights' > \"$dest/model.safetensors\"\nexit 0\n",
         assert_eq!(record.hf_num_layers, Some(48));
         assert_eq!(record.selected_quant.as_deref(), Some("fp8"));
 
+        restore_env();
         guard.finish().await;
     }
 
-    /// Test that a non-zero exit with a non-empty stderr tail produces a
-    /// Failed job whose error is the stderr tail.
-    #[tokio::test]
-    async fn test_finish_repo_pull_failure_records_stderr_tail() {
-        let server = wiremock::MockServer::start().await;
-        wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .respond_with(wiremock::ResponseTemplate::new(404))
-            .mount(&server)
-            .await;
-        {
-            let _guard = ENV_GUARD.lock().unwrap();
-            std::env::set_var("HF_ENDPOINT", server.uri());
-        }
-        let state = crate::proxy::ProxyState::new(
-            crate::config::Config::default(),
-            None,
-            crate::db::pool::test_dummy_pool(),
-        );
-        let sink: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(b"boom\n".to_vec()));
-        let child_arc: Arc<Mutex<Option<tokio::process::Child>>> = Arc::new(Mutex::new(None));
-        state
-            .pull
-            .upsert_repo_pull(RepoPullJob {
-                job_id: "job-fail".to_string(),
-                repo_id: "owner/missing".to_string(),
-                model_id: None,
-                dest: PathBuf::from("/tmp/nowhere"),
-                total_bytes: None,
-                status: RepoPullStatus::Running,
-                error: None,
-                cancel_requested: false,
-                context_length: None,
-                stderr_tail: sink,
-                child: child_arc,
-            })
-            .await;
-
-        finish_repo_pull(&state, "job-fail", Some(3)).await;
-
-        let job = state
-            .pull
-            .get_repo_pull("job-fail")
-            .await
-            .expect("job must still exist");
-        assert_eq!(job.status, RepoPullStatus::Failed);
-        assert_eq!(job.error.as_deref(), Some("boom"));
-        {
-            let _guard = ENV_GUARD.lock().unwrap();
-            std::env::remove_var("HF_ENDPOINT");
-        }
-    }
-
-    /// Test that a non-zero exit with an EMPTY stderr tail falls back to a
-    /// synthetic error message containing the exit code.
-    #[tokio::test]
-    async fn test_finish_repo_pull_failure_empty_stderr_fallback() {
-        let server = wiremock::MockServer::start().await;
-        wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .respond_with(wiremock::ResponseTemplate::new(404))
-            .mount(&server)
-            .await;
-        {
-            let _guard = ENV_GUARD.lock().unwrap();
-            std::env::set_var("HF_ENDPOINT", server.uri());
-        }
-        let state = crate::proxy::ProxyState::new(
-            crate::config::Config::default(),
-            None,
-            crate::db::pool::test_dummy_pool(),
-        );
-        let child_arc: Arc<Mutex<Option<tokio::process::Child>>> = Arc::new(Mutex::new(None));
-        state
-            .pull
-            .upsert_repo_pull(RepoPullJob {
-                job_id: "job-fail-empty".to_string(),
-                repo_id: "owner/missing".to_string(),
-                model_id: None,
-                dest: PathBuf::from("/tmp/nowhere"),
-                total_bytes: None,
-                status: RepoPullStatus::Running,
-                error: None,
-                cancel_requested: false,
-                context_length: None,
-                stderr_tail: Arc::new(Mutex::new(Vec::new())),
-                child: child_arc,
-            })
-            .await;
-
-        finish_repo_pull(&state, "job-fail-empty", Some(2)).await;
-
-        let job = state
-            .pull
-            .get_repo_pull("job-fail-empty")
-            .await
-            .expect("job must still exist");
-        assert_eq!(job.status, RepoPullStatus::Failed);
-        assert_eq!(
-            job.error.as_deref(),
-            Some("hf download exited with code 2"),
-            "empty stderr tail must fall back to a code-based message"
-        );
-        {
-            let _guard = ENV_GUARD.lock().unwrap();
-            std::env::remove_var("HF_ENDPOINT");
-        }
-    }
-
-    /// Test that a cancel request wins over a clean exit: the final status is
-    /// Cancelled with no error.
-    #[tokio::test]
-    async fn test_finish_repo_pull_cancel_requested() {
-        let server = wiremock::MockServer::start().await;
-        wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .respond_with(wiremock::ResponseTemplate::new(404))
-            .mount(&server)
-            .await;
-        {
-            let _guard = ENV_GUARD.lock().unwrap();
-            std::env::set_var("HF_ENDPOINT", server.uri());
-        }
-        let state = crate::proxy::ProxyState::new(
-            crate::config::Config::default(),
-            None,
-            crate::db::pool::test_dummy_pool(),
-        );
-        let child_arc: Arc<Mutex<Option<tokio::process::Child>>> = Arc::new(Mutex::new(None));
-        state
-            .pull
-            .upsert_repo_pull(RepoPullJob {
-                job_id: "job-cancelled".to_string(),
-                repo_id: "owner/repo".to_string(),
-                model_id: None,
-                dest: PathBuf::from("/tmp/nowhere"),
-                total_bytes: None,
-                status: RepoPullStatus::Running,
-                error: None,
-                cancel_requested: true,
-                context_length: None,
-                stderr_tail: Arc::new(Mutex::new(b"killed\n".to_vec())),
-                child: child_arc,
-            })
-            .await;
-
-        finish_repo_pull(&state, "job-cancelled", Some(0)).await;
-
-        let job = state
-            .pull
-            .get_repo_pull("job-cancelled")
-            .await
-            .expect("job must still exist");
-        assert_eq!(job.status, RepoPullStatus::Cancelled);
-        assert!(job.error.is_none());
-        {
-            let _guard = ENV_GUARD.lock().unwrap();
-            std::env::remove_var("HF_ENDPOINT");
-        }
-    }
-
-    /// Regression: a FAILED download must not mark the model row as
+    /// Regression: a FAILED relayed download must not mark the model row as
     /// configured. `hf` writes config.json EARLY (before the weights), so a
     /// failed pull can still leave a valid config.json in dest — the
-    /// completion step (metadata fetch + DB update) must be gated on
-    /// success, and the model row must stay untouched.
+    /// completion step must be gated on success, and the host error must
+    /// surface through the job error.
     #[tokio::test]
-    async fn test_finish_repo_pull_failure_skips_db_update() {
+    async fn test_repo_pull_relay_failure_keeps_model_row_untouched() {
         let server = wiremock::MockServer::start().await;
-        // blobs endpoint 404s → total_bytes soft-fails to None (indeterminate).
         wiremock::Mock::given(wiremock::matchers::method("GET"))
             .and(wiremock::matchers::path("/api/models/fail/repo"))
             .respond_with(wiremock::ResponseTemplate::new(404))
             .mount(&server)
             .await;
-        // hf-hub 0.5 info() hits /api/models/{repo}/revision/{revision}.
         wiremock::Mock::given(wiremock::matchers::method("GET"))
             .and(wiremock::matchers::path(
                 "/api/models/fail/repo/revision/main",
@@ -1435,70 +1164,32 @@ printf 'fake-weights' > \"$dest/model.safetensors\"\nexit 0\n",
             .await;
 
         let models_root = tempfile::tempdir().unwrap();
-        let bin_dir = tempfile::tempdir().unwrap();
-        // The stub writes config.json FIRST (like a real hf), then fails.
-        let _stub = write_stub(
-            bin_dir.path(),
-            "hf",
-            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then exit 0; fi\n\
-dest=\"$4\"\n\
-printf '{\"architectures\": [\"Qwen3ForCausalLM\"], \"max_position_embeddings\": 32768, \"num_hidden_layers\": 48, \"quantization_config\": {\"quant_method\": \"fp8\"}}' > \"$dest/config.json\"\n\
-echo \"download failed: connection reset by peer\" 1>&2\n\
-exit 3\n",
-        );
+        let xdg_tmp = tempfile::tempdir().unwrap();
 
-        let db_dir = tempfile::tempdir().unwrap();
-        let mut config = crate::config::Config::default();
-        config.general.models_dir = Some(models_root.path().to_string_lossy().to_string());
-        let guard = crate::testing::postgres::with_schema().await;
-        let pool = std::sync::Arc::new(guard.pool.clone());
-        let state = Arc::new(crate::proxy::ProxyState::new(
-            config,
-            Some(db_dir.path().to_path_buf()),
-            pool.clone(),
-        ));
+        // config.json WAS written on the host before the failure (hf writes
+        // it early) — it must not leak into the DB through a failed job.
+        let dest = crate::models::repo_path(models_root.path(), "fail/repo");
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(
+            dest.join("config.json"),
+            r#"{"architectures": ["Qwen3ForCausalLM"], "max_position_embeddings": 32768, "num_hidden_layers": 48, "quantization_config": {"quant_method": "fp8"}}"#,
+        )
+        .unwrap();
 
-        // The wizard pre-creates the stub model row before starting the pull.
-        let model_id: i64 = {
-            let record = crate::db::queries::ModelConfigRecord {
-                repo_id: "fail/repo".to_string(),
-                backend: "llama_cpp".to_string(),
-                ..Default::default()
-            };
-            crate::db::queries::upsert_model_config(&pool, &record)
-                .await
-                .unwrap()
-        };
+        std::env::set_var("HF_ENDPOINT", server.uri());
 
-        {
-            let _guard = ENV_GUARD.lock().unwrap();
-            std::env::set_var("PATH", bin_dir.path());
-            std::env::set_var("HF_ENDPOINT", server.uri());
-        }
+        let events = vec![job_event_failed(JOB_ID, "connection reset by peer")];
+        let (stub, _down) = make_stub(events, false);
+        let addr = start_stub(stub.clone()).await;
+
+        let (state, guard) = state_with_stub(&models_root, &xdg_tmp, addr).await;
+        let model_id = insert_stub_model(&state, "fail/repo").await;
+
         let start = start_repo_pull(&state, "fail/repo", Some(model_id))
             .await
             .expect("start should succeed");
-        {
-            let _guard = ENV_GUARD.lock().unwrap();
-            std::env::remove_var("PATH");
-            std::env::remove_var("HF_ENDPOINT");
-        }
 
-        // Poll until the wait loop takes the job to a terminal state.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-        let final_job = loop {
-            if let Some(job) = state.pull.get_repo_pull(&start.job_id).await {
-                if job.status != RepoPullStatus::Running {
-                    break job;
-                }
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "job did not reach a terminal state in time"
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        };
-
+        let final_job = wait_terminal(&state, &start.job_id).await;
         assert_eq!(final_job.status, RepoPullStatus::Failed);
         assert!(
             final_job
@@ -1506,19 +1197,13 @@ exit 3\n",
                 .as_deref()
                 .unwrap_or_default()
                 .contains("connection reset"),
-            "failed job must carry the stderr tail as error: {final_job:?}"
+            "failed job must carry the host error as error: {final_job:?}"
         );
         assert!(final_job.context_length.is_none());
 
-        // config.json WAS written by the stub before it failed…
-        let dest = crate::models::repo_path(models_root.path(), "fail/repo");
-        assert!(
-            dest.join("config.json").exists(),
-            "stub must have written config.json before failing"
-        );
-
-        // …but the model row must be UNCHANGED: no format, no quant, no
+        // The model row must be UNCHANGED: no format, no quant, no
         // context length — a failed download is not a configured model.
+        let pool = state.db_pool();
         let record = crate::db::queries::get_model_config(&pool, model_id)
             .await
             .unwrap()
@@ -1532,13 +1217,296 @@ exit 3\n",
             "failed pull must not touch the model row"
         );
 
+        restore_env();
         guard.finish().await;
     }
 
+    /// Remote-host invariant: the relayed repo's weights + config.json live
+    /// on the tamad's disk and are ABSENT on the proxy's. The relay must
+    /// still complete the job and update the model row from HF metadata
+    /// alone — the config.json read is strictly best-effort (single-host
+    /// layout convenience), never a requirement.
+    #[tokio::test]
+    async fn test_repo_pull_relay_success_without_local_files() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/api/models/happy/repo"))
+            .respond_with(wiremock::ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(
+                "/api/models/happy/repo/revision/main",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "sha": "abc123",
+                    "siblings": [{"rfilename": "model.safetensors"}]
+                })),
+            )
+            .mount(&server)
+            .await;
+
+        let models_root = tempfile::tempdir().unwrap();
+        let xdg_tmp = tempfile::tempdir().unwrap();
+        // No local files written: the "pull host" is remote.
+
+        std::env::set_var("HF_ENDPOINT", server.uri());
+
+        let events = vec![
+            job_event_bytes(JOB_ID, 40, "downloading", "running", 50_000, 120_000),
+            terminal_success(
+                JOB_ID,
+                r#"{"dir": "/remote/models/happy/repo", "ok": true}"#,
+            ),
+        ];
+        let (stub, _down) = make_stub(events, false);
+        let addr = start_stub(stub.clone()).await;
+        let (state, guard) = state_with_stub(&models_root, &xdg_tmp, addr).await;
+        let model_id = insert_stub_model(&state, "happy/repo").await;
+
+        let start = start_repo_pull(&state, "happy/repo", Some(model_id))
+            .await
+            .expect("start should succeed");
+
+        let final_job = wait_terminal(&state, &start.job_id).await;
+        assert_eq!(
+            final_job.status,
+            RepoPullStatus::Completed,
+            "remote-host pull must complete without local files: {:?}",
+            final_job.error
+        );
+        assert!(final_job.error.is_none());
+        assert_eq!(
+            final_job.context_length, None,
+            "no local config.json → no context length (HF metadata only)"
+        );
+        assert_eq!(
+            final_job.bytes_done, 50_000,
+            "relayed progress is the source of truth on a remote host"
+        );
+
+        // Model row: HF metadata merged (format defaults to transformers),
+        // nothing from the (absent) local config.json.
+        let pool = state.db_pool();
+        let record = crate::db::queries::get_model_config(&pool, model_id)
+            .await
+            .unwrap()
+            .expect("model row should exist");
+        assert_eq!(record.hf_format.as_deref(), Some("transformers"));
+        assert!(record.hf_context_length.is_none());
+        assert!(record.selected_quant.is_none());
+
+        restore_env();
+        guard.finish().await;
+    }
+
+    /// A terminal "succeeded" event whose payload declares `ok: false` is a
+    /// contract violation (the host returns Err on failure instead): the
+    /// relay consumes the host's payload and fails the job rather than
+    /// trusting the status flag alone.
+    #[tokio::test]
+    async fn test_repo_pull_relay_success_payload_ok_false_fails() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/api/models/happy/repo"))
+            .respond_with(wiremock::ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(
+                "/api/models/happy/repo/revision/main",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "sha": "abc123",
+                    "siblings": [{"rfilename": "model.safetensors"}]
+                })),
+            )
+            .mount(&server)
+            .await;
+
+        let models_root = tempfile::tempdir().unwrap();
+        let xdg_tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("HF_ENDPOINT", server.uri());
+
+        let events = vec![terminal_success(
+            JOB_ID,
+            r#"{"dir": "/remote/models/happy/repo", "ok": false}"#,
+        )];
+        let (stub, _down) = make_stub(events, false);
+        let addr = start_stub(stub.clone()).await;
+        let (state, guard) = state_with_stub(&models_root, &xdg_tmp, addr).await;
+        let model_id = insert_stub_model(&state, "happy/repo").await;
+
+        let start = start_repo_pull(&state, "happy/repo", Some(model_id))
+            .await
+            .expect("start should succeed");
+
+        let final_job = wait_terminal(&state, &start.job_id).await;
+        assert_eq!(
+            final_job.status,
+            RepoPullStatus::Failed,
+            "ok=false payload must fail the job, error: {:?}",
+            final_job.error
+        );
+        assert!(
+            final_job
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("ok=false"),
+            "job error must mention the payload contradiction, got: {:?}",
+            final_job.error
+        );
+
+        // A contradictory success must not mark the model row configured.
+        let pool = state.db_pool();
+        let record = crate::db::queries::get_model_config(&pool, model_id)
+            .await
+            .unwrap()
+            .expect("model row should exist");
+        assert!(record.hf_format.is_none());
+        assert!(
+            record.selected_quant.is_none(),
+            "contradictory success must not touch the model row"
+        );
+
+        restore_env();
+        guard.finish().await;
+    }
+    // ── finish_repo_pull terminal-decision tests ───────────────────────────
+
+    /// Test that a failed relayed job whose mirrored error is in the
+    /// stderr-tail sink surfaces that error (not an exit-code message).
+    #[tokio::test]
+    async fn test_finish_repo_pull_failure_records_error_tail() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(wiremock::ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        std::env::set_var("HF_ENDPOINT", server.uri());
+        let state = crate::proxy::ProxyState::new(
+            crate::config::Config::default(),
+            None,
+            crate::db::pool::test_dummy_pool(),
+        );
+        let sink: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(b"boom\n".to_vec()));
+        state
+            .pull
+            .upsert_repo_pull(RepoPullJob {
+                job_id: "job-fail".to_string(),
+                repo_id: "owner/missing".to_string(),
+                model_id: None,
+                dest: PathBuf::from("/tmp/nowhere"),
+                total_bytes: None,
+                status: RepoPullStatus::Running,
+                error: None,
+                cancel_requested: false,
+                context_length: None,
+                stderr_tail: sink,
+                tamad_job_id: Some(JOB_ID.to_string()),
+                bytes_done: 0,
+            })
+            .await;
+
+        finish_repo_pull(&state, "job-fail", Some(1)).await;
+
+        let job = state
+            .pull
+            .get_repo_pull("job-fail")
+            .await
+            .expect("job must still exist");
+        assert_eq!(job.status, RepoPullStatus::Failed);
+        assert_eq!(job.error.as_deref(), Some("boom"));
+        restore_env();
+    }
+
+    /// Test that a failed job with an EMPTY mirrored error falls back to a
+    /// synthetic message containing the exit code.
+    #[tokio::test]
+    async fn test_finish_repo_pull_failure_empty_error_fallback() {
+        let state = crate::proxy::ProxyState::new(
+            crate::config::Config::default(),
+            None,
+            crate::db::pool::test_dummy_pool(),
+        );
+        state
+            .pull
+            .upsert_repo_pull(RepoPullJob {
+                job_id: "job-fail-empty".to_string(),
+                repo_id: "owner/missing".to_string(),
+                model_id: None,
+                dest: PathBuf::from("/tmp/nowhere"),
+                total_bytes: None,
+                status: RepoPullStatus::Running,
+                error: None,
+                cancel_requested: false,
+                context_length: None,
+                stderr_tail: Arc::new(Mutex::new(Vec::new())),
+                tamad_job_id: None,
+                bytes_done: 0,
+            })
+            .await;
+
+        finish_repo_pull(&state, "job-fail-empty", Some(2)).await;
+
+        let job = state
+            .pull
+            .get_repo_pull("job-fail-empty")
+            .await
+            .expect("job must still exist");
+        assert_eq!(job.status, RepoPullStatus::Failed);
+        assert_eq!(
+            job.error.as_deref(),
+            Some("hf download exited with code 2"),
+            "empty error tail must fall back to a code-based message"
+        );
+    }
+
+    /// Test that a cancel request wins over a clean terminal event: the
+    /// final status is Cancelled with no error.
+    #[tokio::test]
+    async fn test_finish_repo_pull_cancel_requested() {
+        let state = crate::proxy::ProxyState::new(
+            crate::config::Config::default(),
+            None,
+            crate::db::pool::test_dummy_pool(),
+        );
+        state
+            .pull
+            .upsert_repo_pull(RepoPullJob {
+                job_id: "job-cancelled".to_string(),
+                repo_id: "owner/repo".to_string(),
+                model_id: None,
+                dest: PathBuf::from("/tmp/nowhere"),
+                total_bytes: None,
+                status: RepoPullStatus::Running,
+                error: None,
+                cancel_requested: true,
+                context_length: None,
+                stderr_tail: Arc::new(Mutex::new(b"killed\n".to_vec())),
+                tamad_job_id: None,
+                bytes_done: 0,
+            })
+            .await;
+
+        finish_repo_pull(&state, "job-cancelled", Some(0)).await;
+
+        let job = state
+            .pull
+            .get_repo_pull("job-cancelled")
+            .await
+            .expect("job must still exist");
+        assert_eq!(job.status, RepoPullStatus::Cancelled);
+        assert!(job.error.is_none());
+    }
+
     /// Regression: a CANCELLED pull must also skip the completion step, even
-    /// when the child exited cleanly (cancel_requested wins over exit 0).
-    /// dest contains a config.json, as hf would have written it before the
-    /// user cancelled mid-download — the model row must still stay untouched.
+    /// when the terminal event reports success (cancel_requested wins over
+    /// the clean terminal). dest contains a config.json, as the host would
+    /// have written it before the cancel — the model row must stay untouched.
     #[tokio::test]
     async fn test_finish_repo_pull_cancelled_skips_db_update() {
         let server = wiremock::MockServer::start().await;
@@ -1546,17 +1514,14 @@ exit 3\n",
             .respond_with(wiremock::ResponseTemplate::new(404))
             .mount(&server)
             .await;
-        {
-            let _guard = ENV_GUARD.lock().unwrap();
-            std::env::set_var("HF_ENDPOINT", server.uri());
-        }
+        std::env::set_var("HF_ENDPOINT", server.uri());
 
-        let db_dir = tempfile::tempdir().unwrap();
+        let xdg_tmp = tempfile::tempdir().unwrap();
         let guard = crate::testing::postgres::with_schema().await;
         let pool = std::sync::Arc::new(guard.pool.clone());
         let state = crate::proxy::ProxyState::new(
             crate::config::Config::default(),
-            Some(db_dir.path().to_path_buf()),
+            Some(xdg_tmp.path().to_path_buf()),
             pool.clone(),
         );
         let model_id: i64 = {
@@ -1570,7 +1535,8 @@ exit 3\n",
                 .unwrap()
         };
 
-        // dest with a config.json, as hf would have written before the cancel.
+        // dest with a config.json, as the host would have written it before
+        // the cancel.
         let dest_dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dest_dir.path().join("config.json"),
@@ -1578,7 +1544,6 @@ exit 3\n",
         )
         .unwrap();
 
-        let child_arc: Arc<Mutex<Option<tokio::process::Child>>> = Arc::new(Mutex::new(None));
         state
             .pull
             .upsert_repo_pull(RepoPullJob {
@@ -1592,7 +1557,8 @@ exit 3\n",
                 cancel_requested: true,
                 context_length: None,
                 stderr_tail: Arc::new(Mutex::new(b"killed\n".to_vec())),
-                child: child_arc,
+                tamad_job_id: None,
+                bytes_done: 0,
             })
             .await;
 
@@ -1620,24 +1586,19 @@ exit 3\n",
             record.selected_quant.is_none(),
             "cancelled pull must not touch the model row"
         );
+        restore_env();
         guard.finish().await;
-        {
-            let _guard = ENV_GUARD.lock().unwrap();
-            std::env::remove_var("HF_ENDPOINT");
-        }
     }
 
-    /// Test that a child killed by a signal (the wait-loop sees
-    /// `exit_status == None`) with an empty stderr tail produces a Failed job
-    /// with the "exited abnormally" fallback message.
+    /// Test that a signal/death-style terminal with an empty error tail
+    /// produces a Failed job with the fallback message.
     #[tokio::test]
-    async fn test_finish_repo_pull_signal_death_message() {
+    async fn test_finish_repo_pull_death_message() {
         let state = crate::proxy::ProxyState::new(
             crate::config::Config::default(),
             None,
             crate::db::pool::test_dummy_pool(),
         );
-        let child_arc: Arc<Mutex<Option<tokio::process::Child>>> = Arc::new(Mutex::new(None));
         state
             .pull
             .upsert_repo_pull(RepoPullJob {
@@ -1651,11 +1612,12 @@ exit 3\n",
                 cancel_requested: false,
                 context_length: None,
                 stderr_tail: Arc::new(Mutex::new(Vec::new())),
-                child: child_arc,
+                tamad_job_id: None,
+                bytes_done: 0,
             })
             .await;
 
-        // A signal death surfaces as `exit_status = None` from the wait-loop.
+        // The relay passes None when no exit status is known.
         finish_repo_pull(&state, "job-signal", None).await;
 
         let job = state
@@ -1667,15 +1629,15 @@ exit 3\n",
         assert_eq!(
             job.error.as_deref(),
             Some("hf download exited abnormally"),
-            "signal death with empty stderr must fall back to the abnormal-exit message"
+            "no status with empty error tail must fall back to the abnormal-exit message"
         );
         assert!(job.context_length.is_none());
     }
 
-    /// Test that a successful pull started by an API-only caller (no
-    /// pre-created model row, `model_id: None`) still completes: the DB step
-    /// is skipped entirely, so `context_length` stays None and no model row is
-    /// touched — even when dest holds a config.json.
+    /// Test that a successful relayed pull started by an API-only caller
+    /// (no pre-created model row, `model_id: None`) still completes: the DB
+    /// step is skipped entirely, so `context_length` stays None and no model
+    /// row is touched — even when dest holds a config.json.
     #[tokio::test]
     async fn test_finish_repo_pull_no_model_id_skips_db() {
         let server = wiremock::MockServer::start().await;
@@ -1684,15 +1646,12 @@ exit 3\n",
             .respond_with(wiremock::ResponseTemplate::new(404))
             .mount(&server)
             .await;
-        {
-            let _guard = ENV_GUARD.lock().unwrap();
-            std::env::set_var("HF_ENDPOINT", server.uri());
-        }
+        std::env::set_var("HF_ENDPOINT", server.uri());
 
-        let db_dir = tempfile::tempdir().unwrap();
+        let xdg_tmp = tempfile::tempdir().unwrap();
         let state = crate::proxy::ProxyState::new(
             crate::config::Config::default(),
-            Some(db_dir.path().to_path_buf()),
+            Some(xdg_tmp.path().to_path_buf()),
             crate::db::pool::test_dummy_pool(),
         );
 
@@ -1705,7 +1664,6 @@ exit 3\n",
         )
         .unwrap();
 
-        let child_arc: Arc<Mutex<Option<tokio::process::Child>>> = Arc::new(Mutex::new(None));
         state
             .pull
             .upsert_repo_pull(RepoPullJob {
@@ -1719,7 +1677,8 @@ exit 3\n",
                 cancel_requested: false,
                 context_length: None,
                 stderr_tail: Arc::new(Mutex::new(Vec::new())),
-                child: child_arc,
+                tamad_job_id: None,
+                bytes_done: 0,
             })
             .await;
 
@@ -1736,51 +1695,54 @@ exit 3\n",
             job.context_length.is_none(),
             "no model row → no completion step → no context length"
         );
-        {
-            let _guard = ENV_GUARD.lock().unwrap();
-            std::env::remove_var("HF_ENDPOINT");
-        }
+        restore_env();
     }
 
-    /// Test that a non-404 (500) error from the HF metadata/info endpoint maps
-    /// to `RepoPullError::Upstream` (not `RepoNotFound`).
+    /// Cancel through the PUBLIC delegate while a relay is in flight: the
+    /// local job is flagged and marked cancelled immediately (the relay
+    /// converges when the host sends its terminal `cancelled` event), and a
+    /// second cancel is rejected.
     #[tokio::test]
-    async fn test_start_repo_pull_non_404_info_error_upstream() {
-        let server = wiremock::MockServer::start().await;
-        // hf-hub 0.5 info() hits /api/models/{repo}/revision/{revision}.
-        wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .and(wiremock::matchers::path(
-                "/api/models/broken/repo/revision/main",
-            ))
-            .respond_with(wiremock::ResponseTemplate::new(500))
-            .mount(&server)
-            .await;
-
+    async fn test_cancel_repo_public_delegate_flags_job() {
         let state = Arc::new(crate::proxy::ProxyState::new(
             crate::config::Config::default(),
             None,
             crate::db::pool::test_dummy_pool(),
         ));
-        let bin_dir = tempfile::tempdir().unwrap();
-        let _stub = write_stub(bin_dir.path(), "hf", "#!/bin/sh\nexit 0\n");
-        {
-            let _guard = ENV_GUARD.lock().unwrap();
-            std::env::set_var("PATH", bin_dir.path());
-            std::env::set_var("HF_ENDPOINT", server.uri());
-        }
+        state
+            .pull
+            .upsert_repo_pull(RepoPullJob {
+                job_id: "job-cancel-pub".to_string(),
+                repo_id: "owner/repo".to_string(),
+                model_id: None,
+                dest: PathBuf::from("/tmp/nowhere"),
+                total_bytes: None,
+                status: RepoPullStatus::Running,
+                error: None,
+                cancel_requested: false,
+                context_length: None,
+                stderr_tail: Arc::new(Mutex::new(Vec::new())),
+                tamad_job_id: Some(JOB_ID.to_string()),
+                bytes_done: 0,
+            })
+            .await;
 
-        let err = start_repo_pull(&state, "broken/repo", None)
+        state
+            .cancel_repo_pull("job-cancel-pub")
             .await
-            .expect_err("a 500 from info() must surface as an error");
-        {
-            let _guard = ENV_GUARD.lock().unwrap();
-            std::env::remove_var("PATH");
-            std::env::remove_var("HF_ENDPOINT");
-        }
+            .expect("cancel should succeed");
 
-        assert!(
-            matches!(err, RepoPullError::Upstream(_)),
-            "expected Upstream for a non-404 info error, got: {err:?}"
+        let job = state
+            .pull
+            .get_repo_pull("job-cancel-pub")
+            .await
+            .expect("job must exist");
+        assert!(job.cancel_requested);
+        assert_eq!(job.status, RepoPullStatus::Cancelled);
+
+        assert_eq!(
+            state.cancel_repo_pull("job-cancel-pub").await,
+            Err("already finished".to_string())
         );
     }
 }

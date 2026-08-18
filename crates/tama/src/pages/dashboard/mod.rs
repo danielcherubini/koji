@@ -6,12 +6,14 @@ use wasm_bindgen::JsCast;
 use web_sys::window;
 
 use crate::components::alert_banner::{AlertBanner, AlertVariant};
-use crate::components::gpu_device_card::{device_display_label, model_gpu_label, GpuDeviceCard};
+use crate::components::gpu_device_card::model_gpu_label;
+use crate::components::host_card::HostCard;
 use crate::components::modal::Modal;
 use crate::components::model_card::{ModelCard, ModelPips};
 use crate::components::pull_quant_wizard::{CompletedQuant, PullQuantWizard};
 use crate::components::{bar_chart::nice_max, BarChart, ChartSeries};
-use crate::utils::{handle_response, post_request, rw_signal_to_signal};
+use crate::core_mirrors::GpuVendor;
+use crate::utils::{get_request, handle_response, post_request, rw_signal_to_signal};
 
 mod metrics;
 pub use metrics::*;
@@ -219,6 +221,10 @@ mod tests;
 pub fn Dashboard() -> impl IntoView {
     let buckets = RwSignal::new(Vec::<MetricBucket>::new());
     let current = RwSignal::new(MetricCurrent::default());
+    // Per-tamad host entries from the SSE `hosts[]` field (plan-191 Task 9).
+    let hosts = RwSignal::new(Vec::<HostStats>::new());
+    // Proxy-local card: (version, uptime_seconds) from /tama/v1/system/health.
+    let proxy_meta = RwSignal::new(None::<(String, f64)>);
     let fetch_failed = RwSignal::new(false);
     // Incrementing this signal re-runs the Effect that opens the EventSource.
     let connect_trigger = RwSignal::new(0u32);
@@ -235,16 +241,34 @@ pub fn Dashboard() -> impl IntoView {
             }
         };
 
+        // Refresh the proxy-local card (version + uptime) from the health
+        // endpoint — re-runs whenever the SSE stream (re)connects.
+        let proxy_meta = proxy_meta;
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Ok(resp) = get_request("/tama/v1/system/health").send().await {
+                if let Ok(v) = resp.json::<serde_json::Value>().await {
+                    if let (Some(ver), Some(up)) = (
+                        v.get("version").and_then(|x| x.as_str()),
+                        v.get("uptime_seconds").and_then(|x| x.as_f64()),
+                    ) {
+                        proxy_meta.set(Some((ver.to_string(), up)));
+                    }
+                }
+            }
+        });
+
         // Handler for "snapshot" events — updates the buckets array (for bar
-        // charts) and the current state (for big-number displays, GPU cards,
-        // model list, inference stats).
+        // charts), the current state (for big-number displays, GPU cards,
+        // model list, inference stats), and the per-tamad hosts (plan-191
+        // Task 9 host cards).
         let on_snapshot =
             Closure::<dyn Fn(web_sys::MessageEvent)>::new(move |evt: web_sys::MessageEvent| {
                 if let Some(data_str) = evt.data().as_string() {
                     if let Ok(snapshot) = serde_json::from_str::<MetricsSnapshot>(&data_str) {
                         fetch_failed.set(false);
                         buckets.set(snapshot.buckets);
-                        current.set(snapshot.current);
+                        current.set(snapshot.current.clone());
+                        hosts.set(snapshot.hosts);
                     }
                 }
             });
@@ -445,7 +469,30 @@ pub fn Dashboard() -> impl IntoView {
             ];
 
             let all_models: Vec<ModelStateSnapshot> = cur.models.clone();
-            let gpus_for_labels = cur.gpus.clone();
+            // Model pips' GPU labels derive from the TAMAD hosts' GPUs (the
+            // proxy presents no local hardware, plan-191 Task 9).
+            let gpus_for_labels: Vec<GpuDeviceStats> = hosts
+                .get()
+                .iter()
+                .flat_map(|host| host.gpus.iter())
+                .map(|g| {
+                    GpuDeviceStats {
+                        device_id: format!("GPU{}", g.index),
+                        vendor: GpuVendor::default(),
+                        name: g.name.clone(),
+                        utilization_pct: Some(g.utilization_percent.clamp(0.0, 100.0) as u8),
+                        vram: (g.vram_total_bytes > 0).then(|| {
+                            crate::pages::dashboard::VramInfo {
+                                used_mib: (g.vram_used_bytes.max(0) as u64) / 1024 / 1024,
+                                total_mib: g.vram_total_bytes.max(0) as u64 / 1024 / 1024,
+                            }
+                        }),
+                        temperature_c: Some(g.temperature_c as u8),
+                        power_w: None,
+                        fan_pct: None,
+                    }
+                })
+                .collect();
             let has_data = !buf.is_empty();
 
             view! {
@@ -537,34 +584,92 @@ pub fn Dashboard() -> impl IntoView {
                     </div>
                 </div>
 
-                // GPU Devices section — only rendered if any GPU data is present
-                // Hidden when no GPUs are detected (laptops, CPU-only servers).
+                // Hosts section — one card per registered tamad (live stats
+                // from the SSE `hosts[]` stream) plus the proxy-local card
+                // (version + uptime only, no hardware — ADR-0010).
                 {move || {
-                    let cur = current.get();
-                    if !cur.gpus.is_empty() {
-                            let gpus = cur.gpus.clone();
+                    let host_list = hosts.get();
+                    let proxy_now = proxy_meta.get();
+                    let mut cards: Vec<AnyView> = Vec::new();
+                    // Proxy-local card first (always present).
+                    match proxy_now {
+                        Some((ver, up)) => cards.push(
                             view! {
-                                <section class="dashboard-gpus">
-                                    <div class="page-header">
-                                        <h2>"GPU Cluster Nodes"</h2>
-                                        <span class="text-muted">{format!("{} device(s)", gpus.len())}</span>
-                                    </div>
-                                    <div class="gpu-device-grid">
-                                        {gpus.into_iter().enumerate().map(|(idx, gpu)| {
-                                            let label = device_display_label(idx);
-                                            view! {
-                                                <GpuDeviceCard
-                                                    device=gpu
-                                                    display_label=label
-                                                />
-                                            }
-                                        }).collect::<Vec<_>>()}
-                                    </div>
-                                </section>
-                            }.into_any()
-                    } else {
-                        view! { <div></div> }.into_any()
+                                <HostCard
+                                    name="Proxy".to_string()
+                                    online=true
+                                    version=Some(format!("tama {ver}"))
+                                    cpu_percent=None
+                                    memory=None
+                                    gpus=Vec::new()
+                                    uptime=Some(format_uptime(up))
+                                />
+                            }
+                            .into_any(),
+                        ),
+                        None => cards.push(
+                            view! {
+                                <HostCard
+                                    name="Proxy".to_string()
+                                    online=true
+                                    version=None
+                                    cpu_percent=None
+                                    memory=None
+                                    gpus=Vec::new()
+                                    uptime=None
+                                />
+                            }
+                            .into_any(),
+                        ),
                     }
+                    for h in &host_list {
+                        let meta = h.clone();
+                        cards.push(
+                            view! {
+                                <HostCard
+                                    name=meta.name.clone()
+                                    online=meta.online
+                                    version=meta.version.clone()
+                                    cpu_percent=Some(meta.cpu_percent)
+                                    memory=Some((
+                                        meta.memory.used_bytes,
+                                        meta.memory.total_bytes,
+                                    ))
+                                    gpus=meta.gpus.clone()
+                                    uptime=None
+                                />
+                            }
+                            .into_any(),
+                        );
+                    }
+                    view! {
+                        <section class="dashboard-hosts">
+                            <div class="page-header">
+                                <h2>"Hosts"</h2>
+                                <span class="text-muted">
+                                    {format!(
+                                        "{} tamad host(s) + proxy",
+                                        host_list.len()
+                                    )}
+                                </span>
+                            </div>
+                            <div class="host-card-grid">{
+                                cards.into_iter().collect::<Vec<_>>()
+                            }</div>
+                            {if host_list.is_empty() {
+                                view! {
+                                    <div class="card card--centered">
+                                        <p class="text-muted">
+                                            "No tamads registered — start/ register a tamad to see live host and GPU stats."
+                                        </p>
+                                    </div>
+                                }
+                                .into_any()
+                            } else {
+                                view! { <div/> }.into_any()
+                            }}
+                        </section>
+                    }.into_any()
                 }}
 
 

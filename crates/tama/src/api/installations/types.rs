@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tokio::time::Duration;
 
 use crate::web_types::JobManager;
 use tama_core::installations::ProgressSink;
@@ -487,75 +486,6 @@ impl ProgressSink for JobAdapter {
 
     fn result(&self, _json: &str) {
         // Not used for backend installs/updates
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Capabilities cache
-// ─────────────────────────────────────────────────────────────────────────────
-
-#[derive(Clone)]
-pub struct CapabilitiesCache {
-    inner: Arc<tokio::sync::Mutex<Option<(std::time::Instant, CapabilitiesDto)>>>,
-}
-
-impl CapabilitiesCache {
-    pub fn new() -> Self {
-        Self {
-            inner: Arc::new(tokio::sync::Mutex::new(None)),
-        }
-    }
-
-    pub async fn get_or_compute(
-        &self,
-        detect_prereqs: fn() -> tama_core::gpu::BuildPrerequisites,
-        detect_cuda: fn() -> Option<String>,
-    ) -> anyhow::Result<CapabilitiesDto> {
-        let now = std::time::Instant::now();
-        let mut guard = self.inner.lock().await;
-
-        // Check cache hit (5-second TTL)
-        if let Some((cached_at, cached)) = &*guard {
-            if now.duration_since(*cached_at) < Duration::from_secs(5) {
-                return Ok(cached.clone());
-            }
-        }
-
-        // Cold path: spawn_blocking to avoid blocking runtime
-        let result = tokio::task::spawn_blocking(move || {
-            let caps = detect_prereqs();
-            let cuda = detect_cuda();
-            CapabilitiesDto {
-                os: caps.os,
-                arch: caps.arch,
-                git_available: caps.git_available,
-                cmake_available: caps.cmake_available,
-                compiler_available: caps.compiler_available,
-                detected_cuda_version: cuda,
-                supported_cuda_versions: vec![
-                    "11.1".to_string(),
-                    "12.4".to_string(),
-                    "13.1".to_string(),
-                ],
-            }
-        })
-        .await;
-
-        let caps = match result {
-            Ok(c) => c,
-            Err(e) => {
-                return Err(anyhow::anyhow!("Failed to detect capabilities: {}", e));
-            }
-        };
-
-        *guard = Some((now, caps.clone()));
-        Ok(caps)
-    }
-}
-
-impl Default for CapabilitiesCache {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
