@@ -13,16 +13,12 @@ Plans for features, refactors, and bug fixes in the Tama project.
 ## Quick Stats
 
 - **Total Plans**: 97
-- **Backlog**: 1
-- **Completed**: 94 ✅
+- **Backlog**: 0
+- **Completed**: 95 ✅
 
 ---
 
 ## Backlog
-
-| # | Plan | Status |
-|---|------|--------|
-| 191 | [Tamad Host Runtime Split](plan-191-tamad-host-runtime.md) | Backlog |
 
 > **Note:** The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan.
 
@@ -32,6 +28,7 @@ Plans for features, refactors, and bug fixes in the Tama project.
 
 | # | Plan | Status |
 |---|------|--------|
+| 191 | [Tamad Host Runtime Split](done/plan-191-tamad-host-runtime.md) | ✅ COMPLETED (squash `05f1694f`) |
 | 190 | [SQLite → Postgres Database Migration](done/plan-190-sqlite-to-postgres.md) | ✅ COMPLETED |
 | 189 | [Model Reasoning Effort](done/plan-189-model-reasoning-effort.md) | ✅ COMPLETED |
 | 188 | [hf CLI Repo Pull (Safetensors Wizard Support)](done/plan-188-hf-cli-repo-pull.md) | ✅ COMPLETED |
