@@ -10,52 +10,21 @@ on:
 
 permissions:
   contents: read
+  actions: write
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  test:
+  # Fast non-compile checks. Runs in parallel with everything else.
+  checks:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-
-      - name: Install system dependencies (libclang for TTS native deps, mold linker)
-        run: sudo apt-get update && sudo apt-get install -y libclang-dev mold
-
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-registry-
-
-      - name: Cache sccache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/sccache
-          key: ${{ runner.os }}-sccache-${{ github.run_id }}
-          restore-keys: ${{ runner.os }}-sccache-
-
-      - name: Install sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-nextest
-
-      - name: Add wasm32 target
-        run: rustup target add wasm32-unknown-unknown
-
-      - name: Install trunk
-        uses: jetli/trunk-action@v0.5.0
-        with:
-          version: latest
 
       - name: Format check
         run: cargo fmt --all --check
@@ -67,15 +36,154 @@ jobs:
             exit 1
           fi
 
+  # WASM frontend (dev profile). Independent of the native builds, so it runs
+  # in parallel with clippy/tests. Publishes crates/tama/dist as an artifact —
+  # required because the `ssr` feature embeds it via include_dir!().
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Cache sccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/sccache
+          key: ${{ runner.os }}-sccache-${{ github.run_id }}
+          restore-keys: ${{ runner.os }}-sccache-
+
+      # Each rust-cache job gets a stable key (job id + hash of Cargo/lock/
+      # toolchain files), so per-job caches restore correctly across runs
+      # and concurrent jobs never write the same key.
+      - name: Cache Rust (wasm frontend build)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: wasm-frontend
+          cache-workspace-crates: true
+          cache-on-failure: true
+
+      - name: Install trunk
+        uses: jetli/trunk-action@v0.5.0
+        with:
+          version: latest
+
       - name: Build Leptos WASM frontend
         working-directory: crates/tama
+        env:
+          RUSTC_WRAPPER: sccache
         run: trunk build --no-default-features --features csr
 
+      - name: Upload frontend dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: crates/tama/dist
+
+  # Clippy. Runs in parallel with the test job on its own runner.
+  clippy:
+    runs-on: ubuntu-latest
+    needs: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies (libclang for TTS native deps, mold linker)
+        run: |
+          sudo apt-get install -y --no-install-recommends libclang-dev mold
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Cache sccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/sccache
+          key: ${{ runner.os }}-sccache-${{ github.run_id }}
+          restore-keys: ${{ runner.os }}-sccache-
+
+      - name: Cache Rust (clippy artifacts)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: clippy
+          cache-workspace-crates: true
+          cache-on-failure: true
+
+      - name: Download frontend dist
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: crates/tama/dist
+
       - name: Clippy (workspace)
+        env:
+          RUSTC_WRAPPER: sccache
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Clippy (tama SSR)
+        env:
+          RUSTC_WRAPPER: sccache
         run: cargo clippy --package tama --features ssr --all-targets -- -D warnings
+
+  # Test suite. Runs in parallel with clippy on its own runner.
+  test:
+    runs-on: ubuntu-latest
+    needs: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies (libclang for TTS native deps, mold linker)
+        run: |
+          sudo apt-get install -y --no-install-recommends libclang-dev mold
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Cache sccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/sccache
+          key: ${{ runner.os }}-sccache-${{ github.run_id }}
+          restore-keys: ${{ runner.os }}-sccache-
+
+      - name: Cache Rust (test build artifacts)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: test
+          cache-workspace-crates: true
+          cache-on-failure: true
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: Download frontend dist
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: crates/tama/dist
+
+      - name: Pre-pull Postgres test image (shared testcontainers image)
+        run: docker pull postgres:16
+
+      - name: Build tamad binary (required by tama e2e real-tamad tests)
+        # `cargo nextest run` only builds test targets — the plain binary the
+        # e2e tests spawn at target/debug/tamad must be built explicitly.
+        env:
+          RUSTC_WRAPPER: sccache
+        run: cargo build -p tamad
 
       - name: Run tests (workspace)
         env:
@@ -83,4 +191,5 @@ jobs:
         run: cargo nextest run --workspace
 
       - name: Run sccache stats
+        if: always()
         run: sccache --show-stats

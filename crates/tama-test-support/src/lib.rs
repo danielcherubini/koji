@@ -544,7 +544,9 @@ pub fn test_dummy_pool() -> std::sync::Arc<PgPool> {
     std::sync::Arc::new(
         PgPoolOptions::new()
             .max_connections(1)
-            .acquire_timeout(std::time::Duration::from_secs(1))
+            // 100ms is plenty for a refused loopback connect+RST; keeps
+            // failing-acquire waits short so dummy-pool tests fail fast.
+            .acquire_timeout(std::time::Duration::from_millis(100))
             .connect_lazy("postgres://tama:tama@127.0.0.1:1/tama")
             .expect("valid dummy pool config"),
     )

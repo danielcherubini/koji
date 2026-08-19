@@ -598,7 +598,7 @@ mod tests {
             .await;
 
         // Subscribe before the runner proceeds (the gate holds it).
-        let mut rx = registry.subscribe(&id).expect("job exists after start");
+        let (mut rx, _history) = registry.subscribe(&id).expect("job exists after start");
         gate.notify_one();
 
         let mut lines = Vec::new();
