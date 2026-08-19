@@ -178,6 +178,13 @@ jobs:
       - name: Pre-pull Postgres test image (shared testcontainers image)
         run: docker pull postgres:16
 
+      - name: Build tamad binary (required by tama e2e real-tamad tests)
+        # `cargo nextest run` only builds test targets — the plain binary the
+        # e2e tests spawn at target/debug/tamad must be built explicitly.
+        env:
+          RUSTC_WRAPPER: sccache
+        run: cargo build -p tamad
+
       - name: Run tests (workspace)
         env:
           RUSTC_WRAPPER: sccache
