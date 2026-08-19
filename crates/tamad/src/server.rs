@@ -408,76 +408,76 @@ impl TamadService for TamadServiceImpl {
 
     /// Server-streaming job events for one job (plan-191 Task 6).
     ///
-    /// Unknown job id → `not_found`. The stream ends right after the
-    /// terminal event is emitted. A stream that ends BEFORE a terminal
-    /// event (transport error, lag, or the tamad dying) means the job is
-    /// broken — the proxy relay treats that as a failure.
+    /// Unknown job id → `not_found`. Events recorded BEFORE this
+    /// subscribe (the runner's early progress — `start` spawns the runner
+    /// before the proxy can even open the stream) are replayed from the
+    /// registry's history first, then the live stream continues: a fresh
+    /// broadcast receiver only sees events sent after subscribing. A late
+    /// joiner for a terminal job gets its terminal state and ends
+    /// immediately. The stream ends right after the terminal event is
+    /// emitted. A stream that ends BEFORE a terminal event (transport
+    /// error, lag, or the tamad dying) means the job is broken — the
+    /// proxy relay treats that as a failure.
     async fn stream_job(
         &self,
         request: tonic::Request<JobRequest>,
     ) -> std::result::Result<tonic::Response<Self::StreamJobStream>, tonic::Status> {
         check_auth(&request, &self.expected_token)?;
         let job_id = request.into_inner().job_id;
-        let rx = self
+        let (rx, history) = self
             .jobs
             .subscribe(&job_id)
             .ok_or_else(|| tonic::Status::not_found(format!("unknown job id '{job_id}'")))?;
 
-        // Late joiner: the job may already be terminal (e.g. the proxy
-        // opened the stream after the runner finished). Replay the terminal
-        // state and end immediately.
-        if let Some(job) = self.jobs.get(&job_id) {
-            if job.is_terminal() {
-                let event = job.to_event();
-                let stream =
-                    futures_util::stream::once(async move { Ok::<JobEvent, tonic::Status>(event) })
-                        .boxed();
-                return Ok(tonic::Response::new(stream));
-            }
-        }
-
-        // Wrap the broadcast receiver in a stream. The capacity is generous
-        // (256) so `Lagged` is effectively impossible for low-rate job
-        // progress; if it happens, surface it as an error. A closed channel
-        // simply ends the stream. A stream that ends BEFORE a terminal event
-        // (error or close) means the job is broken — the proxy relay treats
-        // that as a failure.
         let stream = {
             let stream_job_id = job_id.clone();
-            // Wrap the broadcast receiver in a stream. The capacity is
-            // generous (256) so `Lagged` is effectively impossible for
-            // low-rate job progress; if it happens, surface it as an error
-            // so the proxy relay can mark the job failed. A closed channel
-            // simply ends the stream. A stream that ends BEFORE a terminal
-            // event (error or close) means the job is broken — the proxy
-            // relay treats that as a failure.
-            async_stream::stream! {
-                let broadcast = tokio_stream::wrappers::BroadcastStream::new(rx)
-                    .map(move |res| -> Option<std::result::Result<JobEvent, tonic::Status>> {
+            // Wrap the live broadcast receiver in a stream. The capacity
+            // is generous (256) so `Lagged` is effectively impossible for
+            // low-rate job progress; if it happens, surface it as an
+            // error so the proxy relay can mark the job failed. A closed
+            // channel simply ends the stream.
+            let broadcast = tokio_stream::wrappers::BroadcastStream::new(rx)
+                .map(
+                    move |res| -> Option<std::result::Result<JobEvent, tonic::Status>> {
                         match res {
                             Ok(ev) if ev.job_id != stream_job_id => {
                                 None // shared channel — filter by id
                             }
                             Ok(ev) => Some(Ok(ev)),
                             Err(
-                                tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(
-                                    n,
-                                ),
-                            ) => Some(Err(tonic::Status::internal(
-                                format!("job stream lagged by {n} events"),
-                            ))),
+                                tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n),
+                            ) => Some(Err(tonic::Status::internal(format!(
+                                "job stream lagged by {n} events"
+                            )))),
                         }
-                    })
-                    .filter_map(|maybe| async move { maybe });
-                futures_util::pin_mut!(broadcast);
+                    },
+                )
+                .filter_map(|maybe| async move { maybe });
 
-                // Yield every event for this job; end the stream right after
-                // the terminal event is emitted.
-                while let Some(item) = broadcast.next().await {
-                    let terminal = matches!(&item, Ok(ev) if is_terminal_event(ev));
-                    yield item;
-                    if terminal {
-                        break;
+            async_stream::stream! {
+                // 1) Replay the captured history: events emitted before
+                //    our subscribe. History and the live channel strictly
+                //    partition the stream (see JobRegistry::subscribe),
+                //    so nothing here is ever re-delivered.
+                let mut terminal = false;
+                for ev in history {
+                    let is_term = is_terminal_event(&ev);
+                    yield Ok(ev);
+                    terminal = is_term;
+                }
+
+                // 2) A running job continues live; a terminal one ends
+                //    right here.
+                if !terminal {
+                    futures_util::pin_mut!(broadcast);
+                    // Yield every event for this job; end the stream right
+                    // after the terminal event is emitted.
+                    while let Some(item) = broadcast.next().await {
+                        let is_term = matches!(&item, Ok(ev) if is_terminal_event(ev));
+                        yield item;
+                        if is_term {
+                            break;
+                        }
                     }
                 }
             }
@@ -1130,14 +1130,28 @@ mod tests {
     }
 
     /// A late subscriber (after the job already finished) receives the
-    /// terminal event once, then the stream ends.
+    /// FULL history — every early progress line plus the terminal event —
+    /// then the stream ends. This is the regression guard for proxies
+    /// that open `StreamJob` only after the dispatch round-trip returned:
+    /// the runner's early `report` lines must not be lost because a fresh
+    /// broadcast receiver cannot see events sent before it subscribed;
+    /// the registry replays them from history.
     #[tokio::test]
-    async fn test_stream_job_replays_terminal_for_late_subscriber() {
+    async fn test_stream_job_replays_full_history_for_late_subscriber() {
         let (endpoint, _table, jobs, _dir) = start_test_server().await;
         let mut client = connected_client(endpoint).await;
 
+        // The runner emits early progress lines (like the real
+        // bench/install/pull runners) and finishes before the stream is
+        // opened below.
         let job_id = jobs
-            .start("pull", |_h| Box::pin(async { Ok("{}".to_string()) }))
+            .start("pull", |h| {
+                Box::pin(async move {
+                    h.report(10, "fetching repo");
+                    h.report(50, "downloading");
+                    Ok("{}".to_string())
+                })
+            })
             .await;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while std::time::Instant::now() < deadline {
@@ -1149,17 +1163,47 @@ mod tests {
         }
 
         let mut stream = client
-            .stream_job(authed(tonic::Request::new(JobRequest { job_id }), "secret"))
+            .stream_job(authed(
+                tonic::Request::new(JobRequest {
+                    job_id: job_id.clone(),
+                }),
+                "secret",
+            ))
             .await
             .expect("late stream must open")
             .into_inner();
 
-        let ev = stream
-            .message()
-            .await
-            .expect("event")
-            .expect("terminal event replayed");
-        assert_eq!(ev.status, "succeeded");
+        // Collect the full replay: `started` + every report + the single
+        // terminal event, in emission order. Late joiners get exactly the
+        // same sequence an attached-from-the-start subscriber would see
+        // (no gaps, no duplicates).
+        let mut statuses = Vec::new();
+        let mut messages = Vec::new();
+        loop {
+            let ev = match stream.message().await {
+                Ok(Some(ev)) => ev,
+                Ok(None) => panic!("stream ended before the terminal event"),
+                Err(e) => panic!("stream error: {e}"),
+            };
+            let is_terminal = ev.status == "succeeded" || ev.status == "failed";
+            statuses.push(ev.status.clone());
+            messages.push(ev.message.clone());
+            if is_terminal {
+                assert_eq!(ev.status, "succeeded");
+                assert_eq!(ev.job_id, job_id);
+                assert_eq!(ev.result_json, "{}");
+                break;
+            }
+        }
+        assert_eq!(
+            statuses,
+            vec!["running", "running", "running", "succeeded"],
+            "late joiner must get started + reports + terminal, in order: {messages:?}"
+        );
+        assert_eq!(
+            messages, vec!["started", "fetching repo", "downloading", "downloading"],
+            "sequence: started, each report, then the terminal (carrying the last report's message)"
+        );
         let ended = stream.message().await.expect("no error after replay");
         assert!(
             ended.is_none(),

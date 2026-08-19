@@ -491,7 +491,7 @@ mod tests {
 
         // Observe progress: the stub sleeps 0.3s, so a subscriber that
         // attaches right after start catches at least one running event.
-        let mut rx = registry.subscribe(&job_id).expect("job exists");
+        let (mut rx, _history) = registry.subscribe(&job_id).expect("job exists");
         let mut saw_running = false;
         let mut events = 0;
         let deadline = Instant::now() + Duration::from_secs(5);

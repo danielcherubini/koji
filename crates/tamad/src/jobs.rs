@@ -7,11 +7,21 @@
 //! and the latest state per job is kept in memory so late subscribers can
 //! replay the terminal result.
 //!
+//! In addition, a bounded per-job **history ring** captures every event
+//! for the job's lifetime. Emits are linearized against all subscriber
+//! subscriptions (history append + broadcast send happen under the same
+//! lock in total order; `subscribe` takes that same lock before creating
+//! the receiver), so the returned `(receiver, history)` pair is a strict
+//! partition of the event stream: each event arrives in exactly one of
+//! the two halves. This is what lets a proxy which opens `StreamJob`
+//! *after* the runner has already emitted early progress still
+//! reconstruct the full job log.
+//!
 //! Jobs are in-memory only — tamad holds no database (ADR-0010). Terminal
 //! jobs are pruned 1 hour after finishing (bounded memory); the proxy
 //! persists all durable state from the terminal event's `result_json`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -37,6 +47,11 @@ pub const STATUS_CANCELLED: &str = "cancelled";
 /// Broadcast capacity. Generous (low-rate job progress) so `Lagged` is
 /// effectively impossible for a healthy subscriber.
 const BROADCAST_CAPACITY: usize = 256;
+
+/// Per-job replay history ring: a late `StreamJob` subscriber receives at
+/// most this many buffered events (the most recent ones — the terminal
+/// state always survives), so chatty runners can't grow memory unbounded.
+const HISTORY_CAPACITY: usize = 512;
 
 /// Latest state of a single job.
 #[derive(Debug, Clone)]
@@ -125,7 +140,10 @@ impl JobHandle {
             job.total_bytes = total_bytes;
         }
         let event = job.to_event();
-        drop(map);
+        // Append + send under the `jobs` lock: every event is linearized
+        // against every `subscribe` snapshot, so replay history and the
+        // live channel partition the stream (no loss, no duplicates).
+        self.registry.push_history(&self.id, &event);
         let _ = self.registry.tx.send(event);
     }
 
@@ -162,11 +180,18 @@ impl JobHandle {
 /// Registry of in-flight and recently-finished jobs.
 ///
 /// One shared broadcast channel carries events for ALL jobs (each
-/// `JobEvent` is tagged with `job_id`; subscribers filter). The latest-state
-/// map answers `get` and lets a late subscriber replay a terminal result.
+/// `JobEvent` is tagged with `job_id`; subscribers filter). The
+/// latest-state map answers `get` and lets a late subscriber replay a
+/// terminal result; the per-job `history` rings let any late subscriber
+/// replay the full event stream (see the module docs for the partition
+/// invariant). `jobs` is always locked before `history` (never the
+/// reverse) so the two mutexes cannot deadlock.
 pub struct JobRegistry {
     tx: broadcast::Sender<JobEvent>,
     jobs: std::sync::Mutex<HashMap<String, Job>>,
+    /// Per-job event history for late-subscriber replay (keyed by job id),
+    /// each ring capped at `HISTORY_CAPACITY`.
+    history: std::sync::Mutex<HashMap<String, VecDeque<JobEvent>>>,
     /// Cancellation tokens for in-flight jobs (keyed by job id).
     tokens: std::sync::Mutex<HashMap<String, CancellationToken>>,
     /// Terminal jobs older than this are pruned on each insert.
@@ -180,6 +205,7 @@ impl JobRegistry {
         Arc::new(Self {
             tx: broadcast::channel(BROADCAST_CAPACITY).0,
             jobs: std::sync::Mutex::new(HashMap::new()),
+            history: std::sync::Mutex::new(HashMap::new()),
             tokens: std::sync::Mutex::new(HashMap::new()),
             prune_age: Duration::from_secs(3600),
         })
@@ -191,9 +217,22 @@ impl JobRegistry {
         Arc::new(Self {
             tx: broadcast::channel(BROADCAST_CAPACITY).0,
             jobs: std::sync::Mutex::new(HashMap::new()),
+            history: std::sync::Mutex::new(HashMap::new()),
             tokens: std::sync::Mutex::new(HashMap::new()),
             prune_age: age,
         })
+    }
+
+    /// Append `event` to the job's replay history (callers hold the
+    /// `jobs` lock; the `history` lock nests inside it — consistent
+    /// order, so no deadlock).
+    fn push_history(&self, id: &str, event: &JobEvent) {
+        let mut history = self.history.lock().unwrap();
+        let entry = history.entry(id.to_string()).or_default();
+        if entry.len() >= HISTORY_CAPACITY {
+            entry.pop_front();
+        }
+        entry.push_back(event.clone());
     }
 
     /// Start a new job of the given `kind` and return its id.
@@ -234,12 +273,34 @@ impl JobRegistry {
                     ended_at: None,
                 },
             );
+            // Emit the `started` event under the SAME lock — every emit
+            // path appends to history and sends the event while holding
+            // `jobs`, so a `subscribe` snapshot can never race an emit:
+            // each event lands in exactly one half of the replay.
+            let started = JobEvent {
+                job_id: id.clone(),
+                kind: kind.to_string(),
+                progress: 0,
+                message: "started".to_string(),
+                status: STATUS_RUNNING.to_string(),
+                result_json: String::new(),
+                error: String::new(),
+                bytes_downloaded: 0,
+                total_bytes: 0,
+            };
+            self.push_history(&id, &started);
+            let _ = self.tx.send(started);
             // Drop tokens of jobs pruned above (if the retain pass removed
             // anything, its token is stale). Done under the same snapshot so
             // ids and jobs stay consistent.
-            let live: std::collections::HashSet<String> = map.keys().cloned().collect();
+            let live: HashSet<String> = map.keys().cloned().collect();
             drop(map);
             self.tokens
+                .lock()
+                .unwrap()
+                .retain(|tid, _| live.contains(tid));
+            // Prune replay rings in the same pass that prunes the jobs map.
+            self.history
                 .lock()
                 .unwrap()
                 .retain(|tid, _| live.contains(tid));
@@ -250,18 +311,6 @@ impl JobRegistry {
             .lock()
             .unwrap()
             .insert(id.clone(), CancellationToken::new());
-        let started = JobEvent {
-            job_id: id.clone(),
-            kind: kind.to_string(),
-            progress: 0,
-            message: "started".to_string(),
-            status: STATUS_RUNNING.to_string(),
-            result_json: String::new(),
-            error: String::new(),
-            bytes_downloaded: 0,
-            total_bytes: 0,
-        };
-        let _ = self.tx.send(started);
 
         let handle = JobHandle {
             registry: Arc::clone(self),
@@ -278,21 +327,43 @@ impl JobRegistry {
         });
         id
     }
-    /// Subscribe to the broadcast of job events (all jobs; filter by
-    /// `JobEvent.job_id`).
+    /// Subscribe to the job's event stream.
+    ///
+    /// Returns the live broadcast receiver (all jobs; filter by
+    /// `JobEvent.job_id`) **plus a snapshot of the job's recorded
+    /// history**, in emission order. The snapshot and the receiver are
+    /// captured under the same lock that every emit path holds while
+    /// appending to history and sending the event, so the two halves
+    /// strictly partition the event stream: each event is delivered in
+    /// exactly one of them — never both, never neither. This is what
+    /// lets a late `StreamJob` joiner (the proxy opens the stream after
+    /// the dispatch RPC returned) still receive the runner's early
+    /// progress lines.
     ///
     /// Returns `None` when the job id is unknown.
-    pub fn subscribe(self: &Arc<Self>, job_id: &str) -> Option<broadcast::Receiver<JobEvent>> {
+    pub fn subscribe(
+        self: &Arc<Self>,
+        job_id: &str,
+    ) -> Option<(broadcast::Receiver<JobEvent>, Vec<JobEvent>)> {
         let map = self.jobs.lock().unwrap();
-        if map.contains_key(job_id) {
-            Some(self.tx.subscribe())
-        } else {
-            None
+        if !map.contains_key(job_id) {
+            return None;
         }
+        let history: Vec<JobEvent> = self
+            .history
+            .lock()
+            .unwrap()
+            .get(job_id)
+            .map(|v| v.iter().cloned().collect())
+            .unwrap_or_default();
+        let rx = self.tx.subscribe();
+        Some((rx, history))
     }
 
     /// The latest state for a job, if it is (or was, within the prune
-    /// window) known.
+    /// window) known. Test support only. `#[cfg(test)]` because production
+    /// consumers use `subscribe` (with history replay) — not snapshots.
+    #[cfg(test)]
     pub fn get(self: &Arc<Self>, job_id: &str) -> Option<Job> {
         self.jobs.lock().unwrap().get(job_id).cloned()
     }
@@ -322,13 +393,14 @@ impl JobRegistry {
         job.status = STATUS_CANCELLED.to_string();
         job.ended_at = Some(Instant::now());
         let event = job.to_event();
+        self.push_history(job_id, &event);
+        let _ = self.tx.send(event);
         drop(map);
         // Remove + fire the token: `cancel()` wakes every clone the runner
         // holds through `JobHandle::cancelled()`.
         if let Some(tok) = self.tokens.lock().unwrap().remove(job_id) {
             tok.cancel();
         }
-        let _ = self.tx.send(event);
         true
     }
 
@@ -363,7 +435,7 @@ impl JobRegistry {
         job.error = error.map(String::from);
         job.ended_at = Some(Instant::now());
         let event = job.to_event();
-        drop(map);
+        self.push_history(id, &event);
         let _ = self.tx.send(event);
     }
 }
@@ -452,7 +524,11 @@ mod tests {
                 })
             })
             .await;
-        let rx = registry.subscribe(&id).expect("job exists after start");
+        let (rx, history) = registry.subscribe(&id).expect("job exists after start");
+        // The snapshot is point-in-time: the gated runner has only emitted
+        // `started` so far, and later reports will arrive on the live stream.
+        assert_eq!(history.len(), 1, "history snapshot at subscribe time");
+        assert_eq!(history[0].message, "started");
         let mut rx = rx;
         ready_tx.send(()).ok();
 
@@ -522,6 +598,124 @@ mod tests {
             "late fail() must not override succeed()"
         );
         assert_eq!(job.message, "half", "late report must not override state");
+    }
+
+    /// A late subscriber (the proxy opens `StreamJob` only AFTER the
+    /// runner has already streamed its early progress) must still receive
+    /// the full event history. The broadcast channel alone cannot provide
+    /// this — a fresh receiver only sees events sent after `subscribe()`
+    /// — so the registry must replay captured history alongside the
+    /// receiver.
+    #[tokio::test]
+    async fn test_late_subscriber_replays_full_history() {
+        let registry = JobRegistry::new();
+        let id = registry
+            .start("benchmark", |h| {
+                Box::pin(async move {
+                    h.report(0, "Using llama-bench: /bin/llama-bench");
+                    h.report(0, "Model: test-model");
+                    h.report(0, "Running: llama-bench (pp)");
+                    h.report(0, "benchmark finished");
+                    Ok(r#"{"ok": true}"#.to_string())
+                })
+            })
+            .await;
+
+        // Drain to terminal so every runner report lands before we
+        // subscribe — the worst case for a late `StreamJob` joiner.
+        let _ = wait_terminal(&registry, &id).await;
+
+        let (mut rx, history) = registry.subscribe(&id).expect("job exists after start");
+
+        // The history must carry the whole stream in order, ending in the
+        // terminal event (whose message is the runner's last report).
+        let messages: Vec<&str> = history.iter().map(|ev| ev.message.as_str()).collect();
+        assert_eq!(
+            messages,
+            vec![
+                "started",
+                "Using llama-bench: /bin/llama-bench",
+                "Model: test-model",
+                "Running: llama-bench (pp)",
+                "benchmark finished",
+                "benchmark finished",
+            ],
+            "history must replay every pre-subscribe event in order"
+        );
+        let last = history.last().expect("history is non-empty");
+        assert_eq!(last.status, STATUS_SUCCEEDED);
+        assert_eq!(last.progress, 100);
+        assert_eq!(last.result_json, r#"{"ok": true}"#);
+
+        // The live channel must not DUPLICATE the replayed history: a
+        // terminal job emits nothing after subscribe.
+        let dup = tokio::time::timeout(Duration::from_millis(50), rx.recv()).await;
+        match dup {
+            Err(_) => {} // no event — as expected
+            Ok(Ok(ev)) => assert_ne!(ev.job_id, id, "history event replayed twice: {ev:?}"),
+            Ok(other) => panic!("unexpected recv on a terminal job: {other:?}"),
+        }
+    }
+
+    /// The same replay guarantee for a FAILED job: the terminal event must
+    /// carry the error message, so a late joiner reconstructs the failure.
+    #[tokio::test]
+    async fn test_late_subscriber_replays_failed_terminal() {
+        let registry = JobRegistry::new();
+        let id = registry
+            .start("pull", |h| {
+                Box::pin(async move {
+                    h.report(50, "halfway");
+                    Err(anyhow::anyhow!("download exploded: range 416"))
+                })
+            })
+            .await;
+
+        let _ = wait_terminal(&registry, &id).await;
+
+        let (_, history) = registry.subscribe(&id).expect("job exists after start");
+        let last = history.last().expect("history is non-empty");
+        assert_eq!(last.status, STATUS_FAILED);
+        assert_eq!(last.error, "download exploded: range 416");
+        assert_eq!(last.message, "halfway");
+    }
+
+    /// History is bounded — a chatty runner cannot grow a job's in-memory
+    /// replay buffer without limit. The ring keeps the most recent
+    /// `HISTORY_CAPACITY` events (always including the terminal state).
+    #[tokio::test]
+    async fn test_history_is_capped() {
+        let registry = JobRegistry::new();
+        let overflow = HISTORY_CAPACITY + 100;
+        let id = registry
+            .start("pull", move |h| {
+                Box::pin(async move {
+                    for i in 0..overflow {
+                        let progress = i32::try_from(i % 100).expect("fits");
+                        h.report(progress, &format!("line {i}"));
+                    }
+                    Ok("done".to_string())
+                })
+            })
+            .await;
+
+        let _ = wait_terminal(&registry, &id).await;
+
+        let (_, history) = registry.subscribe(&id).expect("job exists after start");
+        assert_eq!(history.len(), HISTORY_CAPACITY, "ring must be bounded");
+        // 1 (started) + {overflow} reports + 1 (terminal) events total.
+        // The ring keeps the last HISTORY_CAPACITY entries: the most
+        // recent HISTORY_CAPACITY-1 report events + the terminal event.
+        let first_report = overflow - HISTORY_CAPACITY + 1;
+        assert_eq!(
+            history.first().map(|ev| ev.message.as_str()),
+            Some(format!("line {first_report}").as_str())
+        );
+        assert_eq!(
+            history.last().map(|ev| ev.status.as_str()),
+            Some(STATUS_SUCCEEDED),
+            "the terminal state must always survive capping"
+        );
     }
 
     /// Unknown job ids: `subscribe` returns `None`, `get` returns `None`.
