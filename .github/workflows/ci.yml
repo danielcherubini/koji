@@ -63,7 +63,7 @@ jobs:
       # toolchain files), so per-job caches restore correctly across runs
       # and concurrent jobs never write the same key.
       - name: Cache Rust (wasm frontend build)
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: wasm-frontend
           cache-workspace-crates: true
@@ -111,7 +111,7 @@ jobs:
           restore-keys: ${{ runner.os }}-sccache-
 
       - name: Cache Rust (clippy artifacts)
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: clippy
           cache-workspace-crates: true
@@ -158,7 +158,7 @@ jobs:
           restore-keys: ${{ runner.os }}-sccache-
 
       - name: Cache Rust (test build artifacts)
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: test
           cache-workspace-crates: true
