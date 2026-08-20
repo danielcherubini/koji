@@ -118,7 +118,8 @@ pub fn rewrite_args_for_container(
 
         // Check for positional path arg (e.g. vLLM model path `/models/org/repo`)
         if unquoted.starts_with('/') {
-            if let Some(rewritten) = maybe_rewrite_path(unquoted, models_dir, container_model_path)? {
+            if let Some(rewritten) = maybe_rewrite_path(unquoted, models_dir, container_model_path)?
+            {
                 result.push(rewritten);
                 continue;
             }
@@ -515,10 +516,7 @@ mod tests {
         let result = rewrite_args_for_container(&args, models_dir, "/models").unwrap();
         assert_eq!(
             result,
-            vec![
-                "--chat-template",
-                "/models/templates/chat_template.jinja"
-            ]
+            vec!["--chat-template", "/models/templates/chat_template.jinja"]
         );
     }
 
@@ -533,11 +531,7 @@ mod tests {
         let result = rewrite_args_for_container(&args, models_dir, "/models").unwrap();
         assert_eq!(
             result,
-            vec![
-                "/models/Qwen/Qwen3.8-27B-FP8",
-                "--port",
-                "8000"
-            ]
+            vec!["/models/Qwen/Qwen3.8-27B-FP8", "--port", "8000"]
         );
     }
 

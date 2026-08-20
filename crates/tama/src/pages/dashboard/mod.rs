@@ -1,18 +1,14 @@
-use std::collections::BTreeMap;
-
 use leptos::prelude::*;
+use leptos_router::components::A;
 use wasm_bindgen::prelude::*;
-use wasm_bindgen::JsCast;
-use web_sys::window;
 
 use crate::components::alert_banner::{AlertBanner, AlertVariant};
 use crate::components::gpu_device_card::model_gpu_label;
 use crate::components::host_card::HostCard;
 use crate::components::modal::Modal;
-use crate::components::model_card::{ModelCard, ModelPips};
 use crate::components::pull_quant_wizard::{CompletedQuant, PullQuantWizard};
-use crate::components::{bar_chart::nice_max, BarChart, ChartSeries};
-use crate::core_mirrors::GpuVendor;
+use crate::components::{bar_chart::nice_max, BarChart};
+use crate::core_mirrors::{GpuVendor, ModelState};
 use crate::utils::{get_request, handle_response, post_request, rw_signal_to_signal};
 
 mod metrics;
@@ -20,7 +16,13 @@ pub use metrics::*;
 
 // ── Sort/Group enums ─────────────────────────────────────────────────────────
 
+// The dashboard now renders only active models (plan-192 Task 2); the full
+// catalog with sort/grouping lives on `/tama/models`. These enums and their
+// helpers stay (with `#[allow(dead_code)]`) so the unit tests in
+// `dashboard/tests.rs` keep exercising them.
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[allow(dead_code)] // Used only by unit tests in dashboard/tests.rs
 enum SortBy {
     #[default]
     Name,
@@ -31,6 +33,7 @@ enum SortBy {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Used only by unit tests in dashboard/tests.rs
 enum GroupBy {
     Gpu,
     Family,
@@ -38,14 +41,10 @@ enum GroupBy {
     Status,
 }
 
-// ── localStorage keys ────────────────────────────────────────────────────────
-
-const SORT_KEY: &str = "tama-models-sort-by";
-const GROUP_KEY: &str = "tama-models-group-by";
-
 // ── Sort/Group helpers (adapted for ModelStateSnapshot) ─────────────────────────────
 
 /// Extract trailing numeric index from a GPU device string (e.g. "CUDA10" → 10).
+#[allow(dead_code)] // Used only by unit tests in dashboard/tests.rs
 fn extract_gpu_index(device: &str) -> Option<u32> {
     let mut digits = String::new();
     for c in device.chars().rev() {
@@ -64,6 +63,7 @@ fn extract_gpu_index(device: &str) -> Option<u32> {
 }
 
 /// Extract vendor from a ModelStateSnapshot using a chain of fallbacks.
+#[allow(dead_code)] // Used only by unit tests in dashboard/tests.rs
 fn extract_vendor_model_status(m: &ModelStateSnapshot) -> String {
     for (field, separator) in &[
         (&m.display_name, ':'),
@@ -83,6 +83,7 @@ fn extract_vendor_model_status(m: &ModelStateSnapshot) -> String {
 }
 
 /// Returns `(priority, index)` for GPU sorting.
+#[allow(dead_code)] // Used only by unit tests in dashboard/tests.rs
 fn extract_gpu_sort_key_model_status(gpu_device: &Option<String>) -> (u32, u32) {
     match gpu_device {
         Some(device) => {
@@ -94,6 +95,7 @@ fn extract_gpu_sort_key_model_status(gpu_device: &Option<String>) -> (u32, u32) 
 }
 
 /// Human-readable GPU label for grouping.
+#[allow(dead_code)] // Used only by unit tests in dashboard/tests.rs
 fn gpu_group_label_model_status(gpu_device: &Option<String>) -> String {
     match gpu_device {
         Some(device) => {
@@ -108,6 +110,7 @@ fn gpu_group_label_model_status(gpu_device: &Option<String>) -> String {
 }
 
 /// Capitalizes the first letter of a string.
+#[allow(dead_code)] // Used only by unit tests in dashboard/tests.rs
 fn capitalize_first(s: &str) -> String {
     let mut chars = s.chars();
     match chars.next() {
@@ -117,6 +120,7 @@ fn capitalize_first(s: &str) -> String {
 }
 
 /// Returns a comparable string for sorting (all non-GPU sorts).
+#[allow(dead_code)] // Used only by unit tests in dashboard/tests.rs
 fn extract_sort_key_model_status(m: &ModelStateSnapshot, sort_by: SortBy) -> String {
     match sort_by {
         SortBy::Name => metrics::model_display_name(m),
@@ -128,6 +132,7 @@ fn extract_sort_key_model_status(m: &ModelStateSnapshot, sort_by: SortBy) -> Str
 }
 
 /// Returns the grouping key for a model.
+#[allow(dead_code)] // Used only by unit tests in dashboard/tests.rs
 fn extract_group_key_model_status(m: &ModelStateSnapshot, group_by: GroupBy) -> String {
     match group_by {
         GroupBy::Gpu => gpu_group_label_model_status(&m.gpu_device),
@@ -148,6 +153,7 @@ fn extract_group_key_model_status(m: &ModelStateSnapshot, group_by: GroupBy) -> 
 }
 
 /// Returns display order for group headers.
+#[allow(dead_code)] // Used only by unit tests in dashboard/tests.rs
 fn group_display_order(group_by: GroupBy, key: &str) -> u32 {
     match group_by {
         GroupBy::Gpu => {
@@ -161,6 +167,7 @@ fn group_display_order(group_by: GroupBy, key: &str) -> u32 {
 }
 
 /// Sort models in place by the given sort criterion.
+#[allow(dead_code)] // Used only by unit tests in dashboard/tests.rs
 fn sort_models_status(models: &mut [ModelStateSnapshot], sort_by: SortBy) {
     match sort_by {
         SortBy::Gpu => {
@@ -177,6 +184,7 @@ fn sort_models_status(models: &mut [ModelStateSnapshot], sort_by: SortBy) {
 }
 
 /// Parse a string into a SortBy enum.
+#[allow(dead_code)] // Used only by unit tests in dashboard/tests.rs
 fn parse_sort_by(s: &str) -> SortBy {
     match s {
         "gpu" => SortBy::Gpu,
@@ -188,6 +196,7 @@ fn parse_sort_by(s: &str) -> SortBy {
 }
 
 /// Parse a string into an Option<GroupBy> enum.
+#[allow(dead_code)] // Used only by unit tests in dashboard/tests.rs
 fn parse_group_by(s: &str) -> Option<GroupBy> {
     match s {
         "gpu" => Some(GroupBy::Gpu),
@@ -195,22 +204,6 @@ fn parse_group_by(s: &str) -> Option<GroupBy> {
         "vendor" => Some(GroupBy::Vendor),
         "status" => Some(GroupBy::Status),
         _ => None,
-    }
-}
-
-/// Read a value from localStorage.
-fn read_local_storage(key: &str) -> Option<String> {
-    window()
-        .and_then(|w| w.local_storage().ok())
-        .flatten()
-        .and_then(|ls| ls.get(key).ok())
-        .flatten()
-}
-
-/// Write a value to localStorage.
-fn write_local_storage(key: &str, value: &str) {
-    if let Some(ls) = window().and_then(|w| w.local_storage().ok()).flatten() {
-        let _ = ls.set(key, value);
     }
 }
 
@@ -223,7 +216,8 @@ pub fn Dashboard() -> impl IntoView {
     let current = RwSignal::new(MetricCurrent::default());
     // Per-tamad host entries from the SSE `hosts[]` field (plan-191 Task 9).
     let hosts = RwSignal::new(Vec::<HostStats>::new());
-    // Proxy-local card: (version, uptime_seconds) from /tama/v1/system/health.
+    // Proxy-local status: (version, uptime_seconds) from /tama/v1/system/health,
+    // rendered in the header status pill (plan-192 Task 2).
     let proxy_meta = RwSignal::new(None::<(String, f64)>);
     let fetch_failed = RwSignal::new(false);
     // Incrementing this signal re-runs the Effect that opens the EventSource.
@@ -241,7 +235,7 @@ pub fn Dashboard() -> impl IntoView {
             }
         };
 
-        // Refresh the proxy-local card (version + uptime) from the health
+        // Refresh the header status pill (version + uptime) from the health
         // endpoint — re-runs whenever the SSE stream (re)connects.
         let proxy_meta = proxy_meta;
         wasm_bindgen_futures::spawn_local(async move {
@@ -302,37 +296,19 @@ pub fn Dashboard() -> impl IntoView {
         }
     });
 
-    // Per-model load/unload actions wired to the same REST endpoints used by
-    // the `/models` page. Both actions are unsync because `gloo_net::Request`
-    // returns `!Send` futures in the WASM target.
+    // Per-model unload action, wired to the same REST endpoint used by the
+    // `/models` page. Unsync because `gloo_net::Request` returns `!Send`
+    // futures in the WASM target.
     //
     // We use a manual "busy" signal instead of relying on Action::pending()
     // because in some WASM error scenarios (e.g. proxy returns 500 with no
     // backend configured), the pending flag can get stuck and never reset,
     // leaving buttons permanently disabled with "Loading…" text.
-    let load_busy = RwSignal::new(false);
     let unload_busy = RwSignal::new(false);
-    let cancel_busy = RwSignal::new(false);
 
     // Pull Model modal
     let pull_modal_open = RwSignal::new(false);
 
-    let load_action: Action<String, (), LocalStorage> = Action::new_unsync(move |id: &String| {
-        let id = id.clone();
-        async move {
-            load_busy.set(true);
-            // Ignore errors — the SSE stream will push updated model state.
-            // Even if the request fails (e.g. no backend configured), we set
-            // load_busy to false below so the button becomes clickable again.
-            if let Ok(resp) = post_request(&format!("/tama/v1/models/{}/load", id))
-                .send()
-                .await
-            {
-                let _ = handle_response(&resp);
-            }
-            load_busy.set(false);
-        }
-    });
     let unload_action: Action<String, (), LocalStorage> = Action::new_unsync(move |id: &String| {
         let id = id.clone();
         async move {
@@ -347,83 +323,50 @@ pub fn Dashboard() -> impl IntoView {
             unload_busy.set(false);
         }
     });
-    let cancel_action: Action<String, (), LocalStorage> = Action::new_unsync(move |id: &String| {
-        let id = id.clone();
-        async move {
-            cancel_busy.set(true);
-            // Ignore errors — SSE will push updated model state.
-            if let Ok(resp) = post_request(&format!("/tama/v1/models/{}/cancel", id))
-                .send()
-                .await
-            {
-                let _ = handle_response(&resp);
-            }
-            cancel_busy.set(false);
-        }
-    });
-
-    // Sort/group state with localStorage persistence
-    let sort_by = RwSignal::new({
-        let stored = read_local_storage(SORT_KEY);
-        stored.as_deref().map(parse_sort_by).unwrap_or(SortBy::Name)
-    });
-    let group_by = RwSignal::new({
-        let stored = read_local_storage(GROUP_KEY);
-        stored.as_deref().map(parse_group_by).unwrap_or(None)
-    });
-
-    // Persist sort preference
-    Effect::new(move || {
-        let val = sort_by.get();
-        let key_str = match val {
-            SortBy::Name => "name",
-            SortBy::Gpu => "gpu",
-            SortBy::Family => "family",
-            SortBy::Vendor => "vendor",
-            SortBy::Status => "status",
-        };
-        write_local_storage(SORT_KEY, key_str);
-    });
-
-    // Persist group preference
-    Effect::new(move || {
-        let val = group_by.get();
-        let key_str = match val {
-            Some(GroupBy::Gpu) => "gpu",
-            Some(GroupBy::Family) => "family",
-            Some(GroupBy::Vendor) => "vendor",
-            Some(GroupBy::Status) => "status",
-            None => "none",
-        };
-        write_local_storage(GROUP_KEY, key_str);
-    });
 
     view! {
+        // Header control plane: title + cluster summary line, gateway status
+        // pill, and the pinned Pull / Restart actions (plan-192 Task 2).
         <div class="page-header">
-            <h1>"Dashboard"</h1>
+            <div class="dashboard-header">
+                <h1>"Dashboard"</h1>
+                <div class="dashboard-cluster-subtitle">
+                    {move || {
+                        let host_list = hosts.get();
+                        let cur = current.get();
+                        let gpu_count: usize = host_list.iter().map(|h| h.gpus.len()).sum();
+                        let active_count = loaded_or_starting_models(&cur.models).len();
+                        format_cluster_subtitle(host_list.len(), gpu_count, active_count, cur.tps)
+                    }}
+                </div>
+            </div>
             <div class="page-header-actions">
-                // Existing status badge + Restart (inside conditional, only shown after SSE data arrives)
                 {move || {
-                    buckets.get().last().cloned().map(|_h| {
-                        let badge_class = if fetch_failed.get() { "badge badge-danger" } else { "badge badge-success" };
-                        let badge_text = if fetch_failed.get() { "error" } else { "ok" };
+                    if fetch_failed.get() {
                         view! {
-                            <div class="flex-between gap-1">
-                                <span class={badge_class}>{badge_text}</span>
-                                <button class="btn btn-secondary" on:click=move |_| { restart.dispatch(()); }>
-                                    "Restart"
-                                </button>
-                            </div>
+                            <span class="gateway-pill gateway-pill--offline">
+                                {gateway_status_text(false, None, None)}
+                            </span>
                         }
-                    })
+                    } else {
+                        let meta = proxy_meta.get();
+                        view! {
+                            <span class="gateway-pill gateway-pill--online">
+                                {gateway_status_text(
+                                    true,
+                                    meta.as_ref().map(|(v, _)| v.as_str()),
+                                    meta.as_ref().map(|(_, u)| *u),
+                                )}
+                            </span>
+                        }
+                    }
                 }}
-                // New buttons (always visible, outside conditional)
+                <button class="btn btn-secondary" on:click=move |_| {
+                    restart.dispatch(());
+                }>"Restart"</button>
                 <button class="btn btn-secondary" on:click=move |_| pull_modal_open.set(true)>"Pull Model"</button>
-
             </div>
         </div>
-
-
 
         {move || {
             let buf = buckets.get();
@@ -438,229 +381,242 @@ pub fn Dashboard() -> impl IntoView {
                 }.into_any();
             }
 
-            // Extract chart data from pre-aggregated 30s buckets (no frontend
-            // transformation — the backend owns the aggregation).
-            let cpu_data: Vec<f32> = buf.iter().map(|s| s.cpu_usage_pct).collect();
-            let mem_data: Vec<f32> = buf.iter().map(|s| s.ram_used_mib as f32).collect();
+            // Inference telemetry (plan-192 Task 3): the 15-minute TG/PP
+            // series from pre-aggregated buckets plus the per-card live
+            // values. The backend owns the aggregation — the view only
+            // derives chart y-ceilings (peak == 0 → flat 1.0 scale) and
+            // per-token latencies up front.
+            let telemetry = build_inference_telemetry(&buf);
             let timestamps: Vec<i64> = buf.iter().map(|s| s.ts_unix_ms).collect();
-            let mem_max = cur.ram_total_mib as f32;
-
-            // Inference stats series: Prompt Processing (blue) and Token Generation (green).
-            // Built from per-bucket averaged tps/prompt_tps values.
-            // Each series gets its own independent scale so both remain visible
-            // even when one metric is orders of magnitude larger than the other.
-            let pp_data: Vec<f32> = buf.iter().map(|b| b.prompt_tps).collect();
-            let tg_data: Vec<f32> = buf.iter().map(|b| b.tps).collect();
-            let max_pp = buf.iter().map(|b| b.prompt_tps).fold(0.0f32, f32::max);
-            let max_tg = buf.iter().map(|b| b.tps).fold(0.0f32, f32::max);
-            let inference_series: Vec<ChartSeries> = vec![
-                ChartSeries {
-                    label: "PP".to_string(),
-                    color: "var(--accent-blue)".to_string(),
-                    data: pp_data,
-                    max_value: Some(nice_max(max_pp)),
-                },
-                ChartSeries {
-                    label: "TG".to_string(),
-                    color: "var(--accent-green)".to_string(),
-                    data: tg_data,
-                    max_value: Some(nice_max(max_tg)),
-                },
-            ];
-
-            let all_models: Vec<ModelStateSnapshot> = cur.models.clone();
-            // Model pips' GPU labels derive from the TAMAD hosts' GPUs (the
-            // proxy presents no local hardware, plan-191 Task 9).
-            let gpus_for_labels: Vec<GpuDeviceStats> = hosts
-                .get()
-                .iter()
-                .flat_map(|host| host.gpus.iter())
-                .map(|g| {
-                    GpuDeviceStats {
-                        device_id: format!("GPU{}", g.index),
-                        vendor: GpuVendor::default(),
-                        name: g.name.clone(),
-                        utilization_pct: Some(g.utilization_percent.clamp(0.0, 100.0) as u8),
-                        vram: (g.vram_total_bytes > 0).then(|| {
-                            crate::pages::dashboard::VramInfo {
-                                used_mib: (g.vram_used_bytes.max(0) as u64) / 1024 / 1024,
-                                total_mib: g.vram_total_bytes.max(0) as u64 / 1024 / 1024,
-                            }
-                        }),
-                        temperature_c: Some(g.temperature_c as u8),
-                        power_w: None,
-                        fan_pct: None,
-                    }
-                })
-                .collect();
             let has_data = !buf.is_empty();
+            // Each sparkline scales against its own window peak (TG vs PP
+            // differ by orders of magnitude), guarded so an empty window
+            // renders a flat 1.0 scale instead of a zero-height chart.
+            let tg_y_max = if telemetry.tg_peak > 0.0 {
+                nice_max(telemetry.tg_peak)
+            } else {
+                1.0
+            };
+            let pp_y_max = if telemetry.pp_peak > 0.0 {
+                nice_max(telemetry.pp_peak)
+            } else {
+                1.0
+            };
+            // Token Generation card: live tok/s + derived inter-token latency.
+            let tg_visible = has_data && cur.tps.is_some();
+            let tg_value = match cur.tps {
+                Some(t) => format!("{t:.1} tok/s"),
+                None => "—".to_string(),
+            };
+            let tg_secondary = cur.tps.and_then(ms_per_token).map(|ms| {
+                format!("ITL {ms:.1} ms/tok · peak {:.0} tok/s", telemetry.tg_peak)
+            });
+            // Prompt Processing card: live tok/s + derived prefill latency.
+            let pp_visible = has_data && cur.prompt_tps.is_some();
+            let pp_value = match cur.prompt_tps {
+                Some(t) => format!("{t:.1} tok/s"),
+                None => "—".to_string(),
+            };
+            let pp_secondary = cur.prompt_tps.and_then(ms_per_token).map(|ms| {
+                format!("prefill {ms:.1} ms/tok · peak {:.0} tok/s", telemetry.pp_peak)
+            });
 
             view! {
-                <div class="grid-stats">
-                    // CPU card
-                    <div class="stat-card">
-                        <div class="stat-card-head">
-                            <div class="card-header">"CPU Usage"</div>
-                            <div class="stat-card-value-group">
-                                {if has_data {
-                                    view! {
-                                        <div class="card-value">{format!("{:.1}%", cur.cpu_usage_pct)}</div>
-                                        <div class="card-secondary">"of 100%"</div>
-                                    }.into_any()
-                                } else {
-                                    view! {
-                                        <div class="card-value-empty">"—"</div>
-                                    }.into_any()
+
+                // Active Models section — only models currently Ready or
+                // Starting, with quick Unload / benchmark actions. The full
+                // catalog with sort/group management lives on `/tama/models`
+                // (plan-192 Task 2).
+                <section class="dashboard-models">
+                    <div class="page-header">
+                        <h2>"Active Models"</h2>
+                        <div class="models-toolbar">
+                            <span class="text-muted">
+                                {move || {
+                                    let cur = current.get();
+                                    format!(
+                                        "{} active",
+                                        loaded_or_starting_models(&cur.models).len()
+                                    )
                                 }}
-                            </div>
-                        </div>
-                        <div class="sparkline-container">
-                            <BarChart
-                                data=cpu_data
-                                max_value=100.0
-                                color="var(--accent-green)".to_string()
-                                height=60.0
-                                timestamps=timestamps.clone()
-                                unit_label="%".to_string()
-                            />
+                            </span>
+                            <A attr:class="btn btn-secondary btn-sm" href="/tama/models">
+                                "Manage Models →"
+                            </A>
                         </div>
                     </div>
+                    {move || {
+                        let cur = current.get();
+                        let active = loaded_or_starting_models(&cur.models);
 
-                    // Memory card
-                    <div class="stat-card">
-                        <div class="stat-card-head">
-                            <div class="card-header">"Memory"</div>
-                            <div class="stat-card-value-group">
-                                {if has_data {
-                                    view! {
-                                        <div class="card-value">{format_number(cur.ram_used_mib)}</div>
-                                        <div class="card-secondary">{format!("of {} MiB", format_number(cur.ram_total_mib))}</div>
-                                    }.into_any()
-                                } else {
-                                    view! {
-                                        <div class="card-value-empty">"—"</div>
-                                    }.into_any()
-                                }}
-                            </div>
-                        </div>
-                        <div class="sparkline-container">
-                            <BarChart
-                                data=mem_data
-                                max_value=mem_max
-                                color="var(--accent-blue)".to_string()
-                                height=60.0
-                                timestamps=timestamps.clone()
-                                unit_label="MiB".to_string()
-                            />
-                        </div>
-                    </div>
+                        // GPU chips resolve against the tamad hosts' GPUs —
+                        // the proxy presents no local hardware (plan-191
+                        // Task 9).
+                        let gpus_for_labels: Vec<GpuDeviceStats> = hosts
+                            .get()
+                            .iter()
+                            .flat_map(|host| host.gpus.iter())
+                            .map(|g| {
+                                let used_mib = (g.vram_used_bytes.max(0) as u64) / (1024 * 1024);
+                                let total_mib = (g.vram_total_bytes.max(0) as u64) / (1024 * 1024);
+                                GpuDeviceStats {
+                                    device_id: format!("GPU{}", g.index),
+                                    vendor: GpuVendor::default(),
+                                    name: g.name.clone(),
+                                    utilization_pct: Some(
+                                        g.utilization_percent.clamp(0.0, 100.0) as u8,
+                                    ),
+                                    vram: (g.vram_total_bytes > 0)
+                                        .then_some(VramInfo { used_mib, total_mib }),
+                                    temperature_c: Some(g.temperature_c as u8),
+                                    power_w: None,
+                                    fan_pct: None,
+                                }
+                            })
+                            .collect();
 
-                    // Inference Stats card — shows Prompt Processing and Token Generation
-                    // as two series in the bar chart. Always shown (even on CPU-only systems).
-                    <div class="stat-card">
-                        <div class="stat-card-head">
-                            <div class="card-header">"Inference Stats"</div>
-                            <div class="stat-card-value-group">
-                                <div class="network-rates">
-                                    <span class="network-rate" style="color: var(--accent-blue)">
-                                        {format!("PP  {:.0} tok/s", cur.prompt_tps.unwrap_or(0.0))}
-                                    </span>
-                                    <span class="network-rate" style="color: var(--accent-green)">
-                                        {format!("TG  {:.0} tok/s", cur.tps.unwrap_or(0.0))}
-                                    </span>
+                        if active.is_empty() {
+                            return view! {
+                                <div class="card card--centered">
+                                    <p class="text-muted">
+                                        "⚪ No models currently active · "
+                                        <A href="/tama/models">"Browse & Load a Model →"</A>
+                                    </p>
                                 </div>
-                            </div>
-                        </div>
-                        <div class="sparkline-container">
-                            <BarChart
-                                series=inference_series.clone()
-                                max_value=0.0
-                                color=String::new()
-                                height=60.0
-                                timestamps=timestamps.clone()
-                                unit_label="tok/s".to_string()
-                            />
-                        </div>
-                    </div>
-                </div>
+                            }.into_any();
+                        }
 
-                // Hosts section — one card per registered tamad (live stats
-                // from the SSE `hosts[]` stream) plus the proxy-local card
-                // (version + uptime only, no hardware — ADR-0010).
+                        let rows: Vec<AnyView> = active
+                            .iter()
+                            .map(move |m| {
+                                let ready = m.state == ModelState::Ready;
+                                let status_class = if ready {
+                                    "active-model-status active-model-status--ready"
+                                } else {
+                                    "active-model-status active-model-status--starting"
+                                };
+                                let status_title = if ready { "Ready" } else { "Starting" };
+                                let display = model_display_name(m);
+                                let api_name = m.api_name.clone();
+                                // GPU allocation chip: the host-resolved label,
+                                // falling back to the raw device string when
+                                // no host reports that GPU yet.
+                                let gpu_chip = model_gpu_label(&gpus_for_labels, m)
+                                    .or_else(|| m.gpu_device.clone());
+                                let meta = format_model_meta_parts(m);
+                                let tps = m.tps.filter(|t| *t > 0.0);
+                                let id_for_unload = m.id.clone();
+                                let bench_href =
+                                    format!("/tama/benchmarks?tab=suite&model={}", urlencoding::encode(&m.id));
+                                view! {
+                                    <div class="active-model-row">
+                                        <span class={status_class} title={status_title}></span>
+                                        <div class="active-model-name">
+                                            <span class="active-model-name--primary">{display}</span>
+                                            {if let Some(api) = api_name {
+                                                view! {
+                                                    <span class="active-model-name--api">" · "{api}</span>
+                                                }
+                                                .into_any()
+                                            } else {
+                                                view! { <span></span> }.into_any()
+                                            }}
+                                        </div>
+                                        {if let Some(chip) = gpu_chip {
+                                            view! {
+                                                <span class="active-model-gpu-chip">{chip}</span>
+                                            }
+                                            .into_any()
+                                        } else {
+                                            view! { <span></span> }.into_any()
+                                        }}
+                                        <span class="active-model-meta">{meta.join(" · ")}</span>
+                                        {if let Some(t) = tps {
+                                            view! {
+                                                <span class="active-model-tps">{format!("{t:.0} tok/s")}</span>
+                                            }
+                                            .into_any()
+                                        } else {
+                                            view! { <span></span> }.into_any()
+                                        }}
+                                        <div class="active-model-actions">
+                                            <button
+                                                class="btn btn-secondary btn-sm"
+                                                disabled=move || unload_busy.get()
+                                                on:click=move |_| {
+                                                    unload_action.dispatch(id_for_unload.clone());
+                                                }
+                                            >
+                                                {move || {
+                                                    if unload_busy.get() {
+                                                        "Unloading…"
+                                                    } else {
+                                                        "Unload"
+                                                    }
+                                                }}
+                                            </button>
+                                            <A
+                                                attr:class="btn btn-secondary btn-sm active-model-bench"
+                                                attr:title="Run benchmark suite"
+                                                href=bench_href
+                                            >
+                                                "▷"
+                                            </A>
+                                        </div>
+                                    </div>
+                                }
+                                .into_any()
+                            })
+                            .collect();
+
+                        view! {
+                            <div class="active-models-list">{rows}</div>
+                        }
+                        .into_any()
+                    }}
+                </section>
+
+                // Hosts section — one card per registered tamad. The grid
+                // renders only real tamad nodes from the SSE `hosts[]`
+                // stream; the proxy's version + uptime live in the header
+                // status pill (plan-192 Task 2).
                 {move || {
                     let host_list = hosts.get();
-                    let proxy_now = proxy_meta.get();
-                    let mut cards: Vec<AnyView> = Vec::new();
-                    // Proxy-local card first (always present).
-                    match proxy_now {
-                        Some((ver, up)) => cards.push(
+                    let cards: Vec<AnyView> = host_list
+                        .iter()
+                        .map(|h| {
+                            let meta = h.clone();
                             view! {
                                 <HostCard
-                                    name="Proxy".to_string()
-                                    online=true
-                                    version=Some(format!("tama {ver}"))
-                                    cpu_percent=None
-                                    memory=None
-                                    gpus=Vec::new()
-                                    uptime=Some(format_uptime(up))
-                                />
-                            }
-                            .into_any(),
-                        ),
-                        None => cards.push(
-                            view! {
-                                <HostCard
-                                    name="Proxy".to_string()
-                                    online=true
-                                    version=None
-                                    cpu_percent=None
-                                    memory=None
-                                    gpus=Vec::new()
-                                    uptime=None
-                                />
-                            }
-                            .into_any(),
-                        ),
-                    }
-                    for h in &host_list {
-                        let meta = h.clone();
-                        cards.push(
-                            view! {
-                                <HostCard
-                                    name=meta.name.clone()
+                                    name=meta.name
                                     online=meta.online
-                                    version=meta.version.clone()
+                                    version=meta.version
                                     cpu_percent=Some(meta.cpu_percent)
                                     memory=Some((
                                         meta.memory.used_bytes,
                                         meta.memory.total_bytes,
                                     ))
-                                    gpus=meta.gpus.clone()
+                                    gpus=meta.gpus
                                     uptime=None
                                 />
                             }
-                            .into_any(),
-                        );
-                    }
+                            .into_any()
+                        })
+                        .collect();
                     view! {
                         <section class="dashboard-hosts">
                             <div class="page-header">
                                 <h2>"Hosts"</h2>
                                 <span class="text-muted">
-                                    {format!(
-                                        "{} tamad host(s) + proxy",
-                                        host_list.len()
-                                    )}
+                                    {format!("{} tamad host(s)", host_list.len())}
                                 </span>
                             </div>
-                            <div class="host-card-grid">{
-                                cards.into_iter().collect::<Vec<_>>()
-                            }</div>
+                            <div class="host-card-grid">{cards}</div>
                             {if host_list.is_empty() {
                                 view! {
                                     <div class="card card--centered">
                                         <p class="text-muted">
-                                            "No tamads registered — start/ register a tamad to see live host and GPU stats."
+                                            "No tamads registered — start a tamad on your inference host to connect compute."
                                         </p>
                                     </div>
                                 }
@@ -672,151 +628,140 @@ pub fn Dashboard() -> impl IntoView {
                     }.into_any()
                 }}
 
+                // Inference Telemetry section — pure gateway inference
+                // metrics (plan-192 Task 3): live generation/prefill
+                // throughput with 15-minute sparklines from the
+                // pre-aggregated SSE buckets, plus cache & speculative
+                // decoding efficiency. Rendered last — at the bottom of the
+                // page, below the Active Models and Hosts sections. Cards
+                // reuse .stat-card / .sparkline-container; the grid is just
+                // .grid-stats + the --inference modifier.
+                <section class="dashboard-telemetry">
+                    <div class="telemetry-heading">
+                        <h2>"Inference Telemetry"</h2>
+                        <span class="text-muted">"(Past 15 minutes)"</span>
+                    </div>
+                    <div class="grid-stats grid-stats--inference">
+                        // Token Generation card — live generation throughput
+                        // + 15m green sparkline.
+                        <div class="stat-card">
+                            <div class="stat-card-head">
+                                <div class="card-header">"Token Generation"</div>
+                                <div class="stat-card-value-group">
+                                    {if tg_visible {
+                                        view! {
+                                            <div class="card-value">{tg_value.clone()}</div>
+                                            {if let Some(sec) = &tg_secondary {
+                                                view! {
+                                                    <div class="card-secondary">{sec.clone()}</div>
+                                                }.into_any()
+                                            } else {
+                                                view! { <span></span> }.into_any()
+                                            }}
+                                        }.into_any()
+                                    } else {
+                                        view! {
+                                            <div class="card-value-empty">"—"</div>
+                                        }.into_any()
+                                    }}
+                                </div>
+                            </div>
+                            <div class="sparkline-container">
+                                <BarChart
+                                    data=telemetry.tg.clone()
+                                    max_value=tg_y_max
+                                    color="var(--accent-green)".to_string()
+                                    height=60.0
+                                    timestamps=timestamps.clone()
+                                    unit_label="tok/s".to_string()
+                                />
+                            </div>
+                        </div>
 
-                // Models section
-                <section class="dashboard-models">
-                    <div class="page-header">
-                        <h2>"Models"</h2>
-                        <div class="models-toolbar">
-                            <select
-                                class="btn btn-secondary btn-sm"
-                                on:change=move |e| {
-                                    let val = e.target()
-                                        .and_then(|t| t.dyn_into::<web_sys::HtmlSelectElement>().ok())
-                                        .map(|s| s.value())
-                                        .unwrap_or_default();
-                                    sort_by.set(parse_sort_by(&val));
-                                }
-                            >
-                                <option value="name" selected=move || sort_by.get() == SortBy::Name>"Name"</option>
-                                <option value="gpu" selected=move || sort_by.get() == SortBy::Gpu>"GPU"</option>
-                                <option value="family" selected=move || sort_by.get() == SortBy::Family>"Family"</option>
-                                <option value="vendor" selected=move || sort_by.get() == SortBy::Vendor>"Vendor"</option>
-                                <option value="status" selected=move || sort_by.get() == SortBy::Status>"Status"</option>
-                            </select>
-                            <select
-                                class="btn btn-secondary btn-sm"
-                                on:change=move |e| {
-                                    let val = e.target()
-                                        .and_then(|t| t.dyn_into::<web_sys::HtmlSelectElement>().ok())
-                                        .map(|s| s.value())
-                                        .unwrap_or_default();
-                                    group_by.set(parse_group_by(&val));
-                                }
-                            >
-                                <option value="none" selected=move || group_by.get().is_none()>"None"</option>
-                                <option value="gpu" selected=move || group_by.get() == Some(GroupBy::Gpu)>"GPU"</option>
-                                <option value="family" selected=move || group_by.get() == Some(GroupBy::Family)>"Family"</option>
-                                <option value="vendor" selected=move || group_by.get() == Some(GroupBy::Vendor)>"Vendor"</option>
-                                <option value="status" selected=move || group_by.get() == Some(GroupBy::Status)>"Status"</option>
-                            </select>
-                            <span class="text-muted">{format!("{} models", all_models.len())}</span>
+                        // Prompt Processing card — live prefill throughput
+                        // + 15m blue sparkline.
+                        <div class="stat-card">
+                            <div class="stat-card-head">
+                                <div class="card-header">"Prompt Processing"</div>
+                                <div class="stat-card-value-group">
+                                    {if pp_visible {
+                                        view! {
+                                            <div class="card-value">{pp_value.clone()}</div>
+                                            {if let Some(sec) = &pp_secondary {
+                                                view! {
+                                                    <div class="card-secondary">{sec.clone()}</div>
+                                                }.into_any()
+                                            } else {
+                                                view! { <span></span> }.into_any()
+                                            }}
+                                        }.into_any()
+                                    } else {
+                                        view! {
+                                            <div class="card-value-empty">"—"</div>
+                                        }.into_any()
+                                    }}
+                                </div>
+                            </div>
+                            <div class="sparkline-container">
+                                <BarChart
+                                    data=telemetry.pp.clone()
+                                    max_value=pp_y_max
+                                    color="var(--accent-blue)".to_string()
+                                    height=60.0
+                                    timestamps=timestamps.clone()
+                                    unit_label="tok/s".to_string()
+                                />
+                            </div>
+                        </div>
+
+                        // Cache & Speculative Efficiency card — no sparkline;
+                        // prompt-cache hit rate + draft acceptance rate with
+                        // a live decoding status.
+                        <div class="stat-card">
+                            <div class="card-header">"Cache & Speculative Efficiency"</div>
+                            <div class="efficiency-grid">
+                                <div class="efficiency-item">
+                                    {match cur.cache_hit_pct {
+                                        Some(p) => view! {
+                                            <div class="card-value">{format!("{p:.0}%")}</div>
+                                        }.into_any(),
+                                        None => view! {
+                                            <div class="card-value-empty">"—"</div>
+                                        }.into_any(),
+                                    }}
+                                    <div class="card-secondary">"Prefix/KV Cache Hit"</div>
+                                </div>
+                                <div class="efficiency-item">
+                                    {match cur.spec_accept_pct {
+                                        Some(p) => view! {
+                                            <div class="card-value">{format!("{p:.0}%")}</div>
+                                        }.into_any(),
+                                        None => view! {
+                                            <div class="card-value-empty">"—"</div>
+                                        }.into_any(),
+                                    }}
+                                    <div class="card-secondary">"Speculative Acceptance"</div>
+                                </div>
+                            </div>
+                            <div class="sparkline-container">
+                                {if cur.spec_decoding_active {
+                                    view! {
+                                        <span class="spec-status spec-status--active">
+                                            "● spec decoding active"
+                                        </span>
+                                    }.into_any()
+                                } else {
+                                    view! {
+                                        <span class="spec-status text-muted">
+                                            "○ spec decoding inactive"
+                                        </span>
+                                    }.into_any()
+                                }}
+                            </div>
                         </div>
                     </div>
-                    {
-                        if all_models.is_empty() {
-                            view! {
-                                <div class="card card--centered">
-                                    <p class="text-muted">"No models configured yet."</p>
-                                </div>
-                            }.into_any()
-                        } else {
-                            // Clone, sort, and optionally group the models
-                            let mut sorted_models = all_models.clone();
-                            sort_models_status(&mut sorted_models, sort_by.get());
-
-                            // Build grouped output
-                            let groups: Vec<(Option<String>, Vec<ModelStateSnapshot>)> = {
-                                let group_by_val = group_by.get();
-                                if let Some(group_by_type) = group_by_val {
-                                    let mut groups_map: BTreeMap<String, Vec<ModelStateSnapshot>> = BTreeMap::new();
-                                    let mut group_order: Vec<String> = Vec::new();
-                                    for m in &sorted_models {
-                                        let key = extract_group_key_model_status(m, group_by_type);
-                                        if !groups_map.contains_key(&key) {
-                                            group_order.push(key.clone());
-                                        }
-                                        groups_map.entry(key).or_default().push(m.clone());
-                                    }
-                                    group_order.sort_by(|a, b| {
-                                        let oa = group_display_order(group_by_type, a.as_str());
-                                        let ob = group_display_order(group_by_type, b.as_str());
-                                        oa.cmp(&ob).then_with(|| a.cmp(b))
-                                    });
-                                    group_order.into_iter()
-                                        .map(|key| {
-                                            let models_in_group = groups_map.remove(&key).unwrap();
-                                            (Some(capitalize_first(&key)), models_in_group)
-                                        })
-                                        .collect()
-                                } else {
-                                    vec![(None, sorted_models)]
-                                }
-                            };
-
-                            view! {
-                                <div class="models-list">
-                                    {groups.into_iter().flat_map(|(label, models_in_group)| {
-                                        let group_len = models_in_group.len();
-                                        let cards: Vec<AnyView> = models_in_group.into_iter().map(|m| {
-                                            let on_load_cb = Callback::new(move |id: String| {
-                                                load_action.dispatch(id);
-                                            });
-                                            let on_unload_cb = Callback::new(move |id: String| {
-                                                unload_action.dispatch(id);
-                                            });
-                                            let on_cancel_cb = Callback::new(move |id: String| {
-                                                cancel_action.dispatch(id);
-                                            });
-                                            let gpu_label = model_gpu_label(&gpus_for_labels, &m);
-                                            view! {
-                                                <ModelCard
-                                                    id=m.id.clone()
-                                                    db_id=m.db_id
-                                                    display_name=model_display_name(&m)
-                                                    quant=m.quant.clone()
-                                                    context_length=m.context_length
-                                                    hf_architecture_type=m.hf_architecture_type.clone()
-                                                    hf_base_model=m.hf_base_model.clone()
-                                                    hf_format=m.hf_format.clone()
-                                                    pips=ModelPips {
-                                                        gpu_variant: m.gpu_variant.clone(),
-                                                        cache_type_k: m.cache_type_k.clone(),
-                                                        cache_type_v: m.cache_type_v.clone(),
-                                                        spec_types: m.spec_types.clone(),
-                                                        gpu_label,
-                                                    }
-                                                    backend=m.backend.clone()
-                                                    log_source=Some(if m.is_docker { format!("docker_{}", m.id) } else { format!("{}_{}", m.backend, m.id) })
-                                                    state=m.state.clone()
-                                                    enabled=None
-                                                    error_message=m.error_message.clone()
-                                                    on_load=on_load_cb
-                                                    on_unload=on_unload_cb
-                                                    on_cancel=on_cancel_cb
-                                                    load_busy=load_busy
-                                                    unload_busy=unload_busy
-                                                    cancel_busy=cancel_busy
-                                                />
-                                            }.into_any()
-                                        }).collect();
-
-                                        if let Some(l) = label {
-                                            let header: AnyView = view! {
-                                                <div class="model-section__title">
-                                                    {l} " (" {group_len} " " {if group_len == 1 { "model" } else { "models" }} ")"
-                                                </div>
-                                            }.into_any();
-                                            std::iter::once(header).chain(cards.into_iter()).collect::<Vec<AnyView>>().into_iter()
-                                        } else {
-                                            cards.into_iter()
-                                        }
-                                    }).collect::<Vec<_>>()}
-                                </div>
-                            }.into_any()
-                        }
-                    }
                 </section>
+
             }.into_any()
         }}
 

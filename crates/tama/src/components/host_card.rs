@@ -10,32 +10,141 @@ use leptos::prelude::*;
 
 use crate::pages::dashboard::{format_bytes_gib, format_bytes_gib_rounded, HostGpu};
 
-/// One row of per-GPU telemetry for a tamad host card.
+/// Format a GPU VRAM label as `used / total GiB`, e.g. `28.6 GiB / 32 GiB`.
+///
+/// Both helpers already include the `GiB` unit, so this must not append
+/// another one. Returns `"—"` when the total is unknown (zero).
+pub fn vram_label(used_bytes: u64, total_bytes: u64) -> String {
+    if total_bytes == 0 {
+        return "—".to_string();
+    }
+    format!(
+        "{} / {}",
+        format_bytes_gib(used_bytes),
+        format_bytes_gib_rounded(total_bytes)
+    )
+}
+
+/// Strip a leading vendor/system prefix from a raw GPU name so only the
+/// device name remains, e.g. `"Advanced Micro Devices, Inc. [AMD/ATI] Radeon
+/// Pro W7900"` -> `"Radeon Pro W7900"`, and drop a trailing PCI id suffix
+/// like `" [10de:2685]"` when one remains. No-op for names that already
+/// look clean (e.g. `"Radeon Pro W7900"`).
+///
+/// When the name is vendor-only (no device name after the label), cleaning
+/// would leave nothing usable — an empty string, a bare bracketed tag like
+/// `[AMD/ATI]`, or a corporate fragment like `Corporation` — so the raw
+/// (trimmed) string is returned instead.
+pub fn clean_gpu_name(raw: &str) -> String {
+    let mut name = raw.trim();
+    // System prefixes run up to and including "], " (e.g. "... [AMD/ATI] ").
+    if let Some(pos) = name.find("], ") {
+        name = &name[pos + 3..];
+    }
+    // Remaining known vendor labels (longest first so the specific ones win).
+    const VENDOR_PREFIXES: &[&str] = &[
+        "NVIDIA Corporation ",
+        "Advanced Micro Devices, Inc. ",
+        "Advanced Micro Devices ",
+        "Intel(R)(R) ",
+        "Intel(R) ",
+        "Intel ",
+        "NVIDIA ",
+    ];
+    for prefix in VENDOR_PREFIXES {
+        if let Some(stripped) = name.strip_prefix(prefix) {
+            name = stripped;
+            break;
+        }
+    }
+    // Drop a leading system tag like "[AMD/ATI] " left behind after the
+    // vendor label (only when the whole tag begins the name).
+    if let Some(end) = name.find("] ") {
+        let tag = &name[..end];
+        if tag.starts_with('[') {
+            name = &name[end + 2..];
+        }
+    }
+    // Drop a trailing PCI identifier, e.g. "[10de:2685]".
+    if let Some(open) = name.rfind('[') {
+        let suffix = &name[open..];
+        let inner = suffix.strip_prefix('[').and_then(|s| s.strip_suffix(']'));
+        if inner.is_some_and(is_pci_id) {
+            name = name[..open].trim_end();
+        }
+    }
+    let cleaned = name.trim().to_string();
+    // Vendor-only names leave nothing usable behind (empty string, a bare
+    // bracketed tag, or a corporate fragment) — fall back to the raw string
+    // so the row still shows something meaningful.
+    if cleaned.is_empty() || is_bare_tag(&cleaned) || VENDOR_FRAGMENTS.contains(&cleaned.as_str()) {
+        raw.trim().to_string()
+    } else {
+        cleaned
+    }
+}
+
+/// Words that appear in vendor labels (e.g. `NVIDIA Corporation`,
+/// `Advanced Micro Devices, Inc.`) but are never part of a device name —
+/// a cleaned-up result made of one of these is a vendor fragment, not a
+/// device.
+const VENDOR_FRAGMENTS: &[&str] = &["Corporation", "Inc.", "Inc", "Corp.", "Corp"];
+
+/// True when the whole string is a single bracketed system tag such as
+/// `[AMD/ATI]` (not a device name).
+fn is_bare_tag(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() >= 2 && b[0] == b'[' && b[b.len() - 1] == b']'
+}
+
+/// Returns true for PCI ids like `10de:2685` (hex digits, colon, hex digits).
+fn is_pci_id(inner: &str) -> bool {
+    let Some((vendor, device)) = inner.split_once(':') else {
+        return false;
+    };
+    !vendor.is_empty()
+        && !device.is_empty()
+        && vendor.len() <= 4
+        && device.len() <= 4
+        && vendor.bytes().all(|b| b.is_ascii_hexdigit())
+        && device.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// One row of per-GPU telemetry for a tamad host card: top line shows the
+/// GPU index + cleaned name, core utilization % and temperature; the bottom
+/// line shows the VRAM label with a full-width usage bar.
 #[component]
 pub fn HostGpuRow(gpu: HostGpu) -> impl IntoView {
-    let util = gpu.utilization_percent;
-    let vram_label = if gpu.vram_total_bytes > 0 {
-        format!(
-            "{} / {} GiB",
-            format_bytes_gib(gpu.vram_used_bytes.max(0) as u64),
-            format_bytes_gib_rounded(gpu.vram_total_bytes.max(0) as u64)
-        )
+    let util = gpu.utilization_percent.clamp(0.0, 100.0);
+    let total = gpu.vram_total_bytes.max(0) as u64;
+    let used = gpu.vram_used_bytes.max(0) as u64;
+    let vram_pct = if total > 0 {
+        (used as f64 / total as f64 * 100.0).clamp(0.0, 100.0)
     } else {
-        "—".to_string()
+        0.0
     };
-    let name = gpu.name.clone();
+    let vram_text = if total > 0 {
+        format!("{} ({vram_pct:.0}%)", vram_label(used, total))
+    } else {
+        vram_label(0, 0)
+    };
+    let title = format!("GPU {} · {}", gpu.index, clean_gpu_name(&gpu.name));
     view! {
         <div class="host-gpu-row">
-            <span class="host-gpu-row__name">{name}</span>
-            <span class="host-gpu-row__vram">{vram_label}</span>
-            <div class="host-gpu-row__util-bar">
-                <div
-                    class="progress-bar-fill"
-                    style=format!("width: {:.0}%", util.clamp(0.0, 100.0))
-                />
+            <div class="host-gpu-row__top">
+                <span class="host-gpu-row__name">{title}</span>
+                <span class="host-gpu-row__value">{format!("{util:.0}%")}</span>
+                <span class="host-gpu-row__temp">{format!("{:.0}°C", gpu.temperature_c)}</span>
             </div>
-            <span class="host-gpu-row__value">{format!("{util:.0}%")}</span>
-            <span class="host-gpu-row__temp">{format!("{:.0}°C", gpu.temperature_c)}</span>
+            <div class="host-gpu-row__bottom">
+                <span class="host-gpu-row__vram">{vram_text}</span>
+                <div class="host-gpu-row__util-bar">
+                    <div
+                        class="progress-bar-fill"
+                        style=format!("width: {vram_pct:.0}%")
+                    />
+                </div>
+            </div>
         </div>
     }
 }
@@ -61,15 +170,19 @@ pub fn HostCard(
     gpus: Vec<HostGpu>,
     /// Extra info line under the header (e.g. "Up 2h 13m" for the proxy).
     uptime: Option<String>,
+    /// Models actively running on this node (e.g.
+    /// `"Qwen3.8-27B-FP8 (Port 37115)"`); empty hides the section.
+    #[prop(default = Vec::new())]
+    running_models: Vec<String>,
 ) -> impl IntoView {
     view! {
         <div class="card host-card">
             <div class="host-card__head">
                 <div class="host-card__title">{name}</div>
                 {if online {
-                    view! { <span class="badge badge-success">"online"</span> }.into_any()
+                    view! { <span class="badge badge-success">"● online"</span> }.into_any()
                 } else {
-                    view! { <span class="badge badge-danger">"offline"</span> }.into_any()
+                    view! { <span class="badge badge-danger">"● offline"</span> }.into_any()
                 }}
             </div>
             <div class="host-card__info">
@@ -148,6 +261,22 @@ pub fn HostCard(
                     } else {
                         view! { <div/> }.into_any()
                     }}
+                    {if !running_models.is_empty() {
+                        view! {
+                            <div class="host-card__running">
+                                <span class="host-card__running-label">"🟢 Running:"</span>
+                                <div class="host-card__running-badges">
+                                    {running_models.iter().map(|m| {
+                                        let m = m.clone();
+                                        view! { <span class="badge host-card__running-badge">{m}</span> }
+                                    }).collect::<Vec<_>>()}
+                                </div>
+                            </div>
+                        }
+                        .into_any()
+                    } else {
+                        view! { <div/> }.into_any()
+                    }}
                 }
                 .into_any()
             } else {
@@ -159,5 +288,97 @@ pub fn HostCard(
                 .into_any()
             }}
         </div>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 28.6 GiB used of a 32 GiB GPU — the live-node regression case.
+    const USED_28_6_GIB: u64 = 30_685_282_304;
+    const TOTAL_32_GIB: u64 = 34_359_738_368;
+
+    #[test]
+    fn test_vram_label_no_duplicate_unit() {
+        let label = vram_label(USED_28_6_GIB, TOTAL_32_GIB);
+        assert!(!label.contains("GiB GiB"), "duplicate unit in {label:?}");
+    }
+
+    #[test]
+    fn test_vram_label_exact_format() {
+        let label = vram_label(USED_28_6_GIB, TOTAL_32_GIB);
+        assert_eq!(label, "28.6 GiB / 32 GiB");
+    }
+
+    #[test]
+    fn test_vram_label_unknown_total() {
+        assert_eq!(vram_label(1024, 0), "—");
+    }
+
+    /// 128 GiB used of a 256 GiB GPU — both values hit the `>=100 GiB`
+    /// zero-decimal branch of `format_bytes_gib`/`format_bytes_gib_rounded`.
+    #[test]
+    fn test_vram_label_hundred_gib_zero_decimals() {
+        let used = 128 * 1024 * 1024 * 1024;
+        let total = 256 * 1024 * 1024 * 1024;
+        assert_eq!(vram_label(used, total), "128 GiB / 256 GiB");
+    }
+
+    #[test]
+    fn test_clean_gpu_name_strips_amd_prefix() {
+        assert_eq!(
+            clean_gpu_name("Advanced Micro Devices, Inc. [AMD/ATI] Radeon Pro W7900"),
+            "Radeon Pro W7900"
+        );
+    }
+
+    #[test]
+    fn test_clean_gpu_name_strips_nvidia_vendor_and_pci_id() {
+        assert_eq!(
+            clean_gpu_name("NVIDIA Corporation GeForce RTX 4090 [10de:2685]"),
+            "GeForce RTX 4090"
+        );
+    }
+
+    #[test]
+    fn test_clean_gpu_name_strips_intel_prefix() {
+        assert_eq!(
+            clean_gpu_name("Intel(R) UHD Graphics 770"),
+            "UHD Graphics 770"
+        );
+    }
+
+    #[test]
+    fn test_clean_gpu_name_noop_when_clean() {
+        assert_eq!(clean_gpu_name("Radeon Pro W7900"), "Radeon Pro W7900");
+    }
+
+    #[test]
+    fn test_clean_gpu_name_empty() {
+        assert_eq!(clean_gpu_name(""), "");
+    }
+
+    /// Vendor label with no device name — stripping the `NVIDIA ` prefix
+    /// would leave a bare corporate fragment (`"Corporation"`), so the
+    /// raw name is returned instead of the fragment.
+    #[test]
+    fn test_clean_gpu_name_vendor_only_nvidia() {
+        assert_eq!(clean_gpu_name("NVIDIA Corporation"), "NVIDIA Corporation");
+        assert_eq!(
+            clean_gpu_name("NVIDIA Corporation "),
+            "NVIDIA Corporation",
+            "trailing-space variant must not leave the row empty"
+        );
+    }
+
+    /// Vendor label with only its bracketed system tag — the tag alone
+    /// (`"[AMD/ATI]"`) is not a device name, so the raw name is returned.
+    #[test]
+    fn test_clean_gpu_name_vendor_only_amd() {
+        assert_eq!(
+            clean_gpu_name("Advanced Micro Devices, Inc. [AMD/ATI]"),
+            "Advanced Micro Devices, Inc. [AMD/ATI]"
+        );
     }
 }

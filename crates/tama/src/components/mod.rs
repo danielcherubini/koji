@@ -21,7 +21,7 @@ pub mod pull_quant_wizard;
 pub mod pull_wizard;
 pub mod section_card;
 pub mod self_update_section;
-pub use bar_chart::{BarChart, ChartSeries};
+pub use bar_chart::BarChart;
 pub mod sidebar;
 pub mod tab_buttons;
 pub mod toast;

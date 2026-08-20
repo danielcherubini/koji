@@ -850,3 +850,364 @@ fn test_format_bytes_gib_rounded() {
     assert_eq!(format_bytes_gib_rounded(16 * 1024 * 1024 * 1024), "16 GiB");
     assert_eq!(format_bytes_gib_rounded(1024), "1 GiB");
 }
+
+// ── loaded_or_starting_models tests ───────────────────────────────────────
+
+/// `loaded_or_starting_models` returns only `Ready` and `Starting` models,
+/// preserving input order.
+#[test]
+fn test_loaded_or_starting_models_returns_ready_and_starting_only() {
+    let models = vec![
+        ModelStateSnapshot {
+            id: "a".into(),
+            state: ModelState::Ready,
+            ..Default::default()
+        },
+        ModelStateSnapshot {
+            id: "b".into(),
+            state: ModelState::Idle,
+            ..Default::default()
+        },
+        ModelStateSnapshot {
+            id: "c".into(),
+            state: ModelState::Starting,
+            ..Default::default()
+        },
+        ModelStateSnapshot {
+            id: "d".into(),
+            state: ModelState::Unloading,
+            ..Default::default()
+        },
+        ModelStateSnapshot {
+            id: "e".into(),
+            state: ModelState::Failed,
+            ..Default::default()
+        },
+    ];
+
+    let active = loaded_or_starting_models(&models);
+    assert_eq!(active.len(), 2);
+    assert_eq!(active[0].id, "a");
+    assert_eq!(active[0].state, ModelState::Ready);
+    assert_eq!(active[1].id, "c");
+    assert_eq!(active[1].state, ModelState::Starting);
+}
+
+/// Unlike `active_models`, a model that has started unloading no longer
+/// counts as loaded — the dashboard's Active Models section must drop it.
+#[test]
+fn test_loaded_or_starting_models_excludes_unloading() {
+    let models = vec![
+        ModelStateSnapshot {
+            id: "a".into(),
+            state: ModelState::Unloading,
+            ..Default::default()
+        },
+        ModelStateSnapshot {
+            id: "b".into(),
+            state: ModelState::Ready,
+            ..Default::default()
+        },
+    ];
+
+    let active = loaded_or_starting_models(&models);
+    assert_eq!(active.len(), 1);
+    assert_eq!(active[0].id, "b");
+}
+
+/// `loaded_or_starting_models` returns an empty vec when no model is
+/// ready or starting.
+#[test]
+fn test_loaded_or_starting_models_returns_empty_when_none_loaded() {
+    let models = vec![
+        ModelStateSnapshot {
+            id: "a".into(),
+            state: ModelState::Idle,
+            ..Default::default()
+        },
+        ModelStateSnapshot {
+            id: "b".into(),
+            state: ModelState::Failed,
+            ..Default::default()
+        },
+        ModelStateSnapshot {
+            id: "c".into(),
+            state: ModelState::Unloading,
+            ..Default::default()
+        },
+    ];
+
+    assert!(loaded_or_starting_models(&models).is_empty());
+}
+
+/// `loaded_or_starting_models` returns an empty vec for an empty input slice.
+#[test]
+fn test_loaded_or_starting_models_returns_empty_for_empty_input() {
+    let models: Vec<ModelStateSnapshot> = vec![];
+    assert!(loaded_or_starting_models(&models).is_empty());
+}
+
+/// `loaded_or_starting_models` preserves all model fields so the Active
+/// Models rows can render without data loss.
+#[test]
+fn test_loaded_or_starting_models_preserves_fields() {
+    let models = vec![
+        ModelStateSnapshot {
+            id: "alpha".into(),
+            db_id: Some(7),
+            api_name: Some("org/alpha".into()),
+            display_name: Some("Alpha 27B".into()),
+            backend: "ik_llama".into(),
+            state: ModelState::Starting,
+            quant: Some("fp8".into()),
+            context_length: Some(262144),
+            tps: Some(12.0),
+            ..Default::default()
+        },
+        ModelStateSnapshot {
+            id: "beta".into(),
+            state: ModelState::Idle,
+            ..Default::default()
+        },
+    ];
+
+    let active = loaded_or_starting_models(&models);
+    assert_eq!(active.len(), 1);
+    assert_eq!(active[0].id, "alpha");
+    assert_eq!(active[0].db_id, Some(7));
+    assert_eq!(active[0].display_name, Some("Alpha 27B".into()));
+    assert_eq!(active[0].quant, Some("fp8".into()));
+    assert_eq!(active[0].context_length, Some(262144));
+    assert_eq!(active[0].tps, Some(12.0));
+}
+
+// ── format_cluster_subtitle tests ─────────────────────────────────────────
+
+/// The cluster subtitle renders the canonical line with rounded
+/// throughput and count-inflected words (`1 Model`, `2 Nodes`).
+#[test]
+fn test_format_cluster_subtitle_full() {
+    assert_eq!(
+        format_cluster_subtitle(2, 3, 1, Some(53.4)),
+        "2 Nodes (3 GPUs) · 1 Model Active · 53 tok/s"
+    );
+}
+
+/// Singular counts render with singular labels: `1 Node (1 GPU) ·
+/// 1 Model Active`.
+#[test]
+fn test_format_cluster_subtitle_singular() {
+    assert_eq!(
+        format_cluster_subtitle(1, 1, 1, Some(53.0)),
+        "1 Node (1 GPU) · 1 Model Active · 53 tok/s"
+    );
+}
+
+/// Throughput renders as `—` when `None` or zero, and a zero-sized cluster
+/// still produces a well-formed line.
+#[test]
+fn test_format_cluster_subtitle_zero_cluster_and_no_throughput() {
+    assert_eq!(
+        format_cluster_subtitle(0, 0, 0, None),
+        "0 Nodes (0 GPUs) · 0 Models Active · —"
+    );
+    assert_eq!(
+        format_cluster_subtitle(1, 2, 2, Some(0.0)),
+        "1 Node (2 GPUs) · 2 Models Active · —"
+    );
+}
+
+// ── gateway_status_text tests ─────────────────────────────────────────────
+
+/// The header status pill text covers every known/unknown combination of
+/// version + uptime, and always reports offline when the stream is down.
+#[test]
+fn test_gateway_status_text_variants() {
+    assert_eq!(
+        gateway_status_text(false, Some("2.1.0"), Some(8_100.0)),
+        "● Gateway Offline"
+    );
+    assert_eq!(
+        gateway_status_text(true, Some("2.1.0"), Some(7_950.0)),
+        "● Gateway Online (v2.1.0) · Up 2h 12m"
+    );
+    assert_eq!(
+        gateway_status_text(true, None, Some(7_950.0)),
+        "● Gateway Online · Up 2h 12m"
+    );
+    assert_eq!(
+        gateway_status_text(true, Some("2.1.0"), None),
+        "● Gateway Online (v2.1.0)"
+    );
+    assert_eq!(gateway_status_text(true, None, None), "● Gateway Online");
+}
+
+// ── format_model_meta_parts tests ─────────────────────────────────────────
+
+/// All meta parts present: `gpu_variant · quant · {ctx}k ctx · format`,
+/// with context length abbreviated in thousands.
+#[test]
+fn test_format_model_meta_parts_full() {
+    let m = ModelStateSnapshot {
+        gpu_variant: Some("radiance (rocm)".into()),
+        quant: Some("fp8".into()),
+        context_length: Some(262_144),
+        hf_format: Some("safetensors".into()),
+        ..Default::default()
+    };
+    assert_eq!(
+        format_model_meta_parts(&m).join(" · "),
+        "radiance (rocm) · fp8 · 262k ctx · safetensors"
+    );
+}
+
+/// Context lengths of 1000+ are rounded to the nearest thousand, not
+/// truncated: `262_800` → `263k`, `1_500` → `2k` (truncation would give
+/// `1k`).
+#[test]
+fn test_format_model_meta_parts_ctx_rounds_to_nearest_thousand() {
+    let m = ModelStateSnapshot {
+        context_length: Some(262_800),
+        ..Default::default()
+    };
+    assert_eq!(format_model_meta_parts(&m), vec!["263k ctx".to_string()]);
+
+    let m2 = ModelStateSnapshot {
+        context_length: Some(1_500),
+        ..Default::default()
+    };
+    assert_eq!(format_model_meta_parts(&m2), vec!["2k ctx".to_string()]);
+}
+
+/// Missing parts are skipped and joined gracefully.
+#[test]
+fn test_format_model_meta_parts_skips_missing_parts() {
+    let m = ModelStateSnapshot {
+        quant: Some("Q4_K_M".into()),
+        context_length: Some(4_096),
+        ..Default::default()
+    };
+    assert_eq!(format_model_meta_parts(&m).join(" · "), "Q4_K_M · 4k ctx");
+}
+
+/// Context lengths below 1000 are rendered as raw numbers.
+#[test]
+fn test_format_model_meta_parts_raw_ctx_under_1k() {
+    let m = ModelStateSnapshot {
+        context_length: Some(512),
+        ..Default::default()
+    };
+    assert_eq!(format_model_meta_parts(&m), vec!["512 ctx".to_string()]);
+}
+
+/// A model with no meta info at all produces no parts.
+#[test]
+fn test_format_model_meta_parts_empty() {
+    let m = ModelStateSnapshot::default();
+    assert!(format_model_meta_parts(&m).is_empty());
+}
+
+// ── Inference telemetry helper tests (plan-192 Task 3) ────────────────────
+
+fn make_bucket(ts_unix_ms: i64, tps: f32, prompt_tps: f32) -> MetricBucket {
+    MetricBucket {
+        ts_unix_ms,
+        cpu_usage_pct: 0.0,
+        ram_used_mib: 0,
+        ram_total_mib: 0,
+        network: None,
+        gpu_utils: vec![],
+        tps,
+        prompt_tps,
+        complete: true,
+    }
+}
+
+/// `build_inference_telemetry` returns per-bucket TG/PP series in bucket
+/// (oldest → newest) order with peaks equal to the window max.
+#[test]
+fn test_build_inference_telemetry_series_and_peaks() {
+    let buckets = vec![
+        make_bucket(1_000_000, 10.0, 500.0),
+        make_bucket(1_030_000, 40.5, 120.0),
+        make_bucket(1_060_000, 25.0, 800.0),
+    ];
+
+    let telemetry = build_inference_telemetry(&buckets);
+
+    assert_eq!(
+        telemetry.tg,
+        vec![10.0, 40.5, 25.0],
+        "TG series must preserve bucket order and values"
+    );
+    assert_eq!(
+        telemetry.pp,
+        vec![500.0, 120.0, 800.0],
+        "PP series must preserve bucket order and values"
+    );
+    assert_eq!(telemetry.tg_peak, 40.5, "TG peak must be the window max");
+    assert_eq!(telemetry.pp_peak, 800.0, "PP peak must be the window max");
+}
+
+/// A single-bucket window yields a length-1 series whose peaks equal that
+/// bucket's own values (the chart scales against its only peak).
+#[test]
+fn test_build_inference_telemetry_single_bucket() {
+    let buckets = vec![make_bucket(1_000_000, 42.0, 900.0)];
+
+    let telemetry = build_inference_telemetry(&buckets);
+
+    assert_eq!(
+        telemetry.tg,
+        vec![42.0],
+        "single bucket → length-1 TG series"
+    );
+    assert_eq!(
+        telemetry.pp,
+        vec![900.0],
+        "single bucket → length-1 PP series"
+    );
+    assert_eq!(
+        telemetry.tg_peak, 42.0,
+        "single-bucket TG peak is that bucket's value"
+    );
+    assert_eq!(
+        telemetry.pp_peak, 900.0,
+        "single-bucket PP peak is that bucket's value"
+    );
+}
+
+/// An empty window yields empty series and zero peaks (the view renders a
+/// flat max-1.0 chart from these, never dividing by zero).
+#[test]
+fn test_build_inference_telemetry_empty_window() {
+    let telemetry = build_inference_telemetry(&[]);
+
+    assert!(telemetry.tg.is_empty(), "empty window → no TG samples");
+    assert!(telemetry.pp.is_empty(), "empty window → no PP samples");
+    assert_eq!(telemetry.tg_peak, 0.0, "empty window → TG peak 0.0");
+    assert_eq!(telemetry.pp_peak, 0.0, "empty window → PP peak 0.0");
+}
+
+/// `ms_per_token` is the latency form of throughput (1000 / tps ms) and is
+/// `None` for non-positive or NaN throughputs.
+#[test]
+fn test_ms_per_token() {
+    assert_eq!(ms_per_token(0.0), None, "0 tok/s has no ITL");
+    assert_eq!(ms_per_token(-12.5), None, "negative throughput has no ITL");
+    assert_eq!(
+        ms_per_token(f32::NAN),
+        None,
+        "NaN throughput must be rejected by the tps > 0.0 guard"
+    );
+
+    let ms = ms_per_token(53.0).expect("53 tok/s must produce an ITL");
+    assert!(
+        (ms - 1000.0 / 53.0).abs() < 1e-9,
+        "53 tok/s → 1000/53 ms/tok, got {ms}"
+    );
+    assert!(
+        (ms - 18.87).abs() < 0.01,
+        "53 tok/s ≈ 18.87 ms/tok, got {ms}"
+    );
+}

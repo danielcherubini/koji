@@ -214,6 +214,7 @@ pub struct ModelStateSnapshot {
 }
 
 /// Format a number with comma separators (e.g. `8460` → `"8,460"`).
+#[allow(dead_code)] // Used only by unit tests in dashboard/tests.rs
 pub fn format_number(n: u64) -> String {
     let s = n.to_string();
     let mut result = String::new();
@@ -226,12 +227,152 @@ pub fn format_number(n: u64) -> String {
     result
 }
 
-/// Filter models to only those that are currently active (ready, loading, or unloading).
+/// Timeline of the 15-minute inference telemetry series from pre-aggregated
+/// buckets, as read by the dashboard's Inference Telemetry section.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InferenceTelemetry {
+    /// Per-bucket token-generation speed (tok/s), oldest → newest.
+    pub tg: Vec<f32>,
+    /// Per-bucket prompt-processing speed (tok/s), oldest → newest.
+    pub pp: Vec<f32>,
+    /// Peak TG (tok/s) over the window (0.0 when empty).
+    pub tg_peak: f32,
+    /// Peak PP (tok/s) over the window (0.0 when empty).
+    pub pp_peak: f32,
+}
+
+/// Build the 15-minute inference telemetry timeline from pre-aggregated
+/// backend buckets. Extracted as a pure function so the view only renders
+/// values — the series, their window peaks, and the chart scaling all live
+/// here and are unit-tested independently of the Leptos reactive view.
+pub fn build_inference_telemetry(buckets: &[MetricBucket]) -> InferenceTelemetry {
+    let tg: Vec<f32> = buckets.iter().map(|b| b.tps).collect();
+    let pp: Vec<f32> = buckets.iter().map(|b| b.prompt_tps).collect();
+    InferenceTelemetry {
+        tg_peak: tg.iter().copied().fold(0.0f32, f32::max),
+        pp_peak: pp.iter().copied().fold(0.0f32, f32::max),
+        tg,
+        pp,
+    }
+}
+
+/// Convert a throughput (tok/s) into a per-token latency in milliseconds
+/// (`1000 / tps`). Returns `None` for non-positive or `NaN` throughputs
+/// (the `tps > 0.0` guard rejects NaN) — there is no inter-token latency
+/// to display when nothing is being generated.
+pub fn ms_per_token(tps: f32) -> Option<f64> {
+    (tps > 0.0).then(|| 1000.0 / tps as f64)
+}
+
+/// Filter models to those currently loaded or still coming up —
+/// `ModelState::Ready` or `ModelState::Starting` only.
 ///
-/// Used by the dashboard to render the Active Models list and by the
-/// "X loaded" summary heading. Extracted as a free function so it can
+/// Unlike [`active_models`], models that have started unloading are
+/// excluded: once unloading begins, a model no longer belongs in the
+/// dashboard's Active Models list. Extracted as a free function so it can
 /// be unit-tested independently of the Leptos reactive view.
-#[allow(dead_code)] // Used only by unit tests in dashboard/tests.rs
+pub fn loaded_or_starting_models(models: &[ModelStateSnapshot]) -> Vec<ModelStateSnapshot> {
+    models
+        .iter()
+        .filter(|m| matches!(m.state, ModelState::Ready | ModelState::Starting))
+        .cloned()
+        .collect()
+}
+
+/// Format the cluster summary line rendered under the Dashboard title.
+/// The count words inflect with their value — singular for one
+/// (`1 Node (1 GPU) · 1 Model Active · 53 tok/s`), plural otherwise
+/// (`2 Nodes (3 GPUs) · 2 Models Active · 53 tok/s`).
+///
+/// `tps` is rendered rounded as `53 tok/s`; when it is `None` or zero the
+/// line ends with a placeholder dash (`—`) instead.
+pub fn format_cluster_subtitle(
+    nodes: usize,
+    gpus: usize,
+    active_models: usize,
+    tps: Option<f32>,
+) -> String {
+    let tps_str = match tps {
+        Some(t) if t > 0.0 => format!("{t:.0} tok/s"),
+        _ => "—".to_string(),
+    };
+    let node_label = if nodes == 1 { "Node" } else { "Nodes" };
+    let gpu_label = if gpus == 1 { "GPU" } else { "GPUs" };
+    let model_label = if active_models == 1 {
+        "Model"
+    } else {
+        "Models"
+    };
+    format!("{nodes} {node_label} ({gpus} {gpu_label}) · {active_models} {model_label} Active · {tps_str}")
+}
+
+/// Format the gateway status pill text for the dashboard header, e.g.
+/// `● Gateway Online (v2.1.0) · Up 2h 15m`.
+///
+/// Renders only what is known: when the proxy version or uptime hasn't
+/// arrived yet the corresponding part is omitted, and when the stream is
+/// down the pill reads `● Gateway Offline` regardless of the other inputs.
+pub fn gateway_status_text(
+    online: bool,
+    version: Option<&str>,
+    uptime_seconds: Option<f64>,
+) -> String {
+    if !online {
+        return "● Gateway Offline".to_string();
+    }
+    let mut head = String::from("● Gateway Online");
+    if let Some(ver) = version {
+        head.push_str(&format!(" (v{ver})"));
+    }
+    let mut parts = vec![head];
+    if let Some(up) = uptime_seconds {
+        parts.push(format!("Up {}", format_uptime(up)));
+    }
+    parts.join(" · ")
+}
+
+/// Build the meta line parts for an Active Models row:
+/// `gpu_variant · quant · {ctx}k ctx · format`, skipping missing parts so
+/// the view can simply join whatever is present with ` · `.
+///
+/// A context length of 1000 or more is abbreviated in thousands, rounded
+/// to the nearest thousand (`262144` → `262k`, `262800` → `263k`); smaller
+/// values are rendered as raw numbers.
+pub fn format_model_meta_parts(m: &ModelStateSnapshot) -> Vec<String> {
+    let mut parts: Vec<String> = Vec::new();
+    for value in [&m.gpu_variant, &m.quant].into_iter().flatten() {
+        if !value.is_empty() {
+            parts.push(value.clone());
+        }
+    }
+    if let Some(ctx) = m.context_length {
+        let ctx_str = if ctx >= 1000 {
+            format!("{}k", (ctx + 500) / 1000)
+        } else {
+            ctx.to_string()
+        };
+        parts.push(format!("{ctx_str} ctx"));
+    }
+    if let Some(file_format) = &m.hf_format {
+        if !file_format.is_empty() {
+            parts.push(file_format.clone());
+        }
+    }
+    parts
+}
+
+/// Legacy broad "active" filter: models in the `Ready`, `Starting`, or
+/// `Unloading` states (i.e. anything not idle/failed).
+///
+/// The dashboard no longer uses this for the Active Models list — it uses
+/// [`loaded_or_starting_models`], which also excludes models that have
+/// started unloading (and hence renders the "X active" summary count).
+/// Kept because its state semantics (including `Unloading`) are what the
+/// unit tests in `dashboard/tests.rs` document.
+///
+/// Extracted as a free function so it can be unit-tested independently of
+/// the Leptos reactive view.
+#[allow(dead_code)] // Referenced only by the unit tests in dashboard/tests.rs — the dashboard view uses loaded_or_starting_models instead (this filter wrongly keeps Unloading models in the Active Models list).
 pub fn active_models(models: &[ModelStateSnapshot]) -> Vec<ModelStateSnapshot> {
     models
         .iter()
@@ -317,15 +458,4 @@ pub fn model_display_name(m: &ModelStateSnapshot) -> String {
         .or(m.api_name.as_deref())
         .unwrap_or(m.id.as_str())
         .to_string()
-}
-
-/// Sort models by base model, then by display name as a tiebreaker.
-#[allow(dead_code)] // Used only by unit tests in dashboard/tests.rs
-pub fn model_sort_key(m: &ModelStateSnapshot) -> (String, String) {
-    let primary = m
-        .hf_base_model
-        .clone()
-        .unwrap_or_else(|| model_display_name(m));
-    let secondary = model_display_name(m);
-    (primary, secondary)
 }

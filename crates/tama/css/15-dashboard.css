@@ -1,22 +1,74 @@
-/* Inference stats grid — vertical gap above to separate from system metrics */
+/* Inference Telemetry grid — vertical gap above separates the 3-card row
+ * from its `.telemetry-heading` title row. */
 .grid-stats--inference {
   margin-top: 1rem;
 }
 
-/* Dashboard Active Models */
+/* ── Inference Telemetry section (plan-192 Task 3) ─────────────────────────
+ * Pure gateway inference metrics — the last dashboard section, rendered at
+ * the bottom of the page below the Active Models and Hosts sections: live
+ * Token Generation / Prompt Processing throughput with 15-minute sparklines,
+ * plus a Cache & Speculative Efficiency card.
+ *
+ * The 3-card row reuses `.grid-stats` from 04 (auto-fit `minmax(260px,
+ * 1fr)` → exactly 3 columns on wide viewports, and 04's existing
+ * ≤768px media rule already collapses it to 1 column) plus `.stat-card`
+ * internals — no fork or override of the grid or card rules is needed.
+ */
+.dashboard-telemetry {
+  margin-top: 2rem;
+}
+
+/* Heading row: section title + window label. The grid's
+ * `.grid-stats--inference` margin-top provides the gap to the cards. */
+.telemetry-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.telemetry-heading h2 {
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+/* Cache & Speculative Efficiency card: two side-by-side value/label
+ * pairs in place of a sparkline (the global .card-header
+ * margin-bottom separates it from the heading above). */
+.efficiency-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+}
+
+.efficiency-item {
+  min-width: 0;
+}
+
+/* Live speculative-decoding status line; `.sparkline-container` (07)
+ * bottom-aligns it with the sparkline charts in the neighbouring
+ * cards. Inactive uses the `.text-muted` utility, active the
+ * `--active` modifier. */
+.spec-status {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+.spec-status--active {
+  color: var(--accent-green);
+}
+
 /* 24. Dashboard "Active Models" section
  *
- * The dashboard renders this section directly below the system metrics
- * `.grid-stats` block. We need:
+ * The dashboard renders this section first — above the Hosts and
+ * Inference Telemetry sections. We need:
  *   - vertical breathing room above the section so it doesn't collide with
  *     the cards above (`margin-top`),
  *   - a tighter bottom margin on the inner `.page-header` than the global
  *     default (`1.5rem`) so the title row hugs its grid more closely,
  *   - a slightly smaller heading size than the page-level `<h1>` so the
  *     section feels subordinate to the page title.
- *
- * The grid items themselves reuse `.models-grid` and `.model-card` from
- * section 17 — no new selectors are needed for the cards.
  */
 .dashboard-models {
   margin-top: 2rem;
@@ -31,11 +83,212 @@
   font-weight: 600;
 }
 
-/* ── Dashboard model rows — horizontal single-line layout ───────────────── */
-.models-list {
+/* Hosts section heading: identical sizing + tightened spacing to the other
+ * two dashboard section headings (Inference Telemetry and Active Models,
+ * both `<h2>`) so all three read as one rhythm. */
+.dashboard-hosts .page-header {
+  margin-bottom: 1rem;
+}
+
+.dashboard-hosts .page-header h2 {
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+/* ── Dashboard header control plane ───────────────────────────────────── `
+ * Title + cluster summary line under the `<h1>`, and the gateway status
+ * pill on the right of the actions row.
+ */
+.dashboard-header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.dashboard-cluster-subtitle {
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  /* Ellipsis (not wrapping) as the last resort: this overflow handling
+   * also zeroes the subtitle's min-content size, which lets the flex
+   * column above shrink on narrow viewports instead of pushing the
+   * actions row off-screen. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gateway-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.15rem 0.65rem;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.gateway-pill--online {
+  background-color: rgba(63, 185, 80, 0.12);
+  color: var(--accent-green);
+}
+
+.gateway-pill--offline {
+  background-color: rgba(248, 81, 73, 0.15);
+  color: var(--accent-red);
+}
+
+/* The actions row (pill + Restart + Pull Model) can never shrink below
+ * its min-content, above which the header would overflow on tablet /
+ * mobile widths. Let the page header wrap at that point: the title block
+ * keeps line one, the actions drop to a second line, and the pill stays
+ * inline with the buttons. Scoped to the dashboard header via `:has` so
+ * other pages' page headers are untouched. */
+.page-header:has(> .dashboard-header) {
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.page-header:has(> .dashboard-header) .page-header-actions {
+  flex-wrap: wrap;
+}
+
+/* ── Active Models rows — horizontal single-line layout ──────────────────── */
+.active-models-list {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+}
+
+.active-model-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+}
+
+.active-model-status {
+  flex-shrink: 0;
+  width: 0.65rem;
+  height: 0.65rem;
+}
+
+.active-model-status--ready {
+  border-radius: 50%;
+  background-color: var(--accent-green);
+  box-shadow: 0 0 6px rgba(63, 185, 80, 0.7);
+}
+
+.active-model-status--starting {
+  border: 2px solid var(--accent-blue);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: active-model-spin 0.9s linear infinite;
+}
+
+@keyframes active-model-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.active-model-name {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.active-model-name--primary {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.active-model-name--api {
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.active-model-gpu-chip {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 500;
+  line-height: 1.4;
+  background-color: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+}
+
+.active-model-meta {
+  flex-shrink: 0;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.active-model-tps {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--accent-green);
+  background-color: rgba(63, 185, 80, 0.1);
+  border-radius: var(--radius-sm);
+  padding: 0.15rem 0.5rem;
+  white-space: nowrap;
+}
+
+.active-model-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-shrink: 0;
+}
+
+/* Leptos conditionals render absent GPU chips / tps badges as empty
+ * `<span>` placeholders; those would otherwise still claim a flex gap in
+ * the row, leaving a phantom double space. (The status dot `<span>` is
+ * intentionally empty and is excluded. */
+.active-model-row > span:empty:not(.active-model-status) {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .active-model-row {
+    flex-wrap: wrap;
+    gap: 0.5rem 0.75rem;
+  }
+  /* Stacked layout: line 1 status dot + name (full width), line 2 GPU chip
+   * + meta (meta takes the remainder of the row and wraps if needed),
+   * line 3 tps badge + actions. No fixed column tracks, so there is no
+   * horizontal overflow at any width. */
+  .active-model-name {
+    flex-basis: 100%;
+  }
+  .active-model-meta {
+    flex: 1 1 auto;
+    min-width: 0;
+    white-space: normal;
+  }
 }
 
 /* ── Modal overlay ──────────────────────────────────────────────────────── */
