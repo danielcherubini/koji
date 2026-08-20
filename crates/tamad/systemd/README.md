@@ -75,6 +75,12 @@ file and `systemctl restart tamad`.
   no orphaned engine processes survive the restart.
 - **Version skew:** keep the tamad at the same version as the proxy — they
   speak a shared gRPC/HTTP protocol.
+- **Transport security:** the proxy listens on plain HTTP (no TLS in the
+  listener), and the admin token is a reusable credential — the env file
+  protects it at rest only. If tamad and proxy cross an untrusted network,
+  put a TLS-terminating reverse proxy in front or run the path over a VPN/
+  WireGuard / encrypted LAN; within a trusted LAN, plain HTTP is the usual
+  setup.
 - **Running as non-root (optional):** the unit defaults to root because
   tamad requires `$HOME` and commonly needs docker plus direct GPU device
   access (nvidia render / `kfd` groups). To run as a dedicated user, add
