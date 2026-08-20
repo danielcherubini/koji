@@ -12,15 +12,17 @@ Plans for features, refactors, and bug fixes in the Tama project.
 
 ## Quick Stats
 
-- **Total Plans**: 97
-- **Backlog**: 0
+- **Total Plans**: 98
+- **Backlog**: 1
 - **Completed**: 95 ✅
 
 ---
 
 ## Backlog
 
-> **Note:** The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan.
+| # | Plan | Tasks | Status |
+|---|------|-------|--------|
+| 192 | [Gateway Dashboard Refactor & Telemetry](plan-192-gateway-dashboard-telemetry.md) | 4 | ⏳ Ready |
 
 ---
 
