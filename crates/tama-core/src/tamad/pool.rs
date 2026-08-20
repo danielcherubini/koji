@@ -197,6 +197,16 @@ impl TamadHandle {
         client.stream_job(job_id).await
     }
 
+    /// Open the engine-log tail stream on this handle (gRPC only, one
+    /// shot: the tamad streams a bounded tail and closes the stream).
+    pub async fn logs(
+        &self,
+        req: &crate::tamad::LogsRequest,
+    ) -> Result<tonic::Streaming<crate::tamad::LogEntry>> {
+        let client = self.client.lock().await;
+        client.logs(req).await
+    }
+
     /// Cancel and abort the background stream task (idempotent).
     async fn shutdown(&self) {
         self.cancel.send_replace(true);
@@ -519,6 +529,14 @@ pub mod test_support {
         /// GPUs included in every emitted `SystemStats` snapshot (default
         /// empty — CPU-only stub host).
         pub stats_gpus: Vec<crate::tamad::GpuInfo>,
+        /// Processes included in every emitted `SystemStats` snapshot
+        /// (default empty — no backends loaded on the stub host).
+        pub stats_processes: Vec<crate::tamad::ProcessInfo>,
+        /// Recorded `logs` RPC requests (for assertions).
+        pub logs_requests: Arc<tokio::sync::Mutex<Vec<crate::tamad::LogsRequest>>>,
+        /// Scripted `LogEntry.message` values every `logs` RPC streams
+        /// back (timestamp/level left empty).
+        pub log_messages: Vec<String>,
     }
 
     type EmptyStream<T> =
@@ -531,22 +549,13 @@ pub mod test_support {
     type BoxedJobStream =
         std::pin::Pin<Box<dyn Stream<Item = std::result::Result<JobEvent, tonic::Status>> + Send>>;
 
-    pub fn stats(cpu: f64) -> SystemStats {
-        SystemStats {
-            cpu_usage_percent: cpu,
-            memory_total_bytes: 1024,
-            memory_used_bytes: 512,
-            swap_total_bytes: 0,
-            swap_used_bytes: 0,
-            disk_total_bytes: 0,
-            disk_free_bytes: 0,
-            gpus: vec![],
-            processes: vec![],
-        }
-    }
-
-    /// A fixed snapshot with the given GPU list (default cpu/memory values).
-    pub fn stats_with_gpus(cpu: f64, gpus: Vec<crate::tamad::GpuInfo>) -> SystemStats {
+    /// Build a scripted `SystemStats` snapshot with explicit gpus AND
+    /// processes (the full shape the proxy side consumes).
+    pub fn stats_full(
+        cpu: f64,
+        gpus: Vec<crate::tamad::GpuInfo>,
+        processes: Vec<crate::tamad::ProcessInfo>,
+    ) -> SystemStats {
         SystemStats {
             cpu_usage_percent: cpu,
             memory_total_bytes: 1024,
@@ -556,8 +565,17 @@ pub mod test_support {
             disk_total_bytes: 0,
             disk_free_bytes: 0,
             gpus,
-            processes: vec![],
+            processes,
         }
+    }
+
+    pub fn stats(cpu: f64) -> SystemStats {
+        stats_full(cpu, vec![], vec![])
+    }
+
+    /// A fixed snapshot with the given GPU list (default cpu/memory values).
+    pub fn stats_with_gpus(cpu: f64, gpus: Vec<crate::tamad::GpuInfo>) -> SystemStats {
+        stats_full(cpu, gpus, vec![])
     }
 
     /// Build a scripted `JobEvent` for a pull job.
@@ -682,11 +700,27 @@ pub mod test_support {
             self.remove_requests.lock().await.push(req);
             Ok(tonic::Response::new(crate::tamad::Empty {}))
         }
+        #[allow(clippy::result_large_err)] // tonic::Status is a large error type
         async fn logs(
             &self,
-            _request: tonic::Request<crate::tamad::LogsRequest>,
+            request: tonic::Request<crate::tamad::LogsRequest>,
         ) -> std::result::Result<tonic::Response<Self::LogsStream>, tonic::Status> {
-            Err(tonic::Status::unimplemented("not used in tests"))
+            let req = request.into_inner();
+            self.logs_requests.lock().await.push(req);
+            let messages = self.log_messages.clone();
+            // Build the entries first so the map closure's `Result` is a
+            // plain `Ok(LogEntry)` (keeps the stream-item alloc in one pass).
+            let entries: Vec<LogEntry> = messages
+                .into_iter()
+                .map(|message| LogEntry {
+                    timestamp: String::new(),
+                    level: String::new(),
+                    message,
+                })
+                .collect();
+            let stream: EmptyStream<LogEntry> =
+                futures_util::stream::iter(entries.into_iter().map(Ok).collect::<Vec<_>>());
+            Ok(tonic::Response::new(stream))
         }
         async fn health_check(
             &self,
@@ -714,15 +748,18 @@ pub mod test_support {
             let gpus_a = self.stats_gpus.clone();
             let gpus_b = self.stats_gpus.clone();
             let gpus_c = self.stats_gpus.clone();
+            let procs_a = self.stats_processes.clone();
+            let procs_b = self.stats_processes.clone();
+            let procs_c = self.stats_processes.clone();
             let stream = futures_util::stream::iter(vec![
-                Ok(stats_with_gpus(1.5, gpus_a)),
-                Ok(stats_with_gpus(42.5, gpus_b)),
+                Ok(stats_full(1.5, gpus_a, procs_a)),
+                Ok(stats_full(42.5, gpus_b, procs_b)),
             ])
             .chain(futures_util::stream::once(async move {
                 // Hold the stream open until the test signals "down",
                 // then emit a final snapshot and close.
                 let _ = down_rx.changed().await;
-                Ok::<SystemStats, tonic::Status>(stats_with_gpus(42.5, gpus_c))
+                Ok::<SystemStats, tonic::Status>(stats_full(42.5, gpus_c, procs_c))
             }));
             Ok(tonic::Response::new(Box::pin(stream)))
         }
@@ -900,6 +937,9 @@ pub mod test_support {
             bench_job_id: "job-bench".to_string(),
             bench_dispatch_fail: Arc::new(tokio::sync::Mutex::new(false)),
             stats_gpus: vec![],
+            stats_processes: vec![],
+            logs_requests: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            log_messages: vec![],
             load_requests: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             load_delays: std::collections::HashMap::new(),
             load_model_fail: Arc::new(tokio::sync::Mutex::new(false)),
@@ -974,6 +1014,9 @@ mod tests {
             load_requests: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             load_delays: std::collections::HashMap::new(),
             load_model_fail: Arc::new(tokio::sync::Mutex::new(false)),
+            stats_processes: vec![],
+            logs_requests: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            log_messages: vec![],
         };
         let addr = start_stub(stub.clone()).await;
         let url = format!("grpc://{addr}");
@@ -1085,6 +1128,9 @@ mod tests {
             load_requests: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             load_delays: std::collections::HashMap::new(),
             load_model_fail: Arc::new(tokio::sync::Mutex::new(false)),
+            stats_processes: vec![],
+            logs_requests: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            log_messages: vec![],
         };
         let addr = start_stub(stub.clone()).await;
         let url = format!("grpc://{addr}");
@@ -1145,6 +1191,9 @@ mod tests {
             load_requests: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             load_delays: std::collections::HashMap::new(),
             load_model_fail: Arc::new(tokio::sync::Mutex::new(false)),
+            stats_processes: vec![],
+            logs_requests: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            log_messages: vec![],
         };
         let addr = start_stub(stub).await;
         let url = format!("grpc://{addr}");

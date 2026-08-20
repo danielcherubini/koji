@@ -351,6 +351,24 @@ impl TamadClient {
         Ok(response.into_inner())
     }
 
+    /// Open the `Logs` stream for an engine tail (gRPC only).
+    ///
+    /// The tamad tails the last N lines of the model's `tama-<model>`
+    /// container log and streams them; the stream ends after the bounded
+    /// tail. A fresh channel per call (same rationale as `stream_job`).
+    pub async fn logs(
+        &self,
+        req: &crate::tamad::LogsRequest,
+    ) -> Result<tonic::Streaming<crate::tamad::LogEntry>> {
+        let channel = self
+            .fresh_channel()
+            .await
+            .context("Logs requires a gRPC connection")?;
+        let mut client = crate::tamad::TamadServiceClient::new(channel);
+        let response = client.logs(self.authed(req.clone())).await?;
+        Ok(response.into_inner())
+    }
+
     /// Open a fresh gRPC channel (uncached — for long-lived streams).
     async fn fresh_channel(&self) -> Result<tonic::transport::Channel> {
         if !self.connection.protocol.is_grpc() {
@@ -719,6 +737,9 @@ mod tests {
             load_requests: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             load_delays: std::collections::HashMap::new(),
             load_model_fail: Arc::new(tokio::sync::Mutex::new(false)),
+            stats_processes: vec![],
+            logs_requests: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            log_messages: vec![],
         };
         let addr = crate::tamad::pool::test_support::start_stub(stub.clone()).await;
         let url = format!("grpc://{addr}");
@@ -767,6 +788,9 @@ mod tests {
             load_requests: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             load_delays: std::collections::HashMap::new(),
             load_model_fail: Arc::new(tokio::sync::Mutex::new(false)),
+            stats_processes: vec![],
+            logs_requests: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            log_messages: vec![],
         };
         let addr = crate::tamad::pool::test_support::start_stub(stub).await;
         let conn = crate::tamad::pool::test_support::grpc_conn(
@@ -818,6 +842,9 @@ mod tests {
             load_requests: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             load_delays: std::collections::HashMap::new(),
             load_model_fail: Arc::new(tokio::sync::Mutex::new(false)),
+            stats_processes: vec![],
+            logs_requests: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            log_messages: vec![],
         };
         let addr = crate::tamad::pool::test_support::start_stub(stub).await;
         let conn = crate::tamad::pool::test_support::grpc_conn(
@@ -907,6 +934,9 @@ mod tests {
             load_requests: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             load_delays: std::collections::HashMap::new(),
             load_model_fail: Arc::new(tokio::sync::Mutex::new(false)),
+            stats_processes: vec![],
+            logs_requests: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            log_messages: vec![],
         }
     }
 

@@ -12,11 +12,28 @@ use crate::pages::dashboard::{
     format_model_meta_parts, model_display_name, GpuDeviceStats, ModelStateSnapshot,
 };
 
+/// Build the logs-link target for a tamad-hosted model: `/tama/logs?source=`
+/// plus the URL-encoded `{host_name}:{model_id}` source name — exactly the
+/// name `collect_tamad_log_sources` builds on the proxy side (the tamad
+/// connection name + the model's config key, which is also the process
+/// table's `model_name` / container `tama-<model>` key).
+///
+/// `None` when the model has no host: file-based models have no
+/// `{host}:{model}` engine-log source, so the link is omitted.
+pub fn model_logs_href(host_name: Option<&str>, model_id: &str) -> Option<String> {
+    let host = host_name?;
+    Some(format!(
+        "/tama/logs?source={}",
+        urlencoding::encode(&format!("{host}:{model_id}"))
+    ))
+}
+
 /// One active-model row: status dot (Ready) or spinner (Starting), primary
 /// display name (+ api name), GPU allocation chip, meta line
 /// (`gpu_variant · quant · Nk ctx · format`), tok/s badge when generating,
-/// an Unload button honoring the shared busy flag, and the `▷` benchmark
-/// link.
+/// an Unload button honoring the shared busy flag, a `📄` logs link for
+/// tamad-hosted models (the engine container tail, via
+/// `/tama/logs?source={host}:{model}`), and the `▷` benchmark link.
 #[component]
 pub fn ActiveModelRow(
     /// The model to render (Ready or Starting).
@@ -97,6 +114,20 @@ pub fn ActiveModelRow(
                         }
                     }}
                 </button>
+                {if let Some(logs_href) = model_logs_href(model.host_name.as_deref(), &model.id) {
+                    view! {
+                        <A
+                            attr:class="btn btn-secondary btn-sm"
+                            attr:title="Open logs"
+                            href=logs_href
+                        >
+                            "📄"
+                        </A>
+                    }
+                    .into_any()
+                } else {
+                    view! { <span></span> }.into_any()
+                }}
                 <A
                     attr:class="btn btn-secondary btn-sm active-model-bench"
                     attr:title="Run benchmark suite"
@@ -106,5 +137,28 @@ pub fn ActiveModelRow(
                 </A>
             </div>
         </div>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::model_logs_href;
+
+    /// A tamad-hosted model (host_name Some) yields the encoded
+    /// `{host}:{model_id}` source link — the `:` must be percent-encoded so
+    /// it survives the `?source=` query param.
+    #[test]
+    fn test_model_logs_href_tamad_hosted_encodes_colon() {
+        assert_eq!(
+            model_logs_href(Some("gpu-box"), "qwen--qwen3.8-27b-fp8"),
+            Some("/tama/logs?source=gpu-box%3Aqwen--qwen3.8-27b-fp8".to_string())
+        );
+    }
+
+    /// A hostless model (host_name None) has no `{host}:{model}` engine-log
+    /// source → the link is omitted entirely.
+    #[test]
+    fn test_model_logs_href_local_model_none() {
+        assert_eq!(model_logs_href(None, "qwen--qwen3.8-27b-fp8"), None);
     }
 }

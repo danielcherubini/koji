@@ -12,7 +12,7 @@
 
 use std::path::Path;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use tokio::process::Command;
 
@@ -416,43 +416,56 @@ pub async fn remove_container(name: &str) -> Result<()> {
     Ok(())
 }
 
+// ─── Container Logs ────────────────────────────────────────────
+
+/// Build the `docker logs` argument vector for tailing a container's
+/// engine log. Extracted so the exact CLI can be unit-tested without
+/// executing docker.
+pub fn logs_tail_args(container_name: &str, max_lines: usize) -> Vec<String> {
+    vec![
+        "logs".to_string(),
+        "--no-trunc".to_string(),
+        "--tail".to_string(),
+        max_lines.to_string(),
+        container_name.to_string(),
+    ]
+}
+
+/// Tail the last `max_lines` lines of a container's logs.
+///
+/// Runs `docker logs --no-trunc --tail <n> <name>`. A non-zero exit
+/// (e.g. "No such container") is an error carrying docker's stderr so the
+/// caller can log what actually happened; the server's `logs` handler
+/// degrades that to an empty stream.
+pub async fn tail_container_logs(container_name: &str, max_lines: usize) -> Result<Vec<String>> {
+    let output = Command::new("docker")
+        .args(logs_tail_args(container_name, max_lines))
+        .output()
+        .await
+        .with_context(|| format!("failed to spawn `docker logs` for '{container_name}'"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow!(
+            "docker logs failed for '{}': {}",
+            container_name,
+            stderr.trim()
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(stdout.lines().map(str::to_string).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::env;
-    use std::os::unix::fs::PermissionsExt;
-    use std::path::PathBuf;
 
-    /// Copy the fake-docker binary onto PATH for a test.
-    fn setup_fake_docker() -> (tempfile::TempDir, PathBuf, String) {
-        let tmpdir = tempfile::tempdir().expect("create temp dir");
-        let docker_dir = tmpdir.path().join("bin");
-        std::fs::create_dir_all(&docker_dir).expect("create bin dir");
-        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/fake-docker.sh");
-        std::fs::copy(&fixture, docker_dir.join("docker")).expect("copy fake-docker.sh");
-        std::fs::set_permissions(docker_dir.join("docker"), PermissionsExt::from_mode(0o755))
-            .expect("chmod +x fake-docker.sh");
-
-        let state_dir = tmpdir.path().join("state");
-        std::fs::create_dir_all(&state_dir).expect("create state dir");
-        let original_path = env::var("PATH").unwrap_or_default();
-        env::set_var(
-            "PATH",
-            format!("{}:{}", docker_dir.display(), original_path),
-        );
-        env::set_var("FAKE_DOCKER_STATE_DIR", state_dir.to_str().unwrap());
-
-        (tmpdir, docker_dir, original_path)
-    }
-
-    fn restore_docker_path(original: &str) {
-        env::set_var("PATH", original);
-        env::remove_var("FAKE_DOCKER_STATE_DIR");
-    }
+    use crate::server::test_support::{
+        fake_docker_config_for_tests, guarded_fake_docker, restore_docker_path,
+    };
 
     #[tokio::test]
     async fn test_remove_container_no_such_container_ok() {
-        let (_tmpdir, _dir, original) = setup_fake_docker();
+        let (_tmpdir, _dir, original, _guard) = guarded_fake_docker().await;
         let result = remove_container("nonexistent-container").await;
         restore_docker_path(&original);
         assert!(result.is_ok(), "remove should tolerate missing container");
@@ -460,7 +473,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_stop_container_no_such_container_ok() {
-        let (_tmpdir, _dir, original) = setup_fake_docker();
+        let (_tmpdir, _dir, original, _guard) = guarded_fake_docker().await;
         let result = stop_container("nonexistent-container").await;
         restore_docker_path(&original);
         assert!(result.is_ok(), "stop should tolerate missing container");
@@ -468,7 +481,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_inspect_container_no_such_container_returns_none() {
-        let (_tmpdir, _dir, original) = setup_fake_docker();
+        let (_tmpdir, _dir, original, _guard) = guarded_fake_docker().await;
         let result = inspect_container("nonexistent-container").await;
         restore_docker_path(&original);
         assert!(
@@ -476,6 +489,66 @@ mod tests {
             "inspect should succeed for missing container"
         );
         assert!(result.unwrap().is_none(), "missing container -> None");
+    }
+
+    /// The exact `docker logs` CLI: --no-trunc, then --tail with the line
+    /// count, then the container name (last arg).
+    #[test]
+    fn test_logs_tail_args_vector() {
+        assert_eq!(
+            logs_tail_args("tama-model-a", 200),
+            vec![
+                "logs".to_string(),
+                "--no-trunc".to_string(),
+                "--tail".to_string(),
+                "200".to_string(),
+                "tama-model-a".to_string(),
+            ]
+        );
+    }
+
+    /// Tailing a running (fake) container returns its log lines in order.
+    #[tokio::test]
+    async fn test_tail_container_logs_returns_lines() {
+        let (_tmpdir, _dir, original, _guard) = guarded_fake_docker().await;
+
+        // Create the container via the same spawn path the lifecycle uses.
+        let models_dir = tempfile::tempdir().unwrap();
+        let config = fake_docker_config_for_tests();
+        let container = spawn_container("model-a", &config, 18099, vec![], &[], models_dir.path())
+            .await
+            .expect("fake container spawn");
+        assert_eq!(container.name, "tama-model-a");
+
+        let lines = tail_container_logs(&container.name, 200)
+            .await
+            .expect("tail must succeed for a live container");
+        restore_docker_path(&original);
+
+        assert_eq!(
+            lines,
+            vec![
+                "[fake-docker] Container tama-model-a logs",
+                "[fake-docker] Starting backend on port 8000",
+                "[fake-docker] Model loaded successfully",
+            ]
+        );
+    }
+
+    /// Tailing a container that was never created is an error (not an
+    /// empty success) — the server's logs handler turns this into an
+    /// empty stream.
+    #[tokio::test]
+    async fn test_tail_container_logs_missing_container_errors() {
+        let (_tmpdir, _dir, original, _guard) = guarded_fake_docker().await;
+        let err = tail_container_logs("tama-ghost", 200)
+            .await
+            .expect_err("missing container must error");
+        restore_docker_path(&original);
+        assert!(
+            err.to_string().contains("No such container"),
+            "stderr context must be preserved: {err}"
+        );
     }
 
     #[tokio::test]

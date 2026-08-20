@@ -516,6 +516,9 @@ mod tests {
             load_requests: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             load_delays: std::collections::HashMap::new(),
             load_model_fail: Arc::new(tokio::sync::Mutex::new(false)),
+            stats_processes: vec![],
+            logs_requests: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            log_messages: vec![],
         };
         (stub, down)
     }

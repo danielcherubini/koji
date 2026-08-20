@@ -335,12 +335,78 @@ impl TamadService for TamadServiceImpl {
 
     type LogsStream = tokio_stream::Iter<std::vec::IntoIter<Result<LogEntry, tonic::Status>>>;
 
+    /// Engine-log tail over gRPC.
+    ///
+    /// Routing (see `LogsRequest`):
+    /// 1. `model_name` non-empty → look up that model in the process table.
+    /// 2. else `provider_name` non-empty → the entry matching it, but only
+    ///    when the match is unique (ambiguous → empty stream).
+    /// 3. else → empty stream.
+    ///
+    /// Only docker-backed backends have tailable logs (container
+    /// `tama-<model_name>` — the spawn site in `lifecycle::load_container`
+    /// names it exactly that way, and the stored spec carries the non-empty
+    /// `docker_config_json` discriminator). Native backends are spawned with
+    /// null stdout/stderr, unknown models, and container-tail failures
+    /// (container gone, daemon down) all degrade to an empty stream — the
+    /// proxy treats "no lines" as "no source", never as an error.
     async fn logs(
         &self,
         request: tonic::Request<LogsRequest>,
     ) -> std::result::Result<tonic::Response<Self::LogsStream>, tonic::Status> {
         check_auth(&request, &self.expected_token)?;
-        Err(tonic::Status::unimplemented("not implemented"))
+        let req = request.into_inner();
+
+        let entry = if !req.model_name.trim().is_empty() {
+            self.table.get(&req.model_name).await
+        } else if !req.provider_name.trim().is_empty() {
+            let mut matches: Vec<_> = self
+                .table
+                .list()
+                .await
+                .into_iter()
+                .filter(|e| e.provider_name == req.provider_name)
+                .collect();
+            // Unique match only — a provider serving several models gives
+            // no single log stream to target.
+            (matches.len() == 1).then(|| matches.pop()).flatten()
+        } else {
+            None
+        };
+
+        let lines = match entry {
+            // Only container backends are tailable (the spawn path stores
+            // the DockerConfig JSON in the spec; native specs leave it
+            // empty).
+            Some(e) if !e.spec.docker_config_json.is_empty() => {
+                let container = format!("tama-{}", e.model_name);
+                match crate::host_installs::docker::runner::tail_container_logs(&container, 200)
+                    .await
+                {
+                    Ok(lines) => lines,
+                    Err(e) => {
+                        tracing::debug!(
+                            container = %container,
+                            error = %e,
+                            "engine log tail failed; returning empty stream"
+                        );
+                        Vec::new()
+                    }
+                }
+            }
+            _ => Vec::new(),
+        };
+
+        let entries: Vec<LogEntry> = lines
+            .into_iter()
+            .map(|message| LogEntry {
+                timestamp: String::new(),
+                level: String::new(),
+                message,
+            })
+            .collect();
+        let stream = tokio_stream::iter(entries.into_iter().map(Ok).collect::<Vec<_>>());
+        Ok(tonic::Response::new(stream))
     }
 
     async fn health_check(
@@ -676,7 +742,7 @@ pub async fn start(
 
 #[cfg(test)]
 pub(crate) mod test_support {
-    use std::sync::Arc;
+    use std::sync::{Arc, LazyLock};
 
     use super::{TamadServiceImpl, TonicServer};
     use crate::process_table::ProcessTable;
@@ -684,6 +750,86 @@ pub(crate) mod test_support {
 
     /// Serializes tests that mutate process env (HF_ENDPOINT, PATH, ...).
     pub static ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Serializes the fake-docker tests. Separate from [`ENV_GUARD`] and
+    /// `tokio`-based because the guard must be held across the
+    /// docker-executing `.await` points (clippy::await_holding_lock fails
+    /// a `std` guard held across await).
+    pub static FAKE_DOCKER_GUARD: LazyLock<tokio::sync::Mutex<()>> =
+        LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+    /// Copy the fake-docker binary onto PATH for a test.
+    ///
+    /// Returns the tempdir (keep it alive for the test), the bin dir, and
+    /// the original PATH. ALWAYS call under [`FAKE_DOCKER_GUARD`] (via
+    /// [`guarded_fake_docker`]) — `PATH` and `FAKE_DOCKER_STATE_DIR` are
+    /// process-global, and so is the state dir every fake-docker
+    /// invocation reads.
+    pub fn setup_fake_docker() -> (tempfile::TempDir, std::path::PathBuf, String) {
+        let tmpdir = tempfile::tempdir().expect("create temp dir");
+        let docker_dir = tmpdir.path().join("bin");
+        std::fs::create_dir_all(&docker_dir).expect("create bin dir");
+        let fixture =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/fake-docker.sh");
+        std::fs::copy(&fixture, docker_dir.join("docker")).expect("copy fake-docker.sh");
+        std::fs::set_permissions(
+            docker_dir.join("docker"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .expect("chmod +x fake-docker.sh");
+
+        let state_dir = tmpdir.path().join("state");
+        std::fs::create_dir_all(&state_dir).expect("create state dir");
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var(
+            "PATH",
+            format!("{}:{}", docker_dir.display(), original_path),
+        );
+        std::env::set_var("FAKE_DOCKER_STATE_DIR", state_dir.to_str().unwrap());
+
+        (tmpdir, docker_dir, original_path)
+    }
+
+    /// Undo [`setup_fake_docker`] (call under [`ENV_GUARD`]).
+    pub fn restore_docker_path(original: &str) {
+        std::env::set_var("PATH", original);
+        std::env::remove_var("FAKE_DOCKER_STATE_DIR");
+    }
+
+    /// [`setup_fake_docker`] plus the FAKE_DOCKER_GUARD lock held for the
+    /// caller's whole test body (fake-docker tests must never run
+    /// concurrently — they share process-global env).
+    pub async fn guarded_fake_docker() -> (
+        tempfile::TempDir,
+        std::path::PathBuf,
+        String,
+        tokio::sync::MutexGuard<'static, ()>,
+    ) {
+        let guard = FAKE_DOCKER_GUARD.lock().await;
+        let (tmpdir, dir, original) = setup_fake_docker();
+        (tmpdir, dir, original, guard)
+    }
+
+    /// Minimal DockerConfig for the fake daemon: a single read-only model
+    /// mount pointing at a temp models dir.
+    pub fn fake_docker_config_for_tests() -> tama_core::installations::DockerConfig {
+        tama_core::installations::DockerConfig {
+            image: "fake-image:latest".to_string(),
+            container_port: 8000,
+            model_mount: tama_core::installations::DockerVolume {
+                host_path: "{{MODEL_DIR}}".to_string(),
+                container_path: "/models".to_string(),
+                read_only: true,
+            },
+            volumes: vec![],
+            devices: vec![],
+            gpus: None,
+            shm_size: None,
+            cap_adds: vec![],
+            security_opts: vec![],
+            group_adds: vec![],
+        }
+    }
 
     /// Build a `TamadState` rooted in a fresh tempdir (token file, models dir).
     pub fn test_state() -> (Arc<TamadState>, tempfile::TempDir) {
@@ -858,6 +1004,297 @@ mod tests {
             .find(|p| p.model_name == "dead-model")
             .expect("dead-model in tick");
         assert!(!dead.alive, "dead PID must be flagged alive=false");
+    }
+
+    /// Logs RPC without auth → Unauthenticated.
+    #[tokio::test]
+    async fn test_logs_requires_auth() {
+        let (endpoint, _table, _jobs, _dir) = start_test_server().await;
+        let mut client = connected_client(endpoint).await;
+        let err = client
+            .logs(tonic::Request::new(LogsRequest::default()))
+            .await
+            .expect_err("missing auth must be rejected");
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
+    }
+
+    /// Logs for a model_name that is not in the process table → the RPC
+    /// succeeds with an EMPTY stream (the proxy degrades to no source).
+    #[tokio::test]
+    async fn test_logs_unknown_model_empty_stream() {
+        let (endpoint, _table, _jobs, _dir) = start_test_server().await;
+        let mut client = connected_client(endpoint).await;
+
+        let stream = client
+            .logs(authed(
+                tonic::Request::new(LogsRequest {
+                    provider_name: String::new(),
+                    model_name: "ghost-model".to_string(),
+                }),
+                "secret",
+            ))
+            .await
+            .expect("rpc must succeed for an unknown model")
+            .into_inner();
+
+        let lines = collect_log_messages(stream).await;
+        assert!(
+            lines.is_empty(),
+            "unknown model must yield no lines: {lines:?}"
+        );
+    }
+
+    /// A matched process whose backend is a NATIVE host binary (no
+    /// docker_config_json in the stored spec) → empty stream; docker must
+    /// never be invoked for it.
+    #[tokio::test]
+    async fn test_logs_native_model_empty_stream() {
+        use crate::process_table::ProcessEntry;
+
+        let (endpoint, table, _jobs, _dir) = start_test_server().await;
+        let mut client = connected_client(endpoint).await;
+
+        table
+            .insert(ProcessEntry {
+                model_name: "native-model".to_string(),
+                provider_name: "llama.cpp".to_string(),
+                pid: std::process::id(),
+                endpoint_url: "http://127.0.0.1:18090".to_string(),
+                status: "ready".to_string(),
+                started_at: std::time::Instant::now(),
+                spec: tama_core::tamad::LoadModelRequest::default(), // no docker config
+            })
+            .await;
+
+        let stream = client
+            .logs(authed(
+                tonic::Request::new(LogsRequest {
+                    provider_name: String::new(),
+                    model_name: "native-model".to_string(),
+                }),
+                "secret",
+            ))
+            .await
+            .expect("rpc must succeed")
+            .into_inner();
+
+        // Runs WITHOUT a fake docker on PATH: if the handler shelled out
+        // it would error/panic, so success + empty is the assertion.
+        let lines = collect_log_messages(stream).await;
+        assert!(
+            lines.is_empty(),
+            "native backend must yield no lines: {lines:?}"
+        );
+    }
+
+    /// A matched process backed by a docker container streams the tail of
+    /// `tama-<model_name>` (fake-docker fixture, no real daemon).
+    #[tokio::test]
+    async fn test_logs_model_tail_streams_container_lines() {
+        use crate::host_installs::docker::runner::spawn_container;
+        use crate::process_table::ProcessEntry;
+
+        let (_fake, _docker_dir, original, _guard) = guarded_fake_docker().await;
+
+        let (endpoint, table, _jobs, _dir) = start_test_server().await;
+        let mut client = connected_client(endpoint).await;
+
+        // The fake container the tail will read from.
+        let models_dir = tempfile::tempdir().unwrap();
+        let container = spawn_container(
+            "model-a",
+            &fake_docker_config_for_tests(),
+            18091,
+            vec![],
+            &[],
+            models_dir.path(),
+        )
+        .await
+        .expect("fake container spawn");
+        assert_eq!(container.name, "tama-model-a");
+        let docker_json =
+            serde_json::to_string(&fake_docker_config_for_tests()).expect("serialize config");
+        table
+            .insert(ProcessEntry {
+                model_name: "model-a".to_string(),
+                provider_name: "llama.cpp".to_string(),
+                pid: std::process::id(),
+                endpoint_url: "http://127.0.0.1:18092".to_string(),
+                status: "ready".to_string(),
+                started_at: std::time::Instant::now(),
+                spec: tama_core::tamad::LoadModelRequest {
+                    provider_name: "llama.cpp".to_string(),
+                    docker_config_json: docker_json,
+                    ..Default::default()
+                },
+            })
+            .await;
+
+        let stream = client
+            .logs(authed(
+                tonic::Request::new(LogsRequest {
+                    provider_name: String::new(),
+                    model_name: "model-a".to_string(),
+                }),
+                "secret",
+            ))
+            .await
+            .expect("rpc must succeed")
+            .into_inner();
+
+        let lines = collect_log_messages(stream).await;
+        restore_docker_path(&original);
+
+        assert_eq!(
+            lines,
+            vec![
+                "[fake-docker] Container tama-model-a logs",
+                "[fake-docker] Starting backend on port 8000",
+                "[fake-docker] Model loaded successfully",
+            ]
+        );
+    }
+
+    /// provider_name fallback (model_name empty): exactly one entry matches
+    /// that provider → its container is tailed.
+    #[tokio::test]
+    async fn test_logs_provider_fallback_unique_entry() {
+        use crate::host_installs::docker::runner::spawn_container;
+        use crate::process_table::ProcessEntry;
+
+        let (_fake, _docker_dir, original, _guard) = guarded_fake_docker().await;
+
+        let (endpoint, table, _jobs, _dir) = start_test_server().await;
+        let mut client = connected_client(endpoint).await;
+
+        let models_dir = tempfile::tempdir().unwrap();
+        spawn_container(
+            "model-b",
+            &fake_docker_config_for_tests(),
+            18093,
+            vec![],
+            &[],
+            models_dir.path(),
+        )
+        .await
+        .expect("fake container spawn");
+
+        let docker_json =
+            serde_json::to_string(&fake_docker_config_for_tests()).expect("serialize config");
+        table
+            .insert(ProcessEntry {
+                model_name: "model-b".to_string(),
+                provider_name: "shared-prov".to_string(),
+                pid: std::process::id(),
+                endpoint_url: "http://127.0.0.1:18094".to_string(),
+                status: "ready".to_string(),
+                started_at: std::time::Instant::now(),
+                spec: tama_core::tamad::LoadModelRequest {
+                    provider_name: "shared-prov".to_string(),
+                    docker_config_json: docker_json,
+                    ..Default::default()
+                },
+            })
+            .await;
+
+        // A second entry with a DIFFERENT provider must not make the
+        // lookup ambiguous.
+        table
+            .insert(ProcessEntry {
+                model_name: "model-c".to_string(),
+                provider_name: "other-prov".to_string(),
+                pid: std::process::id(),
+                endpoint_url: "http://127.0.0.1:18095".to_string(),
+                status: "ready".to_string(),
+                started_at: std::time::Instant::now(),
+                spec: tama_core::tamad::LoadModelRequest::default(),
+            })
+            .await;
+
+        let stream = client
+            .logs(authed(
+                tonic::Request::new(LogsRequest {
+                    provider_name: "shared-prov".to_string(),
+                    model_name: String::new(),
+                }),
+                "secret",
+            ))
+            .await
+            .expect("rpc must succeed")
+            .into_inner();
+
+        let lines = collect_log_messages(stream).await;
+        restore_docker_path(&original);
+
+        assert_eq!(
+            lines,
+            vec![
+                "[fake-docker] Container tama-model-b logs",
+                "[fake-docker] Starting backend on port 8000",
+                "[fake-docker] Model loaded successfully",
+            ]
+        );
+    }
+
+    /// provider_name fallback with an AMBIGUOUS match (two entries on the
+    /// same provider) → empty stream rather than a guess.
+    #[tokio::test]
+    async fn test_logs_provider_ambiguous_empty_stream() {
+        use crate::process_table::ProcessEntry;
+
+        let (endpoint, table, _jobs, _dir) = start_test_server().await;
+        let mut client = connected_client(endpoint).await;
+
+        table
+            .insert(ProcessEntry {
+                model_name: "model-d".to_string(),
+                provider_name: "twin-prov".to_string(),
+                pid: std::process::id(),
+                endpoint_url: "http://127.0.0.1:18096".to_string(),
+                status: "ready".to_string(),
+                started_at: std::time::Instant::now(),
+                spec: tama_core::tamad::LoadModelRequest::default(),
+            })
+            .await;
+        table
+            .insert(ProcessEntry {
+                model_name: "model-e".to_string(),
+                provider_name: "twin-prov".to_string(),
+                pid: std::process::id(),
+                endpoint_url: "http://127.0.0.1:18097".to_string(),
+                status: "ready".to_string(),
+                started_at: std::time::Instant::now(),
+                spec: tama_core::tamad::LoadModelRequest::default(),
+            })
+            .await;
+
+        let stream = client
+            .logs(authed(
+                tonic::Request::new(LogsRequest {
+                    provider_name: "twin-prov".to_string(),
+                    model_name: String::new(),
+                }),
+                "secret",
+            ))
+            .await
+            .expect("rpc must succeed")
+            .into_inner();
+
+        let lines = collect_log_messages(stream).await;
+        assert!(
+            lines.is_empty(),
+            "ambiguous provider must yield no lines: {lines:?}"
+        );
+    }
+
+    /// Collect the remaining `LogEntry.message` values of a stream until it
+    /// ends (a stream error is a test failure).
+    async fn collect_log_messages(mut stream: tonic::Streaming<LogEntry>) -> Vec<String> {
+        let mut out = Vec::new();
+        while let Some(entry) = stream.message().await.expect("log stream must not error") {
+            out.push(entry.message);
+        }
+        out
     }
 
     /// No authorization header → Unauthenticated on health_check.

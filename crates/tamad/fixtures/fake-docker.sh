@@ -205,13 +205,16 @@ EOF
         ;;
 
     logs)
-        # Simulate docker logs -f --since <epoch> <container>
+        # Simulate docker logs (with optional -f, --since, --no-trunc, --tail N) <container>
         since=""
+        tail_lines=""
         container=""
         while [ $# -gt 0 ]; do
             case "$1" in
                 -f|--follow) shift ;;
+                --no-trunc) shift ;;
                 --since) since="$2"; shift 2 ;;
+                --tail) tail_lines="$2"; shift 2 ;;
                 *) container="$1"; shift ;;
             esac
         done
@@ -222,9 +225,12 @@ EOF
             file_name=$(grep -o '"Name": *"[^"]*"' "$state_file" 2>/dev/null | cut -d'"' -f4)
             file_id=$(grep -o '"Id": *"[^"]*"' "$state_file" 2>/dev/null | cut -d'"' -f4)
             if [ "$file_name" = "$container" ] || [ "$file_id" = "$container" ]; then
-                echo "[fake-docker] Container ${container} logs"
-                echo "[fake-docker] Starting backend on port 8000"
-                echo "[fake-docker] Model loaded successfully"
+                lines=$(printf '[fake-docker] Container %s logs\n[fake-docker] Starting backend on port 8000\n[fake-docker] Model loaded successfully\n' "$container")
+                if [ -n "$tail_lines" ]; then
+                    printf '%s' "$lines" | tail -n "$tail_lines"
+                else
+                    printf '%s' "$lines"
+                fi
                 exit 0
             fi
         done

@@ -96,7 +96,14 @@ message RemoveProviderRequest {
 }
 
 message LogsRequest {
+  // Optional fallback — if model_name is empty, use the single running
+  // process whose provider_name matches (ambiguous match → empty stream).
   string provider_name = 1;
+  // Non-empty = tail the engine logs for the backend serving this model:
+  // the Docker container "tama-<model_name>" the backend process runs in
+  // (native host backends have no container and yield an empty stream).
+  // Preferred over the provider_name fallback.
+  string model_name = 2;
 }
 
 message LogEntry {

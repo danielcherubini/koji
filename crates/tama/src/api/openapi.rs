@@ -525,7 +525,7 @@ pub fn spec() -> serde_json::Value {
                 "get",
                 "getLogs",
                 "Get recent log lines",
-                "Returns the last N lines of the tama.log file.",
+                "Returns grouped recent log lines: the tama.log file, each backend's local log file, and engine-log tails from tamad-hosted models named `{tamad-host}:{model}` (their backends run in `tama-<model>` Docker containers and write no local files).",
                 &["web-api"],
                 &[("lines", "query")],
                 None,
