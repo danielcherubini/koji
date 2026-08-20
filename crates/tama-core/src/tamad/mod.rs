@@ -112,6 +112,7 @@ mod tests {
             health_url: "http://127.0.0.1:8080/health".to_string(),
             health_timeout_ms: 30000,
             gpu_device: String::new(),
+            docker_config_json: String::new(),
         };
         assert_eq!(req.model_name, "qwen3");
         assert_eq!(req.args.len(), 2);

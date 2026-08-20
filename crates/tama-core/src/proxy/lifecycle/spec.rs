@@ -147,6 +147,22 @@ pub async fn build_load_spec(
         .await
         .with_context(|| format!("resolving backend path for '{}'", model_config.backend))?;
 
+    // Docker backends: the proxy ships the DockerConfig from the active
+    // install row so the tamad (which owns no DB) can spawn the container.
+    // `resolve_backend_path` yields only the image string as `command`; the
+    // full mount/devices/shm/capability config lives on the install row
+    // (ADDR-0006 / plan-080 style), which we re-read here.
+    let docker_config_json = match manager
+        .get_active(&model_config.backend, &variant_folder)
+        .await
+    {
+        Ok(Some(info)) => info
+            .docker_config
+            .as_ref()
+            .and_then(|dc| serde_json::to_string(dc).ok()),
+        _ => None,
+    };
+
     // Args: installation defaults → model args → injected model paths.
     let default_args = manager
         .get_default_args(&model_config.backend, &variant_folder)
@@ -254,6 +270,9 @@ pub async fn build_load_spec(
         // The tamad resolves the isolation env var for this device against
         // its own GPU list (the proxy never samples local hardware).
         gpu_device: device.clone().unwrap_or_default(),
+        // Docker config (native = None): the tamad spawns a container when
+        // this is present, instead of the host binary in `command`.
+        docker_config_json: docker_config_json.unwrap_or_default(),
     };
 
     Ok(LoadSpec {
@@ -346,6 +365,7 @@ pub async fn build_tts_load_spec(state: &ProxyState, backend_name: &str) -> Resu
         health_url,
         health_timeout_ms: startup_timeout_ms,
         gpu_device: String::new(),
+        docker_config_json: String::new(),
     };
 
     Ok(LoadSpec {
@@ -411,6 +431,7 @@ pub async fn build_compaction_load_spec(state: &ProxyState) -> Result<LoadSpec> 
         health_url,
         health_timeout_ms: startup_timeout_ms,
         gpu_device: String::new(),
+        docker_config_json: String::new(),
     };
 
     Ok(LoadSpec {

@@ -513,6 +513,7 @@ mod tests {
             health_url: String::new(),
             health_timeout_ms: 0,
             gpu_device: String::new(),
+            docker_config_json: String::new(),
         };
         let result = client.load_model(&req).await;
         assert!(result.is_ok(), "load_model should succeed: {:?}", result);
@@ -546,6 +547,7 @@ mod tests {
             health_url: String::new(),
             health_timeout_ms: 0,
             gpu_device: String::new(),
+            docker_config_json: String::new(),
         };
         let result = client.load_model(&req).await;
         assert!(result.is_err(), "load_model should fail for 500");

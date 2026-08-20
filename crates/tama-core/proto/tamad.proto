@@ -37,6 +37,11 @@ message LoadModelRequest {
   // resolution (CUDA_VISIBLE_DEVICES & co.) happens on the tamad, which owns
   // the hardware. Empty = GPU auto-assign / CPU only.
   string gpu_device = 11;
+
+  // Serialized DockerConfig JSON when the model's backend runs inside a
+  // Docker container (restored exec path; the tamad holds no DB, so the
+  // proxy ships the container config). Empty = native host binary.
+  string docker_config_json = 12;
 }
 
 message LoadModelResponse {

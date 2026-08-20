@@ -792,6 +792,7 @@ mod tests {
             health_url: String::new(),
             health_timeout_ms: 0,
             gpu_device: String::new(),
+            docker_config_json: String::new(),
         }
     }
 }

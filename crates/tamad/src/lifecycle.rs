@@ -57,6 +57,13 @@ impl TamadLifecycle {
     pub async fn load(&self, req: &LoadModelRequest) -> Result<LoadModelResponse> {
         let (args, env) = self.resolve_launch(req).await?;
 
+        // Docker-backed engines (e.g. vLLM-radiance): the proxy shipped a
+        // DockerConfig in `docker_config_json`; spawn a container instead of
+        // a host binary (plan-080 style runner restored in tamad).
+        if !req.docker_config_json.is_empty() {
+            return self.load_container(req, args, env).await;
+        }
+
         info!(
             model = %req.model_name,
             command = %req.command,
@@ -164,6 +171,144 @@ impl TamadLifecycle {
         })
     }
 
+    /// Spawn a Docker-backed backend (container) and health-poll it to ready.
+    ///
+    /// The proxy ships a serialized [`DockerConfig`] in `req.docker_config_json`
+    /// (the tamad owns no DB). We pull the image if missing, rewrite the
+    /// already path-remapped args to the container's mounted model dir, then
+    /// `docker run` with the mount/device/shm/capability config. On timeout or
+    /// health failure the container is stopped+removed and a `failed` entry is
+    /// recorded in the table.
+    async fn load_container(
+        &self,
+        req: &LoadModelRequest,
+        args: Vec<String>,
+        env: Vec<(String, String)>,
+    ) -> Result<LoadModelResponse> {
+        let config =
+            serde_json::from_str::<tama_core::installations::DockerConfig>(&req.docker_config_json)
+                .map_err(|e| anyhow!("invalid docker_config_json: {}", e))?;
+
+        // Image presence: pull on first load (images can be large — allow a
+        // generous timeout). Fail when the host genuinely can't fetch it.
+        if !crate::host_installs::docker::runner::is_image_present(&config.image).await? {
+            info!(
+                model = %req.model_name,
+                image = %config.image,
+                "pulling docker image"
+            );
+            crate::host_installs::docker::runner::pull_image(&config.image, 1800)
+                .await
+                .with_context(|| format!("pulling docker image '{}'", config.image))?;
+        }
+
+        let local_models = self.state.models_dir.clone();
+        let container_models = config.model_mount.container_path.clone();
+        let container_args = crate::host_installs::docker::runner::rewrite_args_for_container(
+            &args,
+            &local_models,
+            &container_models,
+        )?;
+
+        // Host-side port: the proxy aliases it into args (`--port <n>`) and
+        // the health URL (`http://127.0.0.1:<n>/health`). Reuse the health URL
+        // port so what we spawn maps to what the proxy health-checks.
+        let host_port =
+            Self::port_from_health_url(&req.health_url).unwrap_or(config.container_port);
+
+        let env_strs: Vec<String> = env
+            .into_iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+
+        info!(
+            model = %req.model_name,
+            image = %config.image,
+            host_port,
+            container_port = config.container_port,
+            "spawning backend container"
+        );
+
+        let container = crate::host_installs::docker::runner::spawn_container(
+            &req.model_name,
+            &config,
+            host_port,
+            container_args,
+            &env_strs,
+            &local_models,
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "failed to spawn container '{}' for model '{}'",
+                config.image, req.model_name
+            )
+        })?;
+
+        let pid = container.pid;
+
+        // Health polling (same contract as the native path).
+        let timeout = Duration::from_millis(req.health_timeout_ms.max(0) as u64);
+        let healthy = if req.health_url.is_empty() || req.health_timeout_ms == 0 {
+            true
+        } else {
+            self.wait_for_health(&req.health_url, timeout).await
+        };
+
+        if !healthy {
+            warn!(
+                model = %req.model_name,
+                "container failed to become healthy; tearing down"
+            );
+            let _ = crate::host_installs::docker::runner::stop_container(&container.name).await;
+            let _ = crate::host_installs::docker::runner::remove_container(&container.name).await;
+            self.table
+                .insert(ProcessEntry {
+                    model_name: req.model_name.clone(),
+                    provider_name: req.provider_name.clone(),
+                    pid,
+                    endpoint_url: Self::endpoint_from_health_url(&req.health_url),
+                    status: "failed".to_string(),
+                    started_at: Instant::now(),
+                    spec: req.clone(),
+                })
+                .await;
+            return Err(anyhow!(
+                "container for model '{}' failed to become healthy within {}ms",
+                req.model_name,
+                req.health_timeout_ms
+            ));
+        }
+
+        let endpoint_url = Self::endpoint_from_health_url(&req.health_url);
+        self.table
+            .insert(ProcessEntry {
+                model_name: req.model_name.clone(),
+                provider_name: req.provider_name.clone(),
+                pid,
+                endpoint_url: endpoint_url.clone(),
+                status: "ready".to_string(),
+                started_at: Instant::now(),
+                spec: req.clone(),
+            })
+            .await;
+
+        Ok(LoadModelResponse {
+            endpoint_url,
+            pid: pid as i32,
+            status: "ready".to_string(),
+        })
+    }
+
+    /// Extract the host-side port from a health URL like
+    /// `http://127.0.0.1:8080/health`. Falls back to None.
+    fn port_from_health_url(url: &str) -> Option<u16> {
+        if url.is_empty() {
+            return None;
+        }
+        url::Url::parse(url).ok().and_then(|u| u.port())
+    }
+
     /// Kill the process group for `model_name` and remove the entry.
     ///
     /// Returns an error when the model is unknown to this tamad.
@@ -175,6 +320,19 @@ impl TamadLifecycle {
             .ok_or_else(|| anyhow!("model '{}' is not loaded on this tamad", model_name))?;
 
         info!(model = %model_name, pid = entry.pid, "unloading backend process");
+
+        // Docker backend: the "pid" is the container's host process. Kill it
+        // and also stop+remove the managed container so it doesn't linger or
+        // auto-restart.
+        if !entry.spec.docker_config_json.is_empty() {
+            let _ = kill_process_group(entry.pid).await;
+            let name = format!("tama-{}", model_name);
+            let _ = crate::host_installs::docker::runner::stop_container(&name).await;
+            let _ = crate::host_installs::docker::runner::remove_container(&name).await;
+            info!(model = %model_name, "docker backend container unloaded");
+            return Ok(());
+        }
+
         let _ = kill_process_group(entry.pid).await;
 
         // SIGTERM → wait up to 5s → SIGKILL.
@@ -478,6 +636,7 @@ mod tests {
             health_url,
             health_timeout_ms,
             gpu_device: String::new(),
+            docker_config_json: String::new(),
         }
     }
 
