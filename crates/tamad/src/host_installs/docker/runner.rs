@@ -424,7 +424,6 @@ pub async fn remove_container(name: &str) -> Result<()> {
 pub fn logs_tail_args(container_name: &str, max_lines: usize) -> Vec<String> {
     vec![
         "logs".to_string(),
-        "--no-trunc".to_string(),
         "--tail".to_string(),
         max_lines.to_string(),
         container_name.to_string(),
@@ -433,7 +432,7 @@ pub fn logs_tail_args(container_name: &str, max_lines: usize) -> Vec<String> {
 
 /// Tail the last `max_lines` lines of a container's logs.
 ///
-/// Runs `docker logs --no-trunc --tail <n> <name>`. A non-zero exit
+/// Runs `docker logs --tail <n> <name>`. A non-zero exit
 /// (e.g. "No such container") is an error carrying docker's stderr so the
 /// caller can log what actually happened; the server's `logs` handler
 /// degrades that to an empty stream.
@@ -491,15 +490,14 @@ mod tests {
         assert!(result.unwrap().is_none(), "missing container -> None");
     }
 
-    /// The exact `docker logs` CLI: --no-trunc, then --tail with the line
-    /// count, then the container name (last arg).
+    /// The exact `docker logs` CLI: --tail with the line count, then the
+    /// container name (last arg).
     #[test]
     fn test_logs_tail_args_vector() {
         assert_eq!(
             logs_tail_args("tama-model-a", 200),
             vec![
                 "logs".to_string(),
-                "--no-trunc".to_string(),
                 "--tail".to_string(),
                 "200".to_string(),
                 "tama-model-a".to_string(),
