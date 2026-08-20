@@ -123,6 +123,8 @@ pub fn rewrite_args_for_container(
 }
 
 /// Rewrite a host path under `models_dir` into the container path.
+/// If the path is already under `container_model_path` or is another
+/// container-internal path, it passes through untouched.
 fn maybe_rewrite_path(
     path: &str,
     models_dir: &Path,
@@ -137,13 +139,7 @@ fn maybe_rewrite_path(
         );
         return Ok(Some(rewritten));
     }
-    if path.starts_with('/') {
-        return Err(anyhow!(
-            "Path '{}' is outside the models directory '{}' and cannot be mounted",
-            path,
-            models_dir.display()
-        ));
-    }
+    // Path doesn't match host models_dir — leave as-is for container-internal paths
     Ok(None)
 }
 
@@ -496,6 +492,23 @@ mod tests {
         let args = vec!["--model=/models/gguf/model.gguf".to_string()];
         let result = rewrite_args_for_container(&args, models_dir, "/container-models").unwrap();
         assert_eq!(result, vec!["--model=/container-models/gguf/model.gguf"]);
+    }
+
+    #[test]
+    fn test_rewrite_container_internal_path_passthrough() {
+        let models_dir = Path::new("/mnt/models");
+        let args = vec![
+            "--chat-template".to_string(),
+            "/models/templates/chat_template.jinja".to_string(),
+        ];
+        let result = rewrite_args_for_container(&args, models_dir, "/models").unwrap();
+        assert_eq!(
+            result,
+            vec![
+                "--chat-template",
+                "/models/templates/chat_template.jinja"
+            ]
+        );
     }
 
     #[test]
