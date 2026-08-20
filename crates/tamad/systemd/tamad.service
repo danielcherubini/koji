@@ -1,0 +1,34 @@
+# tamad — Tama inference daemon, systemd unit for inference hosts.
+#
+# Install: create /etc/tamad/tamad.env (mode 600) with TAMA_URL and
+# TAMA_TOKEN, copy this file to /etc/systemd/system/tamad.service, then
+# `systemctl daemon-reload && systemctl enable --now tamad`.
+# Full steps: crates/tamad/systemd/README.md
+
+[Unit]
+Description=Tama inference daemon
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Unset flags fall back to tamad defaults (see crates/tamad/src/state.rs):
+#   name   -> local hostname
+#   addr   -> 0.0.0.0:50051, protocol grpc
+#   url    -> grpc://<name>:50051
+#   dirs   -> $HOME/.tama (token) and $HOME/.tama/models
+# Optional additions:
+#   --name my-gpu-1                 stable identity key if hostnames change
+#   --public-url grpc://192.168.1.50:50051   if the proxy cannot resolve
+#                                            this host's hostname
+ExecStart=/usr/local/bin/tamad
+# Self-registration credentials from a mode-600 root-only file, so the
+# proxy admin token is not world-readable in the unit (see README).
+# The `-` prefix: a missing file disables self-registration instead of
+# failing startup — tamad then only serves locally and warns in the journal.
+EnvironmentFile=-/etc/tamad/tamad.env
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
