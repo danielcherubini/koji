@@ -1,3 +1,4 @@
+pub mod active_model_row;
 pub mod activity_panel;
 pub mod alert_banner;
 pub mod gpu_device_card;

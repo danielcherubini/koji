@@ -74,6 +74,29 @@ pub struct StatusResponse {
     pub models: std::collections::BTreeMap<String, StatusModelEntry>,
 }
 
+/// Resolve the dashboard host-grouping name for a model.
+///
+/// The frontend groups active models into host fleet cards by
+/// `host_name == hosts[].name`, and the SSE `hosts[]` array is populated
+/// from `TamadHandle.connection.name` (see `tama_handlers::system`). So the
+/// attribution value must be the tamad **connection display name**, not the
+/// provider's name (a user nickname that matches no host card).
+///
+/// Derivation: resolve the model's owning provider, then look up the
+/// provider's `tamad_id` in the live tamad pool and return the handle's
+/// connection name. Pool-first is sufficient: a model can only be `ready`
+/// when its tamad was online to load it, so the live grouping case always
+/// has a handle. Returns `None` (dashboard "Unassigned") when the provider
+/// is unresolvable, has no tamad assigned, or the tamad has no pool handle.
+pub(crate) async fn resolve_host_name(state: &ProxyState, model_id: &str) -> Option<String> {
+    let provider = crate::proxy::lifecycle::spec::resolve_provider_for_model(state, model_id)
+        .await
+        .ok()?;
+    let tamad_id = provider.tamad_id?;
+    let handle = state.tamad_pool().get(&tamad_id).await?;
+    Some(handle.connection.name.clone())
+}
+
 impl ProxyState {
     /// Build the per-model status snapshot embedded in `MetricSample.models`.
     ///
@@ -168,11 +191,28 @@ impl ProxyState {
                 tps: server_stats.and_then(|s| s.tps),
                 prompt_tps: server_stats.and_then(|s| s.prompt_tps),
                 is_docker,
+                host_name: None,
             };
             out.push(status);
         }
         // Stable order so dashboard rows don't shuffle between samples.
         out.sort_by(|a, b| a.id.cmp(&b.id));
+
+        // Attribute each model to its host for the dashboard's host-centric
+        // grouping. Display-only: any resolution error (missing provider,
+        // ambiguous local providers, remote provider, provider without a
+        // tamad, tamad not in the pool, DB error) leaves `host_name` as None
+        // so the model lands in the dashboard's "Unassigned" group. The
+        // registry/config guards are dropped first — provider resolution
+        // re-acquires them and hits the DB, which must not happen while
+        // locks are held. One await per model is acceptable: the snapshot
+        // cadence is ~2s and the model count is small.
+        drop(config);
+        drop(model_configs);
+        drop(runtime);
+        for snapshot in out.iter_mut() {
+            snapshot.host_name = resolve_host_name(self, &snapshot.id).await;
+        }
         out
     }
 
@@ -710,6 +750,133 @@ mod tests {
             "the load-window Starting mirror must be reported as Starting (not Idle): {:?}",
             entry
         );
+    }
+
+    /// `host_name` is display-only: when the owning provider cannot be
+    /// resolved (here: the dummy pool has no providers table at all, so the
+    /// DB lookup fails), the snapshot must still be produced with
+    /// `host_name == None` rather than erroring or panicking.
+    #[tokio::test]
+    async fn test_collect_model_state_snapshots_host_name_none_when_provider_unresolvable() {
+        let config = Config::default();
+        let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
+
+        {
+            let mut mc = state.registry.model_configs.write().await;
+            mc.insert("zephyr".to_string(), make_model_config("llama_cpp"));
+        }
+
+        let statuses = state.collect_model_state_snapshots().await;
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].id, "zephyr");
+        assert!(
+            statuses[0].host_name.is_none(),
+            "unresolvable provider must yield host_name None, got: {:?}",
+            statuses[0].host_name
+        );
+    }
+
+    /// `host_name` feeds the dashboard's host-fleet grouping
+    /// (`host_name == hosts[].name`), and `hosts[].name` is the tamad
+    /// **connection display name** (`TamadHandle.connection.name`). When the
+    /// provider's nickname differs from the tamad's display name (here:
+    /// provider "local-radiance" on tamad "tama"), the snapshot must carry
+    /// the connection name — the provider name matches no host card and the
+    /// model would land in "Unassigned".
+    #[tokio::test]
+    async fn test_collect_model_state_snapshots_host_name_uses_tamad_connection_name() {
+        use crate::tamad::pool::test_support::grpc_conn;
+        use crate::testing::postgres::with_schema;
+
+        let guard = with_schema().await;
+        let pool = Arc::new(guard.pool.clone());
+        let config = Config::default();
+        let state = ProxyState::new(config, None, pool.clone());
+
+        // Provider whose nickname differs from the tamad's display name.
+        crate::db::queries::insert_provider(
+            pool.as_ref(),
+            "local-radiance",
+            "local",
+            "llama_cpp",
+            Some("tamad-1"),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let mut mc = make_model_config("llama_cpp");
+        mc.provider_name = Some("local-radiance".to_string());
+        state
+            .registry
+            .model_configs
+            .write()
+            .await
+            .insert("zephyr".to_string(), mc);
+
+        // Pool handle for the provider's tamad: connection.name is what the
+        // SSE hosts[] array exposes as HostStats.name.
+        let conn = grpc_conn("tamad-1", "tama", "grpc://127.0.0.1:1");
+        state.tamad_pool().upsert_connection(&conn).await.unwrap();
+
+        let statuses = state.collect_model_state_snapshots().await;
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].id, "zephyr");
+        assert_eq!(
+            statuses[0].host_name.as_deref(),
+            Some("tama"),
+            "host_name must be the tamad connection display name (hosts[].name), \
+             not the provider nickname"
+        );
+
+        let _ = guard.finish().await;
+    }
+
+    /// When the provider resolves but its `tamad_id` has no live handle in
+    /// the pool (tamad offline/never connected), `host_name` falls back to
+    /// None — the model lands in the dashboard's "Unassigned" group rather
+    /// than being mis-attributed.
+    #[tokio::test]
+    async fn test_collect_model_state_snapshots_host_name_none_when_tamad_not_in_pool() {
+        use crate::testing::postgres::with_schema;
+
+        let guard = with_schema().await;
+        let pool = Arc::new(guard.pool.clone());
+        let config = Config::default();
+        let state = ProxyState::new(config, None, pool.clone());
+
+        crate::db::queries::insert_provider(
+            pool.as_ref(),
+            "local-radiance",
+            "local",
+            "llama_cpp",
+            Some("tamad-1"),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let mut mc = make_model_config("llama_cpp");
+        mc.provider_name = Some("local-radiance".to_string());
+        state
+            .registry
+            .model_configs
+            .write()
+            .await
+            .insert("zephyr".to_string(), mc);
+
+        // No handle upserted for "tamad-1".
+        let statuses = state.collect_model_state_snapshots().await;
+        assert_eq!(statuses.len(), 1);
+        assert!(
+            statuses[0].host_name.is_none(),
+            "missing pool handle must yield host_name None, got: {:?}",
+            statuses[0].host_name
+        );
+
+        let _ = guard.finish().await;
     }
 
     // ── Drift-guard: /status response round-trip ──────────────────────────────

@@ -1,9 +1,8 @@
 /* Dashboard Hosts section — per-tamad host cards (plan-191 Task 9) */
 
-/* Uniform 2rem section rhythm: `.dashboard-models`, this, and
-   `.dashboard-telemetry` each carry the same `margin-top` (adjacent margins
-   collapse, so inter-section gaps are all 2rem; the first section also
-   sits 2rem below the page header). */
+/* Uniform 2rem section rhythm: this and `.dashboard-telemetry` each carry
+   the same `margin-top` (adjacent margins collapse, so inter-section gaps
+   are all 2rem; the first section also sits 2rem below the page header). */
 .dashboard-hosts {
   margin-top: 2rem;
 }
@@ -37,11 +36,6 @@
   font-size: 0.95rem;
 }
 
-.host-card__info {
-  color: var(--text-muted);
-  font-size: 0.8rem;
-}
-
 /* CPU/RAM rows — reuse the shared host metric row layout below
    (`.host-gpu-row`, used as-is) so CPU, RAM, and every GPU row render
    with the identical two-line structure, aligned bars, and green fill. */
@@ -50,6 +44,20 @@
   flex-direction: column;
   gap: 0.6rem;
   margin-top: 0.25rem;
+}
+
+/* CPU + RAM on ONE compact line: a flex row of two half-column metric
+   groups, each `min-width: 0` so labels/bars shrink instead of clipping;
+   the 10rem flex-basis wraps the row to stacked on narrow cards. */
+.host-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem 1rem;
+}
+
+.host-metrics > .host-gpu-row {
+  flex: 1 1 10rem;
+  min-width: 0;
 }
 
 /* GPU list inside a host card */
@@ -106,12 +114,6 @@
   font-variant-numeric: tabular-nums;
 }
 
-.host-gpu-row__temp {
-  color: var(--text-muted);
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
-
 .host-gpu-row__bottom {
   display: flex;
   align-items: center;
@@ -138,8 +140,11 @@
   background: var(--accent-green);
 }
 
-/* Active models running on this node */
-.host-card__running {
+/* Active models running on this node — same visual structure as the GPU
+   section: bordered subsection with an uppercase muted heading; the rows
+   reuse the shared `.active-models-list` / `.active-model-row` styles from
+   `15-dashboard.css`. */
+.host-card__models {
   margin-top: 0.5rem;
   border-top: 1px solid var(--border-color);
   padding-top: 0.5rem;
@@ -148,29 +153,29 @@
   gap: 0.35rem;
 }
 
-.host-card__running-label {
+.host-card__models-title {
   color: var(--text-muted);
   font-size: 0.75rem;
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 
-.host-card__running-badges {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.3rem;
+/* "Unassigned" group — active models whose host could not be resolved,
+   rendered below the host-card grid inside the Hosts section. */
+.host-unassigned {
+  margin-top: 1rem;
 }
 
-.host-card__running-badge {
-  max-width: 100%;
-  padding: 0.1rem 0.45rem;
-  font-size: 0.72rem;
-  background: rgba(255, 255, 255, 0.05);
-  border-color: var(--border-color);
-  color: var(--text-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.host-unassigned__head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.host-unassigned__head h3 {
+  font-size: 0.95rem;
+  font-weight: 600;
 }
 
 /* Offline placeholder */

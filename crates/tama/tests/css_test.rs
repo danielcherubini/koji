@@ -29,12 +29,14 @@ const CSS_16: &str = include_str!("../css/16-benchmarks.css");
 const CSS_17: &str = include_str!("../css/17-api-docs.css");
 const CSS_18: &str = include_str!("../css/18-aliases.css");
 const CSS_19: &str = include_str!("../css/19-gpu-device-card.css");
+const CSS_20: &str = include_str!("../css/20-api-keys.css");
+const CSS_21: &str = include_str!("../css/21-dashboard-hosts.css");
 
 /// Concatenate all CSS partials in import order.
 fn combined_css() -> String {
     [
         CSS_01, CSS_02, CSS_03, CSS_04, CSS_05, CSS_06, CSS_07, CSS_08, CSS_09, CSS_10, CSS_11,
-        CSS_12, CSS_13, CSS_14, CSS_15, CSS_16, CSS_17, CSS_18, CSS_19,
+        CSS_12, CSS_13, CSS_14, CSS_15, CSS_16, CSS_17, CSS_18, CSS_19, CSS_20, CSS_21,
     ]
     .join("\n")
 }
@@ -107,32 +109,50 @@ fn rule_body<'a>(css: &'a str, selector: &str) -> Option<&'a str> {
     None
 }
 
-/// The dashboard's "Active Models" `<section>` is wrapped in a
-/// `.dashboard-models` class. The CSS must give that section vertical
-/// breathing room so it doesn't visually collide with the system metric
-/// cards directly above it.
+/// The dashboard's Hosts `<section>` (which now also contains the merged
+/// active-models groups) is wrapped in a `.dashboard-hosts` class. The CSS
+/// must give that section vertical breathing room so it doesn't visually
+/// collide with the content directly above it.
 #[test]
-fn test_style_css_defines_dashboard_models_section_spacing() {
+fn test_style_css_defines_dashboard_hosts_section_spacing() {
     let css = strip_css_comments(&combined_css());
-    let body = rule_body(&css, ".dashboard-models")
-        .expect("style.css must define a `.dashboard-models` rule");
+    let body = rule_body(&css, ".dashboard-hosts")
+        .expect("style.css must define a `.dashboard-hosts` rule");
     assert!(
         body.contains("margin-top"),
-        "`.dashboard-models` rule must set `margin-top` to separate the section from the stats grid; got: {body}"
+        "`.dashboard-hosts` rule must set `margin-top` to separate the section from the content above; got: {body}"
     );
 }
 
-/// Inside `.dashboard-models` we render a `.page-header` row containing the
-/// section title and the summary count. It needs its own bottom margin so the
-/// header doesn't sit flush against the model cards grid.
+/// Inside `.dashboard-hosts` we render a `.page-header` row containing the
+/// section title and the host/model summary count. It needs its own bottom
+/// margin so the header doesn't sit flush against the host cards grid.
 #[test]
-fn test_style_css_defines_dashboard_models_page_header_spacing() {
+fn test_style_css_defines_dashboard_hosts_page_header_spacing() {
     let css = strip_css_comments(&combined_css());
-    let body = rule_body(&css, ".dashboard-models .page-header")
-        .expect("style.css must define a `.dashboard-models .page-header` rule");
+    let body = rule_body(&css, ".dashboard-hosts .page-header")
+        .expect("style.css must define a `.dashboard-hosts .page-header` rule");
     assert!(
         body.contains("margin-bottom"),
-        "`.dashboard-models .page-header` rule must set `margin-bottom` to separate the header from the grid; got: {body}"
+        "`.dashboard-hosts .page-header` rule must set `margin-bottom` to separate the header from the grid; got: {body}"
+    );
+}
+
+/// The host card renders CPU + RAM on one compact line inside a
+/// `.host-metrics` flex container; it must be a wrapping flex row so the two
+/// half-column metric groups stack on narrow cards instead of clipping.
+#[test]
+fn test_style_css_defines_host_metrics_compact_row() {
+    let css = strip_css_comments(&combined_css());
+    let body =
+        rule_body(&css, ".host-metrics").expect("style.css must define a `.host-metrics` rule");
+    assert!(
+        body.contains("display: flex"),
+        "`.host-metrics` must be a flex row; got: {body}"
+    );
+    assert!(
+        body.contains("flex-wrap: wrap"),
+        "`.host-metrics` must wrap to stacked on narrow cards; got: {body}"
     );
 }
 

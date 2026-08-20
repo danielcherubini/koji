@@ -1,14 +1,18 @@
 //! Host card component — one card per registered tamad on the dashboard
-//! system section (plan-191 Task 9), plus the proxy-local card.
+//! Hosts section (plan-191 Task 9).
 //!
-//! Tamad cards show name, online status, version, CPU, RAM, and per-GPU
-//! VRAM/utilization/temperature from the SSE `hosts[]` stream. The proxy
-//! card shows only its own version + uptime — the proxy presents no
-//! hardware (ADR-0010).
+//! Tamad cards show name, online status, CPU, RAM, per-GPU
+//! VRAM/utilization/temperature from the SSE `hosts[]` stream, and the
+//! models actively running on the node (host-centric grouping — the old
+//! standalone "Active Models" section was merged into these cards).
 
 use leptos::prelude::*;
 
-use crate::pages::dashboard::{format_bytes_gib, format_bytes_gib_rounded, HostGpu};
+use crate::components::active_model_row::ActiveModelRow;
+use crate::pages::dashboard::{
+    format_bytes_gib, format_bytes_gib_rounded, host_gpus_to_device_stats, HostGpu,
+    ModelStateSnapshot,
+};
 
 /// Format a GPU VRAM label as `used / total GiB`, e.g. `28.6 GiB / 32 GiB`.
 ///
@@ -141,8 +145,9 @@ pub fn HostGpuRow(gpu: HostGpu) -> impl IntoView {
         <div class="host-gpu-row">
             <div class="host-gpu-row__top">
                 <span class="host-gpu-row__name">{title}</span>
-                <span class="host-gpu-row__value">{format!("{util:.0}%")}</span>
-                <span class="host-gpu-row__temp">{format!("{:.0}°C", gpu.temperature_c)}</span>
+                <span class="host-gpu-row__value">
+                    {format!("{util:.0}% util · {:.0}°C", gpu.temperature_c)}
+                </span>
             </div>
             <div class="host-gpu-row__bottom">
                 <span class="host-gpu-row__vram">{vram_text}</span>
@@ -157,31 +162,30 @@ pub fn HostGpuRow(gpu: HostGpu) -> impl IntoView {
     }
 }
 
-/// HostCard — one card per tamad (or the proxy-local card).
+/// HostCard — one card per tamad.
 ///
-/// For the proxy card, pass `cpu_percent = None`, `memory = None` and an
-/// empty `gpus` with `uptime` set: the card then shows only version +
-/// uptime (the proxy presents no hardware).
+/// Shows CPU + RAM on one compact line, one row per GPU, and — below the
+/// GPU section — the models actively running on this node (same row markup
+/// as the Hosts section's "Unassigned" group, via [`ActiveModelRow`]).
 #[component]
 pub fn HostCard(
-    /// Host display name (tamad name, or "Proxy").
+    /// Host display name (tamad name).
     name: String,
     /// Whether the host is currently reachable (tamad stats stream open).
     online: bool,
-    /// The host's self-reported version.
-    version: Option<String>,
-    /// CPU usage % (None hides the CPU/RAM row — proxy card).
+    /// CPU usage % (None hides the CPU metric).
     cpu_percent: Option<f64>,
-    /// RAM used/total in bytes (None hides the RAM row — proxy card).
+    /// RAM used/total in bytes (None hides the RAM metric).
     memory: Option<(u64, u64)>,
     /// GPUs (tamad hosts only).
     gpus: Vec<HostGpu>,
-    /// Extra info line under the header (e.g. "Up 2h 13m" for the proxy).
-    uptime: Option<String>,
-    /// Models actively running on this node (e.g.
-    /// `"Qwen3.8-27B-FP8 (Port 37115)"`); empty hides the section.
+    /// Models actively running on this node; empty hides the models section.
     #[prop(default = Vec::new())]
-    running_models: Vec<String>,
+    running_models: Vec<ModelStateSnapshot>,
+    /// Dispatched with the model id when a row's Unload button is clicked.
+    on_unload: Callback<String>,
+    /// Shared unload-in-progress flag forwarded to each model row.
+    unload_busy: Signal<bool>,
 ) -> impl IntoView {
     view! {
         <div class="card host-card">
@@ -193,70 +197,60 @@ pub fn HostCard(
                     view! { <span class="badge badge-danger">"● offline"</span> }.into_any()
                 }}
             </div>
-            <div class="host-card__info">
-                {if let Some(ref v) = version {
-                    v.clone()
-                } else {
-                    "—".to_string()
-                }}
-                {if let Some(ref up) = uptime {
-                    format!(" · Up {up}")
-                } else {
-                    String::new()
-                }}
-            </div>
             {if online {
                 view! {
                     <div class="host-card__stats">
-                        {if let Some(cpu) = cpu_percent {
-                            view! {
-                                <div class="host-gpu-row">
-                                    <div class="host-gpu-row__top">
-                                        <span class="host-gpu-row__name">"CPU"</span>
-                                        <span class="host-gpu-row__value">{format!("{cpu:.1}%")}</span>
-                                    </div>
-                                    <div class="host-gpu-row__bottom">
-                                        <div class="host-gpu-row__util-bar">
-                                            <div
-                                                class="progress-bar-fill"
-                                                style=format!("width: {:.0}%", cpu.clamp(0.0, 100.0))
-                                            />
+                        <div class="host-metrics">
+                            {if let Some(cpu) = cpu_percent {
+                                view! {
+                                    <div class="host-gpu-row">
+                                        <div class="host-gpu-row__top">
+                                            <span class="host-gpu-row__name">"CPU"</span>
+                                            <span class="host-gpu-row__value">{format!("{cpu:.1}%")}</span>
+                                        </div>
+                                        <div class="host-gpu-row__bottom">
+                                            <div class="host-gpu-row__util-bar">
+                                                <div
+                                                    class="progress-bar-fill"
+                                                    style=format!("width: {:.0}%", cpu.clamp(0.0, 100.0))
+                                                />
+                                            </div>
                                         </div>
                                     </div>
-                                </div>
-                            }
-                            .into_any()
-                        } else {
-                            view! { <div/> }.into_any()
-                        }}
-                        {if let Some((used, total)) = memory {
-                            let (ram_pct, ram_text) = metric_line(used, total);
-                            let ram_pct_text = if total > 0 {
-                                format!("{ram_pct:.0}%")
+                                }
+                                .into_any()
                             } else {
-                                "—".to_string()
-                            };
-                            view! {
-                                <div class="host-gpu-row">
-                                    <div class="host-gpu-row__top">
-                                        <span class="host-gpu-row__name">"RAM"</span>
-                                        <span class="host-gpu-row__value">{ram_pct_text}</span>
-                                    </div>
-                                    <div class="host-gpu-row__bottom">
-                                        <span class="host-gpu-row__vram">{ram_text}</span>
-                                        <div class="host-gpu-row__util-bar">
-                                            <div
-                                                class="progress-bar-fill"
-                                                style=format!("width: {ram_pct:.0}%")
-                                            />
+                                view! { <div/> }.into_any()
+                            }}
+                            {if let Some((used, total)) = memory {
+                                let (ram_pct, ram_text) = metric_line(used, total);
+                                let ram_pct_text = if total > 0 {
+                                    format!("{ram_pct:.0}%")
+                                } else {
+                                    "—".to_string()
+                                };
+                                view! {
+                                    <div class="host-gpu-row">
+                                        <div class="host-gpu-row__top">
+                                            <span class="host-gpu-row__name">"RAM"</span>
+                                            <span class="host-gpu-row__value">{ram_pct_text}</span>
+                                        </div>
+                                        <div class="host-gpu-row__bottom">
+                                            <span class="host-gpu-row__vram">{ram_text}</span>
+                                            <div class="host-gpu-row__util-bar">
+                                                <div
+                                                    class="progress-bar-fill"
+                                                    style=format!("width: {ram_pct:.0}%")
+                                                />
+                                            </div>
                                         </div>
                                     </div>
-                                </div>
-                            }
-                            .into_any()
-                        } else {
-                            view! { <div/> }.into_any()
-                        }}
+                                }
+                                .into_any()
+                            } else {
+                                view! { <div/> }.into_any()
+                            }}
+                        </div>
                     </div>
                     {if !gpus.is_empty() {
                         view! {
@@ -276,13 +270,27 @@ pub fn HostCard(
                         view! { <div/> }.into_any()
                     }}
                     {if !running_models.is_empty() {
+                        // GPU chips resolve against this host's own GPUs —
+                        // models attributed to a host run on that host.
+                        let gpus_for_labels = host_gpus_to_device_stats(&gpus);
                         view! {
-                            <div class="host-card__running">
-                                <span class="host-card__running-label">"🟢 Running:"</span>
-                                <div class="host-card__running-badges">
+                            <div class="host-card__models">
+                                <div class="host-card__models-title">
+                                    {"Active on this node"}
+                                    <span class="text-muted">
+                                        {format!("( {} )", running_models.len())}
+                                    </span>
+                                </div>
+                                <div class="active-models-list">
                                     {running_models.iter().map(|m| {
-                                        let m = m.clone();
-                                        view! { <span class="badge host-card__running-badge">{m}</span> }
+                                        view! {
+                                            <ActiveModelRow
+                                                model=m.clone()
+                                                gpus_for_labels=gpus_for_labels.clone()
+                                                unload_busy=unload_busy
+                                                on_unload=on_unload
+                                            />
+                                        }
                                     }).collect::<Vec<_>>()}
                                 </div>
                             </div>

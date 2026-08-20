@@ -472,6 +472,7 @@ fn make_test_model(id: &str, state: &str, gpu_device: Option<&str>) -> ModelStat
         prompt_tps: None,
         error_message: None,
         is_docker: false,
+        host_name: None,
     }
 }
 
@@ -562,6 +563,7 @@ fn make_sort_model(
         prompt_tps: None,
         error_message: None,
         is_docker: false,
+        host_name: None,
     }
 }
 
@@ -1210,4 +1212,114 @@ fn test_ms_per_token() {
         (ms - 18.87).abs() < 0.01,
         "53 tok/s ≈ 18.87 ms/tok, got {ms}"
     );
+}
+
+/// `host_name` serde round-trip on the frontend mirror: a populated value
+/// survives serialize → deserialize, `None` is omitted from the wire JSON,
+/// and a payload without the field at all (old backend builds) defaults to
+/// None — the same back-compat contract as the other optional fields.
+#[test]
+fn test_model_state_snapshot_host_name_serde_roundtrip() {
+    let json = r#"{
+        "id": "m1",
+        "backend": "llama_cpp",
+        "host_name": "gpu-box"
+    }"#;
+    let snap: ModelStateSnapshot =
+        serde_json::from_str(json).expect("snapshot with host_name deserializes");
+    assert_eq!(snap.host_name.as_deref(), Some("gpu-box"));
+
+    let out = serde_json::to_value(&snap).expect("serialize");
+    assert_eq!(
+        out.get("host_name").and_then(|v| v.as_str()),
+        Some("gpu-box")
+    );
+
+    let mut without = snap.clone();
+    without.host_name = None;
+    let out = serde_json::to_value(&without).expect("serialize");
+    assert!(
+        out.get("host_name").is_none(),
+        "None host_name must be skipped on the wire, got: {out}"
+    );
+
+    let json2 = r#"{ "id": "m1", "backend": "llama_cpp" }"#;
+    let snap2: ModelStateSnapshot =
+        serde_json::from_str(json2).expect("snapshot without host_name deserializes");
+    assert!(snap2.host_name.is_none());
+}
+
+/// `partition_models_by_host` groups models under their attributed host and
+/// collects hostless / unmatched models into the unassigned bucket.
+#[test]
+fn test_partition_models_by_host_groups_and_collects_unassigned() {
+    let mk = |id: &str, host: Option<&str>| ModelStateSnapshot {
+        id: id.into(),
+        backend: "llama_cpp".into(),
+        state: ModelState::Ready,
+        host_name: host.map(str::to_string),
+        ..Default::default()
+    };
+    let models = vec![
+        mk("a", Some("gpu-box")),
+        mk("b", Some("cpu-box")),
+        mk("c", Some("gpu-box")),
+        mk("d", None),               // hostless → unassigned
+        mk("e", Some("ghost-host")), // matches no host → unassigned
+    ];
+    let host_names = vec!["gpu-box".to_string(), "cpu-box".to_string()];
+
+    let (by_host, unassigned) = partition_models_by_host(models, &host_names);
+
+    let gpu_box: Vec<&str> = by_host["gpu-box"].iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(gpu_box, vec!["a", "c"], "order within a host is preserved");
+    let cpu_box: Vec<&str> = by_host["cpu-box"].iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(cpu_box, vec!["b"]);
+    let unassigned_ids: Vec<&str> = unassigned.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(unassigned_ids, vec!["d", "e"]);
+}
+
+/// Every known host gets a (possibly empty) bucket so the dashboard can
+/// render a card per host without a missing-key branch.
+#[test]
+fn test_partition_models_by_host_empty_buckets_for_idle_hosts() {
+    let host_names = vec!["gpu-box".to_string(), "idle-box".to_string()];
+    let (by_host, unassigned) = partition_models_by_host(Vec::new(), &host_names);
+
+    assert_eq!(by_host.len(), 2);
+    assert!(by_host["gpu-box"].is_empty());
+    assert!(by_host["idle-box"].is_empty());
+    assert!(unassigned.is_empty());
+}
+
+/// `host_gpus_to_device_stats` converts the SSE `HostGpu` shape into the
+/// `GpuDeviceStats` shape the GPU-allocation chip resolver expects.
+#[test]
+fn test_host_gpus_to_device_stats_conversion() {
+    let host_gpus = vec![HostGpu {
+        index: 1,
+        name: "Radeon Pro W7900".into(),
+        driver_version: String::new(),
+        vram_total_bytes: 32 * 1024 * 1024 * 1024,
+        vram_used_bytes: 2 * 1024 * 1024 * 1024,
+        utilization_percent: 55.0,
+        temperature_c: 61.0,
+        power_w: 120.0,
+    }];
+
+    let stats = host_gpus_to_device_stats(&host_gpus);
+    assert_eq!(stats.len(), 1);
+    assert_eq!(stats[0].device_id, "GPU1");
+    assert_eq!(stats[0].name, "Radeon Pro W7900");
+    assert_eq!(stats[0].utilization_pct, Some(55));
+    let vram = stats[0].vram.as_ref().expect("vram present when total > 0");
+    assert_eq!(vram.total_mib, 32 * 1024);
+    assert_eq!(vram.used_mib, 2 * 1024);
+
+    // Zero total VRAM → no vram info (unknown), never a divide-by-zero row.
+    let no_vram = host_gpus_to_device_stats(&[HostGpu {
+        vram_total_bytes: 0,
+        ..host_gpus[0].clone()
+    }]);
+    assert!(no_vram[0].vram.is_none());
 }

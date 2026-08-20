@@ -211,6 +211,10 @@ pub struct ModelStateSnapshot {
     pub error_message: Option<String>,
     #[serde(default)]
     pub is_docker: bool,
+    /// Display-only, source tamad/provider name when resolvable. None → the
+    /// model lands in the dashboard's "Unassigned" group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_name: Option<String>,
 }
 
 /// Format a number with comma separators (e.g. `8460` → `"8,460"`).
@@ -262,6 +266,62 @@ pub fn build_inference_telemetry(buckets: &[MetricBucket]) -> InferenceTelemetry
 /// to display when nothing is being generated.
 pub fn ms_per_token(tps: f32) -> Option<f64> {
     (tps > 0.0).then(|| 1000.0 / tps as f64)
+}
+
+/// Partition active models into per-host buckets keyed by host name, plus an
+/// "unassigned" bucket for models whose `host_name` is `None` or matches no
+/// known host. Every name in `host_names` gets a bucket (possibly empty) so
+/// the dashboard can render one card per host without a missing-key branch.
+///
+/// Extracted as a pure function so the host-centric grouping is unit-testable
+/// independently of the Leptos reactive view.
+pub fn partition_models_by_host(
+    models: Vec<ModelStateSnapshot>,
+    host_names: &[String],
+) -> (
+    std::collections::HashMap<String, Vec<ModelStateSnapshot>>,
+    Vec<ModelStateSnapshot>,
+) {
+    let mut by_host: std::collections::HashMap<String, Vec<ModelStateSnapshot>> = host_names
+        .iter()
+        .map(|name| (name.clone(), Vec::new()))
+        .collect();
+    let mut unassigned = Vec::new();
+    for m in models {
+        match &m.host_name {
+            Some(name) if by_host.contains_key(name) => {
+                by_host.get_mut(name).expect("key checked above").push(m);
+            }
+            _ => unassigned.push(m),
+        }
+    }
+    (by_host, unassigned)
+}
+
+/// Convert a tamad host's `HostGpu` list into the `GpuDeviceStats` shape the
+/// GPU-allocation chip resolver (`model_gpu_label`) expects. Shared by the
+/// dashboard (unassigned rows resolve against every host's GPUs) and the
+/// host card (rows resolve against the card's own GPUs).
+pub fn host_gpus_to_device_stats(gpus: &[HostGpu]) -> Vec<GpuDeviceStats> {
+    gpus.iter()
+        .map(|g| {
+            let used_mib = (g.vram_used_bytes.max(0) as u64) / (1024 * 1024);
+            let total_mib = (g.vram_total_bytes.max(0) as u64) / (1024 * 1024);
+            GpuDeviceStats {
+                device_id: format!("GPU{}", g.index),
+                vendor: GpuVendor::default(),
+                name: g.name.clone(),
+                utilization_pct: Some(g.utilization_percent.clamp(0.0, 100.0) as u8),
+                vram: (g.vram_total_bytes > 0).then_some(VramInfo {
+                    used_mib,
+                    total_mib,
+                }),
+                temperature_c: Some(g.temperature_c as u8),
+                power_w: None,
+                fan_pct: None,
+            }
+        })
+        .collect()
 }
 
 /// Filter models to those currently loaded or still coming up —

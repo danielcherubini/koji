@@ -59,33 +59,14 @@
   color: var(--accent-green);
 }
 
-/* 24. Dashboard "Active Models" section
+/* 24. Dashboard Hosts section heading
  *
- * The dashboard renders this section first — above the Hosts and
- * Inference Telemetry sections. We need:
- *   - vertical breathing room above the section so it doesn't collide with
- *     the cards above (`margin-top`),
- *   - a tighter bottom margin on the inner `.page-header` than the global
- *     default (`1.5rem`) so the title row hugs its grid more closely,
- *   - a slightly smaller heading size than the page-level `<h1>` so the
- *     section feels subordinate to the page title.
+ * The old standalone "Active Models" section was merged into the Hosts
+ * section (host-centric grouping), so only one section heading rhythm
+ * remains here: identical sizing + tightened spacing to the Inference
+ * Telemetry `<h2>` so both sections read as one rhythm. The section's own
+ * `margin-top: 2rem` lives in `21-dashboard-hosts.css`.
  */
-.dashboard-models {
-  margin-top: 2rem;
-}
-
-.dashboard-models .page-header {
-  margin-bottom: 1rem;
-}
-
-.dashboard-models .page-header h2 {
-  font-size: 1.25rem;
-  font-weight: 600;
-}
-
-/* Hosts section heading: identical sizing + tightened spacing to the other
- * two dashboard section headings (Inference Telemetry and Active Models,
- * both `<h2>`) so all three read as one rhythm. */
 .dashboard-hosts .page-header {
   margin-bottom: 1rem;
 }

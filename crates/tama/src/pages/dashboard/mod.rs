@@ -2,13 +2,12 @@ use leptos::prelude::*;
 use leptos_router::components::A;
 use wasm_bindgen::prelude::*;
 
+use crate::components::active_model_row::ActiveModelRow;
 use crate::components::alert_banner::{AlertBanner, AlertVariant};
-use crate::components::gpu_device_card::model_gpu_label;
 use crate::components::host_card::HostCard;
 use crate::components::modal::Modal;
 use crate::components::pull_quant_wizard::{CompletedQuant, PullQuantWizard};
 use crate::components::{bar_chart::nice_max, BarChart};
-use crate::core_mirrors::{GpuVendor, ModelState};
 use crate::utils::{get_request, handle_response, post_request, rw_signal_to_signal};
 
 mod metrics;
@@ -324,6 +323,12 @@ pub fn Dashboard() -> impl IntoView {
         }
     });
 
+    // Shared unload callback handed to every active-model row (inside host
+    // cards and in the "Unassigned" group alike).
+    let on_unload = Callback::new(move |id: String| {
+        unload_action.dispatch(id);
+    });
+
     view! {
         // Header control plane: title + cluster summary line, gateway status
         // pill, and the pinned Pull / Restart actions (plan-192 Task 2).
@@ -423,181 +428,50 @@ pub fn Dashboard() -> impl IntoView {
 
             view! {
 
-                // Active Models section — only models currently Ready or
-                // Starting, with quick Unload / benchmark actions. The full
-                // catalog with sort/group management lives on `/tama/models`
-                // (plan-192 Task 2).
-                <section class="dashboard-models">
-                    <div class="page-header">
-                        <h2>"Active Models"</h2>
-                        <div class="models-toolbar">
-                            <span class="text-muted">
-                                {move || {
-                                    let cur = current.get();
-                                    format!(
-                                        "{} active",
-                                        loaded_or_starting_models(&cur.models).len()
-                                    )
-                                }}
-                            </span>
-                            <A attr:class="btn btn-secondary btn-sm" href="/tama/models">
-                                "Manage Models →"
-                            </A>
-                        </div>
-                    </div>
-                    {move || {
-                        let cur = current.get();
-                        let active = loaded_or_starting_models(&cur.models);
-
-                        // GPU chips resolve against the tamad hosts' GPUs —
-                        // the proxy presents no local hardware (plan-191
-                        // Task 9).
-                        let gpus_for_labels: Vec<GpuDeviceStats> = hosts
-                            .get()
-                            .iter()
-                            .flat_map(|host| host.gpus.iter())
-                            .map(|g| {
-                                let used_mib = (g.vram_used_bytes.max(0) as u64) / (1024 * 1024);
-                                let total_mib = (g.vram_total_bytes.max(0) as u64) / (1024 * 1024);
-                                GpuDeviceStats {
-                                    device_id: format!("GPU{}", g.index),
-                                    vendor: GpuVendor::default(),
-                                    name: g.name.clone(),
-                                    utilization_pct: Some(
-                                        g.utilization_percent.clamp(0.0, 100.0) as u8,
-                                    ),
-                                    vram: (g.vram_total_bytes > 0)
-                                        .then_some(VramInfo { used_mib, total_mib }),
-                                    temperature_c: Some(g.temperature_c as u8),
-                                    power_w: None,
-                                    fan_pct: None,
-                                }
-                            })
-                            .collect();
-
-                        if active.is_empty() {
-                            return view! {
-                                <div class="card card--centered">
-                                    <p class="text-muted">
-                                        "⚪ No models currently active · "
-                                        <A href="/tama/models">"Browse & Load a Model →"</A>
-                                    </p>
-                                </div>
-                            }.into_any();
-                        }
-
-                        let rows: Vec<AnyView> = active
-                            .iter()
-                            .map(move |m| {
-                                let ready = m.state == ModelState::Ready;
-                                let status_class = if ready {
-                                    "active-model-status active-model-status--ready"
-                                } else {
-                                    "active-model-status active-model-status--starting"
-                                };
-                                let status_title = if ready { "Ready" } else { "Starting" };
-                                let display = model_display_name(m);
-                                let api_name = m.api_name.clone();
-                                // GPU allocation chip: the host-resolved label,
-                                // falling back to the raw device string when
-                                // no host reports that GPU yet.
-                                let gpu_chip = model_gpu_label(&gpus_for_labels, m)
-                                    .or_else(|| m.gpu_device.clone());
-                                let meta = format_model_meta_parts(m);
-                                let tps = m.tps.filter(|t| *t > 0.0);
-                                let id_for_unload = m.id.clone();
-                                let bench_href =
-                                    format!("/tama/benchmarks?tab=suite&model={}", urlencoding::encode(&m.id));
-                                view! {
-                                    <div class="active-model-row">
-                                        <span class={status_class} title={status_title}></span>
-                                        <div class="active-model-name">
-                                            <span class="active-model-name--primary">{display}</span>
-                                            {if let Some(api) = api_name {
-                                                view! {
-                                                    <span class="active-model-name--api">" · "{api}</span>
-                                                }
-                                                .into_any()
-                                            } else {
-                                                view! { <span></span> }.into_any()
-                                            }}
-                                        </div>
-                                        {if let Some(chip) = gpu_chip {
-                                            view! {
-                                                <span class="active-model-gpu-chip">{chip}</span>
-                                            }
-                                            .into_any()
-                                        } else {
-                                            view! { <span></span> }.into_any()
-                                        }}
-                                        <span class="active-model-meta">{meta.join(" · ")}</span>
-                                        {if let Some(t) = tps {
-                                            view! {
-                                                <span class="active-model-tps">{format!("{t:.0} tok/s")}</span>
-                                            }
-                                            .into_any()
-                                        } else {
-                                            view! { <span></span> }.into_any()
-                                        }}
-                                        <div class="active-model-actions">
-                                            <button
-                                                class="btn btn-secondary btn-sm"
-                                                disabled=move || unload_busy.get()
-                                                on:click=move |_| {
-                                                    unload_action.dispatch(id_for_unload.clone());
-                                                }
-                                            >
-                                                {move || {
-                                                    if unload_busy.get() {
-                                                        "Unloading…"
-                                                    } else {
-                                                        "Unload"
-                                                    }
-                                                }}
-                                            </button>
-                                            <A
-                                                attr:class="btn btn-secondary btn-sm active-model-bench"
-                                                attr:title="Run benchmark suite"
-                                                href=bench_href
-                                            >
-                                                "▷"
-                                            </A>
-                                        </div>
-                                    </div>
-                                }
-                                .into_any()
-                            })
-                            .collect();
-
-                        view! {
-                            <div class="active-models-list">{rows}</div>
-                        }
-                        .into_any()
-                    }}
-                </section>
-
-                // Hosts section — one card per registered tamad. The grid
-                // renders only real tamad nodes from the SSE `hosts[]`
-                // stream; the proxy's version + uptime live in the header
-                // status pill (plan-192 Task 2).
+                // Hosts section — one card per registered tamad, with the
+                // former "Active Models" section merged in (host-centric
+                // grouping): models attributed to a host render inside its
+                // card; hostless or unmatched models render in the
+                // "Unassigned" group below the grid. The full catalog with
+                // sort/group management lives on `/tama/models` (plan-192
+                // Task 2).
                 {move || {
                     let host_list = hosts.get();
+                    let cur = current.get();
+                    let active = loaded_or_starting_models(&cur.models);
+                    let active_count = active.len();
+                    let host_names: Vec<String> =
+                        host_list.iter().map(|h| h.name.clone()).collect();
+                    let (mut by_host, unassigned) =
+                        partition_models_by_host(active, &host_names);
+                    // GPU chips in the unassigned rows resolve against all
+                    // tamad hosts' GPUs — the proxy presents no local
+                    // hardware (plan-191 Task 9).
+                    let all_host_gpus: Vec<HostGpu> = host_list
+                        .iter()
+                        .flat_map(|host| host.gpus.iter().cloned())
+                        .collect();
+                    let gpus_for_labels = host_gpus_to_device_stats(&all_host_gpus);
+                    let host_count = host_list.len();
                     let cards: Vec<AnyView> = host_list
                         .iter()
                         .map(|h| {
                             let meta = h.clone();
+                            let models_for_host =
+                                by_host.remove(&meta.name).unwrap_or_default();
                             view! {
                                 <HostCard
                                     name=meta.name
                                     online=meta.online
-                                    version=meta.version
                                     cpu_percent=Some(meta.cpu_percent)
                                     memory=Some((
                                         meta.memory.used_bytes,
                                         meta.memory.total_bytes,
                                     ))
                                     gpus=meta.gpus
-                                    uptime=None
+                                    running_models=models_for_host
+                                    on_unload=on_unload
+                                    unload_busy=unload_busy.into()
                                 />
                             }
                             .into_any()
@@ -607,16 +481,67 @@ pub fn Dashboard() -> impl IntoView {
                         <section class="dashboard-hosts">
                             <div class="page-header">
                                 <h2>"Hosts"</h2>
-                                <span class="text-muted">
-                                    {format!("{} tamad host(s)", host_list.len())}
-                                </span>
+                                <div class="models-toolbar">
+                                    <span class="text-muted">
+                                        {format!(
+                                            "{} tamad{} · {} loaded",
+                                            host_count,
+                                            if host_count == 1 { "" } else { "s" },
+                                            active_count,
+                                        )}
+                                    </span>
+                                    <A attr:class="btn btn-secondary btn-sm" href="/tama/models">
+                                        "Manage Models →"
+                                    </A>
+                                </div>
                             </div>
                             <div class="host-card-grid">{cards}</div>
-                            {if host_list.is_empty() {
+                            {if host_list.is_empty() && active_count == 0 {
                                 view! {
                                     <div class="card card--centered">
                                         <p class="text-muted">
                                             "No tamads registered — start a tamad on your inference host to connect compute."
+                                        </p>
+                                    </div>
+                                }
+                                .into_any()
+                            } else {
+                                view! { <div/> }.into_any()
+                            }}
+                            {if !unassigned.is_empty() {
+                                let unassigned_count = unassigned.len();
+                                let rows: Vec<AnyView> = unassigned
+                                    .iter()
+                                    .map(|m| {
+                                        view! {
+                                            <ActiveModelRow
+                                                model=m.clone()
+                                                gpus_for_labels=gpus_for_labels.clone()
+                                                unload_busy=unload_busy.into()
+                                                on_unload=on_unload
+                                            />
+                                        }
+                                        .into_any()
+                                    })
+                                    .collect();
+                                view! {
+                                    <div class="host-unassigned">
+                                        <div class="host-unassigned__head">
+                                            <h3>"Unassigned"</h3>
+                                            <span class="text-muted">
+                                                {format!("{unassigned_count} models active")}
+                                            </span>
+                                        </div>
+                                        <div class="active-models-list">{rows}</div>
+                                    </div>
+                                }
+                                .into_any()
+                            } else if active_count == 0 {
+                                view! {
+                                    <div class="card card--centered">
+                                        <p class="text-muted">
+                                            "⚪ No models currently active · "
+                                            <A href="/tama/models">"Browse & Load a Model →"</A>
                                         </p>
                                     </div>
                                 }

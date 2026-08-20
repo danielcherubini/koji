@@ -64,4 +64,56 @@ pub struct ModelStateSnapshot {
     /// Whether this backend is running inside a Docker container.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_docker: bool,
+    /// Display-only, source tamad/provider name when resolvable.
+    /// None when the owning provider cannot be resolved (missing provider,
+    /// ambiguous local providers, or a lookup error) — the dashboard then
+    /// groups the model under "Unassigned".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_name: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `host_name` serde round-trip: a populated value survives
+    /// serialize → deserialize, and `None` is omitted from the wire JSON
+    /// (so old dashboards / partial rollouts keep deserializing).
+    #[test]
+    fn test_host_name_serde_roundtrip() {
+        let json = r#"{
+            "id": "m1",
+            "api_name": null,
+            "display_name": null,
+            "backend": "llama_cpp",
+            "host_name": "gpu-box"
+        }"#;
+        let snap: ModelStateSnapshot =
+            serde_json::from_str(json).expect("snapshot with host_name deserializes");
+        assert_eq!(snap.host_name.as_deref(), Some("gpu-box"));
+
+        let out = serde_json::to_value(&snap).expect("serialize");
+        assert_eq!(
+            out.get("host_name").and_then(|v| v.as_str()),
+            Some("gpu-box")
+        );
+
+        let mut without = snap.clone();
+        without.host_name = None;
+        let out = serde_json::to_value(&without).expect("serialize");
+        assert!(
+            out.get("host_name").is_none(),
+            "None host_name must be skipped on the wire, got: {out}"
+        );
+        // …and its absence must still deserialize (old backend builds).
+        let json2 = r#"{
+            "id": "m1",
+            "api_name": null,
+            "display_name": null,
+            "backend": "llama_cpp"
+        }"#;
+        let snap2: ModelStateSnapshot =
+            serde_json::from_str(json2).expect("snapshot without host_name deserializes");
+        assert!(snap2.host_name.is_none());
+    }
 }
