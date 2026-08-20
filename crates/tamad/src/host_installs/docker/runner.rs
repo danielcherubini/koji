@@ -289,6 +289,9 @@ pub async fn spawn_container(
 ) -> Result<DockerContainer> {
     let container_name = format!("tama-{}", model_name);
 
+    // Clean up any existing container with this name first
+    let _ = remove_container(&container_name).await;
+
     let mut cmd = Command::new("docker");
     cmd.arg("run");
     cmd.arg("-d");

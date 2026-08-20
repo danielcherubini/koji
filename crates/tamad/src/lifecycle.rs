@@ -204,15 +204,23 @@ impl TamadLifecycle {
 
         let local_models = self.state.models_dir.clone();
         let container_models = config.model_mount.container_path.clone();
-        let container_args = crate::host_installs::docker::runner::rewrite_args_for_container(
+        let mut container_args = crate::host_installs::docker::runner::rewrite_args_for_container(
             &args,
             &local_models,
             &container_models,
         )?;
 
-        // Host-side port: the proxy aliases it into args (`--port <n>`) and
-        // the health URL (`http://127.0.0.1:<n>/health`). Reuse the health URL
-        // port so what we spawn maps to what the proxy health-checks.
+        // Inside the container, the backend must listen on 0.0.0.0 and the
+        // internal container_port (e.g. 8000). Docker maps the host_port to it.
+        tama_core::process::override_arg(&mut container_args, "--host", "0.0.0.0");
+        tama_core::process::override_arg(
+            &mut container_args,
+            "--port",
+            &config.container_port.to_string(),
+        );
+
+        // Host-side port: the proxy aliases it into the health URL
+        // (`http://127.0.0.1:<n>/health`). Docker forwards host_port -> container_port.
         let host_port =
             Self::port_from_health_url(&req.health_url).unwrap_or(config.container_port);
 
