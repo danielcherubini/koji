@@ -19,15 +19,21 @@ this is the manual, per-host deployment path.
    sudo install -m 644 tamad.service /etc/systemd/system/tamad.service
    ```
 
-3. **Replace the two placeholders** in `/etc/systemd/system/tamad.service`:
+3. **Create the credentials file** (mode 600, so the proxy admin token is not world-readable):
 
-   - `TAMA_URL` — the proxy base URL, e.g. `http://192.168.1.10:18910`
-   - `TAMA_TOKEN` — the proxy admin token
+   ```bash
+   sudo mkdir -p /etc/tamad
+   sudo tee /etc/tamad/tamad.env >/dev/null <<'EOF'
+   TAMA_URL=http://192.168.1.10:18910
+   TAMA_TOKEN=<proxy admin token>
+   EOF
+   sudo chmod 600 /etc/tamad/tamad.env
+   ```
 
    Unset CLI flags fall back to tamad defaults (hostname as `--name`,
    `grpc://<name>:50051` as the public URL, `$HOME/.tama` data dir). If the
    proxy cannot resolve this host's hostname, add `--public-url grpc://<ip>:50051`
-   to the `ExecStart` line.
+   to the `ExecStart` line in the unit.
 
 4. **Enable and start**:
 
@@ -39,10 +45,11 @@ this is the manual, per-host deployment path.
 ## Verify
 
 ```bash
-# Daemon announces itself at startup:
+# Info-level startup lines:
 journalctl -u tamad -f
-# expect: "Starting tamad daemon" → "Tamad token ready" →
-#         "Self-registered with proxy (created)"
+# expect: "Starting tamad daemon" and "Tamad token ready"
+# (the registration-success line is debug-level and hidden by default —
+#  verify registration with the proxy API instead)
 
 # On the proxy machine:
 curl -s -H "Authorization: Bearer $TAMA_TOKEN" "$TAMA_URL/tama/v1/tamads" | jq
@@ -52,10 +59,10 @@ curl -s -X POST -H "Authorization: Bearer $TAMA_TOKEN" \
 # → {"status":"online"}
 ```
 
-If the placeholder token was left in place, the journal shows
-`Self-registration attempt failed; will retry` every 5 minutes and the
-tamad never appears in the proxy — fix the token and
-`systemctl restart tamad`.
+If `/etc/tamad/tamad.env` is missing, tamad still starts but disables
+self-registration (journal: `TAMA_URL/TAMA_TOKEN not fully set —
+self-registration disabled`) and never appears in the proxy — create the
+file and `systemctl restart tamad`.
 
 ## Notes
 
@@ -68,5 +75,11 @@ tamad never appears in the proxy — fix the token and
   no orphaned engine processes survive the restart.
 - **Version skew:** keep the tamad at the same version as the proxy — they
   speak a shared gRPC/HTTP protocol.
+- **Running as non-root (optional):** the unit defaults to root because
+  tamad requires `$HOME` and commonly needs docker plus direct GPU device
+  access (nvidia render / `kfd` groups). To run as a dedicated user, add
+  `User=tamadaemon` / `Group=tamadaemon` under `[Service]`, give that user a
+  home dir (token and models land in its `~/.tama`), and add it to the docker
+  and GPU device groups — loaded backends inherit that user's device access.
 - **Networking:** the tamad must be reachable from the proxy (firewall) on
   the public URL; access is authorized with the per-tamad bearer token.
