@@ -522,6 +522,33 @@ pub fn vram_load_ok(
     Ok(())
 }
 
+/// Insert (or replace) the `Starting` placeholder mirror for `spec` so the
+/// dashboard and the models API expose the load window as "loading".
+///
+/// The `LoadModel` RPC in [`load_spec_on_tamad`] blocks until the tamad
+/// finishes spawning the backend and it passes its health poll — minutes
+/// for a large model. Without a runtime entry, `collect_model_state_snapshots`
+/// would report the model as `idle` for the whole window. The key is the
+/// canonical config key (`spec.backend_name`) — the same key the `Ready`
+/// mirror is inserted under on success, so it replaces the placeholder in
+/// place — and a `Failed` mirror replaces it if the RPC fails.
+pub(crate) async fn insert_starting_mirror(state: &ProxyState, spec: &LoadSpec) {
+    state.registry.models.write().await.insert(
+        spec.backend_name.clone(),
+        crate::proxy::BackendState::Starting {
+            model_name: spec.backend_name.clone(),
+            backend: spec.backend.clone(),
+            backend_url: String::new(),
+            backend_pid: 0,
+            last_accessed: std::time::Instant::now(),
+            start_time: std::time::Instant::now(),
+            consecutive_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            failure_timestamp: None,
+            is_docker: false,
+        },
+    );
+}
+
 /// The shared tamad-load tail: resolve the provider's live tamad, run the
 /// capacity/VRAM guards, issue `LoadModel`, mark the model *desired* in the
 /// DB, and refresh the local mirror.
@@ -575,12 +602,37 @@ pub async fn load_spec_on_tamad(
         }
     }
 
-    let resp = handle.load_model(&spec.request).await.with_context(|| {
+    // The `LoadModel` RPC blocks until the tamad's spawn + health poll
+    // completes (minutes for a large model); insert a `Starting` placeholder
+    // mirror first so the dashboard and the models API expose that window as
+    // "loading" instead of "idle". The `Ready` mirror inserted below (same
+    // key) replaces it on success; a `Failed` mirror replaces it if the RPC
+    // fails (see below).
+    insert_starting_mirror(state, spec).await;
+
+    let resp = match handle.load_model(&spec.request).await.with_context(|| {
         format!(
             "LoadModel RPC to the tamad of provider \"{}\" failed",
             provider.name
         )
-    })?;
+    }) {
+        Ok(resp) => resp,
+        // A failed load must surface as `failed` in the dashboard / models
+        // API instead of silently going back to `idle`: leave a `Failed`
+        // mirror carrying the error, then re-return the original error so
+        // the caller still sees it.
+        Err(e) => {
+            state.registry.models.write().await.insert(
+                spec.backend_name.clone(),
+                crate::proxy::BackendState::Failed {
+                    model_name: spec.backend_name.clone(),
+                    backend: spec.backend.clone(),
+                    error: e.to_string(),
+                },
+            );
+            return Err(e);
+        }
+    };
 
     // Desired state in the central DB (single-writer rule: only the proxy).
     // Keyed by the canonical config key so the reconciler's join with the

@@ -666,6 +666,52 @@ mod tests {
         );
     }
 
+    /// Regression guard for #192: the `Starting` placeholder mirror that
+    /// `load_spec_on_tamad` inserts before the blocking `LoadModel` RPC must
+    /// be surfaced as `starting` (the Active Models filter keeps it visible
+    /// while the model loads), not as `idle` (no runtime entry).
+    #[tokio::test]
+    async fn test_collect_model_state_snapshots_maps_load_window_starting_mirror() {
+        let config = Config::default();
+        let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
+
+        {
+            let mut mc = state.registry.model_configs.write().await;
+            mc.insert("start-model".to_string(), make_model_config("llama_cpp"));
+        }
+
+        // Insert the exact mirror the load path creates before the RPC, keyed
+        // by the model's config key — then snapshot.
+        let spec = crate::proxy::lifecycle::spec::LoadSpec {
+            backend_name: "start-model".to_string(),
+            backend: "llama_cpp".to_string(),
+            gpu_device: None,
+            request: crate::tamad::LoadModelRequest {
+                model_name: "start-model".to_string(),
+                ..Default::default()
+            },
+        };
+        crate::proxy::lifecycle::spec::insert_starting_mirror(&state, &spec).await;
+
+        let statuses = state.collect_model_state_snapshots().await;
+        assert_eq!(
+            statuses.len(),
+            1,
+            "expected one status entry per configured model, got: {:?}",
+            statuses
+        );
+        let entry = statuses
+            .iter()
+            .find(|s| s.id == "start-model")
+            .expect("start-model entry missing from collect_model_state_snapshots output");
+        assert_eq!(
+            entry.state,
+            crate::gpu::ModelState::Starting,
+            "the load-window Starting mirror must be reported as Starting (not Idle): {:?}",
+            entry
+        );
+    }
+
     // ── Drift-guard: /status response round-trip ──────────────────────────────
 
     /// The StatusResponse struct must faithfully represent the full wire shape.

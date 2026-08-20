@@ -42,34 +42,14 @@
   font-size: 0.8rem;
 }
 
-/* CPU/RAM stat rows */
+/* CPU/RAM rows — reuse the shared host metric row layout below
+   (`.host-gpu-row`, used as-is) so CPU, RAM, and every GPU row render
+   with the identical two-line structure, aligned bars, and green fill. */
 .host-card__stats {
   display: flex;
   flex-direction: column;
   gap: 0.6rem;
   margin-top: 0.25rem;
-}
-
-.host-card__stat {
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-}
-
-.host-card__stat-label {
-  color: var(--text-muted);
-  font-size: 0.75rem;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-.host-card__stat-value {
-  font-size: 0.85rem;
-  font-weight: 500;
-}
-
-.host-card__stat .progress-bar {
-  height: 6px;
 }
 
 /* GPU list inside a host card */
@@ -89,9 +69,13 @@
   text-transform: uppercase;
 }
 
-/* One GPU telemetry row: two lines, no fixed column tracks so long
-   GPU names never clip. Top: index + name, utilization %, temperature.
-   Bottom: VRAM label + full-width usage bar. */
+/* Host metric row — shared pattern for the GPU telemetry rows AND the
+   host card's CPU/RAM rows (the latter reuse these classes as-is so
+   all metrics read identically). Two lines, no fixed column tracks so
+   long labels never clip. Top: label left, right-aligned value(s) with
+   `margin-left:auto` (GPU: index + name, util %, temp; CPU/RAM: name +
+   usage %). Bottom: optional text label (GPU VRAM / RAM GiB; CPU has
+   none) + full-width `flex:1` usage bar with a green fill. */
 .host-gpu-row {
   display: flex;
   flex-direction: column;

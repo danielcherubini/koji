@@ -2,12 +2,15 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::config::{BackendConfig, Config, ModelConfig, QuantEntry, QuantKind};
 use crate::gpu::GpuVariant;
 use crate::proxy::lifecycle::spec::*;
+use crate::proxy::types::BackendState;
 use crate::proxy::ProxyState;
-use crate::tamad::GpuInfo;
+use crate::tamad::pool::test_support::{grpc_conn, start_stub, stub_default, wait_for};
+use crate::tamad::{GpuInfo, LoadModelRequest};
 use crate::testing::postgres::with_schema;
 
 fn test_config(models_dir: &std::path::Path) -> crate::config::Config {
@@ -653,4 +656,204 @@ async fn test_build_compaction_load_spec_disabled() {
         .await
         .expect_err("disabled compaction must fail");
     assert!(err.to_string().contains("not enabled"));
+}
+
+// ─── tamad load-window mirror visibility (issue #192) ────────────────────
+
+/// A minimal launch spec for the mirror-visibility tests: the stub tamad
+/// answers any `LoadModel` for `model_name = "test-model"`.
+fn test_load_spec() -> LoadSpec {
+    LoadSpec {
+        backend_name: "test-model".to_string(),
+        backend: "llama_cpp".to_string(),
+        gpu_device: None,
+        request: LoadModelRequest {
+            provider_name: "llama_cpp".to_string(),
+            model_name: "test-model".to_string(),
+            ..Default::default()
+        },
+    }
+}
+
+/// Stand up the DB rows (provider + tamad), the stats-stream pool handle,
+/// and the model config needed for `load_spec_on_tamad` to reach a stub
+/// tamad.
+///
+/// `load_model_fail` makes the stub's `LoadModel` RPC fail; `load_delay`
+/// makes it sleep before answering (simulating a minutes-long tamad load
+/// in milliseconds).
+async fn setup_stub_load(
+    load_model_fail: bool,
+    load_delay: Option<Duration>,
+) -> (crate::testing::postgres::SchemaGuard, Arc<ProxyState>) {
+    let guard = with_schema().await;
+    let pool = Arc::new(guard.pool.clone());
+
+    let models_dir = tempfile::tempdir().unwrap();
+    let config = test_config(models_dir.path());
+
+    let mut stub = stub_default();
+    if load_model_fail {
+        *stub.load_model_fail.lock().await = true;
+    }
+    if let Some(delay) = load_delay {
+        stub.load_delays.insert("test-model".to_string(), delay);
+    }
+    let addr = start_stub(stub).await;
+    let url = format!("grpc://{addr}");
+
+    crate::db::queries::insert_tamad(&pool, "tamad-1", "stub", &url, "grpc", Some("secret"))
+        .await
+        .unwrap();
+    crate::db::queries::insert_provider(
+        pool.as_ref(),
+        "myprov",
+        "local",
+        "llama_cpp",
+        Some("tamad-1"),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let state = Arc::new(ProxyState::new(config, None, pool));
+    state
+        .tamad_pool()
+        .upsert_connection(&grpc_conn("tamad-1", "stub", &url))
+        .await
+        .unwrap();
+
+    let mut mc = gguf_model_config();
+    mc.provider_name = Some("myprov".to_string());
+    state
+        .registry
+        .model_configs
+        .write()
+        .await
+        .insert("test-model".to_string(), mc);
+
+    (guard, state)
+}
+
+/// While the tamad-side load is in flight, the runtime must hold a
+/// `Starting` mirror for the model — the dashboard and the models API
+/// report it as "loading" for the whole window (issue #192). When the RPC
+/// returns, the mirror flips to `Ready` under the same key (replace, not
+/// duplicate).
+#[tokio::test]
+async fn test_load_spec_on_tamad_exposes_starting_then_ready() {
+    let (guard, state) = setup_stub_load(false, Some(Duration::from_millis(1_000))).await;
+
+    let spec = Arc::new(test_load_spec());
+    let load = tokio::spawn({
+        let state = state.clone();
+        let spec = Arc::clone(&spec);
+        async move { load_spec_on_tamad(&state, &spec, false).await }
+    });
+
+    // Observe the Starting placeholder during the load window: no PID and
+    // no endpoint yet (the tamad owns those until the RPC returns).
+    let saw_starting = wait_for(|| async {
+        state
+            .registry
+            .models
+            .read()
+            .await
+            .get("test-model")
+            .is_some_and(|s| {
+                matches!(
+                    s,
+                    BackendState::Starting {
+                        backend_pid: 0,
+                        backend_url,
+                        ..
+                    } if backend_url.is_empty()
+                )
+            })
+    })
+    .await;
+    assert!(
+        saw_starting,
+        "expected a Starting mirror during the load window"
+    );
+
+    // The load succeeds and the mirror flips to Ready on the same key.
+    let key = load
+        .await
+        .expect("load task panicked")
+        .expect("load should succeed");
+    assert_eq!(key, "test-model");
+
+    let models = state.registry.models.read().await;
+    assert_eq!(
+        models.len(),
+        1,
+        "Ready mirror must replace the placeholder, not add a second entry: {models:?}"
+    );
+    let mirror = models
+        .get("test-model")
+        .expect("mirror present after load")
+        .clone();
+    let BackendState::Ready { .. } = mirror else {
+        panic!("expected Ready mirror after load, got: {mirror:?}");
+    };
+    // Stub tamad answers with endpoint 5801 / pid 1234 — proves the Ready
+    // mirror replaced the Starting placeholder in place.
+    assert_eq!(mirror.backend_pid(), Some(1234));
+    assert_eq!(mirror.backend_url(), Some("http://127.0.0.1:5801"));
+
+    let _ = guard.finish().await;
+}
+
+/// A failed `LoadModel` RPC must leave a `Failed` mirror carrying the error
+/// instead of silently going back to `idle`; the error is still propagated
+/// to the caller, and the model is NOT marked desired (the RPC is the
+/// gating step).
+#[tokio::test]
+async fn test_load_spec_on_tamad_failed_rpc_leaves_failed_mirror() {
+    let (guard, state) = setup_stub_load(true, None).await;
+
+    let spec = test_load_spec();
+    let err = load_spec_on_tamad(&state, &spec, false)
+        .await
+        .expect_err("load must fail when the tamad rejects it");
+
+    let mirror = state
+        .registry
+        .models
+        .read()
+        .await
+        .get("test-model")
+        .cloned()
+        .expect("a Failed mirror must remain after a failed load");
+    let BackendState::Failed {
+        model_name,
+        backend,
+        error,
+    } = mirror
+    else {
+        panic!("expected a Failed mirror, got: {mirror:?}");
+    };
+    assert_eq!(model_name, "test-model");
+    assert_eq!(backend, "llama_cpp");
+    assert!(
+        error.contains("LoadModel RPC to the tamad of provider \"myprov\" failed"),
+        "Failed mirror must carry the RPC error, got: {error}"
+    );
+    assert!(
+        err.to_string().contains("LoadModel RPC to the tamad"),
+        "the original RPC error must still be propagated, got: {err}"
+    );
+
+    // The load never became desired (set_desired runs after the RPC).
+    assert!(
+        crate::db::queries::get_desired(state.db_pool().as_ref(), "test-model")
+            .await
+            .unwrap()
+            .is_none(),
+        "a failed load must not be marked desired"
+    );
+
+    let _ = guard.finish().await;
 }

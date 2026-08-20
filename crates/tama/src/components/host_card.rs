@@ -110,6 +110,23 @@ fn is_pci_id(inner: &str) -> bool {
         && device.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// Properties for a host metric row (GPU VRAM, RAM): the usage percent
+/// clamped to 0–100 and the bottom-line label `used / total GiB (N%)`.
+///
+/// A zero (unknown) total renders the same `"—"` placeholder the GPU row
+/// shows for unknown VRAM, with a 0% bar. Shared by `HostGpuRow` and the
+/// host card's RAM row so one implementation drives both.
+pub fn metric_line(used_bytes: u64, total_bytes: u64) -> (f64, String) {
+    if total_bytes == 0 {
+        return (0.0, vram_label(0, 0));
+    }
+    let pct = (used_bytes as f64 / total_bytes as f64 * 100.0).clamp(0.0, 100.0);
+    (
+        pct,
+        format!("{} ({pct:.0}%)", vram_label(used_bytes, total_bytes)),
+    )
+}
+
 /// One row of per-GPU telemetry for a tamad host card: top line shows the
 /// GPU index + cleaned name, core utilization % and temperature; the bottom
 /// line shows the VRAM label with a full-width usage bar.
@@ -118,16 +135,7 @@ pub fn HostGpuRow(gpu: HostGpu) -> impl IntoView {
     let util = gpu.utilization_percent.clamp(0.0, 100.0);
     let total = gpu.vram_total_bytes.max(0) as u64;
     let used = gpu.vram_used_bytes.max(0) as u64;
-    let vram_pct = if total > 0 {
-        (used as f64 / total as f64 * 100.0).clamp(0.0, 100.0)
-    } else {
-        0.0
-    };
-    let vram_text = if total > 0 {
-        format!("{} ({vram_pct:.0}%)", vram_label(used, total))
-    } else {
-        vram_label(0, 0)
-    };
+    let (vram_pct, vram_text) = metric_line(used, total);
     let title = format!("GPU {} · {}", gpu.index, clean_gpu_name(&gpu.name));
     view! {
         <div class="host-gpu-row">
@@ -202,14 +210,18 @@ pub fn HostCard(
                     <div class="host-card__stats">
                         {if let Some(cpu) = cpu_percent {
                             view! {
-                                <div class="host-card__stat">
-                                    <span class="host-card__stat-label">"CPU"</span>
-                                    <span class="host-card__stat-value">{format!("{cpu:.1}%")}</span>
-                                    <div class="progress-bar">
-                                        <div
-                                            class="progress-bar-fill"
-                                            style=format!("width: {:.0}%", cpu.clamp(0.0, 100.0))
-                                        />
+                                <div class="host-gpu-row">
+                                    <div class="host-gpu-row__top">
+                                        <span class="host-gpu-row__name">"CPU"</span>
+                                        <span class="host-gpu-row__value">{format!("{cpu:.1}%")}</span>
+                                    </div>
+                                    <div class="host-gpu-row__bottom">
+                                        <div class="host-gpu-row__util-bar">
+                                            <div
+                                                class="progress-bar-fill"
+                                                style=format!("width: {:.0}%", cpu.clamp(0.0, 100.0))
+                                            />
+                                        </div>
                                     </div>
                                 </div>
                             }
@@ -218,24 +230,26 @@ pub fn HostCard(
                             view! { <div/> }.into_any()
                         }}
                         {if let Some((used, total)) = memory {
+                            let (ram_pct, ram_text) = metric_line(used, total);
+                            let ram_pct_text = if total > 0 {
+                                format!("{ram_pct:.0}%")
+                            } else {
+                                "—".to_string()
+                            };
                             view! {
-                                <div class="host-card__stat">
-                                    <span class="host-card__stat-label">"RAM"</span>
-                                    <span class="host-card__stat-value">
-                                        {format!("{} / {}", format_bytes_gib(used), format_bytes_gib_rounded(total))}
-                                    </span>
-                                    <div class="progress-bar">
-                                        <div
-                                            class="progress-bar-fill"
-                                            style=format!(
-                                                "width: {:.1}%",
-                                                if total > 0 {
-                                                    used as f64 / total as f64 * 100.0
-                                                } else {
-                                                    0.0
-                                                }
-                                            )
-                                        />
+                                <div class="host-gpu-row">
+                                    <div class="host-gpu-row__top">
+                                        <span class="host-gpu-row__name">"RAM"</span>
+                                        <span class="host-gpu-row__value">{ram_pct_text}</span>
+                                    </div>
+                                    <div class="host-gpu-row__bottom">
+                                        <span class="host-gpu-row__vram">{ram_text}</span>
+                                        <div class="host-gpu-row__util-bar">
+                                            <div
+                                                class="progress-bar-fill"
+                                                style=format!("width: {ram_pct:.0}%")
+                                            />
+                                        </div>
                                     </div>
                                 </div>
                             }
@@ -314,6 +328,44 @@ mod tests {
     #[test]
     fn test_vram_label_unknown_total() {
         assert_eq!(vram_label(1024, 0), "—");
+    }
+
+    /// 10 GiB used of a 60 GiB host — the live host-card regression case.
+    /// The percent must be clamped 0–100 and the label must be
+    /// `used / total GiB (N%)` with a rounded percent in parens.
+    #[test]
+    fn test_metric_line_percent_and_label_format() {
+        let gib = 1024 * 1024 * 1024;
+        let (pct, label) = metric_line(10 * gib, 60 * gib);
+        assert!((pct - 100.0 / 6.0).abs() < 1e-9, "pct {pct}");
+        assert_eq!(label, "10.0 GiB / 60 GiB (17%)");
+    }
+
+    /// Corrupt input (used > total) — the bar fill must never exceed 100%.
+    #[test]
+    fn test_metric_line_clamps_over_100() {
+        let gib = 1024 * 1024 * 1024;
+        let (pct, label) = metric_line(20 * gib, 16 * gib);
+        assert_eq!(pct, 100.0);
+        assert_eq!(label, "20.0 GiB / 16 GiB (100%)");
+    }
+
+    /// Zero (unknown) total — the same “—” placeholder the GPU row shows
+    /// for unknown VRAM, with a 0% bar.
+    #[test]
+    fn test_metric_line_unknown_total_is_dash() {
+        let (pct, label) = metric_line(1024, 0);
+        assert_eq!(pct, 0.0);
+        assert_eq!(label, "—");
+    }
+
+    /// Zero used — a 0% fill and an explicit 0% label.
+    #[test]
+    fn test_metric_line_zero_used() {
+        let gib = 1024 * 1024 * 1024;
+        let (pct, label) = metric_line(0, 64 * gib);
+        assert_eq!(pct, 0.0);
+        assert_eq!(label, "0 GiB / 64 GiB (0%)");
     }
 
     /// 128 GiB used of a 256 GiB GPU — both values hit the `>=100 GiB`
