@@ -95,7 +95,7 @@ pub fn rewrite_args_for_container(
             continue;
         }
 
-        if arg.starts_with("--") {
+        if arg.starts_with('-') {
             if let Some(next) = iter.peek() {
                 let next_str = *next;
                 let next_unquoted = next_str.trim_matches('"').trim_matches('\'');
@@ -113,6 +113,14 @@ pub fn rewrite_args_for_container(
                         }
                     }
                 }
+            }
+        }
+
+        // Check for positional path arg (e.g. vLLM model path `/models/org/repo`)
+        if unquoted.starts_with('/') {
+            if let Some(rewritten) = maybe_rewrite_path(unquoted, models_dir, container_model_path)? {
+                result.push(rewritten);
+                continue;
             }
         }
 
@@ -507,6 +515,25 @@ mod tests {
             vec![
                 "--chat-template",
                 "/models/templates/chat_template.jinja"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_rewrite_positional_model_path_under_models_dir() {
+        let models_dir = Path::new("/mnt/models");
+        let args = vec![
+            "/mnt/models/Qwen/Qwen3.8-27B-FP8".to_string(),
+            "--port".to_string(),
+            "8000".to_string(),
+        ];
+        let result = rewrite_args_for_container(&args, models_dir, "/models").unwrap();
+        assert_eq!(
+            result,
+            vec![
+                "/models/Qwen/Qwen3.8-27B-FP8",
+                "--port",
+                "8000"
             ]
         );
     }
