@@ -118,8 +118,9 @@ fn is_pci_id(inner: &str) -> bool {
 /// clamped to 0–100 and the bottom-line label `used / total GiB (N%)`.
 ///
 /// A zero (unknown) total renders the same `"—"` placeholder the GPU row
-/// shows for unknown VRAM, with a 0% bar. Shared by `HostGpuRow` and the
-/// host card's RAM row so one implementation drives both.
+/// shows for unknown VRAM, with a 0% bar. The GPU row uses both values;
+/// the host card's RAM row uses the percent only (its caption was dropped
+/// so the CPU/RAM groups render as identical two-row metrics).
 pub fn metric_line(used_bytes: u64, total_bytes: u64) -> (f64, String) {
     if total_bytes == 0 {
         return (0.0, vram_label(0, 0));
@@ -131,31 +132,119 @@ pub fn metric_line(used_bytes: u64, total_bytes: u64) -> (f64, String) {
     )
 }
 
-/// One row of per-GPU telemetry for a tamad host card: top line shows the
-/// GPU index + cleaned name, core utilization % and temperature; the bottom
-/// line shows the VRAM label with a full-width usage bar.
+/// CSS `style` value for a usage bar fill: `width: N%` with the percent
+/// rounded and clamped to 0–100 so corrupt telemetry can never overflow
+/// the track or go negative.
+///
+/// Shared by every bar in a host card — CPU, RAM, GPU utilization, and
+/// GPU VRAM — so they are all driven by one implementation.
+pub fn bar_width_style(pct: f64) -> String {
+    format!("width: {:.0}%", pct.clamp(0.0, 100.0))
+}
+
+/// The rendered values for one GPU telemetry row (see [`HostGpuRow`]).
+///
+/// The row is three lines: (1) title left + temperature right,
+/// (2) `util` label + utilization bar + right-aligned percent text,
+/// (3) VRAM label + bar. Building the strings here keeps the markup in
+/// `view!` declarative while the formatting logic stays unit-testable.
+#[derive(Debug, Clone)]
+pub struct GpuRowLines {
+    /// Line 1 (left): `GPU {i} · {cleaned name}`.
+    pub title: String,
+    /// Line 1 (right): temperature, e.g. `52°C`.
+    pub temp: String,
+    /// Line 2: fill style for the utilization bar, e.g. `width: 31%`.
+    pub util_bar: String,
+    /// Line 2 (right): utilization percent text, e.g. `31%`.
+    pub util_pct: String,
+    /// Line 3 (left): VRAM label, e.g. `28.6 GiB / 32 GiB (89%)`.
+    pub vram_label: String,
+    /// Line 3: fill style for the VRAM bar, e.g. `width: 89%`.
+    pub vram_bar: String,
+}
+
+/// Build the display values for one GPU telemetry row (see
+/// [`GpuRowLines`]). Utilization is clamped to 0–100 for BOTH the bar
+/// fill and the percent text; VRAM is shared with [`metric_line`] so an
+/// unknown total renders `"—"` with a 0% bar.
+pub fn gpu_row_lines(gpu: &HostGpu) -> GpuRowLines {
+    let util = gpu.utilization_percent.clamp(0.0, 100.0);
+    let used = gpu.vram_used_bytes.max(0) as u64;
+    let total = gpu.vram_total_bytes.max(0) as u64;
+    let (vram_pct, vram_label) = metric_line(used, total);
+    GpuRowLines {
+        title: format!("GPU {} · {}", gpu.index, clean_gpu_name(&gpu.name)),
+        temp: format!("{:.0}°C", gpu.temperature_c),
+        util_bar: bar_width_style(util),
+        util_pct: format!("{util:.0}%"),
+        vram_label,
+        vram_bar: bar_width_style(vram_pct),
+    }
+}
+
+/// One row of per-GPU telemetry for a tamad host card. Three lines:
+/// (1) GPU index + cleaned name with the temperature right-aligned,
+/// (2) a `util` label + utilization bar + percent text, (3) the VRAM
+/// label with its usage bar. All bars share the `.host-gpu-row__util-bar`
+/// track so they render at identical height across GPU blocks.
 #[component]
 pub fn HostGpuRow(gpu: HostGpu) -> impl IntoView {
-    let util = gpu.utilization_percent.clamp(0.0, 100.0);
-    let total = gpu.vram_total_bytes.max(0) as u64;
-    let used = gpu.vram_used_bytes.max(0) as u64;
-    let (vram_pct, vram_text) = metric_line(used, total);
-    let title = format!("GPU {} · {}", gpu.index, clean_gpu_name(&gpu.name));
+    let GpuRowLines {
+        title,
+        temp,
+        util_bar,
+        util_pct,
+        vram_label,
+        vram_bar,
+    } = gpu_row_lines(&gpu);
     view! {
         <div class="host-gpu-row">
             <div class="host-gpu-row__top">
                 <span class="host-gpu-row__name">{title}</span>
-                <span class="host-gpu-row__value">
-                    {format!("{util:.0}% util · {:.0}°C", gpu.temperature_c)}
-                </span>
+                <span class="host-gpu-row__value">{temp}</span>
+            </div>
+            <div class="host-gpu-row__util-line">
+                <span class="host-gpu-row__metric-label">"util"</span>
+                <div class="host-gpu-row__util-bar">
+                    <div class="progress-bar-fill" style=util_bar/>
+                </div>
+                <span class="host-gpu-row__metric-value">{util_pct}</span>
             </div>
             <div class="host-gpu-row__bottom">
-                <span class="host-gpu-row__vram">{vram_text}</span>
+                <span class="host-gpu-row__vram">{vram_label}</span>
                 <div class="host-gpu-row__util-bar">
-                    <div
-                        class="progress-bar-fill"
-                        style=format!("width: {vram_pct:.0}%")
-                    />
+                    <div class="progress-bar-fill" style=vram_bar/>
+                </div>
+            </div>
+        </div>
+    }
+}
+
+/// One host card metric group (CPU or RAM): a column with exactly two
+/// rows — (a) a label row with the metric name left and a plain
+/// percentage value right, (b) a bar row. CPU and RAM reuse one component
+/// so the two `.host-metrics` groups are guaranteed identical in
+/// structure and height: their labels and bars sit on the same lines.
+/// (GPU rows keep their own three-line structure — [`HostGpuRow`].)
+#[component]
+pub fn HostMetricGroup(
+    /// Metric name, left of the label row (e.g. `CPU`).
+    name: String,
+    /// Plain percentage value, right of the label row (e.g. `17%`).
+    value: String,
+    /// Fill style for the bar (e.g. `width: 17%`, see [`bar_width_style`]).
+    bar: String,
+) -> impl IntoView {
+    view! {
+        <div class="host-gpu-row">
+            <div class="host-gpu-row__top">
+                <span class="host-gpu-row__name">{name}</span>
+                <span class="host-gpu-row__value">{value}</span>
+            </div>
+            <div class="host-gpu-row__bottom">
+                <div class="host-gpu-row__util-bar">
+                    <div class="progress-bar-fill" style=bar/>
                 </div>
             </div>
         </div>
@@ -203,48 +292,32 @@ pub fn HostCard(
                         <div class="host-metrics">
                             {if let Some(cpu) = cpu_percent {
                                 view! {
-                                    <div class="host-gpu-row">
-                                        <div class="host-gpu-row__top">
-                                            <span class="host-gpu-row__name">"CPU"</span>
-                                            <span class="host-gpu-row__value">{format!("{cpu:.1}%")}</span>
-                                        </div>
-                                        <div class="host-gpu-row__bottom">
-                                            <div class="host-gpu-row__util-bar">
-                                                <div
-                                                    class="progress-bar-fill"
-                                                    style=format!("width: {:.0}%", cpu.clamp(0.0, 100.0))
-                                                />
-                                            </div>
-                                        </div>
-                                    </div>
+                                    <HostMetricGroup
+                                        name="CPU".to_string()
+                                        value=format!("{cpu:.1}%")
+                                        bar=bar_width_style(cpu)
+                                    />
                                 }
                                 .into_any()
                             } else {
                                 view! { <div/> }.into_any()
                             }}
                             {if let Some((used, total)) = memory {
-                                let (ram_pct, ram_text) = metric_line(used, total);
-                                let ram_pct_text = if total > 0 {
+                                let ram_pct = metric_line(used, total).0;
+                                let value = if total > 0 {
                                     format!("{ram_pct:.0}%")
                                 } else {
                                     "—".to_string()
                                 };
+                                // Same group component as CPU: the old
+                                // `used / total GiB (N%)` caption was
+                                // dropped — the % value already carries it.
                                 view! {
-                                    <div class="host-gpu-row">
-                                        <div class="host-gpu-row__top">
-                                            <span class="host-gpu-row__name">"RAM"</span>
-                                            <span class="host-gpu-row__value">{ram_pct_text}</span>
-                                        </div>
-                                        <div class="host-gpu-row__bottom">
-                                            <span class="host-gpu-row__vram">{ram_text}</span>
-                                            <div class="host-gpu-row__util-bar">
-                                                <div
-                                                    class="progress-bar-fill"
-                                                    style=format!("width: {ram_pct:.0}%")
-                                                />
-                                            </div>
-                                        </div>
-                                    </div>
+                                    <HostMetricGroup
+                                        name="RAM".to_string()
+                                        value=value
+                                        bar=bar_width_style(ram_pct)
+                                    />
                                 }
                                 .into_any()
                             } else {
@@ -320,6 +393,20 @@ mod tests {
     /// 28.6 GiB used of a 32 GiB GPU — the live-node regression case.
     const USED_28_6_GIB: u64 = 30_685_282_304;
     const TOTAL_32_GIB: u64 = 34_359_738_368;
+
+    /// One live-node GPU (Radeon Pro W7900) at 31% util / 52°C with
+    /// 28.6 of 32 GiB VRAM used — the regression case for the GPU row.
+    fn live_node_gpu() -> HostGpu {
+        HostGpu {
+            index: 0,
+            name: "Advanced Micro Devices, Inc. [AMD/ATI] Radeon Pro W7900".to_string(),
+            vram_used_bytes: USED_28_6_GIB as i64,
+            vram_total_bytes: TOTAL_32_GIB as i64,
+            utilization_percent: 31.4,
+            temperature_c: 52.4,
+            ..Default::default()
+        }
+    }
 
     #[test]
     fn test_vram_label_no_duplicate_unit() {
@@ -440,5 +527,162 @@ mod tests {
             clean_gpu_name("Advanced Micro Devices, Inc. [AMD/ATI]"),
             "Advanced Micro Devices, Inc. [AMD/ATI]"
         );
+    }
+
+    #[test]
+    fn test_bar_width_style_rounds_percent() {
+        assert_eq!(bar_width_style(89.0), "width: 89%");
+        assert_eq!(bar_width_style(31.4), "width: 31%");
+        assert_eq!(bar_width_style(0.4), "width: 0%");
+    }
+
+    /// Corrupt telemetry outside 0–100 — the fill must never overflow or
+    /// go negative.
+    #[test]
+    fn test_bar_width_style_clamps_out_of_range() {
+        assert_eq!(bar_width_style(-5.0), "width: 0%");
+        assert_eq!(bar_width_style(112.0), "width: 100%");
+    }
+
+    #[test]
+    fn test_gpu_row_lines_live_node() {
+        let lines = gpu_row_lines(&live_node_gpu());
+        assert_eq!(lines.title, "GPU 0 · Radeon Pro W7900");
+        assert_eq!(lines.temp, "52°C");
+        assert_eq!(lines.util_bar, "width: 31%");
+        assert_eq!(lines.util_pct, "31%");
+        assert_eq!(lines.vram_label, "28.6 GiB / 32 GiB (89%)");
+        assert_eq!(lines.vram_bar, "width: 89%");
+    }
+
+    /// Corrupt telemetry (utilization > 100) — the bar fill AND the text
+    /// must both clamp to 100, so the row can't read `100%` with a wider
+    /// claim than the bar shows.
+    #[test]
+    fn test_gpu_row_lines_clamps_util_over_100() {
+        let mut gpu = live_node_gpu();
+        gpu.utilization_percent = 112.0;
+        let lines = gpu_row_lines(&gpu);
+        assert_eq!(lines.util_bar, "width: 100%");
+        assert_eq!(lines.util_pct, "100%");
+    }
+
+    /// Unknown VRAM total — the same `“—”` placeholder the row used to
+    /// show, with a 0% bar fill.
+    #[test]
+    fn test_gpu_row_lines_unknown_vram_is_dash() {
+        let mut gpu = live_node_gpu();
+        gpu.vram_total_bytes = 0;
+        let lines = gpu_row_lines(&gpu);
+        assert_eq!(lines.vram_label, "—");
+        assert_eq!(lines.vram_bar, "width: 0%");
+    }
+
+    /// The rendered GPU row must be three lines: (1) title left +
+    /// temperature right, (2) small `util` label + utilization bar + %
+    /// text, (3) VRAM label + bar. The old combined `N% util · N°C` value
+    /// is gone.
+    #[test]
+    fn test_gpu_row_renders_title_temp_util_and_vram_lines() {
+        let html = view! { <HostGpuRow gpu=live_node_gpu()/> }.to_html();
+        // Line 1: title left, temperature as its own right-aligned value.
+        assert!(
+            html.contains("<span class=\"host-gpu-row__name\">GPU 0 · Radeon Pro W7900</span>"),
+            "title line: {html}"
+        );
+        assert!(
+            html.contains("<span class=\"host-gpu-row__value\">52°C</span>"),
+            "temp line: {html}"
+        );
+        assert!(
+            !html.contains("util ·"),
+            "combined util/temp value must be gone: {html}"
+        );
+        // Line 2: `util` label, bar filled to the util %, % text on the right.
+        assert!(
+            html.contains("host-gpu-row__util-line"),
+            "util line: {html}"
+        );
+        assert!(
+            html.contains("<span class=\"host-gpu-row__metric-label\">util</span>"),
+            "util label: {html}"
+        );
+        assert!(
+            html.contains("width: 31%"),
+            "util bar must fill to 31%: {html}"
+        );
+        assert!(
+            html.contains("<span class=\"host-gpu-row__metric-value\">31%</span>"),
+            "util % text: {html}"
+        );
+        // Line 3: VRAM label (format unchanged) + bar.
+        assert!(
+            html.contains("28.6 GiB / 32 GiB (89%)"),
+            "vram label: {html}"
+        );
+        assert!(
+            html.contains("width: 89%"),
+            "vram bar must fill to 89%: {html}"
+        );
+        // Row order: title → util → vram.
+        let top = html.find("host-gpu-row__top").unwrap();
+        let util_line = html.find("host-gpu-row__util-line").unwrap();
+        let vram = html.find("host-gpu-row__vram").unwrap();
+        assert!(
+            top < util_line && util_line < vram,
+            "row order top → util → vram: {html}"
+        );
+    }
+
+    /// The CPU and RAM metric groups must render with IDENTICAL structure
+    /// — a label row (name left + plain % value right) followed by a bar
+    /// row — so both groups' labels and bars sit on the same horizontal
+    /// lines. The old RAM `used / total GiB (N%)` caption is gone.
+    #[test]
+    fn test_host_card_renders_cpu_ram_groups_identically() {
+        let cpu_html = view! {
+            <HostMetricGroup name="CPU".to_string() value="42.3%".to_string() bar="width: 42%".to_string()/>
+        }
+        .to_html();
+        let ram_html = view! {
+            <HostMetricGroup name="RAM".to_string() value="17%".to_string() bar="width: 17%".to_string()/>
+        }
+        .to_html();
+        // Structural identity: redacting the metric-specific strings must
+        // leave byte-identical markup for both groups.
+        let strip = |h: &str, name: &str, value: &str, bar: &str| {
+            h.replace(&format!(">{name}<"), ">METRIC<")
+                .replace(bar, "STYLE")
+                .replace(value, "VALUE")
+        };
+        assert_eq!(
+            strip(&cpu_html, "CPU", "42.3%", "width: 42%"),
+            strip(&ram_html, "RAM", "17%", "width: 17%"),
+            "CPU and RAM groups must share identical markup: CPU={cpu_html} RAM={ram_html}"
+        );
+        // The absolute contract on one group: name + plain % value on the
+        // label row, exactly one bar on the bar row, no VRAM caption span.
+        assert!(
+            cpu_html.contains("<span class=\"host-gpu-row__name\">CPU</span>"),
+            "name: {cpu_html}"
+        );
+        assert!(
+            cpu_html.contains("<span class=\"host-gpu-row__value\">42.3%</span>"),
+            "value: {cpu_html}"
+        );
+        assert!(cpu_html.contains("width: 42%"), "bar: {cpu_html}");
+        assert!(
+            !cpu_html.contains("host-gpu-row__vram"),
+            "caption must be dropped: {cpu_html}"
+        );
+        assert_eq!(
+            cpu_html.matches("host-gpu-row__util-bar").count(),
+            1,
+            "exactly one bar: {cpu_html}"
+        );
+        // Label row comes before the bar row.
+        let top = cpu_html.find("host-gpu-row__top").unwrap();
+        let bar = cpu_html.find("host-gpu-row__util-bar").unwrap();
+        assert!(top < bar, "label row before bar row: {cpu_html}");
     }
 }

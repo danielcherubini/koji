@@ -250,3 +250,65 @@ fn test_style_css_defines_form_subsection() {
         "`.form-subsection legend` must have typography styling; got: {legend}"
     );
 }
+
+/// The GPU telemetry row's new utilization line — small `util` label +
+/// bar + right-aligned % text — must be a centered flex row so the 6px bar
+/// track aligns with the VRAM bar line and reads consistently across GPU
+/// blocks.
+#[test]
+fn test_style_css_defines_gpu_util_line() {
+    let css = strip_css_comments(&combined_css());
+    let body = rule_body(&css, ".host-gpu-row__util-line")
+        .expect("style.css must define a `.host-gpu-row__util-line` rule");
+    assert!(
+        body.contains("display: flex") && body.contains("align-items: center"),
+        "`.host-gpu-row__util-line` must be a centered flex row; got: {body}"
+    );
+}
+
+/// The small `util` label in the utilization line must be visibly quieter
+/// than the row title: a muted color and a smaller font size.
+#[test]
+fn test_style_css_defines_gpu_util_label() {
+    let css = strip_css_comments(&combined_css());
+    let body = rule_body(&css, ".host-gpu-row__metric-label")
+        .expect("style.css must define a `.host-gpu-row__metric-label` rule");
+    assert!(
+        body.contains("color") && body.contains("font-size"),
+        "`.host-gpu-row__metric-label` must style the label color and size; got: {body}"
+    );
+}
+
+/// The right-aligned % value in the utilization line must use tabular
+/// numerals so digits don't jitter as utilization ticks up.
+#[test]
+fn test_style_css_defines_gpu_util_value() {
+    let css = strip_css_comments(&combined_css());
+    let body = rule_body(&css, ".host-gpu-row__metric-value")
+        .expect("style.css must define a `.host-gpu-row__metric-value` rule");
+    assert!(
+        body.contains("tabular-nums"),
+        "`.host-gpu-row__metric-value` must use tabular numerals; got: {body}"
+    );
+}
+
+/// Every bar in a host card (CPU, RAM, GPU utilization, GPU VRAM) shares
+/// the same `.host-gpu-row__util-bar` track — a 6px track with a full-
+/// height fill — so all bars have identical height and the GPU rows read
+/// as a clean grid.
+#[test]
+fn test_style_css_keeps_host_metric_bars_uniform() {
+    let css = strip_css_comments(&combined_css());
+    let track = rule_body(&css, ".host-gpu-row__util-bar")
+        .expect("style.css must define a `.host-gpu-row__util-bar` rule");
+    assert!(
+        track.contains("height: 6px"),
+        "`.host-gpu-row__util-bar` must keep the 6px track height; got: {track}"
+    );
+    let fill = rule_body(&css, ".host-gpu-row__util-bar .progress-bar-fill")
+        .expect("style.css must define a `.host-gpu-row__util-bar .progress-bar-fill` rule");
+    assert!(
+        fill.contains("height: 100%") && fill.contains("background"),
+        "bar fill must be full-height with a background color; got: {fill}"
+    );
+}

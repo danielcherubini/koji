@@ -38,7 +38,8 @@
 
 /* CPU/RAM rows — reuse the shared host metric row layout below
    (`.host-gpu-row`, used as-is) so CPU, RAM, and every GPU row render
-   with the identical two-line structure, aligned bars, and green fill. */
+   with shared two-line building blocks (label row + bar row), aligned
+   bars, and green fill. */
 .host-card__stats {
   display: flex;
   flex-direction: column;
@@ -47,8 +48,12 @@
 }
 
 /* CPU + RAM on ONE compact line: a flex row of two half-column metric
-   groups, each `min-width: 0` so labels/bars shrink instead of clipping;
-   the 10rem flex-basis wraps the row to stacked on narrow cards. */
+   groups. Each group (`HostMetricGroup` → `.host-gpu-row`) has EXACTLY
+   two rows — a label row (name left, plain % right) and a bar row — so
+   the groups share identical structure and height and their labels and
+   bars sit on the same horizontal lines. Each `min-width: 0` so
+   labels/bars shrink instead of clipping; the 10rem flex-basis wraps the
+   row to stacked on narrow cards. */
 .host-metrics {
   display: flex;
   flex-wrap: wrap;
@@ -78,12 +83,21 @@
 }
 
 /* Host metric row — shared pattern for the GPU telemetry rows AND the
-   host card's CPU/RAM rows (the latter reuse these classes as-is so
-   all metrics read identically). Two lines, no fixed column tracks so
-   long labels never clip. Top: label left, right-aligned value(s) with
-   `margin-left:auto` (GPU: index + name, util %, temp; CPU/RAM: name +
-   usage %). Bottom: optional text label (GPU VRAM / RAM GiB; CPU has
-   none) + full-width `flex:1` usage bar with a green fill. */
+   host card's CPU/RAM rows (the latter reuse these classes as-is so all
+   metrics read identically), with no fixed column tracks so long labels
+   never clip. CPU/RAM groups are two lines; a GPU row adds a utilization
+   line between them:
+     row 1 (`.host-gpu-row__top`) — label left (GPU: index + name,
+       CPU/RAM: name), right-aligned value with `margin-left:auto`
+       (GPU: temperature; CPU/RAM: usage %).
+     row 2 — utilization line (`.host-gpu-row__util-line`, GPU only):
+       small `util` label + bar + right-aligned % text.
+     row 3 (`.host-gpu-row__bottom`) — GPU VRAM label + bar; for
+       CPU/RAM the bar row is the group's second line and holds only the
+       bar.
+   Every bar shares the `.host-gpu-row__util-bar` track (see below), so
+   all bars in a card — CPU, RAM, GPU util, GPU VRAM — have identical
+   6px height, color, and vertical rhythm within and across GPU rows. */
 .host-gpu-row {
   display: flex;
   flex-direction: column;
@@ -121,12 +135,41 @@
   min-width: 0;
 }
 
+/* GPU utilization line (GPU rows only): small muted `util` label, the
+   same 6px bar track as the VRAM line (`.host-gpu-row__util-bar`), and
+   the utilization % pinned right — the `flex:1` bar does the pushing,
+   so the value sits exactly where the right edge of the VRAM row's bar
+   hands off between GPU blocks. */
+.host-gpu-row__util-line {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.host-gpu-row__metric-label {
+  flex: none;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  white-space: nowrap;
+}
+
+.host-gpu-row__metric-value {
+  flex: none;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
 .host-gpu-row__vram {
   color: var(--text-muted);
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
 
+/* Shared bar track for EVERY bar in a host card — CPU, RAM, GPU
+   utilization, and GPU VRAM all use it, which is what keeps the bars on
+   one horizontal line per metric group and gives the GPU rows their
+   clean two-vs-two grid. */
 .host-gpu-row__util-bar {
   flex: 1;
   height: 6px;
