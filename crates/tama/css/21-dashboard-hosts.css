@@ -88,12 +88,15 @@
    never clip. CPU/RAM groups are two lines; a GPU row adds a utilization
    line between them:
      row 1 (`.host-gpu-row__top`) — label left (GPU: index + name,
-       CPU/RAM: name), right-aligned value with `margin-left:auto`
-       (GPU: temperature; CPU/RAM: usage %).
-     row 2 — utilization line (`.host-gpu-row__util-line`, GPU only):
-       small `util` label + bar + right-aligned % text.
-     row 3 (`.host-gpu-row__bottom`) — GPU VRAM label + bar; for
-       CPU/RAM the bar row is the group's second line and holds only the
+       CPU/RAM: name), right-aligned value (GPU: muted meta summary
+       `52°C · 47W · fan 40%` in `.host-gpu-row__meta`, zero pieces
+       omitted; CPU/RAM: usage % in `.host-gpu-row__value`).
+     row 2 (`.host-gpu-row__util-line`, GPU only) — small muted `UTIL`
+       label + % value LEFT of the 6px bar track + right-growing bar.
+     row 3 — GPU: a second identical metric line with the `VRAM` label +
+       percent-usage value + bar (the old `used / total GiB` caption was
+       dropped — the percent carries it); for CPU/RAM the bar row is the
+       group's second line (`.host-gpu-row__bottom`) and holds only the
        bar.
    Every bar shares the `.host-gpu-row__util-bar` track (see below), so
    all bars in a card — CPU, RAM, GPU util, GPU VRAM — have identical
@@ -128,6 +131,17 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* GPU name row's muted meta summary (e.g. `52°C · 47W · fan 40%`) —
+   right-aligned like `__value` but smaller and muted so the title
+   stays the focal point. */
+.host-gpu-row__meta {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
 .host-gpu-row__bottom {
   display: flex;
   align-items: center;
@@ -135,11 +149,10 @@
   min-width: 0;
 }
 
-/* GPU utilization line (GPU rows only): small muted `util` label, the
-   same 6px bar track as the VRAM line (`.host-gpu-row__util-bar`), and
-   the utilization % pinned right — the `flex:1` bar does the pushing,
-   so the value sits exactly where the right edge of the VRAM row's bar
-   hands off between GPU blocks. */
+/* GPU utilization + VRAM metric lines (GPU rows only): small muted label
+   and a tabular-numeral % value sit LEFT of the same 6px bar track as the
+   CPU/RAM bars; the `flex:1` bar pushes to fill the remaining width so
+   both GPU bars share one horizontal run. */
 .host-gpu-row__util-line {
   display: flex;
   align-items: center;
@@ -156,12 +169,6 @@
 
 .host-gpu-row__metric-value {
   flex: none;
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
-
-.host-gpu-row__vram {
-  color: var(--text-muted);
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }

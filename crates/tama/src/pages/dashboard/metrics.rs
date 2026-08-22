@@ -142,6 +142,9 @@ pub struct HostGpu {
     pub temperature_c: f64,
     #[serde(default)]
     pub power_w: f64,
+    /// 0-100 fan duty cycle; 0 when unavailable.
+    #[serde(default)]
+    pub fan_percent: f64,
 }
 
 /// Frontend mirror of `tama_core::gpu::GpuDeviceStats`.

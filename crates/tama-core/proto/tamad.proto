@@ -130,6 +130,8 @@ message GpuInfo {
   double utilization_percent = 6;
   double temperature_c = 7;
   double power_w = 8;
+  // 0-100 fan duty cycle; 0 when unavailable.
+  double fan_percent = 9;
 }
 
 message ProcessInfo {

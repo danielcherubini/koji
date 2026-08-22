@@ -43,6 +43,7 @@ mod tests {
                 utilization_percent: 99.9,
                 temperature_c: 71.0,
                 power_w: 350.5,
+                fan_percent: 39.5,
             }],
             processes: vec![ProcessInfo {
                 model_name: "qwen3".to_string(),

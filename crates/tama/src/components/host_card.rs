@@ -2,9 +2,10 @@
 //! Hosts section (plan-191 Task 9).
 //!
 //! Tamad cards show name, online status, CPU, RAM, per-GPU
-//! VRAM/utilization/temperature from the SSE `hosts[]` stream, and the
-//! models actively running on the node (host-centric grouping — the old
-//! standalone "Active Models" section was merged into these cards).
+//! VRAM/utilization/temperature + power + fan from the SSE `hosts[]`
+//! stream, and the models actively running on the node (host-centric
+//! grouping — the old standalone "Active Models" section was merged into
+//! these cards).
 
 use leptos::prelude::*;
 
@@ -144,75 +145,104 @@ pub fn bar_width_style(pct: f64) -> String {
 
 /// The rendered values for one GPU telemetry row (see [`HostGpuRow`]).
 ///
-/// The row is three lines: (1) title left + temperature right,
-/// (2) `util` label + utilization bar + right-aligned percent text,
-/// (3) VRAM label + bar. Building the strings here keeps the markup in
-/// `view!` declarative while the formatting logic stays unit-testable.
+/// The row is three lines: (1) title left + muted meta summary right
+/// (`{temp}°C · {power}W · fan {fan}%`, zero pieces omitted), (2) `UTIL`
+/// label + utilization % + bar, (3) `VRAM` label + VRAM % + bar. Building
+/// the strings here keeps the markup in `view!` declarative while the
+/// formatting logic stays unit-testable.
 #[derive(Debug, Clone)]
 pub struct GpuRowLines {
     /// Line 1 (left): `GPU {i} · {cleaned name}`.
     pub title: String,
-    /// Line 1 (right): temperature, e.g. `52°C`.
-    pub temp: String,
+    /// Line 1 (right): muted meta line, e.g. `52°C · 47W · fan 40%`.
+    /// Zero (unavailable) pieces are omitted; `""` when none are present.
+    pub meta: String,
     /// Line 2: fill style for the utilization bar, e.g. `width: 31%`.
     pub util_bar: String,
-    /// Line 2 (right): utilization percent text, e.g. `31%`.
+    /// Line 2: utilization percent text, e.g. `31%`.
     pub util_pct: String,
-    /// Line 3 (left): VRAM label, e.g. `28.6 GiB / 32 GiB (89%)`.
-    pub vram_label: String,
+    /// Line 3: VRAM-used percent text, e.g. `89%` (`"—"` when unknown).
+    pub vram_pct: String,
     /// Line 3: fill style for the VRAM bar, e.g. `width: 89%`.
     pub vram_bar: String,
 }
 
+/// Build the GPU row's muted meta line: `{temp}°C · {power}W`, plus
+/// ` · fan {fan}%` when the fan reading is present. Telemetry pieces that
+/// are 0 (unavailable — `f64` mirrors default to 0) are omitted, so a
+/// driver with only a temperature sensor renders `52°C` alone.
+pub fn gpu_meta(temp_c: f64, power_w: f64, fan_pct: f64) -> String {
+    let mut parts = Vec::with_capacity(3);
+    if temp_c > 0.0 {
+        parts.push(format!("{temp_c:.0}°C"));
+    }
+    if power_w > 0.0 {
+        parts.push(format!("{power_w:.0}W"));
+    }
+    if fan_pct > 0.0 {
+        parts.push(format!("fan {fan_pct:.0}%"));
+    }
+    parts.join(" · ")
+}
+
 /// Build the display values for one GPU telemetry row (see
 /// [`GpuRowLines`]). Utilization is clamped to 0–100 for BOTH the bar
-/// fill and the percent text; VRAM is shared with [`metric_line`] so an
+/// fill and the percent text; VRAM reuses [`metric_line`]'s percent so an
 /// unknown total renders `"—"` with a 0% bar.
 pub fn gpu_row_lines(gpu: &HostGpu) -> GpuRowLines {
     let util = gpu.utilization_percent.clamp(0.0, 100.0);
     let used = gpu.vram_used_bytes.max(0) as u64;
     let total = gpu.vram_total_bytes.max(0) as u64;
-    let (vram_pct, vram_label) = metric_line(used, total);
+    let vram_pct = metric_line(used, total).0;
     GpuRowLines {
         title: format!("GPU {} · {}", gpu.index, clean_gpu_name(&gpu.name)),
-        temp: format!("{:.0}°C", gpu.temperature_c),
+        meta: gpu_meta(gpu.temperature_c, gpu.power_w, gpu.fan_percent),
         util_bar: bar_width_style(util),
         util_pct: format!("{util:.0}%"),
-        vram_label,
+        // Percent-only — the old `used / total GiB (N%)` GiB caption was
+        // dropped in the re-layout; `"—"` when the total is unknown.
+        vram_pct: if total == 0 {
+            "—".to_string()
+        } else {
+            format!("{vram_pct:.0}%")
+        },
         vram_bar: bar_width_style(vram_pct),
     }
 }
 
 /// One row of per-GPU telemetry for a tamad host card. Three lines:
-/// (1) GPU index + cleaned name with the temperature right-aligned,
-/// (2) a `util` label + utilization bar + percent text, (3) the VRAM
-/// label with its usage bar. All bars share the `.host-gpu-row__util-bar`
-/// track so they render at identical height across GPU blocks.
+/// (1) GPU index + cleaned name with a muted meta summary right-aligned
+/// (`52°C · 47W · fan 40%`, zero pieces omitted), (2) a `UTIL` label +
+/// utilization % + bar, (3) a `VRAM` label + VRAM % + bar — label and
+/// value sit LEFT of the bar, like the CPU/RAM metric groups. All bars
+/// share the `.host-gpu-row__util-bar` track so they render at identical
+/// height across GPU blocks.
 #[component]
 pub fn HostGpuRow(gpu: HostGpu) -> impl IntoView {
     let GpuRowLines {
         title,
-        temp,
+        meta,
         util_bar,
         util_pct,
-        vram_label,
+        vram_pct,
         vram_bar,
     } = gpu_row_lines(&gpu);
     view! {
         <div class="host-gpu-row">
             <div class="host-gpu-row__top">
                 <span class="host-gpu-row__name">{title}</span>
-                <span class="host-gpu-row__value">{temp}</span>
+                <span class="host-gpu-row__meta">{meta}</span>
             </div>
             <div class="host-gpu-row__util-line">
-                <span class="host-gpu-row__metric-label">"util"</span>
+                <span class="host-gpu-row__metric-label">"UTIL"</span>
+                <span class="host-gpu-row__metric-value">{util_pct}</span>
                 <div class="host-gpu-row__util-bar">
                     <div class="progress-bar-fill" style=util_bar/>
                 </div>
-                <span class="host-gpu-row__metric-value">{util_pct}</span>
             </div>
-            <div class="host-gpu-row__bottom">
-                <span class="host-gpu-row__vram">{vram_label}</span>
+            <div class="host-gpu-row__util-line">
+                <span class="host-gpu-row__metric-label">"VRAM"</span>
+                <span class="host-gpu-row__metric-value">{vram_pct}</span>
                 <div class="host-gpu-row__util-bar">
                     <div class="progress-bar-fill" style=vram_bar/>
                 </div>
@@ -544,14 +574,37 @@ mod tests {
         assert_eq!(bar_width_style(112.0), "width: 100%");
     }
 
+    /// Full deploy-host shape: temp + power + fan all present join into
+    /// one muted meta line, rounded to whole units.
+    #[test]
+    fn test_gpu_meta_full_line() {
+        assert_eq!(gpu_meta(52.4, 47.0, 40.1), "52°C · 47W · fan 40%");
+    }
+
+    /// Zero (unavailable) telemetry pieces are omitted — a driver with
+    /// only a temperature sensor shows the temp alone, and a stub GPU
+    /// with nothing shows an empty string, not a confusing `0°C · 0W`.
+    #[test]
+    fn test_gpu_meta_omits_zero_pieces() {
+        assert_eq!(gpu_meta(52.4, 0.0, 0.0), "52°C");
+        assert_eq!(gpu_meta(0.0, 47.0, 0.0), "47W");
+        assert_eq!(gpu_meta(0.0, 0.0, 40.1), "fan 40%");
+        assert_eq!(gpu_meta(52.4, 47.0, 0.0), "52°C · 47W");
+        assert_eq!(gpu_meta(0.0, 0.0, 0.0), "");
+    }
+
     #[test]
     fn test_gpu_row_lines_live_node() {
         let lines = gpu_row_lines(&live_node_gpu());
         assert_eq!(lines.title, "GPU 0 · Radeon Pro W7900");
-        assert_eq!(lines.temp, "52°C");
+        // Temp only — power/fan are 0 (absent) on this fixture and the
+        // zero pieces are omitted from the meta line.
+        assert_eq!(lines.meta, "52°C");
         assert_eq!(lines.util_bar, "width: 31%");
         assert_eq!(lines.util_pct, "31%");
-        assert_eq!(lines.vram_label, "28.6 GiB / 32 GiB (89%)");
+        // VRAM is percent-only now: the `28.6 GiB / 32 GiB (89%)` GiB
+        // caption was dropped in the re-layout.
+        assert_eq!(lines.vram_pct, "89%");
         assert_eq!(lines.vram_bar, "width: 89%");
     }
 
@@ -574,63 +627,87 @@ mod tests {
         let mut gpu = live_node_gpu();
         gpu.vram_total_bytes = 0;
         let lines = gpu_row_lines(&gpu);
-        assert_eq!(lines.vram_label, "—");
+        assert_eq!(lines.vram_pct, "—");
         assert_eq!(lines.vram_bar, "width: 0%");
     }
 
     /// The rendered GPU row must be three lines: (1) title left +
-    /// temperature right, (2) small `util` label + utilization bar + %
-    /// text, (3) VRAM label + bar. The old combined `N% util · N°C` value
-    /// is gone.
+    /// muted meta summary (temp · power · fan) right, (2) small `UTIL`
+    /// label + % text LEFT of the utilization bar, (3) `VRAM` label + %
+    /// text + bar. The old right-side temperature value and the
+    /// `28.6 GiB / 32 GiB (89%)` GiB caption are gone.
     #[test]
-    fn test_gpu_row_renders_title_temp_util_and_vram_lines() {
+    fn test_gpu_row_renders_title_meta_util_and_vram_lines() {
         let html = view! { <HostGpuRow gpu=live_node_gpu()/> }.to_html();
-        // Line 1: title left, temperature as its own right-aligned value.
+        // Line 1: title left, meta right. Temp-only fixture (power/fan
+        // are zero, so those pieces are omitted).
         assert!(
             html.contains("<span class=\"host-gpu-row__name\">GPU 0 · Radeon Pro W7900</span>"),
             "title line: {html}"
         );
         assert!(
-            html.contains("<span class=\"host-gpu-row__value\">52°C</span>"),
-            "temp line: {html}"
+            html.contains("<span class=\"host-gpu-row__meta\">52°C</span>"),
+            "meta line: {html}"
         );
         assert!(
-            !html.contains("util ·"),
-            "combined util/temp value must be gone: {html}"
+            !html.contains("host-gpu-row__value"),
+            "GPU row must no longer use the generic __value span: {html}"
         );
-        // Line 2: `util` label, bar filled to the util %, % text on the right.
+        // Line 2: UTIL label, then % text, then bar — label and value sit
+        // LEFT of the bar, like the CPU/RAM groups.
+        let util_label = html
+            .find("<span class=\"host-gpu-row__metric-label\">UTIL</span>")
+            .expect("util label: {html}");
+        let util_value = html
+            .find("<span class=\"host-gpu-row__metric-value\">31%</span>")
+            .expect("util % text: {html}");
+        let util_bar = html
+            .find("width: 31%")
+            .expect("util bar must fill to 31%: {html}");
         assert!(
-            html.contains("host-gpu-row__util-line"),
-            "util line: {html}"
+            util_label < util_value && util_value < util_bar,
+            "UTIL label + value must sit left of the bar: {html}"
         );
+        // Line 3: VRAM label, then percent-only value (GiB caption gone),
+        // then bar.
         assert!(
-            html.contains("<span class=\"host-gpu-row__metric-label\">util</span>"),
-            "util label: {html}"
+            !html.contains("28.6 GiB / 32 GiB (89%)"),
+            "the GiB caption must be gone: {html}"
         );
+        let vram_label = html
+            .find("<span class=\"host-gpu-row__metric-label\">VRAM</span>")
+            .expect("vram label: {html}");
+        let vram_value = html
+            .find("<span class=\"host-gpu-row__metric-value\">89%</span>")
+            .expect("vram % text: {html}");
+        let vram_bar = html
+            .find("width: 89%")
+            .expect("vram bar must fill to 89%: {html}");
         assert!(
-            html.contains("width: 31%"),
-            "util bar must fill to 31%: {html}"
+            vram_label < vram_value && vram_value < vram_bar,
+            "VRAM label + value must sit left of the bar: {html}"
         );
-        assert!(
-            html.contains("<span class=\"host-gpu-row__metric-value\">31%</span>"),
-            "util % text: {html}"
-        );
-        // Line 3: VRAM label (format unchanged) + bar.
-        assert!(
-            html.contains("28.6 GiB / 32 GiB (89%)"),
-            "vram label: {html}"
-        );
-        assert!(
-            html.contains("width: 89%"),
-            "vram bar must fill to 89%: {html}"
-        );
-        // Row order: title → util → vram.
+        // Row order: title → UTIL line → VRAM line.
         let top = html.find("host-gpu-row__top").unwrap();
         let util_line = html.find("host-gpu-row__util-line").unwrap();
-        let vram = html.find("host-gpu-row__vram").unwrap();
         assert!(
-            top < util_line && util_line < vram,
+            top < util_line && util_line < vram_label,
             "row order top → util → vram: {html}"
+        );
+    }
+
+    /// A GPU with all three telemetry sensors (deploy-host R9700 shape:
+    /// temp + power + fan) renders them in ONE muted meta line right of
+    /// the name row.
+    #[test]
+    fn test_gpu_row_renders_full_meta_line() {
+        let mut gpu = live_node_gpu();
+        gpu.power_w = 47.0;
+        gpu.fan_percent = 40.1;
+        let html = view! { <HostGpuRow gpu=gpu/> }.to_html();
+        assert!(
+            html.contains("<span class=\"host-gpu-row__meta\">52°C · 47W · fan 40%</span>"),
+            "full meta line must join temp, power, and fan: {html}"
         );
     }
 

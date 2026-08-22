@@ -1305,6 +1305,7 @@ fn test_host_gpus_to_device_stats_conversion() {
         utilization_percent: 55.0,
         temperature_c: 61.0,
         power_w: 120.0,
+        fan_percent: 40.0,
     }];
 
     let stats = host_gpus_to_device_stats(&host_gpus);
@@ -1322,4 +1323,38 @@ fn test_host_gpus_to_device_stats_conversion() {
         ..host_gpus[0].clone()
     }]);
     assert!(no_vram[0].vram.is_none());
+}
+
+/// `HostGpu` round-trips the additive `fan_percent` field (0-100 fan duty
+/// cycle) through serde, and payloads from older backends that lack the
+/// key default to 0 — same back-compat contract as the other `hosts[]`
+/// fields.
+#[test]
+fn test_host_gpu_fan_percent_round_trip() {
+    let mut gpu = HostGpu {
+        name: "Radeon AI PRO R9700".to_string(),
+        power_w: 47.0,
+        temperature_c: 43.0,
+        ..Default::default()
+    };
+    gpu.fan_percent = 40.1;
+
+    let json = serde_json::to_string(&gpu).expect("HostGpu serializes");
+    assert!(
+        json.contains("\"fan_percent\":40.1"),
+        "fan_percent must serialize: {json}"
+    );
+    let back: HostGpu = serde_json::from_str(&json).expect("HostGpu deserializes");
+    assert_eq!(back.fan_percent, 40.1);
+    assert_eq!(back.power_w, 47.0);
+
+    // Old backend without the field — serde(default) gives 0, not an
+    // error.
+    let old: HostGpu = serde_json::from_value(serde_json::json!({
+        "name": "legacy",
+        "power_w": 30.0
+    }))
+    .expect("HostGpu without fan_percent must deserialize via #[serde(default)]");
+    assert_eq!(old.fan_percent, 0.0);
+    assert_eq!(old.power_w, 30.0);
 }

@@ -271,6 +271,7 @@ async fn build_hosts(pool: &crate::tamad::pool::TamadPool) -> Vec<serde_json::Va
                     "utilization_percent": g.utilization_percent,
                     "temperature_c": g.temperature_c,
                     "power_w": g.power_w,
+                    "fan_percent": g.fan_percent,
                 })
             })
             .collect::<Vec<_>>();
@@ -400,6 +401,7 @@ mod tests {
                     utilization_percent: 0.0,
                     temperature_c: 0.0,
                     power_w: 0.0,
+                    fan_percent: 0.0,
                 },
                 GpuInfo {
                     index: 1,
@@ -410,6 +412,7 @@ mod tests {
                     utilization_percent: 0.0,
                     temperature_c: 0.0,
                     power_w: 0.0,
+                    fan_percent: 0.0,
                 },
             ],
             processes: vec![],
@@ -589,7 +592,19 @@ mod tests {
             bench_requests: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             bench_job_id: "job-bench".to_string(),
             bench_dispatch_fail: Arc::new(tokio::sync::Mutex::new(false)),
-            stats_gpus: vec![],
+            // One GPU with fan + power so the hosts[] wire shape is
+            // asserted end-to-end (deploy-host R9700 numbers).
+            stats_gpus: vec![GpuInfo {
+                index: 0,
+                name: "Radeon AI PRO R9700".to_string(),
+                driver_version: String::new(),
+                vram_total_bytes: 32 * 1024 * 1024 * 1024,
+                vram_used_bytes: 30 * 1024 * 1024 * 1024,
+                utilization_percent: 12.0,
+                temperature_c: 43.0,
+                power_w: 47.0,
+                fan_percent: 40.1,
+            }],
             load_requests: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             load_delays: std::collections::HashMap::new(),
             load_model_fail: Arc::new(tokio::sync::Mutex::new(false)),
@@ -627,7 +642,18 @@ mod tests {
         assert_eq!(host["cpu_percent"], 42.5);
         assert_eq!(host["memory"]["total_bytes"], 1024);
         assert_eq!(host["memory"]["used_bytes"], 512);
-        assert!(host["gpus"].is_array());
+        let gpus = host["gpus"].as_array().expect("gpus must be an array");
+        assert_eq!(gpus.len(), 1);
+        let g = &gpus[0];
+        assert_eq!(g["name"], "Radeon AI PRO R9700");
+        assert_eq!(
+            g["power_w"], 47.0,
+            "per-GPU power (W) must ride the hosts[] stream"
+        );
+        assert_eq!(
+            g["fan_percent"], 40.1,
+            "per-GPU fan duty cycle (0-100) must ride the hosts[] stream"
+        );
 
         guard.finish().await;
     }
@@ -653,6 +679,7 @@ mod tests {
                     utilization_percent: 12.0,
                     temperature_c: 45.0,
                     power_w: 60.0,
+                    fan_percent: 42.0,
                 },
                 GpuInfo {
                     index: 1,
@@ -663,6 +690,7 @@ mod tests {
                     utilization_percent: 0.0,
                     temperature_c: 40.0,
                     power_w: 10.0,
+                    fan_percent: 0.0,
                 },
             ]
         };
@@ -783,6 +811,7 @@ mod tests {
                 utilization_percent: 55.0,
                 temperature_c: 60.0,
                 power_w: 100.0,
+                fan_percent: 0.0,
             },
             "host-a",
         );

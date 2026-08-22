@@ -132,6 +132,7 @@ fn map_gpus(gpus: &[tama_core::gpu::GpuDeviceStats]) -> Vec<GpuInfo> {
                 utilization_percent: g.utilization_pct.map(|u| u as f64).unwrap_or(0.0),
                 temperature_c: g.temperature_c.map(|t| t as f64).unwrap_or(0.0),
                 power_w: g.power_w.map(|p| p as f64).unwrap_or(0.0),
+                fan_percent: g.fan_pct.map(|f| f as f64).unwrap_or(0.0),
             }
         })
         .collect()
@@ -234,7 +235,7 @@ mod tests {
                 }),
                 temperature_c: Some(71),
                 power_w: Some(350),
-                fan_pct: None,
+                fan_pct: Some(40),
                 pci_bus: None,
                 uuid: None,
             },
@@ -263,6 +264,7 @@ mod tests {
         assert_eq!(out[0].utilization_percent, 42.0);
         assert_eq!(out[0].temperature_c, 71.0);
         assert_eq!(out[0].power_w, 350.0);
+        assert_eq!(out[0].fan_percent, 40.0);
 
         // Unparseable device_id → position in the vec; None fields → 0.
         assert_eq!(out[1].index, 1);
@@ -271,5 +273,6 @@ mod tests {
         assert_eq!(out[1].utilization_percent, 0.0);
         assert_eq!(out[1].temperature_c, 0.0);
         assert_eq!(out[1].power_w, 0.0);
+        assert_eq!(out[1].fan_percent, 0.0);
     }
 }

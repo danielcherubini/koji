@@ -469,6 +469,7 @@ fn gpu(index: i32, total: i64, used: i64) -> GpuInfo {
         utilization_percent: 0.0,
         temperature_c: 0.0,
         power_w: 0.0,
+        fan_percent: 0.0,
     }
 }
 
