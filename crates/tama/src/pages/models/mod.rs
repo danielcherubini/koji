@@ -51,6 +51,9 @@ struct ModelEntry {
     cache_type_v: Option<String>,
     #[serde(default)]
     spec_types: Vec<String>,
+    /// Name of the backend log file stem to open in /tama/logs?source=...
+    #[serde(default)]
+    log_source: Option<String>,
     /// vLLM-specific config (quantization, kv_cache_dtype, max_model_len, etc.)
     #[serde(default)]
     vllm: serde_json::Value,
@@ -378,7 +381,7 @@ pub fn Models() -> impl IntoView {
                                                             spec_types: m.spec_types.clone(),
                                                         }
                                                         backend=m.backend.clone()
-                                                        log_source=Some(m.backend.clone())
+                                                        log_source=m.log_source.clone()
                                                         state=m.state.clone()
                                                         enabled=Some(m.enabled)
                                                         hf_architecture_type=m.hf_architecture_type.clone()

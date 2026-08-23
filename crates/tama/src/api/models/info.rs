@@ -34,7 +34,72 @@ pub(crate) async fn resolve_db_id(pool: &PgPool, id_str: &str) -> anyhow::Result
     Ok(record.map(|r| r.id))
 }
 
-/// Resolve `id_str` (integer id or config_key) to the model id and load its
+/// A discrete log file discovered in the logs directory. `stem` is the
+/// filename without the `.log` extension — the exact value the frontend
+/// selects in `/tama/logs?source=<stem>`. `modified` is the file's mtime so
+/// the freshest (active) backend log wins when one repo maps to multiple.
+struct LogFileCandidate {
+    stem: String,
+    modified: Option<std::time::SystemTime>,
+}
+
+/// Collect backend log file stems from the configured logs dir(s), newest
+/// mtime first. Mirrors the file scan in tama-core's `handle_all_logs`
+/// (backend_logs.rs): every `*.log` except `tama.log` is a source. Live
+/// tamad SSE sources are intentionally not included — a configured model's
+/// persistent log is the on-disk tail from its last backend run.
+async fn collect_log_sources(cfg: &tama_core::config::Config) -> Vec<LogFileCandidate> {
+    // Resolve candidate logs dirs (same fallbacks handle_all_logs uses).
+    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(d) = cfg.logs_dir() {
+        dirs.push(d.clone());
+        if let Ok(base) = tama_core::config::Config::base_dir() {
+            let fallback = base.join("logs");
+            if fallback != d && !dirs.contains(&fallback) {
+                dirs.push(fallback);
+            }
+        }
+    } else if let Ok(base) = tama_core::config::Config::base_dir() {
+        dirs.push(base.join("logs"));
+    }
+
+    let mut out = Vec::new();
+    for dir in &dirs {
+        if let Ok(rd) = std::fs::read_dir(dir) {
+            for entry in rd.filter_map(|e| e.ok()) {
+                let fname = entry.file_name();
+                let fname_str = fname.to_string_lossy();
+                if !fname_str.ends_with(".log") || fname_str == "tama.log" {
+                    continue;
+                }
+                let modified = entry.metadata().ok().and_then(|m| m.modified().ok());
+                out.push(LogFileCandidate {
+                    stem: fname_str[..fname_str.len() - 4].to_string(),
+                    modified,
+                });
+            }
+        }
+    }
+
+    // Newest first so the active backend's log is preferred.
+    out.sort_by_key(|c| std::cmp::Reverse(c.modified));
+    out
+}
+
+/// Pick the log source (file stem) that corresponds to a model.
+///
+/// tamad names backend logs `<source_tag>_<config_key>.log` (e.g.
+/// `docker_qwen--qwen3.8-27b-fp8.log`), so the stem ends with the model's
+/// config_key. `.<N>` rotated logs are naturally excluded because their
+/// stems end with a rotation index, not the config_key.
+fn pick_log_source(candidates: &[LogFileCandidate], config_key: &str) -> Option<String> {
+    candidates
+        .iter()
+        .find(|c| c.stem.ends_with(config_key))
+        .map(|c| c.stem.clone())
+}
+
+/// Resolve a model identifier string (integer db id or config_key) to the model id and load its
 /// config record.
 ///
 /// Error mapping matches the historical per-handler chains:
@@ -114,6 +179,7 @@ fn model_entry_json(
     _configs_dir: &std::path::Path,
     db_meta: Option<&RepoDbMeta>,
     state: Option<ModelState>,
+    log_source: Option<&str>,
 ) -> serde_json::Value {
     // Build a per-quant JSON map, layering DB metadata onto each entry by filename.
     let quants_json: serde_json::Map<String, serde_json::Value> = m
@@ -178,6 +244,8 @@ fn model_entry_json(
         .unwrap_or_default(),
     });
 
+    val["log_source"] = serde_json::to_value(log_source).unwrap_or(serde_json::Value::Null);
+
     if let Some(meta) = db_meta {
         val["repo_commit_sha"] = meta.commit_sha.clone().into();
         val["repo_pulled_at"] = meta.pulled_at.clone().into();
@@ -227,8 +295,14 @@ pub async fn list_models(
                     map
                 });
 
+            // Discover backend log files once per request so every model rows
+            // up against the same candidate set.
+            let log_candidates = collect_log_sources(&cfg).await;
+
             let mut models = Vec::new();
             for record in &records {
+                let key = tama_core::models::ConfigKey::from_repo_id(&record.repo_id);
+                let log_source = pick_log_source(&log_candidates, key.as_str());
                 let mut meta = RepoDbMeta::default();
                 if let Ok(Some(pull)) =
                     tama_core::db::queries::get_model_pull(pool, record.id).await
@@ -263,6 +337,7 @@ pub async fn list_models(
                     &configs_dir_clone,
                     Some(&meta),
                     model_state,
+                    log_source.as_deref(),
                 ));
             }
 
@@ -287,7 +362,7 @@ pub async fn get_model(
     Path(id_str): Path<String>,
 ) -> impl IntoResponse {
     match load_config_from_state(&state).await {
-        Ok((_cfg, config_dir)) => {
+        Ok((cfg, config_dir)) => {
             let configs_dir = config_dir.join("configs");
             let backend_options = build_backend_options(&web_state.db_pool).await;
 
@@ -309,6 +384,7 @@ pub async fn get_model(
                 Err((s, b)) => return (s, Json(b)).into_response(),
             };
             let meta = load_repo_db_meta(pool, model_id).await;
+            let log_candidates = collect_log_sources(&cfg).await;
             let m = tama_core::config::ModelConfig::from_db_record(&record);
             let mut config = m.clone();
             for f in meta.files.values() {
@@ -324,6 +400,8 @@ pub async fn get_model(
                 );
             }
             let model_state = model_states.get(&model_id).cloned();
+            let key = tama_core::models::ConfigKey::from_repo_id(&record.repo_id);
+            let log_source = pick_log_source(&log_candidates, key.as_str());
             let mut val = model_entry_json(
                 model_id,
                 &record,
@@ -331,6 +409,7 @@ pub async fn get_model(
                 &configs_dir_clone,
                 Some(&meta),
                 model_state,
+                log_source.as_deref(),
             );
             val["backends"] = serde_json::json!(backend_options_clone);
             Json(val).into_response()
@@ -406,7 +485,7 @@ mod tests {
         let config = make_config(None);
         let tmp = std::path::Path::new("/tmp");
 
-        let result = model_entry_json(1, &record, &config, tmp, None, None);
+        let result = model_entry_json(1, &record, &config, tmp, None, None, None);
 
         assert_eq!(
             result.get("hf_architecture_type").and_then(|v| v.as_str()),
@@ -427,7 +506,7 @@ mod tests {
         // None case: all should be null when not set
         let record_none = make_record();
         let config_none = make_config(None);
-        let result_none = model_entry_json(1, &record_none, &config_none, tmp, None, None);
+        let result_none = model_entry_json(1, &record_none, &config_none, tmp, None, None, None);
         assert!(
             result_none["hf_architecture_type"].is_null(),
             "hf_architecture_type should be null when not set"
@@ -448,7 +527,7 @@ mod tests {
         let config = make_config(Some("mtp-test.gguf".to_string()));
         let tmp = std::path::Path::new("/tmp");
 
-        let result = model_entry_json(1, &record, &config, tmp, None, None);
+        let result = model_entry_json(1, &record, &config, tmp, None, None, None);
 
         // Some case: mtp_model should be present
         assert_eq!(
@@ -460,7 +539,7 @@ mod tests {
         // None case: mtp_model should be null
         let record_none = make_record();
         let config_none = make_config(None);
-        let result_none = model_entry_json(1, &record_none, &config_none, tmp, None, None);
+        let result_none = model_entry_json(1, &record_none, &config_none, tmp, None, None, None);
         assert!(
             result_none["mtp_model"].is_null(),
             "mtp_model should be null in API JSON when not set"
@@ -473,7 +552,7 @@ mod tests {
         let config = make_config(None);
         let tmp = std::path::Path::new("/tmp");
 
-        let result = model_entry_json(1, &record, &config, tmp, None, None);
+        let result = model_entry_json(1, &record, &config, tmp, None, None, None);
 
         // capabilities should be present in the JSON
         assert!(
@@ -495,7 +574,7 @@ mod tests {
         let tmp = std::path::Path::new("/tmp");
 
         // None state should produce "idle" (not null)
-        let result_idle = model_entry_json(1, &record, &config, tmp, None, None);
+        let result_idle = model_entry_json(1, &record, &config, tmp, None, None, None);
         assert_eq!(
             result_idle.get("state").and_then(|v| v.as_str()),
             Some("idle"),
@@ -503,12 +582,104 @@ mod tests {
         );
 
         // Some(Ready) state should produce "ready"
-        let result_ready =
-            model_entry_json(1, &record, &config, tmp, None, Some(ModelState::Ready));
+        let result_ready = model_entry_json(
+            1,
+            &record,
+            &config,
+            tmp,
+            None,
+            Some(ModelState::Ready),
+            None,
+        );
         assert_eq!(
             result_ready.get("state").and_then(|v| v.as_str()),
             Some("ready"),
             "state should be \"ready\" when ModelState::Ready"
+        );
+    }
+
+    #[test]
+    fn test_pick_log_source_matches_config_key_suffix() {
+        let candidates: Vec<LogFileCandidate> = vec![
+            LogFileCandidate {
+                stem: "docker_qwen--qwen3.8-27b-fp8".to_string(),
+                modified: None,
+            },
+            LogFileCandidate {
+                stem: "llama_cpp_unsloth--gemma-4-e4b-it-gguf".to_string(),
+                modified: None,
+            },
+            LogFileCandidate {
+                stem: "tama".to_string(),
+                modified: None,
+            },
+        ];
+
+        assert_eq!(
+            pick_log_source(&candidates, "qwen--qwen3.8-27b-fp8"),
+            Some("docker_qwen--qwen3.8-27b-fp8".to_string()),
+            "should pick the stem whose suffix is the config_key"
+        );
+        // Config key is lowercased by ConfigKey::from_repo_id.
+        assert_eq!(
+            pick_log_source(&candidates, "unsloth--gemma-4-e4b-it-gguf"),
+            Some("llama_cpp_unsloth--gemma-4-e4b-it-gguf".to_string()),
+        );
+        assert_eq!(
+            pick_log_source(&candidates, "no--such--model"),
+            None,
+            "no match, no source"
+        );
+    }
+
+    #[test]
+    fn test_pick_log_source_ignores_rotated_suffixes() {
+        let candidates: Vec<LogFileCandidate> = vec![
+            LogFileCandidate {
+                stem: "docker_qwen--qwen3.8-27b-fp8.1".to_string(),
+                modified: None,
+            },
+            LogFileCandidate {
+                stem: "docker_qwen--qwen3.8-27b-fp8".to_string(),
+                modified: None,
+            },
+        ];
+
+        assert_eq!(
+            pick_log_source(&candidates, "qwen--qwen3.8-27b-fp8"),
+            Some("docker_qwen--qwen3.8-27b-fp8".to_string()),
+            "rotated <stem>.1 must not match; only the bare stem ends with the key"
+        );
+    }
+
+    #[test]
+    fn test_model_entry_json_includes_log_source() {
+        let record = make_record();
+        let config = make_config(None);
+        let tmp = std::path::Path::new("/tmp");
+
+        let result = model_entry_json(
+            1,
+            &record,
+            &config,
+            tmp,
+            None,
+            None,
+            Some("docker_x"),
+        );
+        assert_eq!(
+            result.get("log_source").and_then(|v| v.as_str()),
+            Some("docker_x"),
+            "log_source should be surfaced when present"
+        );
+
+        let none_result = model_entry_json(1, &record, &config, tmp, None, None, None);
+        assert!(
+            none_result
+                .get("log_source")
+                .map(|v| v.is_null())
+                .unwrap_or(false),
+            "log_source should be null when absent"
         );
     }
 
