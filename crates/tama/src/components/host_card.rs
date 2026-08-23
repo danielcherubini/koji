@@ -251,6 +251,22 @@ pub fn HostGpuRow(gpu: HostGpu) -> impl IntoView {
     }
 }
 
+/// Responsive GPU tile grid: one column by default (mobile / narrow
+/// cards), two columns from 720px viewport width up (CSS,
+/// `21-dashboard-hosts.css`). Each GPU renders as a sibling
+/// [`HostGpuRow`] tile inside the `.host-card__gpu-grid` wrapper.
+#[component]
+pub fn HostGpuGrid(gpus: Vec<HostGpu>) -> impl IntoView {
+    view! {
+        <div class="host-card__gpu-grid">
+            {gpus.iter().map(|g| {
+                let gpu = g.clone();
+                view! { <HostGpuRow gpu=gpu/> }
+            }).collect::<Vec<_>>()}
+        </div>
+    }
+}
+
 /// One host card metric group (CPU or RAM): a column with exactly two
 /// rows — (a) a label row with the metric name left and a plain
 /// percentage value right, (b) a bar row. CPU and RAM reuse one component
@@ -362,10 +378,7 @@ pub fn HostCard(
                                     {"GPU"}
                                     <span class="text-muted">{format!("( {} )", gpus.len())}</span>
                                 </div>
-                                {gpus.iter().map(|g| {
-                                    let gpu = g.clone();
-                                    view! { <HostGpuRow gpu=gpu/> }
-                                }).collect::<Vec<_>>()}
+                                <HostGpuGrid gpus=gpus.clone()/>
                             </div>
                         }
                         .into_any()
@@ -761,5 +774,53 @@ mod tests {
         let top = cpu_html.find("host-gpu-row__top").unwrap();
         let bar = cpu_html.find("host-gpu-row__util-bar").unwrap();
         assert!(top < bar, "label row before bar row: {cpu_html}");
+    }
+
+    /// The GPU section must render its rows as sibling tiles inside a
+    /// `.host-card__gpu-grid` wrapper — the container the CSS (see
+    /// `21-dashboard-hosts.css`) widens to two columns from 720px
+    /// viewport width up, so two GPUs sit side by side (4 = 2×2).
+    /// (Asserted on [`HostGpuGrid`] — the exact view HostCard nests below
+    /// its GPU title — because HostCard's conditional branches are
+    /// AnyViews, which need the `ssr` feature to render statically.)
+    #[test]
+    fn test_host_card_renders_gpu_grid_with_sibling_tiles() {
+        let mut gpus = vec![live_node_gpu(), live_node_gpu()];
+        gpus[1].index = 1;
+        let html = view! { <HostGpuGrid gpus=gpus/> }.to_html();
+        // Exactly one grid wrapper.
+        assert_eq!(
+            html.matches("host-card__gpu-grid").count(),
+            1,
+            "exactly one grid wrapper: {html}"
+        );
+        // One `.host-gpu-row` tile per GPU, both siblings inside the
+        // wrapper, in order.
+        assert_eq!(
+            html.matches("class=\"host-gpu-row\"").count(),
+            2,
+            "one tile per GPU: {html}"
+        );
+        let gpu0 = html
+            .find("<span class=\"host-gpu-row__name\">GPU 0 · Radeon Pro W7900</span>")
+            .expect("first tile: {html}");
+        let gpu1 = html
+            .find("<span class=\"host-gpu-row__name\">GPU 1 · Radeon Pro W7900</span>")
+            .expect("second tile: {html}");
+        let grid = html
+            .find("host-card__gpu-grid")
+            .expect("grid wrapper: {html}");
+        assert!(
+            grid < gpu0 && gpu0 < gpu1,
+            "ordered sibling tiles inside the grid: {html}"
+        );
+        // Both tiles carry their name + util + vram rows — a longer name
+        // in one tile cannot shift its neighbor's rows (min-height is
+        // enforced in the tile CSS).
+        assert!(
+            html.contains("<span class=\"host-gpu-row__metric-label\">UTIL</span>")
+                && html.contains("<span class=\"host-gpu-row__metric-label\">VRAM</span>"),
+            "each tile keeps its util/vram rows: {html}"
+        );
     }
 }

@@ -251,18 +251,23 @@ fn test_style_css_defines_form_subsection() {
     );
 }
 
-/// The GPU telemetry row's new utilization line — small `util` label +
-/// bar + right-aligned % text — must be a centered flex row so the 6px bar
-/// track aligns with the VRAM bar line and reads consistently across GPU
-/// blocks.
+/// The GPU utilization + VRAM metric lines must be a consistent 3-zone
+/// grid — fixed label column, fixed right-aligned value column, and the
+/// flex-1 bar track — so the label/value/bar columns line up across
+/// adjacent GPU tiles in the 2-column GPU grid.
 #[test]
 fn test_style_css_defines_gpu_util_line() {
     let css = strip_css_comments(&combined_css());
     let body = rule_body(&css, ".host-gpu-row__util-line")
         .expect("style.css must define a `.host-gpu-row__util-line` rule");
     assert!(
-        body.contains("display: flex") && body.contains("align-items: center"),
-        "`.host-gpu-row__util-line` must be a centered flex row; got: {body}"
+        body.contains("display: grid")
+            && body.contains("grid-template-columns")
+            && body.contains("3.8ch")
+            && body.contains("4.5ch")
+            && body.contains("1fr")
+            && body.contains("align-items: center"),
+        "`.host-gpu-row__util-line` must be a 3-zone grid (label | value | bar); got: {body}"
     );
 }
 
@@ -310,5 +315,78 @@ fn test_style_css_keeps_host_metric_bars_uniform() {
     assert!(
         fill.contains("height: 100%") && fill.contains("background"),
         "bar fill must be full-height with a background color; got: {fill}"
+    );
+}
+
+/// Extract the balanced `{ ... }` body of the media block whose query
+/// starts with `query` — `rule_body` only matches plain top-level
+/// selectors, so media-query rules need their own lookup.
+fn media_block<'a>(css: &'a str, query: &str) -> Option<&'a str> {
+    let start = css.find(query)?;
+    let brace = css[start..].find('{')? + start;
+    let mut depth = 1i32;
+    let mut idx = brace + 1;
+    while idx < css.len() && depth > 0 {
+        match css.as_bytes()[idx] {
+            b'{' => depth += 1,
+            b'}' => depth -= 1,
+            _ => {}
+        }
+        idx += 1;
+    }
+    Some(&css[brace + 1..idx - 1])
+}
+
+/// The GPU section's tiles must sit in a responsive grid: one column by
+/// default (mobile / narrow cards), two columns from 720px viewport width
+/// up so two GPUs sit side by side (four GPUs = 2×2).
+#[test]
+fn test_style_css_gpu_grid_two_columns_from_720px() {
+    let css = strip_css_comments(&combined_css());
+    let block = media_block(&css, "@media (min-width: 720px)")
+        .expect("a `@media (min-width: 720px)` rule for the GPU grid");
+    assert!(
+        block.contains(".host-card__gpu-grid"),
+        "the 720px media rule must target `.host-card__gpu-grid`; got: {block}"
+    );
+    assert!(
+        block.contains("repeat(2, minmax(0, 1fr))"),
+        "the 720px media rule must set the grid to two equal 1fr columns; got: {block}"
+    );
+}
+
+/// Each GPU tile must carry the project's neutral 1px border (the same
+/// treatment `.card` uses), a small radius, and tight padding — so the
+/// two-across grid reads as connected tiles instead of stacked dividers.
+#[test]
+fn test_style_css_gpu_tile_border() {
+    let css = strip_css_comments(&combined_css());
+    let body = rule_body(&css, ".host-card__gpu-grid .host-gpu-row")
+        .expect("style.css must define a `.host-card__gpu-grid .host-gpu-row` tile rule");
+    assert!(
+        body.contains("border: 1px solid var(--border-color)"),
+        "the GPU tile must reuse the project's neutral 1px border; got: {body}"
+    );
+    assert!(
+        body.contains("border-radius: 8px") && body.contains("padding: 8px 10px"),
+        "the GPU tile must have an 8px radius and 8px 10px padding; got: {body}"
+    );
+}
+
+/// On narrow widths (below 720px) the GPU meta summary must wrap to its
+/// own line under the name instead of truncating the GPU name to
+/// ellipsis.
+#[test]
+fn test_style_css_gpu_meta_wraps_to_own_line_on_mobile() {
+    let css = strip_css_comments(&combined_css());
+    let block = media_block(&css, "@media (max-width: 719.98px)")
+        .expect("a mobile media rule for the GPU meta wrap");
+    assert!(
+        block.contains(".host-card__gpu-grid .host-gpu-row__meta"),
+        "the mobile rule must target the grid's meta span; got: {block}"
+    );
+    assert!(
+        block.contains("flex-basis: 100%") && block.contains("margin-left: 0"),
+        "the mobile meta must take a full line under the name; got: {block}"
     );
 }

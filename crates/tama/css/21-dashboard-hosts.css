@@ -75,6 +75,48 @@
   gap: 0.35rem;
 }
 
+/* Responsive grid of GPU tiles: one column by default (mobile / narrow
+   cards), two columns from 720px viewport width up (2 GPUs side by
+   side, 4 GPUs = 2×2, …). */
+.host-card__gpu-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.5rem;
+}
+
+/* Each GPU item is a tight tile: the project's neutral 1px border (the
+   same treatment `.card` uses), 8px radius, 8px × 10px padding — no
+   bottom-border dividers between rows. */
+.host-card__gpu-grid .host-gpu-row {
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+/* Name row of a tile: fixed min-height so a longer name in one column
+   never shifts the UTIL/VRAM rows of its neighbor; flex-wrap lets the
+   meta summary drop to its own line instead of truncating the name. */
+.host-card__gpu-grid .host-gpu-row__top {
+  min-height: 1.4em;
+  flex-wrap: wrap;
+}
+
+/* Two-across GPU grid on wide viewports. */
+@media (min-width: 720px) {
+  .host-card__gpu-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* Narrow widths: the meta summary wraps to its own line under the GPU
+   name so the name stops getting truncated to an ellipsis. */
+@media (max-width: 719.98px) {
+  .host-card__gpu-grid .host-gpu-row__meta {
+    flex-basis: 100%;
+    margin-left: 0;
+  }
+}
+
 .host-card__gpus-title {
   color: var(--text-muted);
   font-size: 0.75rem;
@@ -91,8 +133,10 @@
        CPU/RAM: name), right-aligned value (GPU: muted meta summary
        `52°C · 47W · fan 40%` in `.host-gpu-row__meta`, zero pieces
        omitted; CPU/RAM: usage % in `.host-gpu-row__value`).
-     row 2 (`.host-gpu-row__util-line`, GPU only) — small muted `UTIL`
-       label + % value LEFT of the 6px bar track + right-growing bar.
+     row 2 (`.host-gpu-row__util-line`, GPU only) — 3-zone grid: small
+       muted `UTIL` label + tabular-numeral % value LEFT of the 6px bar
+       track + the right-growing bar (label and value columns are fixed
+       width so they align across adjacent GPU tiles).
      row 3 — GPU: a second identical metric line with the `VRAM` label +
        percent-usage value + bar (the old `used / total GiB` caption was
        dropped — the percent carries it); for CPU/RAM the bar row is the
@@ -149,26 +193,28 @@
   min-width: 0;
 }
 
-/* GPU utilization + VRAM metric lines (GPU rows only): small muted label
-   and a tabular-numeral % value sit LEFT of the same 6px bar track as the
-   CPU/RAM bars; the `flex:1` bar pushes to fill the remaining width so
-   both GPU bars share one horizontal run. */
+/* GPU utilization + VRAM metric lines (GPU rows only): a consistent
+   3-zone grid — fixed label column, fixed right-aligned tabular-numeral
+   value column, and the same 6px bar track as the CPU/RAM bars filling
+   the rest — so `UTIL`/`VRAM` columns align across adjacent GPU tiles.
+   The label zone grows from a 3.8ch floor when a system font renders
+   the uppercase label wider, keeping both zones stable and unclipped. */
 .host-gpu-row__util-line {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(3.8ch, max-content) 4.5ch 1fr;
   align-items: center;
-  gap: 0.5rem;
+  column-gap: 0.5rem;
   min-width: 0;
 }
 
 .host-gpu-row__metric-label {
-  flex: none;
   color: var(--text-muted);
   font-size: 0.7rem;
   white-space: nowrap;
 }
 
 .host-gpu-row__metric-value {
-  flex: none;
+  text-align: right;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }

@@ -194,14 +194,6 @@
   text-overflow: ellipsis;
 }
 
-.active-model-name--api {
-  font-size: 0.8125rem;
-  color: var(--text-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 .active-model-gpu-chip {
   flex-shrink: 0;
   display: inline-flex;

@@ -28,8 +28,20 @@ pub fn model_logs_href(host_name: Option<&str>, model_id: &str) -> Option<String
     ))
 }
 
+/// Build the row's name block — the bold primary display name. A secondary
+/// api name is intentionally NOT rendered: it duplicates the primary name
+/// and the user reads it as redundant noise, so only the bold primary is
+/// shown.
+fn active_model_name_markup(display: String) -> impl IntoView {
+    view! {
+        <div class="active-model-name">
+            <span class="active-model-name--primary">{display}</span>
+        </div>
+    }
+}
+
 /// One active-model row: status dot (Ready) or spinner (Starting), primary
-/// display name (+ api name), GPU allocation chip, meta line
+/// display name, GPU allocation chip, meta line
 /// (`gpu_variant · quant · Nk ctx · format`), tok/s badge when generating,
 /// an Unload button honoring the shared busy flag, a `📄` logs link for
 /// tamad-hosted models (the engine container tail, via
@@ -56,7 +68,6 @@ pub fn ActiveModelRow(
     };
     let status_title = if ready { "Ready" } else { "Starting" };
     let display = model_display_name(&model);
-    let api_name = model.api_name.clone();
     // GPU allocation chip: the host-resolved label, falling back to the raw
     // device string when no host reports that GPU yet.
     let gpu_chip = model_gpu_label(&gpus_for_labels, &model).or_else(|| model.gpu_device.clone());
@@ -70,17 +81,7 @@ pub fn ActiveModelRow(
     view! {
         <div class="active-model-row">
             <span class={status_class} title={status_title}></span>
-            <div class="active-model-name">
-                <span class="active-model-name--primary">{display}</span>
-                {if let Some(api) = api_name {
-                    view! {
-                        <span class="active-model-name--api">" · "{api}</span>
-                    }
-                    .into_any()
-                } else {
-                    view! { <span></span> }.into_any()
-                }}
-            </div>
+            {active_model_name_markup(display)}
             {if let Some(chip) = gpu_chip {
                 view! {
                     <span class="active-model-gpu-chip">{chip}</span>
@@ -142,7 +143,74 @@ pub fn ActiveModelRow(
 
 #[cfg(test)]
 mod tests {
-    use super::model_logs_href;
+    use super::*;
+
+    /// One Ready model whose `api_name` differs from its display name —
+    /// the live case where the row used to render a redundant grey
+    /// `· Qwen/Qwen3.8-27B-FP8` next to the bold `Qwen: Qwen3.8-27B-FP8`.
+    fn qwen_fixture() -> ModelStateSnapshot {
+        ModelStateSnapshot {
+            id: "qwen--qwen3.8-27b-fp8".to_string(),
+            api_name: Some("Qwen/Qwen3.8-27B-FP8".to_string()),
+            display_name: Some("Qwen: Qwen3.8-27B-FP8".to_string()),
+            state: ModelState::Ready,
+            quant: Some("fp8".to_string()),
+            context_length: Some(262144),
+            gpu_variant: Some("rocm".to_string()),
+            hf_format: Some("transformers".to_string()),
+            host_name: Some("gpu-box".to_string()),
+            ..Default::default()
+        }
+    }
+
+    /// The grey secondary `· {api_name}` span is dropped — the bold
+    /// primary name is all the row shows for the model identity. The
+    /// status dot, meta line data (`rocm · fp8 · 262k ctx ·
+    /// transformers`), Unload button, and links are untouched markup that
+    /// the row keeps rendering.
+    ///
+    /// The name markup is asserted through [`active_model_name_markup`]
+    /// (the exact view the row inserts) because the full row's router
+    /// links need a browser to render statically.
+    #[test]
+    fn test_active_model_row_omits_secondary_api_name() {
+        let model = qwen_fixture();
+        let html = active_model_name_markup(model_display_name(&model)).to_html();
+        // The grey secondary span (and with it the api name) is gone.
+        assert!(
+            !html.contains("active-model-name--api"),
+            "secondary span must be gone: {html}"
+        );
+        assert!(
+            !html.contains("Qwen/Qwen3.8-27B-FP8"),
+            "api name must no longer render: {html}"
+        );
+        // Bold primary name stays, carrying the visible identity.
+        assert!(
+            html.contains(
+                "<span class=\"active-model-name--primary\">Qwen: Qwen3.8-27B-FP8</span>"
+            ),
+            "primary name: {html}"
+        );
+        // The rest of the row's content is untouched: its meta line still
+        // joins the same parts.
+        assert_eq!(
+            format_model_meta_parts(&model).join(" · "),
+            "rocm · fp8 · 262k ctx · transformers"
+        );
+
+        // Nominal case: without an api name the shape is unchanged and the
+        // secondary span is still absent.
+        let absent = active_model_name_markup("model".to_string()).to_html();
+        assert!(
+            !absent.contains("active-model-name--api"),
+            "no class: {absent}"
+        );
+        assert!(
+            absent.contains("<span class=\"active-model-name--primary\">model</span>"),
+            "primary name placeholder: {absent}"
+        );
+    }
 
     /// A tamad-hosted model (host_name Some) yields the encoded
     /// `{host}:{model_id}` source link — the `:` must be percent-encoded so
