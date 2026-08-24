@@ -306,6 +306,37 @@ async fn test_unload_model_graceful_shutdown() {
     assert!(result.is_ok(), "Unload should succeed");
 }
 
+/// unload_model prunes the per-key last-access entry, so the LRU / idle
+/// decisions do not keep a dead entry for an unloaded model (pins the
+/// shared `prune_last_accessed` path from the proxy-unload side).
+#[tokio::test]
+async fn test_unload_model_prunes_last_accessed_entry() {
+    let config = Config::default();
+    let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
+    seed_live_row(&state, "access-prune", "ready").await;
+    set_last_accessed(&state, "access-prune", 0).await;
+    assert!(
+        state
+            .registry
+            .last_accessed_time("access-prune")
+            .await
+            .is_some(),
+        "precondition: the access entry is present"
+    );
+
+    let result = state.unload_model("access-prune").await;
+    assert!(result.is_ok(), "unload should succeed: {result:?}");
+
+    assert!(
+        state
+            .registry
+            .last_accessed_time("access-prune")
+            .await
+            .is_none(),
+        "the unloaded model must not keep a stale last-access entry"
+    );
+}
+
 /// unload_model fails when there is no live row for the backend.
 #[tokio::test]
 async fn test_unload_model_nonexistent_backend() {

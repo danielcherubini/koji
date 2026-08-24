@@ -42,6 +42,15 @@ impl RegistryState {
         lru.get(backend_name).copied()
     }
 
+    /// Drop the per-key last-access entry for `backend_name` (LRU / idle
+    /// bookkeeping). Called by every unload path (the proxy's own
+    /// `ProxyState::unload_model` and the management-API unload handler)
+    /// so an unloaded model never keeps a dead entry until its next
+    /// access. Idempotent: a missing key is a no-op.
+    pub(crate) async fn prune_last_accessed(&self, backend_name: &str) {
+        self.last_accessed.write().await.remove(backend_name);
+    }
+
     /// - If `name` is an alias → returns the resolved model name (api_name or repo_id)
     /// - If `name` is not an alias → returns `name` unchanged (pass-through)
     pub(crate) async fn resolve_alias(&self, name: &str) -> String {
@@ -67,5 +76,35 @@ impl RegistryState {
     pub(crate) async fn reload_aliases(&self, pairs: Vec<(String, String)>) {
         let mut aliases = self.aliases.write().await;
         *aliases = pairs.into_iter().collect();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `prune_last_accessed` removes the per-key last-access entry so an
+    /// unloaded model does not keep a dead LRU/idle entry until its next
+    /// access. Both unload paths funnel through this (the proxy's own
+    /// `ProxyState::unload_model` and the management-API unload handler).
+    #[tokio::test]
+    async fn test_prune_last_accessed_removes_entry() {
+        let registry = RegistryState::new();
+        registry.update_last_accessed("owner--model").await;
+        assert!(
+            registry.last_accessed_time("owner--model").await.is_some(),
+            "precondition: the access entry is present"
+        );
+
+        registry.prune_last_accessed("owner--model").await;
+
+        assert!(
+            registry.last_accessed_time("owner--model").await.is_none(),
+            "the unloaded model's entry must be gone"
+        );
+        // A repeat prune (double-unload, or a model that never accessed
+        // the proxy) must be a harmless no-op.
+        registry.prune_last_accessed("owner--model").await;
+        registry.prune_last_accessed("never-seen").await;
     }
 }

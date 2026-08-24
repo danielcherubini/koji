@@ -267,6 +267,12 @@ pub async fn handle_tama_unload_model(
 
     // No mirror to drop: rows now track lifecycle truth directly.
 
+    // Bookkeeping, exactly as `ProxyState::unload_model` does it: the model
+    // is off the rows, so the per-key last-access entry must go (the API
+    // path is best-effort like that one — the entry is pruned regardless
+    // of the RPC outcome).
+    state.registry.prune_last_accessed(&model_id).await;
+
     Json(ModelResponse {
         id: model_id,
         loaded: false,

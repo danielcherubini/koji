@@ -128,11 +128,16 @@ impl ProxyServer {
     }
 
     /// Spawn the idle timeout checker task.
-    /// Always spawns — the task reads config each iteration and respects runtime
-    /// changes to auto_unload (e.g., via web UI) without requiring a restart.
-    /// check_idle_timeouts is always called so Failed backends get cleaned up
-    /// even when auto_unload is disabled; the idle-unload logic inside it is
-    /// gated on the auto_unload flag.
+    ///
+    /// Always spawns — the task reads config each iteration and respects
+    /// runtime changes to auto_unload (e.g., via web UI) without
+    /// requiring a restart.
+    ///
+    /// Row-based since plan-193 T5c (mirror deleted): `check_idle_timeouts`
+    /// only unloads READY wire rows whose proxy-owned `last_accessed`
+    /// entry is idle past `idle_timeout_secs`, and that decision is gated
+    /// on `auto_unload` inside it — with the flag off (or before the
+    /// timeout elapses) a pass is an empty no-op.
     fn start_idle_timeout_checker(state: Arc<ProxyState>) -> tokio::task::JoinHandle<()> {
         use std::time::Duration;
 
@@ -147,7 +152,9 @@ impl ProxyServer {
                     Duration::from_secs(30)
                 };
                 tokio::time::sleep(interval).await;
-                // Always called — cleans up Failed backends even when auto_unload is off.
+                // Always called: a pass is a no-op while auto_unload is off,
+                // but it re-reads the config every iteration so the flag
+                // takes effect without a restart.
                 let _ = state.check_idle_timeouts().await;
             }
         })

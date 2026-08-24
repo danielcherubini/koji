@@ -264,11 +264,7 @@ impl ProxyState {
 
         // Drop the per-key access entry: the model is off the rows, so
         // the LRU / idle decisions must not keep a dead entry around.
-        self.registry
-            .last_accessed
-            .write()
-            .await
-            .remove(backend_name);
+        self.registry.prune_last_accessed(backend_name).await;
 
         info!("Backend '{}' unloaded", backend_name);
         Ok(())
