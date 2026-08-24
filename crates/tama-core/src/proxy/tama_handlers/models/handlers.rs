@@ -207,19 +207,14 @@ pub async fn handle_tama_cancel_load(
             .into_response();
     }
 
-    // Clear desired state (best-effort: the row may not exist).
-    if let Err(e) = crate::db::queries::clear_desired(&pool, &model_id).await {
-        warn!("cancel: clear_desired for '{}' failed: {}", model_id, e);
-    }
-
-    // Best-effort unload on the tamad (may be not-loaded yet: the
-    // reconciler unloads it on its next tick).
+    // Best-effort unload on the tamad (may be not-loaded yet). Lifecycle
+    // truth is the live tamad rows; there is no `desired_models` row to
+    // clear here.
     if let Err(e) = crate::proxy::lifecycle::spec::unload_model_on_tamad(&state, &model_id).await {
         warn!("cancel: unload RPC for '{}' failed: {}", model_id, e);
     }
 
-    // Remove the local mirror entry, if any.
-    state.remove_mirror_by_model(&model_id).await;
+    // No mirror to remove: rows now track lifecycle truth directly.
 
     info!("Model '{}' cancel completed", model_id);
 
@@ -264,22 +259,14 @@ pub async fn handle_tama_unload_model(
         }
     }
 
-    let pool = state.db_pool();
-
-    // Primary action: clear desired state (best-effort: the row may not
-    // exist, and the reconciler uses it to decide convergence).
-    if let Err(e) = crate::db::queries::clear_desired(&pool, &model_id).await {
-        warn!("unload: clear_desired for '{}' failed: {}", model_id, e);
-    }
-
-    // Best-effort immediate physical unload on the tamad. The reconciler
-    // retries on its next tick if this can't reach the tamad.
+    // Best-effort immediate physical unload on the tamad. Lifecycle truth
+    // is the live tamad rows; there is no `desired_models` row to clear
+    // here.
     if let Err(e) = crate::proxy::lifecycle::spec::unload_model_on_tamad(&state, &model_id).await {
         warn!("unload: RPC for '{}' failed: {}", model_id, e);
     }
 
-    // Drop the local mirror.
-    state.remove_mirror_by_model(&model_id).await;
+    // No mirror to drop: rows now track lifecycle truth directly.
 
     Json(ModelResponse {
         id: model_id,

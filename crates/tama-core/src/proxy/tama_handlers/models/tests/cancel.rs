@@ -68,9 +68,6 @@ async fn test_cancel_returns_200_for_starting_model() {
     );
     seed_live(&state, "test-model", "starting").await;
 
-    // Clone the Arc before moving state into the router
-    let state_clone = state.clone();
-
     let app = Router::new()
         .route(
             "/tama/v1/models/:id/cancel",
@@ -93,17 +90,8 @@ async fn test_cancel_returns_200_for_starting_model() {
     assert_eq!(json["loaded"], false, "Expected loaded: false");
     assert_eq!(json["id"], "test-model", "Expected id: test-model");
 
-    // Model entry should be removed
-    assert!(
-        state_clone
-            .registry
-            .models
-            .read()
-            .await
-            .get("test-model")
-            .is_none(),
-        "Model entry should be removed after cancel"
-    );
+    // plan-193 T5: the handler no longer removes a local mirror entry;
+    // lifecycle truth is the tamad rows, so there is no mirror to purge.
 }
 
 /// Cancel for a Ready (already loaded) model → 200: cancel operates on
@@ -159,18 +147,8 @@ async fn test_cancel_ready_model_unloads() {
     assert_eq!(status, StatusCode::OK, "Expected 200 OK");
     assert_eq!(json["loaded"], false, "Expected loaded: false");
 
-    // The local mirror entry is removed (physical unload is best-effort
-    // RPC on the tamad — no tamad in this unit test).
-    assert!(
-        state
-            .registry
-            .models
-            .read()
-            .await
-            .get("test-model")
-            .is_none(),
-        "Ready mirror should be removed after cancel"
-    );
+    // plan-193 T5: cancel no longer purges a local mirror entry — the
+    // lifecycle rows (live from the tamad) are the source of truth.
 }
 
 /// Cancel returns 404 for a non-existing model.

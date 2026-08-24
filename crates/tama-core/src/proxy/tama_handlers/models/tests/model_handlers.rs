@@ -338,17 +338,8 @@ async fn test_handle_tama_cancel_load_starting() {
     let response = app.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 
-    // Model entry should be removed.
-    assert!(
-        state
-            .registry
-            .models
-            .read()
-            .await
-            .get("test-model")
-            .is_none(),
-        "Model entry should be removed after cancel"
-    );
+    // plan-193 T5: cancel no longer removes a local mirror entry;
+    // lifecycle truth is the tamad rows.
 }
 
 /// POST /tama/v1/models/:id/cancel for a Ready model → 200: cancel now
@@ -406,18 +397,8 @@ async fn test_handle_tama_cancel_load_ready_unloads() {
 
     assert_eq!(json["loaded"], false);
 
-    // The local mirror entry is removed (the physical unload happens on
-    // the tamad; best-effort RPC — no tamad in this unit test).
-    assert!(
-        state
-            .registry
-            .models
-            .read()
-            .await
-            .get("test-model")
-            .is_none(),
-        "Ready mirror should be removed after cancel"
-    );
+    // plan-193 T5: cancel no longer purges a local mirror entry — the
+    // lifecycle rows (live from the tamad) are the source of truth.
 }
 
 /// POST /tama/v1/models/:id/cancel for an unknown model → 404 ModelNotLoadingError.
@@ -503,17 +484,8 @@ async fn test_handle_tama_unload_model_ready() {
     let response = app.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 
-    // Model entry should be removed.
-    assert!(
-        state
-            .registry
-            .models
-            .read()
-            .await
-            .get("test-model")
-            .is_none(),
-        "Model entry should be removed after unload"
-    );
+    // plan-193 T5: unload no longer removes a local mirror entry;
+    // lifecycle truth is the tamad rows.
 }
 
 /// POST /tama/v1/models/:id/unload for an unknown model → 404 NotFoundError.

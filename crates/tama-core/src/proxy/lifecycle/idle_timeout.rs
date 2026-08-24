@@ -88,20 +88,8 @@ impl ProxyState {
         // 5) so the reconciler will not re-load it; the physical kill
         // happens on the tamad via the re-routed unload_model.
         for backend_name in &to_unload {
-            // Capture the model name before the unload removes the mirror.
-            let model_name = self
-                .get_model_state(backend_name)
-                .await
-                .map(|s| s.model_name().to_string());
-            if let Some(ref model_name) = model_name {
-                if let Err(e) = crate::db::queries::clear_desired(&self.db_pool(), model_name).await
-                {
-                    warn!(
-                        "clear_desired for idle model '{}' failed: {}",
-                        model_name, e
-                    );
-                }
-            }
+            // Lifecycle truth comes from the live tamad rows, not the
+            // desired_models table; unloading the model locally is enough.
             if let Err(e) = self.unload_model(backend_name).await {
                 warn!("Failed to unload '{}': {}", backend_name, e);
             }

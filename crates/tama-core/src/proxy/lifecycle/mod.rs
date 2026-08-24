@@ -179,15 +179,10 @@ impl ProxyState {
 
         drop(models);
 
-        if let Some((name, model_name)) = lru {
-            // The evicted model must not be re-loaded by the reconciler:
-            // clear its desired state before unloading.
-            if let Err(e) = crate::db::queries::clear_desired(&self.db_pool(), &model_name).await {
-                warn!(
-                    "clear_desired for evicted model '{}' failed: {}",
-                    model_name, e
-                );
-            }
+        if let Some((name, _model_name)) = lru {
+            // The model is being evicted; unload it locally. Lifecycle
+            // truth now comes from the live tamad rows, so there is no
+            // desired/desired_models row to clear here.
             self.unload_model(&name).await?;
             Ok(Some(name))
         } else {
