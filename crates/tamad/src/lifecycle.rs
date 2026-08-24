@@ -20,7 +20,7 @@ use crate::process::{
 use tama_core::tamad::{LoadModelRequest, LoadModelResponse, ProcessInfo, ProviderInfo};
 
 use crate::process_table::{ProcessEntry, ProcessTable};
-use crate::state::store::Store;
+use crate::state::store::{Store, StoredProcess, DEFAULT_MAX_RESTARTS};
 use crate::state::TamadState;
 
 /// The canonical lifecycle status words for [process lines](ProcessEntry)
@@ -77,6 +77,32 @@ pub const RESTART_WINDOW_SECS: u64 = 300;
 /// same spec works when proxy and tamad host the weights in different
 /// places. The key is stripped before spawning.
 pub const PROXY_MODELS_DIR_ENV: &str = "TAMA_MODELS_DIR";
+
+/// The single host-side builder for the wire `[ProcessInfo]` of one
+/// process line (plan-193 T3). The six legacy fields map straight off the
+/// table `entry` (with `alive` folded from status+pid); the three T3
+/// wire fields come from the persistent store row when one exists, else
+/// fall back to the wire-spec defaults (not desired, zero restarts, the
+/// default restart budget). Both write sites (the lifecycle `list()` and
+/// the server `stream_stats` path) route through this one function so a
+/// loaded model always reports `desired=true` and its restart counters
+/// on the wire.
+pub fn to_process_info(entry: &ProcessEntry, store_row: Option<&StoredProcess>) -> ProcessInfo {
+    ProcessInfo {
+        model_name: entry.model_name.clone(),
+        provider_name: entry.provider_name.clone(),
+        pid: entry.pid as i32,
+        alive: entry.status != crate::lifecycle::status::FAILED
+            && crate::process::is_process_alive(entry.pid),
+        endpoint_url: entry.endpoint_url.clone(),
+        status: entry.status.clone(),
+        desired: store_row.map(|r| r.desired).unwrap_or(false),
+        restart_count: entry.restart_count,
+        max_restarts: store_row
+            .map(|r| r.max_restarts)
+            .unwrap_or(DEFAULT_MAX_RESTARTS),
+    }
+}
 
 /// Tamad-side lifecycle over the process table.
 pub struct TamadLifecycle {
@@ -640,14 +666,7 @@ impl TamadLifecycle {
         let mut by_provider: std::collections::BTreeMap<String, Vec<ProcessInfo>> =
             std::collections::BTreeMap::new();
         for entry in self.table.list().await {
-            let info = ProcessInfo {
-                model_name: entry.model_name.clone(),
-                provider_name: entry.provider_name.clone(),
-                pid: entry.pid as i32,
-                alive: entry.status != "failed" && crate::process::is_process_alive(entry.pid),
-                endpoint_url: entry.endpoint_url.clone(),
-                status: entry.status.clone(),
-            };
+            let info = to_process_info(&entry, self.store.get(&entry.model_name).as_ref());
             by_provider
                 .entry(entry.provider_name)
                 .or_default()
@@ -1034,6 +1053,7 @@ impl TamadLifecycle {
 mod tests {
     use super::*;
     use crate::server::test_support::test_state;
+    use ::prost::Message;
 
     fn make_req(
         model: &str,
@@ -1256,13 +1276,14 @@ mod tests {
             "crashed backend must be marked failed"
         );
 
-        // The snapshot reports it dead (reconciler will re-load it).
+        // The snapshot hands back the entry; the caller's alive fold
+        // reports it dead (status "failed" → not alive).
         let snap = table.snapshot().await;
-        let p = snap
+        let e = snap
             .iter()
-            .find(|p| p.model_name == "crashy")
+            .find(|e| e.model_name == "crashy")
             .expect("crashy in snapshot");
-        assert!(!p.alive, "crashed backend must be reported dead");
+        assert_eq!(e.status, "failed", "crashed backend marked failed");
     }
 
     /// list() groups entries by provider_name with empty engine/version.
@@ -1834,5 +1855,70 @@ mod tests {
         assert_eq!(after.pid, live_pid, "row untouched — no second spawn");
         assert!(crate::process::is_process_alive(after.pid));
         assert_eq!(table.list().await.len(), 1);
+    }
+
+    /// Back-compat regression (plan-193 T3): an OLD wire frame — only the
+    /// six legacy fields, none of 7/8/9 — decodes with the NEW prost to
+    /// the new fields at their defaults (zeros). Encoding a struct whose
+    /// 7/8/9 are all zero skips them on the proto, so the emitted bytes
+    /// are exactly the old shape; the new decoder must still yield a
+    /// valid `ProcessInfo` with `desired=false`, `restart_count=0` and
+    /// `max_restarts=0`.
+    #[test]
+    fn old_frame_decodes() {
+        let old = ProcessInfo {
+            model_name: "m".to_string(),
+            provider_name: "p".to_string(),
+            pid: 1,
+            alive: true,
+            endpoint_url: "http://x".to_string(),
+            status: "ready".to_string(),
+            desired: false,
+            restart_count: 0,
+            max_restarts: 0,
+        };
+        let bytes = old.encode_to_vec();
+        let decoded = ProcessInfo::decode(::prost::bytes::Bytes::from(bytes)).unwrap();
+        assert!(!decoded.desired, "old frame decodes desired=false");
+        assert_eq!(
+            decoded.restart_count, 0,
+            "old frame decodes restart_count=0"
+        );
+        assert_eq!(decoded.max_restarts, 0, "old frame decodes max_restarts=0");
+        assert_eq!(decoded.status, "ready", "the six legacy fields survive");
+    }
+
+    /// The T3 builder folds the store row: an inserted desired row makes
+    /// the wire info report `desired=true` and the default restart budget.
+    #[tokio::test]
+    async fn test_to_process_info_reads_store() {
+        let (state, _dir) = test_state();
+        let table = Arc::new(ProcessTable::default());
+        let lc = TamadLifecycle::new(
+            Arc::clone(&table),
+            Arc::clone(&state.store),
+            Arc::clone(&state),
+        );
+        let m = make_req("wire", "sh", &["-c", "sleep 30"], 0);
+        state
+            .store
+            .insert(&m.model_name, &m, true)
+            .expect("seed desired row");
+        let entry = ProcessEntry {
+            model_name: m.model_name.clone(),
+            provider_name: m.provider_name.clone(),
+            pid: std::process::id(),
+            endpoint_url: String::new(),
+            status: "ready".to_string(),
+            started_at: Instant::now(),
+            spec: m.clone(),
+            restart_count: 0,
+            window_starts: Vec::new(),
+            user_flagged: false,
+        };
+        let info = to_process_info(&entry, lc.store.get(&entry.model_name).as_ref());
+        assert!(info.desired, "store row makes the wire info desired");
+        assert_eq!(info.restart_count, 0);
+        assert_eq!(info.max_restarts, DEFAULT_MAX_RESTARTS);
     }
 }

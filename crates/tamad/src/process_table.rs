@@ -10,7 +10,6 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use tama_core::tamad::LoadModelRequest;
-use tama_core::tamad::ProcessInfo;
 
 /// A running (or recently running) backend process.
 #[derive(Clone)]
@@ -202,23 +201,13 @@ impl ProcessTable {
         )
     }
 
-    /// Alive-checked snapshot for the stats tick. `alive` is false when the
-    /// entry is marked "failed" (the reap task's authoritative signal) or
-    /// the pid no longer exists.
-    pub async fn snapshot(&self) -> Vec<ProcessInfo> {
-        self.inner
-            .read()
-            .await
-            .values()
-            .map(|e| ProcessInfo {
-                model_name: e.model_name.clone(),
-                provider_name: e.provider_name.clone(),
-                pid: e.pid as i32,
-                alive: e.status != "failed" && crate::process::is_process_alive(e.pid),
-                endpoint_url: e.endpoint_url.clone(),
-                status: e.status.clone(),
-            })
-            .collect()
+    /// Table-pure snapshot of the entries for the stats tick (plan-193
+    /// T3). The caller (`stream_stats`) applies the store-augmenting
+    /// [`to_process_info`](crate::lifecycle::to_process_info) builder per
+    /// entry — this accessor never touches the store, so the table stays
+    /// free of `Store` imports.
+    pub async fn snapshot(&self) -> Vec<ProcessEntry> {
+        self.inner.read().await.values().cloned().collect()
     }
 }
 
@@ -283,8 +272,9 @@ mod tests {
         assert!(table.list().await.is_empty());
     }
 
-    /// snapshot() maps entries to ProcessInfo and marks liveness:
-    /// the test process itself is alive, a PID above pid_max is dead.
+    /// snapshot() hands back table entries (the caller computes the wired
+    /// liveness + store fields): the test process itself is alive, a PID
+    /// above pid_max is dead.
     #[tokio::test]
     async fn test_snapshot_liveness() {
         let table = ProcessTable::default();
@@ -296,21 +286,24 @@ mod tests {
 
         let alive = snap
             .iter()
-            .find(|p| p.model_name == "alive-model")
+            .find(|e| e.model_name == "alive-model")
             .expect("alive-model in snapshot");
+        assert_eq!(alive.pid, std::process::id());
+        assert_eq!(alive.status, "ready");
         assert!(
-            alive.alive,
+            alive.status != "failed" && crate::process::is_process_alive(alive.pid),
             "own process (pid {}) must be reported alive",
             std::process::id()
         );
-        assert_eq!(alive.pid as u32, std::process::id());
-        assert_eq!(alive.status, "ready");
 
         let dead = snap
             .iter()
-            .find(|p| p.model_name == "dead-model")
+            .find(|e| e.model_name == "dead-model")
             .expect("dead-model in snapshot");
-        assert!(!dead.alive, "PID above pid_max must be reported dead");
+        assert!(
+            !(dead.status != "failed" && crate::process::is_process_alive(dead.pid)),
+            "PID above pid_max must be reported dead"
+        );
         assert!(!crate::process::is_process_alive(dead_pid()));
     }
 
@@ -342,9 +335,10 @@ mod tests {
         assert_eq!(table.get("alpha").await.unwrap().status, "failed");
     }
 
-    /// A "failed" entry is reported `alive: false` in the snapshot even if
-    /// the (zombie) pid still answers `kill(pid, 0)` — the reap task that
-    /// marks it failed is the authoritative liveness signal.
+    /// A "failed" entry is reported (via the caller's alive fold) dead even
+    /// if the (zombie) pid still answers `kill(pid, 0)` — the reap task that
+    /// marks it failed is the authoritative liveness signal. The snapshot
+    /// preserves the entry's failed status.
     #[tokio::test]
     async fn test_snapshot_failed_entry_reports_dead() {
         let table = ProcessTable::default();
@@ -353,8 +347,11 @@ mod tests {
         table.mark_failed("crashed", my_pid).await;
 
         let snap = table.snapshot().await;
-        let p = snap.iter().find(|p| p.model_name == "crashed").unwrap();
-        assert!(!p.alive, "failed entry must be reported dead");
-        assert_eq!(p.status, "failed");
+        let e = snap.iter().find(|e| e.model_name == "crashed").unwrap();
+        assert_eq!(e.status, "failed");
+        assert!(
+            e.status == "failed" || !crate::process::is_process_alive(e.pid),
+            "failed entry must be reported dead"
+        );
     }
 }

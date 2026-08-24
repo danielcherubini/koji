@@ -386,6 +386,9 @@ mod tests {
             alive,
             endpoint_url: format!("http://127.0.0.1:180{}0", model.len()),
             status: "ready".to_string(),
+            desired: false,
+            restart_count: 0,
+            max_restarts: 0,
         }
     }
 

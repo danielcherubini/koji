@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use tama_core::providers::{Protocol, TamadConnection, TamadStatus};
 use tama_core::tamad::client::TamadClient;
-use tama_core::tamad::UnloadModelRequest;
+use tama_core::tamad::{LoadModelRequest, UnloadModelRequest};
 
 const MODEL_KEY: &str = "boot-replay-e2e";
 
@@ -277,4 +277,99 @@ async fn tamad_boot_replay_is_the_source_of_truth() {
 
         child.kill().await.expect("kill s2 tamad");
     }
+}
+
+/// The wired model key this file's plan-193 T3 test loads explicitly.
+const LOADED_KEY: &str = "t3-wire-e2e";
+
+/// Poll the gRPC stats stream until the wire-loaded model shows up, then
+/// assert the three T3 wire-field extensions on that frame: `desired`
+/// true (the host persisted the load as desired), `restart_count` zero,
+/// `max_restarts` at the default budget (10), and the status within the
+/// canonical six words.
+async fn wait_loaded(client: &TamadClient, key: &str, timeout: Duration) {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let mut stream = client.stream_stats().await.expect("stream stats connect");
+        if let Ok(Some(stats)) = stream.message().await {
+            for p in &stats.processes {
+                if p.model_name == key && p.desired {
+                    assert!(
+                        p.alive,
+                        "T3 loaded model must be alive: status={} pid={}",
+                        p.status, p.pid
+                    );
+                    assert!(p.desired, "T3 loaded model reports desired=true");
+                    assert_eq!(
+                        p.restart_count, 0,
+                        "T3 loaded model reports restart_count=0"
+                    );
+                    assert_eq!(
+                        p.max_restarts, 10,
+                        "T3 loaded model reports max_restarts=10 (DEFAULT_MAX_RESTARTS)"
+                    );
+                    assert!(
+                        p.status == "starting"
+                            || p.status == "ready"
+                            || p.status == "restarting"
+                            || p.status == "failed"
+                            || p.status == "budget_exhausted"
+                            || p.status == "unloading",
+                        "status '{}' is one of the canonical six",
+                        p.status
+                    );
+                    return;
+                }
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "wire-loaded model never appeared on the stream"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// plan-193 T3 — the wire extension: a model loaded through the proto
+/// reports `desired=true` (the host persisted the desired on the load
+/// path), `restart_count=0`, `max_restarts=10`, and a status the lifecycle
+/// accepts (one of the canonical six) on the StreamStats frame.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn loaded_model_reports_wire_field_extensions() {
+    let dir = tempfile::tempdir().expect("T3 tempdir");
+    let data_dir = dir.path().to_path_buf();
+    // No replay seeding: we drive the load explicitly over the wire.
+    let (mut child, port, token, _log) = start_tamad(&data_dir, true).await;
+    let mut client = connect(port, &token);
+
+    let req = LoadModelRequest {
+        provider_name: "llama_cpp".to_string(),
+        model_path: "".to_string(),
+        gpu_variant: "".to_string(),
+        params: std::collections::HashMap::new(),
+        model_name: LOADED_KEY.to_string(),
+        command: "/bin/sh".to_string(),
+        args: vec!["-c".to_string(), "sleep 300".to_string()],
+        env: std::collections::HashMap::new(),
+        health_url: "".to_string(),
+        health_timeout_ms: 0,
+        gpu_device: "".to_string(),
+        docker_config_json: "".to_string(),
+    };
+    client
+        .load_model(&req)
+        .await
+        .expect("load model via the wire");
+
+    wait_loaded(&client, LOADED_KEY, Duration::from_secs(15)).await;
+
+    client
+        .unload_model(&UnloadModelRequest {
+            provider_name: "llama_cpp".to_string(),
+            model_name: LOADED_KEY.to_string(),
+        })
+        .await
+        .expect("cleanup: unload the wire-loaded model");
+
+    child.kill().await.expect("kill T3 tamad");
 }

@@ -141,6 +141,9 @@ message ProcessInfo {
   bool alive = 4;
   string endpoint_url = 5;
   string status = 6;          // "starting" | "ready" | "failed" | "unloading"
+  bool   desired = 7;
+  uint32 restart_count = 8;
+  uint32 max_restarts = 9;
 }
 
 message SystemStats {

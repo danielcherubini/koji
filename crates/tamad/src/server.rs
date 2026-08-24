@@ -468,6 +468,7 @@ impl TamadService for TamadServiceImpl {
     ) -> std::result::Result<tonic::Response<Self::StreamStatsStream>, tonic::Status> {
         check_auth(&request, &self.expected_token)?;
         let table = Arc::clone(&self.table);
+        let state = Arc::clone(&self.state);
         let collector = Arc::clone(&self.collector);
 
         let stream = async_stream::stream! {
@@ -476,7 +477,18 @@ impl TamadService for TamadServiceImpl {
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
-                        let processes = table.snapshot().await;
+                        // Table-pure snapshot; the T3 builder folds the
+                        // store-augmented wire info (desired + restart
+                        // counters) from each entry.
+                        let processes = table
+                            .snapshot()
+                            .await
+                            .iter()
+                            .map(|entry| crate::lifecycle::to_process_info(
+                                entry,
+                                state.store.get(&entry.model_name).as_ref()
+                            ))
+                            .collect::<Vec<_>>();
                         let collector = Arc::clone(&collector);
                         // tick() is blocking (GPU detection shells out) —
                         // keep it off the async runtime.
