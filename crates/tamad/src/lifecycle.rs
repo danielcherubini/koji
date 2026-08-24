@@ -335,7 +335,7 @@ impl TamadLifecycle {
             // the row's bookkeeping so a backend that exits 0.3 s
             // after every start can still trip the budget directive.
             // `user_flagged` is NOT auto-cleared on success, either.
-            let verified = !req.health_url.is_empty() || req.health_timeout_ms != 0;
+            let verified = !req.health_url.is_empty() && req.health_timeout_ms != 0;
             self.table
                 .insert(Self::entry_for(
                     req,
@@ -544,7 +544,7 @@ impl TamadLifecycle {
             // Same verified-ready reset rule as the host path: a
             // successful container health gate clears the trip tally;
             // an instant ready (no gate) preserves it.
-            let verified = !req.health_url.is_empty() || req.health_timeout_ms != 0;
+            let verified = !req.health_url.is_empty() && req.health_timeout_ms != 0;
             self.table
                 .insert(Self::entry_for(
                     req,
@@ -1287,6 +1287,171 @@ mod tests {
             .find(|e| e.model_name == "crashy")
             .expect("crashy in snapshot");
         assert_eq!(e.status, "failed", "crashed backend marked failed");
+    }
+
+    /// Seed the row as an in-flight respawn (`restarting`) that already
+    /// carries an in-window round-trip tally — the shape a respawning row
+    /// has when `load()` re-injects the replacement.
+    async fn seed_restarting_table(table: &Arc<ProcessTable>, model: &str) {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        table
+            .insert(ProcessEntry {
+                model_name: model.to_string(),
+                provider_name: "llama_cpp".to_string(),
+                pid: 1,
+                endpoint_url: String::new(),
+                status: status::RESTARTING.to_string(),
+                started_at: Instant::now(),
+                spec: make_req(model, "sh", &["-c", "sleep 30"], 0),
+                restart_count: 3,
+                window_starts: vec![now_ms - 2_000, now_ms - 1_000, now_ms],
+                user_flagged: false,
+            })
+            .await;
+    }
+
+    /// A load that reaches `ready` must reset the in-window restart tally
+    /// ONLY when the health gate actually fired (`health_url` present AND
+    /// `health_timeout_ms` positive). A spec with a non-empty `health_url`
+    /// but `health_timeout_ms == 0` SKIPS the gate (`load`'s `healthy`
+    /// branch), so that row is NOT verified: it preserves the in-flight
+    /// round-trip tally instead of clearing it.
+    ///
+    /// Before the double-negation fix, `verified` was `A || B` rather than
+    /// `A && B`, so this family was misread as verified and the tally was
+    /// reset (restart_count read 0) — failing the two asserts below.
+    #[tokio::test]
+    async fn test_load_ready_url_zero_timeout_is_unverified_and_preserves_window() {
+        let (state, _dir) = test_state();
+        let table = Arc::new(ProcessTable::default());
+        let lc = TamadLifecycle::new(
+            Arc::clone(&table),
+            Arc::clone(&state.store),
+            Arc::clone(&state),
+        );
+
+        seed_restarting_table(&table, "win").await;
+
+        // Non-empty URL but zero timeout: the health gate is skipped, so
+        // the row is never verified.
+        let mut req = make_req("win", "sh", &["-c", "sleep 30"], 0);
+        req.health_url = "http://127.0.0.1:1/health".to_string();
+        let resp = lc
+            .load(&req)
+            .await
+            .expect("ready without health polling (gate skipped)");
+        assert_eq!(resp.status, status::READY);
+
+        let entry = table.get("win").await.expect("row present after ready");
+        assert_eq!(entry.status, status::READY);
+        assert_eq!(
+            entry.restart_count,
+            3,
+            "URL + zero-timeout skips the health gate: not verified, so the round-trip tally is preserved"
+        );
+        assert_eq!(
+            entry.window_starts.len(),
+            3,
+            "gate was not verified: the restart window must not be reset"
+        );
+        lc.unload("win").await.ok();
+    }
+
+    /// Behaviour the fix must NOT break: a concrete `health_url` AND a
+    /// positive `health_timeout_ms` round-trips a verified ready, so the
+    /// successful health gate resets the in-window restart tally (the
+    /// `restarting` row's tallies are cleared from the verdict).
+    #[tokio::test]
+    async fn test_load_ready_url_positive_timeout_is_verified_and_resets_window() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut buf = [0u8; 512];
+                    let _ = sock.read(&mut buf).await;
+                    let _ = sock
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                        .await;
+                });
+            }
+        });
+
+        let (state, _dir) = test_state();
+        let table = Arc::new(ProcessTable::default());
+        let lc = TamadLifecycle::new(
+            Arc::clone(&table),
+            Arc::clone(&state.store),
+            Arc::clone(&state),
+        );
+
+        seed_restarting_table(&table, "gated").await;
+
+        let mut req = make_req("gated", "sh", &["-c", "sleep 30"], 0);
+        req.health_url = format!("http://127.0.0.1:{port}/health");
+        req.health_timeout_ms = 10_000;
+        let resp = lc
+            .load(&req)
+            .await
+            .expect("health-gated load should succeed");
+        assert_eq!(resp.status, status::READY);
+
+        let entry = table.get("gated").await.expect("row present after ready");
+        assert_eq!(entry.status, status::READY);
+        assert_eq!(
+            entry.restart_count, 0,
+            "the verified health-gated ready resets the round-trip tally"
+        );
+        assert!(
+            entry.window_starts.is_empty(),
+            "verified ready resets the restart window"
+        );
+        lc.unload("gated").await.ok();
+    }
+
+    /// "No `health_url` + no timeout" is the canonically unverified ready
+    /// (the gate never fires), and is the baseline a "URL + zero-timeout"
+    /// spec (the previous test) must match: the tally is preserved, not
+    /// reset.
+    #[tokio::test]
+    async fn test_load_ready_no_url_zero_timeout_is_unverified_and_preserves_window() {
+        let (state, _dir) = test_state();
+        let table = Arc::new(ProcessTable::default());
+        let lc = TamadLifecycle::new(
+            Arc::clone(&table),
+            Arc::clone(&state.store),
+            Arc::clone(&state),
+        );
+
+        seed_restarting_table(&table, "nourl").await;
+
+        // `make_req` with `health_timeout_ms == 0` leaves `health_url` empty.
+        let req = make_req("nourl", "sh", &["-c", "sleep 30"], 0);
+        let resp = lc
+            .load(&req)
+            .await
+            .expect("ready without health polling (no gate)");
+        assert_eq!(resp.status, status::READY);
+
+        let entry = table.get("nourl").await.expect("row present after ready");
+        assert_eq!(entry.status, status::READY);
+        assert_eq!(
+            entry.restart_count, 3,
+            "no health gate: unverified, so the round-trip tally is preserved"
+        );
+        assert_eq!(
+            entry.window_starts.len(),
+            3,
+            "no gate fired: the restart window must not be reset"
+        );
+        lc.unload("nourl").await.ok();
     }
 
     /// list() groups entries by provider_name with empty engine/version.
