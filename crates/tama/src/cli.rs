@@ -14,14 +14,56 @@ pub struct Cli {
     pub command: Option<Command>,
 }
 
-#[derive(Debug, Subcommand)]
+#[derive(Debug, Subcommand, PartialEq, Eq)]
 pub enum Command {
     /// One-time migration from the v2 SQLite database to Postgres
     Migrate(MigrateArgs),
+    /// Headless administration on the proxy side (plan-193 T6): the live
+    /// model rows, model load / unload, and engine-log tails
+    Admin(AdminArgs),
+}
+
+/// Arguments for `tama admin` (plan-193 T6).
+#[derive(Debug, Args, Clone, PartialEq, Eq)]
+pub struct AdminArgs {
+    #[command(subcommand)]
+    pub verb: AdminVerb,
+}
+
+/// The verbs `tama admin` takes (plan-193 T6).
+///
+/// Exit codes: `0` on success; `2` when the key is not found (no live
+/// row, never loaded, or an odd key — odd keys are not-found, not
+/// mis-use); `13` when the model's restart budget is exhausted — the
+/// CLI literal for the wire word `budget_exhausted` (wire `503`
+/// maps the clue: there is no numeric code on the wire); any other
+/// non-zero otherwise.
+#[derive(Debug, Subcommand, Clone, PartialEq, Eq)]
+pub enum AdminVerb {
+    /// Print every live-model wire row as one line of JSON
+    Status,
+    /// Ensure the model is loaded (idempotent: an already-alive row
+    /// never re-issues a second `LoadModel`)
+    Load {
+        /// Model config key (or alias)
+        config_key: String,
+    },
+    /// Unload a loaded model
+    Unload {
+        /// Model config key
+        config_key: String,
+    },
+    /// Tail the model's engine log (container-engine only: the wire
+    /// `Logs` tails the `tama-<key>` container the backend runs in;
+    /// native-backend logs are not captured in this plan)
+    Logs {
+        /// Model config key
+        config_key: String,
+    },
 }
 
 /// Arguments for `tama migrate`.
-#[derive(Debug, Args, Clone)]
+#[derive(Debug, Args, Clone, PartialEq, Eq)]
 pub struct MigrateArgs {
     /// Path to the v2 SQLite database (tama.db)
     #[arg(long)]
@@ -78,5 +120,52 @@ mod tests {
         assert_eq!(args.password_env.as_deref(), Some("TAMA_DB_PASSWORD"));
         assert!(args.dry_run);
         assert!(args.force);
+    }
+
+    #[test]
+    fn test_admin_status_parses() {
+        let cli = Cli::parse_from(["tama", "admin", "status"]);
+        assert_eq!(
+            cli.command,
+            Some(Command::Admin(AdminArgs {
+                verb: AdminVerb::Status
+            }))
+        );
+    }
+
+    #[test]
+    fn test_admin_load_and_unload_take_the_config_key() {
+        let cli = Cli::parse_from(["tama", "admin", "load", "qwen3"]);
+        assert_eq!(
+            cli.command,
+            Some(Command::Admin(AdminArgs {
+                verb: AdminVerb::Load {
+                    config_key: "qwen3".to_string()
+                }
+            }))
+        );
+
+        let cli = Cli::parse_from(["tama", "admin", "unload", "deepseek-r1"]);
+        assert_eq!(
+            cli.command,
+            Some(Command::Admin(AdminArgs {
+                verb: AdminVerb::Unload {
+                    config_key: "deepseek-r1".to_string()
+                }
+            }))
+        );
+    }
+
+    #[test]
+    fn test_admin_logs_takes_the_config_key() {
+        let cli = Cli::parse_from(["tama", "admin", "logs", "llama_cpp_1"]);
+        assert_eq!(
+            cli.command,
+            Some(Command::Admin(AdminArgs {
+                verb: AdminVerb::Logs {
+                    config_key: "llama_cpp_1".to_string()
+                }
+            }))
+        );
     }
 }

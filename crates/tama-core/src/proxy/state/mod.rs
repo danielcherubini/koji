@@ -226,6 +226,14 @@ impl ProxyState {
         self.registry.resolve_alias(name).await
     }
 
+    /// Whether `key` is a known model config (the admin CLI's not-found
+    /// discriminator, plan-193 T6): a key that is neither a model nor an
+    /// alias to one is a not-found (exit 2) rather than an
+    /// ambiguous load failure. Call this with the alias-resolved key.
+    pub async fn has_model_config(&self, key: &str) -> bool {
+        self.registry.model_configs.read().await.contains_key(key)
+    }
+
     /// Open a ModelManager for model-related database operations.
     ///
     /// Crate-internal ModelManager factory for proxy lifecycle code

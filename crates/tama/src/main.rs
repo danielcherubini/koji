@@ -13,6 +13,8 @@ use std::sync::{Arc, Mutex};
 use tama_core::config::Config;
 use tama_core::proxy::{ProxyServer, ProxyState};
 
+mod admin;
+
 /// Set up HF_TOKEN environment variable from config if present.
 fn setup_hf_token(config: &Config) {
     if let Some(token) = &config.general.hf_token {
@@ -36,6 +38,25 @@ fn main() -> Result<()> {
                 .build()
                 .context("building tokio runtime for migrate")?;
             rt.block_on(tama_web::migrate::run(opts)).map(|_| ())
+        }
+        // plan-193 T6: `tama admin` is a CLI, not an SSR thing — the
+        // dispatch is BEFORE any `ssr` feature gate (same shape as
+        // `Migrate` above). Exit codes: 0 ok / 2 not-found / 13
+        // budget-exhausted (the CLI literal matching the wire word
+        // `budget_exhausted`) / 1 otherwise.
+        Some(tama_web::cli::Command::Admin(args)) => {
+            let (filter_handle, _file_writer) = init_default_tracing();
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .context("building tokio runtime for admin")?;
+            match rt.block_on(admin::run(args, filter_handle)) {
+                Ok(()) => Ok(()),
+                Err(admin_error) => {
+                    eprintln!("tama: {admin_error}");
+                    std::process::exit(admin_error.exit_code);
+                }
+            }
         }
         None => {
             let rt = tokio::runtime::Builder::new_multi_thread()

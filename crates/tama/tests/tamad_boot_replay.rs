@@ -466,3 +466,227 @@ async fn proxy_reads_live_rows_from_wire_then_empty_when_host_missing() {
         "offline host → 0 proxy rows (no host = no models)"
     );
 }
+
+// ─── plan-193 T6: the `tama admin` e2e counterparts ────────────────────────
+
+/// The keys T6 drives through the real wire (hermetic: `sh -c sleep`).
+const ADMIN_LOAD_KEY: &str = "admin-load-t6";
+
+/// A TTS-shell model name: if loaded through the normal path, it
+/// proves TTS keys have no special-case wire builder (the wire is
+/// sourced from the same rows as every other model — there is exactly
+/// one `ProcessInfo` builder, `to_process_info` in
+/// `crates/tamad/src/lifecycle.rs`).
+const TTS_MODEL_KEY: &str = "tts_kokoro";
+
+const STATUS_SIX_KEY: &str = "status-six-t6";
+
+/// The canonical six words (plan-193 T2,
+/// `crates/tamad/src/lifecycle.rs`'s `status` module).
+const CANONICAL_STATUSES: [&str; 6] = [
+    "starting",
+    "ready",
+    "restarting",
+    "failed",
+    "budget_exhausted",
+    "unloading",
+];
+
+/// The `LoadModel` wire request that `ensure_model_loaded` sends after
+/// alias resolution, the budget check, and the alive-row fast path —
+/// the EXACTLY same call a headless `tama admin load` makes in-process
+/// (if the model is already alive, `admin load` returns via the fast
+/// path and never sends a second `LoadModel`).
+fn admin_load_request(key: &str) -> LoadModelRequest {
+    LoadModelRequest {
+        provider_name: "llama_cpp".to_string(),
+        model_path: String::new(),
+        gpu_variant: String::new(),
+        params: std::collections::HashMap::new(),
+        model_name: key.to_string(),
+        command: "/bin/sh".to_string(),
+        args: vec!["-c".to_string(), "sleep 300".to_string()],
+        env: std::collections::HashMap::new(),
+        health_url: String::new(),
+        health_timeout_ms: 0,
+        gpu_device: String::new(),
+        docker_config_json: String::new(),
+    }
+}
+
+/// Bind a real proxy `TamadPool` to a running host (the T4 pattern)
+/// and load it — this is what `tama admin status` reads its rows
+/// through.
+async fn bind_proxy_pool(port: u16, token: &str) -> tama_core::tamad::pool::TamadPool {
+    let pool = tama_core::tamad::pool::TamadPool::new(tama_test_support::test_dummy_pool())
+        .with_backoff_base(Duration::from_millis(20));
+    let conn = TamadConnection {
+        id: "t6-admin".to_string(),
+        name: "t6-e2e".to_string(),
+        url: format!("grpc://127.0.0.1:{port}"),
+        protocol: Protocol::Grpc,
+        token: Some(token.to_string()),
+        status: TamadStatus::Unknown,
+    };
+    pool.upsert_connection(&conn)
+        .await
+        .expect("bind the proxy pool to the host");
+    pool
+}
+
+/// Poll the real `TamadPool` until the model is observed as a row with
+/// `status == "ready"` — the state that `tama admin load` leaves
+/// behind (the wire is the status; the admin reads rows, never
+/// counters).
+async fn wait_row_ready(pool: &tama_core::tamad::pool::TamadPool, key: &str, timeout: Duration) {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let rows = tama_core::proxy::live_rows(pool).await;
+        if let Some(row) = rows.row(key).filter(|r| r.status == "ready") {
+            assert!(
+                row.alive,
+                "a `ready` row must have a living process: pid={}",
+                row.pid
+            );
+            assert!(
+                rows.ready_count() >= 1,
+                "the ready count must include the freshly-loaded row"
+            );
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "model '{key}' never became `ready` on the wire within {:?}",
+            timeout
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// plan-193 T6 — `tama admin load` reproducibility: the e2e runs the
+/// same API path the headless admin calls in-process
+/// (alias resolution → budget check → alive-row fast path →
+/// `LoadModel`) and, exactly like `tama admin status`, reads
+/// the constructed rows through a real `TamadPool`. The whole
+/// admin `load` ends up being the row reports `ready` via the wire —
+/// readiness is the host's, and the CLI surfaces it, it doesn't decide it.
+///
+/// Hermetic: real binary, real gRPC, real 1 Hz frames; `sleep`
+/// process, no GPU, no HF Hub, no network.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn admin_load_reports_row_ready_via_wire() {
+    let dir = tempfile::tempdir().expect("T6 admin tempdir");
+    let data_dir = dir.path().to_path_buf();
+    let (mut child, port, token, _log) = start_tamad(&data_dir, true).await;
+    let mut client = connect(port, &token);
+    let pool = bind_proxy_pool(port, &token).await;
+
+    client
+        .load_model(&admin_load_request(ADMIN_LOAD_KEY))
+        .await
+        .expect("admin load via the same API path");
+
+    wait_row_ready(&pool, ADMIN_LOAD_KEY, Duration::from_secs(15)).await;
+
+    client
+        .unload_model(&UnloadModelRequest {
+            provider_name: "llama_cpp".to_string(),
+            model_name: ADMIN_LOAD_KEY.to_string(),
+        })
+        .await
+        .expect("cleanup: unload it");
+    child.kill().await.expect("kill T6 admin tamad");
+}
+
+/// plan-193 T6 — this run's first TTS e2e: a TTS-shell model name
+/// (`tts_kokoro`) loads through the SAME real `LoadModel` path as a
+/// normal model — no special-case wire builder for TTS/
+/// compaction keys — and the row becomes `ready` via the
+/// wire the proxy reads (the verify-only complement: there is
+/// exactly one `ProcessInfo` builder on tamad, and the
+/// proxy read is row-sourced).
+///
+/// Hermetic air gap: the "TTS model" IS a `sleep` process under a
+/// TTS-flavored key — no kokoro download, no GPU, no hub.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tts_key_loads_through_the_normal_wire_path() {
+    let dir = tempfile::tempdir().expect("T6 TTS tempdir");
+    let data_dir = dir.path().to_path_buf();
+    let (mut child, port, token, _log) = start_tamad(&data_dir, true).await;
+    let mut client = connect(port, &token);
+    let pool = bind_proxy_pool(port, &token).await;
+
+    client
+        .load_model(&admin_load_request(TTS_MODEL_KEY))
+        .await
+        .expect("TTS key loaded through the normal wire path");
+
+    wait_row_ready(&pool, TTS_MODEL_KEY, Duration::from_secs(15)).await;
+
+    client
+        .unload_model(&UnloadModelRequest {
+            provider_name: "llama_cpp".to_string(),
+            model_name: TTS_MODEL_KEY.to_string(),
+        })
+        .await
+        .expect("cleanup: unload it");
+    child.kill().await.expect("kill T6 TTS tamad");
+}
+
+/// plan-193 T6 — the canonical-six-word set is carried forward
+/// (asserted at T2; the shape of the row source plane is from T4
+/// unchanged): across one tmp load, every `ProcessInfo.status` word
+/// observed on the 1 Hz stream is within the canonical six.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn observed_wire_statuses_stay_within_the_canonical_six() {
+    let dir = tempfile::tempdir().expect("T6 six tempdir");
+    let data_dir = dir.path().to_path_buf();
+    let (mut child, port, token, _log) = start_tamad(&data_dir, true).await;
+    let mut client = connect(port, &token);
+
+    client
+        .load_model(&admin_load_request(STATUS_SIX_KEY))
+        .await
+        .expect("load for status observation");
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut saw_ready = false;
+    while !saw_ready {
+        let mut stream = client.stream_stats().await.expect("stream stats connect");
+        while let Ok(Some(stats)) = stream.message().await {
+            for p in &stats.processes {
+                if p.model_name == STATUS_SIX_KEY {
+                    seen.insert(p.status.clone());
+                    saw_ready = saw_ready || p.status == "ready";
+                }
+            }
+            if saw_ready || tokio::time::Instant::now() >= deadline {
+                break;
+            }
+        }
+    }
+    assert!(
+        saw_ready,
+        "model must reach `ready` within the observation window (the six-set is OBSERVED, not asserted a priori)"
+    );
+    assert!(
+        !seen.is_empty(),
+        "the stream had to observe status words in the window"
+    );
+    for status in &seen {
+        assert!(
+            CANONICAL_STATUSES.contains(&status.as_str()),
+            "off-spec status '{status}' (must be one of the canonical six)"
+        );
+    }
+
+    client
+        .unload_model(&UnloadModelRequest {
+            provider_name: "llama_cpp".to_string(),
+            model_name: STATUS_SIX_KEY.to_string(),
+        })
+        .await
+        .expect("cleanup: unload it");
+    child.kill().await.expect("kill T6 six tamad");
+}

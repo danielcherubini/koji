@@ -77,7 +77,7 @@ fn row_from(p: &ProcessInfo, last_seen_ms: i64) -> ModelRow {
 /// process id (wire field 3, the authoritative source for `backend_pid`);
 /// `desired` and the restart counters (wire fields 7-9, T3) complete the
 /// picture (plan-193 T5c).
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
 pub struct ModelRow {
     pub key: String,
     pub status: String,
@@ -389,5 +389,46 @@ mod tests {
         );
         let rows = live(&pool_with(stats).await).await;
         assert!(rows.all().is_empty());
+    }
+
+    /// plan-193 T6 — the `models_loaded` semantics switch, as a count,
+    /// asserted. The wire/JSON name `models_loaded` (and the gauge
+    /// `tama:models_loaded`) survives, but it's the **live set's**
+    /// `ready_count()` — a pure function of the current rows, not a
+    /// monotonic counter. Loading a model makes it 1, unloading makes
+    /// it 0, and re-loading yields 1 *again*, **not becoming 2**
+    /// (no cumulative increment survives — the legacy one-way
+    /// `fetch_add` is dead as of T5c). An offline host (an
+    /// unloading process drops from the stream → stale snapshot) yields
+    /// the zero.
+    #[tokio::test]
+    async fn test_ready_count_tracks_the_live_set_not_a_counter() {
+        // Load a model ⇒ 1.
+        let after_load =
+            live(&pool_with(stats_with(vec![proc("m", "ready", true, "u", true, 0, 3)])).await)
+                .await;
+        assert_eq!(after_load.ready_count(), 1, "load a model ⇒ 1");
+
+        // Unload ⇒ 0: the process vanishes from the wire (a dead host
+        // contributes zero rows — "no host = no model").
+        let after_unload = live(&pool_without_latest().await).await;
+        assert_eq!(after_unload.ready_count(), 0, "unload ⇒ 0");
+
+        // Re-load ⇒ 1 again — the count never goes to 2; it always
+        // reflects the number of live ready rows, with no cumulative
+        // trace of having been 1 before.
+        let after_reload =
+            live(&pool_with(stats_with(vec![proc("m", "ready", true, "u", true, 0, 3)])).await)
+                .await;
+        assert_eq!(after_reload.ready_count(), 1, "re-load ⇒ 1, never 2");
+        assert_eq!(
+            after_reload.ready_count(),
+            after_reload
+                .all()
+                .iter()
+                .filter(|r| r.status == "ready")
+                .count() as u64,
+            "the count is the live ready set's size, no hidden state"
+        );
     }
 }
