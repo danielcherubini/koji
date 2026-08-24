@@ -12,13 +12,17 @@ Plans for features, refactors, and bug fixes in the Tama project.
 
 ## Quick Stats
 
-- **Total Plans**: 98
-- **Backlog**: 0
+- **Total Plans**: 99
+- **Backlog**: 1
 - **Completed**: 96 ✅
 
 ---
 
 ## Backlog
+
+| # | Plan | Status |
+|---|------|--------|
+| 193 | [Tamad is the Source of Truth for Lifecycle](plan-193-tamad-lifecycle-truth.md) (ADR-0011) | 📝 Backlog |
 
 > **Note:** The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan.
 
