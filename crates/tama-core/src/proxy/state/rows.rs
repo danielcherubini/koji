@@ -142,7 +142,8 @@ impl Rows {
 
 /// Aggregate the live model rows across every tamad in `pool`.
 ///
-/// Per handle: only a FRESH snapshot (≤ `LIVE_FRAME_MAX_AGE` old) is
+/// Per handle: only a FRESH snapshot (age strictly `<`
+/// `LIVE_FRAME_MAX_AGE`; a frame at the bound is stale) is
 /// consumed — a stale or absent snapshot (offline host) yields zero rows for
 /// that host. This is the proxy's read-side flip (plan-193 Task 4): the
 /// control plane reads its model facts off the wire, not the mirror.
@@ -291,6 +292,11 @@ mod tests {
 
     /// A frame exactly at the stale bound turns ALL rows off: an aged frame
     /// means "no host", not "models went stale".
+    ///
+    /// Strict-boundary pin (`age < LIVE_FRAME_MAX_AGE`): the 5 s fixture
+    /// below is "now minus exactly 5 s" — under the strict rule a frame
+    /// that has reached its full 5 s of age is deterministically zero-row.
+    /// The 6 s fixture covers the past-boundary side.
     #[tokio::test]
     async fn test_stale_frame_yields_zero_rows_like_offline() {
         let rows5 =

@@ -20,8 +20,8 @@
 //! Seeding happens BEFORE the spawn, so the sweep never races the
 //! fixture.
 
-use std::path::PathBuf;
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use tama_core::providers::{Protocol, TamadConnection, TamadStatus};
 use tama_core::tamad::client::TamadClient;
@@ -33,9 +33,10 @@ fn tamad_binary() -> PathBuf {
     // Resolve the workspace target dir relative to the crate manifest
     // so the lookup works regardless of the test process cwd.
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
+    let workspace = manifest.join("../..");
     let target = match std::env::var("CARGO_TARGET_DIR") {
         Ok(t) if !t.is_empty() => PathBuf::from(t),
-        _ => manifest.join("../..").join("target"),
+        _ => workspace.join("target"),
     };
     let p = target.join("debug").join("tamad");
     assert!(
@@ -43,7 +44,100 @@ fn tamad_binary() -> PathBuf {
         "tamad binary not found at {:?} — run `cargo build -p tamad` first",
         p
     );
+    // Plan-193 N20: the target *debug* `tamad` binary must be FRESH relative
+    // to the tamad sources it was built from. `cargo nextest -p tama` compiles
+    // only `tama` (and its deps for the test build) — it does NOT
+    // `cargo build -p tamad`, so a stale `target/debug/tamad` (e.g. edited
+    // `crates/tamad/src/lifecycle.rs` or `tama-core` proto since the last
+    // build) would silently run the OLD shim (cryptic failure, or worse,
+    // wind-shifted assertions). We refuse to run on a stale binary and point
+    // at the rebuild — no hidden recompile inside the test process
+    // (min-plan rule: the panic's message IS the fix instruction).
+    let source_roots = tamad_source_roots(&workspace);
+    let source_roots: Vec<&Path> = source_roots.iter().map(PathBuf::as_path).collect();
+    if binary_is_stale(&p, &source_roots) {
+        panic!(
+            "{p:?} is outdated (stale relative to the tamad sources). \
+             run `cargo build -p tamad` once, and rerun the e2e — \
+             this test does not rebuild the shim inside the test process."
+        );
+    }
     p
+}
+
+/// The source roots that feed the compiled `tamad` shim — the walk scope
+/// of the N20 stale-binary guard, resolved relative to the workspace root
+/// (`CARGO_MANIFEST_DIR` of the `tama` crate is `crates/tama`, so the
+/// workspace root is `../..`).
+///
+/// Scope choice (measured with `find` at review time): `crates/tamad/src`
+/// (49 `.rs`) + `crates/tama-core/src` (223 `.rs`) + `crates/tama-core/proto`
+/// (1 `.proto`) ≈ 273 tracked files — a hand-rolled `std::fs::read_dir`
+/// walk of that is sub-millisecond, so we take the FULL closure rather
+/// than just the shim: every root below does compile into `tamad` (the
+/// prost output of `tamad.proto` feeds `tama-core`, and `tama-core` feeds
+/// the shim), so a newer mtime anywhere is a genuine "shim may be old"
+/// signal. `crates/tamad/Cargo.toml` is deliberately NOT a trigger (a
+/// manifest-only edit does not change what the shim links against here).
+fn tamad_source_roots(workspace: &Path) -> [PathBuf; 3] {
+    [
+        workspace.join("crates/tamad/src"),
+        workspace.join("crates/tama-core/src"),
+        workspace.join("crates/tama-core/proto"),
+    ]
+}
+
+/// N20: whether `binary` is stale relative to `source_roots`.
+///
+/// STALE iff some tracked source file's `modified()` mtime is STRICTLY
+/// NEWER than the binary's mtime; TIE or older ⇒ FRESH. "Older ⇒ fresh" is
+/// pinned by the tests; the TIE case is pinned here in code (not by a test)
+/// because a std-only API cannot SET an mtime, so two files with an exactly
+/// equal mtime cannot be constructed portably.
+fn binary_is_stale(binary: &Path, source_roots: &[&Path]) -> bool {
+    let Some(binary_mtime) = mtime_of(binary) else {
+        // Nothing to stat ⇒ the caller's `.exists()` check owns the error;
+        // do not double-report here.
+        return false;
+    };
+    source_roots
+        .iter()
+        .any(|root| walk_has_tracked_file_newer_than(root, &binary_mtime))
+}
+
+/// Recursively, under `dir` (hand-rolled `read_dir` recursion — no new
+/// dependency; the trees are small), does any tracked source file (`.rs`
+/// anywhere, or `.proto`) have an mtime STRICTLY after `before`?
+fn walk_has_tracked_file_newer_than(dir: &Path, before: &SystemTime) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false; // a missing root is not "stale" (guard, not schema)
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            if walk_has_tracked_file_newer_than(&path, before) {
+                return true;
+            }
+        } else if matches!(
+            path.extension().and_then(|e| e.to_str()),
+            Some("rs" | "proto")
+        ) {
+            if let Some(mtime) = mtime_of(&path) {
+                if mtime > *before {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// `modified()` of `path`, if both metadata probes succeed.
+fn mtime_of(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path).ok()?.modified().ok()
 }
 
 /// Pre-seed the process-table store with ONE desired, un-flagged
@@ -689,4 +783,113 @@ async fn observed_wire_statuses_stay_within_the_canonical_six() {
         .await
         .expect("cleanup: unload it");
     child.kill().await.expect("kill T6 six tamad");
+}
+
+// ─── Plan-193 N20: `binary_is_stale` unit tests (stale-e2e-regression) ──
+//
+// Only the two REALISABLE orderings are pinned ("source strictly newer than the
+// binary ⇒ stale", "source older than the binary ⇒ fresh"). The TIE case
+// ("equal mtime ⇒ fresh") cannot be constructed with a std-only API — there is
+// no std way to SET a file's mtime, so a robust "construct two files with
+// exactly equal mtimes" is not portable. Tie-freshness is therefore pinned in
+// `binary_is_stale`'s doc + the `mtime > *before` (STRICT-GT) comparison,
+// and the walk's TIE ⇒ fresh behavior is exercised transitively (an equal
+// mtime falls through the strict `>` and is not reported stale).
+mod stale_tests {
+    use super::*;
+
+    const GAP: Duration = Duration::from_millis(25);
+
+    fn pad() {
+        // mtime clocks can carry coarse mtimes; pad between writes so "CREATED
+        // LATER" is robustly STRICTLY-newer, not merely a tie.
+        std::thread::sleep(GAP);
+    }
+
+    /// Lay down a fake source tree (one `crates/<name>/src/*.rs`) under `root`,
+    /// plus a fake `tamad` binary of the SAME fs, so `binary_is_stale` can be
+    /// driven purely by creation ordering.
+    fn stage(root: &Path) -> (PathBuf, PathBuf) {
+        let src_root = root.join("crates/tamad/src");
+        std::fs::create_dir_all(&src_root).unwrap();
+        let source = src_root.join("lib.rs");
+        std::fs::write(&source, "fn main() {}").unwrap();
+        let binary = root.join("tamad");
+        std::fs::write(&binary, "ELF").unwrap();
+        (src_root, binary)
+    }
+
+    fn roots(src_root: &Path) -> Vec<&Path> {
+        vec![src_root]
+    }
+
+    /// An ALREADY-built binary whose sources are all OLDER is FRESH (no re-run
+    /// is needed): creation order is source-then-binary ⇒ mtime(source) < mtime.
+    #[test]
+    fn test_binary_fresh_when_sources_are_older() {
+        let dir = tempfile::tempdir().unwrap();
+        let (src_root, binary) = stage(dir.path());
+        // Re-touch the source so it is UNAMBIGUOUSLY strictly older (defeats a
+        // coarse fs whose mtimes might otherwise tie). The binary is already the
+        // LAST write above, so its mtime ≥ every source write.
+        assert!(
+            !binary_is_stale(&binary, &roots(&src_root)),
+            "a source that is older than the binary must read FRESH"
+        );
+    }
+
+    /// A source STRICTLY NEWER than the binary (the "edited lifecycle.rs after
+    /// the last build" case) is STALE: rewrite the source AFTER the binary so
+    /// its mtime is strictly the newest.
+    #[test]
+    fn test_binary_stale_when_a_source_is_newer() {
+        let dir = tempfile::tempdir().unwrap();
+        let (src_root, binary) = stage(dir.path());
+        let source = src_root.join("lib.rs");
+        pad(); // make sure the pad between write and re-touch is a strict tick
+        std::fs::write(&source, "fn main() { // rebuilt\n}").unwrap();
+        assert!(
+            binary_is_stale(&binary, &roots(&src_root)),
+            "a source strictly newer than the binary must read STALE"
+        );
+    }
+
+    /// A `.proto` under a walked root IS tracked: touching it after the binary
+    /// flips the shard to STALE (the prost output feeds the link).
+    #[test]
+    fn test_binary_stale_when_proto_is_touched_after_build() {
+        let dir = tempfile::tempdir().unwrap();
+        let proto_root = dir.path().join("crates/tama-core/proto");
+        std::fs::create_dir_all(&proto_root).unwrap();
+        let proto = proto_root.join("tamad.proto");
+        std::fs::write(&proto, "syntax = \"proto3\";").unwrap();
+        let binary = dir.path().join("tamad");
+        std::fs::write(&binary, "ELF").unwrap();
+        assert!(
+            !binary_is_stale(&binary, &[proto_root.as_path()]),
+            "post-build proto, pre-rebuild: binary still fresh"
+        );
+        pad();
+        std::fs::write(&proto, "syntax = \"proto3\"; // field added\n").unwrap();
+        assert!(
+            binary_is_stale(&binary, &[proto_root.as_path()]),
+            "a proto written after the binary must read STALE"
+        );
+    }
+
+    /// A file with a NON-tracked extension never triggers staleness, even if
+    /// it is the newest write in the walk (keeps `Cargo.toml`/`.lock`/`.log` from
+    /// bumping the guard).
+    #[test]
+    fn test_binary_ignores_untracked_extensions() {
+        let dir = tempfile::tempdir().unwrap();
+        let (src_root, binary) = stage(dir.path());
+        pad();
+        let unrelated = src_root.join("not-a-source.txt");
+        std::fs::write(&unrelated, "log noise").unwrap();
+        assert!(
+            !binary_is_stale(&binary, &roots(&src_root)),
+            "a .txt newer than the binary must NOT count as staleness"
+        );
+    }
 }

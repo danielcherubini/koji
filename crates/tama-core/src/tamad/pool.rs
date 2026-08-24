@@ -82,14 +82,19 @@ impl TamadHandle {
         self.latest.read().await.as_ref().map(|l| l.stats.clone())
     }
 
-    /// The latest stats snapshot if it is at most `max_age` old.
+    /// The latest stats snapshot, fresh only if STRICTLY younger than
+    /// `max_age` (the freshness rule is strict: age `< max_age`).
+    /// A frame that has reached its full `max_age` (e.g. exactly 5 s
+    /// under the 5 s wire-staleness bound) is NOT fresh — the tamad
+    /// emits at 1 Hz, so a 5 s bound is five ticks of slack, and a
+    /// 5 s-old frame has spent the entire slack.
     ///
     /// For callers that *act* on snapshot data: never act
     /// on stale data — a missing/old snapshot means "skip this tick".
     pub async fn latest_fresh(&self, max_age: Duration) -> Option<SystemStats> {
         let latest = self.latest.read().await;
         let l = latest.as_ref()?;
-        (Instant::now().duration_since(l.at) <= max_age).then(|| l.stats.clone())
+        (Instant::now().duration_since(l.at) < max_age).then(|| l.stats.clone())
     }
 
     /// Whether the stats stream is currently open.
