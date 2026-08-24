@@ -220,6 +220,16 @@ impl TamadService for TamadServiceImpl {
         // answers kill(pid,0)) must NOT be treated as alive.
         if let Some(entry) = self.table.get(&req.model_name).await {
             if entry.status != "failed" && crate::process::is_process_alive(entry.pid) {
+                // Record the (re-issued) desired on the host-disk store;
+                // the re-insert preserves an existing user_flagged /
+                // max_restarts, so this can only ever affirm.
+                if let Err(e) = self.state.store.insert(&req.model_name, &req, true) {
+                    tracing::warn!(
+                        model = %req.model_name,
+                        error = %e,
+                        "failed to persist desired on the host store"
+                    );
+                }
                 return Ok(tonic::Response::new(GrpcLoadModelResponse {
                     endpoint_url: entry.endpoint_url,
                     pid: entry.pid as i32,
@@ -230,7 +240,18 @@ impl TamadService for TamadServiceImpl {
         }
 
         match self.lifecycle.load(&req).await {
-            Ok(resp) => Ok(tonic::Response::new(resp)),
+            Ok(resp) => {
+                // The host records its own desired on the load path
+                // (plan-193 T2): `<data_dir>/state/<model_name>.json`.
+                if let Err(e) = self.state.store.insert(&req.model_name, &req, true) {
+                    tracing::warn!(
+                        model = %req.model_name,
+                        error = %e,
+                        "failed to persist desired on the host store"
+                    );
+                }
+                Ok(tonic::Response::new(resp))
+            }
             Err(e) => {
                 tracing::error!(model = %req.model_name, error = %e, "LoadModel failed");
                 Err(tonic::Status::internal(format!(
@@ -248,7 +269,18 @@ impl TamadService for TamadServiceImpl {
         check_auth(&request, &self.expected_token)?;
         let model_name = request.into_inner().model_name;
         match self.lifecycle.unload(&model_name).await {
-            Ok(()) => Ok(tonic::Response::new(GrpcEmpty {})),
+            Ok(()) => {
+                // The host forgets the key: row gone, store row gone
+                // (plan-193 T2). Unknown keys are a no-op, not an error.
+                if let Err(e) = self.state.store.delete(&model_name) {
+                    tracing::warn!(
+                        model = %model_name,
+                        error = %e,
+                        "failed to delete the host store row"
+                    );
+                }
+                Ok(tonic::Response::new(GrpcEmpty {}))
+            }
             Err(e) if e.to_string().contains("not loaded on this tamad") => {
                 Err(tonic::Status::not_found(format!(
                     "model '{}' is not loaded on this tamad",
@@ -841,6 +873,7 @@ pub(crate) mod test_support {
             public_url: None,
             models_dir: Some(dir.path().join("models")),
             data_dir: Some(dir.path().join("data")),
+            no_replay_desired: false,
         };
         (Arc::new(TamadState::from_cli(&args).unwrap()), dir)
     }
@@ -856,8 +889,11 @@ pub(crate) mod test_support {
     ) {
         let (state, dir) = test_state();
         let table = Arc::new(ProcessTable::default());
-        let lifecycle =
-            crate::lifecycle::TamadLifecycle::new(Arc::clone(&table), Arc::clone(&state));
+        let lifecycle = crate::lifecycle::TamadLifecycle::new(
+            Arc::clone(&table),
+            Arc::clone(&state.store),
+            Arc::clone(&state),
+        );
         let service = TamadServiceImpl::new(
             "secret".to_string(),
             state,
@@ -947,6 +983,9 @@ mod tests {
                 status: "ready".to_string(),
                 started_at: std::time::Instant::now(),
                 spec: tama_core::tamad::LoadModelRequest::default(),
+                restart_count: 0,
+                window_starts: Vec::new(),
+                user_flagged: false,
             })
             .await;
         table
@@ -958,6 +997,9 @@ mod tests {
                 status: "ready".to_string(),
                 started_at: std::time::Instant::now(),
                 spec: tama_core::tamad::LoadModelRequest::default(),
+                restart_count: 0,
+                window_starts: Vec::new(),
+                user_flagged: false,
             })
             .await;
 
@@ -1063,6 +1105,9 @@ mod tests {
                 status: "ready".to_string(),
                 started_at: std::time::Instant::now(),
                 spec: tama_core::tamad::LoadModelRequest::default(), // no docker config
+                restart_count: 0,
+                window_starts: Vec::new(),
+                user_flagged: false,
             })
             .await;
 
@@ -1127,6 +1172,9 @@ mod tests {
                     docker_config_json: docker_json,
                     ..Default::default()
                 },
+                restart_count: 0,
+                window_starts: Vec::new(),
+                user_flagged: false,
             })
             .await;
 
@@ -1194,6 +1242,9 @@ mod tests {
                     docker_config_json: docker_json,
                     ..Default::default()
                 },
+                restart_count: 0,
+                window_starts: Vec::new(),
+                user_flagged: false,
             })
             .await;
 
@@ -1208,6 +1259,9 @@ mod tests {
                 status: "ready".to_string(),
                 started_at: std::time::Instant::now(),
                 spec: tama_core::tamad::LoadModelRequest::default(),
+                restart_count: 0,
+                window_starts: Vec::new(),
+                user_flagged: false,
             })
             .await;
 
@@ -1254,6 +1308,9 @@ mod tests {
                 status: "ready".to_string(),
                 started_at: std::time::Instant::now(),
                 spec: tama_core::tamad::LoadModelRequest::default(),
+                restart_count: 0,
+                window_starts: Vec::new(),
+                user_flagged: false,
             })
             .await;
         table
@@ -1265,6 +1322,9 @@ mod tests {
                 status: "ready".to_string(),
                 started_at: std::time::Instant::now(),
                 spec: tama_core::tamad::LoadModelRequest::default(),
+                restart_count: 0,
+                window_starts: Vec::new(),
+                user_flagged: false,
             })
             .await;
 
@@ -1685,6 +1745,7 @@ mod tests {
             Arc::clone(&table),
             Arc::new(crate::lifecycle::TamadLifecycle::new(
                 Arc::clone(&table),
+                Arc::clone(&state.store),
                 Arc::clone(&state),
             )),
         )
@@ -1901,7 +1962,11 @@ mod tests {
         std::fs::create_dir_all(&version_dir).unwrap();
         std::fs::write(version_dir.join("llama-server"), b"binary").unwrap();
 
-        let lifecycle = crate::lifecycle::TamadLifecycle::new(Arc::clone(&table), state.clone());
+        let lifecycle = crate::lifecycle::TamadLifecycle::new(
+            Arc::clone(&table),
+            state.store.clone(),
+            state.clone(),
+        );
         let resp = lifecycle
             .load(&tama_core::tamad::LoadModelRequest {
                 provider_name: "llama_cpp".into(),
@@ -2015,6 +2080,7 @@ mod tests {
             Arc::clone(&table),
             Arc::new(crate::lifecycle::TamadLifecycle::new(
                 Arc::clone(&table),
+                Arc::clone(&state.store),
                 Arc::clone(&state),
             )),
         )

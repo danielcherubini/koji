@@ -155,6 +155,7 @@ mod tests {
             public_url: None,
             models_dir: Some(dir.path().join("models")),
             data_dir: Some(dir.keep()),
+            no_replay_desired: false,
         };
         Arc::new(TamadState::from_cli(&args).unwrap())
     }

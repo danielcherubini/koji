@@ -23,11 +23,13 @@ pub struct ProcessEntry {
     pub pid: u32,
     /// Health/endpoint URL of the running backend.
     pub endpoint_url: String,
-    /// "starting" | "ready" | "failed" | "unloading".
-    /// "failed" also covers a backend that crashed after launch: the
-    /// tamad's reap task marks it "failed" when the child exits, which is
-    /// the authoritative liveness signal (a zombie pid would otherwise
-    /// still answer `kill(pid, 0)`).
+    /// One of the canonical lifecycle status words (plan-193 T2 pins
+    /// the six in `lifecycle::status`):
+    /// `starting` | `ready` | `restarting` | `failed` | `budget_exhausted`
+    /// | `unloading`.
+    /// `failed` also covers a backend that crashed after launch: the
+    /// tamad's reap task is the authoritative liveness signal (a zombie
+    /// pid would otherwise still answer `kill(pid, 0)`).
     pub status: String,
     /// When this entry was created (process launch requested).
     /// Used by Task 5 (idle/restart accounting).
@@ -38,6 +40,16 @@ pub struct ProcessEntry {
     /// (plan-191 Task 5).
     #[allow(dead_code)]
     pub spec: LoadModelRequest,
+    /// Respawn attempts inside the current [`lifecycle::RESTART_WINDOW_SECS`]
+    /// window — kept in sync with [`window_starts`](Self::window_starts)
+    /// (the derived count, published for readers that must not re-derive).
+    pub restart_count: u32,
+    /// Unix-millis start stamps of the respawns inside the sliding
+    /// 300-second budget window (trim trailing entry to stay alive).
+    pub window_starts: Vec<i64>,
+    /// Mirror of the on-disk store's `user_flagged` for this key —
+    /// the operator marker that stops auto-respawn for this row.
+    pub user_flagged: bool,
 }
 
 /// A PID that is guaranteed dead: anything above the kernel's `pid_max`
@@ -86,16 +98,20 @@ impl ProcessTable {
     /// Mark the entry for `model_name` as "failed" when its process
     /// exited.
     ///
-    /// Called by the lifecycle's reap task after the spawned child exits.
-    /// Guards on the pid so a stale reap task from a previous load (after a
-    /// restart) never corrupts the new entry, and never overwrites an
-    /// "unloading" transition. Missing entries (already unloaded) are a
-    /// no-op.
+    /// Called by the lifecycle's reap task's legacy arm: the row has
+    /// no desired/unflagged store row to respawn from, so the death is
+    /// terminal for this process. The line is only made when the row is
+    /// still "ours" — a canonical status state that has not yet been
+    /// marked (terminal during re-spawn, or a self-line).
+    /// Missing entries (already unloaded) are a no-op.
     pub async fn mark_failed(&self, model_name: &str, pid: u32) {
         let mut inner = self.inner.write().await;
         if let Some(entry) = inner.get_mut(model_name) {
-            if entry.pid == pid && !matches!(entry.status.as_str(), "failed" | "unloading") {
-                entry.status = "failed".to_string();
+            if entry.pid == pid
+                && crate::lifecycle::status::is_accepted(&entry.status)
+                && Self::can_move_downstream(&entry.status)
+            {
+                entry.status = crate::lifecycle::status::FAILED.to_string();
             }
         }
     }
@@ -103,6 +119,87 @@ impl ProcessTable {
     /// All entries (order unspecified).
     pub async fn list(&self) -> Vec<ProcessEntry> {
         self.inner.read().await.values().cloned().collect()
+    }
+
+    /// Record one death for `model_name`: append `now_ms` to the entry's
+    /// restart window, trim the trailing entry down to the live range
+    /// (counted in [`lifecycle::RESTART_WINDOW_SECS`]), and publish the
+    /// survivor count as `restart_count` (the row becomes
+    /// self-checked for the budget gate; the fields stay cleared on
+    /// the trigger outcome — the caller decides which one follows
+    /// persisting the row).
+    ///
+    /// Returns the post-trim count; `None` when the entry is absent
+    /// (already unloaded).
+    pub async fn record_restart_window(&self, model_name: &str, now_ms: i64) -> Option<u32> {
+        let cutoff = now_ms - (crate::lifecycle::RESTART_WINDOW_SECS as i64) * 1000;
+        let mut inner = self.inner.write().await;
+        let entry = inner.get_mut(model_name)?;
+        entry.window_starts.push(now_ms);
+        entry.window_starts.retain(|ts| *ts >= cutoff);
+        entry.restart_count = entry.window_starts.len() as u32;
+        Some(entry.restart_count)
+    }
+
+    /// Return the row to `restarting` — the row is rising, defunct
+    /// — before the re-spawn launch re-injects it (the reaper marks it
+    /// synchronously; `load()` flips it to `starting` the moment the
+    /// replacement actually launches). Guarded so a stale or racing
+    /// reaper never clobbers a row that has already made a terminal
+    /// decision for this death (triggered, triggered, self-clobbered).
+    ///
+    /// Returns `false` when the row is not at the reaper's point in
+    /// such a way at all; the reaper must bail.
+    pub async fn mark_restarting(&self, model_name: &str, pid: u32) -> bool {
+        let mut inner = self.inner.write().await;
+        if let Some(entry) = inner.get_mut(model_name) {
+            if entry.pid == pid
+                && crate::lifecycle::status::is_accepted(&entry.status)
+                && Self::can_move_downstream(&entry.status)
+            {
+                entry.status = crate::lifecycle::status::RESTARTING.to_string();
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Trigger the restart budget for a key: set the row to
+    /// `budget_exhausted`, stamp the operator's mark on the row
+    /// (mirror of the on-disk `user_flagged` — the disk write
+    /// happens over in the store, and the caller does it after this
+    /// succeeds), and stop the automatic re-spawn for this row.
+    ///
+    /// Same guard as [`mark_restarting`](Self::mark_restarting).
+    pub async fn mark_budget_exhausted(&self, model_name: &str, pid: u32) -> bool {
+        let mut inner = self.inner.write().await;
+        if let Some(entry) = inner.get_mut(model_name) {
+            if entry.pid == pid
+                && crate::lifecycle::status::is_accepted(&entry.status)
+                && Self::can_move_downstream(&entry.status)
+            {
+                entry.status = crate::lifecycle::status::BUDGET_EXHAUSTED.to_string();
+                entry.user_flagged = true;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// The shared guard for an intent rewrite: the status is a
+    /// canonical vocabulary word and the transition point is still
+    /// open (not `failed` — already logged; not `restarting` — the
+    /// reaper for this death is in the middle of reaping; not
+    /// `budget_exhausted` — the budget trip is final; not
+    /// `unloading` — an operator's unload has a live self-line).
+    fn can_move_downstream(status: &str) -> bool {
+        !matches!(
+            status,
+            crate::lifecycle::status::FAILED
+                | crate::lifecycle::status::RESTARTING
+                | crate::lifecycle::status::BUDGET_EXHAUSTED
+                | crate::lifecycle::status::UNLOADING
+        )
     }
 
     /// Alive-checked snapshot for the stats tick. `alive` is false when the
@@ -140,6 +237,9 @@ mod tests {
             status: "ready".to_string(),
             started_at: Instant::now(),
             spec: LoadModelRequest::default(),
+            restart_count: 0,
+            window_starts: Vec::new(),
+            user_flagged: false,
         }
     }
 

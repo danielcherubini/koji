@@ -33,6 +33,12 @@ struct CliArgs {
     public_url: Option<String>,
     models_dir: Option<PathBuf>,
     data_dir: Option<PathBuf>,
+    /// `--no-replay-desired`: the boot sweep (the replay of `desired`
+    /// models from the host-disk store, plan-193 T2) is OFF. The
+    /// default (flag absent) = the sweep is ON. The plan's one
+    /// operational switch (an operator deploy-safety valve — there is no
+    /// proxy-side toggle, so "no feature flag" holds).
+    no_replay_desired: bool,
 }
 
 impl CliArgs {
@@ -43,6 +49,7 @@ impl CliArgs {
         let mut public_url: Option<String> = None;
         let mut models_dir: Option<PathBuf> = None;
         let mut data_dir: Option<PathBuf> = None;
+        let mut no_replay_desired = false;
 
         let mut args = env::args().skip(1);
         while let Some(arg) = args.next() {
@@ -65,6 +72,9 @@ impl CliArgs {
                 "--data-dir" => {
                     data_dir = args.next().map(PathBuf::from);
                 }
+                "--no-replay-desired" => {
+                    no_replay_desired = true;
+                }
                 _ => {
                     eprintln!("Unknown argument: {}", arg);
                     std::process::exit(1);
@@ -79,6 +89,7 @@ impl CliArgs {
             public_url,
             models_dir,
             data_dir,
+            no_replay_desired,
         })
     }
 }
@@ -115,6 +126,7 @@ async fn main() -> Result<()> {
     let process_table = Arc::new(ProcessTable::default());
     let lifecycle = Arc::new(crate::lifecycle::TamadLifecycle::new(
         Arc::clone(&process_table),
+        Arc::clone(&state.store),
         Arc::clone(&state),
     ));
 
@@ -127,6 +139,26 @@ async fn main() -> Result<()> {
             warn!(error = %e, "docker startup reconciliation failed (continuing)");
         }
     });
+
+    // Respawn supervisor (plan-193 T2): The dead-PID restraint only
+    // enqueue-respawn jobs; this long-lived task dispatches each job
+    // via `lifecycle.load`. It is started before the gRPC listen, so
+    // that even models that crash in-flight at boot time already have
+    // a decision path in motion.
+    let _respawn_supervisor =
+        crate::lifecycle::TamadLifecycle::start_respawn_supervisor(&lifecycle);
+
+    {
+        // Boot sweep (plan-193 T2 entry): If desired, re-fire all
+        // stored lines as running processes (started up — slow models
+        // must not block the listen). `--no-replay-desired` turns the
+        // sweep off; that path emits exactly one line of log.
+        let lifecycle = Arc::clone(&lifecycle);
+        let replay = !args.no_replay_desired;
+        tokio::spawn(async move {
+            lifecycle.replay_desired(replay).await;
+        });
+    }
 
     let mut server_task = tokio::spawn({
         let addr = args.addr.clone();

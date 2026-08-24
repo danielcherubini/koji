@@ -64,6 +64,28 @@ pub struct StoredProcess {
     pub updated_at_ms: i64,
 }
 
+/// Losslessly rehydrate the 12-prost `LoadModelRequest` from a manifest.
+/// (The StoredProcess fields are the prost wire fields verbatim, so
+/// this is a field-by-field copy.)
+impl From<&StoredProcess> for LoadModelRequest {
+    fn from(sp: &StoredProcess) -> Self {
+        Self {
+            provider_name: sp.provider_name.clone(),
+            model_path: sp.model_path.clone(),
+            gpu_variant: sp.gpu_variant.clone(),
+            params: sp.params.clone(),
+            model_name: sp.model_name.clone(),
+            command: sp.command.clone(),
+            args: sp.args.clone(),
+            env: sp.env.clone(),
+            health_url: sp.health_url.clone(),
+            health_timeout_ms: sp.health_timeout_ms,
+            gpu_device: sp.gpu_device.clone(),
+            docker_config_json: sp.docker_config_json.clone(),
+        }
+    }
+}
+
 /// Filesystem-backed per-model store rooted at `<data_dir>/state/`.
 ///
 /// [`Store::new`] reloads every `<key>.json` manifest at construction
@@ -193,7 +215,44 @@ impl Store {
             max_restarts,
             updated_at_ms: now_unix_ms(),
         };
-        let bytes = serde_json::to_vec_pretty(&stored)
+        self.write_stored(key, &stored)
+    }
+
+    /// Flip the persisted `user_flagged` bit for `key` (atomic
+    /// re-write of the manifest, every other field untouched). This
+    /// exists separately from [`insert`](Self::insert), which
+    /// by design PRESERVES the existing bit — here it's the one
+    /// write path that flips it (the trip point of the T2 restart
+    /// budget).
+    ///
+    /// Errors if no manifest exists for the key (flagging
+    /// nothing is not a silent no-op).
+    pub fn set_user_flagged(&self, key: &str, flagged: bool) -> Result<()> {
+        check_key(key)?;
+        let mut next = {
+            let map = self.entries.read().unwrap_or_else(|p| p.into_inner());
+            match map.get(key) {
+                Some(sp) => sp.clone(),
+                None => {
+                    bail!("no stored process for key '{key}'")
+                }
+            }
+        };
+        next.user_flagged = flagged;
+        next.updated_at_ms = now_unix_ms();
+        self.write_stored(key, &next)
+    }
+
+    /// The sole path for atomic writes of a manifest: serialize
+    /// into a temp file inside the same directory (mode 0600) and
+    /// rename it over `<key>.json` — on a mid-write crash the
+    /// previous-good manifest + a tumbling `<key>.json.<pid>.tmp`
+    /// fragment is all that remains, a broken `<key>.json` never
+    /// does — and after that the in-memory view is updated
+    /// (the map only updates the value after it has been synced
+    /// to disk).
+    fn write_stored(&self, key: &str, stored: &StoredProcess) -> Result<()> {
+        let bytes = serde_json::to_vec_pretty(stored)
             .with_context(|| format!("failed to serialize state '{key}'"))?;
 
         let target = self.path_for_key(key);
@@ -234,7 +293,7 @@ impl Store {
         self.entries
             .write()
             .unwrap_or_else(|p| p.into_inner())
-            .insert(key.to_string(), stored);
+            .insert(key.to_string(), stored.clone());
         Ok(())
     }
 

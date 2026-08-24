@@ -174,6 +174,7 @@ mod tests {
             public_url: None,
             models_dir: None,
             data_dir: Some(data_dir.to_path_buf()),
+            no_replay_desired: false,
         }
     }
 
@@ -232,6 +233,7 @@ mod tests {
             public_url: Some("grpc://gpu1.lan:60060".to_string()),
             models_dir: Some(dir.path().join("weights")),
             data_dir: Some(dir.path().to_path_buf()),
+            no_replay_desired: false,
         };
 
         let s = TamadState::from_cli(&args).unwrap();
