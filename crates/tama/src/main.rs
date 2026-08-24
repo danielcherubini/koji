@@ -178,14 +178,6 @@ async fn run_server() -> Result<()> {
         tracing::error!("Failed to load tamad pool at startup: {}", e);
     }
 
-    // Spawn the desired-vs-actual reconciler (plan-191 Task 5): every
-    // second it converges each online tamad's process table to the
-    // `desired_models` set — loading missing/dead desired models (bounded
-    // restarts) and unloading models that are no longer desired. The
-    // first tick doubles as startup reconciliation.
-    #[cfg(feature = "ssr")]
-    tokio::spawn(tama_web::reconciler::run(proxy_state.clone()));
-
     #[cfg(feature = "ssr")]
     {
         // Create WebState separately from ProxyState.

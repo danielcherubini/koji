@@ -85,11 +85,6 @@ path = "tests/tamad_boot_replay.rs"
 required-features = ["ssr"]
 
 [[test]]
-name = "reconciler_e2e"
-path = "tests/reconciler_e2e.rs"
-required-features = ["ssr"]
-
-[[test]]
 name = "tamad_bench_e2e"
 path = "tests/tamad_bench_e2e.rs"
 required-features = ["ssr"]
