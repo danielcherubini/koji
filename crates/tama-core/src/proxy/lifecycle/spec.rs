@@ -9,9 +9,9 @@
 //! specs.
 //!
 //! The proxy never spawns, kills, or samples the host (ADR-0010, enforced
-//! by the dependency graph since plan-191 Task 10): after the RPC succeeds
-//! it records *desired* state in `desired_models`; live model state is read
-//! from each tamad's wire (plan 193 T4+) so the forward path and
+//! by the dependency graph since plan-191 Task 10): after the RPC succeeds,
+//! the tamad's host-side store owns *desired* state and live model state is
+//! read from each tamad's wire (plan 193 T4+) so the forward path and
 //! management API keep working. GPU isolation env vars are resolved by the *tamad*
 //! from the `gpu_device` field it compares against its own hardware.
 
@@ -254,11 +254,11 @@ pub async fn build_load_spec(
         // params is wire-compat only: command/args/env carry the fully
         // resolved spec and are authoritative.
         params: HashMap::new(),
-        // Canonical identity: the config key (== `backend_name`), NOT the raw
-        // request name. The proxy's `desired_models.model_name` and each
-        // tamad's row `name` are both the config key; the forward path
-        // passes the raw repo_id/api_name while the management path passes
-        // the config key, so both must normalise to the config key here, or
+        // Canonical identity: the config key (== `backend_name`), NOT the
+        // raw request name. The proxy's wire `model_name` and each tamad's
+        // row `name` are both the config key; the forward path passes the
+        // raw repo_id/api_name while the management path passes the
+        // config key, so both must normalise to the config key here, or
         // the roadside rows and the wire rows disagree.
         model_name: backend_name.clone(),
         command: command.to_string_lossy().into_owned(),
@@ -522,8 +522,9 @@ pub fn vram_load_ok(
 }
 
 /// The shared tamad-load tail: resolve the provider's live tamad, run the
-/// capacity/VRAM guards, issue `LoadModel`, and mark the model *desired* in
-/// the DB. The tamad's wire row (not a proxy mirror) is the lifecycle truth.
+/// capacity/VRAM guards, and issue `LoadModel`. The tamad's host-side store
+/// owns *desired* state; the tamad's wire row (not a proxy mirror) is the
+/// lifecycle truth.
 ///
 /// `evict_lru` enables the LRU capacity guard (LLM loads only — auxiliary
 /// backends like TTS/compaction are excluded from the capacity count and
@@ -592,13 +593,6 @@ pub async fn load_spec_on_tamad(
         Err(e) => return Err(e),
     };
 
-    // Desired state in the central DB (single-writer rule: only the proxy).
-    // Keyed by the canonical config key so the `desired_models` row and the
-    // tamad row (named the same config key) stay in lock-step.
-    crate::db::queries::set_desired(&state.db_pool, &spec.backend_name, &tamad_id)
-        .await
-        .with_context(|| format!("marking model \"{}\" as desired", spec.backend_name))?;
-
     // plan-193 T5c: no staging mirror and no in-memory load counter — the
     // tamad's live wire row (`ready`) is the source of truth for "loaded".
     tracing::info!(
@@ -663,8 +657,7 @@ pub async fn load_compaction_on_tamad(state: &ProxyState) -> Result<()> {
     Ok(())
 }
 
-/// Resolve a model name to its canonical config key (the mirror /
-/// `active_models` / `desired_models` join key). Falls back to the input when
+/// Resolve a model name to its canonical config key. Falls back to the
 /// the model isn't in the registry (e.g. an already-unloaded model),
 /// preserving the previous pass-through behaviour for the unload path.
 async fn canonical_model_key(state: &ProxyState, model_name: &str) -> String {
@@ -678,7 +671,7 @@ async fn canonical_model_key(state: &ProxyState, model_name: &str) -> String {
         .unwrap_or_else(|| model_name.to_string())
 }
 
-/// Unload a model on its provider's tamad and clear its desired state.
+/// Unload a model on its provider's tamad.
 ///
 /// Returns `true` when the tamad actually had the model loaded, `false`
 /// when the model was unknown to the tamad (idempotent unload).
@@ -699,14 +692,11 @@ pub async fn unload_model_on_tamad(state: &ProxyState, model_name: &str) -> Resu
             )
         })?;
 
-    // Normalise to the config key so the RPC target and the desired-state
-    // row line up with the load path and the host's rows.
+    // Normalise to the config key so the RPC target lines up with the load
+    // path and the host's rows.
     let key = canonical_model_key(state, model_name).await;
     match handle.unload_model(&key).await {
-        Ok(()) => {
-            let _ = crate::db::queries::clear_desired(&state.db_pool, &key).await;
-            Ok(true)
-        }
+        Ok(()) => Ok(true),
         Err(e) if is_not_loaded_err(&e) => Ok(false),
         Err(e) => Err(e).with_context(|| {
             format!(

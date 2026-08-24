@@ -161,9 +161,10 @@ async fn test_build_load_spec_fields() {
 
 /// The `LoadModelRequest.model_name` must be the canonical config key, not the
 /// raw request name: the host addresses processes by the config key, and it
-/// is what the proxy records in `desired_models`, so a load issued with a
-/// raw repo_id/api_name would answer to a different name and never settle.
-/// Normalising to the config key keeps load and unload joined on one name.
+/// is what lands on the wire (`ProcessInfo.model_name`) and in the host's
+/// store, so a load issued with a raw repo_id/api_name would answer to a
+/// different name and never settle. Normalising to the config key keeps load
+/// and unload joined on one name.
 #[tokio::test]
 async fn test_build_load_spec_normalises_model_name_to_config_key() {
     let guard = with_schema().await;
@@ -736,9 +737,10 @@ async fn setup_stub_load(
 
 /// The load-window source of truth now comes from the
 /// host side (the proxy-side state cache died with plan 193 T5);
-/// the proxy itself only records the load outcome (desired mark).
+/// the desired mark lives in the tamad's host-side store, so the
+/// proxy-side test only asserts the load RPC settled.
 #[tokio::test]
-async fn test_load_spec_on_tamad_load_succeeds_and_marks_desired() {
+async fn test_load_spec_on_tamad_load_succeeds() {
     let (guard, state) = setup_stub_load(false, Some(Duration::from_millis(1_000))).await;
     let spec = Arc::new(test_load_spec());
     let load = tokio::spawn({
@@ -754,9 +756,9 @@ async fn test_load_spec_on_tamad_load_succeeds_and_marks_desired() {
     let _ = guard.finish().await;
 }
 
-/// A failed `LoadModel` RPC propagates its error to the caller and the
-/// model must NOT be marked desired. The proxy-side failed record is gone
-/// (plan-193 T5c) - the terminal failure lives on the tamad side.
+/// A failed `LoadModel` RPC propagates its error to the caller and no live
+/// desired row may surface for the model. The proxy-side failed record is
+/// gone (plan-193 T5c) — the terminal failure lives on the tamad side.
 #[tokio::test]
 async fn test_load_spec_on_tamad_failed_rpc_propagates_and_not_desired() {
     let (guard, state) = setup_stub_load(true, None).await;
@@ -769,11 +771,12 @@ async fn test_load_spec_on_tamad_failed_rpc_propagates_and_not_desired() {
         "the original RPC error must still be propagated, got: {err}"
     );
     assert!(
-        crate::db::queries::get_desired(state.db_pool().as_ref(), "test-model")
+        crate::proxy::live_rows(state.tamad_pool().as_ref())
             .await
-            .unwrap()
+            .row("test-model")
+            .filter(|r| r.desired)
             .is_none(),
-        "a failed load must not be marked desired"
+        "a failed load must not surface a live desired row"
     );
     let _ = guard.finish().await;
 }

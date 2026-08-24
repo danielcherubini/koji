@@ -259,51 +259,6 @@ async fn test_log_pull() {
 }
 
 #[tokio::test]
-async fn test_active_model_operations() {
-    let (guard, manager) = pool_manager().await;
-
-    // Initially empty
-    let active = manager.get_active().await.unwrap();
-    assert!(active.is_empty());
-
-    // Insert an active record
-    manager
-        .insert_active(
-            "server1",
-            "model.gguf",
-            "llama.cpp",
-            1234,
-            8080,
-            "http://127.0.0.1:8080",
-        )
-        .await
-        .unwrap();
-
-    // Verify it appears
-    let active = manager.get_active().await.unwrap();
-    assert_eq!(active.len(), 1);
-    assert_eq!(active[0].server_name, "server1");
-    assert_eq!(active[0].model_name, "model.gguf");
-    assert_eq!(active[0].backend, "llama.cpp");
-    assert_eq!(active[0].pid, 1234);
-    assert_eq!(active[0].port, 8080);
-
-    // Rename the active record
-    manager
-        .rename_active("server1", "server1-renamed")
-        .await
-        .unwrap();
-    let active = manager.get_active().await.unwrap();
-    assert_eq!(active[0].server_name, "server1-renamed");
-
-    // Remove the active record
-    manager.remove_active("server1-renamed").await.unwrap();
-    let active = manager.get_active().await.unwrap();
-    assert!(active.is_empty());
-    guard.finish().await;
-}
-
-#[tokio::test]
 async fn test_pull_queue_operations() {
     let (guard, manager) = pool_manager().await;
 

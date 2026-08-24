@@ -72,7 +72,7 @@ fn row_from(p: &ProcessInfo, last_seen_ms: i64) -> ModelRow {
 ///
 /// `key` is the canonical config key (== `ProcessInfo.model_name` wire
 /// string) — the join key for the management API, routing, and the
-/// `desired_models`/`active_models` DB views. `status` / `alive` mirror the
+/// dashboard readers. `status` / `alive` mirror the
 /// wire; `endpoint` is the routing target (wire field 5); `pid` is the wire
 /// process id (wire field 3, the authoritative source for `backend_pid`);
 /// `desired` and the restart counters (wire fields 7-9, T3) complete the

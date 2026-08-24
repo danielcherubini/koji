@@ -17,7 +17,6 @@ impl ProxyState {
     ///   - If save fails: rollback — remove `new_name`, re-insert at `old_name`, return error
     /// - Writes nothing else: pure in-cache bookkeeping (no registry ops).
     ///   - If `old_name` exists in the map, removes and re-inserts at `new_name`
-    /// - DB update (best-effort): calls `rename_active_model(conn, old_name, new_name)` if db is available
     pub async fn rename_model(&self, old_name: &str, new_name: &str) -> Result<()> {
         // Validate inputs
         if new_name.is_empty() {
@@ -85,9 +84,6 @@ impl ProxyState {
                 map.insert(new_name.to_string(), stats);
             }
         });
-
-        // Best-effort DB update
-        let _ = self.model_mgr().rename_active(old_name, new_name).await;
 
         Ok(())
     }

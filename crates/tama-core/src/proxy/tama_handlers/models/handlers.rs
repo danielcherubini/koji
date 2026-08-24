@@ -128,8 +128,8 @@ pub async fn handle_tama_get_model(
 /// Handle loading a model (Tama management API).
 ///
 /// plan-191 Task 5: the load goes through the model's provider tamad
-/// (`LoadModel` RPC); the proxy records desired state (no local process
-/// state; plan 193 T5).
+/// (`LoadModel` RPC); *desired* state lives in the tamad's host-side store
+/// (no proxy-side DB copy anymore; plan-193 T7).
 pub async fn handle_tama_load_model(
     state: State<Arc<ProxyState>>,
     Path(model_id): Path<String>,
@@ -160,24 +160,25 @@ pub async fn handle_tama_load_model(
 
 /// Handle cancelling a loading model (Tama management API).
 ///
-/// plan-191 Task 5: operates on **desired state**, not on a local process.
-/// Cancelling clears the desired row and issues `UnloadModel` to the
-/// provider's tamad. If the load RPC is still in flight, the tamad's
-/// host-side store handles the post-load unload (loads are short).
-/// (loads are short; a cancel is therefore best-effort for in-flight
-/// loads).
+/// plan-191 Task 5 / plan-193 T7: operates on the model's ***desired***
+/// wire state (the tamad row's `desired` flag), not on a local process.
+/// Cancelling issues `UnloadModel` to the provider's tamad. If the load
+/// RPC is still in flight, the tamad's host-side store handles the
+/// post-load unload (loads are short, so a cancel is best-effort).
 pub async fn handle_tama_cancel_load(
     state: State<Arc<ProxyState>>,
     Path(model_id): Path<String>,
 ) -> Response {
     let model_id = resolve_config_key(&state, &model_id).await;
 
-    // Is the model desired, mirrored, or running on its tamad?
-    let pool = state.db_pool();
-    let desired = crate::db::queries::get_desired(&pool, &model_id)
+    // Is the model desired (its live wire row reports `desired`),
+    // mirrored, or running on its tamad? plan-193 T7: the desired fact
+    // comes off the wire row — the last Postgres read of model desire
+    // is gone.
+    let desired = crate::proxy::live_rows(state.tamad_pool().as_ref())
         .await
-        .ok()
-        .flatten();
+        .row(&model_id)
+        .filter(|r| r.desired);
     let mirrored = state
         .get_available_backend_for_model(&model_id)
         .await
@@ -208,8 +209,8 @@ pub async fn handle_tama_cancel_load(
     }
 
     // Best-effort unload on the tamad (may be not-loaded yet). Lifecycle
-    // truth is the live tamad rows; there is no `desired_models` row to
-    // clear here.
+    // truth is the live tamad rows — the tamad's host-side store clears
+    // the model's desired flag onUnload().
     if let Err(e) = crate::proxy::lifecycle::spec::unload_model_on_tamad(&state, &model_id).await {
         warn!("cancel: unload RPC for '{}' failed: {}", model_id, e);
     }
@@ -227,13 +228,12 @@ pub async fn handle_tama_cancel_load(
 
 /// Handle unloading a model (Tama management API).
 ///
-/// plan-191 Task 5: clearing the model's **desired** state is the primary
-/// action — once it is no longer desired, the tamad's host-side store
-/// drops the model (this is the safety net if the RPC below can't reach
-/// the tamad). The `UnloadModel` RPC is issued best-effort for immediate
-/// convergence; a failure to reach the tamad (offline, no provider) is
-/// logged, not an error: the host-side store keeps the truth.
-/// Unloading a model that is not loaded on the tamad is a no-op
+/// plan-191 Task 5 / plan-193 T7: issuing `UnloadModel` to the provider's
+/// tamad makes the host-side store clear the model's **desired** flag and
+/// drop the process (this is the safety net if the RPC below can't reach
+/// the tamad). A failure to reach the tamad (offline, no provider) is
+/// logged, not an error: the tamad's host-side store keeps the desired
+/// truth. Unloading a model that is not loaded on the tamad is a no-op
 /// (idempotent).
 pub async fn handle_tama_unload_model(
     state: State<Arc<ProxyState>>,
@@ -258,9 +258,9 @@ pub async fn handle_tama_unload_model(
         }
     }
 
-    // Best-effort immediate physical unload on the tamad. Lifecycle truth
-    // is the live tamad rows; there is no `desired_models` row to clear
-    // here.
+    // Best-effort immediate physical unload on the tamad. Lifecycle
+    // truth is the live tamad rows — the tamad's host-side store clears
+    // the model's desired flag on the UnloadModel RPC.
     if let Err(e) = crate::proxy::lifecycle::spec::unload_model_on_tamad(&state, &model_id).await {
         warn!("unload: RPC for '{}' failed: {}", model_id, e);
     }
