@@ -80,6 +80,9 @@ pub async fn handle_metrics(state: State<Arc<ProxyState>>) -> Response {
         })
         .collect();
     let active_count = backends.len();
+    // Wire-name fork (since the plan-193 flip): `tama:models_loaded` =
+    // ready AND non-empty-endpoint AND non-TTS rows; `/status` + `/system`
+    // JSON `models_loaded` = `Rows::ready_count()` (all ready, incl. TTS).
 
     // Fetch metrics from each backend concurrently
     let mut backend_metrics = Vec::new();

@@ -85,10 +85,14 @@ pub async fn ensure_model_loaded(
     let resolved_model = state.resolve_alias(model_name).await;
 
     // plan-193 T5c: a model whose restart budget is exhausted stays on
-    // the wire as a `budget_exhausted` row (the tamad holds that state
-    // with the process dead, re-warming in ~60s). It cannot respawn:
-    // surface 503 + retry-after via the typed BudgetExhausted mark
-    // instead of looping a load.
+    // the wire as a `budget_exhausted` row, and that state is
+    // TERMINAL until the operator re-arms the key: an `unload` of the
+    // burned key (clean — the host store row and its flag go with
+    // it), then a manual `load`. Nothing auto-clears the flag
+    // in-place. It cannot respawn: surface 503 + retry-after via
+    // the typed BudgetExhausted mark instead of looping a load.
+    // (`retry-after: 60` is the proxy pacing the caller — not a
+    // host-side auto-rearm timer.)
     {
         let rows = crate::proxy::live_rows(state.tamad_pool().as_ref()).await;
         if rows

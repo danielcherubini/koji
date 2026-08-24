@@ -45,10 +45,12 @@ fn eligible_status(status: &str) -> bool {
 /// process-alive AND in an eligible lifecycle status (frame freshness is
 /// enforced upstream by `live`'s `latest_deadline`) — plus the plan-193 T5c
 /// extension: a `budget_exhausted` process contributes a row INDEPENDENTLY
-/// of process liveness. The tamad keeps reporting the budget state (the
-/// process is dead; its restart budget is spent; it re-warms in ~60s) and
-/// the proxy reads that row for the budget-exhausted 503. Every other
-/// non-live status (`failed`, `unloading`, ...) is not a row.
+/// of process liveness. That state is TERMINAL until the operator
+/// re-arms the key (an `unload` of the burned key, then a manual
+/// `load` — nothing auto-clears the flag in-place); the tamad keeps
+/// reporting the budget state on the wire, and the proxy reads that
+/// row for the budget-exhausted 503. Every other non-live status
+/// (`failed`, `unloading`, ...) is not a row.
 fn is_eligible(p: &ProcessInfo) -> bool {
     (p.alive && eligible_status(&p.status)) || p.status == "budget_exhausted"
 }
@@ -312,10 +314,14 @@ mod tests {
         assert_eq!(rows.ready_count(), 0);
     }
 
-    /// plan-193 T5c: a `budget_exhausted` process is surfaced as a row even
-    /// when the process itself is dead — the tamad keeps reporting the budget
-    /// state and the proxy reads it for the 503 path. Because the budgeted
-    /// process is dead, it is NOT online and NOT counted ready.
+    /// plan-193 T5c: a `budget_exhausted` process is surfaced as a row —
+    /// the proxy reads it for the budget-exhausted 503 path. Whether it
+    /// is `online` mirrors the wire's own `alive` bit: here the budgeted
+    /// process is `alive = true`, so it is online (the 503 scoreboard
+    /// answers 503); with `alive = false` (the test below) a present row
+    /// goes dead — `online` reads false, but the scoreboard still
+    /// answers 503. Either way a `budget_exhausted` row is never
+    /// counted ready.
     #[tokio::test]
     async fn test_non_eligible_statuses_excluded() {
         let stats = stats_with(vec![
@@ -328,9 +334,10 @@ mod tests {
         assert_eq!(rows.ready_count(), 1);
         assert!(rows.row("m-ready").is_some());
         assert!(!rows.online("m-fail"));
-        // budget_exhausted IS a row (T5c) but a dead one: not online...
+        // budget_exhausted IS a row (T5c), and this fixture's
+        // process is alive — so it IS online (the 503 scoreboard...
         assert!(rows.online("m-budget"));
-        // ...not counted ready.
+        // ...answers 503) and never counted ready.
         assert!(!rows.online("m-unload"));
         assert_eq!(rows.all().len(), 2);
     }

@@ -112,8 +112,12 @@ impl ProxyState {
     /// Process status on the TAMAD wire for `name` (plan 193 T5c:
     /// process-state queries read from the live rows, not a mirror).
     ///
-    /// `Some(endpoint)` when there is a matching live row for the
-    /// process; `None` otherwise.
+    /// `Some(endpoint)` IFF that key has a live, addressable wire row
+    /// for the process — a row exists AND its `alive` bit is set
+    /// (`starting` / `restarting` rows are included; this is not
+    /// `ready`-only) — returning the row's endpoint URL. `None`
+    /// otherwise: no row for the key at all, or a row whose `alive`
+    /// is false (a dead `budget_exhausted` row).
     pub async fn process_status(&self, name: &str) -> Option<String> {
         crate::proxy::live_rows(self.tamad_pool().as_ref())
             .await

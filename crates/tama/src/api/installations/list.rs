@@ -350,6 +350,8 @@ pub async fn list_installations(
     // Check if compaction backend is running (in model registry as "compaction")
     // The compaction process is a TAMAD wire row (plan 193 T5c):
     // running == the row reports alive.
+    // `running` is true for the whole span of a live row — `starting` /
+    // `restarting` included, not only once it is `ready`.
     let running = state.process_status("compaction").await;
     let (compaction_running, compaction_url) = (running.is_some(), running);
 

@@ -1,9 +1,12 @@
 -- plan-193 T7 (cycle 2 of the shadow drop): remove `active_models`.
 --
--- By the time this migration runs, migration 000000000000004 has already
--- run the FIRST PROBE (both shadow tables empty, else the deploy aborts)
--- and the `desired_models` shadow is gone. This second cycle drops the
--- *active-models* shadow: the tally the proxy kept of its own model roster.
+-- The probe is this migration's own: the cycle 1 migration
+-- (`00000000000004_drop_desired_models.sql`) probes ONLY `desired_models` — on a
+-- non-empty count it RAISES NOTICE and SKIPs that drop,
+-- deferring it to the next cycle; it never aborts the deploy,
+-- and it never looks at `active_models`. This second cycle
+-- drops the *active-models* shadow: the tally the proxy kept
+-- of its own model roster.
 -- It is the GATED half — the plan's exceptions admit the probe can go
 -- non-zero on a real deployment; in that case the drop is deferred to the
 -- next cycle (log + skip, not drift — the desired_models drop still

@@ -140,7 +140,7 @@ message ProcessInfo {
   int32 pid = 3;
   bool alive = 4;
   string endpoint_url = 5;
-  string status = 6;          // "starting" | "ready" | "failed" | "unloading"
+  string status = 6;          // "starting" | "ready" | "restarting" | "failed" | "budget_exhausted" | "unloading"
   bool   desired = 7;
   uint32 restart_count = 8;
   uint32 max_restarts = 9;

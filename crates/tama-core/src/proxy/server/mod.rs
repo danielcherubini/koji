@@ -111,8 +111,10 @@ impl ProxyServer {
 
         // Note: dead-process cleanup and Docker container reconciliation were
         // removed in plan-191 Task 10 — the proxy no longer sees local backends
-        // (ADR-0010). The proxy never spawns backends: each tamad's process table
-        // the desired set, and the idle checker cleans up Failed mirror entries.
+        // (ADR-0010). The proxy never spawns backends: each tamad's process
+        // table is the desired set, and the idle checker (row-sourced now —
+        // `check_idle_timeouts`) only unloads READY models whose `last_accessed`
+        // entry sits idle past `idle_timeout_secs`, and only with `auto_unload` on.
         let idle_timeout_handle = Self::start_idle_timeout_checker(state.clone());
 
         // Spawn background task to refresh system metrics every 2s.
