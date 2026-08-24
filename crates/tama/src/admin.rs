@@ -378,4 +378,68 @@ mod tests {
         assert!(key_is_model_key("qwen3"));
         assert!(key_is_model_key("tts_kokoro"));
     }
+
+    /// Admin path (plan-193 T5c/T6): `admin unload` on a `budget_exhausted`
+    /// row must succeed — the row is live (the 503 reads it) so the
+    /// not-found check at exit `2` does not fire, and `unload_model` — now
+    /// admitted for `budget_exhausted` — returns `Ok`, which this verb maps
+    /// to exit `0` (the pre-fix gate made it an `other` error → exit `1`).
+    ///
+    /// Driven at the `cmd_unload` level (the real exit-code contract):
+    /// an in-memory `ProxyState` is enough, since `cmd_unload` itself does
+    /// not bootstrap Postgres (only `bootstrap_proxy_state` does).
+    #[tokio::test]
+    async fn test_cmd_unload_budget_exhausted_exit_0() {
+        let config = Config::default();
+        let state = Arc::new(ProxyState::new(
+            config,
+            None,
+            tama_test_support::test_dummy_pool(),
+        ));
+
+        // Seed a live `budget_exhausted` row for the key (the host stub
+        // frame the T5c proxy test drives off: same shape, same key).
+        let key = "model.gguf";
+        let proc = tama_core::tamad::ProcessInfo {
+            model_name: key.to_string(),
+            provider_name: "llama-cpp".to_string(),
+            pid: 1,
+            alive: true,
+            endpoint_url: "http://127.0.0.1:8080".to_string(),
+            status: "budget_exhausted".to_string(),
+            desired: true,
+            restart_count: 0,
+            max_restarts: 3,
+        };
+        let stats = tama_core::tamad::pool::test_support::stats_full(1.5, vec![], vec![proc]);
+        state
+            .tamad_pool()
+            .insert_raw_handle(
+                key,
+                Arc::new(
+                    tama_core::tamad::pool::test_support::handle_with_latest(
+                        std::time::Instant::now(),
+                        stats,
+                    )
+                    .await,
+                ),
+            )
+            .await;
+
+        // The row must be live so cmd_unload's not-found check passes
+        // (budget_exhausted is deliberately an eligible wire row).
+        assert!(
+            live_rows(state.tamad_pool().as_ref())
+                .await
+                .row(key)
+                .is_some(),
+            "precondition: the budget_exhausted row is live"
+        );
+
+        let result = cmd_unload(&state, key).await;
+        assert!(
+            result.is_ok(),
+            "admin unload of a budget_exhausted row must map to exit 0 (Ok), got: {result:?}"
+        );
+    }
 }

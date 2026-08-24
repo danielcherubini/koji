@@ -47,9 +47,12 @@ pub mod status {
     /// The process failed: the startup failed, became unhealthy in time,
     /// or died without a desired/flagged store row to respawn from.
     pub const FAILED: &str = "failed";
-    /// The window of restart budget was blown: auto-respawn stops, and the
-    /// store's `user_flagged` is set alongside. A manual load is,
-    /// on success, resets the counter and clears the flag.
+    /// The window of restart budget was blown: auto-respawn stops, and
+    /// the store's `user_flagged` is set alongside. Nothing anywhere
+    /// auto-clears the flag — the clean recovery is an operator
+    /// `unload` of the model (the `UnloadModel` wire kills the host
+    /// store row, and the flag with it) followed by a manual `load`
+    /// (a fresh, un-flagged row with a fresh counter).
     pub const BUDGET_EXHAUSTED: &str = "budget_exhausted";
     /// The process is being brought down by an operator. The row comes
     /// down on unload completion; the words serve so that no

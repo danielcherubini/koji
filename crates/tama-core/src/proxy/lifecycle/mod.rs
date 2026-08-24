@@ -219,7 +219,21 @@ impl ProxyState {
             anyhow::bail!("Backend '{}' not loaded", backend_name);
         }
         let row = row.unwrap();
-        if row.status != "ready" && row.status != "starting" && row.status != "restarting" {
+        // plan-193 T5c/T6 review: admit `budget_exhausted` alongside the
+        // loadable states. Since T5c a `budget_exhausted` model holds a live
+        // row by design (it is what the 503 in `ensure_model_loaded`
+        // reads), so the pre-fix three-way gate made it unloadable
+        // through **no** proxy path (including `tama admin`): `admin load`
+        // -> exit 13, `admin unload` -> the error below -> exit 1, forever.
+        // Unloading it is cleanup, not re-arm, so let it proceed. The rest
+        // of the function is unchanged (wire UnloadModel to the owning
+        // tamad; T2 then kills the store row; local state cleared).
+        // `budget_exhausted` is the ONLY addition: every other non-loadable
+        // status (`failed`, `unloading`, ...) stays refused.
+        if !matches!(
+            row.status.as_str(),
+            "ready" | "starting" | "restarting" | "budget_exhausted"
+        ) {
             return Err(anyhow!(
                 "Backend '{}' is not ready (state: {})",
                 backend_name,

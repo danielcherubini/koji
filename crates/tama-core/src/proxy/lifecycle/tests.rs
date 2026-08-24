@@ -328,6 +328,83 @@ async fn test_unload_model_non_ready_state() {
     assert!(result.is_err(), "Unload should fail for non-ready state");
 }
 
+// ─── plan-193 T5c/T6 budget-exhausted unload ──────────────────────────────
+
+/// Unloading a `budget_exhausted` row is CLEANUP, not re-arm.
+///
+/// Since T5c a `budget_exhausted` model deliberately holds a live row (it is
+/// what the 503 in `ensure_model_loaded` reads). The pre-fix status gate
+/// refused every row whose status was not `ready | starting | restarting`,
+/// so a budget-EB model was unloadable via **no** proxy path through this
+/// gate — including `tama admin unload` — and nothing ever re-warmed:
+/// `admin load` to exit 13 (503), `admin unload` to error exit 1, forever.
+/// Recovery therefore *must* be allowed to proceed for a `budget_exhausted`
+/// row: `unload_model` returns `Ok` so the admin exit-code contract maps it
+/// to `0` (not-found to 2, Ok to 0), and the host-side flush (T2
+/// `store.delete`) then drops the row.
+#[tokio::test]
+async fn test_unload_model_budget_exhausted_is_cleanup_not_rearm() {
+    let config = Config::default();
+    let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
+
+    // The tamad holds a live `budget_exhausted` row — the precondition:
+    // this is the very row `ensure_model_loaded` reads for the 503.
+    seed_live_row(&state, "model.gguf", "budget_exhausted").await;
+    assert!(
+        crate::proxy::live_rows(state.tamad_pool().as_ref())
+            .await
+            .row("model.gguf")
+            .is_some(),
+        "precondition: a budget_exhausted row is live (the 503 reads it)"
+    );
+
+    // The fix: unloading it is cleanup, so it must be Ok, not the gate err.
+    let result = state.unload_model("model.gguf").await;
+    assert!(
+        result.is_ok(),
+        "unloading a budget_exhausted row must be allowed (cleanup, not re-arm): {result:?}"
+    );
+
+    // Once the host-side flush lands (T2: the UnloadModel via kills the
+    // store row, so the wire no longer reports the model), the proxy's
+    // live view reflects it: no row. We model the host re-emitting a
+    // frame that no longer carries the key. Since admin e2e is out of
+    // scope, we use the same seed pattern as the T5c tests.
+    let pool = state.tamad_pool();
+    let frame = crate::tamad::pool::test_support::stats_full(1.5, vec![], vec![]);
+    pool.insert_raw_handle(
+        "model.gguf",
+        Arc::new(
+            crate::tamad::pool::test_support::handle_with_latest(std::time::Instant::now(), frame)
+                .await,
+        ),
+    )
+    .await;
+    assert!(
+        crate::proxy::live_rows(pool.as_ref())
+            .await
+            .row("model.gguf")
+            .is_none(),
+        "after the host flushes the row it must be gone from the live view"
+    );
+}
+
+/// Regression guard: admitting `budget_exhausted` must not widen
+/// the gate beyond that. A row in a non-terminatable status (here
+/// `unloading`) stays refused. Only `ready | starting | restarting`
+/// plus `budget_exhausted` are admissible; everything else errors.
+#[tokio::test]
+async fn test_unload_model_still_refuses_unloading_row() {
+    let config = Config::default();
+    let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
+    seed_live_row(&state, "away-server", "unloading").await;
+    let result = state.unload_model("away-server").await;
+    assert!(
+        result.is_err(),
+        "the gate must stay narrow: an `unloading` row is still refused"
+    );
+}
+
 // ─── Slim idle-timeout tests (plan-191 Task 10) ────────────────────────
 
 /// An idle Ready model is unloaded while a fresh one is left alone and a
