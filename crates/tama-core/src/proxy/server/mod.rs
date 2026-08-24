@@ -111,7 +111,7 @@ impl ProxyServer {
 
         // Note: dead-process cleanup and Docker container reconciliation were
         // removed in plan-191 Task 10 — the proxy no longer sees local backends
-        // (ADR-0010). The reconciler converges each tamad's process table to
+        // (ADR-0010). The proxy never spawns backends: each tamad's process table
         // the desired set, and the idle checker cleans up Failed mirror entries.
         let idle_timeout_handle = Self::start_idle_timeout_checker(state.clone());
 

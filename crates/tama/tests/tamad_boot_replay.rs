@@ -379,9 +379,9 @@ async fn loaded_model_reports_wire_field_extensions() {
 /// wire, `desired=true`, `restart_count=0`), and stopping the host empties
 /// the row set (no host = no models) once the last frame goes stale.
 ///
-/// This is the e2e counterpart of the in-module `rows.rs` unit tests — the
-/// DISCOVERY of the shared `registry.models` mirror is now asserted against
-/// the tamad's actual 1 Hz stream, not a synthetic handle.
+/// This is the e2e counterpart of the in-module `rows.rs` unit tests:
+/// row discovery now runs against the tamad's actual 1 Hz stream
+/// (with no proxy-side state in between, plan 193 T5c), not a synthetic handle.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn proxy_reads_live_rows_from_wire_then_empty_when_host_missing() {
     let dir = tempfile::tempdir().expect("T4 tempdir");

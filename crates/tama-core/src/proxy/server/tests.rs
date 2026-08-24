@@ -186,7 +186,6 @@ async fn test_metrics_no_backends_returns_tama_only() {
 /// Verify that /metrics merges backend metrics correctly with {server} labels.
 #[tokio::test]
 async fn test_metrics_merges_backend_metrics() {
-    use std::sync::atomic::AtomicU32;
     use wiremock::matchers::method;
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -211,24 +210,7 @@ async fn test_metrics_merges_backend_metrics() {
         crate::db::pool::test_dummy_pool(),
     ));
 
-    {
-        let mut models = state.registry.models.write().await;
-        models.insert(
-            "test-model".to_string(),
-            super::super::types::BackendState::Ready {
-                model_name: "test-model".to_string(),
-                backend: "llama_cpp".to_string(),
-                backend_pid: 99999,
-                backend_url: backend_url.clone(),
-                load_time: std::time::SystemTime::now(),
-                last_accessed: std::time::Instant::now(),
-                consecutive_failures: std::sync::Arc::new(AtomicU32::new(0)),
-                failure_timestamp: None,
-                is_docker: false,
-                restart_count: 0,
-            },
-        );
-    }
+    // (ready row seeded below; the mirror insert is gone - plan-193 T5c)
     seed_live_row(&state, "test-model", backend_url.as_str()).await;
 
     // Start the proxy server

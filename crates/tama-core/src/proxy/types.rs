@@ -1,205 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use std::time::Instant;
 
 use super::pull_queue::PullQueueService;
 use super::state::repo_pull::{RepoPullError, RepoPullStart, RepoPullStatusDto};
 use super::state::{MetricsState, PullState, RegistryState};
-
-/// State for a model backend lifecycle.
-#[derive(Debug, Clone)]
-pub enum BackendState {
-    /// Backend is starting up (placeholder during initialization)
-    Starting {
-        model_name: String,
-        backend: String,
-        backend_url: String,
-        backend_pid: u32,
-        last_accessed: Instant,
-        start_time: Instant,
-        consecutive_failures: Arc<std::sync::atomic::AtomicU32>,
-        failure_timestamp: Option<std::time::SystemTime>,
-        is_docker: bool,
-    },
-    /// Backend is ready and accepting traffic
-    Ready {
-        model_name: String,
-        backend: String,
-        backend_pid: u32,
-        backend_url: String,
-        load_time: std::time::SystemTime,
-        last_accessed: Instant,
-        consecutive_failures: Arc<std::sync::atomic::AtomicU32>,
-        failure_timestamp: Option<std::time::SystemTime>,
-        restart_count: u32,
-        is_docker: bool,
-    },
-    /// Backend failed to start
-    Failed {
-        model_name: String,
-        backend: String,
-        error: String,
-    },
-    /// Backend is in the process of being unloaded (holding lock during SIGTERM)
-    Unloading {
-        model_name: String,
-        backend: String,
-        backend_pid: u32,
-        backend_url: String,
-        last_accessed: Instant,
-        consecutive_failures: Arc<std::sync::atomic::AtomicU32>,
-        failure_timestamp: Option<std::time::SystemTime>,
-        restart_count: u32,
-        is_docker: bool,
-    },
-}
-
-impl Default for BackendState {
-    fn default() -> Self {
-        Self::Failed {
-            model_name: String::new(),
-            backend: String::new(),
-            error: String::new(),
-        }
-    }
-}
-
-impl BackendState {
-    pub fn model_name(&self) -> &str {
-        match self {
-            BackendState::Starting { model_name, .. } => model_name,
-            BackendState::Ready { model_name, .. } => model_name,
-            BackendState::Failed { model_name, .. } => model_name,
-            BackendState::Unloading { model_name, .. } => model_name,
-        }
-    }
-
-    pub fn backend(&self) -> &str {
-        match self {
-            BackendState::Starting { backend, .. } => backend,
-            BackendState::Ready { backend, .. } => backend,
-            BackendState::Failed { backend, .. } => backend,
-            BackendState::Unloading { backend, .. } => backend,
-        }
-    }
-
-    pub fn is_ready(&self) -> bool {
-        matches!(self, BackendState::Ready { .. })
-    }
-
-    pub fn backend_url(&self) -> Option<&str> {
-        match self {
-            BackendState::Ready { backend_url, .. } => Some(backend_url),
-            BackendState::Unloading { .. } => None,
-            _ => None,
-        }
-    }
-
-    pub fn backend_pid(&self) -> Option<u32> {
-        match self {
-            BackendState::Starting { backend_pid, .. } => Some(*backend_pid),
-            BackendState::Ready { backend_pid, .. } => Some(*backend_pid),
-            BackendState::Unloading { backend_pid, .. } => Some(*backend_pid),
-            _ => None,
-        }
-    }
-
-    /// Returns true if this backend is running inside a Docker container.
-    pub fn is_docker(&self) -> bool {
-        match self {
-            BackendState::Starting { is_docker, .. }
-            | BackendState::Ready { is_docker, .. }
-            | BackendState::Unloading { is_docker, .. } => *is_docker,
-            BackendState::Failed { .. } => false,
-        }
-    }
-
-    /// Returns true if this is a TTS backend (identified by backend name prefix).
-    /// TTS backends are stored with names like "tts_kokoro" and have their own
-    /// lifecycle management separate from LLM models.
-    pub fn is_tts_backend(&self) -> bool {
-        self.backend().starts_with("tts_")
-    }
-
-    /// Returns true if this is a non-inference backend (TTS or compaction).
-    /// Non-inference backends are excluded from idle timeout checks and LRU eviction.
-    pub fn is_non_inference_backend(&self) -> bool {
-        self.backend().starts_with("tts_") || self.backend() == "compaction"
-    }
-
-    pub fn consecutive_failures(&self) -> Option<&Arc<std::sync::atomic::AtomicU32>> {
-        match self {
-            BackendState::Starting {
-                consecutive_failures,
-                ..
-            } => Some(consecutive_failures),
-            BackendState::Ready {
-                consecutive_failures,
-                ..
-            } => Some(consecutive_failures),
-            BackendState::Failed { .. } => None,
-            BackendState::Unloading {
-                consecutive_failures,
-                ..
-            } => Some(consecutive_failures),
-        }
-    }
-
-    pub fn load_time(&self) -> Option<std::time::SystemTime> {
-        match self {
-            BackendState::Ready { load_time, .. } => Some(*load_time),
-            BackendState::Unloading { .. } => None,
-            _ => None,
-        }
-    }
-
-    pub fn last_accessed(&self) -> Option<Instant> {
-        match self {
-            BackendState::Ready { last_accessed, .. } => Some(*last_accessed),
-            BackendState::Starting { last_accessed, .. } => Some(*last_accessed),
-            BackendState::Failed { .. } => None,
-            BackendState::Unloading { last_accessed, .. } => Some(*last_accessed),
-        }
-    }
-
-    /// Get the restart count for this model (only set on Ready/Unloading states).
-    pub fn restart_count(&self) -> Option<u32> {
-        match self {
-            BackendState::Ready { restart_count, .. } => Some(*restart_count),
-            BackendState::Unloading { restart_count, .. } => Some(*restart_count),
-            _ => None,
-        }
-    }
-
-    /// Get the start time for Starting state models.
-    pub fn start_time(&self) -> Option<Instant> {
-        match self {
-            BackendState::Starting { start_time, .. } => Some(*start_time),
-            _ => None,
-        }
-    }
-
-    /// Check if the backend has failed and the cooldown has elapsed.
-    pub fn can_reload(&self, cooldown_seconds: u64) -> bool {
-        match self {
-            BackendState::Failed { .. } => false,
-            BackendState::Unloading { .. } => false,
-            BackendState::Starting {
-                failure_timestamp, ..
-            }
-            | BackendState::Ready {
-                failure_timestamp, ..
-            } => failure_timestamp
-                .map(|ts| {
-                    std::time::SystemTime::now()
-                        .duration_since(ts)
-                        .map(|d| d.as_secs() >= cooldown_seconds)
-                        .unwrap_or(false)
-                })
-                .unwrap_or(true),
-        }
-    }
-}
 
 /// Metrics for the proxy server.
 #[derive(Debug, Default)]
@@ -207,8 +11,6 @@ pub struct ProxyMetrics {
     pub total_requests: std::sync::atomic::AtomicU64,
     pub successful_requests: std::sync::atomic::AtomicU64,
     pub failed_requests: std::sync::atomic::AtomicU64,
-    pub models_loaded: std::sync::atomic::AtomicU64,
-    pub models_unloaded: std::sync::atomic::AtomicU64,
 }
 
 /// Latest inference timing stats extracted from llama_cpp response `timings` object.
@@ -306,6 +108,18 @@ impl ProxyState {
     /// delete refresh), and the dashboard fan-out in `tama_handlers`.
     pub fn tamad_pool(&self) -> Arc<crate::tamad::pool::TamadPool> {
         Arc::clone(&self.tamad_pool)
+    }
+    /// Process status on the TAMAD wire for `name` (plan 193 T5c:
+    /// process-state queries read from the live rows, not a mirror).
+    ///
+    /// `Some(endpoint)` when there is a matching live row for the
+    /// process; `None` otherwise.
+    pub async fn process_status(&self, name: &str) -> Option<String> {
+        crate::proxy::live_rows(self.tamad_pool().as_ref())
+            .await
+            .row(name)
+            .filter(|r| r.alive)
+            .map(|r| r.endpoint)
     }
 
     /// Start a whole-repo `hf` CLI pull.
@@ -417,7 +231,6 @@ impl ProxyState {
     ///
     /// This method is called during a hard restart to clean up resources:
     /// - Closes the metrics broadcast channel to stop metrics streaming
-    /// - Clears all loaded models from the models map
     /// - Clears active pull jobs
     /// - Clears in-flight pulls
     pub async fn shutdown(&self) {
@@ -427,11 +240,10 @@ impl ProxyState {
             .metrics_tx
             .send(crate::gpu::MetricsSnapshot::default());
 
-        // Clear all loaded models
-        let mut models = self.registry.models.write().await;
-        models.clear();
-
-        // Clear inference stats
+        // Clear inference stats (there is no model mirror to clear, plan-193
+        // T5c) and the per-key access map is cleared with it, so
+        // nothing stale survives a restart.
+        self.registry.last_accessed.write().await.clear();
         self.metrics.clear_inference_stats();
 
         // Clear pull jobs and in-flight pulls

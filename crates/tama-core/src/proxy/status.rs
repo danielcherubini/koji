@@ -1,8 +1,8 @@
-use std::time::{Duration, Instant, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use super::types::{BackendState, ProxyState};
+use super::types::ProxyState;
 
 /// Lifecycle state of a model as reported by the `/status` endpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -209,8 +209,11 @@ impl ProxyState {
         let model_configs = self.registry.model_configs.read().await;
         let auto_unload = config.proxy.auto_unload;
         let idle_timeout_secs = config.proxy.idle_timeout_secs;
-        let models = self.registry.models.read().await;
         let mut models_obj = std::collections::BTreeMap::new();
+        let rows = crate::proxy::live_rows(self.tamad_pool().as_ref()).await;
+        // The proxy-owned per-key access snapshot (plan-193 T5c LRU source,
+        // + the countdown fields below).
+        let access = self.registry.last_accessed.read().await;
 
         for (model_name, model_config) in model_configs.iter() {
             let backend_path = config
@@ -218,130 +221,76 @@ impl ProxyState {
                 .get(&model_config.backend)
                 .and_then(|b| b.path.clone());
 
-            let model_state = models.get(model_name);
+            // Lifecycle state from the live wire rows (plan-193 T4/T5c):
+            // `ready` → Ready, `starting`/`restarting` → Loading, any
+            // other state (incl. `budget_exhausted`) or no row (idle
+            // model / offline host) → Idle. The rich fields read from
+            // the row (+ the per-key access map) instead of the mirror:
+            // `backend_pid` is the wire process id; `last_accessed_secs_ago` /
+            // `idle_timeout_remaining_secs` are arithmetic on the proxy's
+            // per-key access entry (no entry = the model was never touched
+            // by the proxy → both are reported as `None`); `load_time_secs`
+            // and `consecutive_failures` never had a row source, so they
+            // are permanently `None`.
+            let state = match rows.row(model_name) {
+                Some(r) if r.status == "ready" => StatusModelState::Ready,
+                Some(r) if r.status == "starting" || r.status == "restarting" => {
+                    StatusModelState::Loading
+                }
+                _ => StatusModelState::Idle,
+            };
 
-            let entry = match model_state {
-                Some(BackendState::Ready {
-                    backend_pid,
-                    load_time,
-                    last_accessed,
-                    consecutive_failures,
-                    ..
-                }) => {
-                    let now = Instant::now();
-                    let last_accessed_secs_ago = now.duration_since(*last_accessed).as_secs();
-                    let idle_timeout_remaining_secs: Option<u64> = if auto_unload {
-                        let timeout = Duration::from_secs(idle_timeout_secs);
-                        let elapsed = now.duration_since(*last_accessed);
-                        if elapsed < timeout {
-                            Some((timeout - elapsed).as_secs())
+            // Rich fields (plan-193 T5c): ready rows carry the process
+            // id; the per-key access entry carries the idle countdown.
+            // No access entry = never touched = both read None, same as
+            // the mirror never touched one.
+            let (backend_pid, last_accessed_secs_ago, idle_timeout_remaining_secs) =
+                if let Some(row) = rows.row(model_name) {
+                    if row.status == "ready" {
+                        let pid = Some(row.pid.max(0) as u32);
+                        if let Some(last) = access.get(&row.key) {
+                            let elapsed = Instant::now().duration_since(*last);
+                            let remaining = if auto_unload {
+                                let timeout = Duration::from_secs(idle_timeout_secs);
+                                Some(if elapsed < timeout {
+                                    (timeout - elapsed).as_secs()
+                                } else {
+                                    0
+                                })
+                            } else {
+                                None
+                            };
+                            (pid, Some(elapsed.as_secs()), remaining)
                         } else {
-                            Some(0)
+                            (pid, None, None)
                         }
                     } else {
-                        // Auto-unload disabled — no countdown
-                        None
-                    };
-                    let load_time_secs = load_time
-                        .duration_since(UNIX_EPOCH)
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0);
-
-                    StatusModelEntry {
-                        id: model_config.db_id,
-                        display_name: model_config.display_name.clone(),
-                        backend: model_config.backend.clone(),
-                        backend_path: backend_path.clone(),
-                        model: model_config.model.clone(),
-                        quant: model_config.quant.clone(),
-                        context_length: model_config.context_length,
-                        enabled: model_config.enabled,
-                        api_name: model_config.api_name.clone(),
-                        state: StatusModelState::Ready,
-                        backend_pid: Some(*backend_pid),
-                        load_time_secs: Some(load_time_secs),
-                        last_accessed_secs_ago: Some(last_accessed_secs_ago),
-                        idle_timeout_remaining_secs,
-                        consecutive_failures: Some(consecutive_failures.load(Relaxed)),
+                        (None, None, None)
                     }
-                }
-                Some(BackendState::Starting {
-                    consecutive_failures,
-                    ..
-                }) => StatusModelEntry {
-                    id: model_config.db_id,
-                    display_name: model_config.display_name.clone(),
-                    backend: model_config.backend.clone(),
-                    backend_path: backend_path.clone(),
-                    model: model_config.model.clone(),
-                    quant: model_config.quant.clone(),
-                    context_length: model_config.context_length,
-                    enabled: model_config.enabled,
-                    api_name: model_config.api_name.clone(),
-                    state: StatusModelState::Loading,
-                    backend_pid: None,
-                    load_time_secs: None,
-                    last_accessed_secs_ago: None,
-                    idle_timeout_remaining_secs: None,
-                    consecutive_failures: Some(consecutive_failures.load(Relaxed)),
-                },
-                Some(BackendState::Unloading { .. }) => StatusModelEntry {
-                    id: model_config.db_id,
-                    display_name: model_config.display_name.clone(),
-                    backend: model_config.backend.clone(),
-                    backend_path: backend_path.clone(),
-                    model: model_config.model.clone(),
-                    quant: model_config.quant.clone(),
-                    context_length: model_config.context_length,
-                    enabled: model_config.enabled,
-                    api_name: model_config.api_name.clone(),
-                    state: StatusModelState::Unloading,
-                    backend_pid: None,
-                    load_time_secs: None,
-                    last_accessed_secs_ago: None,
-                    idle_timeout_remaining_secs: None,
-                    consecutive_failures: None,
-                },
-                Some(BackendState::Failed { .. }) => StatusModelEntry {
-                    id: model_config.db_id,
-                    display_name: model_config.display_name.clone(),
-                    backend: model_config.backend.clone(),
-                    backend_path: backend_path.clone(),
-                    model: model_config.model.clone(),
-                    quant: model_config.quant.clone(),
-                    context_length: model_config.context_length,
-                    enabled: model_config.enabled,
-                    api_name: model_config.api_name.clone(),
-                    state: StatusModelState::Failed,
-                    backend_pid: None,
-                    load_time_secs: None,
-                    last_accessed_secs_ago: None,
-                    idle_timeout_remaining_secs: None,
-                    consecutive_failures: None,
-                },
-                _ => StatusModelEntry {
-                    id: model_config.db_id,
-                    display_name: model_config.display_name.clone(),
-                    backend: model_config.backend.clone(),
-                    backend_path: backend_path.clone(),
-                    model: model_config.model.clone(),
-                    quant: model_config.quant.clone(),
-                    context_length: model_config.context_length,
-                    enabled: model_config.enabled,
-                    api_name: model_config.api_name.clone(),
-                    state: StatusModelState::Idle,
-                    backend_pid: None,
-                    load_time_secs: None,
-                    last_accessed_secs_ago: None,
-                    idle_timeout_remaining_secs: None,
-                    consecutive_failures: None,
-                },
+                } else {
+                    (None, None, None)
+                };
+
+            let entry = StatusModelEntry {
+                id: model_config.db_id,
+                display_name: model_config.display_name.clone(),
+                backend: model_config.backend.clone(),
+                backend_path: backend_path.clone(),
+                model: model_config.model.clone(),
+                quant: model_config.quant.clone(),
+                context_length: model_config.context_length,
+                enabled: model_config.enabled,
+                api_name: model_config.api_name.clone(),
+                state,
+                backend_pid,
+                load_time_secs: None,
+                last_accessed_secs_ago,
+                idle_timeout_remaining_secs,
+                consecutive_failures: None,
             };
 
             models_obj.insert(model_name.clone(), entry);
         }
-
-        drop(models);
 
         let metrics = &self.metrics.counters;
 
@@ -360,8 +309,11 @@ impl ProxyState {
                 total_requests: metrics.total_requests.load(Relaxed),
                 successful_requests: metrics.successful_requests.load(Relaxed),
                 failed_requests: metrics.failed_requests.load(Relaxed),
-                models_loaded: metrics.models_loaded.load(Relaxed),
-                models_unloaded: metrics.models_unloaded.load(Relaxed),
+                // plan-193 T4/T5c: the wire `models_loaded`/`models_unloaded`
+                // names survive, sourced from the live row ready count (the
+                // in-memory AtomicU64 counters are gone).
+                models_loaded: rows.ready_count(),
+                models_unloaded: 0,
             },
             models: models_obj,
         }
@@ -486,8 +438,8 @@ mod tests {
             mc.insert("alpha".to_string(), make_model_config("vllm"));
         }
 
-        // Sanity check: no runtime entries.
-        assert!(state.registry.models.read().await.is_empty());
+        // Sanity check: no per-key access entries yet.
+        assert!(state.registry.last_accessed.read().await.is_empty());
 
         let statuses = state.collect_model_state_snapshots().await;
 
@@ -514,7 +466,7 @@ mod tests {
         assert_eq!(statuses[1].backend, "llama_cpp");
     }
 
-    /// When `state.models()` contains a `BackendState::Ready` entry under the
+    /// When a live wire row reports `ready` under the
     /// server name that resolves for one of the configured models, that
     /// model should be reported as `loaded == true` while all other
     /// configured models remain `loaded == false`. The returned vector
@@ -592,7 +544,7 @@ mod tests {
         assert_eq!(statuses[1].backend, "llama_cpp");
     }
 
-    /// `collect_model_state_snapshots` should only treat `BackendState::Ready` as
+    /// `collect_model_state_snapshots` should only treat a `ready` wire row as
     /// "loaded". Other variants like `Starting` and `Failed` must be
     /// reported as `loaded == false` so the dashboard does not falsely
     /// claim a model is serving traffic while it is still booting or has
@@ -832,8 +784,6 @@ mod tests {
     #[tokio::test]
     async fn test_status_response_roundtrip_lossless() {
         use crate::gpu::{SystemMetrics, VramInfo};
-        use std::sync::atomic::AtomicU32;
-        use std::time::{Instant, UNIX_EPOCH};
 
         // Build a minimal fixture with one ready model and vram present.
         let mut config = Config::default();
@@ -862,24 +812,9 @@ mod tests {
             );
         }
 
-        {
-            let mut runtime = state.registry.models.write().await;
-            runtime.insert(
-                "ready-model".to_string(),
-                BackendState::Ready {
-                    model_name: "ready-model".to_string(),
-                    backend: "llama_cpp".to_string(),
-                    backend_pid: 1234,
-                    backend_url: "http://127.0.0.1:8080".to_string(),
-                    load_time: UNIX_EPOCH,
-                    last_accessed: Instant::now(),
-                    consecutive_failures: Arc::new(AtomicU32::new(0)),
-                    failure_timestamp: None,
-                    is_docker: false,
-                    restart_count: 0,
-                },
-            );
-        }
+        // Seed a ready wire row for the in-profile model (plan-193 T5c:
+        // state comes from rows).
+        seed_live_row(&state, "ready-model", "ready").await;
 
         {
             state

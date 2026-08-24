@@ -17,8 +17,9 @@ pub fn format_tama_metrics(metrics: &ProxyMetrics, active_models: usize) -> Stri
     let total = metrics.total_requests.load(Relaxed);
     let successful = metrics.successful_requests.load(Relaxed);
     let failed = metrics.failed_requests.load(Relaxed);
-    let loaded = metrics.models_loaded.load(Relaxed);
-    let unloaded = metrics.models_unloaded.load(Relaxed);
+    // plan-193 T4/T5c: `models_loaded` is the live row ready count (the
+    // in-memory AtomicU64 counter is gone), passed in as `active_models`.
+    let loaded = active_models as u64;
 
     push_gauge(
         &mut out,
@@ -41,14 +42,14 @@ pub fn format_tama_metrics(metrics: &ProxyMetrics, active_models: usize) -> Stri
     push_gauge(
         &mut out,
         "tama:models_loaded",
-        "Cumulative number of model load events.",
+        "Current number of loaded (ready) models (rows.ready_count).",
         loaded,
     );
     push_gauge(
         &mut out,
         "tama:models_unloaded",
-        "Cumulative number of model unload events.",
-        unloaded,
+        "Unloaded-model counter (kept for wire compatibility; no counter remains).",
+        0,
     );
     push_gauge(
         &mut out,
@@ -294,8 +295,6 @@ mod tests {
             total_requests: AtomicU64::new(98),
             successful_requests: AtomicU64::new(90),
             failed_requests: AtomicU64::new(4),
-            models_loaded: AtomicU64::new(2),
-            models_unloaded: AtomicU64::new(1),
         }
     }
 
@@ -408,8 +407,10 @@ mod tests {
         assert!(output.contains("tama:total_requests 98"));
         assert!(output.contains("tama:successful_requests 90"));
         assert!(output.contains("tama:failed_requests 4"));
-        assert!(output.contains("tama:models_loaded 2"));
-        assert!(output.contains("tama:models_unloaded 1"));
+        // models_loaded = the live ready count (the active_models arg);
+        // models_unloaded no longer has a counter (constant 0).
+        assert!(output.contains("tama:models_loaded 3"));
+        assert!(output.contains("tama:models_unloaded 0"));
         assert!(output.contains("tama:active_models 3"));
     }
 

@@ -76,7 +76,7 @@ impl TamadHandle {
     /// The latest stats snapshot, if the stream has delivered one.
     ///
     /// Snapshots are ~1s fresh while the tamad is up; callers that act on
-    /// the data (e.g. the reconciler) must treat a snapshot older than a few
+    /// the data (e.g. the proxy's row reads) must treat a snapshot older than a few
     /// seconds as stale.
     pub async fn latest(&self) -> Option<SystemStats> {
         self.latest.read().await.as_ref().map(|l| l.stats.clone())
@@ -84,7 +84,7 @@ impl TamadHandle {
 
     /// The latest stats snapshot if it is at most `max_age` old.
     ///
-    /// For callers that *act* on snapshot data (the reconciler): never act
+    /// For callers that *act* on snapshot data: never act
     /// on stale data — a missing/old snapshot means "skip this tick".
     pub async fn latest_fresh(&self, max_age: Duration) -> Option<SystemStats> {
         let latest = self.latest.read().await;

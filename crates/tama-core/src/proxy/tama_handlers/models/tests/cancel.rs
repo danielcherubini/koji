@@ -1,6 +1,4 @@
-use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
-use std::time::Instant;
 
 use axum::body::Body;
 use axum::extract::Request;
@@ -11,7 +9,6 @@ use tower::ServiceExt;
 use super::helpers::create_state_with_model;
 use crate::config::ModelConfig;
 use crate::proxy::tama_handlers::models::handle_tama_cancel_load;
-use crate::proxy::BackendState;
 
 /// Seed a live wire row for `model_id` (plan-193 T4: `handle_cancel_load`
 /// checks availability via rows, not the mirror).
@@ -52,20 +49,6 @@ async fn test_cancel_returns_200_for_starting_model() {
     .await;
 
     // Insert a Starting entry with a fake PID
-    state.registry.models.write().await.insert(
-        "test-model".to_string(),
-        BackendState::Starting {
-            model_name: "test-model".into(),
-            backend: "llama_cpp".into(),
-            backend_url: String::new(),
-            backend_pid: 99999,
-            last_accessed: Instant::now(),
-            start_time: Instant::now(),
-            consecutive_failures: Arc::new(AtomicU32::new(0)),
-            is_docker: false,
-            failure_timestamp: None,
-        },
-    );
     seed_live(&state, "test-model", "starting").await;
 
     let app = Router::new()
@@ -109,21 +92,6 @@ async fn test_cancel_ready_model_unloads() {
     .await;
 
     // Insert a Ready entry
-    state.registry.models.write().await.insert(
-        "test-model".to_string(),
-        BackendState::Ready {
-            model_name: "test-model".to_string(),
-            backend: "llama_cpp".to_string(),
-            backend_pid: 12345,
-            backend_url: "http://127.0.0.1:1234".to_string(),
-            load_time: std::time::SystemTime::now(),
-            last_accessed: Instant::now(),
-            consecutive_failures: Arc::new(AtomicU32::new(0)),
-            failure_timestamp: None,
-            is_docker: false,
-            restart_count: 0,
-        },
-    );
     seed_live(&state, "test-model", "ready").await;
 
     let app = Router::new()
@@ -207,14 +175,6 @@ async fn test_cancel_returns_404_for_failed_model() {
     .await;
 
     // Insert a Failed entry
-    state.registry.models.write().await.insert(
-        "test-model".to_string(),
-        BackendState::Failed {
-            model_name: "test-model".to_string(),
-            backend: "llama_cpp".to_string(),
-            error: "Some error".to_string(),
-        },
-    );
 
     let app = Router::new()
         .route(

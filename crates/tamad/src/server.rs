@@ -215,7 +215,7 @@ impl TamadService for TamadServiceImpl {
         let req = request.into_inner();
 
         // Idempotent: a live process for this model already exists →
-        // return the existing response (the reconciler re-issues loads).
+        // return the existing response (idempotent load re-issue).
         // A "failed" entry (crashed child, possibly a zombie that still
         // answers kill(pid,0)) must NOT be treated as alive.
         if let Some(entry) = self.table.get(&req.model_name).await {

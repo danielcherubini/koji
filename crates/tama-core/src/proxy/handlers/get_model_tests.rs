@@ -191,25 +191,6 @@ async fn test_handle_get_model_fetches_from_backend_with_meta() {
         );
     }
 
-    // Add a Ready model state
-    {
-        let mut models = state.registry.models.write().await;
-        models.insert(
-            "test-model".to_string(),
-            crate::proxy::BackendState::Ready {
-                model_name: "test-model".to_string(),
-                backend: "llama_cpp".to_string(),
-                backend_pid: 1234,
-                backend_url: mock_server.uri(),
-                load_time: std::time::SystemTime::now(),
-                last_accessed: std::time::Instant::now(),
-                consecutive_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-                failure_timestamp: None,
-                is_docker: false,
-                restart_count: 0,
-            },
-        );
-    }
     seed_live_proxy(&state, "test-model", mock_server.uri().as_str()).await;
 
     let state_arc = Arc::new(state);
@@ -350,24 +331,6 @@ async fn test_handle_get_model_matches_by_model_field_when_multiple() {
         );
     }
 
-    {
-        let mut models = state.registry.models.write().await;
-        models.insert(
-            "my-model".to_string(),
-            crate::proxy::BackendState::Ready {
-                model_name: "my-model".to_string(),
-                backend: "llama_cpp".to_string(),
-                backend_pid: 5678,
-                backend_url: mock_server.uri(),
-                load_time: std::time::SystemTime::now(),
-                last_accessed: std::time::Instant::now(),
-                consecutive_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-                failure_timestamp: None,
-                is_docker: false,
-                restart_count: 0,
-            },
-        );
-    }
     seed_live_proxy(&state, "my-model", mock_server.uri().as_str()).await;
 
     let state_arc = Arc::new(state);
@@ -406,25 +369,6 @@ async fn test_handle_get_model_backend_failure_fallback() {
         );
     }
 
-    // Add a Ready model with unreachable backend URL
-    {
-        let mut models = state.registry.models.write().await;
-        models.insert(
-            "fail-model".to_string(),
-            crate::proxy::BackendState::Ready {
-                model_name: "fail-model".to_string(),
-                backend: "llama_cpp".to_string(),
-                backend_pid: 9999,
-                backend_url: "http://localhost:59999".to_string(),
-                load_time: std::time::SystemTime::now(),
-                last_accessed: std::time::Instant::now(),
-                consecutive_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-                failure_timestamp: None,
-                is_docker: false,
-                restart_count: 0,
-            },
-        );
-    }
     seed_live_proxy(&state, "fail-model", "http://localhost:59999").await;
 
     let state_arc = Arc::new(state);
@@ -484,24 +428,6 @@ async fn test_handle_get_model_normalizes_id_from_alias() {
         );
     }
 
-    {
-        let mut models = state.registry.models.write().await;
-        models.insert(
-            "gemma-e2b".to_string(),
-            crate::proxy::BackendState::Ready {
-                model_name: "gemma-e2b".to_string(),
-                backend: "llama_cpp".to_string(),
-                backend_pid: 1001,
-                backend_url: mock_server.uri(),
-                load_time: std::time::SystemTime::now(),
-                last_accessed: std::time::Instant::now(),
-                consecutive_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-                failure_timestamp: None,
-                is_docker: false,
-                restart_count: 0,
-            },
-        );
-    }
     seed_live_proxy(&state, "gemma-e2b", mock_server.uri().as_str()).await;
 
     let state_arc = Arc::new(state);
@@ -591,24 +517,6 @@ async fn test_handle_get_model_loaded_with_reasoning_levels() {
         );
     }
 
-    {
-        let mut models = state.registry.models.write().await;
-        models.insert(
-            "leveled-model".to_string(),
-            crate::proxy::BackendState::Ready {
-                model_name: "leveled-model".to_string(),
-                backend: "llama_cpp".to_string(),
-                backend_pid: 4242,
-                backend_url: mock_server.uri(),
-                load_time: std::time::SystemTime::now(),
-                last_accessed: std::time::Instant::now(),
-                consecutive_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-                failure_timestamp: None,
-                is_docker: false,
-                restart_count: 0,
-            },
-        );
-    }
     seed_live_proxy(&state, "leveled-model", mock_server.uri().as_str()).await;
 
     let state_arc = Arc::new(state);
@@ -677,24 +585,6 @@ async fn test_handle_get_model_loaded_without_reasoning_levels_unchanged() {
         );
     }
 
-    {
-        let mut models = state.registry.models.write().await;
-        models.insert(
-            "plain-model".to_string(),
-            crate::proxy::BackendState::Ready {
-                model_name: "plain-model".to_string(),
-                backend: "llama_cpp".to_string(),
-                backend_pid: 4243,
-                backend_url: mock_server.uri(),
-                load_time: std::time::SystemTime::now(),
-                last_accessed: std::time::Instant::now(),
-                consecutive_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-                failure_timestamp: None,
-                is_docker: false,
-                restart_count: 0,
-            },
-        );
-    }
     seed_live_proxy(&state, "plain-model", mock_server.uri().as_str()).await;
 
     let state_arc = Arc::new(state);

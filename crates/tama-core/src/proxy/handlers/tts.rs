@@ -69,7 +69,7 @@ async fn ensure_tts_server(state: &ProxyState, model_name: &str) -> anyhow::Resu
         }
     };
 
-    // Check if already loaded and get the actual URL from BackendState
+    // Check if already loaded and get the actual URL from the wire row
     if let Some(url) = get_backend_url(state, backend_name).await? {
         return Ok(url);
     }
@@ -87,7 +87,7 @@ async fn ensure_tts_server(state: &ProxyState, model_name: &str) -> anyhow::Resu
 /// GET /v1/audio/voices - List available voices.
 pub async fn handle_audio_voices(State(state): State<Arc<ProxyState>>) -> impl IntoResponse {
     // Try to lazy-load the default TTS backend (Kokoro) if not already loaded,
-    // and get its actual URL from BackendState
+    // and get its actual URL from the wire row
     let server_url = match ensure_tts_server(&state, "kokoro").await {
         Ok(url) => url,
         Err(e) => {

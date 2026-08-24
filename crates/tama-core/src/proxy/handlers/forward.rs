@@ -64,6 +64,9 @@ pub async fn handle_forward_post(
         {
             Ok(name) => name,
             Err(e) => {
+                if let Some(resp) = crate::proxy::lifecycle::budget_exhausted_response_for(&e) {
+                    return resp;
+                }
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(serde_json::json!({

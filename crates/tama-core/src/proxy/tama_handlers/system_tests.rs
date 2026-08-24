@@ -1,6 +1,5 @@
 use crate::config::Config;
 use crate::proxy::tama_handlers::{handle_hf_list_quants, handle_tama_system_health};
-use crate::proxy::BackendState;
 use crate::proxy::ProxyState;
 use axum::body::Body;
 use axum::http::Request;
@@ -20,22 +19,6 @@ async fn test_handle_tama_system_health() {
     ));
 
     // Insert one Ready entry into the model registry.
-    use std::time::Instant;
-    state.registry.models.write().await.insert(
-        "test-model".to_string(),
-        BackendState::Ready {
-            model_name: "test-model".to_string(),
-            backend: "llama_cpp".to_string(),
-            backend_pid: 1234,
-            backend_url: "http://127.0.0.1:12345".to_string(),
-            load_time: std::time::SystemTime::now(),
-            last_accessed: Instant::now(),
-            consecutive_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-            failure_timestamp: None,
-            is_docker: false,
-            restart_count: 0,
-        },
-    );
     // Seed a live ready row so `models_loaded` (rows.ready_count(), plan-193
     // T4) sees one loaded model.
     {

@@ -1242,7 +1242,7 @@ mod tests {
     /// A backend that exits on its own is reaped by the tamad and marked
     /// "failed" in the table (the reap task is the authoritative liveness
     /// signal — a zombie pid would otherwise read as alive via kill(pid,0)
-    /// and the proxy's reconciler would never restart it).
+    /// and the auto-load path would never restart it).
     #[tokio::test]
     async fn test_load_marks_failed_when_backend_crashes() {
         let (state, _dir) = test_state();

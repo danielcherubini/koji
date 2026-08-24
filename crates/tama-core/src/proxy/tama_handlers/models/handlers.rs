@@ -128,8 +128,8 @@ pub async fn handle_tama_get_model(
 /// Handle loading a model (Tama management API).
 ///
 /// plan-191 Task 5: the load goes through the model's provider tamad
-/// (`LoadModel` RPC); the proxy records desired state and mirrors the
-/// result in its BackendState cache.
+/// (`LoadModel` RPC); the proxy records desired state (no local process
+/// state; plan 193 T5).
 pub async fn handle_tama_load_model(
     state: State<Arc<ProxyState>>,
     Path(model_id): Path<String>,
@@ -162,8 +162,8 @@ pub async fn handle_tama_load_model(
 ///
 /// plan-191 Task 5: operates on **desired state**, not on a local process.
 /// Cancelling clears the desired row and issues `UnloadModel` to the
-/// provider's tamad. If the load RPC is still in flight, the reconciler's
-/// next tick unloads the model once it appears in the tamad's snapshot
+/// provider's tamad. If the load RPC is still in flight, the tamad's
+/// host-side store handles the post-load unload (loads are short).
 /// (loads are short; a cancel is therefore best-effort for in-flight
 /// loads).
 pub async fn handle_tama_cancel_load(
@@ -228,12 +228,11 @@ pub async fn handle_tama_cancel_load(
 /// Handle unloading a model (Tama management API).
 ///
 /// plan-191 Task 5: clearing the model's **desired** state is the primary
-/// action — once it is no longer desired, the reconciler unloads it on the
-/// provider's tamad (this is the safety net if the RPC below can't reach
+/// action — once it is no longer desired, the tamad's host-side store
+/// drops the model (this is the safety net if the RPC below can't reach
 /// the tamad). The `UnloadModel` RPC is issued best-effort for immediate
 /// convergence; a failure to reach the tamad (offline, no provider) is
-/// logged, not an error, because the reconciler will converge the tamad's
-/// process table to the desired set on its next tick.
+/// logged, not an error: the host-side store keeps the truth.
 /// Unloading a model that is not loaded on the tamad is a no-op
 /// (idempotent).
 pub async fn handle_tama_unload_model(

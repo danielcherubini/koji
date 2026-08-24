@@ -1,7 +1,7 @@
 //! Desired-model-state database queries (plan-191 Task 5).
 //!
 //! The proxy is the single writer of desired state (ADR-0010): the
-//! reconciler loop converges each tamad's actual process table to this
+//! The proxy writes this table; the tamad's own host-side store keeps
 //! set via `LoadModel`/`UnloadModel` RPCs.
 
 use anyhow::Result;

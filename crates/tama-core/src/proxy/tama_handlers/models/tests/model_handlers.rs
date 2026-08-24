@@ -1,8 +1,7 @@
 use axum::body::Body;
 use axum::extract::Request;
 use axum::http::StatusCode;
-use std::sync::{atomic::AtomicU32, Arc};
-use std::time::Instant;
+use std::sync::Arc;
 use tower::ServiceExt;
 
 use crate::config::{Config, ModelConfig};
@@ -10,7 +9,7 @@ use crate::proxy::tama_handlers::models::{
     handle_tama_cancel_load, handle_tama_get_model, handle_tama_list_models,
     handle_tama_load_model, handle_tama_unload_model,
 };
-use crate::proxy::{BackendState, ProxyState};
+use crate::proxy::ProxyState;
 
 use super::helpers::create_state_with_model;
 
@@ -73,21 +72,6 @@ async fn test_handle_tama_list_models_states() {
     }
 
     // Insert a Ready entry for "ready-model" (must match the config key).
-    state.registry.models.write().await.insert(
-        "ready-model".to_string(),
-        BackendState::Ready {
-            model_name: "ready-model".to_string(),
-            backend: "llama_cpp".to_string(),
-            backend_pid: 1234,
-            backend_url: "http://127.0.0.1:1234".to_string(),
-            load_time: std::time::SystemTime::now(),
-            last_accessed: Instant::now(),
-            consecutive_failures: Arc::new(AtomicU32::new(0)),
-            failure_timestamp: None,
-            is_docker: false,
-            restart_count: 0,
-        },
-    );
     seed_live_row(&state, "ready-model", "ready").await;
 
     let app = axum::Router::new()
@@ -146,21 +130,6 @@ async fn test_handle_tama_get_model_loaded() {
     .await;
 
     // Insert a Ready entry.
-    state.registry.models.write().await.insert(
-        "test-model".to_string(),
-        BackendState::Ready {
-            model_name: "test-model".to_string(),
-            backend: "llama_cpp".to_string(),
-            backend_pid: 1234,
-            backend_url: "http://127.0.0.1:1234".to_string(),
-            load_time: std::time::SystemTime::now(),
-            last_accessed: Instant::now(),
-            consecutive_failures: Arc::new(AtomicU32::new(0)),
-            failure_timestamp: None,
-            is_docker: false,
-            restart_count: 0,
-        },
-    );
     seed_live_row(&state, "test-model", "ready").await;
 
     let app = axum::Router::new()
@@ -306,20 +275,6 @@ async fn test_handle_tama_cancel_load_starting() {
     .await;
 
     // Insert a Starting entry with PID 0 (no real process to kill).
-    state.registry.models.write().await.insert(
-        "test-model".to_string(),
-        BackendState::Starting {
-            model_name: "test-model".into(),
-            backend: "llama_cpp".into(),
-            backend_url: String::new(),
-            backend_pid: 0,
-            last_accessed: Instant::now(),
-            start_time: Instant::now(),
-            consecutive_failures: Arc::new(AtomicU32::new(0)),
-            is_docker: false,
-            failure_timestamp: None,
-        },
-    );
     seed_live_row(&state, "test-model", "starting").await;
 
     let app = axum::Router::new()
@@ -357,21 +312,6 @@ async fn test_handle_tama_cancel_load_ready_unloads() {
     .await;
 
     // Insert a Ready entry.
-    state.registry.models.write().await.insert(
-        "test-model".to_string(),
-        BackendState::Ready {
-            model_name: "test-model".to_string(),
-            backend: "llama_cpp".to_string(),
-            backend_pid: 1234,
-            backend_url: "http://127.0.0.1:1234".to_string(),
-            load_time: std::time::SystemTime::now(),
-            last_accessed: Instant::now(),
-            consecutive_failures: Arc::new(AtomicU32::new(0)),
-            failure_timestamp: None,
-            is_docker: false,
-            restart_count: 0,
-        },
-    );
     seed_live_row(&state, "test-model", "ready").await;
 
     let app = axum::Router::new()
@@ -452,21 +392,6 @@ async fn test_handle_tama_unload_model_ready() {
     .await;
 
     // Insert a Ready entry with a bogus PID (won't find a real process).
-    state.registry.models.write().await.insert(
-        "test-model".to_string(),
-        BackendState::Ready {
-            model_name: "test-model".to_string(),
-            backend: "llama_cpp".to_string(),
-            backend_pid: 99999,
-            backend_url: "http://127.0.0.1:1234".to_string(),
-            load_time: std::time::SystemTime::now(),
-            last_accessed: Instant::now(),
-            consecutive_failures: Arc::new(AtomicU32::new(0)),
-            failure_timestamp: None,
-            is_docker: false,
-            restart_count: 0,
-        },
-    );
 
     let app = axum::Router::new()
         .route(

@@ -15,7 +15,7 @@ impl ProxyState {
     ///   - Removes the entry at `old_name`, inserts at `new_name`
     ///   - Attempts `config.save()`
     ///   - If save fails: rollback — remove `new_name`, re-insert at `old_name`, return error
-    /// - Takes a write lock on `self.registry.models`:
+    /// - Writes nothing else: pure in-cache bookkeeping (no registry ops).
     ///   - If `old_name` exists in the map, removes and re-inserts at `new_name`
     /// - DB update (best-effort): calls `rename_active_model(conn, old_name, new_name)` if db is available
     pub async fn rename_model(&self, old_name: &str, new_name: &str) -> Result<()> {
@@ -70,11 +70,12 @@ impl ProxyState {
         drop(_config);
         drop(model_configs);
 
-        // Update in-memory models map
+        // Migrate the LRU access-time entry from old name to new name (the
+        // model mirror is gone, plan-193 T5c).
         {
-            let mut models = self.registry.models.write().await;
-            if let Some(model_state) = models.remove(old_name) {
-                models.insert(new_name.to_string(), model_state);
+            let mut lru = self.registry.last_accessed.write().await;
+            if let Some(ts) = lru.remove(old_name) {
+                lru.insert(new_name.to_string(), ts);
             }
         }
 

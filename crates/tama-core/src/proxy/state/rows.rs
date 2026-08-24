@@ -1,7 +1,7 @@
 //! Live model rows aggregated from the tamad's 1 Hz `ProcessInfo` stream.
 //!
 //! This is the proxy's read-side source of truth for model facts (plan-193
-//! Task 4): instead of reading the staging `registry.models` mirror, the
+//! Task 4): instead of a local per-model state map, the
 //! dashboard / routing / management readers resolve each model's current
 //! state, endpoint, desired flag and restart counters straight off the
 //! tamad's `SystemStats.processes` wire field.
@@ -23,12 +23,11 @@ use crate::tamad::ProcessInfo;
 
 /// Max age of a wire frame the proxy trusts as "live".
 ///
-/// This bound re-exposes the reconciler's `SNAPSHOT_MAX_AGE` (5s,
-/// `crates/tama/src/reconciler.rs`) so `tama-core` keeps that staleness
-/// contract after the reconciler dies in plan-193 Task 5. The tamad emits at
-/// 1 Hz, so 5s is five ticks of slack before a silent producer is declared
-/// absent. Deliberately NOT 500ms — a single dropped frame must not blank the
-/// model list.
+/// This bound re-exposes the 5s wire-staleness contract of plan-193:
+/// a row older than this is not treated as loaded (absent). The
+/// tamad emits at 1 Hz, so 5s is five ticks of slack before a
+/// silent producer is declared absent. Deliberately NOT 500ms: a
+/// single dropped frame must not blank the model list.
 const LIVE_FRAME_MAX_AGE: Duration = Duration::from_secs(5);
 
 /// The lifecycle statuses a process must report to be counted as a live row.
@@ -44,9 +43,14 @@ fn eligible_status(status: &str) -> bool {
 
 /// Whether a wire process is currently eligible as a live model row:
 /// process-alive AND in an eligible lifecycle status (frame freshness is
-/// enforced upstream by `live`'s `latest_deadline`).
+/// enforced upstream by `live`'s `latest_deadline`) — plus the plan-193 T5c
+/// extension: a `budget_exhausted` process contributes a row INDEPENDENTLY
+/// of process liveness. The tamad keeps reporting the budget state (the
+/// process is dead; its restart budget is spent; it re-warms in ~60s) and
+/// the proxy reads that row for the budget-exhausted 503. Every other
+/// non-live status (`failed`, `unloading`, ...) is not a row.
 fn is_eligible(p: &ProcessInfo) -> bool {
-    p.alive && eligible_status(&p.status)
+    (p.alive && eligible_status(&p.status)) || p.status == "budget_exhausted"
 }
 
 /// Build the proxy-side row for one wire process, at `last_seen_ms`.
@@ -57,6 +61,7 @@ fn row_from(p: &ProcessInfo, last_seen_ms: i64) -> ModelRow {
         alive: p.alive,
         endpoint: p.endpoint_url.clone(),
         last_seen_ms,
+        pid: p.pid,
         desired: p.desired,
         restart_count: p.restart_count,
         max_restarts: p.max_restarts,
@@ -68,8 +73,10 @@ fn row_from(p: &ProcessInfo, last_seen_ms: i64) -> ModelRow {
 /// `key` is the canonical config key (== `ProcessInfo.model_name` wire
 /// string) — the join key for the management API, routing, and the
 /// `desired_models`/`active_models` DB views. `status` / `alive` mirror the
-/// wire; `endpoint` is the routing target (wire field 5); `desired` and the
-/// restart counters (wire fields 7-9, T3) complete the picture.
+/// wire; `endpoint` is the routing target (wire field 5); `pid` is the wire
+/// process id (wire field 3, the authoritative source for `backend_pid`);
+/// `desired` and the restart counters (wire fields 7-9, T3) complete the
+/// picture (plan-193 T5c).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ModelRow {
     pub key: String,
@@ -77,6 +84,7 @@ pub struct ModelRow {
     pub alive: bool,
     pub endpoint: String,
     pub last_seen_ms: i64,
+    pub pid: i32,
     pub desired: bool,
     pub restart_count: u32,
     pub max_restarts: u32,
@@ -304,8 +312,10 @@ mod tests {
         assert_eq!(rows.ready_count(), 0);
     }
 
-    /// Non-eligible statuses (failed, budget-exhausted, unloading) are not
-    /// surfaced as rows even when the process is alive.
+    /// plan-193 T5c: a `budget_exhausted` process is surfaced as a row even
+    /// when the process itself is dead — the tamad keeps reporting the budget
+    /// state and the proxy reads it for the 503 path. Because the budgeted
+    /// process is dead, it is NOT online and NOT counted ready.
     #[tokio::test]
     async fn test_non_eligible_statuses_excluded() {
         let stats = stats_with(vec![
@@ -318,9 +328,55 @@ mod tests {
         assert_eq!(rows.ready_count(), 1);
         assert!(rows.row("m-ready").is_some());
         assert!(!rows.online("m-fail"));
-        assert!(!rows.online("m-budget"));
+        // budget_exhausted IS a row (T5c) but a dead one: not online...
+        assert!(rows.online("m-budget"));
+        // ...not counted ready.
         assert!(!rows.online("m-unload"));
-        assert_eq!(rows.all().len(), 1);
+        assert_eq!(rows.all().len(), 2);
+    }
+
+    /// A `budget_exhausted` process keeps a row even with `alive: false` —
+    /// the liveness exemption, spelled out (the test above's process was
+    /// alive WITH a budget status).
+    #[tokio::test]
+    async fn test_budget_exhausted_row_survives_dead_process() {
+        let stats = stats_with(vec![proc(
+            "m-budget",
+            "budget_exhausted",
+            false,
+            "e",
+            true,
+            9,
+            10,
+        )]);
+        let rows = live(&pool_with(stats).await).await;
+        let r = rows.row("m-budget").expect("budget_exhausted keeps a row");
+        assert_eq!(r.status, "budget_exhausted");
+        assert!(!r.alive);
+        assert_eq!(r.pid, 100, "pid rides wire field 3 (test proc pid)");
+        assert!(!rows.online("m-budget"));
+        assert_eq!(rows.ready_count(), 0);
+    }
+
+    /// A `ready` row carries the wire process id (wire field 3) — the
+    /// source of the `/status` `backend_pid` (plan-193 T5c).
+    #[tokio::test]
+    async fn test_row_pid_rides_wire_field() {
+        let rows = live(
+            &pool_with(stats_with(vec![proc(
+                "qwen3",
+                "ready",
+                true,
+                "http://127.0.0.1:8080",
+                true,
+                0,
+                3,
+            )]))
+            .await,
+        )
+        .await;
+        let r = rows.row("qwen3").expect("ready row present");
+        assert_eq!(r.pid, 100);
     }
 
     /// A dead (alive=false) process is never a row.

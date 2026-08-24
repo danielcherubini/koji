@@ -7,9 +7,8 @@ use std::time::Duration;
 use crate::config::{BackendConfig, Config, ModelConfig, QuantEntry, QuantKind};
 use crate::gpu::GpuVariant;
 use crate::proxy::lifecycle::spec::*;
-use crate::proxy::types::BackendState;
 use crate::proxy::ProxyState;
-use crate::tamad::pool::test_support::{grpc_conn, start_stub, stub_default, wait_for};
+use crate::tamad::pool::test_support::{grpc_conn, start_stub, stub_default};
 use crate::tamad::{GpuInfo, LoadModelRequest};
 use crate::testing::postgres::with_schema;
 
@@ -161,12 +160,10 @@ async fn test_build_load_spec_fields() {
 }
 
 /// The `LoadModelRequest.model_name` must be the canonical config key, not the
-/// raw request name. The reconciler joins `desired_models.model_name` with the
-/// tamad process's `model_name`; if the forward path (which sees the raw
-/// repo_id/api_name) and the management path (which sees the config key)
-/// populated those with different strings, the reconciler would flap
-/// (load + unload every tick). Normalising to the config key — the same key
-/// the mirror and `active_models` already use — makes the join consistent.
+/// raw request name: the host addresses processes by the config key, and it
+/// is what the proxy records in `desired_models`, so a load issued with a
+/// raw repo_id/api_name would answer to a different name and never settle.
+/// Normalising to the config key keeps load and unload joined on one name.
 #[tokio::test]
 async fn test_build_load_spec_normalises_model_name_to_config_key() {
     let guard = with_schema().await;
@@ -659,9 +656,9 @@ async fn test_build_compaction_load_spec_disabled() {
     assert!(err.to_string().contains("not enabled"));
 }
 
-// ─── tamad load-window mirror visibility (issue #192) ────────────────────
+// ── tamad load-window reporting (issue #192) ──
 
-/// A minimal launch spec for the mirror-visibility tests: the stub tamad
+/// A minimal launch spec for the load-window tests: the stub tamad
 /// answers any `LoadModel` for `model_name = "test-model"`.
 fn test_load_spec() -> LoadSpec {
     LoadSpec {
@@ -737,117 +734,40 @@ async fn setup_stub_load(
     (guard, state)
 }
 
-/// While the tamad-side load is in flight, the runtime must hold a
-/// `Starting` mirror for the model — the dashboard and the models API
-/// report it as "loading" for the whole window (issue #192). When the RPC
-/// returns, the mirror flips to `Ready` under the same key (replace, not
-/// duplicate).
+/// The load-window source of truth now comes from the
+/// host side (the proxy-side state cache died with plan 193 T5);
+/// the proxy itself only records the load outcome (desired mark).
 #[tokio::test]
-async fn test_load_spec_on_tamad_exposes_starting_then_ready() {
+async fn test_load_spec_on_tamad_load_succeeds_and_marks_desired() {
     let (guard, state) = setup_stub_load(false, Some(Duration::from_millis(1_000))).await;
-
     let spec = Arc::new(test_load_spec());
     let load = tokio::spawn({
         let state = state.clone();
         let spec = Arc::clone(&spec);
         async move { load_spec_on_tamad(&state, &spec, false).await }
     });
-
-    // Observe the Starting placeholder during the load window: no PID and
-    // no endpoint yet (the tamad owns those until the RPC returns).
-    let saw_starting = wait_for(|| async {
-        state
-            .registry
-            .models
-            .read()
-            .await
-            .get("test-model")
-            .is_some_and(|s| {
-                matches!(
-                    s,
-                    BackendState::Starting {
-                        backend_pid: 0,
-                        backend_url,
-                        ..
-                    } if backend_url.is_empty()
-                )
-            })
-    })
-    .await;
-    assert!(
-        saw_starting,
-        "expected a Starting mirror during the load window"
-    );
-
-    // The load succeeds and the mirror flips to Ready on the same key.
     let key = load
         .await
         .expect("load task panicked")
         .expect("load should succeed");
     assert_eq!(key, "test-model");
-
-    let models = state.registry.models.read().await;
-    assert_eq!(
-        models.len(),
-        1,
-        "Ready mirror must replace the placeholder, not add a second entry: {models:?}"
-    );
-    let mirror = models
-        .get("test-model")
-        .expect("mirror present after load")
-        .clone();
-    let BackendState::Ready { .. } = mirror else {
-        panic!("expected Ready mirror after load, got: {mirror:?}");
-    };
-    // Stub tamad answers with endpoint 5801 / pid 1234 — proves the Ready
-    // mirror replaced the Starting placeholder in place.
-    assert_eq!(mirror.backend_pid(), Some(1234));
-    assert_eq!(mirror.backend_url(), Some("http://127.0.0.1:5801"));
-
     let _ = guard.finish().await;
 }
 
-/// A failed `LoadModel` RPC must leave a `Failed` mirror carrying the error
-/// instead of silently going back to `idle`; the error is still propagated
-/// to the caller, and the model is NOT marked desired (the RPC is the
-/// gating step).
+/// A failed `LoadModel` RPC propagates its error to the caller and the
+/// model must NOT be marked desired. The proxy-side failed record is gone
+/// (plan-193 T5c) - the terminal failure lives on the tamad side.
 #[tokio::test]
-async fn test_load_spec_on_tamad_failed_rpc_leaves_failed_mirror() {
+async fn test_load_spec_on_tamad_failed_rpc_propagates_and_not_desired() {
     let (guard, state) = setup_stub_load(true, None).await;
-
     let spec = test_load_spec();
     let err = load_spec_on_tamad(&state, &spec, false)
         .await
-        .expect_err("load must fail when the tamad rejects it");
-
-    let mirror = state
-        .registry
-        .models
-        .read()
-        .await
-        .get("test-model")
-        .cloned()
-        .expect("a Failed mirror must remain after a failed load");
-    let BackendState::Failed {
-        model_name,
-        backend,
-        error,
-    } = mirror
-    else {
-        panic!("expected a Failed mirror, got: {mirror:?}");
-    };
-    assert_eq!(model_name, "test-model");
-    assert_eq!(backend, "llama_cpp");
-    assert!(
-        error.contains("LoadModel RPC to the tamad of provider \"myprov\" failed"),
-        "Failed mirror must carry the RPC error, got: {error}"
-    );
+        .expect_err("a load must fail when the tamad rejects it");
     assert!(
         err.to_string().contains("LoadModel RPC to the tamad"),
         "the original RPC error must still be propagated, got: {err}"
     );
-
-    // The load never became desired (set_desired runs after the RPC).
     assert!(
         crate::db::queries::get_desired(state.db_pool().as_ref(), "test-model")
             .await
@@ -855,6 +775,5 @@ async fn test_load_spec_on_tamad_failed_rpc_leaves_failed_mirror() {
             .is_none(),
         "a failed load must not be marked desired"
     );
-
     let _ = guard.finish().await;
 }

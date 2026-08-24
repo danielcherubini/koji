@@ -93,40 +93,8 @@ pub async fn create_state_with_two_backends(
         );
     }
 
-    // Add two Ready model states
-    {
-        let mut models = state.registry.models.write().await;
-        models.insert(
-            "model-a".to_string(),
-            crate::proxy::BackendState::Ready {
-                model_name: "model-a".to_string(),
-                backend: "llama_cpp".to_string(),
-                backend_pid: 1001,
-                backend_url: backend1_url.to_string(),
-                load_time: std::time::SystemTime::now(),
-                last_accessed: std::time::Instant::now(),
-                consecutive_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-                failure_timestamp: None,
-                is_docker: false,
-                restart_count: 0,
-            },
-        );
-        models.insert(
-            "model-b".to_string(),
-            crate::proxy::BackendState::Ready {
-                model_name: "model-b".to_string(),
-                backend: "llama_cpp".to_string(),
-                backend_pid: 1002,
-                backend_url: backend2_url.to_string(),
-                load_time: std::time::SystemTime::now(),
-                last_accessed: std::time::Instant::now(),
-                consecutive_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-                failure_timestamp: None,
-                is_docker: false,
-                restart_count: 0,
-            },
-        );
-    }
+    // (plan-193 T5c: the mirror block is gone. Two `ready` wire rows
+    // below are the loaded state for the forward / list-model handlers.)
 
     seed_live_row(&state, "model-a", backend1_url).await;
     seed_live_row(&state, "model-b", backend2_url).await;

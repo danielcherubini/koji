@@ -4,18 +4,63 @@
 //! the dependency graph): this module only *resolves* launch specs from the
 //! central DB and *dispatches* them to the model's provider tamad. All
 //! process spawning, health polling, killing, and host sampling live in the
-//! tamad crate. The proxy keeps a staging `BackendState` mirror of the
-//! tamad's process table (see `ProxyState::sync_tamad_mirror`) so the
-//! forward path and management API see live endpoints.
+//! tamad crate. The forward path and management API see live model state
+//! from the tamads' process tables over the 1 Hz wire (plan 193 T4+
+//! T5, `crate::proxy::live_rows`-backed reads), not from any local cache.
 
 use anyhow::{anyhow, Result};
 use tracing::{debug, info, warn};
 
-use super::types::{BackendState, ProxyState};
+use super::types::ProxyState;
 
 mod idle_timeout;
 
 pub mod spec;
+
+/// Marked error: the model's tamad-side restart budget is exhausted.
+/// Its `budget_exhausted` row is the tamad's signal that it will not
+/// respawn the model for ~60s (plan-193 T5c).
+///
+/// Typed variant (not a string match): `ensure_model_loaded` returns it
+/// in its `Err` arm when the row is `budget_exhausted`; the HTTP
+/// callers check `err.is::<BudgetExhausted>()` and map it to
+/// [`budget_exhausted_response`]. No handler may recover the mark
+/// from error text, and the wire string 'the model exhausted its
+/// restarts; retry in 60 seconds' is only ever built inside
+/// [`budget_exhausted_response`].
+#[derive(Debug)]
+pub struct BudgetExhausted;
+
+impl std::fmt::Display for BudgetExhausted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("model restart budget exhausted; retry in 60 seconds")
+    }
+}
+
+impl std::error::Error for BudgetExhausted {}
+
+/// Build the HTTP 503 response returned when a model is in the tamad's
+/// `budget_exhausted` lifecycle state (plan-193 T5c): its restart budget is
+/// spent, so the tamad will refuse to respawn it for ~60s. The body and
+/// `retry-after` header are part of the wire contract.
+pub fn budget_exhausted_response() -> axum::response::Response {
+    axum::response::Response::builder()
+        .status(axum::http::StatusCode::SERVICE_UNAVAILABLE)
+        .header("retry-after", "60")
+        .body(axum::body::Body::from(
+            "the model exhausted its restarts; retry in 60 seconds",
+        ))
+        .unwrap()
+}
+
+/// The HTTP-layer transformation for a typed mark: `Some(503)` when
+/// `err` is the `BudgetExhausted` variant (a typed check — never a
+/// string match), otherwise `None`. If possible, we go through the same
+/// fn (the forward/chat handler and unit tests below); the marker stays a
+/// single source.
+pub fn budget_exhausted_response_for(err: &anyhow::Error) -> Option<axum::response::Response> {
+    err.is::<BudgetExhausted>().then(budget_exhausted_response)
+}
 
 /// Ensure a model is loaded and return its backend name.
 ///
@@ -25,7 +70,7 @@ pub mod spec;
 ///
 /// The proxy never spawns the backend process itself (ADR-0010): the launch
 /// spec is resolved from the central DB, sent to the tamad via `LoadModel`,
-/// and the model is marked *desired* so the reconciler keeps it alive.
+/// and the model is marked *desired* (host-side lifetime, ADR-0011).
 ///
 /// Callers provide an `on_load_error` closure to handle the case where loading
 /// fails (e.g., returning an error response). The closure receives the
@@ -38,6 +83,21 @@ pub async fn ensure_model_loaded(
 ) -> Result<String> {
     // Resolve alias before routing
     let resolved_model = state.resolve_alias(model_name).await;
+
+    // plan-193 T5c: a model whose restart budget is exhausted stays on
+    // the wire as a `budget_exhausted` row (the tamad holds that state
+    // with the process dead, re-warming in ~60s). It cannot respawn:
+    // surface 503 + retry-after via the typed BudgetExhausted mark
+    // instead of looping a load.
+    {
+        let rows = crate::proxy::live_rows(state.tamad_pool().as_ref()).await;
+        if rows
+            .row(&resolved_model)
+            .is_some_and(|r| r.status == "budget_exhausted")
+        {
+            return Err(anyhow::Error::new(BudgetExhausted));
+        }
+    }
 
     // Check if model has a provider_name that resolves to a remote provider.
     // When set, this overrides the `backend` field for routing.
@@ -57,8 +117,8 @@ pub async fn ensure_model_loaded(
         }
     }
 
-    // Already loaded (staging mirror of the tamad's process table) → fast
-    // path: no RPC, no desired write.
+    // Already loaded (the live wire row says so) → fast path: no RPC,
+    // no desired write.
     if let Some(backend_name) = state.get_available_backend_for_model(&resolved_model).await {
         state.update_last_accessed(&backend_name).await;
         return Ok(backend_name);
@@ -90,113 +150,63 @@ impl ProxyState {
             return Ok(None);
         }
 
-        let models = self.registry.models.write().await;
-        let ready_backends: Vec<String> = models
-            .iter()
-            .filter(|(_, s)| matches!(s, BackendState::Ready { .. }))
-            .map(|(name, _)| name.clone())
-            .collect();
-
-        let non_inference_backends: std::collections::HashSet<String> = models
-            .iter()
-            .filter(|(_, s)| s.is_non_inference_backend())
-            .map(|(name, _)| name.clone())
-            .collect();
-
-        drop(models);
-
+        // Live wire rows are the lifecycle truth (plan-193 T4): evict
+        // from the live eligible rows, not from a staging mirror. The LRU
+        // key is the row's `last_seen_ms` (wire recency) — the mirror's
+        // request `last_accessed` disappeared with the mirror.
         let model_configs = self.registry.model_configs.read().await;
-        let llm_count = ready_backends
+        let rows = crate::proxy::live_rows(self.tamad_pool().as_ref()).await;
+        let candidates: Vec<&crate::proxy::ModelRow> = rows
+            .all()
             .iter()
-            .filter(|backend_name| {
-                if model_configs
-                    .get(backend_name.as_str())
-                    .is_some_and(|mc| mc.backend.starts_with("tts_") || mc.backend == "compaction")
-                    || non_inference_backends.contains(backend_name.as_str())
-                {
+            .filter(|r| r.status == "ready")
+            .filter(|r| {
+                let mc = model_configs.get(&r.key);
+                let backend = mc.map(|c| c.backend.as_str()).unwrap_or("");
+                if backend.starts_with("tts_") || backend == "compaction" {
                     return false;
                 }
-                let model_gpu = model_configs
-                    .get(backend_name.as_str())
-                    .and_then(|mc| mc.gpu_device.as_ref());
-                model_gpu == target_gpu_device.as_ref()
+                mc.and_then(|c| c.gpu_device.as_ref()) == target_gpu_device.as_ref()
             })
-            .count();
+            .collect();
 
-        if llm_count < max as usize {
+        if candidates.len() < max as usize {
             return Ok(None);
         }
 
-        let mut models = self.registry.models.write().await;
-        let lru = ready_backends
-            .iter()
-            .filter(|backend_name| {
-                if model_configs
-                    .get(backend_name.as_str())
-                    .is_some_and(|mc| mc.backend.starts_with("tts_") || mc.backend == "compaction")
-                    || non_inference_backends.contains(backend_name.as_str())
-                {
-                    return false;
-                }
-                let model_gpu = model_configs
-                    .get(backend_name.as_str())
-                    .and_then(|mc| mc.gpu_device.as_ref());
-                model_gpu == target_gpu_device.as_ref()
-            })
-            .filter_map(|backend_name| models.get(backend_name).map(|s| (backend_name, s)))
-            .min_by_key(|(_, s)| s.last_accessed())
-            .map(|(name, s)| (name.to_string(), s.model_name().to_string()));
-
-        if let Some((ref name, _)) = lru {
-            if let Some(state) = models.get_mut(name) {
-                if let BackendState::Ready {
-                    model_name,
-                    backend,
-                    backend_pid,
-                    backend_url,
-                    last_accessed,
-                    consecutive_failures,
-                    failure_timestamp,
-                    restart_count,
-                    load_time: _,
-                    is_docker,
-                } = std::mem::take(state)
-                {
-                    *state = BackendState::Unloading {
-                        model_name,
-                        backend,
-                        backend_pid,
-                        backend_url,
-                        last_accessed,
-                        consecutive_failures,
-                        failure_timestamp,
-                        restart_count,
-                        is_docker,
-                    };
-                }
+        // Least-recently-ACCESSED first (per-key access map; plan 193
+        // T5c): a candidate with no access entry never touched the
+        // proxy and sits LRU-frontmost. Ties break on the wire
+        // recency (`last_seen_ms`), then the key — orderings that
+        // differ across racing concurrent callers, so two
+        // simultaneous calls at capacity do not double-evict the
+        // same model.
+        let lru = self.registry.last_accessed.read().await;
+        let mut ordered = candidates;
+        ordered.sort_by(|a, b| {
+            let ka = lru.get(&a.key).cloned();
+            let kb = lru.get(&b.key).cloned();
+            if ka == kb {
+                a.last_seen_ms
+                    .cmp(&b.last_seen_ms)
+                    .then_with(|| a.key.cmp(&b.key))
+            } else {
+                ka.cmp(&kb)
             }
-        }
-
-        drop(models);
-
-        if let Some((name, _model_name)) = lru {
-            // The model is being evicted; unload it locally. Lifecycle
-            // truth now comes from the live tamad rows, so there is no
-            // desired/desired_models row to clear here.
-            self.unload_model(&name).await?;
-            Ok(Some(name))
-        } else {
-            Ok(None)
-        }
+        });
+        drop(lru);
+        let name = ordered[0].key.clone();
+        self.unload_model(&name).await?;
+        Ok(Some(name))
     }
 
     /// Unload a backend (plan-191 Task 5 re-route): the *physical* kill
     /// happens on the model's provider tamad via `UnloadModel`; the proxy
-    /// clears its own state (mirror, inference stats, active_models row).
+    /// clears its own state (inference stats, access-map entry).
     ///
     /// The tamad RPC is best-effort: on failure the local state is cleared
-    /// anyway and the reconciler converges the tamad's process table to the
-    /// desired set on its next tick.
+    /// anyway and the tamad's own lifecycle (sweep / reaper) converges its
+    /// process table next window.
     pub async fn unload_model(&self, backend_name: &str) -> Result<()> {
         debug!("Unloading backend: {}", backend_name);
 
@@ -225,28 +235,24 @@ impl ProxyState {
             Err(e) => warn!(
                 model = %model_name,
                 error = %e,
-                "UnloadModel RPC failed; clearing local state anyway (reconciler will converge)"
+                "UnloadModel RPC failed; clearing local state anyway (host-side store keeps the truth)"
             ),
         }
-
-        // Remove from the mirror.
-        let mut models = self.registry.models.write().await;
-        models.remove(backend_name);
 
         // Clear stale inference stats.
         self.metrics.modify_inference_stats(|map| {
             map.remove(backend_name);
         });
 
-        // Best-effort DB cleanup.
-        let pool = self.db_pool();
-        let _ = crate::db::queries::remove_active_model(&pool, backend_name).await;
+        // Drop the per-key access entry: the model is off the rows, so
+        // the LRU / idle decisions must not keep a dead entry around.
+        self.registry
+            .last_accessed
+            .write()
+            .await
+            .remove(backend_name);
 
         info!("Backend '{}' unloaded", backend_name);
-        self.metrics
-            .counters
-            .models_unloaded
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
 }
