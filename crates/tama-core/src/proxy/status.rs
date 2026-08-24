@@ -97,6 +97,19 @@ pub(crate) async fn resolve_host_name(state: &ProxyState, model_id: &str) -> Opt
     Some(handle.connection.name.clone())
 }
 
+/// Map a wire process status onto the dashboard `ModelState` enum.
+///
+/// Only the eligible row statuses are ever seen (rows.rs filters the rest),
+/// so `starting`/`restarting` map to `Starting` and everything else falls
+/// back to `Idle` defensively.
+fn row_model_state(status: &str) -> crate::gpu::ModelState {
+    match status {
+        "ready" => crate::gpu::ModelState::Ready,
+        "starting" | "restarting" => crate::gpu::ModelState::Starting,
+        _ => crate::gpu::ModelState::Idle,
+    }
+}
+
 impl ProxyState {
     /// Build the per-model status snapshot embedded in `MetricSample.models`.
     ///
@@ -111,52 +124,18 @@ impl ProxyState {
         // Borrow inference_stats before acquiring runtime to avoid lock-order issues.
         let inference_stats = self.metrics.inference_stats_snapshot();
 
-        let runtime = self.registry.models.read().await;
+        let rows = crate::proxy::live_rows(self.tamad_pool().as_ref()).await;
         let mut out: Vec<crate::models::ModelStateSnapshot> =
             Vec::with_capacity(model_configs.len());
         for (model_id, model_cfg) in model_configs.iter() {
-            // Determine the model's lifecycle state from its backend entries.
+            // Determine the model's lifecycle state from its live wire row
+            // (plan-193 Task 4 read-side source flip: rows, not the mirror).
+            // A row exists only for a loaded, eligible process; an idle
+            // model — or an offline host — has no row and reads as Idle.
             let servers = config.resolve_backends_for_model(&model_configs, model_id);
-            let mut best_state: Option<&BackendState> = None;
-            for (backend_name, _, _) in servers.iter() {
-                if let Some(state) = runtime.get(backend_name) {
-                    match state {
-                        BackendState::Ready { .. } => {
-                            best_state = Some(state);
-                            break; // Ready is the best possible state
-                        }
-                        BackendState::Starting { .. }
-                        | BackendState::Unloading { .. }
-                        | BackendState::Failed { .. } => {
-                            if best_state.is_none() {
-                                best_state = Some(state);
-                            }
-                        }
-                    }
-                }
-            }
-
-            let (model_state, error_message, is_docker) = match best_state {
-                Some(BackendState::Ready { .. }) => (
-                    crate::gpu::ModelState::Ready,
-                    None,
-                    best_state.unwrap().is_docker(),
-                ),
-                Some(BackendState::Starting { .. }) => (
-                    crate::gpu::ModelState::Starting,
-                    None,
-                    best_state.unwrap().is_docker(),
-                ),
-                Some(BackendState::Unloading { .. }) => (
-                    crate::gpu::ModelState::Unloading,
-                    None,
-                    best_state.unwrap().is_docker(),
-                ),
-                Some(BackendState::Failed { error, .. }) => (
-                    crate::gpu::ModelState::Failed,
-                    Some(error.clone()),
-                    best_state.unwrap().is_docker(),
-                ),
+            let row = rows.row(model_id);
+            let (model_state, error_message, is_docker) = match row {
+                Some(r) => (row_model_state(&r.status), None, false),
                 None => (crate::gpu::ModelState::Idle, None, false),
             };
 
@@ -209,7 +188,6 @@ impl ProxyState {
         // cadence is ~2s and the model count is small.
         drop(config);
         drop(model_configs);
-        drop(runtime);
         for snapshot in out.iter_mut() {
             snapshot.host_name = resolve_host_name(self, &snapshot.id).await;
         }
@@ -425,6 +403,30 @@ mod tests {
         }
     }
 
+    /// Seed a live wire row for `model_id` with the given status (plan-193
+    /// T4: `collect_model_state_snapshots` reads rows, not the mirror).
+    async fn seed_live_row(state: &ProxyState, model_id: &str, status: &str) {
+        use crate::tamad::pool::test_support::{handle_with_latest, stats_full};
+        let proc = crate::tamad::ProcessInfo {
+            model_name: model_id.to_string(),
+            provider_name: "llama_cpp".to_string(),
+            pid: 1,
+            alive: true,
+            endpoint_url: "http://127.0.0.1:8000".to_string(),
+            status: status.to_string(),
+            desired: true,
+            restart_count: 0,
+            max_restarts: 3,
+        };
+        let stats = stats_full(1.5, vec![], vec![proc]);
+        let pool = state.tamad_pool();
+        pool.insert_raw_handle(
+            model_id,
+            Arc::new(handle_with_latest(std::time::Instant::now(), stats).await),
+        )
+        .await;
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn make_model_config_with_vllm(
         backend: &str,
@@ -520,10 +522,6 @@ mod tests {
     /// `backend` value.
     #[tokio::test]
     async fn test_collect_model_state_snapshots_reports_loaded_when_server_is_ready() {
-        use std::sync::atomic::AtomicU32;
-        use std::sync::Arc;
-        use std::time::{Instant, SystemTime};
-
         let mut config = Config::default();
         // Add backends so resolve_backends_for_model can match models.
         config.backends.insert(
@@ -551,27 +549,9 @@ mod tests {
             mc.insert("alpha".to_string(), make_model_config("vllm"));
         }
 
-        // Insert a Ready entry for "alpha" under the server name that
-        // `resolve_backends_for_model("alpha")` will return — the config key
-        // itself, since `make_model_config` leaves `model` as `None`.
-        {
-            let mut runtime = state.registry.models.write().await;
-            runtime.insert(
-                "alpha".to_string(),
-                BackendState::Ready {
-                    model_name: "alpha".to_string(),
-                    backend: "vllm".to_string(),
-                    backend_pid: 12345,
-                    backend_url: "http://127.0.0.1:8000".to_string(),
-                    load_time: SystemTime::now(),
-                    last_accessed: Instant::now(),
-                    consecutive_failures: Arc::new(AtomicU32::new(0)),
-                    failure_timestamp: None,
-                    is_docker: false,
-                    restart_count: 0,
-                },
-            );
-        }
+        // Seed a live `ready` wire row for "alpha" (plan-193 T4: snapshots
+        // read rows, not the mirror).
+        seed_live_row(&state, "alpha", "ready").await;
 
         let statuses = state.collect_model_state_snapshots().await;
 
@@ -619,10 +599,6 @@ mod tests {
     /// crashed.
     #[tokio::test]
     async fn test_collect_model_state_snapshots_ignores_non_ready_states() {
-        use std::sync::atomic::AtomicU32;
-        use std::sync::Arc;
-        use std::time::Instant;
-
         let config = Config::default();
         let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
@@ -638,23 +614,7 @@ mod tests {
         let backend_name = "alpha".to_string();
 
         // --- Case 1: Starting must NOT count as loaded ---------------------
-        {
-            let mut runtime = state.registry.models.write().await;
-            runtime.insert(
-                backend_name.clone(),
-                BackendState::Starting {
-                    model_name: "alpha".to_string(),
-                    backend: "llama_cpp".to_string(),
-                    backend_url: "http://127.0.0.1:8000".to_string(),
-                    backend_pid: 0,
-                    last_accessed: Instant::now(),
-                    start_time: Instant::now(),
-                    consecutive_failures: Arc::new(AtomicU32::new(0)),
-                    is_docker: false,
-                    failure_timestamp: None,
-                },
-            );
-        }
+        seed_live_row(&state, &backend_name, "starting").await;
 
         let statuses = state.collect_model_state_snapshots().await;
         assert_eq!(
@@ -670,22 +630,15 @@ mod tests {
         assert_eq!(
             alpha.state,
             crate::gpu::ModelState::Starting,
-            "BackendState::Starting must not be reported as ready, got: {:?}",
+            "a starting wire row must be reported as starting, not ready, got: {:?}",
             alpha
         );
 
-        // --- Case 2: Failed must NOT count as loaded -----------------------
-        {
-            let mut runtime = state.registry.models.write().await;
-            runtime.insert(
-                backend_name.clone(),
-                BackendState::Failed {
-                    model_name: "alpha".to_string(),
-                    backend: "llama_cpp".to_string(),
-                    error: "backend exited with status 1".to_string(),
-                },
-            );
-        }
+        // --- Case 2: a dead/failed process is NOT a live row ------
+        // Flip (plan-193 T4): a failed backend reports no eligible process
+        // on the wire, so the model reads Idle — "no host = no models",
+        // never a phantom "failed" entry.
+        seed_live_row(&state, &backend_name, "failed").await;
 
         let statuses = state.collect_model_state_snapshots().await;
         assert_eq!(
@@ -700,8 +653,8 @@ mod tests {
             .expect("alpha entry missing from collect_model_state_snapshots output");
         assert_eq!(
             alpha.state,
-            crate::gpu::ModelState::Failed,
-            "BackendState::Failed must not be reported as ready, got: {:?}",
+            crate::gpu::ModelState::Idle,
+            "a failed/dead process is not a live row and must read Idle, got: {:?}",
             alpha
         );
     }
@@ -720,18 +673,10 @@ mod tests {
             mc.insert("start-model".to_string(), make_model_config("llama_cpp"));
         }
 
-        // Insert the exact mirror the load path creates before the RPC, keyed
-        // by the model's config key — then snapshot.
-        let spec = crate::proxy::lifecycle::spec::LoadSpec {
-            backend_name: "start-model".to_string(),
-            backend: "llama_cpp".to_string(),
-            gpu_device: None,
-            request: crate::tamad::LoadModelRequest {
-                model_name: "start-model".to_string(),
-                ..Default::default()
-            },
-        };
-        crate::proxy::lifecycle::spec::insert_starting_mirror(&state, &spec).await;
+        // The load-window is now a live `starting` wire row (the tamad emits
+        // it while the in-flight `LoadModel` RPC blocks), not a local mirror
+        // placeholder — and the dashboard reads rows (plan-193 T4).
+        seed_live_row(&state, "start-model", "starting").await;
 
         let statuses = state.collect_model_state_snapshots().await;
         assert_eq!(

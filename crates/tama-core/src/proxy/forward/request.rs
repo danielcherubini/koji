@@ -78,23 +78,23 @@ pub async fn forward_request(
         }
     }
 
-    let backend_url = {
-        let models = state.registry.models.read().await;
-        match models.get(backend_name).and_then(|ms| ms.backend_url()) {
-            Some(url) => url.to_string(),
-            None => {
-                info!("No backend URL for model '{}' (not loaded?)", backend_name);
-                return (
-                    axum::http::StatusCode::BAD_GATEWAY,
-                    axum::response::Json(serde_json::json!({
-                        "error": {
-                            "message": format!("Model '{}' is not loaded", backend_name),
-                            "type": "BackendUrlError"
-                        }
-                    })),
-                )
-                    .into_response();
-            }
+    // Flip: the routing target comes from the live model rows (plan-193 T4),
+    // not the staging mirror. Offline host → no row → "not loaded".
+    let live = crate::proxy::live_rows(state.tamad_pool().as_ref()).await;
+    let backend_url = match live.row(backend_name) {
+        Some(r) if !r.endpoint.is_empty() => r.endpoint.clone(),
+        _ => {
+            info!("No backend URL for model '{}' (not loaded?)", backend_name);
+            return (
+                axum::http::StatusCode::BAD_GATEWAY,
+                axum::response::Json(serde_json::json!({
+                    "error": {
+                        "message": format!("Model '{}' is not loaded", backend_name),
+                        "type": "BackendUrlError"
+                    }
+                })),
+            )
+                .into_response();
         }
     };
 

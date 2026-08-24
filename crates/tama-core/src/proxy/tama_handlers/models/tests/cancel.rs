@@ -13,6 +13,30 @@ use crate::config::ModelConfig;
 use crate::proxy::tama_handlers::models::handle_tama_cancel_load;
 use crate::proxy::BackendState;
 
+/// Seed a live wire row for `model_id` (plan-193 T4: `handle_cancel_load`
+/// checks availability via rows, not the mirror).
+async fn seed_live(state: &Arc<crate::proxy::ProxyState>, model_id: &str, status: &str) {
+    use crate::tamad::pool::test_support::{handle_with_latest, stats_full};
+    let proc = crate::tamad::ProcessInfo {
+        model_name: model_id.to_string(),
+        provider_name: "llama_cpp".to_string(),
+        pid: 1,
+        alive: true,
+        endpoint_url: "http://127.0.0.1:1".to_string(),
+        status: status.to_string(),
+        desired: true,
+        restart_count: 0,
+        max_restarts: 3,
+    };
+    let stats = stats_full(1.5, vec![], vec![proc]);
+    let pool = state.tamad_pool();
+    pool.insert_raw_handle(
+        model_id,
+        Arc::new(handle_with_latest(std::time::Instant::now(), stats).await),
+    )
+    .await;
+}
+
 /// Cancel returns 200 for a Starting model with a PID.
 /// The fake PID (99999) has no real process group, so kill_process_group
 /// returns Ok(()) on ESRCH and is_process_group_alive returns false.
@@ -42,6 +66,7 @@ async fn test_cancel_returns_200_for_starting_model() {
             failure_timestamp: None,
         },
     );
+    seed_live(&state, "test-model", "starting").await;
 
     // Clone the Arc before moving state into the router
     let state_clone = state.clone();
@@ -111,6 +136,7 @@ async fn test_cancel_ready_model_unloads() {
             restart_count: 0,
         },
     );
+    seed_live(&state, "test-model", "ready").await;
 
     let app = Router::new()
         .route(

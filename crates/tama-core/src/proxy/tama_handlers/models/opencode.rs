@@ -19,19 +19,18 @@ pub async fn handle_opencode_list_models(
 ) -> Json<OpencodeModelsResponse> {
     // 1. Snapshot data under locks — clone out so locks are dropped before any .await below.
     // `all_configs` is a clone of the HashMap contents, not the guard, so no explicit drop needed.
-    let (loaded_models, all_configs): (HashMap<_, _>, _) = {
-        let models = state.registry.models.read().await;
+    let (loaded_models, all_configs): (
+        HashMap<String, String>,
+        HashMap<String, crate::config::ModelConfig>,
+    ) = {
+        // Live wire rows (plan-193 T4 flip) — config_name → endpoint for ready rows.
+        let live = crate::proxy::live_rows(state.tamad_pool().as_ref()).await;
         let configs = state.registry.model_configs.read().await;
-        // Collect (config_name, backend_url) for Ready backends
-        let loaded: HashMap<_, _> = models
+        let loaded: HashMap<String, String> = live
+            .all()
             .iter()
-            .filter_map(|(name, ms)| {
-                if let crate::proxy::BackendState::Ready { backend_url, .. } = ms {
-                    Some((name.clone(), backend_url.clone()))
-                } else {
-                    None
-                }
-            })
+            .filter(|r| r.status == "ready" && !r.endpoint.is_empty())
+            .map(|r| (r.key.clone(), r.endpoint.clone()))
             .collect();
         (loaded, configs.clone())
     }; // locks dropped

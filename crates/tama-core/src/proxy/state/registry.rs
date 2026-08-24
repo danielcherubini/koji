@@ -49,45 +49,7 @@ impl RegistryState {
         }
     }
 
-    /// Find an available loaded backend for a given model name.
-    pub(crate) async fn get_available_backend_for_model(
-        &self,
-        config: &crate::config::Config,
-        model_name: &str,
-    ) -> Option<String> {
-        let (backend_names, circuit_breaker_threshold) = {
-            let model_configs = self.model_configs.read().await;
-            // Collect just the backend names (owned Strings) so we can drop the lock.
-            let names: Vec<String> = config
-                .resolve_backends_for_model(&model_configs, model_name)
-                .into_iter()
-                .map(|(name, _, _)| name)
-                .collect();
-            let threshold = config.proxy.circuit_breaker_threshold;
-            (names, threshold)
-        };
-
-        let models = self.models.read().await;
-
-        // Simple round-robin or first available
-        for backend_name in backend_names {
-            if let Some(state) = models.get(&backend_name) {
-                if (state.is_ready() || matches!(state, BackendState::Starting { .. }))
-                    && state
-                        .consecutive_failures()
-                        .map(|f| f.load(std::sync::atomic::Ordering::Relaxed))
-                        .unwrap_or(0)
-                        < circuit_breaker_threshold
-                {
-                    return Some(backend_name);
-                }
-            }
-        }
-
-        None
-    }
-
-    /// Resolve a model name through the alias registry.
+    /// Return the names of all loaded backends that are TTS (text-to-speech) backends.
     /// - If `name` is an alias → returns the resolved model name (api_name or repo_id)
     /// - If `name` is not an alias → returns `name` unchanged (pass-through)
     pub(crate) async fn resolve_alias(&self, name: &str) -> String {

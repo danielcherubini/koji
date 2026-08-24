@@ -189,14 +189,14 @@ impl ProxyServer {
         let cleanup_state = Arc::clone(&self.state);
         let app = self.into_router().await;
         let on_shutdown = async move {
-            let models = cleanup_state.registry.models.read().await;
-            let tts_backends: Vec<String> = models
+            let live = crate::proxy::live_rows(cleanup_state.tamad_pool().as_ref()).await;
+            let tts_backs: Vec<String> = live
+                .all()
                 .iter()
-                .filter(|(_, ms)| ms.is_tts_backend())
-                .map(|(name, _)| name.clone())
+                .filter(|r| r.key.starts_with("tts_"))
+                .map(|r| r.key.clone())
                 .collect();
-            drop(models);
-            for name in tts_backends {
+            for name in tts_backs {
                 if let Err(e) = cleanup_state.unload_model(&name).await {
                     tracing::warn!("Failed to unload TTS backend '{}': {}", name, e);
                 }

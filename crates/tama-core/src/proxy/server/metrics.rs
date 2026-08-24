@@ -297,12 +297,14 @@ pub fn start_metrics_collector(
             let spec_decoding_active = inference_map.values().any(|s| s.spec_decoding_active);
             let inference_last_updated_ms = latest_server.map(|s| s.last_updated_ms);
 
-            // 3. Collect model statuses
+            // 3. Collect model statuses.
             let model_statuses = metrics_state.collect_model_state_snapshots().await;
-            let models_loaded = model_statuses
-                .iter()
-                .filter(|m| matches!(m.state, crate::gpu::ModelState::Ready))
-                .count() as u64;
+            // The wire `models_loaded` name is kept, but its source is now the
+            // live may-still row ready count (plan-193 T4) — a *current*
+            // ready-count semantics switch, driven by rows.ready_count(), not
+            // a tally against the staging mirror.
+            let live = crate::proxy::live_rows(metrics_state.tamad_pool().as_ref()).await;
+            let models_loaded = live.ready_count() as u64;
 
             // 4. Build unified MetricSample WITH inference fields
             let sample = crate::gpu::MetricSample {

@@ -36,6 +36,29 @@ async fn test_handle_tama_system_health() {
             restart_count: 0,
         },
     );
+    // Seed a live ready row so `models_loaded` (rows.ready_count(), plan-193
+    // T4) sees one loaded model.
+    {
+        use crate::tamad::pool::test_support::{handle_with_latest, stats_full};
+        let proc = crate::tamad::ProcessInfo {
+            model_name: "test-model".to_string(),
+            provider_name: "llama_cpp".to_string(),
+            pid: 1,
+            alive: true,
+            endpoint_url: "http://127.0.0.1:12345".to_string(),
+            status: "ready".to_string(),
+            desired: true,
+            restart_count: 0,
+            max_restarts: 3,
+        };
+        let stats = stats_full(1.5, vec![], vec![proc]);
+        let pool = state.tamad_pool();
+        pool.insert_raw_handle(
+            "t1",
+            Arc::new(handle_with_latest(std::time::Instant::now(), stats).await),
+        )
+        .await;
+    }
 
     let app = axum::Router::new()
         .route(

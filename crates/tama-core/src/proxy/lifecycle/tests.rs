@@ -38,6 +38,30 @@ fn make_starting_state(model_name: &str, backend: &str) -> BackendState {
     }
 }
 
+/// Seed a live `ready` wire row so `unload_model` / `evict_lru_if_needed`
+/// (plan-193 T4: presence from rows) see the model as loaded.
+async fn seed_live_row(state: &ProxyState, model_id: &str) {
+    use crate::tamad::pool::test_support::{handle_with_latest, stats_full};
+    let proc = crate::tamad::ProcessInfo {
+        model_name: model_id.to_string(),
+        provider_name: "llama-cpp".to_string(),
+        pid: 1,
+        alive: true,
+        endpoint_url: "http://127.0.0.1:8080".to_string(),
+        status: "ready".to_string(),
+        desired: true,
+        restart_count: 0,
+        max_restarts: 3,
+    };
+    let stats = stats_full(1.5, vec![], vec![proc]);
+    let pool = state.tamad_pool();
+    pool.insert_raw_handle(
+        model_id,
+        Arc::new(handle_with_latest(std::time::Instant::now(), stats).await),
+    )
+    .await;
+}
+
 /// Helper to create a Failed BackendState for testing.
 fn make_failed_state() -> BackendState {
     BackendState::Failed {
@@ -352,6 +376,7 @@ async fn test_evict_lru_if_needed_at_limit_evicts_lru() {
         .write()
         .await
         .insert("server1".to_string(), ready_state);
+    seed_live_row(&state, "server1").await;
 
     let result = state.evict_lru_if_needed(None).await;
     assert!(result.is_ok());
@@ -440,6 +465,7 @@ async fn test_evict_lru_if_needed_concurrent_no_double_eviction() {
         .write()
         .await
         .insert("server1".to_string(), ready1);
+    seed_live_row(&state, "server1").await;
 
     let mut ready2 = make_ready_state("model2.gguf", "llama-cpp");
     if let BackendState::Ready { last_accessed, .. } = &mut ready2 {
@@ -451,6 +477,7 @@ async fn test_evict_lru_if_needed_concurrent_no_double_eviction() {
         .write()
         .await
         .insert("server2".to_string(), ready2);
+    seed_live_row(&state, "server2").await;
 
     // Add 1 Starting model — it should be skipped by eviction, ensuring
     // both concurrent calls have a Ready model to evict.
@@ -671,6 +698,7 @@ async fn test_evict_lru_same_gpu_counts_together() {
         .write()
         .await
         .insert("cuda0-server1".to_string(), ready1);
+    seed_live_row(&state, "cuda0-server1").await;
 
     // Add second Ready model on CUDA0 (newer last_accessed)
     let mut ready2 = make_ready_state("model2.gguf", "llama-cpp");
@@ -683,6 +711,7 @@ async fn test_evict_lru_same_gpu_counts_together() {
         .write()
         .await
         .insert("cuda0-server2".to_string(), ready2);
+    seed_live_row(&state, "cuda0-server2").await;
 
     // Evict for CUDA0 target — should evict the LRU (server1)
     let result = state
@@ -756,6 +785,7 @@ async fn test_evict_lru_none_gpu_grouped() {
         .write()
         .await
         .insert("default-server1".to_string(), ready1);
+    seed_live_row(&state, "default-server1").await;
 
     // Add second Ready model with no gpu_device (newer)
     let mut ready2 = make_ready_state("model2.gguf", "llama-cpp");
@@ -768,6 +798,7 @@ async fn test_evict_lru_none_gpu_grouped() {
         .write()
         .await
         .insert("default-server2".to_string(), ready2);
+    seed_live_row(&state, "default-server2").await;
 
     // Evict for None target — should evict the LRU (server1, both are None group)
     let result = state.evict_lru_if_needed(None).await.unwrap();
@@ -789,6 +820,7 @@ async fn test_unload_model_graceful_shutdown() {
         "unload-test".to_string(),
         make_ready_state("unload-model", "llama-cpp"),
     );
+    seed_live_row(&state, "unload-test").await;
 
     // Verify the model exists
     assert!(
@@ -876,18 +908,21 @@ async fn test_idle_timeout_unloads_idle_ready_models() {
         .write()
         .await
         .insert("idle-server".to_string(), idle_ready);
+    seed_live_row(&state, "idle-server").await;
     state
         .registry
         .models
         .write()
         .await
         .insert("fresh-server".to_string(), fresh_ready);
+    seed_live_row(&state, "fresh-server").await;
     state
         .registry
         .models
         .write()
         .await
         .insert("tts-server".to_string(), tts);
+    seed_live_row(&state, "tts-server").await;
 
     let cleaned = state.check_idle_timeouts().await;
 

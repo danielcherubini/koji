@@ -8,7 +8,7 @@
 //! tamad's process table (see `ProxyState::sync_tamad_mirror`) so the
 //! forward path and management API see live endpoints.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use tracing::{debug, info, warn};
 
 use super::types::{BackendState, ProxyState};
@@ -205,23 +205,23 @@ impl ProxyState {
     pub async fn unload_model(&self, backend_name: &str) -> Result<()> {
         debug!("Unloading backend: {}", backend_name);
 
-        let state = self
-            .get_model_state(backend_name)
-            .await
-            .with_context(|| format!("Backend '{}' not loaded", backend_name))?;
-
-        if !matches!(
-            state,
-            BackendState::Ready { .. } | BackendState::Unloading { .. }
-        ) {
+        // plan-193 T4 flip: first confirm the model is currently live on the
+        // wire (no host => nothing to unload). The mirror's richer state is
+        // no longer the source for this presence check.
+        let live = crate::proxy::live_rows(self.tamad_pool().as_ref()).await;
+        let row = live.row(backend_name);
+        if row.is_none() {
+            anyhow::bail!("Backend '{}' not loaded", backend_name);
+        }
+        let row = row.unwrap();
+        if row.status != "ready" && row.status != "starting" && row.status != "restarting" {
             return Err(anyhow!(
-                "Backend '{}' is not ready (state: {:?})",
+                "Backend '{}' is not ready (state: {})",
                 backend_name,
-                state
+                row.status
             ));
         }
-
-        let model_name = state.model_name().to_string();
+        let model_name = backend_name.to_string();
 
         // Physical unload on the tamad (best-effort).
         match spec::unload_model_on_tamad(self, &model_name).await {

@@ -373,3 +373,96 @@ async fn loaded_model_reports_wire_field_extensions() {
 
     child.kill().await.expect("kill T3 tamad");
 }
+
+/// plan-193 T4 — the proxy read side is row-backed: a loaded model shows up
+/// as a live row via `tama_core::proxy::live_rows` (endpoint routed from the
+/// wire, `desired=true`, `restart_count=0`), and stopping the host empties
+/// the row set (no host = no models) once the last frame goes stale.
+///
+/// This is the e2e counterpart of the in-module `rows.rs` unit tests — the
+/// DISCOVERY of the shared `registry.models` mirror is now asserted against
+/// the tamad's actual 1 Hz stream, not a synthetic handle.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn proxy_reads_live_rows_from_wire_then_empty_when_host_missing() {
+    let dir = tempfile::tempdir().expect("T4 tempdir");
+    let data_dir = dir.path().to_path_buf();
+    let (mut child, port, token, _log) = start_tamad(&data_dir, true).await;
+    let mut client = connect(port, token.as_str());
+
+    // Drive an explicit load over the wire (T3's flow), then let the proxy
+    // read the SAME live frame through a real `TamadPool`.
+    let req = LoadModelRequest {
+        provider_name: "llama_cpp".to_string(),
+        model_path: "".to_string(),
+        gpu_variant: "".to_string(),
+        params: std::collections::HashMap::new(),
+        model_name: LOADED_KEY.to_string(),
+        command: "/bin/sh".to_string(),
+        args: vec!["-c".to_string(), "sleep 300".to_string()],
+        env: std::collections::HashMap::new(),
+        health_url: "".to_string(),
+        health_timeout_ms: 0,
+        gpu_device: "".to_string(),
+        docker_config_json: "".to_string(),
+    };
+    client
+        .load_model(&req)
+        .await
+        .expect("load the model over the wire");
+    wait_loaded(&client, LOADED_KEY, Duration::from_secs(15)).await;
+
+    // Bind a proxy `TamadPool` to the same running host and read live rows.
+    let pool = tama_core::tamad::pool::TamadPool::new(tama_test_support::test_dummy_pool())
+        .with_backoff_base(Duration::from_millis(20));
+    let conn = TamadConnection {
+        id: "e2e-boot-replay".to_string(),
+        name: "e2e-box".to_string(),
+        url: format!("grpc://127.0.0.1:{port}"),
+        protocol: Protocol::Grpc,
+        token: Some(token.to_string()),
+        status: TamadStatus::Unknown,
+    };
+    pool.upsert_connection(&conn)
+        .await
+        .expect("proxy pool connect");
+
+    // The proxy row set converges to >= 1 for the loaded model: rows.ready
+    // and the tamad stream's own process snapshot AGREE at the 0/1 level
+    // (both *have* the model).
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    while tokio::time::Instant::now() < deadline {
+        let rows = tama_core::proxy::live_rows(&pool).await;
+        if let Some(r) = rows.row(LOADED_KEY) {
+            assert!(r.desired, "proxy row reports desired=true (wire T3 flag)");
+            assert_eq!(r.restart_count, 0, "proxy row reports restart_count=0");
+            assert!(
+                rows.ready_count() >= 1,
+                "proxy ready count >= 1 (both sources agree at 0/1)"
+            );
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    let rows = tama_core::proxy::live_rows(&pool).await;
+    assert!(
+        rows.row(LOADED_KEY).is_some(),
+        "proxy must read the loaded model row off the wire"
+    );
+
+    // Stop the host: the frame goes stale past LIVE_FRAME_MAX_AGE (5s), and
+    // the proxy read drops to ZERO rows (no host = no models) — same index
+    // pattern as `rows.rs`'s stale-frame unit test.
+    child.kill().await.expect("kill T4 tamad");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while tokio::time::Instant::now() < deadline {
+        let rows = tama_core::proxy::live_rows(&pool).await;
+        if rows.all().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    assert!(
+        tama_core::proxy::live_rows(&pool).await.all().is_empty(),
+        "offline host → 0 proxy rows (no host = no models)"
+    );
+}

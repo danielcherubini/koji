@@ -14,6 +14,29 @@ use crate::proxy::{BackendState, ProxyState};
 
 use super::helpers::create_state_with_model;
 
+/// Seed a live wire row (plan-193 T4: management handlers read rows).
+async fn seed_live_row(state: &Arc<ProxyState>, model_id: &str, status: &str) {
+    use crate::tamad::pool::test_support::{handle_with_latest, stats_full};
+    let proc = crate::tamad::ProcessInfo {
+        model_name: model_id.to_string(),
+        provider_name: "llama_cpp".to_string(),
+        pid: 1,
+        alive: true,
+        endpoint_url: "http://127.0.0.1:1".to_string(),
+        status: status.to_string(),
+        desired: true,
+        restart_count: 0,
+        max_restarts: 3,
+    };
+    let stats = stats_full(1.5, vec![], vec![proc]);
+    let pool = state.tamad_pool();
+    pool.insert_raw_handle(
+        model_id,
+        Arc::new(handle_with_latest(std::time::Instant::now(), stats).await),
+    )
+    .await;
+}
+
 /// Two model configs, one Ready → loaded has state=="ready", other has "idle".
 #[tokio::test]
 async fn test_handle_tama_list_models_states() {
@@ -65,6 +88,7 @@ async fn test_handle_tama_list_models_states() {
             restart_count: 0,
         },
     );
+    seed_live_row(&state, "ready-model", "ready").await;
 
     let app = axum::Router::new()
         .route(
@@ -137,6 +161,7 @@ async fn test_handle_tama_get_model_loaded() {
             restart_count: 0,
         },
     );
+    seed_live_row(&state, "test-model", "ready").await;
 
     let app = axum::Router::new()
         .route(
@@ -295,6 +320,7 @@ async fn test_handle_tama_cancel_load_starting() {
             failure_timestamp: None,
         },
     );
+    seed_live_row(&state, "test-model", "starting").await;
 
     let app = axum::Router::new()
         .route(
@@ -355,6 +381,7 @@ async fn test_handle_tama_cancel_load_ready_unloads() {
             restart_count: 0,
         },
     );
+    seed_live_row(&state, "test-model", "ready").await;
 
     let app = axum::Router::new()
         .route(

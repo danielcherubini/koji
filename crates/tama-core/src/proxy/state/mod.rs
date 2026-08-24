@@ -9,6 +9,7 @@ mod metrics;
 mod pull;
 mod registry;
 pub(crate) mod repo_pull;
+pub(crate) mod rows;
 
 pub(crate) use metrics::MetricsState;
 pub(crate) use pull::PullState;
@@ -114,10 +115,26 @@ impl ProxyState {
 
     /// Find an available loaded backend for a given model name.
     pub async fn get_available_backend_for_model(&self, model_name: &str) -> Option<String> {
+        // plan-193 T4 flip: presence comes from the live wire rows, not the
+        // staging mirror. A backend is available when its row is `ready` and
+        // exposes a routeable endpoint (offline host → no rows → not loaded).
         let config = self.config.read().await;
-        self.registry
-            .get_available_backend_for_model(&config, model_name)
-            .await
+        let model_configs = self.registry.model_configs.read().await;
+        let backends = config.resolve_backends_for_model(&model_configs, model_name);
+
+        // (model_configs read guard stays alive through the loop; the
+        // resolved backends borrow from it.)
+
+        let rows = crate::proxy::live_rows(self.tamad_pool().as_ref()).await;
+        for (name, _, _) in backends.iter() {
+            let r = rows.row(name);
+            if r.is_some_and(|r| {
+                r.status == "ready" || r.status == "starting" || r.status == "restarting"
+            }) {
+                return Some(name.clone());
+            }
+        }
+        None
     }
 
     /// Update the last accessed time for a backend.

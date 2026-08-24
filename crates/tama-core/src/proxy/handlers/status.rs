@@ -61,20 +61,24 @@ pub async fn handle_health() -> Json<serde_json::Value> {
 /// metrics prefixed with `tama:`. Returns `text/plain; version=0.0.4`.
 #[axum::debug_handler]
 pub async fn handle_metrics(state: State<Arc<ProxyState>>) -> Response {
-    // Collect Ready non-TTS backends and drop the lock immediately
-    let backends: Vec<(String, String)> = {
-        let models = state.registry.models.read().await;
-        models
-            .iter()
-            .filter_map(|(name, ms)| {
-                if ms.is_ready() && !ms.is_tts_backend() {
-                    ms.backend_url().map(|url| (name.clone(), url.to_string()))
-                } else {
-                    None
-                }
-            })
-            .collect()
-    };
+    // Collect Ready non-TTS backends on the live model rows (plan-193 T4
+    // read-side flip: rows, not the mirror). `live` returns eligible
+    // (ready/starting/restarting) rows; ready + endpoint narrows to the
+    // routeable set, and `tts_` prefixes are excluded like the mirror's
+    // `is_tts_backend()`.
+    let live = crate::proxy::live_rows(state.tamad_pool().as_ref()).await;
+    let backends: Vec<(String, String)> = live
+        .all()
+        .iter()
+        .filter(|r| r.status == "ready" && !r.endpoint.is_empty())
+        .filter_map(|r| {
+            if r.key.starts_with("tts_") {
+                None
+            } else {
+                Some((r.key.clone(), r.endpoint.clone()))
+            }
+        })
+        .collect();
     let active_count = backends.len();
 
     // Fetch metrics from each backend concurrently

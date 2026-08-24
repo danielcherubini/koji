@@ -306,6 +306,17 @@ impl TamadPool {
         let tamad_id = tamad_id?;
         self.get(tamad_id).await
     }
+
+    /// Test-only: insert a pre-built handle WITHOUT starting a stream task
+    /// (rows.rs unit tests supply controlled `latest_fresh` snapshots). This
+    /// is compiled out of production builds.
+    #[cfg(any(test, feature = "test-stubs"))]
+    pub async fn insert_raw_handle(&self, id: &str, handle: Arc<TamadHandle>) {
+        self.handles
+            .write()
+            .await
+            .insert(id.to_string(), Arc::clone(&handle));
+    }
 }
 
 /// Background stream task: keep one `StreamStats` stream open per tamad,
@@ -455,6 +466,8 @@ pub mod test_support {
     use futures_util::{Stream, StreamExt};
 
     use crate::providers::{Protocol, TamadConnection, TamadStatus};
+    use crate::tamad::pool::LatestStats;
+    use crate::tamad::pool::TamadHandle;
     use crate::tamad::{JobEvent, LogEntry, StatsRequest, SystemStats};
 
     // ── Stub tamad gRPC service ──
@@ -944,6 +957,38 @@ pub mod test_support {
             load_delays: std::collections::HashMap::new(),
             load_model_fail: Arc::new(tokio::sync::Mutex::new(false)),
         }
+    }
+
+    // ── Scripted-handle factories (rows.rs unit tests) ─────────────────────
+
+    /// Build a handle that has ALREADY delivered the given snapshot at `at`
+    /// (no stream task). `rows.rs` uses this to unit-test `freshness` and
+    /// `ProcessInfo` aggregation with a controlled frame.
+    pub async fn handle_with_latest(at: Instant, stats: SystemStats) -> TamadHandle {
+        let handle = TamadHandle::new(TamadConnection {
+            id: "rows-host".to_string(),
+            name: "rows-host".to_string(),
+            url: "grpc://127.0.0.1:1".to_string(),
+            protocol: Protocol::Grpc,
+            token: Some("secret".to_string()),
+            status: TamadStatus::Unknown,
+        });
+        // test_support lives in pool.rs, so the private `latest` field is
+        // reachable (same as the StubTamad stream write path below).
+        *handle.latest.write().await = Some(LatestStats { stats, at });
+        handle
+    }
+
+    /// A handle that has NEVER delivered a snapshot (offline from birth).
+    pub fn handle_no_latest() -> TamadHandle {
+        TamadHandle::new(TamadConnection {
+            id: "rows-offline".to_string(),
+            name: "rows-offline".to_string(),
+            url: "grpc://127.0.0.1:1".to_string(),
+            protocol: Protocol::Grpc,
+            token: Some("secret".to_string()),
+            status: TamadStatus::Unknown,
+        })
     }
 
     /// Poll `f` (every 20ms) until it returns true or the 10s deadline hits.

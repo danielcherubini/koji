@@ -2,6 +2,30 @@ use super::*;
 use futures_util::StreamExt;
 use std::sync::Arc;
 
+/// Seed a live `ready` wire row so `handle_metrics` (plan-193 T4: rows)
+/// sees the mock backend as a Ready, routeable endpoint.
+async fn seed_live_row(state: &Arc<crate::proxy::ProxyState>, model_id: &str, endpoint: &str) {
+    use crate::tamad::pool::test_support::{handle_with_latest, stats_full};
+    let proc = crate::tamad::ProcessInfo {
+        model_name: model_id.to_string(),
+        provider_name: "llama_cpp".to_string(),
+        pid: 1,
+        alive: true,
+        endpoint_url: endpoint.to_string(),
+        status: "ready".to_string(),
+        desired: true,
+        restart_count: 0,
+        max_restarts: 3,
+    };
+    let stats = stats_full(1.5, vec![], vec![proc]);
+    let pool = state.tamad_pool();
+    pool.insert_raw_handle(
+        model_id,
+        Arc::new(handle_with_latest(std::time::Instant::now(), stats).await),
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn test_proxy_routes_exist() {
     let config = crate::config::Config::default();
@@ -205,6 +229,7 @@ async fn test_metrics_merges_backend_metrics() {
             },
         );
     }
+    seed_live_row(&state, "test-model", backend_url.as_str()).await;
 
     // Start the proxy server
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

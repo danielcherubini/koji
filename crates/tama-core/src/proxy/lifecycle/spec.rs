@@ -712,11 +712,14 @@ pub async fn load_model_on_tamad(state: &ProxyState, model_name: &str) -> Result
 /// from the central DB installation row and the uvicorn process is spawned
 /// by the tamad.
 pub async fn load_tts_on_tamad(state: &ProxyState, backend_name: &str) -> Result<String> {
-    // Fast path — already loaded (mirror).
-    if let Some(state) = state.registry.models.read().await.get(backend_name) {
-        if state.is_ready() {
-            return Ok(backend_name.to_string());
-        }
+    // Fast path — already loaded (live row, plan-193 T4 flip).
+    let live = crate::proxy::live_rows(state.tamad_pool().as_ref()).await;
+    if live
+        .row(backend_name)
+        .map(|r| r.status == "ready")
+        .unwrap_or(false)
+    {
+        return Ok(backend_name.to_string());
     }
     let spec = build_tts_load_spec(state, backend_name).await?;
     load_spec_on_tamad(state, &spec, false).await
@@ -728,11 +731,14 @@ pub async fn load_compaction_on_tamad(state: &ProxyState) -> Result<()> {
     if !state.config.read().await.compaction.enabled {
         anyhow::bail!("Compaction is not enabled in config");
     }
-    // Fast path — already loaded (mirror).
-    if let Some(state) = state.registry.models.read().await.get("compaction") {
-        if state.is_ready() {
-            return Ok(());
-        }
+    // Fast path — already loaded (live row, plan-3 flip).
+    let live = crate::proxy::live_rows(state.tamad_pool().as_ref()).await;
+    if live
+        .row("compaction")
+        .map(|r| r.status == "ready")
+        .unwrap_or(false)
+    {
+        return Ok(());
     }
     let spec = build_compaction_load_spec(state).await?;
     load_spec_on_tamad(state, &spec, false).await?;

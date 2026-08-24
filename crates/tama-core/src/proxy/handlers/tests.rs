@@ -12,6 +12,31 @@ pub fn create_test_state() -> ProxyState {
     ProxyState::new(config, None, crate::db::pool::test_dummy_pool())
 }
 
+/// Seed a live `ready` wire row for `model_id` on the state's tamad pool
+/// (plan-193 T4: handlers read endpoints/state from the live ProcessInfo
+/// rows, so tests must seed them the way the tamad stream would).
+pub async fn seed_live_row(state: &ProxyState, model_id: &str, endpoint: &str) {
+    use crate::tamad::pool::test_support::{handle_with_latest, stats_full};
+    let proc = crate::tamad::ProcessInfo {
+        model_name: model_id.to_string(),
+        provider_name: "llama_cpp".to_string(),
+        pid: 1,
+        alive: true,
+        endpoint_url: endpoint.to_string(),
+        status: "ready".to_string(),
+        desired: true,
+        restart_count: 0,
+        max_restarts: 3,
+    };
+    let stats = stats_full(1.5, vec![], vec![proc]);
+    let pool = state.tamad_pool();
+    pool.insert_raw_handle(
+        model_id,
+        Arc::new(handle_with_latest(std::time::Instant::now(), stats).await),
+    )
+    .await;
+}
+
 /// Create a POST request with the given body for testing forward handlers.
 pub fn create_forward_post_request(body: &[u8]) -> Request<Body> {
     Request::post("/v1/chat/completions")
@@ -102,6 +127,9 @@ pub async fn create_state_with_two_backends(
             },
         );
     }
+
+    seed_live_row(&state, "model-a", backend1_url).await;
+    seed_live_row(&state, "model-b", backend2_url).await;
 
     Arc::new(state)
 }

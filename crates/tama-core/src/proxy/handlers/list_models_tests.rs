@@ -470,6 +470,7 @@ async fn test_handle_list_models_alias_deduplication() {
             },
         );
     }
+    seed_live_row(&state, "gemma-e2b", mock_server.uri().as_str()).await;
 
     let state_arc = Arc::new(state);
     let state = State(state_arc.clone());
@@ -567,6 +568,7 @@ async fn test_handle_list_models_no_alias_no_normalization() {
             },
         );
     }
+    seed_live_row(&state, "my-model", mock_server.uri().as_str()).await;
 
     let state_arc = Arc::new(state);
     let state = State(state_arc.clone());

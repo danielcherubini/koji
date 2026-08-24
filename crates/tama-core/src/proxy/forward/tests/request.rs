@@ -70,6 +70,32 @@ fn test_state() -> Arc<ProxyState> {
     ))
 }
 
+/// Register a live `ready` wire row for `model_id` on the state's tamad pool
+/// (plan-193 T4: `forward_request` reads the endpoint from rows, so tests
+/// must seed the live ProcessInfo the same way the tamad stream would). The
+/// mirror entry (circuit breaker, failure bookkeeping) is inserted separately.
+async fn seed_live_row(state: &Arc<ProxyState>, model_id: &str, endpoint: &str) {
+    use crate::tamad::pool::test_support::{handle_with_latest, stats_full};
+    let proc = crate::tamad::ProcessInfo {
+        model_name: model_id.to_string(),
+        provider_name: "llama.cpp".to_string(),
+        pid: 1,
+        alive: true,
+        endpoint_url: endpoint.to_string(),
+        status: "ready".to_string(),
+        desired: true,
+        restart_count: 0,
+        max_restarts: 3,
+    };
+    let stats = stats_full(1.5, vec![], vec![proc]);
+    let pool = state.tamad_pool();
+    pool.insert_raw_handle(
+        "t1",
+        Arc::new(handle_with_latest(Instant::now(), stats).await),
+    )
+    .await;
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────
 
 /// Crashed backend (nothing listening) surfaces as a connection error at
@@ -86,6 +112,7 @@ async fn test_forward_request_conn_error_returns_502_and_cleans_up() {
         "test-model".to_string(),
         make_ready_state("http://127.0.0.1:1".into(), 99999999, 0, None),
     );
+    seed_live_row(&state, "test-model", "http://127.0.0.1:1").await;
 
     // Pre-seed inference_stats so we can assert it's cleared.
     state
@@ -140,6 +167,7 @@ async fn test_forward_request_conn_error_counts_failed_and_removes_model() {
         "test-model".to_string(),
         make_ready_state("http://127.0.0.1:1".into(), 99999999, 0, None),
     );
+    seed_live_row(&state, "test-model", "http://127.0.0.1:1").await;
 
     let _resp = forward_request(
         &state,
@@ -307,6 +335,7 @@ async fn test_forward_request_circuit_breaker_trips_and_unloads_after_cooldown()
             Some(SystemTime::now() - Duration::from_secs(120)),
         ),
     );
+    seed_live_row(&state, "test-model", "http://127.0.0.1:1").await;
 
     let resp = forward_request(
         &state,
@@ -385,6 +414,7 @@ async fn test_forward_request_below_threshold_passes_circuit_breaker() {
             Some(SystemTime::now()),
         ),
     );
+    seed_live_row(&state, "test-model", server.uri().as_str()).await;
 
     let resp = forward_request(
         &state,
@@ -448,6 +478,7 @@ async fn test_forward_request_success_increments_metrics_and_rewrites_model() {
         "test-model".to_string(),
         make_ready_state(server.uri(), std::process::id(), 2, None),
     );
+    seed_live_row(&state, "test-model", server.uri().as_str()).await;
 
     let resp = forward_request(
         &state,
@@ -533,6 +564,7 @@ async fn test_forward_request_backend_500_increments_failures_and_sets_timestamp
         "test-model".to_string(),
         make_ready_state(server.uri(), std::process::id(), 0, None),
     );
+    seed_live_row(&state, "test-model", server.uri().as_str()).await;
 
     let resp = forward_request(
         &state,
@@ -628,6 +660,7 @@ async fn test_forward_request_rewrites_model_in_request_body() {
         "resolved-model".to_string(),
         make_ready_state(server.uri(), std::process::id(), 0, None),
     );
+    seed_live_row(&state, "resolved-model", server.uri().as_str()).await;
 
     // Body padded large enough that a stale (smaller) content-length header
     // would visibly truncate it. "org/alias" is shorter than "resolved-model"

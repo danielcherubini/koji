@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use axum::{
     extract::{Path, State},
@@ -11,19 +10,22 @@ use axum::{
 use super::utils::resolve_config_key;
 use crate::gpu::ModelState;
 use crate::proxy::tama_handlers::{ListModelsResponse, ListedModelResponse, ModelResponse};
-use crate::proxy::{BackendState, ProxyState};
+use crate::proxy::ProxyState;
 use tracing::{info, warn};
 
 // TODO(plan-172): unrouted after plan-169 — delete
 /// Handle listing all configured models (Tama management API).
 pub async fn handle_tama_list_models(state: State<Arc<ProxyState>>) -> Json<ListModelsResponse> {
-    use std::sync::atomic::Ordering::Relaxed;
-
     let config = state.config.read().await;
     let model_configs = state.registry.model_configs.read().await;
-    let models = state.registry.models.read().await;
-    let auto_unload = config.proxy.auto_unload;
-    let idle_timeout_secs = config.proxy.idle_timeout_secs;
+
+    // Lifecycle state now comes from the row-backed per-model snapshots
+    // (plan-193 Task 4 flip: `collect_model_state_snapshots` reads the live
+    // ProcessInfo rows, not the mirror).
+    let mut snap_by_id = std::collections::HashMap::new();
+    for snap in state.collect_model_state_snapshots().await {
+        snap_by_id.insert(snap.id.clone(), snap);
+    }
 
     let mut result: Vec<ListedModelResponse> = Vec::with_capacity(model_configs.len());
 
@@ -33,66 +35,12 @@ pub async fn handle_tama_list_models(state: State<Arc<ProxyState>>) -> Json<List
             .get(&model_config.backend)
             .and_then(|b| b.path.clone());
 
-        let model_state = models.get(model_name);
-
-        let (
-            model_state,
-            backend_pid,
-            load_time_secs,
-            last_accessed_secs_ago,
-            idle_timeout_remaining_secs,
-            consecutive_failures,
-        ) = match model_state {
-            Some(BackendState::Ready {
-                backend_pid,
-                load_time,
-                last_accessed,
-                consecutive_failures,
-                ..
-            }) => {
-                let now = Instant::now();
-                let secs_ago = now.duration_since(*last_accessed).as_secs();
-                let elapsed = now.duration_since(*last_accessed);
-                let remaining = if auto_unload {
-                    let timeout = Duration::from_secs(idle_timeout_secs);
-                    if elapsed < timeout {
-                        Some((timeout - elapsed).as_secs())
-                    } else {
-                        Some(0)
-                    }
-                } else {
-                    None
-                };
-                let load_secs = load_time
-                    .duration_since(UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                (
-                    ModelState::Ready,
-                    Some(*backend_pid),
-                    Some(load_secs),
-                    Some(secs_ago),
-                    remaining,
-                    Some(consecutive_failures.load(Relaxed)),
-                )
-            }
-            Some(BackendState::Starting {
-                consecutive_failures,
-                ..
-            }) => (
-                ModelState::Starting,
-                None,
-                None,
-                None,
-                None,
-                Some(consecutive_failures.load(Relaxed)),
-            ),
-            Some(BackendState::Unloading { .. }) => {
-                (ModelState::Unloading, None, None, None, None, None)
-            }
-            Some(BackendState::Failed { .. }) => (ModelState::Failed, None, None, None, None, None),
-            _ => (ModelState::Idle, None, None, None, None, None),
-        };
+        // row-backed per-model lifecycle state; the mirror-only detail
+        // (pid, load time, idle count) has no wire source and reads None.
+        let lifecycle_state = snap_by_id
+            .get(model_name)
+            .map(|s| s.state.clone())
+            .unwrap_or(ModelState::Idle);
 
         result.push(ListedModelResponse {
             id: model_config.db_id,
@@ -104,12 +52,12 @@ pub async fn handle_tama_list_models(state: State<Arc<ProxyState>>) -> Json<List
             context_length: model_config.context_length,
             enabled: model_config.enabled,
             api_name: model_config.api_name.clone(),
-            state: model_state,
-            backend_pid,
-            load_time_secs,
-            last_accessed_secs_ago,
-            idle_timeout_remaining_secs,
-            consecutive_failures,
+            state: lifecycle_state,
+            backend_pid: None,
+            load_time_secs: None,
+            last_accessed_secs_ago: None,
+            idle_timeout_remaining_secs: None,
+            consecutive_failures: None,
         });
     }
 
@@ -123,24 +71,27 @@ pub async fn handle_tama_get_model(
     Path(model_id): Path<String>,
 ) -> Response {
     let model_id = resolve_config_key(&state, &model_id).await;
-    // Check if already loaded (by server name or model name)
-    let model_state = state.get_model_state(&model_id).await;
-
-    if let Some(ms) = model_state {
-        let owned_by = ms.backend();
-        let created = match ms.load_time() {
-            Some(load_time) => load_time
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or(std::time::Duration::ZERO)
-                .as_secs(),
-            None => 0,
-        };
+    // Whether the model is currently live on the wire (plan-193 T4 flip:
+    // rows, not the mirror). `created`/`owned_by` have no wire source and
+    // read 0 / empty; `ready` is the lifecycle fact that matters.
+    let live = crate::proxy::live_rows(state.tamad_pool().as_ref()).await;
+    // Merge the row with the configured backend so `owned_by` still resolves
+    // (the wire row has no provider field); `created` stays 0 (no wire source).
+    let owned = state
+        .registry
+        .model_configs
+        .read()
+        .await
+        .get(&model_id)
+        .map(|mc| mc.backend.clone())
+        .unwrap_or(String::new());
+    if let Some(r) = live.row(&model_id) {
         return Json(serde_json::json!({
             "id": model_id,
             "object": "model",
-            "created": created,
-            "owned_by": owned_by,
-            "ready": ms.is_ready()
+            "created": 0,
+            "owned_by": owned,
+            "ready": r.status == "ready"
         }))
         .into_response();
     }

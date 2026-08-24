@@ -16,6 +16,31 @@ use wiremock::{
 
 use super::tests::*;
 
+/// Seed a live `ready` wire row for `model_id` on the state's tamad pool so
+/// `handle_get_model` (plan-193 T4: rows, not the mirror) sees the backend
+/// as loaded and pulls its `/v1/models` from the live endpoint.
+async fn seed_live_proxy(state: &ProxyState, model_id: &str, endpoint: &str) {
+    use crate::tamad::pool::test_support::{handle_with_latest, stats_full};
+    let proc = crate::tamad::ProcessInfo {
+        model_name: model_id.to_string(),
+        provider_name: "llama_cpp".to_string(),
+        pid: 1,
+        alive: true,
+        endpoint_url: endpoint.to_string(),
+        status: "ready".to_string(),
+        desired: true,
+        restart_count: 0,
+        max_restarts: 3,
+    };
+    let stats = stats_full(1.5, vec![], vec![proc]);
+    let pool = state.tamad_pool();
+    pool.insert_raw_handle(
+        "t1",
+        Arc::new(handle_with_latest(std::time::Instant::now(), stats).await),
+    )
+    .await;
+}
+
 // ── handle_get_model: basic config lookup tests ──────────────────────────
 
 #[tokio::test]
@@ -185,6 +210,7 @@ async fn test_handle_get_model_fetches_from_backend_with_meta() {
             },
         );
     }
+    seed_live_proxy(&state, "test-model", mock_server.uri().as_str()).await;
 
     let state_arc = Arc::new(state);
     let state = State(state_arc.clone());
@@ -342,6 +368,7 @@ async fn test_handle_get_model_matches_by_model_field_when_multiple() {
             },
         );
     }
+    seed_live_proxy(&state, "my-model", mock_server.uri().as_str()).await;
 
     let state_arc = Arc::new(state);
     let state = State(state_arc.clone());
@@ -398,6 +425,7 @@ async fn test_handle_get_model_backend_failure_fallback() {
             },
         );
     }
+    seed_live_proxy(&state, "fail-model", "http://localhost:59999").await;
 
     let state_arc = Arc::new(state);
     let state = State(state_arc.clone());
@@ -474,6 +502,7 @@ async fn test_handle_get_model_normalizes_id_from_alias() {
             },
         );
     }
+    seed_live_proxy(&state, "gemma-e2b", mock_server.uri().as_str()).await;
 
     let state_arc = Arc::new(state);
     let state = State(state_arc.clone());
@@ -580,6 +609,7 @@ async fn test_handle_get_model_loaded_with_reasoning_levels() {
             },
         );
     }
+    seed_live_proxy(&state, "leveled-model", mock_server.uri().as_str()).await;
 
     let state_arc = Arc::new(state);
     let state = State(state_arc.clone());
@@ -665,6 +695,7 @@ async fn test_handle_get_model_loaded_without_reasoning_levels_unchanged() {
             },
         );
     }
+    seed_live_proxy(&state, "plain-model", mock_server.uri().as_str()).await;
 
     let state_arc = Arc::new(state);
     let state = State(state_arc.clone());
