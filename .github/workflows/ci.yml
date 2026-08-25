@@ -25,7 +25,7 @@ jobs:
 
       - name: Install Rust (pinned via rustup; action version input ignored)
         run: |
-          rustup toolchain install 1.95.0 --profile minimal
+          rustup toolchain install 1.95.0 --profile minimal -c clippy -c rustfmt
           rustup default 1.95.0
           rustc --version
           cargo --version
@@ -50,9 +50,11 @@ jobs:
 
       - name: Install Rust (pinned via rustup; action version input ignored)
         run: |
-          rustup toolchain install 1.95.0 --profile minimal
-          rustup target add wasm32-unknown-unknown
+          rustup toolchain install 1.95.0 --profile minimal -c clippy -c rustfmt
           rustup default 1.95.0
+          # target add AFTER the default switch, scoped to the pinned toolchain
+          # (attaching it earlier silently lands it on the runner's preinstalled stable)
+          rustup target add --toolchain 1.95.0 wasm32-unknown-unknown
           rustc --version
           cargo --version
 
@@ -102,7 +104,7 @@ jobs:
 
       - name: Install Rust (pinned via rustup; action version input ignored)
         run: |
-          rustup toolchain install 1.95.0 --profile minimal -c clippy
+          rustup toolchain install 1.95.0 --profile minimal -c clippy -c rustfmt
           rustup default 1.95.0
           rustc --version
           cargo --version
@@ -153,7 +155,7 @@ jobs:
 
       - name: Install Rust (pinned via rustup; action version input ignored)
         run: |
-          rustup toolchain install 1.95.0 --profile minimal -c clippy
+          rustup toolchain install 1.95.0 --profile minimal -c clippy -c rustfmt
           rustup default 1.95.0
           rustc --version
           cargo --version
