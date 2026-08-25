@@ -102,17 +102,28 @@ fn key_is_model_key(key: &str) -> bool {
     !key.is_empty() && key != ".." && !key.starts_with('/')
 }
 
+// plan-193: `NONE` of these fall outside the plan's
+// magic-constant allow-list (`RESTART_WINDOW_SECS` / `DEFAULT_MAX_RESTARTS` /
+// `RETRY_AFTER` / `LIVE_FRAME_MAX_AGE`) — the two marked CLI-bound
+// constants below are recorded intentional exceptions
+// (each tagged in its doc) for next-plan gate adjudication.
 /// The pool gRPC host-mapping frame-freshness window (5 s) — the same
 /// wire staleness contract as `live`'s row handling: we only trust a
 /// host's newest frame for "who hosts this key."
 const LOGS_FRESH_FRAME: Duration = Duration::from_secs(5);
 
-/// Time for the unbounded `Logs` tail to end (the tamad caps it in-line
-/// and closes; the bound is there only to protect against a hang).
+/// CLI tail bound (plan-193 magic-constant EXCEPTION — not in the
+/// allow-list). Bounds the whole one-shot `logs` stream read, not a
+/// per-message timeout; no write-side mirror on the tamad (the host
+/// streams a finite tail once and closes). Carry to docs/plans for
+/// the next plan to adjudicate.
 const LOGS_STREAM_CAP: Duration = Duration::from_secs(30);
 
-/// A defensive line count a `Logs` tail can carry (the tamad side is
-/// already capped by this length).
+/// CLI tail cap (plan-193 magic-constant EXCEPTION — not in the
+/// allow-list). Value mirrors the host-side
+/// `tail_container_logs(&container, 200)` in `crates/tamad/src/server.rs`
+/// (signature `tail_container_logs(container_name: &str, max_lines: usize)`);
+/// keep them in sync if one moves; verified at T6.
 const LOGS_LINE_CAP: usize = 200;
 
 /// The bootstrap chain the admin verb shares with all the
