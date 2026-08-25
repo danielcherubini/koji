@@ -205,6 +205,10 @@ async fn cmd_status(state: &Arc<ProxyState>) -> std::result::Result<(), AdminErr
 /// headless CLI runs in-process the same API path the proxy does:
 /// alias resolution → the 503 budget check → the already-alive-row fast
 /// path (no second `LoadModel`) → the wire `LoadModel`).
+///
+/// **Key contract (uniform across all verbs):** a config key or alias;
+/// resolution happens at the verb entry, and the not-found determination
+/// uses the alias-resolved key (the exit-code mapping is unchanged).
 async fn cmd_load(
     state: &Arc<ProxyState>,
     config_key: &str,
@@ -240,6 +244,10 @@ async fn cmd_load(
 
 /// `unload <config_key>` — the existing unload path (no row ⇒
 /// not-found; a status that cannot be terminated is a normal error).
+///
+/// **Key contract (uniform across all verbs):** a config key or alias;
+/// resolution happens at the verb entry, and the not-found determination
+/// uses the alias-resolved key (the exit-code mapping is unchanged).
 async fn cmd_unload(
     state: &Arc<ProxyState>,
     config_key: &str,
@@ -247,18 +255,21 @@ async fn cmd_unload(
     if !key_is_model_key(config_key) {
         return Err(AdminError::not_found(config_key));
     }
+    // Alias resolution at the verb entry (the uniform contract): the
+    // row lookup, the unload, and the report all use the resolved key.
+    let resolved = state.resolve_alias(config_key).await;
     if live_rows(state.tamad_pool().as_ref())
         .await
-        .row(config_key)
+        .row(&resolved)
         .is_none()
     {
         return Err(AdminError::not_found(config_key));
     }
     state
-        .unload_model(config_key)
+        .unload_model(&resolved)
         .await
-        .map_err(|e| AdminError::other(format!("unloading '{config_key}' failed: {e}")))?;
-    println!("unloaded {config_key}");
+        .map_err(|e| AdminError::other(format!("unloading '{resolved}' failed: {e}")))?;
+    println!("unloaded {resolved}");
     Ok(())
 }
 
@@ -266,6 +277,10 @@ async fn cmd_unload(
 /// — reused; no new RPC). Container engine only: the wire `Logs`
 /// tails the `tama-<key>` container, and a native-backend engine is
 /// not in scope for this plan.
+///
+/// **Key contract (uniform across all verbs):** a config key or alias;
+/// resolution happens at the verb entry, and the not-found determination
+/// uses the alias-resolved key (the exit-code mapping is unchanged).
 async fn cmd_logs(
     state: &Arc<ProxyState>,
     config_key: &str,
@@ -273,10 +288,14 @@ async fn cmd_logs(
     if !key_is_model_key(config_key) {
         return Err(AdminError::not_found(config_key));
     }
+    // Alias resolution at the verb entry (the uniform contract): the
+    // row check, the host-map iteration, and the log request all use
+    // the resolved key.
+    let resolved = state.resolve_alias(config_key).await;
     let pool = state.tamad_pool();
     // The row must exist (offline / not loaded / hook already
     // collected ⇒ not-found).
-    if live_rows(pool.as_ref()).await.row(config_key).is_none() {
+    if live_rows(pool.as_ref()).await.row(&resolved).is_none() {
         return Err(AdminError::not_found(config_key));
     }
     // Host mapping: pick the handle reporting the key in its newest
@@ -287,7 +306,7 @@ async fn cmd_logs(
         let Some(stats) = handle.latest_fresh(LOGS_FRESH_FRAME).await else {
             continue;
         };
-        if stats.processes.iter().any(|p| p.model_name == config_key) {
+        if stats.processes.iter().any(|p| p.model_name == resolved) {
             if host.is_none() {
                 host = Some(handle);
             }
@@ -301,7 +320,7 @@ async fn cmd_logs(
     };
     let req = LogsRequest {
         provider_name: String::new(),
-        model_name: config_key.to_string(),
+        model_name: resolved.clone(),
     };
     let mut stream = host
         .logs(&req)
