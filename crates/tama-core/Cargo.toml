@@ -53,6 +53,16 @@ sqlx.workspace = true
 web-ui = []
 test-stubs = []
 
+[lints.clippy]
+# The tamad RPC wire (prost/tonic codegen via build.rs → OUT_DIR/tamad.rs)
+# has wrapper fns whose Err ~200B can overflow clippy's result_large_err.
+# Overflow count is probe-sensitive: same pinned 1.95.0 yields 1 fn locally,
+# 8+ on CI (ubuntu) — prost codegen `size_of` drifts per environment.
+# Pin ALLOW in the manifest: generated files aren't touchable by gen-stamp
+# edits or per-file attrs, and CI env can't carry this. Shape is pinned in
+# tests/tamad_lint_wing_pin.rs (denial is linted here, not flagged later).
+result_large_err = "allow"
+
 [build-dependencies]
 tonic-build = "0.12"
 protoc-bin-vendored = "3"
