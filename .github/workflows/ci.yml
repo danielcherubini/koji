@@ -25,6 +25,8 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          version: '1.95.0'
 
       - name: Format check
         run: cargo fmt --all --check
@@ -47,6 +49,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
+          version: '1.95.0'
           targets: wasm32-unknown-unknown
 
       - name: Install sccache
@@ -95,6 +98,8 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          version: '1.95.0'
 
       - name: Install system dependencies (libclang for TTS native deps, mold linker)
         run: |
@@ -142,6 +147,8 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          version: '1.95.0'
 
       - name: Install system dependencies (libclang for TTS native deps, mold linker)
         run: |
