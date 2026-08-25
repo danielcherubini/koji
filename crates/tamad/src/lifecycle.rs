@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::process::{
     configure_backend_command, configure_process_group, force_kill_process_group,
@@ -105,6 +105,40 @@ pub fn to_process_info(entry: &ProcessEntry, store_row: Option<&StoredProcess>) 
             .map(|r| r.max_restarts)
             .unwrap_or(DEFAULT_MAX_RESTARTS),
     }
+}
+
+/// Persist the budget trip's `user_flagged` mark with a bounded
+/// retry: three attempts, 100 ms apart. The store write is an atomic
+/// temp+rename, and a momentary disk flap must never drop the mark —
+/// dropped, the in-memory mirror loses it on restart, and the boot
+/// sweep would REPLAY the budget-exhausted model — a silent hole in a
+/// terminal state.
+///
+/// Returns `Ok` on the first success; `Err` once all attempts are
+/// exhausted. The caller must `error!` (carrying the operator
+/// recovery: `tama admin unload <key>` then `load`) and stop — that
+/// caller-side `error!` is the recovery contract; the state below has
+/// not changed beyond the table row write that preceded it.
+async fn persist_user_flagged(store: &Store, model_name: &str) -> Result<()> {
+    for attempt in 1..=3u32 {
+        match store.set_user_flagged(model_name, true) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                warn!(
+                    model = %model_name,
+                    attempt,
+                    error = %e,
+                    "persisting the budget trip user_flagged mark failed; retrying"
+                );
+            }
+        }
+        if attempt < 3 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+    Err(anyhow!(
+        "persisting user_flagged for '{model_name}' failed after all 3 attempts"
+    ))
 }
 
 /// Tamad-side lifecycle over the process table.
@@ -751,11 +785,15 @@ impl TamadLifecycle {
                     max_restarts,
                     "restart budget exhausted; stopping auto-respawn for this key"
                 );
-                if let Err(e) = self.store.set_user_flagged(model_name, true) {
-                    warn!(
+                if let Err(e) = persist_user_flagged(&self.store, model_name).await {
+                    error!(
                         model = %model_name,
+                        pid,
+                        restart_count,
+                        max_restarts,
                         error = %e,
-                        "failed to persist the user_flagged mark on budget trip"
+                        "budget tripped but the user_flagged mark could not be \
+                         persisted to disk — the budget may re-arm on daemon \n                         restart; recovery = `tama admin unload <key>` then \n                         `load` (clean re-arm)"
                     );
                 }
             }
@@ -1057,6 +1095,54 @@ mod tests {
     use super::*;
     use crate::server::test_support::test_state;
     use ::prost::Message;
+
+    /// A healthy store succeeds on the first attempt: the cheap path is a
+    /// single atomic temp+rename — the helper must never loop, and the
+    /// mark is persisted.
+    #[tokio::test]
+    async fn test_persist_user_flagged_healthy_dir_ok_first_attempt() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path()).unwrap();
+        store
+            .insert("pf-ok", &make_req("pf-ok", "sh", &[], 0), true)
+            .unwrap();
+
+        persist_user_flagged(&store, "pf-ok")
+            .await
+            .expect("healthy dir: Ok on the 1st attempt (no retry swallows)");
+
+        assert!(
+            store.get("pf-ok").unwrap().user_flagged,
+            "the mark is persisted (terminal state is on disk)"
+        );
+    }
+
+    /// With the state directory gone, EVERY retry fails and the helper
+    /// gives up with `Err` — the retry loop runs and bails instead of
+    /// panic/hang, reaching the caller's fatal branch. The caller's
+    /// `error!` (with the operator recovery text) is the recovery
+    /// contract; this unit pins the error-shaped path — the same shape
+    /// that only its caller can convert into the fatal log.
+    #[tokio::test]
+    async fn test_persist_user_flagged_gives_up_when_dir_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path()).unwrap();
+        store
+            .insert("pf-gone", &make_req("pf-gone", "sh", &[], 0), true)
+            .unwrap();
+        // Kill the store out from under itself: the in-memory manifest
+        // remains, but every temp open + rename fails — all three
+        // attempts are exhausted.
+        std::fs::remove_dir_all(dir.path()).unwrap();
+
+        let err = persist_user_flagged(&store, "pf-gone")
+            .await
+            .expect_err("missing dir: every retry fails → the helper gives up with Err");
+        assert!(
+            err.to_string().contains("pf-gone"),
+            "the failed key is carried for the caller's error!"
+        );
+    }
 
     fn make_req(
         model: &str,
