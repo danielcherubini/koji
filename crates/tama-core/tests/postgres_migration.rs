@@ -16,8 +16,8 @@ const V49_FIXTURE: &str = include_str!("fixtures/v49_schema.sql");
 /// proxy's last v49-era model-state table dies with it (the tamad's wire rows
 /// are the source of truth now). `desired_models` (post-v49, added by
 /// `00000000000002`) is dropped by `00000000000004`;
-/// `active_models` (v49-fixture table) by the probe-gated
-/// `00000000000005`. The cross-checks below assert their
+/// `active_models` (v49-fixture table) by the unconditional drop
+/// `00000000000005`. The zero-rows probe is diagnostic (NOTICE-only). The cross-checks below assert their
 /// ABSENCE on a fresh schema — the pin that the shadow is dead.
 const DROPPED_SHADOW_TABLES: &[&str] = &["desired_models", "active_models"];
 

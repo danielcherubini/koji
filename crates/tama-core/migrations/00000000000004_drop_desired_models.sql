@@ -4,13 +4,19 @@
 -- store owns *desired* state (T1) and the proxy reads it off the wire
 -- (`ProcessInfo.desired`, T3).
 --
--- Data guard: probe `desired_models` itself before the drop. Plan rule:
--- "Any row = abort (log + skip; note in the commit)" — so a non-empty
--- `desired_models` defers this drop to the next cycle (RAISE NOTICE +
--- skip, NOT a hard failure): the drop MUST not crash proxy startup.
--- A non-empty `active_models` is deliberately NOT observed here: its gate
--- lives entirely in migration 00000000000005 (log + skip, next cycle).
--- "Drop desired_models (always)": zero rows → the drop always happens.
+-- The pre-drop probe is DIAGNOSTIC ONLY: it counts the rows and, on a
+-- non-zero count, RAISEs NOTICE with the count rendered — it logs
+-- survivors but never blocks or defers anything. The DROP itself is
+-- UNCONDITIONAL: a sqlx migration row that raises a notice and RETURNs
+-- is still marked `success`, so a "log + skip, deferred to the next
+-- cycle" promise could NEVER be retried — a one-shot skip would leave
+-- the table alive forever. The zero-rows invariant is therefore
+-- asserted in logs (the NOTICE), not in control flow.
+--
+-- The no-steering premise holds by construction: only pre-plan-193
+-- `tama` proxies ever steered this table (T5b/T7 removed the
+-- steering). Rollout caveat: the drop must land AFTER the pre-plan-193
+-- proxy was retired (rollout ladder step ordering).
 DO $$
 DECLARE
     n integer;
@@ -18,11 +24,9 @@ BEGIN
     SELECT count(*) INTO n FROM desired_models;
     IF n > 0 THEN
         RAISE NOTICE
-            'plan-193 T7 probe: desired_models has % row(s) — deferring its DROP to the next cycle', n;
-        RETURN;
+            'plan 193 T7 NOTICE: desired_models has % row(s) at drop time — dropping anyway; if you see this, a pre-193 proxy may still be steering — re-verify rollout-step ordering', n;
     END IF;
     DROP TABLE desired_models;
-    RAISE NOTICE 'plan-193 T7 probe: desired_models empty — dropped';
 END
 $$;
 

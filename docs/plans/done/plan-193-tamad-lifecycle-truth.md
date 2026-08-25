@@ -522,10 +522,17 @@ Step 3 — delete the module:
 
 Step 4 — migration: the two drops (next two free 14-digit numbers, verify at
 copy time; both `DROP`s only, no data):
-- FIRST PROBE: `SELECT count(*)` = 0 on both tables. Any row = abort (log +
-  skip; note in the commit).
-- drop `desired_models` (always).
-- drop `active_models` (gated: probe row count = 0).
+- FIRST PROBE: `SELECT count(*)` on both tables — DIAGNOSTIC ONLY: the
+  zero-rows invariant stays *the assertion*, but a non-zero count now merely
+  RAISEs NOTICE with the count (log the survivors) — it never blocks and
+  never skips.
+- drop `desired_models` — UNCONDITIONAL.
+- drop `active_models` — UNCONDITIONAL. (A sqlx migration row that
+  notice + RETURNs is marked `success` anyway: a "log + skip, next cycle"
+  promise can never be retried — a one-shot skip leaves the table alive
+  forever. The no-steering premise holds by construction (T5b/T7 removed
+  the steering), and the drop must land after the pre-plan-193 proxy was
+  retired (rollout step ordering).)
 - Both drops are trivial — no *other* table references either (desired_models
   has a column-side FK to tamad_registry, which is fine to drop with it; no
   FK points back into either table). `drop table` on both is safe.
@@ -573,6 +580,12 @@ Gate:
   here).
 - The store is proxy-invisible (ADR-0010): the proxy never touches host disk.
 - A 7th status word / unknown-word parse arm → next plan's scope (excluded).
+- T7 step-4 deviation: the step previously promised "log + skip; note in
+  the commit" / next-cycle deferral for a non-zero pre-drop probe. A sqlx
+  migration is one-shot (a notice + RETURN row is marked `success`, so a
+  skipped drop never re-runs) — fix applied: probe = zero-rows invariant
+  assertion (diagnostic, NOTICE-only), drop = unconditional. Supersedes the
+  "moves to the next cycle" exception above.
 
 ## Gate — Deploy acceptance
 
