@@ -451,25 +451,7 @@ async fn test_handle_list_models_alias_deduplication() {
         );
     }
 
-    // Add a Ready model
-    {
-        let mut models = state.registry.models.write().await;
-        models.insert(
-            "gemma-e2b".to_string(),
-            crate::proxy::BackendState::Ready {
-                model_name: "gemma-e2b".to_string(),
-                backend: "llama_cpp".to_string(),
-                backend_pid: 1001,
-                backend_url: mock_server.uri(),
-                load_time: std::time::SystemTime::now(),
-                last_accessed: std::time::Instant::now(),
-                consecutive_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-                failure_timestamp: None,
-                is_docker: false,
-                restart_count: 0,
-            },
-        );
-    }
+    seed_live_row(&state, "gemma-e2b", mock_server.uri().as_str()).await;
 
     let state_arc = Arc::new(state);
     let state = State(state_arc.clone());
@@ -549,24 +531,7 @@ async fn test_handle_list_models_no_alias_no_normalization() {
         );
     }
 
-    {
-        let mut models = state.registry.models.write().await;
-        models.insert(
-            "my-model".to_string(),
-            crate::proxy::BackendState::Ready {
-                model_name: "my-model".to_string(),
-                backend: "llama_cpp".to_string(),
-                backend_pid: 1001,
-                backend_url: mock_server.uri(),
-                load_time: std::time::SystemTime::now(),
-                last_accessed: std::time::Instant::now(),
-                consecutive_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-                failure_timestamp: None,
-                is_docker: false,
-                restart_count: 0,
-            },
-        );
-    }
+    seed_live_row(&state, "my-model", mock_server.uri().as_str()).await;
 
     let state_arc = Arc::new(state);
     let state = State(state_arc.clone());

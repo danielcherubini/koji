@@ -80,8 +80,8 @@ path = "tests/tamad_installs_e2e.rs"
 required-features = ["ssr"]
 
 [[test]]
-name = "reconciler_e2e"
-path = "tests/reconciler_e2e.rs"
+name = "tamad_boot_replay"
+path = "tests/tamad_boot_replay.rs"
 required-features = ["ssr"]
 
 [[test]]

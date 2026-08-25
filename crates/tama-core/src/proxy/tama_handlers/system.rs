@@ -48,7 +48,11 @@ pub struct SystemHealthResponse {
 pub async fn handle_tama_system_health(
     state: State<Arc<ProxyState>>,
 ) -> Json<SystemHealthResponse> {
-    let models_loaded = state.registry.models.read().await.len();
+    // The wire `models_loaded` name is stable; its source flips to the
+    // live model-row ready count (plan-193 Task 4), matching the metrics
+    // collector's parallel semantics switch.
+    let live = crate::proxy::live_rows(state.tamad_pool().as_ref()).await;
+    let models_loaded = live.ready_count() as usize;
     let metrics = state.metrics.system_metrics_snapshot().await;
 
     Json(SystemHealthResponse {

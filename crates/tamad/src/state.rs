@@ -2,9 +2,13 @@
 //!
 //! The token is generated once on first run and stored at
 //! `<data_dir>/tamad.token` (mode 0600) so it stays stable across restarts.
+//!
+//! The [`store::Store`] persists per-model launch specs + lifecycle
+//! control blocks under `<data_dir>/state/` (plan-193 T1).
 
 use std::env;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use rand::Rng;
@@ -12,6 +16,8 @@ use tracing::{info, warn};
 
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
+
+pub mod store;
 
 /// Runtime state for the tamad daemon.
 ///
@@ -35,6 +41,10 @@ pub struct TamadState {
     pub proxy_token: Option<String>,
     /// This tamad's bearer token, persisted at `<data_dir>/tamad.token`.
     token: String,
+    /// Per-model lifecycle store on host disk, `<data_dir>/state/` (T1).
+    /// First production read lands with the T2 respawn sweep.
+    #[allow(dead_code)]
+    pub store: Arc<store::Store>,
 }
 
 impl TamadState {
@@ -116,6 +126,13 @@ impl TamadState {
         };
         info!(token_path = %token_path.display(), "Tamad token ready (persisted)");
 
+        // Per-model persistent store (plan-193 T1): created right next to the
+        // token-file setup; `Store::new` makes <data_dir>/state (0700) and
+        // reloads the persisted manifests (corrupted ones are logged +
+        // skipped — never fatal at boot).
+        let store = store::Store::new(&data_dir)
+            .with_context(|| format!("failed to open store in '{}'", data_dir.display()))?;
+
         Ok(Self {
             name,
             public_url,
@@ -125,6 +142,7 @@ impl TamadState {
             proxy_url,
             proxy_token,
             token,
+            store: Arc::new(store),
         })
     }
 
@@ -156,6 +174,7 @@ mod tests {
             public_url: None,
             models_dir: None,
             data_dir: Some(data_dir.to_path_buf()),
+            no_replay_desired: false,
         }
     }
 
@@ -214,6 +233,7 @@ mod tests {
             public_url: Some("grpc://gpu1.lan:60060".to_string()),
             models_dir: Some(dir.path().join("weights")),
             data_dir: Some(dir.path().to_path_buf()),
+            no_replay_desired: false,
         };
 
         let s = TamadState::from_cli(&args).unwrap();

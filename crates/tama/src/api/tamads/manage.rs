@@ -87,12 +87,6 @@ pub async fn delete_tamad(
 ) -> impl IntoResponse {
     let pool = web_state.db_pool.as_ref();
 
-    // Drop any desired-state rows pointing at this tamad first: they are
-    // FK-protected and would otherwise block the deletion (plan-191 Task 5).
-    if let Err(e) = tama_core::db::queries::clear_desired_for_tamad(pool, &id).await {
-        tracing::warn!("failed to clear desired models for tamad '{}': {}", id, e);
-    }
-
     // Clear the proxy's pull_backend if it points at this tamad: it is
     // FK-protected the same way (plan-191 review fix).
     if let Err(e) = tama_core::db::queries::clear_pull_backend_for_tamad(pool, &id).await {

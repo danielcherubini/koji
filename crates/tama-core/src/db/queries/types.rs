@@ -107,18 +107,6 @@ pub struct PullLogEntry {
     pub error_message: Option<String>,
 }
 
-/// An active model entry tracking a running backend process.
-pub struct ActiveModelRecord {
-    pub server_name: String,
-    pub model_name: String,
-    pub backend: String,
-    pub pid: i64,
-    pub port: i64,
-    pub backend_url: String,
-    pub loaded_at: String,
-    pub last_accessed: String,
-}
-
 /// TTS engine configuration record.
 pub struct TtsConfigRecord {
     pub id: i64,        // auto-increment primary key

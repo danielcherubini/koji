@@ -357,6 +357,9 @@ mod tests {
             alive: true,
             endpoint_url: "http://127.0.0.1:18099".to_string(),
             status: status.to_string(),
+            desired: false,
+            restart_count: 0,
+            max_restarts: 0,
         }
     }
 

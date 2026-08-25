@@ -12,13 +12,17 @@ Plans for features, refactors, and bug fixes in the Tama project.
 
 ## Quick Stats
 
-- **Total Plans**: 98
+- **Total Plans**: 99
 - **Backlog**: 0
-- **Completed**: 96 ✅
+- **Completed**: 97 ✅
 
 ---
 
 ## Backlog
+
+| # | Plan | Status |
+|---|------|--------|
+| — | *No plans currently in backlog* | |
 
 > **Note:** The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan.
 
@@ -28,6 +32,7 @@ Plans for features, refactors, and bug fixes in the Tama project.
 
 | # | Plan | Status |
 |---|------|--------|
+| 193 | [Tamad is the Source of Truth for Lifecycle](done/plan-193-tamad-lifecycle-truth.md) (ADR-0011) | ✅ COMPLETED (PR #177) |
 | 192 | [Gateway Dashboard Refactor & Telemetry](done/plan-192-gateway-dashboard-telemetry.md) | ✅ COMPLETED (squash `28f12ad4`) |
 | 191 | [Tamad Host Runtime Split](done/plan-191-tamad-host-runtime.md) | ✅ COMPLETED (squash `05f1694f`) |
 | 190 | [SQLite → Postgres Database Migration](done/plan-190-sqlite-to-postgres.md) | ✅ COMPLETED |

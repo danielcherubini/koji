@@ -1,8 +1,7 @@
 use axum::body::Body;
 use axum::extract::Request;
 use axum::http::StatusCode;
-use std::sync::{atomic::AtomicU32, Arc};
-use std::time::Instant;
+use std::sync::Arc;
 use tower::ServiceExt;
 
 use crate::config::{Config, ModelConfig};
@@ -10,9 +9,32 @@ use crate::proxy::tama_handlers::models::{
     handle_tama_cancel_load, handle_tama_get_model, handle_tama_list_models,
     handle_tama_load_model, handle_tama_unload_model,
 };
-use crate::proxy::{BackendState, ProxyState};
+use crate::proxy::ProxyState;
 
 use super::helpers::create_state_with_model;
+
+/// Seed a live wire row (plan-193 T4: management handlers read rows).
+async fn seed_live_row(state: &Arc<ProxyState>, model_id: &str, status: &str) {
+    use crate::tamad::pool::test_support::{handle_with_latest, stats_full};
+    let proc = crate::tamad::ProcessInfo {
+        model_name: model_id.to_string(),
+        provider_name: "llama_cpp".to_string(),
+        pid: 1,
+        alive: true,
+        endpoint_url: "http://127.0.0.1:1".to_string(),
+        status: status.to_string(),
+        desired: true,
+        restart_count: 0,
+        max_restarts: 3,
+    };
+    let stats = stats_full(1.5, vec![], vec![proc]);
+    let pool = state.tamad_pool();
+    pool.insert_raw_handle(
+        model_id,
+        Arc::new(handle_with_latest(std::time::Instant::now(), stats).await),
+    )
+    .await;
+}
 
 /// Two model configs, one Ready → loaded has state=="ready", other has "idle".
 #[tokio::test]
@@ -50,21 +72,7 @@ async fn test_handle_tama_list_models_states() {
     }
 
     // Insert a Ready entry for "ready-model" (must match the config key).
-    state.registry.models.write().await.insert(
-        "ready-model".to_string(),
-        BackendState::Ready {
-            model_name: "ready-model".to_string(),
-            backend: "llama_cpp".to_string(),
-            backend_pid: 1234,
-            backend_url: "http://127.0.0.1:1234".to_string(),
-            load_time: std::time::SystemTime::now(),
-            last_accessed: Instant::now(),
-            consecutive_failures: Arc::new(AtomicU32::new(0)),
-            failure_timestamp: None,
-            is_docker: false,
-            restart_count: 0,
-        },
-    );
+    seed_live_row(&state, "ready-model", "ready").await;
 
     let app = axum::Router::new()
         .route(
@@ -122,21 +130,7 @@ async fn test_handle_tama_get_model_loaded() {
     .await;
 
     // Insert a Ready entry.
-    state.registry.models.write().await.insert(
-        "test-model".to_string(),
-        BackendState::Ready {
-            model_name: "test-model".to_string(),
-            backend: "llama_cpp".to_string(),
-            backend_pid: 1234,
-            backend_url: "http://127.0.0.1:1234".to_string(),
-            load_time: std::time::SystemTime::now(),
-            last_accessed: Instant::now(),
-            consecutive_failures: Arc::new(AtomicU32::new(0)),
-            failure_timestamp: None,
-            is_docker: false,
-            restart_count: 0,
-        },
-    );
+    seed_live_row(&state, "test-model", "ready").await;
 
     let app = axum::Router::new()
         .route(
@@ -281,20 +275,7 @@ async fn test_handle_tama_cancel_load_starting() {
     .await;
 
     // Insert a Starting entry with PID 0 (no real process to kill).
-    state.registry.models.write().await.insert(
-        "test-model".to_string(),
-        BackendState::Starting {
-            model_name: "test-model".into(),
-            backend: "llama_cpp".into(),
-            backend_url: String::new(),
-            backend_pid: 0,
-            last_accessed: Instant::now(),
-            start_time: Instant::now(),
-            consecutive_failures: Arc::new(AtomicU32::new(0)),
-            is_docker: false,
-            failure_timestamp: None,
-        },
-    );
+    seed_live_row(&state, "test-model", "starting").await;
 
     let app = axum::Router::new()
         .route(
@@ -312,17 +293,8 @@ async fn test_handle_tama_cancel_load_starting() {
     let response = app.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 
-    // Model entry should be removed.
-    assert!(
-        state
-            .registry
-            .models
-            .read()
-            .await
-            .get("test-model")
-            .is_none(),
-        "Model entry should be removed after cancel"
-    );
+    // plan-193 T5: cancel no longer removes a local mirror entry;
+    // lifecycle truth is the tamad rows.
 }
 
 /// POST /tama/v1/models/:id/cancel for a Ready model → 200: cancel now
@@ -340,21 +312,7 @@ async fn test_handle_tama_cancel_load_ready_unloads() {
     .await;
 
     // Insert a Ready entry.
-    state.registry.models.write().await.insert(
-        "test-model".to_string(),
-        BackendState::Ready {
-            model_name: "test-model".to_string(),
-            backend: "llama_cpp".to_string(),
-            backend_pid: 1234,
-            backend_url: "http://127.0.0.1:1234".to_string(),
-            load_time: std::time::SystemTime::now(),
-            last_accessed: Instant::now(),
-            consecutive_failures: Arc::new(AtomicU32::new(0)),
-            failure_timestamp: None,
-            is_docker: false,
-            restart_count: 0,
-        },
-    );
+    seed_live_row(&state, "test-model", "ready").await;
 
     let app = axum::Router::new()
         .route(
@@ -379,18 +337,8 @@ async fn test_handle_tama_cancel_load_ready_unloads() {
 
     assert_eq!(json["loaded"], false);
 
-    // The local mirror entry is removed (the physical unload happens on
-    // the tamad; best-effort RPC — no tamad in this unit test).
-    assert!(
-        state
-            .registry
-            .models
-            .read()
-            .await
-            .get("test-model")
-            .is_none(),
-        "Ready mirror should be removed after cancel"
-    );
+    // plan-193 T5: cancel no longer purges a local mirror entry — the
+    // lifecycle rows (live from the tamad) are the source of truth.
 }
 
 /// POST /tama/v1/models/:id/cancel for an unknown model → 404 ModelNotLoadingError.
@@ -444,21 +392,6 @@ async fn test_handle_tama_unload_model_ready() {
     .await;
 
     // Insert a Ready entry with a bogus PID (won't find a real process).
-    state.registry.models.write().await.insert(
-        "test-model".to_string(),
-        BackendState::Ready {
-            model_name: "test-model".to_string(),
-            backend: "llama_cpp".to_string(),
-            backend_pid: 99999,
-            backend_url: "http://127.0.0.1:1234".to_string(),
-            load_time: std::time::SystemTime::now(),
-            last_accessed: Instant::now(),
-            consecutive_failures: Arc::new(AtomicU32::new(0)),
-            failure_timestamp: None,
-            is_docker: false,
-            restart_count: 0,
-        },
-    );
 
     let app = axum::Router::new()
         .route(
@@ -476,17 +409,8 @@ async fn test_handle_tama_unload_model_ready() {
     let response = app.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 
-    // Model entry should be removed.
-    assert!(
-        state
-            .registry
-            .models
-            .read()
-            .await
-            .get("test-model")
-            .is_none(),
-        "Model entry should be removed after unload"
-    );
+    // plan-193 T5: unload no longer removes a local mirror entry;
+    // lifecycle truth is the tamad rows.
 }
 
 /// POST /tama/v1/models/:id/unload for an unknown model → 404 NotFoundError.

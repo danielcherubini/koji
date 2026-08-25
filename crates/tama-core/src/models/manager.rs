@@ -1,7 +1,7 @@
 //! Centralized model data access.
 //!
 //! `ModelManager` is a facade over the Postgres pool for all model-domain
-//! data (configs, files, pulls, active models, pull queue).
+//! data (configs, files, pulls, pull queue).
 
 use std::path::Path;
 
@@ -11,8 +11,7 @@ use std::sync::Arc;
 
 use crate::config::ModelConfig;
 use crate::db::queries::{
-    ActiveModelRecord, ModelConfigRecord, ModelFileRecord, ModelPullRecord, PullLogEntry,
-    PullQueueItem,
+    ModelConfigRecord, ModelFileRecord, ModelPullRecord, PullLogEntry, PullQueueItem,
 };
 
 /// Centralized model data access. Each caller opens its own instance.
@@ -212,45 +211,6 @@ impl ModelManager {
     /// Log a pull event (append-only).
     pub async fn log_pull(&self, entry: &PullLogEntry) -> Result<()> {
         crate::db::queries::log_pull(self.pool.as_ref(), entry).await
-    }
-
-    // ── Active models ──────────────────────────────────────────
-
-    /// Insert or replace an active model entry when a backend is loaded.
-    pub async fn insert_active(
-        &self,
-        backend_name: &str,
-        model_name: &str,
-        backend: &str,
-        pid: i64,
-        port: i64,
-        backend_url: &str,
-    ) -> Result<()> {
-        crate::db::queries::insert_active_model(
-            self.pool.as_ref(),
-            backend_name,
-            model_name,
-            backend,
-            pid,
-            port,
-            backend_url,
-        )
-        .await
-    }
-
-    /// Remove an active model entry when a backend is unloaded.
-    pub async fn remove_active(&self, backend_name: &str) -> Result<()> {
-        crate::db::queries::remove_active_model(self.pool.as_ref(), backend_name).await
-    }
-
-    /// Get all active model entries (for status / cleanup).
-    pub async fn get_active(&self) -> Result<Vec<ActiveModelRecord>> {
-        crate::db::queries::get_active_models(self.pool.as_ref()).await
-    }
-
-    /// Rename an active model by updating its primary key (backend_name).
-    pub async fn rename_active(&self, old_name: &str, new_name: &str) -> Result<()> {
-        crate::db::queries::rename_active_model(self.pool.as_ref(), old_name, new_name).await
     }
 
     // ── Pull queue ────────────────────────────────────────────

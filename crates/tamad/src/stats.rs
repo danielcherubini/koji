@@ -155,6 +155,7 @@ mod tests {
             public_url: None,
             models_dir: Some(dir.path().join("models")),
             data_dir: Some(dir.keep()),
+            no_replay_desired: false,
         };
         Arc::new(TamadState::from_cli(&args).unwrap())
     }
@@ -211,6 +212,9 @@ mod tests {
             alive: true,
             endpoint_url: "http://x".to_string(),
             status: "ready".to_string(),
+            desired: false,
+            restart_count: 0,
+            max_restarts: 0,
         };
         let third = collector.tick(vec![proc.clone()]);
         assert_eq!(third.processes.len(), 1);

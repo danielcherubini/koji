@@ -52,6 +52,9 @@ mod tests {
                 alive: true,
                 endpoint_url: "http://127.0.0.1:8080".to_string(),
                 status: "ready".to_string(),
+                desired: false,
+                restart_count: 0,
+                max_restarts: 0,
             }],
         };
         assert_eq!(stats.cpu_usage_percent, 42.5);
@@ -133,6 +136,9 @@ mod tests {
                 alive: true,
                 endpoint_url: "http://127.0.0.1:8080".to_string(),
                 status: "ready".to_string(),
+                desired: false,
+                restart_count: 0,
+                max_restarts: 0,
             }],
         };
         assert_eq!(provider.loaded_models.len(), 1);

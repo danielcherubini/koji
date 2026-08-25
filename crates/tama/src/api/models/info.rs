@@ -658,15 +658,7 @@ mod tests {
         let config = make_config(None);
         let tmp = std::path::Path::new("/tmp");
 
-        let result = model_entry_json(
-            1,
-            &record,
-            &config,
-            tmp,
-            None,
-            None,
-            Some("docker_x"),
-        );
+        let result = model_entry_json(1, &record, &config, tmp, None, None, Some("docker_x"));
         assert_eq!(
             result.get("log_source").and_then(|v| v.as_str()),
             Some("docker_x"),

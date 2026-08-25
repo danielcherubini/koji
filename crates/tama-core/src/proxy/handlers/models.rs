@@ -117,27 +117,29 @@ pub async fn handle_get_model(
         }
     };
 
-    // Phase 2: Check if the config's backend is loaded and Ready.
-    if let Some(crate::proxy::BackendState::Ready { backend_url, .. }) =
-        state.registry.models.read().await.get(&config_name)
-    {
-        // Query backend's /v1/models and find matching entry
-        let entries = fetch_models_from_backend(&state, backend_url).await;
-        if let Some(mut entry) = find_model_in_entries(&entries, server_cfg.model.as_deref()) {
-            // Normalize the id to the config's api_name (or config_name)
-            // so the response is consistent with /v1/models list.
-            // If the request came in via an alias, use the alias name.
-            let response_id = if is_alias {
-                &model_id
-            } else {
-                server_cfg.api_name.as_deref().unwrap_or(&config_name)
-            };
-            entry.id = Some(response_id.to_string());
-            entry.ready = Some(true);
-            // Inject reasoning-effort fields when the config has levels
-            // (entries without levels stay byte-identical).
-            inject_reasoning_effort_fields(&mut entry.extra, &server_cfg);
-            return Json(entry).into_response();
+    // Phase 2: Check if the config's backend is loaded and Ready on the wire
+    // (plan-193 T4 flip: live rows, not the mirror).
+    let live = crate::proxy::live_rows(state.tamad_pool().as_ref()).await;
+    if let Some(r) = live.row(&config_name) {
+        if r.status == "ready" && !r.endpoint.is_empty() {
+            // Query backend's /v1/models and find matching entry
+            let entries = fetch_models_from_backend(&state, &r.endpoint).await;
+            if let Some(mut entry) = find_model_in_entries(&entries, server_cfg.model.as_deref()) {
+                // Normalize the id to the config's api_name (or config_name)
+                // so the response is consistent with /v1/models list.
+                // If the request came in via an alias, use the alias name.
+                let response_id = if is_alias {
+                    &model_id
+                } else {
+                    server_cfg.api_name.as_deref().unwrap_or(&config_name)
+                };
+                entry.id = Some(response_id.to_string());
+                entry.ready = Some(true);
+                // Inject reasoning-effort fields when the config has levels
+                // (entries without levels stay byte-identical).
+                inject_reasoning_effort_fields(&mut entry.extra, &server_cfg);
+                return Json(entry).into_response();
+            }
         }
     }
 
@@ -190,17 +192,18 @@ fn inject_reasoning_effort_fields(
 pub async fn handle_list_models(state: State<Arc<ProxyState>>) -> Json<serde_json::Value> {
     // Phase 1: Snapshot data under locks, then drop them before I/O.
     let (backend_info, all_configs) = {
-        let models = state.registry.models.read().await;
         let configs = state.registry.model_configs.read().await;
 
-        // Collect (config_name, backend_url, is_ready) for all models
-        let backend_info: Vec<_> = models
+        // Live model rows (plan-193 T4 flip: the wire is the source).
+        let live = crate::proxy::live_rows(state.tamad_pool().as_ref()).await;
+        let backend_info: Vec<(String, Option<String>, bool)> = live
+            .all()
             .iter()
-            .map(|(name, ms)| {
-                if let crate::proxy::BackendState::Ready { backend_url, .. } = ms {
-                    (name.clone(), Some(backend_url.clone()), true)
+            .map(|r| {
+                if r.status == "ready" && !r.endpoint.is_empty() {
+                    (r.key.clone(), Some(r.endpoint.clone()), true)
                 } else {
-                    (name.clone(), None, false)
+                    (r.key.clone(), None, false)
                 }
             })
             .collect();

@@ -50,7 +50,6 @@ fn expected_counts() -> BTreeMap<&'static str, u64> {
         ("tamad_registry", 1),
         ("tts_configs", 1),
         ("update_checks", 1),
-        ("active_models", 1),
         ("benchmarks", 1),
     ]
     .into_iter()
@@ -368,13 +367,13 @@ async fn test_full_migration_copies_all_tables() {
             .await
             .unwrap();
     assert_eq!(quant, "Q8_0");
-    let backend_url: String = sqlx::query_scalar(
-        "SELECT backend_url FROM active_models WHERE server_name = 'my-coding-model'",
-    )
-    .fetch_one(&guard.pool)
-    .await
-    .unwrap();
-    assert_eq!(backend_url, "http://127.0.0.1:12345");
+    // plan-193 T7: the migrate tool no longer seeds `active_models` — the
+    // proxy no longer keeps an active-models table (the tamad's wire rows
+    // are the source of truth), so its fixture rows stay skipped.
+    assert!(
+        !report.inserted.contains_key("active_models"),
+        "the migrate tool must not seed active_models"
+    );
     let tamad_status: String =
         sqlx::query_scalar("SELECT status FROM tamad_registry WHERE id = 'tamad-1'")
             .fetch_one(&guard.pool)

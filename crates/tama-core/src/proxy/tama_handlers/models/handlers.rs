@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use axum::{
     extract::{Path, State},
@@ -11,19 +10,22 @@ use axum::{
 use super::utils::resolve_config_key;
 use crate::gpu::ModelState;
 use crate::proxy::tama_handlers::{ListModelsResponse, ListedModelResponse, ModelResponse};
-use crate::proxy::{BackendState, ProxyState};
+use crate::proxy::ProxyState;
 use tracing::{info, warn};
 
 // TODO(plan-172): unrouted after plan-169 — delete
 /// Handle listing all configured models (Tama management API).
 pub async fn handle_tama_list_models(state: State<Arc<ProxyState>>) -> Json<ListModelsResponse> {
-    use std::sync::atomic::Ordering::Relaxed;
-
     let config = state.config.read().await;
     let model_configs = state.registry.model_configs.read().await;
-    let models = state.registry.models.read().await;
-    let auto_unload = config.proxy.auto_unload;
-    let idle_timeout_secs = config.proxy.idle_timeout_secs;
+
+    // Lifecycle state now comes from the row-backed per-model snapshots
+    // (plan-193 Task 4 flip: `collect_model_state_snapshots` reads the live
+    // ProcessInfo rows, not the mirror).
+    let mut snap_by_id = std::collections::HashMap::new();
+    for snap in state.collect_model_state_snapshots().await {
+        snap_by_id.insert(snap.id.clone(), snap);
+    }
 
     let mut result: Vec<ListedModelResponse> = Vec::with_capacity(model_configs.len());
 
@@ -33,66 +35,12 @@ pub async fn handle_tama_list_models(state: State<Arc<ProxyState>>) -> Json<List
             .get(&model_config.backend)
             .and_then(|b| b.path.clone());
 
-        let model_state = models.get(model_name);
-
-        let (
-            model_state,
-            backend_pid,
-            load_time_secs,
-            last_accessed_secs_ago,
-            idle_timeout_remaining_secs,
-            consecutive_failures,
-        ) = match model_state {
-            Some(BackendState::Ready {
-                backend_pid,
-                load_time,
-                last_accessed,
-                consecutive_failures,
-                ..
-            }) => {
-                let now = Instant::now();
-                let secs_ago = now.duration_since(*last_accessed).as_secs();
-                let elapsed = now.duration_since(*last_accessed);
-                let remaining = if auto_unload {
-                    let timeout = Duration::from_secs(idle_timeout_secs);
-                    if elapsed < timeout {
-                        Some((timeout - elapsed).as_secs())
-                    } else {
-                        Some(0)
-                    }
-                } else {
-                    None
-                };
-                let load_secs = load_time
-                    .duration_since(UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                (
-                    ModelState::Ready,
-                    Some(*backend_pid),
-                    Some(load_secs),
-                    Some(secs_ago),
-                    remaining,
-                    Some(consecutive_failures.load(Relaxed)),
-                )
-            }
-            Some(BackendState::Starting {
-                consecutive_failures,
-                ..
-            }) => (
-                ModelState::Starting,
-                None,
-                None,
-                None,
-                None,
-                Some(consecutive_failures.load(Relaxed)),
-            ),
-            Some(BackendState::Unloading { .. }) => {
-                (ModelState::Unloading, None, None, None, None, None)
-            }
-            Some(BackendState::Failed { .. }) => (ModelState::Failed, None, None, None, None, None),
-            _ => (ModelState::Idle, None, None, None, None, None),
-        };
+        // row-backed per-model lifecycle state; the mirror-only detail
+        // (pid, load time, idle count) has no wire source and reads None.
+        let lifecycle_state = snap_by_id
+            .get(model_name)
+            .map(|s| s.state.clone())
+            .unwrap_or(ModelState::Idle);
 
         result.push(ListedModelResponse {
             id: model_config.db_id,
@@ -104,12 +52,12 @@ pub async fn handle_tama_list_models(state: State<Arc<ProxyState>>) -> Json<List
             context_length: model_config.context_length,
             enabled: model_config.enabled,
             api_name: model_config.api_name.clone(),
-            state: model_state,
-            backend_pid,
-            load_time_secs,
-            last_accessed_secs_ago,
-            idle_timeout_remaining_secs,
-            consecutive_failures,
+            state: lifecycle_state,
+            backend_pid: None,
+            load_time_secs: None,
+            last_accessed_secs_ago: None,
+            idle_timeout_remaining_secs: None,
+            consecutive_failures: None,
         });
     }
 
@@ -123,24 +71,27 @@ pub async fn handle_tama_get_model(
     Path(model_id): Path<String>,
 ) -> Response {
     let model_id = resolve_config_key(&state, &model_id).await;
-    // Check if already loaded (by server name or model name)
-    let model_state = state.get_model_state(&model_id).await;
-
-    if let Some(ms) = model_state {
-        let owned_by = ms.backend();
-        let created = match ms.load_time() {
-            Some(load_time) => load_time
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or(std::time::Duration::ZERO)
-                .as_secs(),
-            None => 0,
-        };
+    // Whether the model is currently live on the wire (plan-193 T4 flip:
+    // rows, not the mirror). `created`/`owned_by` have no wire source and
+    // read 0 / empty; `ready` is the lifecycle fact that matters.
+    let live = crate::proxy::live_rows(state.tamad_pool().as_ref()).await;
+    // Merge the row with the configured backend so `owned_by` still resolves
+    // (the wire row has no provider field); `created` stays 0 (no wire source).
+    let owned = state
+        .registry
+        .model_configs
+        .read()
+        .await
+        .get(&model_id)
+        .map(|mc| mc.backend.clone())
+        .unwrap_or(String::new());
+    if let Some(r) = live.row(&model_id) {
         return Json(serde_json::json!({
             "id": model_id,
             "object": "model",
-            "created": created,
-            "owned_by": owned_by,
-            "ready": ms.is_ready()
+            "created": 0,
+            "owned_by": owned,
+            "ready": r.status == "ready"
         }))
         .into_response();
     }
@@ -177,8 +128,8 @@ pub async fn handle_tama_get_model(
 /// Handle loading a model (Tama management API).
 ///
 /// plan-191 Task 5: the load goes through the model's provider tamad
-/// (`LoadModel` RPC); the proxy records desired state and mirrors the
-/// result in its BackendState cache.
+/// (`LoadModel` RPC); *desired* state lives in the tamad's host-side store
+/// (no proxy-side DB copy anymore; plan-193 T7).
 pub async fn handle_tama_load_model(
     state: State<Arc<ProxyState>>,
     Path(model_id): Path<String>,
@@ -209,24 +160,25 @@ pub async fn handle_tama_load_model(
 
 /// Handle cancelling a loading model (Tama management API).
 ///
-/// plan-191 Task 5: operates on **desired state**, not on a local process.
-/// Cancelling clears the desired row and issues `UnloadModel` to the
-/// provider's tamad. If the load RPC is still in flight, the reconciler's
-/// next tick unloads the model once it appears in the tamad's snapshot
-/// (loads are short; a cancel is therefore best-effort for in-flight
-/// loads).
+/// plan-191 Task 5 / plan-193 T7: operates on the model's ***desired***
+/// wire state (the tamad row's `desired` flag), not on a local process.
+/// Cancelling issues `UnloadModel` to the provider's tamad. If the load
+/// RPC is still in flight, the tamad's host-side store handles the
+/// post-load unload (loads are short, so a cancel is best-effort).
 pub async fn handle_tama_cancel_load(
     state: State<Arc<ProxyState>>,
     Path(model_id): Path<String>,
 ) -> Response {
     let model_id = resolve_config_key(&state, &model_id).await;
 
-    // Is the model desired, mirrored, or running on its tamad?
-    let pool = state.db_pool();
-    let desired = crate::db::queries::get_desired(&pool, &model_id)
+    // Is the model desired (its live wire row reports `desired`),
+    // mirrored, or running on its tamad? plan-193 T7: the desired fact
+    // comes off the wire row — the last Postgres read of model desire
+    // is gone.
+    let desired = crate::proxy::live_rows(state.tamad_pool().as_ref())
         .await
-        .ok()
-        .flatten();
+        .row(&model_id)
+        .filter(|r| r.desired);
     let mirrored = state
         .get_available_backend_for_model(&model_id)
         .await
@@ -256,19 +208,14 @@ pub async fn handle_tama_cancel_load(
             .into_response();
     }
 
-    // Clear desired state (best-effort: the row may not exist).
-    if let Err(e) = crate::db::queries::clear_desired(&pool, &model_id).await {
-        warn!("cancel: clear_desired for '{}' failed: {}", model_id, e);
-    }
-
-    // Best-effort unload on the tamad (may be not-loaded yet: the
-    // reconciler unloads it on its next tick).
+    // Best-effort unload on the tamad (may be not-loaded yet). Lifecycle
+    // truth is the live tamad rows — the tamad's host-side store clears
+    // the model's desired flag onUnload().
     if let Err(e) = crate::proxy::lifecycle::spec::unload_model_on_tamad(&state, &model_id).await {
         warn!("cancel: unload RPC for '{}' failed: {}", model_id, e);
     }
 
-    // Remove the local mirror entry, if any.
-    state.remove_mirror_by_model(&model_id).await;
+    // No mirror to remove: rows now track lifecycle truth directly.
 
     info!("Model '{}' cancel completed", model_id);
 
@@ -281,14 +228,12 @@ pub async fn handle_tama_cancel_load(
 
 /// Handle unloading a model (Tama management API).
 ///
-/// plan-191 Task 5: clearing the model's **desired** state is the primary
-/// action — once it is no longer desired, the reconciler unloads it on the
-/// provider's tamad (this is the safety net if the RPC below can't reach
-/// the tamad). The `UnloadModel` RPC is issued best-effort for immediate
-/// convergence; a failure to reach the tamad (offline, no provider) is
-/// logged, not an error, because the reconciler will converge the tamad's
-/// process table to the desired set on its next tick.
-/// Unloading a model that is not loaded on the tamad is a no-op
+/// plan-191 Task 5 / plan-193 T7: issuing `UnloadModel` to the provider's
+/// tamad makes the host-side store clear the model's **desired** flag and
+/// drop the process (this is the safety net if the RPC below can't reach
+/// the tamad). A failure to reach the tamad (offline, no provider) is
+/// logged, not an error: the tamad's host-side store keeps the desired
+/// truth. Unloading a model that is not loaded on the tamad is a no-op
 /// (idempotent).
 pub async fn handle_tama_unload_model(
     state: State<Arc<ProxyState>>,
@@ -313,22 +258,20 @@ pub async fn handle_tama_unload_model(
         }
     }
 
-    let pool = state.db_pool();
-
-    // Primary action: clear desired state (best-effort: the row may not
-    // exist, and the reconciler uses it to decide convergence).
-    if let Err(e) = crate::db::queries::clear_desired(&pool, &model_id).await {
-        warn!("unload: clear_desired for '{}' failed: {}", model_id, e);
-    }
-
-    // Best-effort immediate physical unload on the tamad. The reconciler
-    // retries on its next tick if this can't reach the tamad.
+    // Best-effort immediate physical unload on the tamad. Lifecycle
+    // truth is the live tamad rows — the tamad's host-side store clears
+    // the model's desired flag on the UnloadModel RPC.
     if let Err(e) = crate::proxy::lifecycle::spec::unload_model_on_tamad(&state, &model_id).await {
         warn!("unload: RPC for '{}' failed: {}", model_id, e);
     }
 
-    // Drop the local mirror.
-    state.remove_mirror_by_model(&model_id).await;
+    // No mirror to drop: rows now track lifecycle truth directly.
+
+    // Bookkeeping, exactly as `ProxyState::unload_model` does it: the model
+    // is off the rows, so the per-key last-access entry must go (the API
+    // path is best-effort like that one — the entry is pruned regardless
+    // of the RPC outcome).
+    state.registry.prune_last_accessed(&model_id).await;
 
     Json(ModelResponse {
         id: model_id,

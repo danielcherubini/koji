@@ -738,7 +738,11 @@ mod tests {
     async fn test_kill_backend_processes() {
         let (state, _dir) = crate::server::test_support::test_state();
         let table = Arc::new(ProcessTable::default());
-        let lifecycle = TamadLifecycle::new(Arc::clone(&table), Arc::clone(&state));
+        let lifecycle = TamadLifecycle::new(
+            Arc::clone(&table),
+            Arc::clone(&state.store),
+            Arc::clone(&state),
+        );
 
         // Two real sleeper processes via the lifecycle (proper process
         // groups, so unload can kill them), different provider names.

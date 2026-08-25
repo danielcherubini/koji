@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::process::{
     configure_backend_command, configure_process_group, force_kill_process_group,
@@ -20,7 +20,59 @@ use crate::process::{
 use tama_core::tamad::{LoadModelRequest, LoadModelResponse, ProcessInfo, ProviderInfo};
 
 use crate::process_table::{ProcessEntry, ProcessTable};
+use crate::state::store::{Store, StoredProcess, DEFAULT_MAX_RESTARTS};
 use crate::state::TamadState;
+
+/// The canonical lifecycle status words for [process lines](ProcessEntry)
+/// (the single host-side home; plan-193 runs with things here).
+///
+/// The four existing on-the-wire words (`starting`, `ready`, `failed`,
+/// `unloading`) are joined here by the two of T2: `restarting` and
+/// `budget_exhausted`. An empty word is out-of-spec legislation (the
+/// table never writes them; T3's e2e asserts that the set of observed
+/// words is ⊆ these six). Every write site in the
+/// `lifecycle`/`process-table` uses just these constants — no
+/// off-spec words.
+pub mod status {
+    /// Process startup began, but the health gate hasn't settled yet.
+    pub const STARTING: &str = "starting";
+    /// The backend is healthy and serving.
+    pub const READY: &str = "ready";
+    /// The backend died and a respawn is in flight — the row is defunct,
+    /// and the dead-missing-pid reaper is, synchronously,
+    /// standing a replacement back up (the reaper sets this BEFORE the
+    /// respawn; `load()` flips it back to `starting` at the moment of
+    /// launch, reflecting the normal entry-point walk).
+    pub const RESTARTING: &str = "restarting";
+    /// The process failed: the startup failed, became unhealthy in time,
+    /// or died without a desired/flagged store row to respawn from.
+    pub const FAILED: &str = "failed";
+    /// The window of restart budget was blown: auto-respawn stops, and
+    /// the store's `user_flagged` is set alongside. Nothing anywhere
+    /// auto-clears the flag — the clean recovery is an operator
+    /// `unload` of the model (the `UnloadModel` wire kills the host
+    /// store row, and the flag with it) followed by a manual `load`
+    /// (a fresh, un-flagged row with a fresh counter).
+    pub const BUDGET_EXHAUSTED: &str = "budget_exhausted";
+    /// The process is being brought down by an operator. The row comes
+    /// down on unload completion; the words serve so that no
+    /// reaper can race in mid-unload.
+    pub const UNLOADING: &str = "unloading";
+
+    /// Whether `s` is one of the six words (the single validator;
+    /// the set of words observed on `process` info must stay ⊆).
+    pub fn is_accepted(s: &str) -> bool {
+        matches!(
+            s,
+            STARTING | READY | RESTARTING | FAILED | BUDGET_EXHAUSTED | UNLOADING
+        )
+    }
+}
+
+/// Span of the sliding restart budget window (seconds; the default
+/// per-key budget `DEFAULT_MAX_RESTARTS` lives — T2 reuses — in
+/// `crate::state::store`) .
+pub const RESTART_WINDOW_SECS: u64 = 300;
 
 /// Env key the proxy uses to carry the *proxy's* models directory in the
 /// launch spec. The tamad rewrites any arg that references it (a path
@@ -29,18 +81,168 @@ use crate::state::TamadState;
 /// places. The key is stripped before spawning.
 pub const PROXY_MODELS_DIR_ENV: &str = "TAMA_MODELS_DIR";
 
+/// The single host-side builder for the wire `[ProcessInfo]` of one
+/// process line (plan-193 T3). The six legacy fields map straight off the
+/// table `entry` (with `alive` folded from status+pid); the three T3
+/// wire fields come from the persistent store row when one exists, else
+/// fall back to the wire-spec defaults (not desired, zero restarts, the
+/// default restart budget). Both write sites (the lifecycle `list()` and
+/// the server `stream_stats` path) route through this one function so a
+/// loaded model always reports `desired=true` and its restart counters
+/// on the wire.
+pub fn to_process_info(entry: &ProcessEntry, store_row: Option<&StoredProcess>) -> ProcessInfo {
+    ProcessInfo {
+        model_name: entry.model_name.clone(),
+        provider_name: entry.provider_name.clone(),
+        pid: entry.pid as i32,
+        alive: entry.status != crate::lifecycle::status::FAILED
+            && crate::process::is_process_alive(entry.pid),
+        endpoint_url: entry.endpoint_url.clone(),
+        status: entry.status.clone(),
+        desired: store_row.map(|r| r.desired).unwrap_or(false),
+        restart_count: entry.restart_count,
+        max_restarts: store_row
+            .map(|r| r.max_restarts)
+            .unwrap_or(DEFAULT_MAX_RESTARTS),
+    }
+}
+
+/// Persist the budget trip's `user_flagged` mark with a bounded
+/// retry: three attempts, 100 ms apart. The store write is an atomic
+/// temp+rename, and a momentary disk flap must never drop the mark —
+/// dropped, the in-memory mirror loses it on restart, and the boot
+/// sweep would REPLAY the budget-exhausted model — a silent hole in a
+/// terminal state.
+///
+/// Returns `Ok` on the first success; `Err` once all attempts are
+/// exhausted. The caller must `error!` (carrying the operator
+/// recovery: `tama admin unload <key>` then `load`) and stop — that
+/// caller-side `error!` is the recovery contract; the state below has
+/// not changed beyond the table row write that preceded it.
+async fn persist_tripped(
+    store: &Store,
+    model_name: &str,
+    persisted_restart_count: u32,
+) -> Result<()> {
+    for attempt in 1..=3u32 {
+        match store.set_tripped(model_name, persisted_restart_count) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                warn!(
+                    model = %model_name,
+                    attempt,
+                    error = %e,
+                    "persisting the budget trip mark (user_flagged + tally) failed; retrying"
+                );
+            }
+        }
+        if attempt < 3 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+    Err(anyhow!(
+        "persisting the trip mark (user_flagged + at-cap tally) for '{model_name}' failed after all 3 attempts"
+    ))
+}
+
+/// Operator-facing refusal line for the boot sweep's at-cap, unmarked
+/// manifest (pre-policy durability, round-2 P1): the persisted trip tally
+/// reached the disk; its `user_flagged` mark did not (the ENOSPC-at-trip shape).
+/// The recovery sentence is word-for-word the trip's own fatal `error!`
+/// sentence — the sweep LOGS; the operator FIXES.
+fn at_cap_skip_note(model_name: &str, persisted: u32, cap: u32) -> String {
+    format!(
+        "persisted restart tally is at cap ({persisted} >= {cap}) — the boot sweep \
+         will NOT replay '{model_name}' (replaying would re-arm the crash loop); \
+         the manifest is left exactly as found. recovery = `tama admin unload \
+{model_name}` then `load` (clean re-arm)"
+    )
+}
+
 /// Tamad-side lifecycle over the process table.
 pub struct TamadLifecycle {
     /// In-memory table of spawned backend processes.
     pub table: Arc<ProcessTable>,
+    /// The per-model on-host-disk persistent store (plan-193 T1) — the
+    /// source of truth for respawns and the boot replay.
+    pub store: Arc<Store>,
     /// Runtime state (models_dir for path remapping).
     pub state: Arc<TamadState>,
+    /// Queue into the respawn supervisor.
+    respawn_tx: tokio::sync::mpsc::UnboundedSender<(String, LoadModelRequest, u32)>,
+    /// The other end of that queue, handed to the supervisor task.
+    respawn_rx: Arc<
+        tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<(String, LoadModelRequest, u32)>>,
+    >,
 }
 
 impl TamadLifecycle {
-    /// Create a lifecycle backed by `table` and `state`.
-    pub fn new(table: Arc<ProcessTable>, state: Arc<TamadState>) -> Self {
-        Self { table, state }
+    /// Create a lifecycle backed by `table`, the persistent `store`,
+    /// and runtime `state`.
+    pub fn new(table: Arc<ProcessTable>, store: Arc<Store>, state: Arc<TamadState>) -> Self {
+        let (respawn_tx, respawn_rx) = tokio::sync::mpsc::unbounded_channel();
+        Self {
+            table,
+            store,
+            state,
+            respawn_tx,
+            respawn_rx: Arc::new(tokio::sync::Mutex::new(respawn_rx)),
+        }
+    }
+
+    /// A state-sharing copy of this lifecycle for detached tasks (the
+    /// reaper wait, the boot-sweep loads). The struct is just a trio of
+    /// shared Arcs, so a copy IS the state itself — no identity data
+    /// needs to be preserved.
+    fn shared_copy(&self) -> Self {
+        Self {
+            table: Arc::clone(&self.table),
+            store: Arc::clone(&self.store),
+            state: Arc::clone(&self.state),
+            respawn_tx: self.respawn_tx.clone(),
+            respawn_rx: Arc::clone(&self.respawn_rx),
+        }
+    }
+
+    /// Start the respawn supervisor (plan-193 T2). The dead-PID reaper
+    /// itself only queues jobs: the relaunched spawn-back must not run
+    /// inside the wait task — it cannot reenter `load` from there (the
+    /// spawned task would have to prove `load`\'s future `Send` through
+    /// its own spawn, which is circular) — so the supervisor, a
+    /// detached task started once at boot, consumes the queue and
+    /// dispatches each respawn through
+    /// [`load`](Self::load). It exits when the lifecycle that owns it
+    /// (and its test clones) are dropped.
+    pub fn start_respawn_supervisor(
+        lifecycle: &Arc<TamadLifecycle>,
+    ) -> tokio::task::JoinHandle<()> {
+        let lifecycle = Arc::clone(lifecycle);
+        let queue = Arc::clone(&lifecycle.respawn_rx);
+        tokio::spawn(async move {
+            loop {
+                let job = {
+                    let mut guard = queue.lock().await;
+                    guard.recv().await
+                };
+                let Some((model_name, req, restart_count)) = job else {
+                    break; // lifecycle dropped
+                };
+                match lifecycle.load(&req).await {
+                    Ok(resp) => info!(
+                        model = %model_name,
+                        new_pid = resp.pid,
+                        restart_count,
+                        "respawn supervisor relaunched the backend (stored spec)"
+                    ),
+                    Err(e) => warn!(
+                        model = %model_name,
+                        error = %e,
+                        restart_count,
+                        "respawn attempt failed; the row saw its outcome"
+                    ),
+                }
+            }
+        })
     }
 
     /// Spawn the backend described by `req`, health-poll until success or
@@ -94,21 +296,40 @@ impl TamadLifecycle {
         let pid = child
             .id()
             .ok_or_else(|| anyhow!("failed to get PID for model '{}'", req.model_name))?;
-        // Reap task: wait for the child to exit and mark the entry failed.
-        // The tamad owns the process, so it must reap it — otherwise a
-        // crashed backend lingers as a zombie that still answers
-        // kill(pid, 0), and the proxy's reconciler would never see it
-        // as dead (and never restart it).
+        // Reaped-by-dead-PID reaper: the tamad owns the process, so it
+        // must reap it — otherwise a crashed backend lingers as a zombie
+        // that still answers `kill(pid, 0)`. On exit the reaper
+        // consults the persistent store and the restart budget
+        // (plan-193 T2) — see `reap_dead_pid`.
+        let model_name = req.model_name.clone();
         {
-            let table = Arc::clone(&self.table);
-            let model_name = req.model_name.clone();
+            let lifecycle = self.shared_copy();
             tokio::spawn(async move {
                 let _ = child.wait().await;
-                table.mark_failed(&model_name, pid).await;
+                lifecycle.reap_dead_pid(&model_name, pid).await;
             });
         }
 
         info!(model = %req.model_name, pid, "backend process spawned");
+
+        // Track the new process as `starting` — the normal entry-point
+        // visibility. A respawn that comes in through the reaper arrives
+        // on a `restarting`-row (round-trip tally already posted into
+        // this store); its failed-terminal row retains that tally so
+        // an aborted attempt still consumes its budget.
+        let previous = self.table.get(&req.model_name).await;
+        let inheriting_attempt = previous
+            .as_ref()
+            .is_some_and(|p| p.status == status::RESTARTING);
+        self.table
+            .insert(Self::entry_for(
+                req,
+                pid,
+                status::STARTING,
+                inheriting_attempt,
+                &previous,
+            ))
+            .await;
 
         // Health polling.
         let timeout = Duration::from_millis(req.health_timeout_ms.max(0) as u64);
@@ -130,19 +351,24 @@ impl TamadLifecycle {
             if is_process_group_alive(pid) {
                 let _ = force_kill_process_group(pid).await;
             }
-            // Record the failed attempt (status "failed") so the stats
-            // stream shows it until the next load replaces it.
-            self.table
-                .insert(ProcessEntry {
-                    model_name: req.model_name.clone(),
-                    provider_name: req.provider_name.clone(),
-                    pid,
-                    endpoint_url: Self::endpoint_from_health_url(&req.health_url),
-                    status: "failed".to_string(),
-                    started_at: Instant::now(),
-                    spec: req.clone(),
-                })
-                .await;
+            // Record the failed attempt (status `failed`). Only when
+            // the line is still the very process of this one — a concurrent
+            // unload or reaper race has already spun the key around, and
+            // the `failed` row of its own must not clobber it.
+            if self.owns_row(&req.model_name, pid).await {
+                // If a restart attempt burns out hard, retain the
+                // (already recorded) round-trip tally; a plain load
+                // that fails from scratch starts the record clean.
+                self.table
+                    .insert(Self::entry_for(
+                        req,
+                        pid,
+                        status::FAILED,
+                        inheriting_attempt,
+                        &previous,
+                    ))
+                    .await;
+            }
             return Err(anyhow!(
                 "backend '{}' for model '{}' failed to become healthy within {}ms",
                 req.provider_name,
@@ -152,23 +378,101 @@ impl TamadLifecycle {
         }
 
         let endpoint_url = Self::endpoint_from_health_url(&req.health_url);
-        self.table
-            .insert(ProcessEntry {
-                model_name: req.model_name.clone(),
-                provider_name: req.provider_name.clone(),
-                pid,
-                endpoint_url: endpoint_url.clone(),
-                status: "ready".to_string(),
-                started_at: Instant::now(),
-                spec: req.clone(),
-            })
-            .await;
+        if self.owns_row(&req.model_name, pid).await {
+            // The verified-`ready` verdict resets the round-trip record
+            // (plan-193 T2): a successful HEALTH GATE clears the
+            // in-window trip tally, so a healthy stretch of life
+            // restarts the budget clock. The INSTANT ready (no gate
+            // configured) is no verified success, though — it preserves
+            // the row's bookkeeping so a backend that exits 0.3 s
+            // after every start can still trip the budget directive.
+            // `user_flagged` is NOT auto-cleared on success, either.
+            let verified = !req.health_url.is_empty() && req.health_timeout_ms != 0;
+            self.table
+                .insert(Self::entry_for(
+                    req,
+                    pid,
+                    status::READY,
+                    inheriting_attempt && !verified,
+                    &previous,
+                ))
+                .await;
+            // The durable half of the same reset (round-2 P1): a verified-ready
+            // ALSO zeroes the on-disk at-cap tally. Without it, the manifest
+            // would keep presenting as at-cap after a healthy outcome, and the
+            // next boot sweep would refuse to replay a perfectly fine key.
+            // `user_flagged` stays untouched — success never re-claims the
+            // operator's mark.
+            if verified {
+                if let Err(e) = self.store.zero_persisted_restart_count(&req.model_name) {
+                    warn!(
+                        model = %req.model_name,
+                        error = %e,
+                        "verified-ready success reset could not zero the persisted \
+                         at-cap tally; a later boot sweep may still treat this key \
+                         as at-cap — recovery = `tama admin unload <key>` then \
+                         `load` (clean re-arm)"
+                    );
+                }
+            }
+        }
 
         Ok(LoadModelResponse {
             endpoint_url,
             pid: pid as i32,
-            status: "ready".to_string(),
+            status: status::READY.to_string(),
         })
+    }
+
+    /// Ownership check — does the row for `model_name` still stand
+    /// for this very process (pid match)? The terminal rows (failed / ready)
+    /// overwrite it their one; an unload or reaper race in between has
+    /// already moved this key's own process, and a late
+    /// terminal must not clobber it.
+    async fn owns_row(&self, model_name: &str, pid: u32) -> bool {
+        self.table
+            .get(model_name)
+            .await
+            .is_some_and(|e| e.pid == pid)
+    }
+
+    /// Single entry builder for the lifespan (process entry) —
+    /// keeps the round-trip tally + the `user_flagged` mirror the
+    /// same discipline everywhere: `ready` resets the tally while
+    /// retaining the mirror; a failed restart attempt retains
+    /// both (the attempt was counted); everything else starts clean.
+    fn entry_for(
+        req: &LoadModelRequest,
+        pid: u32,
+        entry_status: &str,
+        inherit_bookkeeping: bool,
+        previous: &Option<ProcessEntry>,
+    ) -> ProcessEntry {
+        let (restart_count, window_starts, user_flagged) =
+            match (inherit_bookkeeping, previous.as_ref()) {
+                (true, Some(prev)) => (
+                    prev.restart_count,
+                    prev.window_starts.clone(),
+                    prev.user_flagged,
+                ),
+                _ => (
+                    0,
+                    Vec::new(),
+                    previous.as_ref().map(|p| p.user_flagged).unwrap_or(false),
+                ),
+            };
+        ProcessEntry {
+            model_name: req.model_name.clone(),
+            provider_name: req.provider_name.clone(),
+            pid,
+            endpoint_url: Self::endpoint_from_health_url(&req.health_url),
+            status: entry_status.to_string(),
+            started_at: Instant::now(),
+            spec: req.clone(),
+            restart_count,
+            window_starts,
+            user_flagged,
+        }
     }
 
     /// Spawn a Docker-backed backend (container) and health-poll it to ready.
@@ -255,6 +559,23 @@ impl TamadLifecycle {
 
         let pid = container.pid;
 
+        // Same entry discipline as the native path: a `starting` row at
+        // launch, ownership-guarded terminal rows on settle, and the
+        // reaper's round-trip rental carries through for respawns.
+        let previous = self.table.get(&req.model_name).await;
+        let inheriting_attempt = previous
+            .as_ref()
+            .is_some_and(|p| p.status == status::RESTARTING);
+        self.table
+            .insert(Self::entry_for(
+                req,
+                pid,
+                status::STARTING,
+                inheriting_attempt,
+                &previous,
+            ))
+            .await;
+
         // Health polling (same contract as the native path).
         let timeout = Duration::from_millis(req.health_timeout_ms.max(0) as u64);
         let healthy = if req.health_url.is_empty() || req.health_timeout_ms == 0 {
@@ -270,17 +591,17 @@ impl TamadLifecycle {
             );
             let _ = crate::host_installs::docker::runner::stop_container(&container.name).await;
             let _ = crate::host_installs::docker::runner::remove_container(&container.name).await;
-            self.table
-                .insert(ProcessEntry {
-                    model_name: req.model_name.clone(),
-                    provider_name: req.provider_name.clone(),
-                    pid,
-                    endpoint_url: Self::endpoint_from_health_url(&req.health_url),
-                    status: "failed".to_string(),
-                    started_at: Instant::now(),
-                    spec: req.clone(),
-                })
-                .await;
+            if self.owns_row(&req.model_name, pid).await {
+                self.table
+                    .insert(Self::entry_for(
+                        req,
+                        pid,
+                        status::FAILED,
+                        inheriting_attempt,
+                        &previous,
+                    ))
+                    .await;
+            }
             return Err(anyhow!(
                 "container for model '{}' failed to become healthy within {}ms",
                 req.model_name,
@@ -289,22 +610,35 @@ impl TamadLifecycle {
         }
 
         let endpoint_url = Self::endpoint_from_health_url(&req.health_url);
-        self.table
-            .insert(ProcessEntry {
-                model_name: req.model_name.clone(),
-                provider_name: req.provider_name.clone(),
-                pid,
-                endpoint_url: endpoint_url.clone(),
-                status: "ready".to_string(),
-                started_at: Instant::now(),
-                spec: req.clone(),
-            })
-            .await;
+        if self.owns_row(&req.model_name, pid).await {
+            // Same verified-ready reset rule as the host path: a
+            // successful container health gate clears the trip tally;
+            // an instant ready (no gate) preserves it.
+            let verified = !req.health_url.is_empty() && req.health_timeout_ms != 0;
+            self.table
+                .insert(Self::entry_for(
+                    req,
+                    pid,
+                    status::READY,
+                    inheriting_attempt && !verified,
+                    &previous,
+                ))
+                .await;
+            if verified {
+                if let Err(e) = self.store.zero_persisted_restart_count(&req.model_name) {
+                    warn!(
+                        model = %req.model_name,
+                        error = %e,
+                        "verified container-ready success reset could not zero the \n                         persisted at-cap tally — recovery = `tama admin unload \n                         <key>` then `load` (clean re-arm)"
+                    );
+                }
+            }
+        }
 
         Ok(LoadModelResponse {
             endpoint_url,
             pid: pid as i32,
-            status: "ready".to_string(),
+            status: status::READY.to_string(),
         })
     }
 
@@ -414,14 +748,7 @@ impl TamadLifecycle {
         let mut by_provider: std::collections::BTreeMap<String, Vec<ProcessInfo>> =
             std::collections::BTreeMap::new();
         for entry in self.table.list().await {
-            let info = ProcessInfo {
-                model_name: entry.model_name.clone(),
-                provider_name: entry.provider_name.clone(),
-                pid: entry.pid as i32,
-                alive: entry.status != "failed" && crate::process::is_process_alive(entry.pid),
-                endpoint_url: entry.endpoint_url.clone(),
-                status: entry.status.clone(),
-            };
+            let info = to_process_info(&entry, self.store.get(&entry.model_name).as_ref());
             by_provider
                 .entry(entry.provider_name)
                 .or_default()
@@ -438,6 +765,222 @@ impl TamadLifecycle {
                 loaded_models,
             })
             .collect()
+    }
+
+    /// Dead-PID reaper arm (plan-193 T2): runs when the reaped child
+    /// exits. Two outcomes.
+    ///
+    /// *Legacy arm* — the key has no store row, or the row is not
+    /// `desired`, or someone already gave this key up (either on-disk or
+    /// in-memory `user_flagged`): mark the row `failed`, exactly the
+    /// pre-T2 behavior.
+    ///
+    /// *Respawn arm* — desired, unflagged store row and the budget
+    /// still has room: set the row to `restarting`, post one replay
+    /// into the sliding heavy window, and re-fire the saved spec via
+    /// [`load`](Self::load). If the class is a downward of
+    /// `restart_count >= max` (the budget gate's refusal), set the row
+    /// to `budget_exhausted` and burn in the operator's mark on the store.
+    /// No auto-respawn after that.
+    async fn reap_dead_pid(&self, model_name: &str, pid: u32) {
+        let entry = match self.table.get(model_name).await {
+            Some(e) if e.pid == pid => e,
+            _ => return, // Already-unloaded, or a gone reaper from a previous round —
+                         // the pid guard makes it a no-op.
+        };
+        debug!(
+            model = %model_name,
+            pid,
+            status = %entry.status,
+            "dead-PID reaper fired"
+        );
+
+        let stored = self.store.get(model_name);
+        let respawn = stored
+            .as_ref()
+            .is_some_and(|sp| sp.desired && !sp.user_flagged)
+            && !entry.user_flagged;
+        if !respawn {
+            // Legacy arm: no store row to restart from (or given up) —
+            // nothing we can do, and no round-trip is charged.
+            self.table.mark_failed(model_name, pid).await;
+            return;
+        }
+        let stored = stored.expect("just-checked respawn");
+        let max_restarts = stored.max_restarts;
+
+        // One death → one round-trip in the sliding window, trimmed
+        // and re-published.
+        let Some(restart_count) = self
+            .table
+            .record_restart_window(model_name, Self::now_unix_ms())
+            .await
+        else {
+            return; // The rows moved on (unload) — no-op.
+        };
+
+        if restart_count >= max_restarts {
+            // Budget gate's refusal: a terminal state on the row, the
+            // operator's mark burned in-disk, no auto-respawn after.
+            if self.table.mark_budget_exhausted(model_name, pid).await {
+                warn!(
+                    model = %model_name,
+                    pid,
+                    restart_count,
+                    max_restarts,
+                    "restart budget exhausted; stopping auto-respawn for this key"
+                );
+                if let Err(e) = persist_tripped(&self.store, model_name, max_restarts).await {
+                    error!(
+                        model = %model_name,
+                        pid,
+                        restart_count,
+                        max_restarts,
+                        error = %e,
+                        "budget tripped but the trip persistence (the mark + the at-cap \
+                        tally) did not reach disk — the boot sweep 's at-cap refusal \
+                        still covers it; recovery = `tama admin unload <key>` then \
+                        `load` (clean re-arm)"
+                    );
+                }
+            }
+            return;
+        }
+
+        // Round-trip is coming up: set the row `restarting` FIRST
+        // (the row's background is starting up, and it's defunct before
+        // the replacement even boots). Only act when the line of this
+        // process is still standing (the same guard the table method
+        // applies) — the reaper bails on one move.
+        if !self.table.mark_restarting(model_name, pid).await {
+            return;
+        }
+        let req: LoadModelRequest = (&stored).into();
+        // Hand the job to the supervisor. The reaper dispatches, so the
+        // row stands `restarting` here; `load` flips it to `starting`
+        // the moment the replacement launches.
+        if self
+            .respawn_tx
+            .send((model_name.to_string(), req, restart_count))
+            .is_err()
+        {
+            warn!(
+                model = %model_name,
+                restart_count,
+                max_restarts,
+                "respawn supervisor gone; row left `restarting` (daemon unwinding)"
+            );
+        }
+    }
+
+    /// Boot sweep (plan-193 T2's entry-point): re-fire every store
+    /// row that's `desired` and not `user_flagged` as a live process.
+    ///
+    /// Per file: rows already live under the same key skip it (row
+    /// wins over file); a Load that fails is logged and left desired
+    /// (boot must never fail because one model failed). Bounded
+    /// parallelism: at most two Loads in flight at any moment.
+    /// (A serial loop would chain 30–300 s health polling
+    /// latencies across all desired models.)
+    ///
+    /// `--no-replay-desired` turns the whole sweep off (this is the
+    /// only operational switch in the plan).
+    ///
+    /// Pre-policy durability addition (round-2 P1): a row whose PERSISTED
+    /// at-cap tally reached the disk but whose trip mark did not (the
+    /// ENOSPC-trip shape) is also refused — replaying it would re-arm the
+    /// crash loop. The log carries the recovery sentence (`tama admin
+    /// unload` then `load`); the manifest is not rewritten.
+    pub async fn replay_desired(&self, enabled: bool) {
+        if !enabled {
+            info!("boot sweep: replay-desired is disabled (--no-replay-desired); nothing replayed");
+            return;
+        }
+        let sem = Arc::new(tokio::sync::Semaphore::new(2));
+        let mut inflight: Vec<(String, tokio::task::JoinHandle<Result<LoadModelResponse>>)> =
+            Vec::new();
+        for stored in self.store.list() {
+            let key = stored.model_name.clone();
+            if !stored.desired {
+                continue;
+            }
+            if stored.user_flagged {
+                debug!(model = %key, "boot sweep: skipping user-flagged model");
+                continue;
+            }
+            // Pre-policy durability (round-2 P1): a manifest whose PERSISTED
+            // at-cap tally reached the disk but whose trip mark did not
+            // (the ENOSPC not-on-disk shape) is also refused — replaying it
+            // would re-arm the crash loop. The log carries the operator
+            // recovery sentence; the manifest stays byte-for-byte as found.
+            if stored.persisted_restart_count >= stored.max_restarts {
+                warn!(
+                    model = %key,
+                    persisted = stored.persisted_restart_count,
+                    cap = stored.max_restarts,
+                    "boot sweep: {}",
+                    at_cap_skip_note(&key, stored.persisted_restart_count, stored.max_restarts)
+                );
+                continue;
+            }
+            if self
+                .table
+                .get(&key)
+                .await
+                .filter(|e| crate::process::is_process_alive(e.pid))
+                .is_some()
+            {
+                // Already running in-process under this key — the row
+                // wins over the file. No double-spawn.
+                debug!(model = %key, "boot sweep: model already alive; skipping");
+                continue;
+            }
+            let Ok(permit) = sem.clone().acquire_owned().await else {
+                warn!("boot sweep: semaphore closed; aborting remaining replays");
+                break;
+            };
+            let lifecycle = self.shared_copy();
+            inflight.push((
+                key,
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    let req: LoadModelRequest = (&stored).into();
+                    lifecycle.load(&req).await
+                }),
+            ));
+        }
+        let mut replayed = 0usize;
+        for (key, task) in inflight {
+            match task.await {
+                Ok(Ok(resp)) => {
+                    replayed += 1;
+                    info!(model = %key, pid = resp.pid, "boot sweep: replayed desired model");
+                }
+                Ok(Err(e)) => {
+                    warn!(
+                        model = %key,
+                        error = %e,
+                        "boot sweep: load failed; model left desired on disk"
+                    );
+                }
+                Err(e) => {
+                    warn!(model = %key, error = %e, "boot sweep: load task failed");
+                }
+            }
+        }
+        if replayed > 0 {
+            info!(replayed, "boot sweep complete");
+        }
+    }
+
+    /// Current unix time in milliseconds (budget-window bookkeeping;
+    /// mirroring the store's own clock beyond a boundary — the store
+    /// keeps `updated_at_ms` in the same unit).
+    fn now_unix_ms() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0)
     }
 
     /// Health-poll `url` (200–399) every 500ms until `timeout`.
@@ -619,6 +1162,60 @@ impl TamadLifecycle {
 mod tests {
     use super::*;
     use crate::server::test_support::test_state;
+    use ::prost::Message;
+
+    /// A healthy store succeeds on the first attempt: the cheap path is a
+    /// single atomic temp+rename — the helper must never loop, and the
+    /// mark is persisted.
+    #[tokio::test]
+    async fn test_persist_tripped_healthy_dir_ok_first_attempt() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path()).unwrap();
+        store
+            .insert("pf-ok", &make_req("pf-ok", "sh", &[], 0), true)
+            .unwrap();
+
+        persist_tripped(&store, "pf-ok", 10)
+            .await
+            .expect("healthy dir: Ok on the 1st attempt (no retry swallows)");
+
+        assert!(
+            store.get("pf-ok").unwrap().user_flagged,
+            "the mark is persisted (terminal state is on disk)"
+        );
+        assert_eq!(
+            store.get("pf-ok").unwrap().persisted_restart_count,
+            10,
+            "the at-cap tally is persisted in the same bounded write"
+        );
+    }
+
+    /// With the state directory gone, EVERY retry fails and the helper
+    /// gives up with `Err` — the retry loop runs and bails instead of
+    /// panic/hang, reaching the caller's fatal branch. The caller's
+    /// `error!` (with the operator recovery text) is the recovery
+    /// contract; this unit pins the error-shaped path — the same shape
+    /// that only its caller can convert into the fatal log.
+    #[tokio::test]
+    async fn test_persist_tripped_gives_up_when_dir_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path()).unwrap();
+        store
+            .insert("pf-gone", &make_req("pf-gone", "sh", &[], 0), true)
+            .unwrap();
+        // Kill the store out from under itself: the in-memory manifest
+        // remains, but every temp open + rename fails — all three
+        // attempts are exhausted.
+        std::fs::remove_dir_all(dir.path()).unwrap();
+
+        let err = persist_tripped(&store, "pf-gone", 10)
+            .await
+            .expect_err("missing dir: every retry fails → the helper gives up with Err");
+        assert!(
+            err.to_string().contains("pf-gone"),
+            "the failed key is carried for the caller's error!"
+        );
+    }
 
     fn make_req(
         model: &str,
@@ -654,7 +1251,11 @@ mod tests {
     async fn test_load_restart_unload() {
         let (state, _dir) = test_state();
         let table = Arc::new(ProcessTable::default());
-        let lc = TamadLifecycle::new(Arc::clone(&table), Arc::clone(&state));
+        let lc = TamadLifecycle::new(
+            Arc::clone(&table),
+            Arc::clone(&state.store),
+            Arc::clone(&state),
+        );
 
         // health_timeout_ms = 0 → immediately ready, no health polling.
         let resp = lc
@@ -710,7 +1311,11 @@ mod tests {
     #[tokio::test]
     async fn test_unload_unknown_fails() {
         let (state, _dir) = test_state();
-        let lc = TamadLifecycle::new(Arc::new(ProcessTable::default()), Arc::clone(&state));
+        let lc = TamadLifecycle::new(
+            Arc::new(ProcessTable::default()),
+            Arc::clone(&state.store),
+            Arc::clone(&state),
+        );
         assert!(lc.unload("nope").await.is_err());
     }
 
@@ -718,7 +1323,11 @@ mod tests {
     #[tokio::test]
     async fn test_restart_unknown_fails() {
         let (state, _dir) = test_state();
-        let lc = TamadLifecycle::new(Arc::new(ProcessTable::default()), Arc::clone(&state));
+        let lc = TamadLifecycle::new(
+            Arc::new(ProcessTable::default()),
+            Arc::clone(&state.store),
+            Arc::clone(&state),
+        );
         assert!(lc.restart("nope").await.is_err());
     }
 
@@ -745,7 +1354,11 @@ mod tests {
 
         let (state, _dir) = test_state();
         let table = Arc::new(ProcessTable::default());
-        let lc = TamadLifecycle::new(Arc::clone(&table), Arc::clone(&state));
+        let lc = TamadLifecycle::new(
+            Arc::clone(&table),
+            Arc::clone(&state.store),
+            Arc::clone(&state),
+        );
 
         let mut req = make_req("healthy", "sh", &["-c", "sleep 30"], 0);
         req.health_url = format!("http://127.0.0.1:{port}/health");
@@ -763,7 +1376,11 @@ mod tests {
     async fn test_load_health_timeout() {
         let (state, _dir) = test_state();
         let table = Arc::new(ProcessTable::default());
-        let lc = TamadLifecycle::new(Arc::clone(&table), Arc::clone(&state));
+        let lc = TamadLifecycle::new(
+            Arc::clone(&table),
+            Arc::clone(&state.store),
+            Arc::clone(&state),
+        );
 
         let mut req = make_req("unhealthy", "sh", &["-c", "sleep 30"], 0);
         // A port nothing listens on.
@@ -787,12 +1404,16 @@ mod tests {
     /// A backend that exits on its own is reaped by the tamad and marked
     /// "failed" in the table (the reap task is the authoritative liveness
     /// signal — a zombie pid would otherwise read as alive via kill(pid,0)
-    /// and the proxy's reconciler would never restart it).
+    /// and the auto-load path would never restart it).
     #[tokio::test]
     async fn test_load_marks_failed_when_backend_crashes() {
         let (state, _dir) = test_state();
         let table = Arc::new(ProcessTable::default());
-        let lc = TamadLifecycle::new(Arc::clone(&table), Arc::clone(&state));
+        let lc = TamadLifecycle::new(
+            Arc::clone(&table),
+            Arc::clone(&state.store),
+            Arc::clone(&state),
+        );
 
         // No health check: load succeeds immediately, then the process
         // exits on its own.
@@ -817,13 +1438,179 @@ mod tests {
             "crashed backend must be marked failed"
         );
 
-        // The snapshot reports it dead (reconciler will re-load it).
+        // The snapshot hands back the entry; the caller's alive fold
+        // reports it dead (status "failed" → not alive).
         let snap = table.snapshot().await;
-        let p = snap
+        let e = snap
             .iter()
-            .find(|p| p.model_name == "crashy")
+            .find(|e| e.model_name == "crashy")
             .expect("crashy in snapshot");
-        assert!(!p.alive, "crashed backend must be reported dead");
+        assert_eq!(e.status, "failed", "crashed backend marked failed");
+    }
+
+    /// Seed the row as an in-flight respawn (`restarting`) that already
+    /// carries an in-window round-trip tally — the shape a respawning row
+    /// has when `load()` re-injects the replacement.
+    async fn seed_restarting_table(table: &Arc<ProcessTable>, model: &str) {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        table
+            .insert(ProcessEntry {
+                model_name: model.to_string(),
+                provider_name: "llama_cpp".to_string(),
+                pid: 1,
+                endpoint_url: String::new(),
+                status: status::RESTARTING.to_string(),
+                started_at: Instant::now(),
+                spec: make_req(model, "sh", &["-c", "sleep 30"], 0),
+                restart_count: 3,
+                window_starts: vec![now_ms - 2_000, now_ms - 1_000, now_ms],
+                user_flagged: false,
+            })
+            .await;
+    }
+
+    /// A load that reaches `ready` must reset the in-window restart tally
+    /// ONLY when the health gate actually fired (`health_url` present AND
+    /// `health_timeout_ms` positive). A spec with a non-empty `health_url`
+    /// but `health_timeout_ms == 0` SKIPS the gate (`load`'s `healthy`
+    /// branch), so that row is NOT verified: it preserves the in-flight
+    /// round-trip tally instead of clearing it.
+    ///
+    /// Before the double-negation fix, `verified` was `A || B` rather than
+    /// `A && B`, so this family was misread as verified and the tally was
+    /// reset (restart_count read 0) — failing the two asserts below.
+    #[tokio::test]
+    async fn test_load_ready_url_zero_timeout_is_unverified_and_preserves_window() {
+        let (state, _dir) = test_state();
+        let table = Arc::new(ProcessTable::default());
+        let lc = TamadLifecycle::new(
+            Arc::clone(&table),
+            Arc::clone(&state.store),
+            Arc::clone(&state),
+        );
+
+        seed_restarting_table(&table, "win").await;
+
+        // Non-empty URL but zero timeout: the health gate is skipped, so
+        // the row is never verified.
+        let mut req = make_req("win", "sh", &["-c", "sleep 30"], 0);
+        req.health_url = "http://127.0.0.1:1/health".to_string();
+        let resp = lc
+            .load(&req)
+            .await
+            .expect("ready without health polling (gate skipped)");
+        assert_eq!(resp.status, status::READY);
+
+        let entry = table.get("win").await.expect("row present after ready");
+        assert_eq!(entry.status, status::READY);
+        assert_eq!(
+            entry.restart_count,
+            3,
+            "URL + zero-timeout skips the health gate: not verified, so the round-trip tally is preserved"
+        );
+        assert_eq!(
+            entry.window_starts.len(),
+            3,
+            "gate was not verified: the restart window must not be reset"
+        );
+        lc.unload("win").await.ok();
+    }
+
+    /// Behaviour the fix must NOT break: a concrete `health_url` AND a
+    /// positive `health_timeout_ms` round-trips a verified ready, so the
+    /// successful health gate resets the in-window restart tally (the
+    /// `restarting` row's tallies are cleared from the verdict).
+    #[tokio::test]
+    async fn test_load_ready_url_positive_timeout_is_verified_and_resets_window() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut buf = [0u8; 512];
+                    let _ = sock.read(&mut buf).await;
+                    let _ = sock
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                        .await;
+                });
+            }
+        });
+
+        let (state, _dir) = test_state();
+        let table = Arc::new(ProcessTable::default());
+        let lc = TamadLifecycle::new(
+            Arc::clone(&table),
+            Arc::clone(&state.store),
+            Arc::clone(&state),
+        );
+
+        seed_restarting_table(&table, "gated").await;
+
+        let mut req = make_req("gated", "sh", &["-c", "sleep 30"], 0);
+        req.health_url = format!("http://127.0.0.1:{port}/health");
+        req.health_timeout_ms = 10_000;
+        let resp = lc
+            .load(&req)
+            .await
+            .expect("health-gated load should succeed");
+        assert_eq!(resp.status, status::READY);
+
+        let entry = table.get("gated").await.expect("row present after ready");
+        assert_eq!(entry.status, status::READY);
+        assert_eq!(
+            entry.restart_count, 0,
+            "the verified health-gated ready resets the round-trip tally"
+        );
+        assert!(
+            entry.window_starts.is_empty(),
+            "verified ready resets the restart window"
+        );
+        lc.unload("gated").await.ok();
+    }
+
+    /// "No `health_url` + no timeout" is the canonically unverified ready
+    /// (the gate never fires), and is the baseline a "URL + zero-timeout"
+    /// spec (the previous test) must match: the tally is preserved, not
+    /// reset.
+    #[tokio::test]
+    async fn test_load_ready_no_url_zero_timeout_is_unverified_and_preserves_window() {
+        let (state, _dir) = test_state();
+        let table = Arc::new(ProcessTable::default());
+        let lc = TamadLifecycle::new(
+            Arc::clone(&table),
+            Arc::clone(&state.store),
+            Arc::clone(&state),
+        );
+
+        seed_restarting_table(&table, "nourl").await;
+
+        // `make_req` with `health_timeout_ms == 0` leaves `health_url` empty.
+        let req = make_req("nourl", "sh", &["-c", "sleep 30"], 0);
+        let resp = lc
+            .load(&req)
+            .await
+            .expect("ready without health polling (no gate)");
+        assert_eq!(resp.status, status::READY);
+
+        let entry = table.get("nourl").await.expect("row present after ready");
+        assert_eq!(entry.status, status::READY);
+        assert_eq!(
+            entry.restart_count, 3,
+            "no health gate: unverified, so the round-trip tally is preserved"
+        );
+        assert_eq!(
+            entry.window_starts.len(),
+            3,
+            "no gate fired: the restart window must not be reset"
+        );
+        lc.unload("nourl").await.ok();
     }
 
     /// list() groups entries by provider_name with empty engine/version.
@@ -831,7 +1618,11 @@ mod tests {
     async fn test_list_groups_by_provider() {
         let (state, _dir) = test_state();
         let table = Arc::new(ProcessTable::default());
-        let lc = TamadLifecycle::new(Arc::clone(&table), Arc::clone(&state));
+        let lc = TamadLifecycle::new(
+            Arc::clone(&table),
+            Arc::clone(&state.store),
+            Arc::clone(&state),
+        );
 
         let mut req_a = make_req("alpha", "sh", &["-c", "sleep 30"], 0);
         req_a.provider_name = "llama_cpp".to_string();
@@ -865,7 +1656,11 @@ mod tests {
     #[tokio::test]
     async fn test_models_dir_remap() {
         let (state, _dir) = test_state();
-        let lc = TamadLifecycle::new(Arc::new(ProcessTable::default()), Arc::clone(&state));
+        let lc = TamadLifecycle::new(
+            Arc::new(ProcessTable::default()),
+            Arc::clone(&state.store),
+            Arc::clone(&state),
+        );
 
         let proxy_dir = "/srv/proxy/models";
         let local_dir = state.models_dir.to_string_lossy().to_string();
@@ -943,7 +1738,11 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_launch_gpu_env_wiring() {
         let (state, _dir) = test_state();
-        let lc = TamadLifecycle::new(Arc::new(ProcessTable::default()), state);
+        let lc = TamadLifecycle::new(
+            Arc::new(ProcessTable::default()),
+            state.store.clone(),
+            state,
+        );
 
         // GPU device + cuda variant with an explicit env entry.
         let mut req = make_req("gpu-env-a", "/bin/true", &[], 0);
@@ -994,7 +1793,7 @@ mod tests {
 
         let (state, _dir) = test_state();
         let table = Arc::new(ProcessTable::default());
-        let lc = TamadLifecycle::new(Arc::clone(&table), state);
+        let lc = TamadLifecycle::new(Arc::clone(&table), state.store.clone(), state);
 
         // Child (sh) + grandchild (sleep) — the grandchild keeps running
         // even after sh exits; only a *group* kill removes it.
@@ -1024,5 +1823,524 @@ mod tests {
             );
         }
         assert!(table.list().await.is_empty(), "table cleared by kill_all");
+    }
+
+    // ── plan-193 T2: respawn + restart budget + boot sweep ────────────
+
+    /// Rewrite the persisted `max_restarts` of a key's manifest and return
+    /// a FRESH store that sees it (the probed store in the lifecycle is
+    /// the one built here — `state.store` holds the pre-rewrite view).
+    fn rekey_stored_max(
+        state: &TamadState,
+        key: &str,
+        max: u32,
+    ) -> Arc<crate::state::store::Store> {
+        use crate::state::store::StoredProcess;
+        let path = state.data_dir.join("state").join(format!("{key}.json"));
+        let mut sp: StoredProcess =
+            serde_json::from_slice(&std::fs::read(&path).expect("manifest read"))
+                .expect("manifest parse");
+        sp.max_restarts = max;
+        std::fs::write(
+            &path,
+            serde_json::to_vec_pretty(&sp).expect("manifest write"),
+        )
+        .expect("manifest rewrite");
+        Arc::new(crate::state::store::Store::new(&state.data_dir).expect("store reload"))
+    }
+
+    /// (window trim) four seeded respawns + 301 s elapse → the window
+    /// trims to the single fresh replay: the trimmed result keeps the
+    /// survivor, not the raw history.
+    #[tokio::test]
+    async fn test_reap_window_trims_after_300s() {
+        let (_state, _dir) = test_state();
+        let table = Arc::new(ProcessTable::default());
+        let t: i64 = 1_000_000;
+        let window_ms = RESTART_WINDOW_SECS as i64 * 1000;
+        table
+            .insert(ProcessEntry {
+                model_name: "trim".to_string(),
+                provider_name: "llama_cpp".to_string(),
+                pid: std::process::id(),
+                endpoint_url: String::new(),
+                status: "ready".to_string(),
+                started_at: Instant::now(),
+                spec: LoadModelRequest::default(),
+                restart_count: 4,
+                window_starts: vec![t, t, t, t],
+                user_flagged: false,
+            })
+            .await;
+        // +301 s past the seeded stamps → all four have left the 300 s
+        // window; only the death the trim itself records survives.
+        let count = table
+            .record_restart_window("trim", t + window_ms + 1)
+            .await
+            .expect("entry present");
+        assert_eq!(count, 1, "the four older replays must trim off");
+        let e = table.get("trim").await.expect("entry still here");
+        assert_eq!(e.restart_count, 1);
+        assert_eq!(e.window_starts.len(), 1);
+
+        // A death that happens … just after? stays inside the window
+        // against the fresh stamp — still one.
+        let count2 = table
+            .record_restart_window("trim", t + window_ms + 2)
+            .await
+            .expect("entry present");
+        assert_eq!(count2, 2, "in-window replays keep accumulating");
+    }
+
+    /// (budget trip) with `max_restarts = 2`, two failing respawns
+    /// exhaust the budget: the row lands in `budget_exhausted`, the
+    /// operator mark persists on the disk store, and the
+    /// auto-respawned there (no third attempt ever comes up).
+    #[tokio::test]
+    async fn test_reap_budget_trip_flags_and_refuses() {
+        let _s = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .try_init();
+        let (state, _dir) = test_state();
+        let table = Arc::new(ProcessTable::default());
+        let req = make_req("budget-shot", "sh", &["-c", "sleep 0.3; exit 2"], 0);
+        state
+            .store
+            .insert(&req.model_name, &req, true)
+            .expect("seed desired row");
+        let store = rekey_stored_max(&state, &req.model_name, 2);
+        let lc = Arc::new(TamadLifecycle::new(
+            Arc::clone(&table),
+            store,
+            Arc::clone(&state),
+        ));
+        let _supervisor = TamadLifecycle::start_respawn_supervisor(&lc);
+
+        lc.load(&req).await.expect("initial load");
+        let by = tokio::time::Instant::now() + Duration::from_secs(15);
+        for _ in 0..100 {
+            if let Some(e) = table.get(&req.model_name).await {
+                if e.status == status::BUDGET_EXHAUSTED {
+                    break;
+                }
+            }
+            assert!(tokio::time::Instant::now() < by, "no budget trip in time");
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let e = table
+            .get(&req.model_name)
+            .await
+            .expect("row kept after the trip");
+        assert_eq!(
+            e.status,
+            status::BUDGET_EXHAUSTED,
+            "trip on the row (count={} window={:?} pid={})",
+            e.restart_count,
+            e.window_starts.len(),
+            e.pid
+        );
+        assert_eq!(e.restart_count, 2, "both respawns rented out the window");
+        assert_eq!(e.window_starts.len(), 2);
+        assert!(e.user_flagged, "row mirror carried the mark at trip");
+        // The flag went to disk (a fresh store reload sees it).
+        let reloaded = crate::state::store::Store::new(&state.data_dir).expect("fresh store");
+        assert!(
+            reloaded
+                .get(&req.model_name)
+                .expect("manifest present")
+                .user_flagged
+        );
+        // The trip's tally went to disk WITH the mark — one write:
+        // the boot sweep's at-cap refusal (round-2 P1) reads exactly
+        // this pairing, so a count without a flag (or vice versa)
+        // can never be half-persisted.
+        assert_eq!(
+            reloaded
+                .get(&req.model_name)
+                .expect("manifest present")
+                .persisted_restart_count,
+            2,
+            "the at-cap tally persisted with the mark (one write)"
+        );
+        // And it STOPS: row + dead process stay put a little while.
+        let dead_pid = e.pid;
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        let after = table.get(&req.model_name).await.expect("row still here");
+        assert_eq!(after.status, status::BUDGET_EXHAUSTED);
+        assert_eq!(after.pid, dead_pid, "no third respawn came");
+        assert!(!crate::process::is_process_alive(dead_pid));
+    }
+
+    /// (success reset) with `max_restarts = 3`, the crasher fails
+    /// twice (count 2), the next respawn then comes from a healthy
+    /// spec — the stored row is rewritten mid-flight — and the ready
+    /// row resets the counter to zero without more touching the
+    /// (`user_flagged` is never auto-cleared, but it was not set).
+    #[tokio::test]
+    async fn test_reap_success_resets_counter() {
+        // Local health sniffer (same pattern as `test_load_with_health_check`):
+        // tokio TCP listener answering one 200 per connection.
+        let sniffer = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let health_port = sniffer.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = sniffer.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut buf = [0u8; 512];
+                    let _ = sock.read(&mut buf).await;
+                    let _ = sock
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                        .await;
+                });
+            }
+        });
+        let health_url = format!("http://127.0.0.1:{health_port}/health");
+
+        let (state, _dir) = test_state();
+        let table = Arc::new(ProcessTable::default());
+        let crashing = make_req("reset-me", "sh", &["-c", "sleep 0.5; exit 2"], 0);
+        state
+            .store
+            .insert(&crashing.model_name, &crashing, true)
+            .expect("seed desired row");
+        let store = rekey_stored_max(&state, &crashing.model_name, 3);
+        let lc = Arc::new(TamadLifecycle::new(
+            Arc::clone(&table),
+            store,
+            Arc::clone(&state),
+        ));
+        let _supervisor = TamadLifecycle::start_respawn_supervisor(&lc);
+
+        lc.load(&crashing).await.expect("initial (crashing) load");
+        let initial_pid = table
+            .get(&crashing.model_name)
+            .await
+            .expect("row present")
+            .pid;
+        // At the moment the first respawn shows up (the table reports a
+        // different pid), swap the stored spec to a healthy sleeper —
+        // still safely before that one can die (0.5 s window deadline,
+        // we detect within one 50 ms poll and the next crash reads the
+        // already-rewritten row).
+        let by = tokio::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            let e = table.get(&crashing.model_name).await.expect("row present");
+            if e.pid != initial_pid {
+                // A healthy replacement whose health gate PASSES (local
+                // sniffer) → verified ready → lever reset. The swap
+                // goes into the store the REAPER sees (not the test's
+                // original pre-load view).
+                let mut healthy = make_req("reset-me", "sh", &["-c", "sleep 30"], 0);
+                healthy.health_url = health_url.clone();
+                healthy.health_timeout_ms = 15_000;
+                lc.store
+                    .insert(&crashing.model_name, &healthy, true)
+                    .expect("mid-flight swap");
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < by,
+                "first respawn did not show"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        // The healthy respawn then lands a `ready` row that resets the
+        // bookkeeping (keeps `user_flagged`, which was false).
+        let by = tokio::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Some(e) = table.get(&crashing.model_name).await {
+                if e.status == "ready" && e.restart_count == 0 {
+                    break;
+                }
+            }
+            assert!(tokio::time::Instant::now() < by, "no reset in time");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let e = table.get(&crashing.model_name).await.expect("ready row");
+        assert_eq!(e.restart_count, 0, "success zeroes the counter");
+        assert!(e.window_starts.is_empty(), "success clears the window");
+        assert!(!e.user_flagged, "flag untouched (it was never set)");
+        assert!(crate::process::is_process_alive(e.pid), "respawn is live");
+        // The verified-healthy respawn also zeroed the ON-DISK tally
+        // (round-2 P1): without it, the manifest would still present
+        // as at-cap and the next boot sweep would refuse to replay a
+        // perfectly healthy key.
+        assert_eq!(
+            lc.store
+                .get(&crashing.model_name)
+                .unwrap()
+                .persisted_restart_count,
+            0,
+            "the verified-ready reset zeroed the persisted tally"
+        );
+        lc.unload(&crashing.model_name).await.expect("cleanup");
+    }
+
+    /// (sweep) two desired, unflagged models replay (in parallel), a
+    /// flagged one is skipped, and a model that is already alive
+    /// under the same key loses to its row — exactly two new spawns
+    /// in total.
+    #[tokio::test]
+    async fn test_boot_sweep_parallel_and_skips() {
+        let (state, _dir) = test_state();
+        let table = Arc::new(ProcessTable::default());
+        let lc = TamadLifecycle::new(
+            Arc::clone(&table),
+            Arc::clone(&state.store),
+            Arc::clone(&state),
+        );
+        let a = make_req("sw-a", "sh", &["-c", "sleep 40"], 0);
+        let b = make_req("sw-b", "sh", &["-c", "sleep 40"], 0);
+        let c = make_req("sw-c", "sh", &["-c", "sleep 40"], 0);
+        let d = make_req("sw-d", "sh", &["-c", "sleep 40"], 0);
+        state.store.insert(&a.model_name, &a, true).expect("a");
+        state.store.insert(&b.model_name, &b, true).expect("b");
+        state.store.insert(&c.model_name, &c, true).expect("c");
+        state.store.insert(&d.model_name, &d, true).expect("d");
+        state
+            .store
+            .set_user_flagged(&c.model_name, true)
+            .expect("flag c");
+        // `d` already has a row alive under it (test-own pid as its
+        // standing) — the row must win over the file.
+        table
+            .insert(ProcessEntry {
+                model_name: d.model_name.clone(),
+                provider_name: "llama_cpp".to_string(),
+                pid: std::process::id(),
+                endpoint_url: String::new(),
+                status: "ready".to_string(),
+                started_at: Instant::now(),
+                spec: d.clone(),
+                restart_count: 0,
+                window_starts: Vec::new(),
+                user_flagged: false,
+            })
+            .await;
+
+        lc.replay_desired(true).await;
+
+        let ea = table.get("sw-a").await.expect("a replayed");
+        let eb = table.get("sw-b").await.expect("b replayed");
+        assert!(
+            crate::process::is_process_alive(ea.pid) && crate::process::is_process_alive(eb.pid),
+            "both spawns are alive at the same time (2 in-flight)"
+        );
+        assert!(table.get("sw-c").await.is_none(), "flagged skips");
+        let ed = table.get("sw-d").await.expect("row stands");
+        assert_eq!(ed.pid, std::process::id(), "row wins; no second spawn");
+        assert_eq!(
+            table.list().await.len(),
+            3,
+            "a + b new; c skipped; d stands"
+        );
+        assert_eq!(lc.store.list().len(), 4, "store untouched by the sweep");
+        lc.unload("sw-a").await.expect("cleanup a");
+        lc.unload("sw-b").await.expect("cleanup b");
+    }
+
+    /// (round-2 P1, pre-policy durability) A trip-persisted row whose
+    /// MARK never reached disk (its tally write succeeded, its mark
+    /// write did not — the C3-warned-not-on-disk form): the boot
+    /// sweep must NOT replay it (replay re-arms the crash loop),
+    /// must leave the manifest the way it found it (tally at cap,
+    /// flag absent), and must hand the operator the recovery
+    /// sentence the trip trip would have — the sweep LOGS; the
+    /// operator FIXES.
+    #[tokio::test]
+    async fn test_boot_sweep_refuses_at_cap_persisted_unflagged() {
+        let (state, _dir) = test_state();
+        let table = Arc::new(ProcessTable::default());
+        let m = make_req("cap-unflagged", "sh", &["-c", "sleep 40"], 0);
+        state
+            .store
+            .insert(&m.model_name, &m, true)
+            .expect("seed desired row");
+        let _rekeyed = rekey_stored_max(&state, &m.model_name, 2);
+        // Witness the trip-time ENOSPC (the C3 warning that the mark
+        // could not reach disk): tally at cap, mark absent.
+        let path = state
+            .data_dir
+            .join("state")
+            .join(format!("{}.json", m.model_name));
+        let mut sp: crate::state::store::StoredProcess =
+            serde_json::from_slice(&std::fs::read(&path).expect("manifest read"))
+                .expect("manifest parse");
+        assert_eq!(sp.max_restarts, 2, "the re-keyed budget must be in place");
+        sp.persisted_restart_count = 2; // == max_restarts
+        sp.user_flagged = false; // the flag did not reach disk
+        std::fs::write(
+            &path,
+            serde_json::to_vec_pretty(&sp).expect("manifest serialize"),
+        )
+        .expect("manifest write");
+        // A dead daemon means its in-memory store died with it — the store at boot
+        // is re-read FRESH from the disk the crash left (the partial write
+        // survives; the in-memory mirror of whatever wrote it does not).
+        let store = Arc::new(
+            crate::state::store::Store::new(&state.data_dir)
+                .expect("boot-fresh store reads the crashed write"),
+        );
+        let lc = TamadLifecycle::new(Arc::clone(&table), store, Arc::clone(&state));
+
+        lc.replay_desired(true).await;
+
+        assert!(
+            table.list().await.is_empty(),
+            "a cap-tally + unflagged row must not be replayed — replay = the crash loop re-armed"
+        );
+        // The manifest is exactly capped as found: the sweep REFUSED
+        // the replay; it did not rewrite.
+        let got = lc
+            .store
+            .get(&m.model_name)
+            .expect("manifest present in store");
+        assert_eq!(got.persisted_restart_count, 2, "the tally stays at cap");
+        assert!(!got.user_flagged, "the flag stays un-persisted");
+        // The operator line carries the trip's recovery sentence.
+        let note = at_cap_skip_note(&m.model_name, 2, 2);
+        assert!(
+            note.contains("will NOT replay"),
+            "the refusal is explicit: {note}"
+        );
+        assert!(
+            note.contains("recovery = `tama admin unload ")
+                && note.contains("then `load` (clean re-arm)"),
+            "the recovery sentence = the trip's: {note}"
+        );
+    }
+
+    /// (no-op) with replay disabled, the sweep does nothing at all:
+    /// no spawns, no file changes.
+    #[tokio::test]
+    async fn test_boot_sweep_disabled_is_noop() {
+        let (state, _dir) = test_state();
+        let table = Arc::new(ProcessTable::default());
+        let lc = TamadLifecycle::new(
+            Arc::clone(&table),
+            Arc::clone(&state.store),
+            Arc::clone(&state),
+        );
+        let m = make_req("no-sweep", "sh", &["-c", "sleep 40"], 0);
+        state
+            .store
+            .insert(&m.model_name, &m, true)
+            .expect("seed desired row");
+        lc.replay_desired(false).await;
+        assert!(table.list().await.is_empty(), "no spawns with replay off");
+        assert_eq!(lc.store.list().len(), 1, "manifest files stay put");
+        assert!(
+            lc.store.get(&m.model_name).expect("still there").desired,
+            "desired is preserved"
+        );
+    }
+
+    /// (double-issue guard) a model that stands with an alive row
+    /// during the sweep under the same key stays exactly one
+    /// process — the row wins over the file (the table key cannot
+    /// admit a second entry in the same key).
+    #[tokio::test]
+    async fn test_boot_sweep_double_issue_guard() {
+        let (state, _dir) = test_state();
+        let table = Arc::new(ProcessTable::default());
+        let lc = TamadLifecycle::new(
+            Arc::clone(&table),
+            Arc::clone(&state.store),
+            Arc::clone(&state),
+        );
+        let m = make_req("double-key", "sh", &["-c", "sleep 40"], 0);
+        state
+            .store
+            .insert(&m.model_name, &m, true)
+            .expect("seed desired row");
+        let live = ProcessEntry {
+            model_name: m.model_name.clone(),
+            provider_name: "llama_cpp".to_string(),
+            pid: std::process::id(),
+            endpoint_url: String::new(),
+            status: "ready".to_string(),
+            started_at: Instant::now(),
+            spec: m.clone(),
+            restart_count: 0,
+            window_starts: Vec::new(),
+            user_flagged: false,
+        };
+        let live_pid = live.pid;
+        table.insert(live).await;
+
+        lc.replay_desired(true).await;
+
+        let after = table.get(&m.model_name).await.expect("row kept");
+        assert_eq!(after.pid, live_pid, "row untouched — no second spawn");
+        assert!(crate::process::is_process_alive(after.pid));
+        assert_eq!(table.list().await.len(), 1);
+    }
+
+    /// Back-compat regression (plan-193 T3): an OLD wire frame — only the
+    /// six legacy fields, none of 7/8/9 — decodes with the NEW prost to
+    /// the new fields at their defaults (zeros). Encoding a struct whose
+    /// 7/8/9 are all zero skips them on the proto, so the emitted bytes
+    /// are exactly the old shape; the new decoder must still yield a
+    /// valid `ProcessInfo` with `desired=false`, `restart_count=0` and
+    /// `max_restarts=0`.
+    #[test]
+    fn old_frame_decodes() {
+        let old = ProcessInfo {
+            model_name: "m".to_string(),
+            provider_name: "p".to_string(),
+            pid: 1,
+            alive: true,
+            endpoint_url: "http://x".to_string(),
+            status: "ready".to_string(),
+            desired: false,
+            restart_count: 0,
+            max_restarts: 0,
+        };
+        let bytes = old.encode_to_vec();
+        let decoded = ProcessInfo::decode(::prost::bytes::Bytes::from(bytes)).unwrap();
+        assert!(!decoded.desired, "old frame decodes desired=false");
+        assert_eq!(
+            decoded.restart_count, 0,
+            "old frame decodes restart_count=0"
+        );
+        assert_eq!(decoded.max_restarts, 0, "old frame decodes max_restarts=0");
+        assert_eq!(decoded.status, "ready", "the six legacy fields survive");
+    }
+
+    /// The T3 builder folds the store row: an inserted desired row makes
+    /// the wire info report `desired=true` and the default restart budget.
+    #[tokio::test]
+    async fn test_to_process_info_reads_store() {
+        let (state, _dir) = test_state();
+        let table = Arc::new(ProcessTable::default());
+        let lc = TamadLifecycle::new(
+            Arc::clone(&table),
+            Arc::clone(&state.store),
+            Arc::clone(&state),
+        );
+        let m = make_req("wire", "sh", &["-c", "sleep 30"], 0);
+        state
+            .store
+            .insert(&m.model_name, &m, true)
+            .expect("seed desired row");
+        let entry = ProcessEntry {
+            model_name: m.model_name.clone(),
+            provider_name: m.provider_name.clone(),
+            pid: std::process::id(),
+            endpoint_url: String::new(),
+            status: "ready".to_string(),
+            started_at: Instant::now(),
+            spec: m.clone(),
+            restart_count: 0,
+            window_starts: Vec::new(),
+            user_flagged: false,
+        };
+        let info = to_process_info(&entry, lc.store.get(&entry.model_name).as_ref());
+        assert!(info.desired, "store row makes the wire info desired");
+        assert_eq!(info.restart_count, 0);
+        assert_eq!(info.max_restarts, DEFAULT_MAX_RESTARTS);
     }
 }

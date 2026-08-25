@@ -348,10 +348,12 @@ pub async fn list_installations(
     let compaction_config = state.with_config(|c| c.compaction.clone()).await;
 
     // Check if compaction backend is running (in model registry as "compaction")
-    let (compaction_running, compaction_url) = match state.get_model_state("compaction").await {
-        Some(s) if s.is_ready() => (true, s.backend_url().map(|u| u.to_string())),
-        _ => (false, None),
-    };
+    // The compaction process is a TAMAD wire row (plan 193 T5c):
+    // running == the row reports alive.
+    // `running` is true for the whole span of a live row — `starting` /
+    // `restarting` included, not only once it is `ready`.
+    let running = state.process_status("compaction").await;
+    let (compaction_running, compaction_url) = (running.is_some(), running);
 
     let compaction_card = CompactionCardDto {
         enabled: compaction_config.enabled,

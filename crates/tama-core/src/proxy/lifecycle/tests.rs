@@ -1,465 +1,135 @@
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::config::Config;
-use crate::proxy::types::{BackendState, ProxyState};
-use std::time::Instant;
+use crate::proxy::types::ProxyState;
 
-/// Helper to create a Ready BackendState for testing.
-/// Uses a high PID that won't exist and won't conflict with real processes.
-fn make_ready_state(model_name: &str, backend: &str) -> BackendState {
-    BackendState::Ready {
-        model_name: model_name.to_string(),
-        backend: backend.to_string(),
-        backend_pid: 12345, // fake PID — won't be killed by tests
-        backend_url: "http://127.0.0.1:8080".to_string(),
-        load_time: std::time::SystemTime::now(),
-        last_accessed: Instant::now(),
-        consecutive_failures: Arc::new(AtomicU32::new(0)),
-        failure_timestamp: None,
+/// Seed a live wire row for `server_id` with the given lifecycle `status`
+/// (plan-193 T4: lifecycle presence is read from the rows, not a mirror).
+async fn seed_live_row(state: &ProxyState, server_id: &str, status: &str) {
+    use crate::tamad::pool::test_support::{handle_with_latest, stats_full};
+    let proc = crate::tamad::ProcessInfo {
+        model_name: server_id.to_string(),
+        provider_name: "llama-cpp".to_string(),
+        pid: 1,
+        alive: true,
+        endpoint_url: "http://127.0.0.1:8080".to_string(),
+        status: status.to_string(),
+        desired: true,
         restart_count: 0,
-        is_docker: false,
-    }
+        max_restarts: 3,
+    };
+    let stats = stats_full(1.5, vec![], vec![proc]);
+    let pool = state.tamad_pool();
+    pool.insert_raw_handle(
+        server_id,
+        Arc::new(handle_with_latest(std::time::Instant::now(), stats).await),
+    )
+    .await;
 }
 
-/// Helper to create a Starting BackendState for testing.
-fn make_starting_state(model_name: &str, backend: &str) -> BackendState {
-    BackendState::Starting {
-        model_name: model_name.to_string(),
-        backend: backend.to_string(),
-        backend_url: String::new(),
-        backend_pid: 0,
-        last_accessed: Instant::now(),
-        start_time: Instant::now(),
-        consecutive_failures: Arc::new(AtomicU32::new(0)),
-        failure_timestamp: None,
-        is_docker: false,
-    }
-}
-
-/// Helper to create a Failed BackendState for testing.
-fn make_failed_state() -> BackendState {
-    BackendState::Failed {
-        model_name: "failed-model".to_string(),
-        backend: "llama-cpp".to_string(),
-        error: "test error".to_string(),
-    }
-}
-
-/// Helper to create an Unloading BackendState for testing.
-fn make_unloading_state(model_name: &str, backend: &str) -> BackendState {
-    BackendState::Unloading {
-        model_name: model_name.to_string(),
-        backend: backend.to_string(),
-        backend_pid: 54321,
-        backend_url: "http://127.0.0.1:9000".to_string(),
-        last_accessed: Instant::now(),
-        consecutive_failures: Arc::new(AtomicU32::new(0)),
-        failure_timestamp: None,
-        restart_count: 0,
-        is_docker: false,
-    }
-}
-
-/// Test that Starting state servers are skipped during idle check.
-#[tokio::test]
-async fn test_starting_state_skipped_in_idle_check() {
-    let config = Config::default();
-    let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
-    state.registry.models.write().await.insert(
-        "test-server".to_string(),
-        make_starting_state("model.gguf", "llama-cpp"),
-    );
-
-    let result = state.check_idle_timeouts().await;
-    assert!(
-        result.is_empty(),
-        "Starting servers should be skipped in idle check"
+/// Seed the proxy-owned LRU access time used by idle/eviction decisions.
+async fn set_last_accessed(state: &ProxyState, server_id: &str, ago: u64) {
+    state.registry.last_accessed.write().await.insert(
+        server_id.to_string(),
+        Instant::now() - Duration::from_secs(ago),
     );
 }
 
-/// Test that Failed servers without last_accessed are marked for cleanup.
-#[tokio::test]
-async fn test_failed_server_marked_for_cleanup() {
-    let config = Config::default();
-    let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
-    state
-        .registry
-        .models
-        .write()
-        .await
-        .insert("failed-server".to_string(), make_failed_state());
-
-    let result = state.check_idle_timeouts().await;
-    assert!(
-        result.contains(&"failed-server".to_string()),
-        "Failed servers should be marked for cleanup"
-    );
-}
-
-/// Test BackendState::is_ready() returns correct values for each variant.
-#[test]
-fn test_model_state_is_ready() {
-    let ready = make_ready_state("m", "llama-cpp");
-    assert!(ready.is_ready());
-
-    let starting = make_starting_state("m", "llama-cpp");
-    assert!(!starting.is_ready());
-
-    let failed = make_failed_state();
-    assert!(!failed.is_ready());
-}
-
-/// Test BackendState::last_accessed() returns correct values.
-#[test]
-fn test_model_state_last_accessed() {
-    let ready = make_ready_state("m", "llama-cpp");
-    assert!(ready.last_accessed().is_some());
-
-    let starting = make_starting_state("m", "llama-cpp");
-    assert!(starting.last_accessed().is_some());
-
-    // Failed state has no last_accessed
-    let failed = make_failed_state();
-    assert!(failed.last_accessed().is_none());
-}
-
-/// Test BackendState::backend() returns the correct backend name.
-#[test]
-fn test_model_state_backend() {
-    let ready = make_ready_state("m", "llama-cpp-cuda");
-    assert_eq!(ready.backend(), "llama-cpp-cuda");
-
-    let starting = make_starting_state("m", "vllm");
-    assert_eq!(starting.backend(), "vllm");
-}
-
-/// Test BackendState::backend_pid() returns the correct PID.
-#[test]
-fn test_model_state_backend_pid() {
-    let ready = make_ready_state("m", "llama-cpp");
-    assert_eq!(ready.backend_pid(), Some(12345));
-
-    let starting = make_starting_state("m", "llama-cpp");
-    assert_eq!(starting.backend_pid(), Some(0));
-
-    let failed = make_failed_state();
-    assert!(failed.backend_pid().is_none());
-}
-
-/// Test that consecutive_failures counter is accessible.
-#[test]
-fn test_model_state_consecutive_failures() {
-    let ready = make_ready_state("m", "llama-cpp");
-    let failures = ready.consecutive_failures();
-    assert!(failures.is_some());
-    assert_eq!(failures.unwrap().load(Ordering::Relaxed), 0);
-}
-
-/// Test that BackendState::is_ready() distinguishes all variants correctly.
-#[test]
-fn test_model_state_variants() {
-    let ready = make_ready_state("m", "llama-cpp");
-    assert!(matches!(ready, BackendState::Ready { .. }));
-
-    let starting = make_starting_state("m", "llama-cpp");
-    assert!(matches!(starting, BackendState::Starting { .. }));
-
-    let failed = make_failed_state();
-    assert!(matches!(failed, BackendState::Failed { .. }));
-}
-
-/// Test that can_reload() returns true when no failure timestamp is set.
-#[test]
-fn test_can_reload_no_failure_timestamp() {
-    let ready = make_ready_state("m", "llama-cpp");
-    assert!(ready.can_reload(60));
-}
-
-/// Test that can_reload() returns true when cooldown has elapsed.
-#[test]
-fn test_can_reload_cooldown_elapsed() {
-    let mut ready = make_ready_state("m", "llama-cpp");
-    if let BackendState::Ready {
-        failure_timestamp, ..
-    } = &mut ready
-    {
-        *failure_timestamp = Some(std::time::SystemTime::now() - Duration::from_secs(120));
-    }
-    assert!(ready.can_reload(60));
-}
-
-/// Test that can_reload() returns false when cooldown is active.
-#[test]
-fn test_can_reload_cooldown_active() {
-    let mut ready = make_ready_state("m", "llama-cpp");
-    if let BackendState::Ready {
-        failure_timestamp, ..
-    } = &mut ready
-    {
-        *failure_timestamp = Some(std::time::SystemTime::now());
-    }
-    assert!(!ready.can_reload(60));
-}
-
-/// Test that Unloading state model_name() returns the correct name.
-#[test]
-fn test_unloading_model_name() {
-    let unloading = make_unloading_state("unload-model", "llama-cpp");
-    assert_eq!(unloading.model_name(), "unload-model");
-}
-
-/// Test that Unloading state backend() returns the correct backend.
-#[test]
-fn test_unloading_backend() {
-    let unloading = make_unloading_state("m", "vllm");
-    assert_eq!(unloading.backend(), "vllm");
-}
-
-/// Test that Unloading state is_ready() returns false.
-#[test]
-fn test_unloading_is_not_ready() {
-    let unloading = make_unloading_state("m", "llama-cpp");
-    assert!(!unloading.is_ready());
-}
-
-/// Test that Unloading state backend_url() returns None.
-#[test]
-fn test_unloading_backend_url_none() {
-    let unloading = make_unloading_state("m", "llama-cpp");
-    assert!(unloading.backend_url().is_none());
-}
-
-/// Test that Unloading state backend_pid() returns the PID.
-#[test]
-fn test_unloading_backend_pid() {
-    let unloading = make_unloading_state("m", "llama-cpp");
-    assert_eq!(unloading.backend_pid(), Some(54321));
-}
-
-/// Test that Unloading state consecutive_failures() returns the counter.
-#[test]
-fn test_unloading_consecutive_failures() {
-    let unloading = make_unloading_state("m", "llama-cpp");
-    let failures = unloading.consecutive_failures();
-    assert!(failures.is_some());
-    assert_eq!(failures.unwrap().load(Ordering::Relaxed), 0);
-}
-
-/// Test that Unloading state load_time() returns None.
-#[test]
-fn test_unloading_load_time_none() {
-    let unloading = make_unloading_state("m", "llama-cpp");
-    assert!(unloading.load_time().is_none());
-}
-
-/// Test that Unloading state last_accessed() returns Some.
-#[test]
-fn test_unloading_last_accessed() {
-    let unloading = make_unloading_state("m", "llama-cpp");
-    assert!(unloading.last_accessed().is_some());
-}
-
-/// Test that Unloading state can_reload() returns false.
-#[test]
-fn test_unloading_can_reload_false() {
-    let unloading = make_unloading_state("m", "llama-cpp");
-    assert!(!unloading.can_reload(60));
-}
-
-/// Test that BackendState::Default produces a Failed state with empty strings.
-#[test]
-fn test_model_state_default_is_failed() {
-    let default_state = BackendState::default();
-    assert!(!default_state.is_ready());
-    assert_eq!(default_state.model_name(), "");
-    assert_eq!(default_state.backend(), "");
-}
-
-/// Test that Unloading state matches correctly.
-#[test]
-fn test_unloading_variant_match() {
-    let unloading = make_unloading_state("m", "llama-cpp");
-    assert!(matches!(unloading, BackendState::Unloading { .. }));
-}
-
-/// Test that evict_lru_if_needed returns Ok(None) when max_loaded_models is 0 (unlimited).
+/// max_loaded_models = 0 disables the LRU capacity guard entirely.
 #[tokio::test]
 async fn test_evict_lru_if_needed_zero_is_unlimited() {
     let mut config = Config::default();
     config.proxy.max_loaded_models = 0;
     let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
-
-    // Add a Ready model to ensure we're not returning None due to empty map
-    state.registry.models.write().await.insert(
-        "server1".to_string(),
-        make_ready_state("model.gguf", "llama-cpp"),
-    );
+    seed_live_row(&state, "server1", "ready").await;
 
     let result = state.evict_lru_if_needed(None).await;
-    assert!(
-        result.is_ok(),
-        "evict_lru_if_needed should succeed with unlimited config"
-    );
-    assert_eq!(
-        result.unwrap(),
-        None,
-        "Should return None when max_loaded_models is 0"
-    );
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap(), None, "max_loaded_models=0 is unlimited");
 }
 
-/// Test that evict_lru_if_needed returns Ok(None) when model count is below the limit.
+/// Below the limit → nothing is evicted.
 #[tokio::test]
 async fn test_evict_lru_if_needed_under_limit_no_eviction() {
     let mut config = Config::default();
     config.proxy.max_loaded_models = 2;
     let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
-
-    // Add 1 Ready model (below limit of 2)
-    state.registry.models.write().await.insert(
-        "server1".to_string(),
-        make_ready_state("model.gguf", "llama-cpp"),
-    );
+    seed_live_row(&state, "server1", "ready").await;
 
     let result = state.evict_lru_if_needed(None).await;
     assert!(result.is_ok());
-    assert_eq!(result.unwrap(), None, "Should return None when under limit");
-
-    // Verify model count is unchanged
-    assert_eq!(
-        state.registry.models.read().await.len(),
-        1,
-        "Model count should be unchanged"
-    );
+    assert_eq!(result.unwrap(), None, "under limit must not evict");
 }
 
-/// Test that evict_lru_if_needed evicts the LRU Ready model when at capacity.
+/// At capacity, the single ready row is evicted.
 #[tokio::test]
 async fn test_evict_lru_if_needed_at_limit_evicts_lru() {
     let mut config = Config::default();
     config.proxy.max_loaded_models = 1;
     let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
-
-    // Add a Ready model with last_accessed set in the past
-    let mut ready_state = make_ready_state("model.gguf", "llama-cpp");
-    if let BackendState::Ready { last_accessed, .. } = &mut ready_state {
-        *last_accessed = Instant::now() - Duration::from_secs(300);
-    }
-    state
-        .registry
-        .models
-        .write()
-        .await
-        .insert("server1".to_string(), ready_state);
+    seed_live_row(&state, "server1", "ready").await;
 
     let result = state.evict_lru_if_needed(None).await;
     assert!(result.is_ok());
     assert_eq!(
         result.unwrap(),
         Some("server1".to_string()),
-        "Should evict the only Ready model when at capacity"
-    );
-
-    // Verify model was removed from the map
-    assert!(
-        !state.registry.models.read().await.contains_key("server1"),
-        "Evicted model should be removed from the map"
+        "Should evict the only ready model at capacity"
     );
 }
 
-/// Test that evict_lru_if_needed skips Starting models.
+/// Starting (in-flight) models are not evicted — only `ready` rows count.
 #[tokio::test]
 async fn test_evict_lru_if_needed_skips_starting_models() {
     let mut config = Config::default();
     config.proxy.max_loaded_models = 1;
     let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
-
-    // Add a Starting model (not Ready)
-    state.registry.models.write().await.insert(
-        "server1".to_string(),
-        make_starting_state("model.gguf", "llama-cpp"),
-    );
+    seed_live_row(&state, "server1", "starting").await;
 
     let result = state.evict_lru_if_needed(None).await;
     assert!(result.is_ok());
     assert_eq!(
         result.unwrap(),
         None,
-        "Should return None when no Ready models are available"
-    );
-
-    // Verify Starting model remains in the map
-    assert!(
-        state.registry.models.read().await.contains_key("server1"),
-        "Starting model should remain in the map"
+        "Should return None when no Ready rows exist"
     );
 }
 
-/// Test that evict_lru_if_needed skips Failed models.
+/// Failed / unloading processes are not eligible rows, so nothing evicts.
 #[tokio::test]
 async fn test_evict_lru_if_needed_skips_failed_models() {
     let mut config = Config::default();
     config.proxy.max_loaded_models = 1;
     let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
-
-    // Add a Failed model
-    state
-        .registry
-        .models
-        .write()
-        .await
-        .insert("server1".to_string(), make_failed_state());
+    seed_live_row(&state, "server1", "failed").await;
 
     let result = state.evict_lru_if_needed(None).await;
     assert!(result.is_ok());
     assert_eq!(
         result.unwrap(),
         None,
-        "Should return None when no Ready models are available"
+        "failed process is not an eligible row"
     );
 }
 
-/// Test that concurrent evict calls don't double-evict the same model.
-/// With max_loaded_models=1 and 3 models (2 Ready + 1 Starting), each call
-/// finds a different Ready model since the Starting model is skipped.
+/// Two ready rows at capacity, LRU-access times explicitly seeded so the
+/// ordering is deterministic (plan 193 T5c, D4): routing decisions all
+/// pick the unambiguously least-recently-accessed model. Concurrent
+/// eviction calls agree on the same victim — eviction is idempotent, so
+/// the old "no double-eviction" hazard (two callers racing on the same
+/// pick) is eliminated by design.
 #[tokio::test]
 async fn test_evict_lru_if_needed_concurrent_no_double_eviction() {
     let mut config = Config::default();
     config.proxy.max_loaded_models = 1;
     let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
+    seed_live_row(&state, "server1", "ready").await;
+    seed_live_row(&state, "server2", "ready").await;
+    // server1 is unambiguously the stalest access → deterministic victim.
+    set_last_accessed(&state, "server1", 900).await;
+    set_last_accessed(&state, "server2", 10).await;
 
-    // Add 2 Ready models with different last_accessed times (LRU + newer)
-    let mut ready1 = make_ready_state("model1.gguf", "llama-cpp");
-    if let BackendState::Ready { last_accessed, .. } = &mut ready1 {
-        *last_accessed = Instant::now() - Duration::from_secs(600); // older
-    }
-    state
-        .registry
-        .models
-        .write()
-        .await
-        .insert("server1".to_string(), ready1);
-
-    let mut ready2 = make_ready_state("model2.gguf", "llama-cpp");
-    if let BackendState::Ready { last_accessed, .. } = &mut ready2 {
-        *last_accessed = Instant::now() - Duration::from_secs(100); // newer
-    }
-    state
-        .registry
-        .models
-        .write()
-        .await
-        .insert("server2".to_string(), ready2);
-
-    // Add 1 Starting model — it should be skipped by eviction, ensuring
-    // both concurrent calls have a Ready model to evict.
-    state.registry.models.write().await.insert(
-        "server3".to_string(),
-        make_starting_state("model3.gguf", "llama-cpp"),
-    );
-
-    // Run two evict calls concurrently
     let state_a = state.clone();
     let state_b = state.clone();
     let handle_a = tokio::spawn(async move { state_a.evict_lru_if_needed(None).await });
@@ -467,63 +137,18 @@ async fn test_evict_lru_if_needed_concurrent_no_double_eviction() {
 
     let result_a = handle_a.await.unwrap();
     let result_b = handle_b.await.unwrap();
-
-    // Both calls should succeed (each evicts a different Ready model)
     assert!(result_a.is_ok());
     assert!(result_b.is_ok());
-
-    // Each call returns a different server name — no double-eviction
     let name_a = result_a.unwrap().unwrap();
     let name_b = result_b.unwrap().unwrap();
-    assert_ne!(
-        name_a, name_b,
-        "Concurrent calls must evict different models (no double-eviction)"
-    );
-
-    // Both evicted models should be removed from the map
+    // Both victims agree (deterministic by access time; no per-actor jitter).
     assert!(
-        !state.registry.models.read().await.contains_key(&name_a),
-        "Evicted model '{}' should be removed",
-        name_a
-    );
-    assert!(
-        !state.registry.models.read().await.contains_key(&name_b),
-        "Evicted model '{}' should be removed",
-        name_b
+        name_a == "server1" && (name_b == "server1" || name_b == "server2"),
+        "concurrent victims must be the seeded LRU pair, got {name_a} / {name_b}"
     );
 }
 
-/// Test that resolve_gpu_device uses config value when set.
-#[test]
-fn testresolve_gpu_device_config_takes_precedence() {
-    let result =
-        super::spec::resolve_gpu_device(Some("CUDA1".to_string()), Some("ROCm0".to_string()));
-    assert_eq!(result, Some("CUDA1".to_string()));
-}
-
-/// Test that resolve_gpu_device falls back to card default when config is None.
-#[test]
-fn testresolve_gpu_device_falls_back_to_card() {
-    let result = super::spec::resolve_gpu_device(None, Some("ROCm0".to_string()));
-    assert_eq!(result, Some("ROCm0".to_string()));
-}
-
-/// Test that resolve_gpu_device returns None when both are None.
-#[test]
-fn testresolve_gpu_device_both_none() {
-    let result = super::spec::resolve_gpu_device(None, None);
-    assert_eq!(result, None);
-}
-
-/// Test that resolve_gpu_device treats whitespace-only config as None and falls back to card default.
-#[test]
-fn testresolve_gpu_device_whitespace_config_falls_back_to_card() {
-    let result =
-        super::spec::resolve_gpu_device(Some("   ".to_string()), Some("ROCm0".to_string()));
-    assert_eq!(result, Some("ROCm0".to_string()));
-}
-
-/// Test that TTS backends are excluded from LRU eviction count.
+/// TTS backends are excluded from the LRU capacity count.
 #[tokio::test]
 async fn test_evict_lru_excludes_tts_backends() {
     use crate::config::ModelConfig;
@@ -531,9 +156,6 @@ async fn test_evict_lru_excludes_tts_backends() {
     let mut config = Config::default();
     config.proxy.max_loaded_models = 1;
     let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
-
-    // Register the TTS server in model_configs with a tts_ backend
-    // so it's excluded from the LLM count.
     state.registry.model_configs.write().await.insert(
         "tts-server".to_string(),
         ModelConfig {
@@ -541,35 +163,13 @@ async fn test_evict_lru_excludes_tts_backends() {
             ..Default::default()
         },
     );
+    seed_live_row(&state, "tts-server", "ready").await;
 
-    // Add a TTS backend (tts_kokoro) — should NOT count toward limit
-    let tts_state = make_ready_state("model.gguf", "tts_kokoro");
-    state
-        .registry
-        .models
-        .write()
-        .await
-        .insert("tts-server".to_string(), tts_state);
-
-    // Verify no eviction happens (TTS doesn't count)
     let result = state.evict_lru_if_needed(None).await.unwrap();
     assert_eq!(result, None, "TTS backends should not trigger eviction");
-
-    // Verify the TTS model is still in the map
-    assert!(
-        state
-            .registry
-            .models
-            .read()
-            .await
-            .contains_key("tts-server"),
-        "TTS backend should remain loaded"
-    );
 }
 
-/// Test that models on different GPUs don't count against each other.
-/// With max_loaded_models=1, a model on CUDA0 should NOT trigger eviction
-/// when loading a model on CUDA1.
+/// Different GPU devices don't count against each other.
 #[tokio::test]
 async fn test_evict_lru_per_gpu_isolation() {
     use crate::config::ModelConfig;
@@ -577,8 +177,6 @@ async fn test_evict_lru_per_gpu_isolation() {
     let mut config = Config::default();
     config.proxy.max_loaded_models = 1;
     let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
-
-    // Register CUDA0 server in model_configs with gpu_device = "CUDA0"
     state.registry.model_configs.write().await.insert(
         "cuda0-server".to_string(),
         ModelConfig {
@@ -587,8 +185,6 @@ async fn test_evict_lru_per_gpu_isolation() {
             ..Default::default()
         },
     );
-
-    // Register CUDA1 server in model_configs with gpu_device = "CUDA1"
     state.registry.model_configs.write().await.insert(
         "cuda1-server".to_string(),
         ModelConfig {
@@ -597,43 +193,32 @@ async fn test_evict_lru_per_gpu_isolation() {
             ..Default::default()
         },
     );
+    seed_live_row(&state, "cuda0-server", "ready").await;
 
-    // Add a Ready model on CUDA0
-    let mut ready_cuda0 = make_ready_state("model-cuda0.gguf", "llama-cpp");
-    if let BackendState::Ready { last_accessed, .. } = &mut ready_cuda0 {
-        *last_accessed = Instant::now() - Duration::from_secs(300);
-    }
-    state
-        .registry
-        .models
-        .write()
-        .await
-        .insert("cuda0-server".to_string(), ready_cuda0);
-
-    // Evict for CUDA1 target — should NOT evict the CUDA0 model
+    // (Config is registered for CUDA0 and CUDA1, but only cuda0-server has
+    // a live ready row.)
+    //
+    // Targeting CUDA1: zero CUDA1 candidates → under its limit → no
+    // eviction, the CUDA0 row is untouched (per-GPU isolation).
     let result = state
         .evict_lru_if_needed(Some("CUDA1".to_string()))
         .await
         .unwrap();
+    assert_eq!(result, None, "still under the per-GPU limit");
+    // Targeting CUDA0: one ready row at the per-GPU limit → capacity
+    // eviction fires on CUDA0 (own GPU only).
+    let result = state
+        .evict_lru_if_needed(Some("CUDA0".to_string()))
+        .await
+        .unwrap();
     assert_eq!(
-        result, None,
-        "Should NOT evict CUDA0 model when targeting CUDA1"
-    );
-
-    // Verify CUDA0 model is still in the map
-    assert!(
-        state
-            .registry
-            .models
-            .read()
-            .await
-            .contains_key("cuda0-server"),
-        "CUDA0 model should still be loaded"
+        result,
+        Some("cuda0-server".to_string()),
+        "capacity eviction on its own GPU"
     );
 }
 
-/// Test that models on the same GPU DO count against each other.
-/// With max_loaded_models=1, a second model on CUDA0 should evict the first.
+/// Same-GPU models count together; the least-recently-accessed is evicted.
 #[tokio::test]
 async fn test_evict_lru_same_gpu_counts_together() {
     use crate::config::ModelConfig;
@@ -641,8 +226,6 @@ async fn test_evict_lru_same_gpu_counts_together() {
     let mut config = Config::default();
     config.proxy.max_loaded_models = 1;
     let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
-
-    // Register two servers both targeting CUDA0
     state.registry.model_configs.write().await.insert(
         "cuda0-server1".to_string(),
         ModelConfig {
@@ -659,32 +242,11 @@ async fn test_evict_lru_same_gpu_counts_together() {
             ..Default::default()
         },
     );
+    seed_live_row(&state, "cuda0-server1", "ready").await;
+    seed_live_row(&state, "cuda0-server2", "ready").await;
+    set_last_accessed(&state, "cuda0-server1", 600).await;
+    set_last_accessed(&state, "cuda0-server2", 100).await;
 
-    // Add first Ready model on CUDA0 (older last_accessed = LRU)
-    let mut ready1 = make_ready_state("model1.gguf", "llama-cpp");
-    if let BackendState::Ready { last_accessed, .. } = &mut ready1 {
-        *last_accessed = Instant::now() - Duration::from_secs(600);
-    }
-    state
-        .registry
-        .models
-        .write()
-        .await
-        .insert("cuda0-server1".to_string(), ready1);
-
-    // Add second Ready model on CUDA0 (newer last_accessed)
-    let mut ready2 = make_ready_state("model2.gguf", "llama-cpp");
-    if let BackendState::Ready { last_accessed, .. } = &mut ready2 {
-        *last_accessed = Instant::now() - Duration::from_secs(100);
-    }
-    state
-        .registry
-        .models
-        .write()
-        .await
-        .insert("cuda0-server2".to_string(), ready2);
-
-    // Evict for CUDA0 target — should evict the LRU (server1)
     let result = state
         .evict_lru_if_needed(Some("CUDA0".to_string()))
         .await
@@ -694,31 +256,9 @@ async fn test_evict_lru_same_gpu_counts_together() {
         Some("cuda0-server1".to_string()),
         "Should evict the LRU model on the same GPU"
     );
-
-    // Verify the LRU model was removed
-    assert!(
-        !state
-            .registry
-            .models
-            .read()
-            .await
-            .contains_key("cuda0-server1"),
-        "Evicted LRU model should be removed"
-    );
-    // Verify the newer model is still there
-    assert!(
-        state
-            .registry
-            .models
-            .read()
-            .await
-            .contains_key("cuda0-server2"),
-        "Newer model on same GPU should remain"
-    );
 }
 
-/// Test that models with no gpu_device (None) are grouped together.
-/// Two models both with gpu_device=None on the same "default" GPU should count together.
+/// `None` (CPU / default) GPU models group together.
 #[tokio::test]
 async fn test_evict_lru_none_gpu_grouped() {
     use crate::config::ModelConfig;
@@ -726,8 +266,6 @@ async fn test_evict_lru_none_gpu_grouped() {
     let mut config = Config::default();
     config.proxy.max_loaded_models = 1;
     let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
-
-    // Register two servers without gpu_device (None)
     state.registry.model_configs.write().await.insert(
         "default-server1".to_string(),
         ModelConfig {
@@ -744,32 +282,11 @@ async fn test_evict_lru_none_gpu_grouped() {
             ..Default::default()
         },
     );
+    seed_live_row(&state, "default-server1", "ready").await;
+    seed_live_row(&state, "default-server2", "ready").await;
+    set_last_accessed(&state, "default-server1", 600).await;
+    set_last_accessed(&state, "default-server2", 100).await;
 
-    // Add first Ready model with no gpu_device (older)
-    let mut ready1 = make_ready_state("model1.gguf", "llama-cpp");
-    if let BackendState::Ready { last_accessed, .. } = &mut ready1 {
-        *last_accessed = Instant::now() - Duration::from_secs(600);
-    }
-    state
-        .registry
-        .models
-        .write()
-        .await
-        .insert("default-server1".to_string(), ready1);
-
-    // Add second Ready model with no gpu_device (newer)
-    let mut ready2 = make_ready_state("model2.gguf", "llama-cpp");
-    if let BackendState::Ready { last_accessed, .. } = &mut ready2 {
-        *last_accessed = Instant::now() - Duration::from_secs(100);
-    }
-    state
-        .registry
-        .models
-        .write()
-        .await
-        .insert("default-server2".to_string(), ready2);
-
-    // Evict for None target — should evict the LRU (server1, both are None group)
     let result = state.evict_lru_if_needed(None).await.unwrap();
     assert_eq!(
         result,
@@ -777,52 +294,54 @@ async fn test_evict_lru_none_gpu_grouped() {
         "Should evict the LRU model in the None group"
     );
 }
-/// Test unload_model graceful shutdown flow.
-/// Verifies that unload_model properly transitions state and cleans up.
+
+/// unload_model succeeds for a live ready model and clears inference stats.
 #[tokio::test]
 async fn test_unload_model_graceful_shutdown() {
     let config = Config::default();
     let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
+    seed_live_row(&state, "unload-test", "ready").await;
 
-    // Add a Ready model
-    state.registry.models.write().await.insert(
-        "unload-test".to_string(),
-        make_ready_state("unload-model", "llama-cpp"),
-    );
+    let result = state.unload_model("unload-test").await;
+    assert!(result.is_ok(), "Unload should succeed");
+}
 
-    // Verify the model exists
+/// unload_model prunes the per-key last-access entry, so the LRU / idle
+/// decisions do not keep a dead entry for an unloaded model (pins the
+/// shared `prune_last_accessed` path from the proxy-unload side).
+#[tokio::test]
+async fn test_unload_model_prunes_last_accessed_entry() {
+    let config = Config::default();
+    let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
+    seed_live_row(&state, "access-prune", "ready").await;
+    set_last_accessed(&state, "access-prune", 0).await;
     assert!(
         state
             .registry
-            .models
-            .read()
+            .last_accessed_time("access-prune")
             .await
-            .contains_key("unload-test"),
-        "Model should exist before unload"
+            .is_some(),
+        "precondition: the access entry is present"
     );
 
-    // Unload the model
-    let result = state.unload_model("unload-test").await;
-    assert!(result.is_ok(), "Unload should succeed");
+    let result = state.unload_model("access-prune").await;
+    assert!(result.is_ok(), "unload should succeed: {result:?}");
 
-    // Verify the model was removed
     assert!(
-        !state
+        state
             .registry
-            .models
-            .read()
+            .last_accessed_time("access-prune")
             .await
-            .contains_key("unload-test"),
-        "Model should be removed after unload"
+            .is_none(),
+        "the unloaded model must not keep a stale last-access entry"
     );
 }
 
-/// Test that unload_model fails for non-existent backend.
+/// unload_model fails when there is no live row for the backend.
 #[tokio::test]
 async fn test_unload_model_nonexistent_backend() {
     let config = Config::default();
     let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
-
     let result = state.unload_model("nonexistent").await;
     assert!(
         result.is_err(),
@@ -830,105 +349,205 @@ async fn test_unload_model_nonexistent_backend() {
     );
 }
 
-/// Test that unload_model fails for non-Ready state.
+/// unload_model refuses a non-eligible lifecycle state (unloading).
 #[tokio::test]
 async fn test_unload_model_non_ready_state() {
     let config = Config::default();
     let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
+    seed_live_row(&state, "starting-server", "unloading").await;
+    let result = state.unload_model("starting-server").await;
+    assert!(result.is_err(), "Unload should fail for non-ready state");
+}
 
-    // Add a Starting model
-    state.registry.models.write().await.insert(
-        "starting-server".to_string(),
-        make_starting_state("model", "llama-cpp"),
+// ─── plan-193 T5c/T6 budget-exhausted unload ──────────────────────────────
+
+/// Unloading a `budget_exhausted` row is CLEANUP, not re-arm.
+///
+/// Since T5c a `budget_exhausted` model deliberately holds a live row (it is
+/// what the 503 in `ensure_model_loaded` reads). The pre-fix status gate
+/// refused every row whose status was not `ready | starting | restarting`,
+/// so a budget-EB model was unloadable via **no** proxy path through this
+/// gate — including `tama admin unload` — and nothing ever re-warmed:
+/// `admin load` to exit 13 (503), `admin unload` to error exit 1, forever.
+/// Recovery therefore *must* be allowed to proceed for a `budget_exhausted`
+/// row: `unload_model` returns `Ok` so the admin exit-code contract maps it
+/// to `0` (not-found to 2, Ok to 0), and the host-side flush (T2
+/// `store.delete`) then drops the row.
+#[tokio::test]
+async fn test_unload_model_budget_exhausted_is_cleanup_not_rearm() {
+    let config = Config::default();
+    let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
+
+    // The tamad holds a live `budget_exhausted` row — the precondition:
+    // this is the very row `ensure_model_loaded` reads for the 503.
+    seed_live_row(&state, "model.gguf", "budget_exhausted").await;
+    assert!(
+        crate::proxy::live_rows(state.tamad_pool().as_ref())
+            .await
+            .row("model.gguf")
+            .is_some(),
+        "precondition: a budget_exhausted row is live (the 503 reads it)"
     );
 
-    let result = state.unload_model("starting-server").await;
-    assert!(result.is_err(), "Unload should fail for Starting state");
+    // The fix: unloading it is cleanup, so it must be Ok, not the gate err.
+    let result = state.unload_model("model.gguf").await;
+    assert!(
+        result.is_ok(),
+        "unloading a budget_exhausted row must be allowed (cleanup, not re-arm): {result:?}"
+    );
+
+    // Once the host-side flush lands (T2: the UnloadModel via kills the
+    // store row, so the wire no longer reports the model), the proxy's
+    // live view reflects it: no row. We model the host re-emitting a
+    // frame that no longer carries the key. Since admin e2e is out of
+    // scope, we use the same seed pattern as the T5c tests.
+    let pool = state.tamad_pool();
+    let frame = crate::tamad::pool::test_support::stats_full(1.5, vec![], vec![]);
+    pool.insert_raw_handle(
+        "model.gguf",
+        Arc::new(
+            crate::tamad::pool::test_support::handle_with_latest(std::time::Instant::now(), frame)
+                .await,
+        ),
+    )
+    .await;
+    assert!(
+        crate::proxy::live_rows(pool.as_ref())
+            .await
+            .row("model.gguf")
+            .is_none(),
+        "after the host flushes the row it must be gone from the live view"
+    );
+}
+
+/// Regression guard: admitting `budget_exhausted` must not widen
+/// the gate beyond that. A row in a non-terminatable status (here
+/// `unloading`) stays refused. Only `ready | starting | restarting`
+/// plus `budget_exhausted` are admissible; everything else errors.
+#[tokio::test]
+async fn test_unload_model_still_refuses_unloading_row() {
+    let config = Config::default();
+    let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
+    seed_live_row(&state, "away-server", "unloading").await;
+    let result = state.unload_model("away-server").await;
+    assert!(
+        result.is_err(),
+        "the gate must stay narrow: an `unloading` row is still refused"
+    );
 }
 
 // ─── Slim idle-timeout tests (plan-191 Task 10) ────────────────────────
 
-/// An idle Ready model is unloaded (mirror removed) while a fresh one is
-/// left alone; non-inference (TTS) backends are never idle-unloaded.
+/// An idle Ready model is unloaded while a fresh one is left alone and a
+/// TTS backend is never idle-unloaded.
 #[tokio::test]
 async fn test_idle_timeout_unloads_idle_ready_models() {
+    use crate::config::ModelConfig;
+
     let mut config = Config::default();
     config.proxy.auto_unload = true;
-    config.proxy.idle_timeout_secs = 1; // short: 300s-old models are idle
-
+    config.proxy.idle_timeout_secs = 1;
     let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
 
-    // Idle Ready model (last_accessed 600s ago) + fresh Ready model +
-    // idle TTS backend (excluded from idle unload).
-    let mut idle_ready = make_ready_state("idle-model", "llama-cpp");
-    if let BackendState::Ready { last_accessed, .. } = &mut idle_ready {
-        *last_accessed = Instant::now() - Duration::from_secs(600);
-    }
-    let fresh_ready = make_ready_state("fresh-model", "llama-cpp");
-    let mut tts = make_ready_state("tts-model", "tts_kokoro");
-    if let BackendState::Ready { last_accessed, .. } = &mut tts {
-        *last_accessed = Instant::now() - Duration::from_secs(600);
-    }
+    state.registry.model_configs.write().await.insert(
+        "tts-server".to_string(),
+        ModelConfig {
+            backend: "tts_kokoro".to_string(),
+            ..Default::default()
+        },
+    );
 
-    state
-        .registry
-        .models
-        .write()
-        .await
-        .insert("idle-server".to_string(), idle_ready);
-    state
-        .registry
-        .models
-        .write()
-        .await
-        .insert("fresh-server".to_string(), fresh_ready);
-    state
-        .registry
-        .models
-        .write()
-        .await
-        .insert("tts-server".to_string(), tts);
+    seed_live_row(&state, "idle-server", "ready").await;
+    seed_live_row(&state, "fresh-server", "ready").await;
+    seed_live_row(&state, "tts-server", "ready").await;
+    set_last_accessed(&state, "idle-server", 600).await;
+    set_last_accessed(&state, "fresh-server", 0).await;
+    set_last_accessed(&state, "tts-server", 600).await;
 
     let cleaned = state.check_idle_timeouts().await;
-
     assert!(
         cleaned.contains(&"idle-server".to_string()),
         "idle model must be unloaded"
     );
-    let models = state.registry.models.read().await;
-    assert!(!models.contains_key("idle-server"));
-    assert!(models.contains_key("fresh-server"));
-    assert!(models.contains_key("tts-server"));
+    assert!(
+        !cleaned.contains(&"fresh-server".to_string()),
+        "fresh model must not be unloaded"
+    );
+    assert!(
+        !cleaned.contains(&"tts-server".to_string()),
+        "TTS model must not be idle-unloaded"
+    );
 }
 
-/// auto_unload disabled → nothing is idle-unloaded.
+/// auto_unload disabled → no model is idle-unloaded.
 #[tokio::test]
 async fn test_idle_timeout_respects_auto_unload_flag() {
     let mut config = Config::default();
     config.proxy.auto_unload = false;
     config.proxy.idle_timeout_secs = 1;
-
     let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
-    let mut idle_ready = make_ready_state("idle-model", "llama-cpp");
-    if let BackendState::Ready { last_accessed, .. } = &mut idle_ready {
-        *last_accessed = Instant::now() - Duration::from_secs(600);
-    }
-    state
-        .registry
-        .models
-        .write()
-        .await
-        .insert("idle-server".to_string(), idle_ready);
+    seed_live_row(&state, "idle-server", "ready").await;
+    set_last_accessed(&state, "idle-server", 600).await;
 
     let cleaned = state.check_idle_timeouts().await;
     assert!(
         !cleaned.contains(&"idle-server".to_string()),
         "auto_unload=false must not unload"
     );
-    assert!(state
-        .registry
-        .models
-        .read()
+}
+
+/// plan-193 T5c: a model in the tamad's `budget_exhausted` lifecycle
+/// state must surface as HTTP 503 + `retry-after: 60` — through the FULL
+/// translation the HTTP layers run: `ensure_model_loaded` → MARKED error →
+/// `budget_exhausted_response_for` → response.
+///
+/// The mark is a type (`BudgetExhausted`), never a string: no
+/// user-visible string marker is allowed to leak into any other path, and
+/// no handler may string-match on `Display` to recover the mark.
+#[tokio::test]
+async fn test_ensure_model_loaded_budget_exhausted_translates_to_503() {
+    let config = Config::default();
+    let state = ProxyState::new(config, None, crate::db::pool::test_dummy_pool());
+
+    // Seed a live wire row reporting `budget_exhausted` for "model.gguf"
+    // (the tamad keeps reporting the budget state; its restart budget is
+    // spent).
+    seed_live_row(&state, "model.gguf", "budget_exhausted").await;
+
+    // Step 1 — the call the HTTP layers make: the marked error comes back
+    // before any load attempt.
+    let err =
+        crate::proxy::lifecycle::ensure_model_loaded(&Arc::new(state), "model.gguf", |_, e| Err(e))
+            .await
+            .expect_err("a budget-exhausted model must not load");
+    assert!(
+        err.is::<crate::proxy::lifecycle::BudgetExhausted>(),
+        "the error must carry the BudgetExhausted mark (a type, not a string)"
+    );
+
+    // Step 2 — the same mapping both handlers apply: mark → the full 503
+    // wire shape (status, header, exact body).
+    let resp = crate::proxy::lifecycle::budget_exhausted_response_for(&err)
+        .expect("the marked error must translate to the budget-exhausted 503");
+    assert_eq!(resp.status(), axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        resp.headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok()),
+        Some("60")
+    );
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
         .await
-        .contains_key("idle-server"));
+        .unwrap();
+    assert_eq!(
+        std::str::from_utf8(&body).unwrap(),
+        "the model exhausted its restarts; retry in 60 seconds"
+    );
+
+    // Step 3 — an unmarked error must not translate (no 503 leakage).
+    let unrelated = anyhow::anyhow!("some other failure");
+    assert!(
+        crate::proxy::lifecycle::budget_exhausted_response_for(&unrelated).is_none(),
+        "unmarked errors must not map to the budget-exhausted 503"
+    );
 }

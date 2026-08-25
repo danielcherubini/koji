@@ -665,11 +665,6 @@ pub async fn rename_installation(pool: &PgPool, old_name: &str, new_name: &str) 
         .bind(old_name)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("UPDATE active_models SET backend = $1 WHERE backend = $2")
-        .bind(new_name)
-        .bind(old_name)
-        .execute(&mut *tx)
-        .await?;
     tx.commit().await?;
     Ok(true)
 }
@@ -926,26 +921,13 @@ mod tests {
         .await
         .unwrap();
 
-        // A model and an active-model row reference the backend by name.
+        // A model row references the backend by name.
         sqlx::query("INSERT INTO model_configs (repo_id, backend) VALUES ($1, $2)")
             .bind("m/m")
             .bind("vllm")
             .execute(pool)
             .await
             .unwrap();
-        sqlx::query(
-            "INSERT INTO active_models (server_name, model_name, backend, pid, port, backend_url)
-             VALUES ($1, $2, $3, $4, $5, $6)",
-        )
-        .bind("s1")
-        .bind("m")
-        .bind("vllm")
-        .bind(1i64)
-        .bind(8000i64)
-        .bind("http://x")
-        .execute(pool)
-        .await
-        .unwrap();
 
         // Pre-rename, config is found by name.
         assert!(get_installation_config(pool, "vllm", "rocm")
@@ -973,7 +955,7 @@ mod tests {
         assert_eq!(cfg.default_env, vec!["A=1"]);
         assert_eq!(cfg.name, "radiance");
 
-        // Models / runtime rows now point at the new name.
+        // The model row now points at the new name.
         let backend: String =
             sqlx::query_scalar("SELECT backend FROM model_configs WHERE repo_id = $1")
                 .bind("m/m")
@@ -981,13 +963,6 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(backend, "radiance");
-        let ab: String =
-            sqlx::query_scalar("SELECT backend FROM active_models WHERE server_name = $1")
-                .bind("s1")
-                .fetch_one(pool)
-                .await
-                .unwrap();
-        assert_eq!(ab, "radiance");
         guard.finish().await;
     }
 

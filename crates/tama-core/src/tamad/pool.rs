@@ -76,20 +76,25 @@ impl TamadHandle {
     /// The latest stats snapshot, if the stream has delivered one.
     ///
     /// Snapshots are ~1s fresh while the tamad is up; callers that act on
-    /// the data (e.g. the reconciler) must treat a snapshot older than a few
+    /// the data (e.g. the proxy's row reads) must treat a snapshot older than a few
     /// seconds as stale.
     pub async fn latest(&self) -> Option<SystemStats> {
         self.latest.read().await.as_ref().map(|l| l.stats.clone())
     }
 
-    /// The latest stats snapshot if it is at most `max_age` old.
+    /// The latest stats snapshot, fresh only if STRICTLY younger than
+    /// `max_age` (the freshness rule is strict: age `< max_age`).
+    /// A frame that has reached its full `max_age` (e.g. exactly 5 s
+    /// under the 5 s wire-staleness bound) is NOT fresh — the tamad
+    /// emits at 1 Hz, so a 5 s bound is five ticks of slack, and a
+    /// 5 s-old frame has spent the entire slack.
     ///
-    /// For callers that *act* on snapshot data (the reconciler): never act
+    /// For callers that *act* on snapshot data: never act
     /// on stale data — a missing/old snapshot means "skip this tick".
     pub async fn latest_fresh(&self, max_age: Duration) -> Option<SystemStats> {
         let latest = self.latest.read().await;
         let l = latest.as_ref()?;
-        (Instant::now().duration_since(l.at) <= max_age).then(|| l.stats.clone())
+        (Instant::now().duration_since(l.at) < max_age).then(|| l.stats.clone())
     }
 
     /// Whether the stats stream is currently open.
@@ -306,6 +311,17 @@ impl TamadPool {
         let tamad_id = tamad_id?;
         self.get(tamad_id).await
     }
+
+    /// Test-only: insert a pre-built handle WITHOUT starting a stream task
+    /// (rows.rs unit tests supply controlled `latest_fresh` snapshots). This
+    /// is compiled out of production builds.
+    #[cfg(any(test, feature = "test-stubs"))]
+    pub async fn insert_raw_handle(&self, id: &str, handle: Arc<TamadHandle>) {
+        self.handles
+            .write()
+            .await
+            .insert(id.to_string(), Arc::clone(&handle));
+    }
 }
 
 /// Background stream task: keep one `StreamStats` stream open per tamad,
@@ -455,6 +471,8 @@ pub mod test_support {
     use futures_util::{Stream, StreamExt};
 
     use crate::providers::{Protocol, TamadConnection, TamadStatus};
+    use crate::tamad::pool::LatestStats;
+    use crate::tamad::pool::TamadHandle;
     use crate::tamad::{JobEvent, LogEntry, StatsRequest, SystemStats};
 
     // ── Stub tamad gRPC service ──
@@ -944,6 +962,38 @@ pub mod test_support {
             load_delays: std::collections::HashMap::new(),
             load_model_fail: Arc::new(tokio::sync::Mutex::new(false)),
         }
+    }
+
+    // ── Scripted-handle factories (rows.rs unit tests) ─────────────────────
+
+    /// Build a handle that has ALREADY delivered the given snapshot at `at`
+    /// (no stream task). `rows.rs` uses this to unit-test `freshness` and
+    /// `ProcessInfo` aggregation with a controlled frame.
+    pub async fn handle_with_latest(at: Instant, stats: SystemStats) -> TamadHandle {
+        let handle = TamadHandle::new(TamadConnection {
+            id: "rows-host".to_string(),
+            name: "rows-host".to_string(),
+            url: "grpc://127.0.0.1:1".to_string(),
+            protocol: Protocol::Grpc,
+            token: Some("secret".to_string()),
+            status: TamadStatus::Unknown,
+        });
+        // test_support lives in pool.rs, so the private `latest` field is
+        // reachable (same as the StubTamad stream write path below).
+        *handle.latest.write().await = Some(LatestStats { stats, at });
+        handle
+    }
+
+    /// A handle that has NEVER delivered a snapshot (offline from birth).
+    pub fn handle_no_latest() -> TamadHandle {
+        TamadHandle::new(TamadConnection {
+            id: "rows-offline".to_string(),
+            name: "rows-offline".to_string(),
+            url: "grpc://127.0.0.1:1".to_string(),
+            protocol: Protocol::Grpc,
+            token: Some("secret".to_string()),
+            status: TamadStatus::Unknown,
+        })
     }
 
     /// Poll `f` (every 20ms) until it returns true or the 10s deadline hits.

@@ -12,13 +12,17 @@ use sqlx::types::time::{OffsetDateTime, UtcOffset};
 /// The committed v49 SQLite DDL fixture (ground truth for table/column sets).
 const V49_FIXTURE: &str = include_str!("fixtures/v49_schema.sql");
 
-/// Postgres-native tables added after the v49 SQLite baseline (plan-191
-/// Task 5). These have no SQLite counterpart, so the v49-fixture
-/// cross-checks account for them explicitly. They are applied by a
-/// separate numbered migration — the shipped
-/// `00000000000001_initial.sql` is never rewritten (sqlx
-/// checksum-validates it on already-migrated databases).
-const POST_V49_TABLES: &[&str] = &["desired_models"];
+/// Shadow tables the plan-193 T7 migrations DROP out of the v49 baseline: the
+/// proxy's last v49-era model-state table dies with it (the tamad's wire rows
+/// are the source of truth now). `desired_models` (post-v49, added by
+/// `00000000000002`) is dropped by `00000000000004`;
+/// `active_models` (v49-fixture table) by the same GATE (round-2 P1):
+/// `00000000000005` (count>0 → RAISE EXCEPTION; drops only on the zero
+/// row assertion). A failed one is UNRECORDED → sqlx retries it at
+/// every boot.
+/// The cross-checks below assert their
+/// ABSENCE on a fresh schema — the pin that the shadow is dead.
+const DROPPED_SHADOW_TABLES: &[&str] = &["desired_models", "active_models"];
 
 /// Parse the table names declared in a chunk of SQL DDL.
 ///
@@ -84,19 +88,71 @@ async fn test_run_migrations_ok_re_run_is_noop() {
     .await
     .expect("query _sqlx_migrations");
     assert_eq!(
-        row.0, 3,
-        "one success row per migration file (initial + post-v49 desired_models + pull_backend)"
+        row.0, 5,
+        "one success row per migration file (initial + desired_models + pull_backend + the two T7 shadow drops)"
     );
 
     let _ = guard.finish().await;
+}
+
+/// Shape-pin: the two T7 shadow drops must be a GATE — never a blind
+/// drop, never a one-shot skip. A skipped migration whose row was marked
+/// `success` can never be re-executed (the missing-skip cannot retry,
+/// it cannot report-retry), while a drop without the gate would delete
+/// the live steering mid-mixed-rollout (the pre-plan-193 proxies still
+/// steer the shadow tables). The intended operator shape: non-zero row
+/// count → `RAISE EXCEPTION` (the failed migration is NOT recorded
+/// applied → re-attempted at every subsequent boot); DROP only on the
+/// zero-row assertion.
+#[test]
+fn test_drop_migrations_are_guarded_shape() {
+    // Read the drop migrations from the migrations directory: pinning the
+    // zero-padded 14-digit filenames in an `include_str!` invites a shift-a-digit
+    // typo that breaks compilation, while the guard is what the directory
+    // contents themselves must carry.
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+    let mut names: Vec<String> = std::fs::read_dir(&dir)
+        .expect("read migrations dir")
+        .map(|e| {
+            e.expect("dir entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .filter(|n| n.ends_with("drop_desired_models.sql") || n.ends_with("drop_active_models.sql"))
+        .collect();
+    names.sort();
+    assert_eq!(
+        names.len(),
+        2,
+        "exactly the two T7 shadow-drop migrations expected in {dir:?}"
+    );
+
+    for name in &names {
+        let sql = std::fs::read_to_string(dir.join(name)).expect("read migration sql");
+        assert!(
+            sql.contains("RAISE EXCEPTION"),
+            "the pre-drop probe must GATE with RAISE EXCEPTION (non-zero count -> the migration fails, unrecorded -> retried at every boot)"
+        );
+        assert!(
+            sql.contains("count(*)"),
+            "the gate must assert zero-rows from the table itself"
+        );
+        assert!(
+            !sql.contains("RETURN"),
+            "no one-shot `RETURN` may survive (a skipped row marked success is never re-executed)"
+        );
+    }
 }
 
 #[tokio::test]
 async fn test_all_squashed_tables_exist() {
     let guard = with_schema().await;
 
+    // The v49 baseline minus the T7 drop (`active_models`); `desired_models`
+    // was never part of the v49 fixture, so the list only shrinks.
     let mut expected: Vec<String> = table_names_in(V49_FIXTURE);
-    expected.extend(POST_V49_TABLES.iter().map(|t| t.to_string()));
+    expected.retain(|t| !DROPPED_SHADOW_TABLES.iter().any(|d| d == t));
     expected.sort();
 
     let rows: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
@@ -112,27 +168,6 @@ async fn test_all_squashed_tables_exist() {
     assert_eq!(
         rows, expected,
         "every table from the squashed schema must exist in the test schema"
-    );
-
-    let _ = guard.finish().await;
-}
-
-#[tokio::test]
-async fn test_desired_models_tamad_index_exists() {
-    let guard = with_schema().await;
-
-    let rows: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "SELECT indexname FROM pg_indexes \
-         WHERE schemaname = '{}' AND tablename = 'desired_models' ORDER BY indexname",
-        guard.schema
-    )))
-    .fetch_all(&guard.pool)
-    .await
-    .expect("query pg_indexes");
-
-    assert!(
-        rows.contains(&"idx_desired_models_tamad".to_string()),
-        "idx_desired_models_tamad must exist on desired_models(tamad_id); found: {rows:?}"
     );
 
     let _ = guard.finish().await;
@@ -310,31 +345,39 @@ async fn test_pg_schema_matches_v49_fixture() {
     }
     drop(conn);
 
-    // (table -> ordered columns) from the migrated Postgres schema.
-    // Drop the post-v49 Postgres-native tables (no SQLite counterpart) so
-    // the comparison is strictly against the v49 baseline; assert those
-    // tables exist separately.
+    // (table -> ordered columns) from the migrated Postgres schema. The T7 drop
+    // migrations carve these tables out of the baseline, so the cross-check pins
+    // their ABSENCE on a fresh schema and compares the rest strictly against
+    // the v49 baseline (minus the drops).
     let all_pg: Vec<(String, Vec<String>)> = postgres_columns(&guard).await;
-    let mut pg = all_pg.clone();
-    pg.retain(|(t, _)| !POST_V49_TABLES.contains(&t.as_str()));
+
+    for t in DROPPED_SHADOW_TABLES {
+        assert!(
+            !all_pg.iter().any(|(name, _)| name == t),
+            "shadow table '{t}' must be dropped on a fresh schema (plan-193 T7)"
+        );
+    }
+
+    let mut sqlite_tables: Vec<String> = sqlite_tables.clone();
+    sqlite_tables.retain(|t| !DROPPED_SHADOW_TABLES.iter().any(|d| d == t));
+    sqlite_tables.sort();
+    let mut sqlite_entries_cmp: Vec<(String, Vec<String>)> = sqlite_entries.clone();
+    sqlite_entries_cmp.retain(|(t, _)| !DROPPED_SHADOW_TABLES.iter().any(|d| d == t));
+    sqlite_entries_cmp.sort();
+
+    let mut pg: Vec<(String, Vec<String>)> = postgres_columns(&guard).await;
+    pg.retain(|(t, _)| !DROPPED_SHADOW_TABLES.iter().any(|d| d == t));
     pg.sort_by(|a, b| a.0.cmp(&b.0));
     let mut pg_table_names: Vec<String> = pg.iter().map(|(t, _)| t.clone()).collect();
     pg_table_names.sort();
 
-    for t in POST_V49_TABLES {
-        assert!(
-            all_pg.iter().any(|(name, _)| name == t),
-            "post-v49 table '{t}' must exist in the migrated schema"
-        );
-    }
-
     assert_eq!(
         pg_table_names, sqlite_tables,
-        "table sets must match between Postgres schema and v49 fixture"
+        "table sets must match between the Postgres schema and the v49 fixture (minus T7 drops)"
     );
     assert_eq!(
-        pg, sqlite_entries,
-        "column lists must match between Postgres schema and v49 fixture (modulo type mapping)"
+        pg, sqlite_entries_cmp,
+        "column lists must match (modulo type mapping + T7 drops)"
     );
 
     let _ = guard.finish().await;

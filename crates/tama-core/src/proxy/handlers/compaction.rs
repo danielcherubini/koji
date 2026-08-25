@@ -98,7 +98,7 @@ const COMPACTION_BACKEND_NAME: &str = "compaction";
 
 /// Ensure the compaction backend is loaded and return its server URL.
 async fn ensure_compaction_backend(state: &ProxyState) -> anyhow::Result<String> {
-    // Check if already loaded and get URL from BackendState
+    // Check if already loaded and get URL from the wire row
     if let Some(url) = get_backend_url(state, COMPACTION_BACKEND_NAME).await? {
         return Ok(url);
     }

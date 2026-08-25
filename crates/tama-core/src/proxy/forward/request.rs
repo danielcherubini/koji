@@ -6,13 +6,13 @@ use super::langfuse::{
 };
 use super::sse::process_sse_line;
 use super::stats::extract_inference_stats;
-use crate::proxy::{api_keys::AuthSubject, BackendState, ProxyState};
+use crate::proxy::{api_keys::AuthSubject, ProxyState};
 use axum::{body::Body, http::request::Parts, response::IntoResponse};
 use bytes::{Bytes, BytesMut};
 use futures_util::stream::StreamExt;
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
-use std::time::{Instant, SystemTime};
+use std::time::Instant;
 use tracing::info;
 
 pub async fn forward_request(
@@ -28,73 +28,29 @@ pub async fn forward_request(
         .total_requests
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-    let model_state = state.get_model_state(backend_name).await;
-    if let Some(ms) = &model_state {
-        // The proxy cannot inspect backend processes (ADR-0010): the mirror's
-        // liveness is converging toward the truth via the reconciler (~1s
-        // tick). A crashed backend surfaces as a connection error below,
-        // which cleans up the same state.
-        let failures = ms
-            .consecutive_failures()
-            .map(|f| f.load(std::sync::atomic::Ordering::Relaxed))
-            .unwrap_or(0);
-        let config = state.config.read().await;
-        if failures >= config.proxy.circuit_breaker_threshold {
-            // Check if cooldown has elapsed
-            if !ms.can_reload(config.proxy.circuit_breaker_cooldown_seconds) {
-                info!(
-                    "Circuit breaker cooldown active for backend '{}' ({} failures). Waiting for cooldown.",
-                    backend_name, failures
-                );
-                return (
-                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                    axum::response::Json(serde_json::json!({
-                        "error": {
-                            "message": format!("Server {} is in cooldown due to repeated failures", backend_name),
-                            "type": "ServiceUnavailableError"
-                        }
-                    })),
-                )
-                    .into_response();
-            }
-            info!(
-                "Circuit breaker tripped for server '{}' ({} failures). Unloading backend.",
-                backend_name, failures
-            );
-            // Unload the backend using PID from backend_pid
-            if let Some(_pid) = ms.backend_pid() {
-                let _ = state.unload_model(backend_name).await;
-            }
+    // There used to be a per-backend failure counter map here; with it
+    // gone (plan-193 T5c) there is no failure memory, so a crashed or
+    // repeatedly-failing backend surfaces as a connection error below and
+    // the tamad's own restart budget (`budget_exhausted` → HTTP 503)
+    // bounds it.
+
+    // Flip: the routing target comes from the live model rows (plan-193 T4),
+    // not a local state cache. Offline host → no row → "not loaded".
+    let live = crate::proxy::live_rows(state.tamad_pool().as_ref()).await;
+    let backend_url = match live.row(backend_name) {
+        Some(r) if !r.endpoint.is_empty() => r.endpoint.clone(),
+        _ => {
+            info!("No backend URL for model '{}' (not loaded?)", backend_name);
             return (
-                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                axum::http::StatusCode::BAD_GATEWAY,
                 axum::response::Json(serde_json::json!({
                     "error": {
-                        "message": format!("Server {} is currently unavailable due to repeated failures", backend_name),
-                        "type": "ServiceUnavailableError"
+                        "message": format!("Model '{}' is not loaded", backend_name),
+                        "type": "BackendUrlError"
                     }
                 })),
             )
                 .into_response();
-        }
-    }
-
-    let backend_url = {
-        let models = state.registry.models.read().await;
-        match models.get(backend_name).and_then(|ms| ms.backend_url()) {
-            Some(url) => url.to_string(),
-            None => {
-                info!("No backend URL for model '{}' (not loaded?)", backend_name);
-                return (
-                    axum::http::StatusCode::BAD_GATEWAY,
-                    axum::response::Json(serde_json::json!({
-                        "error": {
-                            "message": format!("Model '{}' is not loaded", backend_name),
-                            "type": "BackendUrlError"
-                        }
-                    })),
-                )
-                    .into_response();
-            }
         }
     };
 
@@ -230,43 +186,15 @@ pub async fn forward_request(
                     .counters
                     .successful_requests
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                if let Some(ms) = &model_state {
-                    if let Some(f) = ms.consecutive_failures() {
-                        f.store(0, std::sync::atomic::Ordering::Relaxed);
-                    }
-                }
+                // plan-193 T5c: no consecutive-failure counter to reset (mirror gone).
             } else {
                 state
                     .metrics
                     .counters
                     .failed_requests
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                if status.is_server_error() {
-                    if let Some(ms) = &model_state {
-                        if let Some(f) = ms.consecutive_failures() {
-                            f.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        }
-                        // Set failure timestamp for cooldown
-                        if ms.is_ready() || matches!(ms, BackendState::Starting { .. }) {
-                            let new_ts = SystemTime::now();
-                            let mut models = state.registry.models.write().await;
-                            #[allow(clippy::collapsible_match)]
-                            if let Some(existing) = models.get_mut(backend_name) {
-                                match existing {
-                                    BackendState::Ready {
-                                        failure_timestamp, ..
-                                    }
-                                    | BackendState::Starting {
-                                        failure_timestamp, ..
-                                    } => {
-                                        *failure_timestamp = Some(new_ts);
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-                    }
-                }
+                // (Plan-193 T5c: the per-backend failure bookkeeping that used to
+                // live on the deleted state cache is gone with it.)
             }
 
             let mut builder = axum::response::Response::builder().status(status);
@@ -556,32 +484,23 @@ pub async fn forward_request(
             // (ADR-0010). A connection-level failure (refused/reset) or a
             // timeout means the backend is not accepting traffic — clean up
             // immediately instead of letting the circuit breaker accumulate
-            // failures; the reconciler + auto-load re-establish it. Any other
+            // failures; auto-load re-establishes it. Any other
             // error (the backend answered, e.g. 5xx) is a transient failure
-            // counted by the circuit breaker.
+            // counted as a transient failure.
             let backend_unreachable = e.is_connect() || e.is_timeout();
 
             if backend_unreachable {
                 info!(
-                    "Backend for backend '{}' is unreachable (request error = {}), cleaning up model state",
+                    "Backend for backend '{}' is unreachable (request error = {}), clearing stale inference stats",
                     backend_name, e
                 );
-                let mut models = state.registry.models.write().await;
-                models.remove(backend_name);
                 state.metrics.modify_inference_stats(|map| {
                     map.remove(backend_name);
                 });
-                // Best-effort DB cleanup
-                let pool = state.db_pool();
-                let _ = crate::db::queries::remove_active_model(&pool, backend_name).await;
             } else {
-                // Process is alive — this is a transient error (timeout, busy, etc.)
-                // Increment the circuit breaker counter.
-                if let Some(ms) = &model_state {
-                    if let Some(f) = ms.consecutive_failures() {
-                        f.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    }
-                }
+                // Process is alive — this is a transient error (timeout, busy,
+                // etc.). There is no per-backend circuit-breaker counter to
+                // bump now that the mirror is gone (plan-193 T5c).
             }
 
             info!("Failed to forward request: {}", e);

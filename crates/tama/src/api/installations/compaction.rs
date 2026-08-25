@@ -67,11 +67,7 @@ pub async fn update_compaction(
     }
 
     // Check current running status
-    let running = state
-        .get_model_state("compaction")
-        .await
-        .map(|s| s.is_ready())
-        .unwrap_or(false);
+    let running = state.process_status("compaction").await.is_some();
 
     (
         StatusCode::OK,

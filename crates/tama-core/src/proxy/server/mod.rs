@@ -111,8 +111,10 @@ impl ProxyServer {
 
         // Note: dead-process cleanup and Docker container reconciliation were
         // removed in plan-191 Task 10 — the proxy no longer sees local backends
-        // (ADR-0010). The reconciler converges each tamad's process table to
-        // the desired set, and the idle checker cleans up Failed mirror entries.
+        // (ADR-0010). The proxy never spawns backends: each tamad's process
+        // table is the desired set, and the idle checker (row-sourced now —
+        // `check_idle_timeouts`) only unloads READY models whose `last_accessed`
+        // entry sits idle past `idle_timeout_secs`, and only with `auto_unload` on.
         let idle_timeout_handle = Self::start_idle_timeout_checker(state.clone());
 
         // Spawn background task to refresh system metrics every 2s.
@@ -126,11 +128,16 @@ impl ProxyServer {
     }
 
     /// Spawn the idle timeout checker task.
-    /// Always spawns — the task reads config each iteration and respects runtime
-    /// changes to auto_unload (e.g., via web UI) without requiring a restart.
-    /// check_idle_timeouts is always called so Failed backends get cleaned up
-    /// even when auto_unload is disabled; the idle-unload logic inside it is
-    /// gated on the auto_unload flag.
+    ///
+    /// Always spawns — the task reads config each iteration and respects
+    /// runtime changes to auto_unload (e.g., via web UI) without
+    /// requiring a restart.
+    ///
+    /// Row-based since plan-193 T5c (mirror deleted): `check_idle_timeouts`
+    /// only unloads READY wire rows whose proxy-owned `last_accessed`
+    /// entry is idle past `idle_timeout_secs`, and that decision is gated
+    /// on `auto_unload` inside it — with the flag off (or before the
+    /// timeout elapses) a pass is an empty no-op.
     fn start_idle_timeout_checker(state: Arc<ProxyState>) -> tokio::task::JoinHandle<()> {
         use std::time::Duration;
 
@@ -145,7 +152,9 @@ impl ProxyServer {
                     Duration::from_secs(30)
                 };
                 tokio::time::sleep(interval).await;
-                // Always called — cleans up Failed backends even when auto_unload is off.
+                // Always called: a pass is a no-op while auto_unload is off,
+                // but it re-reads the config every iteration so the flag
+                // takes effect without a restart.
                 let _ = state.check_idle_timeouts().await;
             }
         })
@@ -189,14 +198,14 @@ impl ProxyServer {
         let cleanup_state = Arc::clone(&self.state);
         let app = self.into_router().await;
         let on_shutdown = async move {
-            let models = cleanup_state.registry.models.read().await;
-            let tts_backends: Vec<String> = models
+            let live = crate::proxy::live_rows(cleanup_state.tamad_pool().as_ref()).await;
+            let tts_backs: Vec<String> = live
+                .all()
                 .iter()
-                .filter(|(_, ms)| ms.is_tts_backend())
-                .map(|(name, _)| name.clone())
+                .filter(|r| r.key.starts_with("tts_"))
+                .map(|r| r.key.clone())
                 .collect();
-            drop(models);
-            for name in tts_backends {
+            for name in tts_backs {
                 if let Err(e) = cleanup_state.unload_model(&name).await {
                     tracing::warn!("Failed to unload TTS backend '{}': {}", name, e);
                 }

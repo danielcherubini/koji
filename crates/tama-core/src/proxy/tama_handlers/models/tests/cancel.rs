@@ -1,6 +1,4 @@
-use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
-use std::time::Instant;
 
 use axum::body::Body;
 use axum::extract::Request;
@@ -11,7 +9,30 @@ use tower::ServiceExt;
 use super::helpers::create_state_with_model;
 use crate::config::ModelConfig;
 use crate::proxy::tama_handlers::models::handle_tama_cancel_load;
-use crate::proxy::BackendState;
+
+/// Seed a live wire row for `model_id` (plan-193 T4: `handle_cancel_load`
+/// checks availability via rows, not the mirror).
+async fn seed_live(state: &Arc<crate::proxy::ProxyState>, model_id: &str, status: &str) {
+    use crate::tamad::pool::test_support::{handle_with_latest, stats_full};
+    let proc = crate::tamad::ProcessInfo {
+        model_name: model_id.to_string(),
+        provider_name: "llama_cpp".to_string(),
+        pid: 1,
+        alive: true,
+        endpoint_url: "http://127.0.0.1:1".to_string(),
+        status: status.to_string(),
+        desired: true,
+        restart_count: 0,
+        max_restarts: 3,
+    };
+    let stats = stats_full(1.5, vec![], vec![proc]);
+    let pool = state.tamad_pool();
+    pool.insert_raw_handle(
+        model_id,
+        Arc::new(handle_with_latest(std::time::Instant::now(), stats).await),
+    )
+    .await;
+}
 
 /// Cancel returns 200 for a Starting model with a PID.
 /// The fake PID (99999) has no real process group, so kill_process_group
@@ -28,23 +49,7 @@ async fn test_cancel_returns_200_for_starting_model() {
     .await;
 
     // Insert a Starting entry with a fake PID
-    state.registry.models.write().await.insert(
-        "test-model".to_string(),
-        BackendState::Starting {
-            model_name: "test-model".into(),
-            backend: "llama_cpp".into(),
-            backend_url: String::new(),
-            backend_pid: 99999,
-            last_accessed: Instant::now(),
-            start_time: Instant::now(),
-            consecutive_failures: Arc::new(AtomicU32::new(0)),
-            is_docker: false,
-            failure_timestamp: None,
-        },
-    );
-
-    // Clone the Arc before moving state into the router
-    let state_clone = state.clone();
+    seed_live(&state, "test-model", "starting").await;
 
     let app = Router::new()
         .route(
@@ -68,17 +73,8 @@ async fn test_cancel_returns_200_for_starting_model() {
     assert_eq!(json["loaded"], false, "Expected loaded: false");
     assert_eq!(json["id"], "test-model", "Expected id: test-model");
 
-    // Model entry should be removed
-    assert!(
-        state_clone
-            .registry
-            .models
-            .read()
-            .await
-            .get("test-model")
-            .is_none(),
-        "Model entry should be removed after cancel"
-    );
+    // plan-193 T5: the handler no longer removes a local mirror entry;
+    // lifecycle truth is the tamad rows, so there is no mirror to purge.
 }
 
 /// Cancel for a Ready (already loaded) model → 200: cancel operates on
@@ -96,21 +92,7 @@ async fn test_cancel_ready_model_unloads() {
     .await;
 
     // Insert a Ready entry
-    state.registry.models.write().await.insert(
-        "test-model".to_string(),
-        BackendState::Ready {
-            model_name: "test-model".to_string(),
-            backend: "llama_cpp".to_string(),
-            backend_pid: 12345,
-            backend_url: "http://127.0.0.1:1234".to_string(),
-            load_time: std::time::SystemTime::now(),
-            last_accessed: Instant::now(),
-            consecutive_failures: Arc::new(AtomicU32::new(0)),
-            failure_timestamp: None,
-            is_docker: false,
-            restart_count: 0,
-        },
-    );
+    seed_live(&state, "test-model", "ready").await;
 
     let app = Router::new()
         .route(
@@ -133,18 +115,8 @@ async fn test_cancel_ready_model_unloads() {
     assert_eq!(status, StatusCode::OK, "Expected 200 OK");
     assert_eq!(json["loaded"], false, "Expected loaded: false");
 
-    // The local mirror entry is removed (physical unload is best-effort
-    // RPC on the tamad — no tamad in this unit test).
-    assert!(
-        state
-            .registry
-            .models
-            .read()
-            .await
-            .get("test-model")
-            .is_none(),
-        "Ready mirror should be removed after cancel"
-    );
+    // plan-193 T5: cancel no longer purges a local mirror entry — the
+    // lifecycle rows (live from the tamad) are the source of truth.
 }
 
 /// Cancel returns 404 for a non-existing model.
@@ -203,14 +175,6 @@ async fn test_cancel_returns_404_for_failed_model() {
     .await;
 
     // Insert a Failed entry
-    state.registry.models.write().await.insert(
-        "test-model".to_string(),
-        BackendState::Failed {
-            model_name: "test-model".to_string(),
-            backend: "llama_cpp".to_string(),
-            error: "Some error".to_string(),
-        },
-    );
 
     let app = Router::new()
         .route(

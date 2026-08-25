@@ -9,6 +9,7 @@ mod metrics;
 mod pull;
 mod registry;
 pub(crate) mod repo_pull;
+pub(crate) mod rows;
 
 pub(crate) use metrics::MetricsState;
 pub(crate) use pull::PullState;
@@ -20,7 +21,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::pull_queue::{queue_processor_loop, PullQueueService};
-use super::types::{BackendState, ProxyState};
+use super::types::ProxyState;
 
 impl ProxyState {
     pub fn new(
@@ -107,17 +108,28 @@ impl ProxyState {
         Ok(backend_url)
     }
 
-    /// Get the state of a loaded model (backend).
-    pub async fn get_model_state(&self, backend_name: &str) -> Option<BackendState> {
-        self.registry.get_model_state(backend_name).await
-    }
-
     /// Find an available loaded backend for a given model name.
     pub async fn get_available_backend_for_model(&self, model_name: &str) -> Option<String> {
+        // plan-193 T4 flip: presence comes from the live wire rows, not the
+        // staging mirror. A backend is available when its row is `ready` and
+        // exposes a routeable endpoint (offline host → no rows → not loaded).
         let config = self.config.read().await;
-        self.registry
-            .get_available_backend_for_model(&config, model_name)
-            .await
+        let model_configs = self.registry.model_configs.read().await;
+        let backends = config.resolve_backends_for_model(&model_configs, model_name);
+
+        // (model_configs read guard stays alive through the loop; the
+        // resolved backends borrow from it.)
+
+        let rows = crate::proxy::live_rows(self.tamad_pool().as_ref()).await;
+        for (name, _, _) in backends.iter() {
+            let r = rows.row(name);
+            if r.is_some_and(|r| {
+                r.status == "ready" || r.status == "starting" || r.status == "restarting"
+            }) {
+                return Some(name.clone());
+            }
+        }
+        None
     }
 
     /// Update the last accessed time for a backend.
@@ -214,6 +226,14 @@ impl ProxyState {
         self.registry.resolve_alias(name).await
     }
 
+    /// Whether `key` is a known model config (the admin CLI's not-found
+    /// discriminator, plan-193 T6): a key that is neither a model nor an
+    /// alias to one is a not-found (exit 2) rather than an
+    /// ambiguous load failure. Call this with the alias-resolved key.
+    pub async fn has_model_config(&self, key: &str) -> bool {
+        self.registry.model_configs.read().await.contains_key(key)
+    }
+
     /// Open a ModelManager for model-related database operations.
     ///
     /// Crate-internal ModelManager factory for proxy lifecycle code
@@ -224,9 +244,20 @@ impl ProxyState {
         crate::models::ModelManager::new(self.db_pool.clone())
     }
 
-    /// Return the names of all loaded backends that are TTS (text-to-speech) backends.
+    /// Return the names of all loaded backends that are TTS (text-to-speech)
+    /// backends, sourced from the live wire rows (plan-193 T4).
     pub async fn tts_backend_names(&self) -> Vec<String> {
-        self.registry.tts_backend_names().await
+        let model_configs = self.registry.model_configs.read().await;
+        let rows = crate::proxy::live_rows(self.tamad_pool().as_ref()).await;
+        rows.all()
+            .iter()
+            .filter(|r| {
+                model_configs
+                    .get(&r.key)
+                    .is_some_and(|c| c.backend.starts_with("tts_"))
+            })
+            .map(|r| r.key.clone())
+            .collect()
     }
 
     /// Get a provider by name from the database.
@@ -236,140 +267,6 @@ impl ProxyState {
             .await
             .ok()
             .flatten()
-    }
-
-    /// Remove the local BackendState mirror entry (if any) for the model
-    /// with this name (plan-191 Task 5). The mirror is a staging cache of
-    /// the tamad's process table — keyed by config backend name, carrying
-    /// the model name — so the lookup is by `model_name()`.
-    pub async fn remove_mirror_by_model(&self, model_name: &str) {
-        let mut models = self.registry.models.write().await;
-        let stale: Vec<String> = models
-            .iter()
-            .filter(|(_, s)| s.model_name() == model_name)
-            .map(|(k, _)| k.clone())
-            .collect();
-        for key in &stale {
-            models.remove(key);
-        }
-        drop(models);
-        self.metrics.modify_inference_stats(|map| {
-            for key in &stale {
-                map.remove(key);
-            }
-        });
-        let pool = self.db_pool();
-        for key in &stale {
-            let _ = crate::db::queries::remove_active_model(&pool, key).await;
-        }
-    }
-
-    /// Sync the local BackendState mirror with one tamad's live process
-    /// snapshot (plan-191 Task 5, staging mirror):
-    ///
-    /// - upsert `Ready` entries for every live process (so the forward
-    ///   path and the management API see live endpoints),
-    /// - drop mirror entries for models on this tamad that are neither
-    ///   alive nor desired.
-    pub async fn sync_tamad_mirror(
-        &self,
-        processes: &[crate::tamad::ProcessInfo],
-        desired: &[String],
-    ) {
-        let config = self.config.read().await.clone();
-
-        // Build the upsert plan before taking the mirror lock (no nested
-        // acquisition of registry locks).
-        let model_configs = self.registry.model_configs.read().await;
-        let mut upserts: Vec<(String, String, String, u32, String)> = Vec::new();
-        for p in processes {
-            if !p.alive {
-                continue;
-            }
-            let Some(backend_name) = config
-                .resolve_backends_for_model(&model_configs, &p.model_name)
-                .into_iter()
-                .next()
-                .map(|(name, _, _)| name)
-            else {
-                continue;
-            };
-            let backend = model_configs
-                .get(&backend_name)
-                .map(|c| c.backend.clone())
-                .unwrap_or_else(|| p.provider_name.clone());
-            upserts.push((
-                backend_name,
-                backend,
-                p.model_name.clone(),
-                p.pid.max(0) as u32,
-                p.endpoint_url.clone(),
-            ));
-        }
-        drop(model_configs);
-
-        let mut models = self.registry.models.write().await;
-
-        // Upsert/update live processes.
-        for (backend_name, backend, model_name, pid, url) in upserts {
-            match models.get_mut(&backend_name) {
-                Some(BackendState::Ready {
-                    backend_pid,
-                    backend_url,
-                    ..
-                }) => {
-                    *backend_pid = pid;
-                    if !url.is_empty() {
-                        *backend_url = url;
-                    }
-                }
-                _ => {
-                    models.insert(
-                        backend_name,
-                        BackendState::Ready {
-                            model_name,
-                            backend,
-                            backend_pid: pid,
-                            backend_url: url,
-                            load_time: std::time::SystemTime::now(),
-                            last_accessed: std::time::Instant::now(),
-                            consecutive_failures: std::sync::Arc::new(
-                                std::sync::atomic::AtomicU32::new(0),
-                            ),
-                            failure_timestamp: None,
-                            restart_count: 0,
-                            is_docker: false,
-                        },
-                    );
-                }
-            }
-        }
-
-        // Drop mirror entries for models that are gone (dead or evicted)
-        // and not desired.
-        let mut stale: Vec<String> = Vec::new();
-        for (key, s) in models.iter() {
-            let model = s.model_name();
-            let still_wanted = desired.iter().any(|d| d == model);
-            let still_alive = processes.iter().any(|p| p.model_name == model && p.alive);
-            if !still_wanted && !still_alive {
-                stale.push(key.clone());
-            }
-        }
-        for key in &stale {
-            models.remove(key);
-        }
-        drop(models);
-
-        self.metrics.modify_inference_stats(|map| {
-            for key in &stale {
-                map.remove(key);
-            }
-        });
-        let pool = self.db_pool();
-        for key in &stale {
-            let _ = crate::db::queries::remove_active_model(&pool, key).await;
-        }
     }
 }
 

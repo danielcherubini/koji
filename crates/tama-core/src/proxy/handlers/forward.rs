@@ -64,6 +64,9 @@ pub async fn handle_forward_post(
         {
             Ok(name) => name,
             Err(e) => {
+                if let Some(resp) = crate::proxy::lifecycle::budget_exhausted_response_for(&e) {
+                    return resp;
+                }
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(serde_json::json!({
@@ -77,11 +80,11 @@ pub async fn handle_forward_post(
             }
         }
     } else {
-        // No model field — forward to first available backend or return error
-        let models = state.registry.models.read().await;
-        if let Some(name) = models.keys().next().cloned() {
-            drop(models);
-            name
+        // No model field — forward to the first live row (no host = no
+        // models, plan-193): rows are the wire truth, not the mirror.
+        let rows = crate::proxy::live_rows(state.tamad_pool().as_ref()).await;
+        if let Some(first) = rows.all().first() {
+            first.key.clone()
         } else {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -169,9 +172,12 @@ pub async fn forward_to_backend(
         .await
         .unwrap_or_default();
 
-    let models = state.registry.models.read().await;
-    let backend_name = models.keys().next().cloned().unwrap_or_else(String::new);
-    drop(models);
+    let rows = crate::proxy::live_rows(state.tamad_pool().as_ref()).await;
+    let backend_name = rows
+        .all()
+        .first()
+        .map(|r| r.key.clone())
+        .unwrap_or_else(String::new);
 
     if backend_name.is_empty() {
         return (

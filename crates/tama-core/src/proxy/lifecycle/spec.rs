@@ -5,18 +5,17 @@
 //! device) and ships it to the model's provider tamad via `LoadModel`. This
 //! module is the single home of that resolution so the request path
 //! (`ensure_model_loaded`), the TTS/compaction handlers, the management API
-//! (load/unload/cancel handlers), and the reconciler all build identical
+//! (load/unload/cancel handlers) all build identical
 //! specs.
 //!
 //! The proxy never spawns, kills, or samples the host (ADR-0010, enforced
-//! by the dependency graph since plan-191 Task 10): after the RPC succeeds
-//! it records *desired* state in `desired_models` and keeps a local
-//! `BackendState` mirror (staging mirror) so the forward path and management
-//! API keep working. GPU isolation env vars are resolved by the *tamad*
+//! by the dependency graph since plan-191 Task 10): after the RPC succeeds,
+//! the tamad's host-side store owns *desired* state and live model state is
+//! read from each tamad's wire (plan 193 T4+) so the forward path and
+//! management API keep working. GPU isolation env vars are resolved by the *tamad*
 //! from the `gpu_device` field it compares against its own hardware.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
 use tracing::warn;
@@ -255,12 +254,12 @@ pub async fn build_load_spec(
         // params is wire-compat only: command/args/env carry the fully
         // resolved spec and are authoritative.
         params: HashMap::new(),
-        // Canonical identity: the config key (== `backend_name`), NOT the raw
-        // request name. The reconciler joins desired_models.model_name with the
-        // tamad process's model_name; the forward path passes the raw
-        // repo_id/api_name while the management path passes the config key, so
-        // both must normalise to the config key here (the same key the mirror
-        // and active_models already use) or the reconciler flaps.
+        // Canonical identity: the config key (== `backend_name`), NOT the
+        // raw request name. The proxy's wire `model_name` and each tamad's
+        // row `name` are both the config key; the forward path passes the
+        // raw repo_id/api_name while the management path passes the
+        // config key, so both must normalise to the config key here, or
+        // the roadside rows and the wire rows disagree.
         model_name: backend_name.clone(),
         command: command.to_string_lossy().into_owned(),
         args,
@@ -522,36 +521,10 @@ pub fn vram_load_ok(
     Ok(())
 }
 
-/// Insert (or replace) the `Starting` placeholder mirror for `spec` so the
-/// dashboard and the models API expose the load window as "loading".
-///
-/// The `LoadModel` RPC in [`load_spec_on_tamad`] blocks until the tamad
-/// finishes spawning the backend and it passes its health poll — minutes
-/// for a large model. Without a runtime entry, `collect_model_state_snapshots`
-/// would report the model as `idle` for the whole window. The key is the
-/// canonical config key (`spec.backend_name`) — the same key the `Ready`
-/// mirror is inserted under on success, so it replaces the placeholder in
-/// place — and a `Failed` mirror replaces it if the RPC fails.
-pub(crate) async fn insert_starting_mirror(state: &ProxyState, spec: &LoadSpec) {
-    state.registry.models.write().await.insert(
-        spec.backend_name.clone(),
-        crate::proxy::BackendState::Starting {
-            model_name: spec.backend_name.clone(),
-            backend: spec.backend.clone(),
-            backend_url: String::new(),
-            backend_pid: 0,
-            last_accessed: std::time::Instant::now(),
-            start_time: std::time::Instant::now(),
-            consecutive_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-            failure_timestamp: None,
-            is_docker: false,
-        },
-    );
-}
-
 /// The shared tamad-load tail: resolve the provider's live tamad, run the
-/// capacity/VRAM guards, issue `LoadModel`, mark the model *desired* in the
-/// DB, and refresh the local mirror.
+/// capacity/VRAM guards, and issue `LoadModel`. The tamad's host-side store
+/// owns *desired* state; the tamad's wire row (not a proxy mirror) is the
+/// lifecycle truth.
 ///
 /// `evict_lru` enables the LRU capacity guard (LLM loads only — auxiliary
 /// backends like TTS/compaction are excluded from the capacity count and
@@ -581,11 +554,10 @@ pub async fn load_spec_on_tamad(
         })?;
 
     if evict_lru {
-        // LRU capacity check: the mirror now tracks the tamads' process
-        // tables (plan-191 Task 5), so capacity/eviction operates on the
-        // proxy's view of per-tamad state. Best-effort: an eviction failure
-        // must not block the load itself. (Runs for CPU loads too — the
-        // target device `None` matches the CPU-model bucket, as before.)
+        // LRU capacity check: eviction operates on the live rows (the
+        // tamads' process tables aggregated at plan-193 T4), so capacity /
+        // eviction uses the row LRU key. Best-effort: an eviction failure
+        // must not block the load itself.
         if let Err(e) = state.evict_lru_if_needed(spec.gpu_device.clone()).await {
             warn!(error = %e, model = %spec.backend_name, "LRU eviction check failed");
         }
@@ -603,12 +575,10 @@ pub async fn load_spec_on_tamad(
     }
 
     // The `LoadModel` RPC blocks until the tamad's spawn + health poll
-    // completes (minutes for a large model); insert a `Starting` placeholder
-    // mirror first so the dashboard and the models API expose that window as
-    // "loading" instead of "idle". The `Ready` mirror inserted below (same
-    // key) replaces it on success; a `Failed` mirror replaces it if the RPC
-    // fails (see below).
-    insert_starting_mirror(state, spec).await;
+    // completes (minutes for a large model). The load window is surfaced
+    // via the tamad's own wire row (plan-193 T4): the tamad reports the
+    // process as `starting` until its health poll passes, so no proxy-side
+    // placeholder mirror is needed anymore.
 
     let resp = match handle.load_model(&spec.request).await.with_context(|| {
         format!(
@@ -617,72 +587,14 @@ pub async fn load_spec_on_tamad(
         )
     }) {
         Ok(resp) => resp,
-        // A failed load must surface as `failed` in the dashboard / models
-        // API instead of silently going back to `idle`: leave a `Failed`
-        // mirror carrying the error, then re-return the original error so
-        // the caller still sees it.
-        Err(e) => {
-            state.registry.models.write().await.insert(
-                spec.backend_name.clone(),
-                crate::proxy::BackendState::Failed {
-                    model_name: spec.backend_name.clone(),
-                    backend: spec.backend.clone(),
-                    error: e.to_string(),
-                },
-            );
-            return Err(e);
-        }
+        // A failed load surfaces via the tamad's wire row (the failed
+        // process is filtered out of the live-eligible set); there is no
+        // mirror left to write. Re-return the original error.
+        Err(e) => return Err(e),
     };
 
-    // Desired state in the central DB (single-writer rule: only the proxy).
-    // Keyed by the canonical config key so the reconciler's join with the
-    // tamad process name (also the config key) is consistent.
-    crate::db::queries::set_desired(&state.db_pool, &spec.backend_name, &tamad_id)
-        .await
-        .with_context(|| format!("marking model \"{}\" as desired", spec.backend_name))?;
-
-    // Staging mirror: keep the forward path + management API working.
-    let port = resp
-        .endpoint_url
-        .rsplit_once(':')
-        .and_then(|(_, p)| p.parse::<i64>().ok())
-        .unwrap_or(0);
-    let mirror = crate::proxy::BackendState::Ready {
-        model_name: spec.backend_name.clone(),
-        backend: spec.backend.clone(),
-        backend_pid: resp.pid.max(0) as u32,
-        backend_url: resp.endpoint_url.clone(),
-        load_time: std::time::SystemTime::now(),
-        last_accessed: std::time::Instant::now(),
-        consecutive_failures: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-        failure_timestamp: None,
-        restart_count: 0,
-        is_docker: false,
-    };
-    state
-        .registry
-        .models
-        .write()
-        .await
-        .insert(spec.backend_name.clone(), mirror);
-
-    // Best-effort active_models row (existing convention).
-    let _ = crate::db::queries::insert_active_model(
-        &state.db_pool,
-        &spec.backend_name,
-        &spec.backend_name,
-        &spec.backend,
-        resp.pid.max(0) as i64,
-        port,
-        &resp.endpoint_url,
-    )
-    .await;
-
-    state
-        .metrics
-        .counters
-        .models_loaded
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    // plan-193 T5c: no staging mirror and no in-memory load counter — the
+    // tamad's live wire row (`ready`) is the source of truth for "loaded".
     tracing::info!(
         model = %spec.backend_name,
         provider = %provider.name,
@@ -712,11 +624,14 @@ pub async fn load_model_on_tamad(state: &ProxyState, model_name: &str) -> Result
 /// from the central DB installation row and the uvicorn process is spawned
 /// by the tamad.
 pub async fn load_tts_on_tamad(state: &ProxyState, backend_name: &str) -> Result<String> {
-    // Fast path — already loaded (mirror).
-    if let Some(state) = state.registry.models.read().await.get(backend_name) {
-        if state.is_ready() {
-            return Ok(backend_name.to_string());
-        }
+    // Fast path — already loaded (live row, plan-193 T4 flip).
+    let live = crate::proxy::live_rows(state.tamad_pool().as_ref()).await;
+    if live
+        .row(backend_name)
+        .map(|r| r.status == "ready")
+        .unwrap_or(false)
+    {
+        return Ok(backend_name.to_string());
     }
     let spec = build_tts_load_spec(state, backend_name).await?;
     load_spec_on_tamad(state, &spec, false).await
@@ -728,19 +643,21 @@ pub async fn load_compaction_on_tamad(state: &ProxyState) -> Result<()> {
     if !state.config.read().await.compaction.enabled {
         anyhow::bail!("Compaction is not enabled in config");
     }
-    // Fast path — already loaded (mirror).
-    if let Some(state) = state.registry.models.read().await.get("compaction") {
-        if state.is_ready() {
-            return Ok(());
-        }
+    // Fast path — already loaded (live row, plan-3 flip).
+    let live = crate::proxy::live_rows(state.tamad_pool().as_ref()).await;
+    if live
+        .row("compaction")
+        .map(|r| r.status == "ready")
+        .unwrap_or(false)
+    {
+        return Ok(());
     }
     let spec = build_compaction_load_spec(state).await?;
     load_spec_on_tamad(state, &spec, false).await?;
     Ok(())
 }
 
-/// Resolve a model name to its canonical config key (the mirror /
-/// `active_models` / `desired_models` join key). Falls back to the input when
+/// Resolve a model name to its canonical config key. Falls back to the
 /// the model isn't in the registry (e.g. an already-unloaded model),
 /// preserving the previous pass-through behaviour for the unload path.
 async fn canonical_model_key(state: &ProxyState, model_name: &str) -> String {
@@ -754,7 +671,7 @@ async fn canonical_model_key(state: &ProxyState, model_name: &str) -> String {
         .unwrap_or_else(|| model_name.to_string())
 }
 
-/// Unload a model on its provider's tamad and clear its desired state.
+/// Unload a model on its provider's tamad.
 ///
 /// Returns `true` when the tamad actually had the model loaded, `false`
 /// when the model was unknown to the tamad (idempotent unload).
@@ -775,14 +692,11 @@ pub async fn unload_model_on_tamad(state: &ProxyState, model_name: &str) -> Resu
             )
         })?;
 
-    // Normalise to the config key so the RPC target and the desired-state
-    // row line up with the load path and the reconciler's join.
+    // Normalise to the config key so the RPC target lines up with the load
+    // path and the host's rows.
     let key = canonical_model_key(state, model_name).await;
     match handle.unload_model(&key).await {
-        Ok(()) => {
-            let _ = crate::db::queries::clear_desired(&state.db_pool, &key).await;
-            Ok(true)
-        }
+        Ok(()) => Ok(true),
         Err(e) if is_not_loaded_err(&e) => Ok(false),
         Err(e) => Err(e).with_context(|| {
             format!(
