@@ -23,10 +23,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          version: '1.95.0'
+      - name: Install Rust (pinned via rustup; action version input ignored)
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup default 1.95.0
+          rustc --version
+          cargo --version
 
       - name: Format check
         run: cargo fmt --all --check
@@ -46,11 +48,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          version: '1.95.0'
-          targets: wasm32-unknown-unknown
+      - name: Install Rust (pinned via rustup; action version input ignored)
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup target add wasm32-unknown-unknown
+          rustup default 1.95.0
+          rustc --version
+          cargo --version
 
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.9
@@ -96,10 +100,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          version: '1.95.0'
+      - name: Install Rust (pinned via rustup; action version input ignored)
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal -c clippy
+          rustup default 1.95.0
+          rustc --version
+          cargo --version
 
       - name: Install system dependencies (libclang for TTS native deps, mold linker)
         run: |
@@ -145,10 +151,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          version: '1.95.0'
+      - name: Install Rust (pinned via rustup; action version input ignored)
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal -c clippy
+          rustup default 1.95.0
+          rustc --version
+          cargo --version
 
       - name: Install system dependencies (libclang for TTS native deps, mold linker)
         run: |
