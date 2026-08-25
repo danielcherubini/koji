@@ -261,6 +261,10 @@ Tests (6, in-file `#[cfg(test)]`):
   test setup, not "hosting host files"). T3/T4/T6 add asserts; T7 does not.
   Accept: gate + `cargo nextest run --package tamad`.
 
+- Cited audit (Round 2, Commit-B): pre-policy durability of the reaper — trip persists
+  `user_flagged` + `persisted_restart_count` in ONE write; a verified-healthy reset zeroes
+  the tally; the boot sweep refuses any row whose persisted tally has reached its cap.
+
 ## Task 3 — Wire extension (3 fields on ProcessInfo, 2 status values)
 
 Proto (append-only; the old is untouched):

@@ -5,8 +5,8 @@
 //! all 12 wire fields of [`LoadModelRequest`] (verbatim prost field names, so
 //! rehydrating the stored fields into a fresh `LoadModelRequest` is
 //! lossless) plus a small control block: `desired` (on-disk semantics =
-//! "keep"), `user_flagged`, `max_restarts` and the unix-millis
-//! `updated_at_ms`.
+//! "keep"), `user_flagged`, `max_restarts`, `persisted_restart_count`
+//! and the unix-millis `updated_at_ms`.
 //!
 //! Writes are atomic: serialize to a temp file IN THE SAME DIRECTORY and
 //! `rename` over `<key>.json` — a crash mid-write never leaves a partial
@@ -60,6 +60,20 @@ pub struct StoredProcess {
     pub user_flagged: bool,
     /// Remaining restart budget (defaults to [`DEFAULT_MAX_RESTARTS`]).
     pub max_restarts: u32,
+    /// Tally of restart round-trips persisted at budget trip (round-2
+    /// P1, pre-policy durability). The trip stamps the at-cap value
+    /// into this in the SAME write as the `user_flagged` mark; the
+    /// verified-healthy reload's success reset zeroes it. The boot
+    /// sweep refuses to play a row whose persisted tally is already
+    /// at or over `max_restarts` even if marking its row never
+    /// reached the disk — that is the ENOSPC crash-loop hole. 0 are
+    /// the state of the good body.
+    ///
+    /// `#[serde(default)]`: manifests prior to round-2 do not have this
+    /// field and must be loaded as 0 (not as a value to trip-persist),
+    /// and never as a value that must be trip-persisted.
+    #[serde(default)]
+    pub persisted_restart_count: u32,
     /// Last write, unix milliseconds.
     pub updated_at_ms: i64,
 }
@@ -183,17 +197,22 @@ impl Store {
     /// it over `<key>.json` — the rename is atomic, so a crash mid-write
     /// leaves the previous good manifest plus an orphan tmp, never a
     /// partial `<key>.json`. Re-insert into an existing key replaces the
-    /// request but preserves the key's `user_flagged` and
-    /// `max_restarts` — an operator's mark or an adjusted restart
-    /// budget must not be clobbered by a re-insert.
+    /// request but preserves the key's `user_flagged`, `max_restarts` and
+    /// `persisted_restart_count` — an operator's mark, an adjusted
+    /// restart budget, or the tally persisted at trip must not be
+    /// clobbered by a re-insert.
     pub fn insert(&self, key: &str, req: &LoadModelRequest, desired: bool) -> Result<()> {
         check_key(key)?;
 
-        let (user_flagged, max_restarts) = {
+        let (user_flagged, max_restarts, persisted_restart_count) = {
             let map = self.entries.read().unwrap_or_else(|p| p.into_inner());
             match map.get(key) {
-                Some(prev) => (prev.user_flagged, prev.max_restarts),
-                None => (false, DEFAULT_MAX_RESTARTS),
+                Some(prev) => (
+                    prev.user_flagged,
+                    prev.max_restarts,
+                    prev.persisted_restart_count,
+                ),
+                None => (false, DEFAULT_MAX_RESTARTS, 0),
             }
         };
 
@@ -213,6 +232,7 @@ impl Store {
             desired,
             user_flagged,
             max_restarts,
+            persisted_restart_count,
             updated_at_ms: now_unix_ms(),
         };
         self.write_stored(key, &stored)
@@ -239,6 +259,56 @@ impl Store {
             }
         };
         next.user_flagged = flagged;
+        next.updated_at_ms = now_unix_ms();
+        self.write_stored(key, &next)
+    }
+
+    /// Trip writes (round-2 P1, pre-policy durability): in one atomic
+    /// rewrite, persist the terminal `user_flagged` mark AND the
+    /// at-cap-value `persisted_restart_count` tally. One write — not two:
+    /// a partial persist could shatter the row into a shape (triage
+    /// tally reached but never mark flagged) that no boot sweep can
+    /// recognize, and a round of atomic rewrites that left nothing on
+    /// disk is a failure the call-site can escalate. No other field
+    /// is touched.
+    ///
+    /// Errors the same as [`set_user_flagged`](Self::set_user_flagged)
+    /// if no manifest exists under the key.
+    pub fn set_tripped(&self, key: &str, persisted_restart_count: u32) -> Result<()> {
+        check_key(key)?;
+        let mut next = {
+            let map = self.entries.read().unwrap_or_else(|p| p.into_inner());
+            match map.get(key) {
+                Some(sp) => sp.clone(),
+                None => {
+                    bail!("no stored process for key '{key}'")
+                }
+            }
+        };
+        next.user_flagged = true;
+        next.persisted_restart_count = persisted_restart_count;
+        next.updated_at_ms = now_unix_ms();
+        self.write_stored(key, &next)
+    }
+
+    /// Success reset (round-2 P1): zero the `persisted_restart_count`
+    /// tally after a resonant, verified-healthy respawn load. No
+    /// other field is touched.
+    ///
+    /// Errors the same as [`set_user_flagged`](Self::set_user_flagged)
+    /// if no manifest exists under the key.
+    pub fn zero_persisted_restart_count(&self, key: &str) -> Result<()> {
+        check_key(key)?;
+        let mut next = {
+            let map = self.entries.read().unwrap_or_else(|p| p.into_inner());
+            match map.get(key) {
+                Some(sp) => sp.clone(),
+                None => {
+                    bail!("no stored process for key '{key}'")
+                }
+            }
+        };
+        next.persisted_restart_count = 0;
         next.updated_at_ms = now_unix_ms();
         self.write_stored(key, &next)
     }
@@ -472,6 +542,10 @@ mod tests {
         assert!(got.desired, "desired recorded as given");
         assert!(!got.user_flagged, "user_flagged defaults to false");
         assert_eq!(got.max_restarts, DEFAULT_MAX_RESTARTS, "defaults to 10");
+        assert_eq!(
+            got.persisted_restart_count, 0,
+            "persisted restart count defaults to 0"
+        );
         assert!(got.updated_at_ms > 0, "updated_at_ms set");
     }
 
@@ -626,5 +700,102 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path()).unwrap();
         assert!(store.list().is_empty(), "fresh store lists nothing");
+    }
+
+    /// Back-compat (round-2 P1, pre-policy durability): a manifest
+    /// written by a binary WITHOUT the new control field — the shape
+    /// every row on disk has today — must load with
+    /// `persisted_restart_count = 0` ("nothing trip-persisted"),
+    /// NEVER as a trip-persisted at-cap.
+    #[test]
+    fn test_old_manifest_without_persisted_count_field_loads_as_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path()).unwrap();
+        store.insert("legacy-model", &full_req(), true).unwrap();
+        // Rewrite the manifest WITHOUT the field, the way an older
+        // binary's file comes off disk.
+        let path = dir.path().join("state").join("legacy-model.json");
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("manifest read"))
+                .expect("manifest must be json");
+        let mut aged = value;
+        assert!(
+            aged.as_object_mut()
+                .expect("manifest is an object")
+                .remove("persisted_restart_count")
+                .is_some(),
+            "the current writer must have persisted the field"
+        );
+        std::fs::write(path.clone(), serde_json::to_vec_pretty(&aged).unwrap())
+            .expect("age the manifest");
+
+        let reloaded = Store::new(dir.path()).unwrap();
+        let got = reloaded
+            .get("legacy-model")
+            .expect("the aged manifest must still load");
+        assert_eq!(
+            got.persisted_restart_count, 0,
+            "a missing field must load as 0 (nothing trip-persisted)"
+        );
+        assert_eq!(
+            got.max_restarts, DEFAULT_MAX_RESTARTS,
+            "other fields intact"
+        );
+        assert!(got.desired, "desired intact");
+    }
+
+    /// The trip write (round-2 P1) persists the mark AND the at-cap
+    /// tally in the SAME write (one read-update-write, not two), and
+    /// the verified-ready success reset zeroes the tally while
+    /// preserving every other field. Re-insert preserves both, as it
+    /// always did `user_flagged` and `max_restarts`.
+    #[test]
+    fn test_trip_write_persists_mark_and_count_one_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path()).unwrap();
+        store.insert("tripped-model", &full_req(), true).unwrap();
+
+        // The trip: terminal mark + at-cap tally, one write.
+        store.set_tripped("tripped-model", 3).unwrap();
+        // One write: a reload off DISK sees both, and they sit in
+        // the same manifest the mark landed in.
+        let reloaded = Store::new(dir.path()).unwrap();
+        let got = reloaded
+            .get("tripped-model")
+            .expect("manifest present after the trip write");
+        assert!(got.user_flagged, "the operator mark persisted");
+        assert_eq!(
+            got.persisted_restart_count, 3,
+            "the at-cap tally persisted in the trip's one write"
+        );
+        assert_eq!(got.max_restarts, DEFAULT_MAX_RESTARTS, "budget untouched");
+        assert!(got.desired, "desired untouched");
+
+        // The verified-ready success reset: zero the tally only.
+        store.zero_persisted_restart_count("tripped-model").unwrap();
+        let reloaded = Store::new(dir.path()).unwrap();
+        let got = reloaded
+            .get("tripped-model")
+            .expect("manifest present after the success reset");
+        assert_eq!(
+            got.persisted_restart_count, 0,
+            "the success reset zeros the persisted tally"
+        );
+        assert!(
+            got.user_flagged,
+            "the success reset does not clear the mark"
+        );
+
+        // Re-insert preserves the mark + tally like everything else.
+        store.insert("tripped-model", &full_req(), false).unwrap();
+        let got = store
+            .get("tripped-model")
+            .expect("manifest present after re-insert");
+        assert!(got.user_flagged, "re-insert preserves the operator mark");
+        assert_eq!(
+            got.persisted_restart_count, 0,
+            "re-insert preserves the persisted tally (both were kept by the same read)"
+        );
+        store.delete("tripped-model").expect("cleanup");
     }
 }

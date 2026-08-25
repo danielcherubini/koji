@@ -119,16 +119,20 @@ pub fn to_process_info(entry: &ProcessEntry, store_row: Option<&StoredProcess>) 
 /// recovery: `tama admin unload <key>` then `load`) and stop — that
 /// caller-side `error!` is the recovery contract; the state below has
 /// not changed beyond the table row write that preceded it.
-async fn persist_user_flagged(store: &Store, model_name: &str) -> Result<()> {
+async fn persist_tripped(
+    store: &Store,
+    model_name: &str,
+    persisted_restart_count: u32,
+) -> Result<()> {
     for attempt in 1..=3u32 {
-        match store.set_user_flagged(model_name, true) {
+        match store.set_tripped(model_name, persisted_restart_count) {
             Ok(()) => return Ok(()),
             Err(e) => {
                 warn!(
                     model = %model_name,
                     attempt,
                     error = %e,
-                    "persisting the budget trip user_flagged mark failed; retrying"
+                    "persisting the budget trip mark (user_flagged + tally) failed; retrying"
                 );
             }
         }
@@ -137,8 +141,22 @@ async fn persist_user_flagged(store: &Store, model_name: &str) -> Result<()> {
         }
     }
     Err(anyhow!(
-        "persisting user_flagged for '{model_name}' failed after all 3 attempts"
+        "persisting the trip mark (user_flagged + at-cap tally) for '{model_name}' failed after all 3 attempts"
     ))
+}
+
+/// Operator-facing refusal line for the boot sweep's at-cap, unmarked
+/// manifest (pre-policy durability, round-2 P1): the persisted trip tally
+/// reached the disk; its `user_flagged` mark did not (the ENOSPC-at-trip shape).
+/// The recovery sentence is word-for-word the trip's own fatal `error!`
+/// sentence — the sweep LOGS; the operator FIXES.
+fn at_cap_skip_note(model_name: &str, persisted: u32, cap: u32) -> String {
+    format!(
+        "persisted restart tally is at cap ({persisted} >= {cap}) — the boot sweep \
+         will NOT replay '{model_name}' (replaying would re-arm the crash loop); \
+         the manifest is left exactly as found. recovery = `tama admin unload \
+{model_name}` then `load` (clean re-arm)"
+    )
 }
 
 /// Tamad-side lifecycle over the process table.
@@ -379,6 +397,24 @@ impl TamadLifecycle {
                     &previous,
                 ))
                 .await;
+            // The durable half of the same reset (round-2 P1): a verified-ready
+            // ALSO zeroes the on-disk at-cap tally. Without it, the manifest
+            // would keep presenting as at-cap after a healthy outcome, and the
+            // next boot sweep would refuse to replay a perfectly fine key.
+            // `user_flagged` stays untouched — success never re-claims the
+            // operator's mark.
+            if verified {
+                if let Err(e) = self.store.zero_persisted_restart_count(&req.model_name) {
+                    warn!(
+                        model = %req.model_name,
+                        error = %e,
+                        "verified-ready success reset could not zero the persisted \
+                         at-cap tally; a later boot sweep may still treat this key \
+                         as at-cap — recovery = `tama admin unload <key>` then \
+                         `load` (clean re-arm)"
+                    );
+                }
+            }
         }
 
         Ok(LoadModelResponse {
@@ -588,6 +624,15 @@ impl TamadLifecycle {
                     &previous,
                 ))
                 .await;
+            if verified {
+                if let Err(e) = self.store.zero_persisted_restart_count(&req.model_name) {
+                    warn!(
+                        model = %req.model_name,
+                        error = %e,
+                        "verified container-ready success reset could not zero the \n                         persisted at-cap tally — recovery = `tama admin unload \n                         <key>` then `load` (clean re-arm)"
+                    );
+                }
+            }
         }
 
         Ok(LoadModelResponse {
@@ -785,15 +830,17 @@ impl TamadLifecycle {
                     max_restarts,
                     "restart budget exhausted; stopping auto-respawn for this key"
                 );
-                if let Err(e) = persist_user_flagged(&self.store, model_name).await {
+                if let Err(e) = persist_tripped(&self.store, model_name, max_restarts).await {
                     error!(
                         model = %model_name,
                         pid,
                         restart_count,
                         max_restarts,
                         error = %e,
-                        "budget tripped but the user_flagged mark could not be \
-                         persisted to disk — the budget may re-arm on daemon \n                         restart; recovery = `tama admin unload <key>` then \n                         `load` (clean re-arm)"
+                        "budget tripped but the trip persistence (the mark + the at-cap \
+                        tally) did not reach disk — the boot sweep 's at-cap refusal \
+                        still covers it; recovery = `tama admin unload <key>` then \
+                        `load` (clean re-arm)"
                     );
                 }
             }
@@ -838,6 +885,12 @@ impl TamadLifecycle {
     ///
     /// `--no-replay-desired` turns the whole sweep off (this is the
     /// only operational switch in the plan).
+    ///
+    /// Pre-policy durability addition (round-2 P1): a row whose PERSISTED
+    /// at-cap tally reached the disk but whose trip mark did not (the
+    /// ENOSPC-trip shape) is also refused — replaying it would re-arm the
+    /// crash loop. The log carries the recovery sentence (`tama admin
+    /// unload` then `load`); the manifest is not rewritten.
     pub async fn replay_desired(&self, enabled: bool) {
         if !enabled {
             info!("boot sweep: replay-desired is disabled (--no-replay-desired); nothing replayed");
@@ -853,6 +906,21 @@ impl TamadLifecycle {
             }
             if stored.user_flagged {
                 debug!(model = %key, "boot sweep: skipping user-flagged model");
+                continue;
+            }
+            // Pre-policy durability (round-2 P1): a manifest whose PERSISTED
+            // at-cap tally reached the disk but whose trip mark did not
+            // (the ENOSPC not-on-disk shape) is also refused — replaying it
+            // would re-arm the crash loop. The log carries the operator
+            // recovery sentence; the manifest stays byte-for-byte as found.
+            if stored.persisted_restart_count >= stored.max_restarts {
+                warn!(
+                    model = %key,
+                    persisted = stored.persisted_restart_count,
+                    cap = stored.max_restarts,
+                    "boot sweep: {}",
+                    at_cap_skip_note(&key, stored.persisted_restart_count, stored.max_restarts)
+                );
                 continue;
             }
             if self
@@ -1100,20 +1168,25 @@ mod tests {
     /// single atomic temp+rename — the helper must never loop, and the
     /// mark is persisted.
     #[tokio::test]
-    async fn test_persist_user_flagged_healthy_dir_ok_first_attempt() {
+    async fn test_persist_tripped_healthy_dir_ok_first_attempt() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path()).unwrap();
         store
             .insert("pf-ok", &make_req("pf-ok", "sh", &[], 0), true)
             .unwrap();
 
-        persist_user_flagged(&store, "pf-ok")
+        persist_tripped(&store, "pf-ok", 10)
             .await
             .expect("healthy dir: Ok on the 1st attempt (no retry swallows)");
 
         assert!(
             store.get("pf-ok").unwrap().user_flagged,
             "the mark is persisted (terminal state is on disk)"
+        );
+        assert_eq!(
+            store.get("pf-ok").unwrap().persisted_restart_count,
+            10,
+            "the at-cap tally is persisted in the same bounded write"
         );
     }
 
@@ -1124,7 +1197,7 @@ mod tests {
     /// contract; this unit pins the error-shaped path — the same shape
     /// that only its caller can convert into the fatal log.
     #[tokio::test]
-    async fn test_persist_user_flagged_gives_up_when_dir_gone() {
+    async fn test_persist_tripped_gives_up_when_dir_gone() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path()).unwrap();
         store
@@ -1135,7 +1208,7 @@ mod tests {
         // attempts are exhausted.
         std::fs::remove_dir_all(dir.path()).unwrap();
 
-        let err = persist_user_flagged(&store, "pf-gone")
+        let err = persist_tripped(&store, "pf-gone", 10)
             .await
             .expect_err("missing dir: every retry fails → the helper gives up with Err");
         assert!(
@@ -1877,6 +1950,18 @@ mod tests {
                 .expect("manifest present")
                 .user_flagged
         );
+        // The trip's tally went to disk WITH the mark — one write:
+        // the boot sweep's at-cap refusal (round-2 P1) reads exactly
+        // this pairing, so a count without a flag (or vice versa)
+        // can never be half-persisted.
+        assert_eq!(
+            reloaded
+                .get(&req.model_name)
+                .expect("manifest present")
+                .persisted_restart_count,
+            2,
+            "the at-cap tally persisted with the mark (one write)"
+        );
         // And it STOPS: row + dead process stay put a little while.
         let dead_pid = e.pid;
         tokio::time::sleep(Duration::from_millis(600)).await;
@@ -1979,6 +2064,18 @@ mod tests {
         assert!(e.window_starts.is_empty(), "success clears the window");
         assert!(!e.user_flagged, "flag untouched (it was never set)");
         assert!(crate::process::is_process_alive(e.pid), "respawn is live");
+        // The verified-healthy respawn also zeroed the ON-DISK tally
+        // (round-2 P1): without it, the manifest would still present
+        // as at-cap and the next boot sweep would refuse to replay a
+        // perfectly healthy key.
+        assert_eq!(
+            lc.store
+                .get(&crashing.model_name)
+                .unwrap()
+                .persisted_restart_count,
+            0,
+            "the verified-ready reset zeroed the persisted tally"
+        );
         lc.unload(&crashing.model_name).await.expect("cleanup");
     }
 
@@ -2043,6 +2140,77 @@ mod tests {
         assert_eq!(lc.store.list().len(), 4, "store untouched by the sweep");
         lc.unload("sw-a").await.expect("cleanup a");
         lc.unload("sw-b").await.expect("cleanup b");
+    }
+
+    /// (round-2 P1, pre-policy durability) A trip-persisted row whose
+    /// MARK never reached disk (its tally write succeeded, its mark
+    /// write did not — the C3-warned-not-on-disk form): the boot
+    /// sweep must NOT replay it (replay re-arms the crash loop),
+    /// must leave the manifest the way it found it (tally at cap,
+    /// flag absent), and must hand the operator the recovery
+    /// sentence the trip trip would have — the sweep LOGS; the
+    /// operator FIXES.
+    #[tokio::test]
+    async fn test_boot_sweep_refuses_at_cap_persisted_unflagged() {
+        let (state, _dir) = test_state();
+        let table = Arc::new(ProcessTable::default());
+        let m = make_req("cap-unflagged", "sh", &["-c", "sleep 40"], 0);
+        state
+            .store
+            .insert(&m.model_name, &m, true)
+            .expect("seed desired row");
+        let _rekeyed = rekey_stored_max(&state, &m.model_name, 2);
+        // Witness the trip-time ENOSPC (the C3 warning that the mark
+        // could not reach disk): tally at cap, mark absent.
+        let path = state
+            .data_dir
+            .join("state")
+            .join(format!("{}.json", m.model_name));
+        let mut sp: crate::state::store::StoredProcess =
+            serde_json::from_slice(&std::fs::read(&path).expect("manifest read"))
+                .expect("manifest parse");
+        assert_eq!(sp.max_restarts, 2, "the re-keyed budget must be in place");
+        sp.persisted_restart_count = 2; // == max_restarts
+        sp.user_flagged = false; // the flag did not reach disk
+        std::fs::write(
+            &path,
+            serde_json::to_vec_pretty(&sp).expect("manifest serialize"),
+        )
+        .expect("manifest write");
+        // A dead daemon means its in-memory store died with it — the store at boot
+        // is re-read FRESH from the disk the crash left (the partial write
+        // survives; the in-memory mirror of whatever wrote it does not).
+        let store = Arc::new(
+            crate::state::store::Store::new(&state.data_dir)
+                .expect("boot-fresh store reads the crashed write"),
+        );
+        let lc = TamadLifecycle::new(Arc::clone(&table), store, Arc::clone(&state));
+
+        lc.replay_desired(true).await;
+
+        assert!(
+            table.list().await.is_empty(),
+            "a cap-tally + unflagged row must not be replayed — replay = the crash loop re-armed"
+        );
+        // The manifest is exactly capped as found: the sweep REFUSED
+        // the replay; it did not rewrite.
+        let got = lc
+            .store
+            .get(&m.model_name)
+            .expect("manifest present in store");
+        assert_eq!(got.persisted_restart_count, 2, "the tally stays at cap");
+        assert!(!got.user_flagged, "the flag stays un-persisted");
+        // The operator line carries the trip's recovery sentence.
+        let note = at_cap_skip_note(&m.model_name, 2, 2);
+        assert!(
+            note.contains("will NOT replay"),
+            "the refusal is explicit: {note}"
+        );
+        assert!(
+            note.contains("recovery = `tama admin unload ")
+                && note.contains("then `load` (clean re-arm)"),
+            "the recovery sentence = the trip's: {note}"
+        );
     }
 
     /// (no-op) with replay disabled, the sweep does nothing at all:
