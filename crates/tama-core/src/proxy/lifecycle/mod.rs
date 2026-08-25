@@ -44,13 +44,14 @@ impl std::error::Error for BudgetExhausted {}
 /// spent, so the tamad will refuse to respawn it for ~60s. The body and
 /// `retry-after` header are part of the wire contract.
 pub fn budget_exhausted_response() -> axum::response::Response {
-    axum::response::Response::builder()
-        .status(axum::http::StatusCode::SERVICE_UNAVAILABLE)
-        .header("retry-after", "60")
-        .body(axum::body::Body::from(
-            "the model exhausted its restarts; retry in 60 seconds",
-        ))
-        .unwrap()
+    // Composed straight from the (status, retry-after, body) tuple via
+    // `IntoResponse` — no builder/mapped-Result chain, and the fn is
+    // built without panicking on an intermediate `Result`.
+    axum::response::IntoResponse::into_response((
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        [(axum::http::header::RETRY_AFTER, "60")],
+        "the model exhausted its restarts; retry in 60 seconds",
+    ))
 }
 
 /// The HTTP-layer transformation for a typed mark: `Some(503)` when
