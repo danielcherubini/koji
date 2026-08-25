@@ -3,15 +3,9 @@
 -- This is the other shadow table: the tally the proxy kept of its own
 -- model roster. Same shape as the cycle-1 migration
 -- (`000000000004_drop_desired_models.sql`): probe FIRST, then drop —
--- except the probe is DIAGNOSTIC ONLY here too (count, non-zero →
--- RAISE NOTICE with the count rendered; it never blocks or defers
--- anything).
---
--- The DROP is UNCONDITIONAL: a sqlx migration row that raises a notice
--- and RETURNs is still marked `success`, so a "log + skip, deferred to
--- the next cycle" promise could NEVER be retried — a one-shot skip
--- would leave the table alive forever. The zero-rows invariant is
--- asserted in logs (the NOTICE), not in control flow.
+-- except the probe here is now the GATE, guided + RETRYABLE
+-- (round-2 P1): non-zero count → RAISE EXCEPTION (failed migration →
+-- sqlx retries it on every subsequent boot); zero count → drop.
 --
 -- The no-steering premise holds by construction: only pre-plan-193
 -- `tama` proxies ever steered this table (T5b/T7 removed the
@@ -27,8 +21,8 @@ DECLARE
 BEGIN
     SELECT count(*) INTO n FROM active_models;
     IF n > 0 THEN
-        RAISE NOTICE
-            'plan 193 T7 NOTICE: active_models has % row(s) at drop time — dropping anyway; if you see this, a pre-193 proxy may still be steering — re-verify rollout-step ordering', n;
+        RAISE EXCEPTION
+            'active_models still has % row(s) — these lifecycle tables must be empty before plan-193 T7 drop (a pre-plan-193 proxy may still own steering state in them). Verify no pre-plan-193 proxy exists, then DELETE the remaining rows; sqlx retries this migration on the next proxy boot.', n;
     END IF;
     DROP TABLE active_models;
 END

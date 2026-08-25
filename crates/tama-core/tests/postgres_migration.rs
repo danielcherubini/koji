@@ -16,8 +16,11 @@ const V49_FIXTURE: &str = include_str!("fixtures/v49_schema.sql");
 /// proxy's last v49-era model-state table dies with it (the tamad's wire rows
 /// are the source of truth now). `desired_models` (post-v49, added by
 /// `00000000000002`) is dropped by `00000000000004`;
-/// `active_models` (v49-fixture table) by the unconditional drop
-/// `00000000000005`. The zero-rows probe is diagnostic (NOTICE-only). The cross-checks below assert their
+/// `active_models` (v49-fixture table) by the same GATE (round-2 P1):
+/// `00000000000005` (count>0 → RAISE EXCEPTION; drops only on the zero
+/// row assertion). A failed one is UNRECORDED → sqlx retries it at
+/// every boot.
+/// The cross-checks below assert their
 /// ABSENCE on a fresh schema — the pin that the shadow is dead.
 const DROPPED_SHADOW_TABLES: &[&str] = &["desired_models", "active_models"];
 
@@ -90,6 +93,56 @@ async fn test_run_migrations_ok_re_run_is_noop() {
     );
 
     let _ = guard.finish().await;
+}
+
+/// Shape-pin: the two T7 shadow drops must be a GATE — never a blind
+/// drop, never a one-shot skip. A skipped migration whose row was marked
+/// `success` can never be re-executed (the missing-skip cannot retry,
+/// it cannot report-retry), while a drop without the gate would delete
+/// the live steering mid-mixed-rollout (the pre-plan-193 proxies still
+/// steer the shadow tables). The intended operator shape: non-zero row
+/// count → `RAISE EXCEPTION` (the failed migration is NOT recorded
+/// applied → re-attempted at every subsequent boot); DROP only on the
+/// zero-row assertion.
+#[test]
+fn test_drop_migrations_are_guarded_shape() {
+    // Read the drop migrations from the migrations directory: pinning the
+    // zero-padded 14-digit filenames in an `include_str!` invites a shift-a-digit
+    // typo that breaks compilation, while the guard is what the directory
+    // contents themselves must carry.
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+    let mut names: Vec<String> = std::fs::read_dir(&dir)
+        .expect("read migrations dir")
+        .map(|e| {
+            e.expect("dir entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .filter(|n| n.ends_with("drop_desired_models.sql") || n.ends_with("drop_active_models.sql"))
+        .collect();
+    names.sort();
+    assert_eq!(
+        names.len(),
+        2,
+        "exactly the two T7 shadow-drop migrations expected in {dir:?}"
+    );
+
+    for name in &names {
+        let sql = std::fs::read_to_string(dir.join(name)).expect("read migration sql");
+        assert!(
+            sql.contains("RAISE EXCEPTION"),
+            "the pre-drop probe must GATE with RAISE EXCEPTION (non-zero count -> the migration fails, unrecorded -> retried at every boot)"
+        );
+        assert!(
+            sql.contains("count(*)"),
+            "the gate must assert zero-rows from the table itself"
+        );
+        assert!(
+            !sql.contains("RETURN"),
+            "no one-shot `RETURN` may survive (a skipped row marked success is never re-executed)"
+        );
+    }
 }
 
 #[tokio::test]
