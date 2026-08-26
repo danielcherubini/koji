@@ -41,8 +41,8 @@ test: build-frontend-dev
 	cargo test --package tama --features ssr
 
 # Remove the shared Postgres test container (tama-test-pg) and orphaned
-testcontainers. Tests share ONE container on 127.0.0.1:5433 — point tests at
-your own Postgres instead with TAMA_TEST_PG_DSN (TAMA_TEST_PG_PORT overrides the port).
+# testcontainers. Tests share ONE container on 127.0.0.1:5433 — point tests at
+# your own Postgres instead with TAMA_TEST_PG_DSN (TAMA_TEST_PG_PORT overrides the port).
 docker-clean:
 	docker ps -aq --filter "name=tama-test-pg" | xargs -r docker rm -f
 	docker system prune -f

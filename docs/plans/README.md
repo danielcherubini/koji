@@ -12,11 +12,17 @@ Plans for features, refactors, and bug fixes in the Tama project.
 
 ## Quick Stats
 
-- **Total Plans**: 100
-- **Backlog**: 0
+- **Total Plans**: 101
+- **Backlog**: 1
 - **Completed**: 98 ✅
 
 ---
+
+## Backlog
+
+| # | Plan | Status |
+|---|------|--------|
+| 194 | [Models Page: Live State, Filter Toolbar, Pull-Host UX](plan-194-models-live-state-filters-pull-host.md) | Backlog |
 
 > **Note:** The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan.
 

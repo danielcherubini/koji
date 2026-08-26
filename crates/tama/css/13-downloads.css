@@ -178,3 +178,11 @@
   font-size: 0.9375rem;
 }
 
+
+/* Pull wizard: "set a pull host" hint link under the missing-host error */
+.pull-host-hint {
+  font-size: 0.85rem;
+  color: var(--accent-blue);
+  display: inline-block;
+  margin-top: 0.25rem;
+}

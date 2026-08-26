@@ -51,8 +51,8 @@ pub struct ProxyConfigPatch {
     pub authenticator_skip_paths: Option<Vec<String>>,
     pub oauth2: Option<OAuth2ConfigPatch>,
     pub api_keys_enabled: Option<bool>,
-    /// Tamad pull backend (plan-191 Task 6). `None` = unchanged;
-    /// `Some(None)` = clear (local pulls); `Some(Some(id))` = set.
+    /// Tamad pull host (plan-191 Task 6). `None` = unchanged;
+    /// `Some(None)` = clear (no pull host set); `Some(Some(id))` = set.
     #[serde(default)]
     pub pull_backend: Option<Option<String>>,
 }

@@ -1,4 +1,6 @@
-use crate::components::pull_wizard::{format_bytes, JobProgress};
+use crate::components::pull_wizard::{
+    format_bytes, is_missing_pull_host, pull_host_hint_link, JobProgress,
+};
 use leptos::prelude::*;
 
 #[component]
@@ -46,6 +48,15 @@ pub fn PullStep(
                             <span class="text-mono text-sm">{job.filename.clone()}</span>
                             <span class=status_class>{status_text}</span>
                         </div>
+                        {if job.status == "failed"
+                            && job.error.as_deref().is_some_and(is_missing_pull_host)
+                        {
+                            Some(view! {
+                                {pull_host_hint_link()}
+                            })
+                        } else {
+                            None
+                        }}
                         <div class="progress-bar">
                             {if let Some(pct) = progress_pct {
                                 view! {

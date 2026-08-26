@@ -21,6 +21,10 @@ pub fn RepoInput(
                 <span>{e}</span>
             </div>
         })}
+        {move || error_msg
+            .get()
+            .filter(|e| is_missing_pull_host(e))
+            .map(|_| pull_host_hint_link())}
 
         <div class="form-group">
             <label class="form-label" for="repo-id">"Repo ID"</label>

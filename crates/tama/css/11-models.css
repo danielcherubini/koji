@@ -169,3 +169,78 @@
   white-space: nowrap;
 }
 
+/* Filter toolbar — search box, state pills, right-aligned sort/group selects
+   (composes with the existing .models-toolbar container above) */
+.models-filter-bar {
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.75rem 0;
+}
+
+.filter-search {
+  width: auto;
+  flex: 1 1 200px;
+  max-width: 280px;
+}
+
+.state-pill {
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  padding: 0.25rem 0.75rem;
+  font-family: var(--font-body);
+  font-size: 0.8rem;
+  font-weight: 500;
+  line-height: 1.3;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+
+.state-pill:hover {
+  border-color: var(--border-hover);
+  color: var(--text-primary);
+}
+
+.state-pill--active {
+  background-color: var(--accent-blue);
+  border-color: var(--accent-blue);
+  color: #fff;
+}
+
+.state-pill--active:hover {
+  color: #fff;
+}
+
+/* Right-aligned sort/group selects */
+.filter-controls {
+  display: flex;
+  gap: 0.5rem;
+  margin-left: auto;
+}
+
+.filter-select {
+  max-width: 10rem;
+}
+
+/* Model group headers (group-by mode) */
+.group-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 1rem 0 0.5rem;
+  font-size: 0.8rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.group-header:first-child {
+  margin-top: 0;
+}
+
+.group-count {
+  color: var(--text-muted);
+  font-size: 0.85em;
+}
+

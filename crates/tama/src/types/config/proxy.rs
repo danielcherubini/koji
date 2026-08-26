@@ -78,7 +78,8 @@ pub struct ProxyConfig {
     #[serde(default)]
     pub api_keys_enabled: bool,
     /// Registered tamad connection id that executes queued model pulls
-    /// (plan-191 Task 6). `None` → the proxy downloads locally.
+    /// (plan-191 Task 6). `None` → pulls fail with the explicit
+    /// "no pull host configured" error; no local-download fallback (ADR-0010).
     #[serde(default)]
     pub pull_backend: Option<String>,
 }

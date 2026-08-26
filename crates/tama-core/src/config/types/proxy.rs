@@ -124,10 +124,12 @@ pub struct ProxyConfig {
     #[serde(default)]
     pub api_keys_enabled: bool,
     /// Registered tamad connection id that executes queued model pulls
-    /// (plan-191 Task 6). When set, `start_pull_from_queue` dispatches the
-    /// download to that tamad (the file lands on the tamad's disk) and the
-    /// proxy relays job events into its existing pull progress/SSE
-    /// tracking. `None` (default) → the proxy downloads locally.
+    /// (plan-191 Task 6). The download ALWAYS runs on that tamad — the file
+    /// lands on the tamad's disk — and the proxy relays job events into its
+    /// pull queue/SSE tracking. When `None` (default), pulls fail with the
+    /// explicit "no pull host configured" error; there is no local-download
+    /// fallback (removed with ADR-0010 — "the proxy spawns nothing").
+    /// The value must be a registered tamad id (FK to `tamad_registry`).
     #[serde(default)]
     pub pull_backend: Option<String>,
 }

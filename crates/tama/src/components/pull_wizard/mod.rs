@@ -1,4 +1,5 @@
 use leptos::prelude::*;
+use leptos_router::components::A;
 use serde::{Deserialize, Serialize};
 
 // ── Re-exports from core_shared (shared source on both ssr and csr) ─────────
@@ -119,6 +120,21 @@ pub fn resolve_branch(hf_format: Option<&str>, has_gguf_files: bool) -> Option<W
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// True for the stable "no pull host configured" error prefix emitted
+/// by the pull start paths (tama-core `pull/start.rs` and `state/repo_pull.rs`,
+/// ADR-0010 fail-loud). Case-sensitive: the prefix is exact.
+pub(crate) fn is_missing_pull_host(msg: &str) -> bool {
+    msg.starts_with("no pull host configured")
+}
+
+/// The link rendered under the "no pull host configured" error in the
+/// pull wizard, pointing to the Config page where the pull host is set.
+pub(crate) fn pull_host_hint_link() -> impl IntoView {
+    view! {
+        <A href="/tama/config" attr:class="pull-host-hint">"Set a pull host in Config → Proxy → Tuning"</A>
+    }
+}
 
 pub fn format_bytes(bytes: u64) -> String {
     if bytes >= 1_073_741_824 {
@@ -423,6 +439,24 @@ pub mod components;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The byte-identical, full "no pull host configured" message emitted by
+    /// the pull start paths (tama-core `pull/start.rs` and
+    /// `state/repo_pull.rs`, ADR-0010 fail-loud) matches the helper.
+    #[test]
+    fn test_is_missing_pull_host_exact() {
+        let msg = "no pull host configured: set proxy.pull_backend (the proxy itself never downloads — ADR-0010)";
+        assert!(is_missing_pull_host(msg));
+    }
+
+    /// Unrelated errors, the empty string, and a capitalized variant do
+    /// NOT match — the prefix is exact and case-sensitive.
+    #[test]
+    fn test_is_missing_pull_host_other_errors_no_match() {
+        assert!(!is_missing_pull_host("HTTP 502"));
+        assert!(!is_missing_pull_host(""));
+        assert!(!is_missing_pull_host("No pull host configured"));
+    }
 
     /// Consecutive failed polls below the threshold → keep polling
     /// (a transient 404/503 blip must not kill a live download).

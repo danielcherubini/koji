@@ -51,7 +51,8 @@ pub struct ProxyRecord {
     pub oauth2_session_ttl_secs: u64,
     pub api_keys_enabled: bool,
     /// Registered tamad connection id that executes queued model pulls
-    /// (plan-191 Task 6). NULL → proxy downloads locally.
+    /// (plan-191 Task 6). `NULL` → no pull host set; pulls fail with the
+    /// explicit "no pull host configured" error (ADR-0010).
     pub pull_backend: Option<String>,
 }
 

@@ -56,6 +56,10 @@ _Avoid_: Model status, model state machine
 The process of downloading a model from HuggingFace — includes API lookup, parallel chunked download, GGUF metadata parsing, and DB insertion. The download executes on the tamad's host (it's the tamad's disk); the proxy tracks it in the download queue with real-time SSE progress. Applies to GGUF files only.
 _Avoid_: Download, fetch
 
+**Pull host**:
+The tamad named by `proxy.pull_backend` (a registered tamad id, FK-enforced) that executes model pulls on its own disk. The proxy never downloads — it dispatches to the pull host and relays progress; with no pull host configured, pulls fail with the explicit "no pull host configured" error (ADR-0010).
+_Avoid_: pull backend (that's the config field name, not the host), download host
+
 **Repo pull**:
 A whole-repository download of a safetensors (transformers) model, executed by the *tamad* shelling out to the `hf` CLI (`hf download <repo> --local-dir …`) as a tracked subprocess; the proxy relays progress/cancel (no per-file selection, verification, or `model_files` rows — see ADR-0007). Wizard-scoped, polled for progress.
 _Avoid_: hf pull, CLI download, whole-repo pull
