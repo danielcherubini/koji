@@ -54,11 +54,18 @@ cargo clippy --workspace --all-targets -- -D warnings
 # 3. Clippy — tama SSR build (separate target)
 cargo clippy --package tama --features ssr --all-targets -- -D warnings
 
-# 4. Tests
+# 4. Compile check — tama WASM (csr) build. Compiles code gated OUT of both
+#    clippy gates above (`#[cfg(not(feature = "ssr"))]` in crates/tama — e.g.
+#    gloo_timers/web_sys page schedulers); mirrors the CI `frontend` job.
+cargo check --package tama --no-default-features --features csr
+
+# 5. Tests
 cargo nextest run --workspace
 ```
 
 > **Critical:** Always use `--all-targets` with clippy — without it, test-code lint errors are silently skipped locally but will fail CI.
+
+> **Critical:** Never skip the csr check — the two clippy gates compile the ssr/native variant only, so `#[cfg(not(feature = "ssr"))]` code in `crates/tama` is type-unchecked by them (plan-194 post-merge hotfix: an expression closure passed to `on_cleanup` compiled under ssr but broke the wasm build because gloo-timers 0.3's `cancel()` returns a `ScopedClosure`, not `()`).
 
 ### Targeted Testing (during development)
 

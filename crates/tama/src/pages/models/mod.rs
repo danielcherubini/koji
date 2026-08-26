@@ -318,7 +318,17 @@ pub fn Models() -> impl IntoView {
                 refresh_i.update(|n| *n += 1);
             }
         });
-        on_cleanup(move || interval.cancel());
+        // Keep the JS interval alive (forget the handle), then release it
+        // when the page unmounts. `on_cleanup` must capture `Send + Sync`
+        // state, and gloo's `Interval` is neither (it holds a raw, non-
+        // `Send` `wasm_bindgen::Closure`) — so capture only the numeric
+        // interval id and clear it via `window.clearInterval`.
+        let timer_id = interval.forget().as_f64().unwrap_or(0.0) as i32;
+        on_cleanup(move || {
+            if let Some(window) = web_sys::window() {
+                window.clear_interval_with_handle(timer_id);
+            }
+        });
     }
 
     let load_action: Action<String, (), LocalStorage> = Action::new_unsync(move |id: &String| {
