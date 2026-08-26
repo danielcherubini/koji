@@ -13,16 +13,10 @@ Plans for features, refactors, and bug fixes in the Tama project.
 ## Quick Stats
 
 - **Total Plans**: 100
-- **Backlog**: 1
-- **Completed**: 97 ✅
+- **Backlog**: 0
+- **Completed**: 98 ✅
 
 ---
-
-## Backlog
-
-| # | Plan | Status |
-|---|------|--------|
-| 194 | [Detached Health Gate](plan-194-detached-health-gate.md) | Backlog |
 
 > **Note:** The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan.
 
@@ -32,6 +26,7 @@ Plans for features, refactors, and bug fixes in the Tama project.
 
 | # | Plan | Status |
 |---|------|--------|
+| 194 | [Detached Health Gate](done/plan-194-detached-health-gate.md) | ✅ COMPLETED (squash `221bbb6e`) |
 | 193 | [Tamad is the Source of Truth for Lifecycle](done/plan-193-tamad-lifecycle-truth.md) (ADR-0011) | ✅ COMPLETED (PR #177) |
 | 192 | [Gateway Dashboard Refactor & Telemetry](done/plan-192-gateway-dashboard-telemetry.md) | ✅ COMPLETED (squash `28f12ad4`) |
 | 191 | [Tamad Host Runtime Split](done/plan-191-tamad-host-runtime.md) | ✅ COMPLETED (squash `05f1694f`) |
