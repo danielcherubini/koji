@@ -12,8 +12,8 @@ Plans for features, refactors, and bug fixes in the Tama project.
 
 ## Quick Stats
 
-- **Total Plans**: 99
-- **Backlog**: 0
+- **Total Plans**: 100
+- **Backlog**: 1
 - **Completed**: 97 ✅
 
 ---
@@ -22,7 +22,7 @@ Plans for features, refactors, and bug fixes in the Tama project.
 
 | # | Plan | Status |
 |---|------|--------|
-| — | *No plans currently in backlog* | |
+| 194 | [vLLM Spec-Decode Telemetry + Consistent tok/s Formatting](plan-194-vllm-spec-telemetry.md) (ADR-0012) | Backlog |
 
 > **Note:** The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan.
 

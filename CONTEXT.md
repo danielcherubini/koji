@@ -68,6 +68,10 @@ _Avoid_: safetensors model (ambiguous — could mean a single file), HF model, n
 Technique to accelerate inference by having the main model predict multiple tokens at once using a draft model (MTP or ngram). Configured per-model via checkboxes and parameters in the model editor.
 _Avoid_: Draft decoding, speculative sampling
 
+**Speculative acceptance rate**:
+Fraction of drafted tokens accepted by the main model, as a percentage: accepted ÷ drafted × 100 — the same "Avg Draft acceptance rate" vLLM logs. Measured per tamad-scraped 10s window from the backend's Prometheus counters (`vllm:spec_decode_num_accepted_tokens_total` ÷ `vllm:spec_decode_num_draft_tokens_total`); for llama.cpp, `draft_n_accepted ÷ draft_n` from per-response timings (ADR-0012).
+_Avoid_: Spec acceptance ratio, draft hit rate, acceptance length (that's 1 + accepted ÷ draft steps)
+
 **API Key**:
 A named, scoped credential stored as a SHA-256 hash in the DB. Format: `tama_<32 chars base62>`. Scopes: `inference`, `management:read`, `management:write`. The plaintext key is returned once on creation and never retrievable.
 _Avoid_: API token, secret key, bearer key
