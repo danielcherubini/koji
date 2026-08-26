@@ -162,9 +162,12 @@ pub async fn handle_tama_load_model(
 ///
 /// plan-191 Task 5 / plan-193 T7: operates on the model's ***desired***
 /// wire state (the tamad row's `desired` flag), not on a local process.
-/// Cancelling issues `UnloadModel` to the provider's tamad. If the load
-/// RPC is still in flight, the tamad's host-side store handles the
-/// post-load unload (loads are short, so a cancel is best-effort).
+/// Cancelling issues `UnloadModel` to the provider's tamad, which
+/// deliberately TEARS DOWN the in-flight load: it removes the tamad-side
+/// row and kills the spawning process/container. Only CALLER abandonment
+/// (a dropped connection or a dropped future) is non-destructive — the
+/// tamad-side health gate is detached from the RPC, so an abandoned waiter
+/// leaves the gate free to settle the row on its own.
 pub async fn handle_tama_cancel_load(
     state: State<Arc<ProxyState>>,
     Path(model_id): Path<String>,

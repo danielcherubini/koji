@@ -83,8 +83,11 @@ pub fn configure_process_group(cmd: &mut tokio::process::Command) {
 /// Negative PID in kill() targets the process group.
 pub async fn kill_process_group(pid: u32) -> Result<()> {
     // SAFETY: libc::kill with a negative PID targets the entire process group.
-    // The PID was obtained from a successfully spawned child process and is guaranteed > 0.
-    // SIGTERM is a standard POSIX signal. The call cannot access invalid memory.
+    // CALLER CONTRACT: `pid` must be > 0 and must actually lead the backend's
+    // group (obtained from a successfully spawned child, or validated from
+    // container inspect). A pid of 0 would make kill(-0) == kill(0) signal
+    // THIS daemon's own process group. SIGTERM is a standard POSIX signal;
+    // the call cannot access invalid memory.
     let ret = unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGTERM) };
     if ret != 0 {
         let err = std::io::Error::last_os_error();
@@ -103,8 +106,10 @@ pub async fn kill_process_group(pid: u32) -> Result<()> {
 /// Send SIGKILL to an entire process group.
 pub async fn force_kill_process_group(pid: u32) -> Result<()> {
     // SAFETY: libc::kill with a negative PID targets the entire process group.
-    // The PID was obtained from a successfully spawned child process and is guaranteed > 0.
-    // SIGKILL is a standard POSIX signal. The call cannot access invalid memory.
+    // CALLER CONTRACT: same as `kill_process_group` — pid must be > 0 and
+    // must lead the backend's own group; pid == 0 would signal tamad's own
+    // process group. SIGKILL is a standard POSIX signal; the call cannot
+    // access invalid memory.
     let ret = unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) };
     if ret != 0 {
         let err = std::io::Error::last_os_error();

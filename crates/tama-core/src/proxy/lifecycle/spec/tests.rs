@@ -9,7 +9,7 @@ use crate::gpu::GpuVariant;
 use crate::proxy::lifecycle::spec::*;
 use crate::proxy::ProxyState;
 use crate::tamad::pool::test_support::{grpc_conn, start_stub, stub_default};
-use crate::tamad::{GpuInfo, LoadModelRequest};
+use crate::tamad::{GpuInfo, LoadModelRequest, ProcessInfo};
 use crate::testing::postgres::with_schema;
 
 fn test_config(models_dir: &std::path::Path) -> crate::config::Config {
@@ -698,6 +698,22 @@ async fn setup_stub_load(
     if let Some(delay) = load_delay {
         stub.load_delays.insert("test-model".to_string(), delay);
     }
+    // plan-194 Task 3: `load_spec_on_tamad` now waits on the live wire
+    // rows after a successful LoadModel RPC, so the stub must publish a
+    // ready `test-model` process row (its stats stream clones this into
+    // every frame) or the waiter burns the whole startup deadline on
+    // perpetual None.
+    stub.stats_processes = vec![ProcessInfo {
+        model_name: "test-model".to_string(),
+        provider_name: "llama_cpp".to_string(),
+        pid: 100,
+        alive: true,
+        endpoint_url: "http://127.0.0.1:8080".to_string(),
+        status: "ready".to_string(),
+        desired: false,
+        restart_count: 0,
+        max_restarts: 0,
+    }];
     let addr = start_stub(stub).await;
     let url = format!("grpc://{addr}");
 
@@ -754,6 +770,190 @@ async fn test_load_spec_on_tamad_load_succeeds() {
         .expect("load should succeed");
     assert_eq!(key, "test-model");
     let _ = guard.finish().await;
+}
+
+// ── wait_for_terminal_row (plan-194 Task 3) ──
+
+/// Sequence-driven status provider: pops one entry per poll; the last
+/// entry repeats once the list is exhausted.
+fn provider_from(seq: Vec<RowStatus>) -> impl FnMut() -> std::future::Ready<RowStatus> {
+    let mut rest = seq.into_iter();
+    let mut last: Option<RowStatus> = None;
+    move || {
+        let next = match rest.next() {
+            Some(s) => {
+                last = Some(s.clone());
+                s
+            }
+            // Exhausted sequences keep repeating their final value forever.
+            None => last.clone().expect("non-empty provider sequence"),
+        };
+        std::future::ready(next)
+    }
+}
+
+/// Ready on the first poll → Ok.
+#[tokio::test]
+async fn test_wait_for_terminal_row_ready_first_poll() {
+    let status_of = provider_from(vec![RowStatus::Present("ready".to_string())]);
+    wait_for_terminal_row(
+        status_of,
+        Duration::from_millis(10),
+        Duration::from_secs(5),
+        3,
+    )
+    .await
+    .expect("ready on first poll must succeed");
+}
+
+/// Row visibility lag before the first sighting is tolerated: absence
+/// before any sighting never counts toward the gone-threshold.
+#[tokio::test]
+async fn test_wait_for_terminal_row_tolerates_absent_before_first_sighting() {
+    let status_of = provider_from(vec![
+        RowStatus::Absent,
+        RowStatus::NoFrame,
+        RowStatus::Present("ready".to_string()),
+    ]);
+    wait_for_terminal_row(
+        status_of,
+        Duration::from_millis(10),
+        Duration::from_secs(5),
+        3,
+    )
+    .await
+    .expect("absent/no-frame lag before first sighting must succeed");
+}
+
+/// Seen-then-gone: a row observed as `starting` and then absent for
+/// `gone_threshold` consecutive ticks (on FRESH frames) means the backend
+/// died → Err.
+#[tokio::test]
+async fn test_wait_for_terminal_row_dies_after_sighting() {
+    let status_of = provider_from(vec![
+        RowStatus::Present("starting".to_string()),
+        RowStatus::Present("starting".to_string()),
+        RowStatus::Absent,
+    ]);
+    let err = wait_for_terminal_row(
+        status_of,
+        Duration::from_millis(10),
+        Duration::from_secs(30),
+        3,
+    )
+    .await
+    .expect_err("seen-then-gone must fail");
+    assert!(
+        err.to_string().contains("died during startup"),
+        "death error expected, got: {err}"
+    );
+}
+
+/// budget_exhausted surfaces as the TYPED mark (chat/forward callers
+/// translate via budget_exhausted_response_for which downcasts).
+#[tokio::test]
+async fn test_wait_for_terminal_row_budget_exhausted_is_typed() {
+    let status_of = provider_from(vec![RowStatus::Present("budget_exhausted".to_string())]);
+    let err = wait_for_terminal_row(
+        status_of,
+        Duration::from_millis(10),
+        Duration::from_secs(5),
+        3,
+    )
+    .await
+    .expect_err("budget_exhausted must fail");
+    assert!(
+        err.downcast_ref::<crate::proxy::lifecycle::BudgetExhausted>()
+            .is_some(),
+        "error must carry the typed BudgetExhausted mark, got: {err}"
+    );
+}
+
+/// A frame that NEVER goes fresh (host stalled from the start) burns the
+/// whole deadline → Err — but via the generic deadline path, NOT the death
+/// path: NoFrame carries no signal and never counts toward the threshold.
+#[tokio::test]
+async fn test_wait_for_terminal_row_perpetual_no_frame_hits_deadline() {
+    let status_of = provider_from(vec![RowStatus::NoFrame]);
+    let err = wait_for_terminal_row(
+        status_of,
+        Duration::from_millis(10),
+        Duration::from_millis(100),
+        3,
+    )
+    .await
+    .expect_err("never-fresh host must hit the deadline");
+    assert!(
+        err.to_string().contains("did not become ready within"),
+        "deadline error expected, got: {err}"
+    );
+}
+
+/// NoFrame BETWEEN sightings does not count toward the gone-threshold: a
+/// host that stalls mid-boot (frame > LIVE_FRAME_MAX_AGE) then recovers
+/// with a Present row must still succeed, however many stale ticks occur.
+#[tokio::test]
+async fn test_wait_for_terminal_row_no_frame_between_sightings_does_not_count() {
+    let status_of = provider_from(vec![
+        RowStatus::Present("starting".to_string()),
+        RowStatus::NoFrame,
+        RowStatus::NoFrame,
+        RowStatus::NoFrame,
+        RowStatus::NoFrame,
+        RowStatus::Present("ready".to_string()),
+    ]);
+    wait_for_terminal_row(
+        status_of,
+        Duration::from_millis(10),
+        Duration::from_secs(5),
+        3,
+    )
+    .await
+    .expect("stale-frame gap between sightings carries no signal → success");
+}
+
+/// Absent-after-sighting fails exactly AT the threshold: threshold − 1
+/// absent ticks are tolerated, the next one fails.
+#[tokio::test]
+async fn test_wait_for_terminal_row_absent_fails_at_threshold() {
+    let seq = vec![
+        RowStatus::Present("starting".to_string()),
+        RowStatus::Absent,
+        RowStatus::Absent,
+        // The final Absent repeats forever, so the 3rd consecutive absence
+        // (== gone_threshold of 3) lands and must fail.
+    ];
+    let err = wait_for_terminal_row(
+        provider_from(seq),
+        Duration::from_millis(10),
+        Duration::from_secs(30),
+        3,
+    )
+    .await
+    .expect_err("third consecutive absent tick (== threshold) must fail");
+    assert!(err.to_string().contains("died during startup"));
+}
+
+/// A Present observation resets the gone-counter entirely: absent, absent,
+/// Present(starting), absent, absent … keeps waiting past the threshold —
+/// only CONSECUTIVE absences mean death.
+#[tokio::test]
+async fn test_wait_for_terminal_row_present_resets_gone_counter() {
+    let status_of = provider_from(vec![
+        RowStatus::Present("starting".to_string()),
+        RowStatus::Absent,
+        RowStatus::Absent,
+        RowStatus::Present("starting".to_string()), // resets gone=2 → 0
+        RowStatus::Present("ready".to_string()),
+    ]);
+    wait_for_terminal_row(
+        status_of,
+        Duration::from_millis(10),
+        Duration::from_secs(30),
+        3,
+    )
+    .await
+    .expect("present sighting between absence runs resets the counter → success");
 }
 
 /// A failed `LoadModel` RPC propagates its error to the caller and no live

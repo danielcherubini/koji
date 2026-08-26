@@ -34,6 +34,8 @@ pub struct DockerContainer {
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 pub struct DockerInspect {
+    #[serde(rename = "Id")]
+    pub id: Option<String>,
     #[serde(rename = "State")]
     pub state: InspectState,
     #[serde(rename = "NetworkSettings", default)]
@@ -276,6 +278,11 @@ pub async fn pull_image(image: &str, timeout_secs: u64) -> Result<()> {
 
 // ─── Container Lifecycle ─────────────────────────────────────────
 
+/// Deterministic container name for a model (used by spawn, stop, remove).
+pub fn container_name_for(model_name: &str) -> String {
+    format!("tama-{}", model_name)
+}
+
 /// Spawn a Docker container with the given configuration.
 ///
 /// Builds and executes `docker run` with all flags from the config. Returns
@@ -288,7 +295,7 @@ pub async fn spawn_container(
     env_vars: &[String],
     models_dir: &Path,
 ) -> Result<DockerContainer> {
-    let container_name = format!("tama-{}", model_name);
+    let container_name = container_name_for(model_name);
 
     // Clean up any existing container with this name first
     let _ = remove_container(&container_name).await;
@@ -344,11 +351,34 @@ pub async fn spawn_container(
     }
 
     let id = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let pid = inspect_container(&container_name)
-        .await
-        .ok()
-        .and_then(|r| r.and_then(|i| i.state.pid.map(|p| p as u32)))
-        .unwrap_or(0);
+    // Best-effort cleanup for every hard error raised AFTER a successful
+    // run below: the freshly created container is live with a bound host
+    // port, so leaking it would pin the port until the daemon reaps it.
+    // The host PID must be present AND non-zero: `kill_process_group(0)`
+    // would signal tamad's OWN process group (kill(-0) == kill(0)), so a
+    // missing/zero inspect PID is a hard error, never a silent 0.
+    let inspected = match inspect_container(&id).await {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = stop_container(&id).await;
+            let _ = remove_container(&id).await;
+            return Err(e.context("inspecting spawned container for its host PID"));
+        }
+    };
+    let inspected = match inspected {
+        Some(v) => v,
+        None => {
+            let _ = stop_container(&id).await;
+            let _ = remove_container(&id).await;
+            anyhow::bail!("container '{container_name}' vanished immediately after run");
+        }
+    };
+    let pid = inspected.state.pid.map(|p| p as u32).filter(|p| *p != 0);
+    let Some(pid) = pid else {
+        let _ = stop_container(&id).await;
+        let _ = remove_container(&id).await;
+        anyhow::bail!("docker did not report a usable host PID for container '{container_name}'");
+    };
 
     Ok(DockerContainer {
         name: container_name,

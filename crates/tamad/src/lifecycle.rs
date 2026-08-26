@@ -232,7 +232,7 @@ impl TamadLifecycle {
                         model = %model_name,
                         new_pid = resp.pid,
                         restart_count,
-                        "respawn supervisor relaunched the backend (stored spec)"
+                        "respawn supervisor relaunched the backend (gate detached)"
                     ),
                     Err(e) => warn!(
                         model = %model_name,
@@ -245,17 +245,229 @@ impl TamadLifecycle {
         })
     }
 
-    /// Spawn the backend described by `req`, health-poll until success or
-    /// timeout, and record the process in the table.
+    /// Start the detached reconciliation sweep for orphaned `starting`
+    /// rows (plan-194). Runs every 5 seconds until the lifecycle drops.
     ///
-    /// - `health_timeout_ms == 0` or empty `health_url` → the process is
-    ///   considered ready immediately (no health polling).
-    /// - `provider_name == "compaction"` → the proxy ships the generic
-    ///   `uv run uvicorn ...` shape and this tamad injects its own embedded
-    ///   server directory (`--project`), because the Python source is
-    ///   bundled in this binary (plan-191 Task 10).
-    /// - On timeout the process group is killed and a `failed` entry is
-    ///   recorded before the error is returned.
+    /// Defense in depth: rows can still strand in `starting` within a live
+    /// tamad — bugs in older deployed binaries, a spawn-frame race, or any
+    /// future path that forgets the detached-settle discipline. Each tick
+    /// delegates to [`Self::reconcile_once`], which processes ALL eligible
+    /// `starting` rows per pass: healthy orphans are adopted verified-ready
+    /// and rows far past their health deadline are torn down (see that
+    /// method for the exact semantics).
+    pub fn start_starting_reconciler(
+        lifecycle: &Arc<TamadLifecycle>,
+    ) -> tokio::task::JoinHandle<()> {
+        let lifecycle = Arc::clone(lifecycle);
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(Duration::from_secs(5));
+            loop {
+                ticker.tick().await;
+                lifecycle.reconcile_once().await;
+            }
+        })
+    }
+
+    /// One reconciliation pass over all `starting` rows. Exposed
+    /// (pub(crate)) for deterministic testing; production knobs are
+    /// grace = 10s and min_deadline = 120_000ms.
+    pub(crate) async fn reconcile_once(&self) {
+        self.reconcile_once_with(Duration::from_secs(10), Duration::from_millis(120_000))
+            .await;
+    }
+
+    /// Test-injectable core of [`Self::reconcile_once`]. Production:
+    /// `grace = 10s`, `min_deadline = 120_000ms`. Both knobs are
+    /// parameters so tests never sleep real production timeouts.
+    ///
+    /// Concurrency with live gates: after `grace` elapses this sweep runs
+    /// CONCURRENTLY with any detached health gate that may still be settling
+    /// the same row (`grace ≪ gate timeout`). Arbitration between the two
+    /// writers is entirely via [`Self::owns_starting_row`] — both sides
+    /// re-check it immediately before every teardown and terminal insert,
+    /// so whichever actor sees the row leave `starting` first stands down.
+    ///
+    /// For each `starting` row:
+    /// - gate-less specs (empty `health_url` or `health_timeout_ms == 0`)
+    ///   are skipped entirely (they were meant to be instant-ready);
+    /// - rows younger than `grace` are skipped — an active detached gate
+    ///   owns them until then (both writers guard with `owns_row`, but
+    ///   skipping avoids redundant pings);
+    /// - a row older than `max(2 × health_timeout_ms, min_deadline)` is
+    ///   torn down first (kill process group / stop+remove container,
+    ///   mirroring the settle-path teardown) and then recorded `failed`
+    ///   when it still owns its row — corpses are judged BEFORE probing
+    ///   so they die promptly even though their port would refuse anyway;
+    /// - otherwise a health probe runs: on success the row is adopted as
+    ///   verified-ready with the same bookkeeping as a real gate pass
+    ///   (including the persisted-tally reset).
+    pub(crate) async fn reconcile_once_with(&self, grace: Duration, min_deadline: Duration) {
+        for entry in self.table.list().await {
+            if entry.status != status::STARTING {
+                continue;
+            }
+            // The full launch spec is stored on every entry.
+            let spec = entry.spec.clone();
+            // Gate-less specs were meant to be instant-ready; a lingering
+            // one indicates an in-flight operation too young to judge.
+            if spec.health_url.is_empty() || spec.health_timeout_ms == 0 {
+                continue;
+            }
+            let age = entry.started_at.elapsed();
+            // Grace period: an active detached gate from the spawn owns the
+            // row until then; the sweep must not race it.
+            if age < grace {
+                continue;
+            }
+
+            // Deadline breach FIRST — evaluate before the probe so a corpse
+            // is torn down promptly even though its port would refuse.
+            let deadline =
+                Duration::from_millis(2u64.saturating_mul(spec.health_timeout_ms.max(0) as u64))
+                    .max(min_deadline);
+            if age > deadline {
+                warn!(
+                    model = %entry.model_name,
+                    pid = entry.pid,
+                    age_ms = age.as_millis() as u64,
+                    deadline_ms = deadline.as_millis() as u64,
+                    "starting row is past its health deadline; reconciling"
+                );
+                // Status-aware ownership FIRST: a stale snapshot row may have
+                // been re-adopted by a detached gate or the reaper since the
+                // pass started; only tear down a row that is still THIS
+                // process AND still awaiting a verdict.
+                if !self.owns_starting_row(&entry.model_name, entry.pid).await {
+                    continue;
+                }
+                if !spec.docker_config_json.is_empty() {
+                    // The ProcessEntry stores the launch spec but NOT the
+                    // spawned container id, so this teardown cannot bind to
+                    // the id captured at spawn the way `settle_container_gate`
+                    // does (that gate tears down strictly by the container id
+                    // it was handed, which survives name reuse). The PID
+                    // inspection below is the ONLY thing standing between the
+                    // owns_starting_row gate above and docker's kill: we
+                    // verify the running container's host PID still matches
+                    // entry.pid before acting (the same identity discipline as
+                    // the settle gates), then stop/remove by the INSPECTED
+                    // container id — closing the residual millisecond window
+                    // where an unload→reload could legally rebind the
+                    // deterministic name (`tama-{model}`) between inspect and
+                    // kill. On any inspect failure or PID mismatch we stand
+                    // down rather than kill an instance this row doesn't own.
+                    let container_name =
+                        crate::host_installs::docker::runner::container_name_for(&entry.model_name);
+                    match crate::host_installs::docker::runner::inspect_container(&container_name)
+                        .await
+                    {
+                        Ok(Some(inspect)) if inspect.state.pid == Some(entry.pid as u64) => {
+                            // Teardown by inspected id when available; fall back
+                            // to the deterministic name only if docker didn't
+                            // report one.
+                            let teardown_target =
+                                inspect.id.clone().unwrap_or_else(|| container_name.clone());
+                            let _ = crate::host_installs::docker::runner::stop_container(
+                                &teardown_target,
+                            )
+                            .await;
+                            let _ = crate::host_installs::docker::runner::remove_container(
+                                &teardown_target,
+                            )
+                            .await;
+                        }
+                        other => {
+                            warn!(
+                                model = %entry.model_name,
+                                expected_pid = entry.pid,
+                                inspected_pid = ?other.ok().flatten().and_then(|i| i.state.pid),
+                                "skipping container teardown: container identity unverified"
+                            );
+                        }
+                    }
+                } else {
+                    // Mirror the native settle tail: SIGTERM, brief grace,
+                    // SIGKILL escalation.
+                    let _ = kill_process_group(entry.pid).await;
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    if is_process_group_alive(entry.pid) {
+                        let _ = force_kill_process_group(entry.pid).await;
+                    }
+                }
+                // Re-check AFTER teardown too: the kill window is where a
+                // concurrent writer (unload / reaper / gate) is most likely
+                // to have moved the row on.
+                if self.owns_starting_row(&entry.model_name, entry.pid).await {
+                    let previous = self.table.get(&entry.model_name).await;
+                    self.table
+                        .insert(Self::entry_for(
+                            &spec,
+                            entry.pid,
+                            status::FAILED,
+                            false,
+                            &previous,
+                        ))
+                        .await;
+                    warn!(
+                        model = %entry.model_name,
+                        "reconciler tore down orphaned starting row past health deadline"
+                    );
+                }
+                continue;
+            }
+
+            // Health probe: adopt a backend that answers as verified ready.
+            if let Ok(response) = crate::process::check_health(&spec.health_url, Some(5)).await {
+                if response.status().is_success() {
+                    // Re-check immediately before the insert (not just at
+                    // loop top): the probe takes up to 5 s, ample time for a
+                    // detached gate to land its own verdict. NOTE: single-
+                    // probe adoption trades strictness for simplicity — two
+                    // consecutive probes would be stricter, but the
+                    // in-memory 300s restart window still bounds any crash
+                    // loop this could mask.
+                    if self.owns_starting_row(&entry.model_name, entry.pid).await {
+                        let previous = self.table.get(&entry.model_name).await;
+                        self.table
+                            .insert(Self::entry_for(
+                                &spec,
+                                entry.pid,
+                                status::READY,
+                                false,
+                                &previous,
+                            ))
+                            .await;
+                        info!(
+                            model = %entry.model_name,
+                            pid = entry.pid,
+                            "reconciler adopted orphaned starting row as ready"
+                        );
+                        self.reset_persisted_tally(&entry.model_name).await;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Spawn the backend described by `req` and record the process in
+    /// the table. The spawn itself is synchronous; the health gate is not:
+    ///
+    /// - With a real gate configured (non-empty `health_url` AND
+    ///   `health_timeout_ms > 0`) the gate is detached into its own tokio
+    ///   task, which polls until success or timeout and records the
+    ///   terminal `ready`/`failed` row — this RPC returns `starting`
+    ///   within seconds of the spawn regardless of how long the backend
+    ///   takes to boot. The caller's disappearance can no longer strand a
+    ///   `starting` row (the settle survives even if this future is
+    ///   cancelled).
+    /// - Without a gate (`health_timeout_ms == 0` or empty `health_url`)
+    ///   the process is considered ready immediately and `ready` is
+    ///   returned synchronously.
+    ///
+    /// `provider_name == "compaction"` → the proxy ships the generic
+    /// `uv run uvicorn ...` shape and this tamad injects its own embedded
+    /// server directory (`--project`), because the Python source is
+    /// bundled in this binary (plan-191 Task 10).
     pub async fn load(&self, req: &LoadModelRequest) -> Result<LoadModelResponse> {
         let (args, env) = self.resolve_launch(req).await?;
 
@@ -331,16 +543,93 @@ impl TamadLifecycle {
             ))
             .await;
 
-        // Health polling.
-        let timeout = Duration::from_millis(req.health_timeout_ms.max(0) as u64);
-        let healthy = if req.health_url.is_empty() || req.health_timeout_ms == 0 {
-            // No health check requested → immediately ready.
-            true
-        } else {
-            self.wait_for_health(&req.health_url, timeout).await
-        };
+        // Health gating: when a real gate is configured, detach it into
+        // its own task via `settle_native_gate` (it records the terminal
+        // READY/FAILED row internally; `Err` means the gate settled
+        // unhealthy). Detaching keeps the RPC response independent of the
+        // boot duration AND of the caller's survival: if this future is
+        // cancelled mid-boot (caller gone), the spawned settle still runs
+        // to completion instead of stranding a forever-`starting` row.
+        // Without a gate we fall through to the synchronous instant-ready
+        // branch.
+        if !req.health_url.is_empty() && req.health_timeout_ms != 0 {
+            let timeout = Duration::from_millis(req.health_timeout_ms.max(0) as u64);
+            let lc = self.shared_copy();
+            let req2 = req.clone();
+            let model_name2 = req.model_name.clone();
+            tokio::spawn(async move {
+                if let Err(e) = lc
+                    .settle_native_gate(req2, pid, inheriting_attempt, timeout)
+                    .await
+                {
+                    warn!(
+                        model = %model_name2,
+                        error = %e,
+                        "detached health gate settled unhealthy"
+                    );
+                }
+            });
+            return Ok(LoadModelResponse {
+                endpoint_url: Self::endpoint_from_health_url(&req.health_url),
+                pid: pid as i32,
+                status: status::STARTING.to_string(),
+            });
+        }
+
+        // No gate configured → instant ready (unchanged synchronous path).
+        let endpoint_url = Self::endpoint_from_health_url(&req.health_url);
+        if self.owns_row(&req.model_name, pid).await {
+            // The INSTANT ready (no gate configured) is not a verified
+            // success — it preserves the row's bookkeeping so a backend
+            // that exits 0.3 s after every start can still trip the
+            // budget directive. No persisted-tally reset here either:
+            // an unverified ready must keep presenting its at-cap tally
+            // to the boot sweep.
+            self.table
+                .insert(Self::entry_for(
+                    req,
+                    pid,
+                    status::READY,
+                    inheriting_attempt,
+                    &previous,
+                ))
+                .await;
+        }
+
+        Ok(LoadModelResponse {
+            endpoint_url,
+            pid: pid as i32,
+            status: status::READY.to_string(),
+        })
+    }
+
+    /// Settles the native-path health gate: polls `wait_for_health`, then
+    /// records the terminal row (READY or FAILED) with the exact
+    /// bookkeeping semantics of the former inline tail, including the
+    /// verified-ready persisted-tally reset. Returns `Err` when the gate
+    /// settled unhealthy (the teardown has already run by then).
+    async fn settle_native_gate(
+        &self,
+        req: LoadModelRequest,
+        pid: u32,
+        inheriting_attempt: bool,
+        timeout: Duration,
+    ) -> Result<()> {
+        let healthy = self.wait_for_health(&req.health_url, timeout).await;
 
         if !healthy {
+            // Status-aware ownership FIRST (checked BEFORE any teardown): a
+            // pid match alone does not mean this row still wants our verdict.
+            // A concurrent unload / reaper / reconciler may have spun the key
+            // around — someone else owns the outcome now; do nothing.
+            if !self.owns_starting_row(&req.model_name, pid).await {
+                debug!(
+                    model = %req.model_name,
+                    pid,
+                    "gate timed out but no longer owns the starting row; standing down"
+                );
+                return Ok(());
+            }
             warn!(
                 model = %req.model_name,
                 timeout_ms = timeout.as_millis() as u64,
@@ -351,17 +640,21 @@ impl TamadLifecycle {
             if is_process_group_alive(pid) {
                 let _ = force_kill_process_group(pid).await;
             }
-            // Record the failed attempt (status `failed`). Only when
-            // the line is still the very process of this one — a concurrent
-            // unload or reaper race has already spun the key around, and
-            // the `failed` row of its own must not clobber it.
-            if self.owns_row(&req.model_name, pid).await {
-                // If a restart attempt burns out hard, retain the
-                // (already recorded) round-trip tally; a plain load
-                // that fails from scratch starts the record clean.
+            // Record the failed attempt (status `failed`). Re-check ownership
+            // AFTER the kill too — the teardown window is where a concurrent
+            // writer is most likely to have moved the row on. Only when the
+            // line is still THIS process AND still `starting` may our
+            // terminal verdict land.
+            if self.owns_starting_row(&req.model_name, pid).await {
+                // Bookkeeping reflects the CURRENT row at insert time (e.g.
+                // budget round-trip tallies a reaper posted mid-gate are kept).
+                // If a restart attempt burns out hard, retain the (already
+                // recorded) round-trip tally; a plain load that fails from
+                // scratch starts the record clean.
+                let previous = self.table.get(&req.model_name).await;
                 self.table
                     .insert(Self::entry_for(
-                        req,
+                        &req,
                         pid,
                         status::FAILED,
                         inheriting_attempt,
@@ -377,51 +670,31 @@ impl TamadLifecycle {
             ));
         }
 
-        let endpoint_url = Self::endpoint_from_health_url(&req.health_url);
-        if self.owns_row(&req.model_name, pid).await {
-            // The verified-`ready` verdict resets the round-trip record
-            // (plan-193 T2): a successful HEALTH GATE clears the
-            // in-window trip tally, so a healthy stretch of life
-            // restarts the budget clock. The INSTANT ready (no gate
-            // configured) is no verified success, though — it preserves
-            // the row's bookkeeping so a backend that exits 0.3 s
-            // after every start can still trip the budget directive.
-            // `user_flagged` is NOT auto-cleared on success, either.
-            let verified = !req.health_url.is_empty() && req.health_timeout_ms != 0;
-            self.table
-                .insert(Self::entry_for(
-                    req,
-                    pid,
-                    status::READY,
-                    inheriting_attempt && !verified,
-                    &previous,
-                ))
-                .await;
-            // The durable half of the same reset (round-2 P1): a verified-ready
-            // ALSO zeroes the on-disk at-cap tally. Without it, the manifest
-            // would keep presenting as at-cap after a healthy outcome, and the
-            // next boot sweep would refuse to replay a perfectly fine key.
-            // `user_flagged` stays untouched — success never re-claims the
-            // operator's mark.
-            if verified {
-                if let Err(e) = self.store.zero_persisted_restart_count(&req.model_name) {
-                    warn!(
-                        model = %req.model_name,
-                        error = %e,
-                        "verified-ready success reset could not zero the persisted \
-                         at-cap tally; a later boot sweep may still treat this key \
-                         as at-cap — recovery = `tama admin unload <key>` then \
-                         `load` (clean re-arm)"
-                    );
-                }
-            }
+        // Same status-aware gate on the READY verdict: never overwrite a row
+        // that another writer (reaper → RESTARTING/FAILED, unload → gone)
+        // has taken over since the poll started.
+        if !self.owns_starting_row(&req.model_name, pid).await {
+            debug!(
+                model = %req.model_name,
+                pid,
+                "gate went healthy but no longer owns the starting row; standing down"
+            );
+            return Ok(());
         }
+        // The verified-`ready` verdict resets the round-trip record
+        // (plan-193 T2): a successful HEALTH GATE clears the in-window trip
+        // tally, so a healthy stretch of life restarts the budget clock.
+        // The INSTANT ready (no gate configured) is no verified success and
+        // keeps its bookkeeping instead. `user_flagged` is NOT auto-cleared
+        // on success, either.
+        let previous = self.table.get(&req.model_name).await;
+        self.table
+            .insert(Self::entry_for(&req, pid, status::READY, false, &previous))
+            .await;
+        info!(model = %req.model_name, pid, "backend became healthy (detached gate)");
+        self.reset_persisted_tally(&req.model_name).await;
 
-        Ok(LoadModelResponse {
-            endpoint_url,
-            pid: pid as i32,
-            status: status::READY.to_string(),
-        })
+        Ok(())
     }
 
     /// Ownership check — does the row for `model_name` still stand
@@ -434,6 +707,37 @@ impl TamadLifecycle {
             .get(model_name)
             .await
             .is_some_and(|e| e.pid == pid)
+    }
+
+    /// Status-aware ownership: is the row still THIS process AND still
+    /// awaiting a verdict (`starting`)? Detached writers must gate BOTH any
+    /// teardown AND their terminal insert on this — a pid match alone does
+    /// not mean the row still wants our verdict (a reaper may have flipped
+    /// it to `restarting`, a reconciler adopted it, an unload removed it).
+    async fn owns_starting_row(&self, model_name: &str, pid: u32) -> bool {
+        self.table
+            .get(model_name)
+            .await
+            .is_some_and(|e| e.pid == pid && e.status == crate::lifecycle::status::STARTING)
+    }
+
+    /// Durable half of the verified-ready reset (round-2 P1): a
+    /// verified-ready zeroes the on-disk at-cap tally so the manifest does
+    /// not keep presenting as at-cap and the next boot sweep will replay a
+    /// perfectly fine key. `user_flagged` stays untouched — success never
+    /// re-claims the operator's mark. Failures are warned with the operator
+    /// recovery sentence; they must not fail the load path itself.
+    async fn reset_persisted_tally(&self, model_name: &str) {
+        if let Err(e) = self.store.zero_persisted_restart_count(model_name) {
+            warn!(
+                model = %model_name,
+                error = %e,
+                "verified-ready success reset could not zero the persisted \
+                 at-cap tally; a later boot sweep may still treat this key \
+                 as at-cap — recovery = `tama admin unload <key>` then \
+                 `load` (clean re-arm)"
+            );
+        }
     }
 
     /// Single entry builder for the lifespan (process entry) —
@@ -475,14 +779,19 @@ impl TamadLifecycle {
         }
     }
 
-    /// Spawn a Docker-backed backend (container) and health-poll it to ready.
+    /// Spawn a Docker-backed backend (container).
     ///
     /// The proxy ships a serialized [`DockerConfig`] in `req.docker_config_json`
     /// (the tamad owns no DB). We pull the image if missing, rewrite the
     /// already path-remapped args to the container's mounted model dir, then
-    /// `docker run` with the mount/device/shm/capability config. On timeout or
-    /// health failure the container is stopped+removed and a `failed` entry is
-    /// recorded in the table.
+    /// `docker run` with the mount/device/shm/capability config.
+    ///
+    /// Like the native path, the health gate is detached when configured:
+    /// with a real gate (`health_url` + positive timeout) this returns
+    /// `starting` within seconds while a detached task polls to ready/timeout
+    /// and records the terminal row (on failure the container is stopped+
+    /// removed and a `failed` entry recorded). Without a gate the container
+    /// is considered ready immediately and `ready` is returned synchronously.
     async fn load_container(
         &self,
         req: &LoadModelRequest,
@@ -576,25 +885,108 @@ impl TamadLifecycle {
             ))
             .await;
 
-        // Health polling (same contract as the native path).
-        let timeout = Duration::from_millis(req.health_timeout_ms.max(0) as u64);
-        let healthy = if req.health_url.is_empty() || req.health_timeout_ms == 0 {
-            true
-        } else {
-            self.wait_for_health(&req.health_url, timeout).await
-        };
+        // Health gating: when a real gate is configured, detach it into
+        // its own task via `settle_container_gate` (same rationale as the
+        // native path — the terminal row must land even if the RPC caller
+        // vanishes). Without a gate we fall through to the synchronous
+        // instant-ready branch.
+        if !req.health_url.is_empty() && req.health_timeout_ms != 0 {
+            let timeout = Duration::from_millis(req.health_timeout_ms.max(0) as u64);
+            let lc = self.shared_copy();
+            let req2 = req.clone();
+            // Identity-safe teardown: carry the Docker-assigned container id
+            // (not the deterministic `tama-{model}` name) into the gate, so a
+            // stale gate can never stop/remove a freshly RELOADED container
+            // that merely reused the deterministic name.
+            let container_id = container.id.clone();
+            let model_name2 = req.model_name.clone();
+            tokio::spawn(async move {
+                if let Err(e) = lc
+                    .settle_container_gate(req2, pid, inheriting_attempt, timeout, container_id)
+                    .await
+                {
+                    warn!(
+                        model = %model_name2,
+                        error = %e,
+                        "detached health gate settled unhealthy"
+                    );
+                }
+            });
+            return Ok(LoadModelResponse {
+                endpoint_url: Self::endpoint_from_health_url(&req.health_url),
+                pid: pid as i32,
+                status: status::STARTING.to_string(),
+            });
+        }
+
+        // No gate configured → instant ready (unchanged synchronous path).
+        let endpoint_url = Self::endpoint_from_health_url(&req.health_url);
+        if self.owns_row(&req.model_name, pid).await {
+            // An instant ready (no gate configured) is not a verified
+            // success — it preserves the row's bookkeeping and its persisted
+            // at-cap tally, exactly like the native no-gate branch.
+            self.table
+                .insert(Self::entry_for(
+                    req,
+                    pid,
+                    status::READY,
+                    inheriting_attempt,
+                    &previous,
+                ))
+                .await;
+        }
+
+        Ok(LoadModelResponse {
+            endpoint_url,
+            pid: pid as i32,
+            status: status::READY.to_string(),
+        })
+    }
+
+    /// Same shape as [`Self::settle_native_gate`] for the Docker path:
+    /// polls `wait_for_health`, records the terminal row (READY or
+    /// FAILED), and on unhealthy stops and removes the container instead
+    /// of killing a process group. Teardown addresses the container BY
+    /// INSTANCE ID (the Docker-assigned hash captured at spawn), never by
+    /// the deterministic name — a name can be reused by a newer load of the
+    /// same model while this stale gate was polling. Returns `Err` when the
+    /// gate settled unhealthy (the teardown has already run by then).
+    async fn settle_container_gate(
+        &self,
+        req: LoadModelRequest,
+        pid: u32,
+        inheriting_attempt: bool,
+        timeout: Duration,
+        container_id: String,
+    ) -> Result<()> {
+        let healthy = self.wait_for_health(&req.health_url, timeout).await;
 
         if !healthy {
+            // Status-aware ownership FIRST (checked BEFORE any teardown): a
+            // pid match alone does not mean this row still wants our verdict.
+            if !self.owns_starting_row(&req.model_name, pid).await {
+                debug!(
+                    model = %req.model_name,
+                    pid,
+                    "gate timed out but no longer owns the starting row; standing down"
+                );
+                return Ok(());
+            }
             warn!(
                 model = %req.model_name,
                 "container failed to become healthy; tearing down"
             );
-            let _ = crate::host_installs::docker::runner::stop_container(&container.name).await;
-            let _ = crate::host_installs::docker::runner::remove_container(&container.name).await;
-            if self.owns_row(&req.model_name, pid).await {
+            // docker stop/rm accept full container ids — teardown is bound to
+            // THIS instance even if the deterministic name was reused.
+            let _ = crate::host_installs::docker::runner::stop_container(&container_id).await;
+            let _ = crate::host_installs::docker::runner::remove_container(&container_id).await;
+            // Re-check ownership AFTER teardown too — the kill window is where
+            // a concurrent writer is most likely to have moved the row on.
+            if self.owns_starting_row(&req.model_name, pid).await {
+                let previous = self.table.get(&req.model_name).await;
                 self.table
                     .insert(Self::entry_for(
-                        req,
+                        &req,
                         pid,
                         status::FAILED,
                         inheriting_attempt,
@@ -609,37 +1001,26 @@ impl TamadLifecycle {
             ));
         }
 
-        let endpoint_url = Self::endpoint_from_health_url(&req.health_url);
-        if self.owns_row(&req.model_name, pid).await {
-            // Same verified-ready reset rule as the host path: a
-            // successful container health gate clears the trip tally;
-            // an instant ready (no gate) preserves it.
-            let verified = !req.health_url.is_empty() && req.health_timeout_ms != 0;
-            self.table
-                .insert(Self::entry_for(
-                    req,
-                    pid,
-                    status::READY,
-                    inheriting_attempt && !verified,
-                    &previous,
-                ))
-                .await;
-            if verified {
-                if let Err(e) = self.store.zero_persisted_restart_count(&req.model_name) {
-                    warn!(
-                        model = %req.model_name,
-                        error = %e,
-                        "verified container-ready success reset could not zero the \n                         persisted at-cap tally — recovery = `tama admin unload \n                         <key>` then `load` (clean re-arm)"
-                    );
-                }
-            }
+        // Same status-aware gate on the READY verdict: never overwrite a row
+        // that another writer has taken over since the poll started.
+        if !self.owns_starting_row(&req.model_name, pid).await {
+            debug!(
+                model = %req.model_name,
+                pid,
+                "gate went healthy but no longer owns the starting row; standing down"
+            );
+            return Ok(());
         }
+        // Verified-ready reset rule as the host path: a successful container
+        // health gate clears the trip tally (`user_flagged` untouched).
+        let previous = self.table.get(&req.model_name).await;
+        self.table
+            .insert(Self::entry_for(&req, pid, status::READY, false, &previous))
+            .await;
+        info!(model = %req.model_name, pid, "backend became healthy (detached gate)");
+        self.reset_persisted_tally(&req.model_name).await;
 
-        Ok(LoadModelResponse {
-            endpoint_url,
-            pid: pid as i32,
-            status: status::READY.to_string(),
-        })
+        Ok(())
     }
 
     /// Extract the host-side port from a health URL like
@@ -668,7 +1049,7 @@ impl TamadLifecycle {
         // auto-restart.
         if !entry.spec.docker_config_json.is_empty() {
             let _ = kill_process_group(entry.pid).await;
-            let name = format!("tama-{}", model_name);
+            let name = crate::host_installs::docker::runner::container_name_for(model_name);
             let _ = crate::host_installs::docker::runner::stop_container(&name).await;
             let _ = crate::host_installs::docker::runner::remove_container(&name).await;
             info!(model = %model_name, "docker backend container unloaded");
@@ -954,7 +1335,15 @@ impl TamadLifecycle {
             match task.await {
                 Ok(Ok(resp)) => {
                     replayed += 1;
-                    info!(model = %key, pid = resp.pid, "boot sweep: replayed desired model");
+                    // With a configured health gate this fires at
+                    // `starting` time — the detached gate records the
+                    // terminal row asynchronously.
+                    info!(
+                        model = %key,
+                        pid = resp.pid,
+                        status = %resp.status,
+                        "boot sweep: replayed desired model (gate detached; row settles async)"
+                    );
                 }
                 Ok(Err(e)) => {
                     warn!(
@@ -1331,7 +1720,9 @@ mod tests {
         assert!(lc.restart("nope").await.is_err());
     }
 
-    /// Health polling: a local listener answering 200 → ready.
+    /// Health polling with a configured gate: the RPC returns `starting`
+    /// immediately (the gate runs detached) and the row flips to `ready`
+    /// asynchronously once the sniffer answers 200.
     #[tokio::test]
     async fn test_load_with_health_check() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1364,16 +1755,44 @@ mod tests {
         req.health_url = format!("http://127.0.0.1:{port}/health");
         req.health_timeout_ms = 10_000;
         let resp = lc.load(&req).await.expect("health load should succeed");
-        assert_eq!(resp.status, "ready");
+        assert_eq!(resp.status, status::STARTING);
         assert_eq!(resp.endpoint_url, format!("http://127.0.0.1:{port}"));
+
+        // The detached gate settles the row asynchronously.
+        let entry = poll_until_status(&table, "healthy", status::READY, Duration::from_secs(5))
+            .await
+            .expect("row must reach ready via the detached gate");
+        assert_eq!(entry.endpoint_url, format!("http://127.0.0.1:{port}"));
 
         lc.unload("healthy").await.ok();
     }
 
-    /// Health timeout: unreachable health URL → Err + failed entry, process
-    /// killed.
+    /// Poll `table` until `model` reaches `want`, returning its entry.
+    /// Gives up after `budget` and returns `None`.
+    async fn poll_until_status(
+        table: &Arc<ProcessTable>,
+        model: &str,
+        want: &str,
+        budget: Duration,
+    ) -> Option<ProcessEntry> {
+        let deadline = tokio::time::Instant::now() + budget;
+        while tokio::time::Instant::now() < deadline {
+            if let Some(entry) = table.get(model).await {
+                if entry.status == want {
+                    return Some(entry);
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        None
+    }
+
+    /// Health timeout: unreachable health URL → `Ok(starting)` from the
+    /// RPC, then the detached gate times out, kills the process group and
+    /// records the failed entry asynchronously.
     #[tokio::test]
     async fn test_load_health_timeout() {
+        use crate::process::is_process_group_alive;
         let (state, _dir) = test_state();
         let table = Arc::new(ProcessTable::default());
         let lc = TamadLifecycle::new(
@@ -1386,19 +1805,30 @@ mod tests {
         // A port nothing listens on.
         req.health_url = "http://127.0.0.1:1/health".to_string();
         req.health_timeout_ms = 1_500;
-        let err = lc.load(&req).await.expect_err("must time out");
-        assert!(err.to_string().contains("failed to become healthy"));
+        let resp = lc
+            .load(&req)
+            .await
+            .expect("RPC returns starting; gate detached");
+        assert_eq!(resp.status, status::STARTING);
 
-        let entry = table.get("unhealthy").await.expect("failed entry recorded");
-        assert_eq!(entry.status, "failed");
-        // Process must have been killed.
+        // The detached gate settles the row to `failed` after its timeout
+        // (1.5 s) + teardown margin. Generous budget: loaded CI machines
+        // have been observed starving sub-5s polls.
+        let entry = poll_until_status(&table, "unhealthy", status::FAILED, Duration::from_secs(10))
+            .await
+            .expect("row must reach failed via the detached gate");
+
+        // Process group must have been killed.
         for _ in 0..40 {
-            if !crate::process::is_process_alive(entry.pid) {
+            if !is_process_group_alive(entry.pid) {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
-        assert!(!crate::process::is_process_alive(entry.pid));
+        assert!(
+            !is_process_group_alive(entry.pid),
+            "process group must be dead after the detached gate timed out"
+        );
     }
 
     /// A backend that exits on its own is reaped by the tamad and marked
@@ -1559,11 +1989,13 @@ mod tests {
         let resp = lc
             .load(&req)
             .await
-            .expect("health-gated load should succeed");
-        assert_eq!(resp.status, status::READY);
+            .expect("health-gated load should return starting immediately");
+        assert_eq!(resp.status, status::STARTING);
 
-        let entry = table.get("gated").await.expect("row present after ready");
-        assert_eq!(entry.status, status::READY);
+        // Await the terminal row transition driven by the detached gate.
+        let entry = poll_until_status(&table, "gated", status::READY, Duration::from_secs(5))
+            .await
+            .expect("verified ready must land via the detached gate");
         assert_eq!(
             entry.restart_count, 0,
             "the verified health-gated ready resets the round-trip tally"
@@ -2342,5 +2774,260 @@ mod tests {
         assert!(info.desired, "store row makes the wire info desired");
         assert_eq!(info.restart_count, 0);
         assert_eq!(info.max_restarts, DEFAULT_MAX_RESTARTS);
+    }
+
+    // ---- plan-194 Task 4: reconciliation sweep for orphaned `starting`
+    // rows ---------------------------------------------------------------
+
+    /// A TCP sniffer that answers every connection with a bare
+    /// HTTP/1.1 200 (the same pattern as `test_load_with_health_check`).
+    /// Returns the bound host port.
+    async fn start_sniffer() -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut buf = [0u8; 512];
+                    let _ = sock.read(&mut buf).await;
+                    let _ = sock
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                        .await;
+                });
+            }
+        });
+        port
+    }
+
+    /// Spawn a real child in its own process group and return a guard
+    /// holding its pid — the reconciler's native teardown has something
+    /// genuinely killable, and the guard kills the WHOLE group (SIGKILL)
+    /// deterministically even when a test assertion fails first.
+    fn spawn_group_child() -> GroupChildGuard {
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.process_group(0);
+        cmd.arg("-c").arg("sleep 30");
+        cmd.stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        let mut child = cmd.spawn().expect("spawn sleep child");
+        let pid = child.id().expect("child pid");
+        tokio::spawn(async move {
+            let _ = child.wait().await;
+        });
+        GroupChildGuard { pid }
+    }
+
+    /// Drop guard around [`Self::spawn_group_child`]: SIGKILLs the child's
+    /// process group on scope exit so no `sleep 30` survives a failed
+    /// assertion or an early return.
+    struct GroupChildGuard {
+        pid: u32,
+    }
+
+    impl GroupChildGuard {
+        fn pid(&self) -> u32 {
+            self.pid
+        }
+    }
+
+    impl Drop for GroupChildGuard {
+        fn drop(&mut self) {
+            // SAFETY: negative PID targets the process group led by `pid`,
+            // which this test itself created via process_group(0). SIGKILL
+            // cannot access invalid memory; ESRCH (already dead) is ignored.
+            unsafe {
+                libc::kill(-(self.pid as libc::pid_t), libc::SIGKILL);
+            }
+        }
+    }
+
+    /// Insert a `starting` row whose age is `age` (via `started_at`
+    /// backdating — a pub `Instant` field).
+    async fn seed_starting_row(
+        table: &Arc<ProcessTable>,
+        spec: &LoadModelRequest,
+        pid: u32,
+        age: Duration,
+    ) {
+        let started_at = Instant::now().checked_sub(age).unwrap_or_else(Instant::now);
+        table
+            .insert(ProcessEntry {
+                model_name: spec.model_name.clone(),
+                provider_name: spec.provider_name.clone(),
+                pid,
+                endpoint_url: String::new(),
+                status: status::STARTING.to_string(),
+                started_at,
+                spec: spec.clone(),
+                restart_count: 0,
+                window_starts: Vec::new(),
+                user_flagged: false,
+            })
+            .await;
+    }
+
+    /// An orphaned `starting` row whose backend answers its health URL is
+    /// adopted as a verified ready within one pass, with the verified-success
+    /// bookkeeping: the persisted at-cap tally is zeroed on disk.
+    #[tokio::test]
+    async fn test_reconciler_adopts_healthy_orphan() {
+        let port = start_sniffer().await;
+        let (state, _dir) = test_state();
+        let table = Arc::new(ProcessTable::default());
+        let lc = TamadLifecycle::new(
+            Arc::clone(&table),
+            Arc::clone(&state.store),
+            Arc::clone(&state),
+        );
+
+        let mut req = make_req("orphan", "sh", &["-c", "sleep 30"], 0);
+        req.health_url = format!("http://127.0.0.1:{port}/health");
+        req.health_timeout_ms = 10_000;
+
+        // Seed the persisted tally non-zero so the verified-ready reset is
+        // observable (the adopt path must run the same bookkeeping as the
+        // detached settle path).
+        state
+            .store
+            .insert(&req.model_name, &req, true)
+            .expect("seed desired row");
+        state
+            .store
+            .set_tripped(&req.model_name, 5)
+            .expect("seed at-cap tally");
+
+        let child = spawn_group_child();
+        let pid = child.pid();
+        seed_starting_row(&table, &req, pid, Duration::from_secs(11)).await;
+
+        lc.reconcile_once_with(Duration::from_secs(10), Duration::from_secs(120))
+            .await;
+
+        let entry = poll_until_status(&table, "orphan", status::READY, Duration::from_secs(5))
+            .await
+            .expect("reconciler must adopt the healthy orphan as ready");
+        assert_eq!(entry.pid, pid, "adopted row keeps its process");
+        let stored = state
+            .store
+            .get(&req.model_name)
+            .expect("store row survives");
+        assert_eq!(
+            stored.persisted_restart_count, 0,
+            "verified-ready adoption zeroes the persisted at-cap tally"
+        );
+
+        lc.unload("orphan").await.ok();
+    }
+
+    /// A native-path `starting` row far past its health deadline (age >
+    /// max(2 × health_timeout_ms, min_deadline)) is torn down — process
+    /// group killed — and recorded `failed`. The deadline check runs
+    /// BEFORE the probe, so the corpse dies even with a refusing port.
+    #[tokio::test]
+    async fn test_reconciler_fails_deadline_breach() {
+        use crate::process::is_process_group_alive;
+        let (state, _dir) = test_state();
+        let table = Arc::new(ProcessTable::default());
+        let lc = TamadLifecycle::new(
+            Arc::clone(&table),
+            Arc::clone(&state.store),
+            Arc::clone(&state),
+        );
+
+        // Port 1 refuses: nothing listens there (same shape as
+        // `test_load_health_timeout`). Deadline floor 100ms vs
+        // 2 × 500ms timeout → breach past 1s; the row is aged well past it.
+        let mut req = make_req("corpse", "sh", &["-c", "sleep 30"], 0);
+        req.health_url = "http://127.0.0.1:1/health".to_string();
+        req.health_timeout_ms = 500;
+
+        let child = spawn_group_child();
+        let pid = child.pid();
+        seed_starting_row(&table, &req, pid, Duration::from_secs(5)).await;
+
+        // Small injectable knobs: grace already passed, deadline floor tiny.
+        lc.reconcile_once_with(Duration::from_millis(50), Duration::from_millis(100))
+            .await;
+
+        let entry = poll_until_status(&table, "corpse", status::FAILED, Duration::from_secs(5))
+            .await
+            .expect("deadline-breach row must be recorded failed");
+        assert_eq!(entry.pid, pid, "failed row keeps its process identity");
+
+        // Native teardown must have killed the process group.
+        for _ in 0..40 {
+            if !is_process_group_alive(pid) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        assert!(
+            !is_process_group_alive(pid),
+            "process group must be dead after the reconciler tore down the breach"
+        );
+    }
+
+    /// Rows the sweep must never touch: a gate-less spec (`health_url`
+    /// empty AND `health_timeout_ms == 0`) is skipped entirely even when
+    /// old, and a gated row younger than the grace period stays untouched
+    /// (an active detached gate owns it until then).
+    #[tokio::test]
+    async fn test_reconciler_skips_young_and_gainless() {
+        use crate::process::is_process_group_alive;
+        let port = start_sniffer().await;
+        let (state, _dir) = test_state();
+        let table = Arc::new(ProcessTable::default());
+        let lc = TamadLifecycle::new(
+            Arc::clone(&table),
+            Arc::clone(&state.store),
+            Arc::clone(&state),
+        );
+
+        // Gate-less spec, aged far beyond any grace: skip entirely.
+        let gateless = make_req("gainless", "sh", &["-c", "sleep 30"], 0);
+        let gateless_child = spawn_group_child();
+        let gateless_pid = gateless_child.pid();
+        seed_starting_row(&table, &gateless, gateless_pid, Duration::from_secs(60)).await;
+
+        // Gated spec but fresh (< grace): an active detached gate owns it.
+        let mut gated = make_req("young", "sh", &["-c", "sleep 30"], 0);
+        gated.health_url = format!("http://127.0.0.1:{port}/health");
+        gated.health_timeout_ms = 10_000;
+        let gated_child = spawn_group_child();
+        let gated_pid = gated_child.pid();
+        seed_starting_row(&table, &gated, gated_pid, Duration::from_millis(0)).await;
+
+        // Production-shaped knobs: 10s grace means both rows fall inside
+        // protected territory this tick.
+        lc.reconcile_once_with(Duration::from_secs(10), Duration::from_millis(100))
+            .await;
+
+        let g = table.get("gainless").await.expect("gateless row kept");
+        assert_eq!(
+            g.status,
+            status::STARTING,
+            "gate-less row must be skipped entirely"
+        );
+        let y = table.get("young").await.expect("young row kept");
+        assert_eq!(
+            y.status,
+            status::STARTING,
+            "row inside the grace period must not be judged yet"
+        );
+        assert!(
+            is_process_group_alive(gateless_pid),
+            "skipped gate-less process must stay alive"
+        );
+        assert!(
+            is_process_group_alive(gated_pid),
+            "skipped young process must stay alive"
+        );
+
+        lc.unload("gainless").await.ok();
+        lc.unload("young").await.ok();
     }
 }

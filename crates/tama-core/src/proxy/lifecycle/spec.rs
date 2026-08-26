@@ -16,12 +16,15 @@
 //! from the `gpu_device` field it compares against its own hardware.
 
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use tracing::warn;
 
 use crate::gpu::GpuVariant;
 use crate::providers::Provider;
+use crate::proxy::state::rows::{is_eligible, LIVE_FRAME_MAX_AGE};
 use crate::tamad::{LoadModelRequest, SystemStats};
 
 use super::ProxyState;
@@ -521,6 +524,88 @@ pub fn vram_load_ok(
     Ok(())
 }
 
+/// Row visibility for [`wait_for_terminal_row`].
+#[derive(Clone, Debug)]
+pub(crate) enum RowStatus {
+    /// Fresh frame observed, row present with this status.
+    Present(String),
+    /// Fresh frame observed, row absent (failed rows are filtered out of
+    /// live_rows — absence after sighting means death).
+    Absent,
+    /// No fresh stats frame (stale host / stream gap) — carries no signal;
+    /// must NOT count toward the gone-threshold.
+    NoFrame,
+}
+
+/// Polls a row-status provider until it reports `ready`, an explicit
+/// failure status, or the deadline elapses.
+///
+/// Provider contract (tri-state, disambiguating the old `Option<String>`):
+/// - [`RowStatus::Present`] = fresh frame, row visible with that status.
+/// - [`RowStatus::Absent`] = fresh frame, row NOT visible. Failed rows are
+///   filtered out of live_rows, so absence AFTER at least one sighting
+///   means death: sustained absence (`>= gone_threshold` consecutive ticks)
+///   → Err("backend died during startup"). Callers size `gone_threshold`
+///   generously (≥ 15 s worth of ticks).
+/// - [`RowStatus::NoFrame`] = no FRESH stats frame (host stalled or stream
+///   gap). Carries no signal either way: it must NOT count toward the
+///   gone-threshold and does not reset it.
+///
+/// Absence BEFORE any sighting is also tolerated without counting (the row
+/// may not have been published yet). The overall `deadline` still bounds
+/// every path.
+pub(crate) async fn wait_for_terminal_row<F, Fut>(
+    mut status_of: F,
+    poll_every: Duration,
+    deadline: Duration,
+    gone_threshold: u32,
+) -> Result<()>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = RowStatus>,
+{
+    let started = tokio::time::Instant::now();
+    let mut seen_any = false;
+    let mut gone = 0u32;
+    loop {
+        if started.elapsed() >= deadline {
+            return Err(anyhow!(
+                "backend did not become ready within {:?}",
+                deadline
+            ));
+        }
+        match status_of().await {
+            RowStatus::Present(s) => {
+                seen_any = true;
+                gone = 0;
+                match s.as_str() {
+                    "ready" => return Ok(()),
+                    // Typed mark is mandatory: chat/forward callers
+                    // translate via budget_exhausted_response_for(err),
+                    // which requires err.is::<BudgetExhausted>().
+                    "budget_exhausted" => {
+                        return Err(anyhow::Error::new(crate::proxy::lifecycle::BudgetExhausted));
+                    }
+                    // "starting" / "restarting" / anything else — keep waiting.
+                    _ => {}
+                }
+            }
+            RowStatus::Absent if seen_any => {
+                gone += 1;
+                if gone >= gone_threshold {
+                    return Err(anyhow!("backend died during startup"));
+                }
+            }
+            // Absent before any sighting: tolerate publish lag without
+            // counting toward the threshold.
+            RowStatus::Absent => {}
+            // No frame = no signal; never touches the counter.
+            RowStatus::NoFrame => {}
+        }
+        tokio::time::sleep(poll_every).await;
+    }
+}
+
 /// The shared tamad-load tail: resolve the provider's live tamad, run the
 /// capacity/VRAM guards, and issue `LoadModel`. The tamad's host-side store
 /// owns *desired* state; the tamad's wire row (not a proxy mirror) is the
@@ -574,12 +659,16 @@ pub async fn load_spec_on_tamad(
         }
     }
 
-    // The `LoadModel` RPC blocks until the tamad's spawn + health poll
-    // completes (minutes for a large model). The load window is surfaced
-    // via the tamad's own wire row (plan-193 T4): the tamad reports the
-    // process as `starting` until its health poll passes, so no proxy-side
-    // placeholder mirror is needed anymore.
-
+    // plan-194: the `LoadModel` RPC returns fast — `Ok(status: "starting")`
+    // within seconds of the spawn when a health gate is configured (the
+    // tamad settles the gate in a detached task), or instant-ready when no
+    // gate is set. Readiness therefore comes from the tamad's live wire row:
+    // wait on it until a terminal outcome so callers only proceed once the
+    // backend is genuinely healthy.
+    //
+    // Compat: an OLD tamad still blocks this RPC until healthy, so by the
+    // time it returns the first row poll observes `ready` immediately and
+    // the waiter degenerates to a single poll.
     let resp = match handle.load_model(&spec.request).await.with_context(|| {
         format!(
             "LoadModel RPC to the tamad of provider \"{}\" failed",
@@ -592,6 +681,42 @@ pub async fn load_spec_on_tamad(
         // mirror left to write. Re-return the original error.
         Err(e) => return Err(e),
     };
+
+    // Wait on the wire rows for the terminal outcome (plan-194 Task 3).
+    // Frame fidelity: classify THIS tamad's handle's FRESH frame directly
+    // instead of going through the live_rows aggregate — the aggregate
+    // conflates "host stalled > LIVE_FRAME_MAX_AGE" (no signal) with "row
+    // absent from a fresh frame" (death). Capture discipline: owned clones
+    // only (`Arc<TamadHandle>` + key string), futures stay 'static.
+    let key = spec.backend_name.clone();
+    let handle2 = Arc::clone(&handle);
+    let status_of = move || {
+        let h = Arc::clone(&handle2);
+        let k = key.clone();
+        async move {
+            let Some(stats) = h.latest_fresh(LIVE_FRAME_MAX_AGE).await else {
+                return RowStatus::NoFrame;
+            };
+            match stats
+                .processes
+                .iter()
+                .find(|p| p.model_name == k && is_eligible(p))
+            {
+                Some(p) => RowStatus::Present(p.status.clone()),
+                None => RowStatus::Absent,
+            }
+        }
+    };
+
+    // Deadline derives from the spec's own health timeout plus margin: the
+    // gate timeout IS derived from `startup_timeout_secs` upstream (spec
+    // builders), so health_timeout_ms + 20 s lets a genuine gate failure
+    // surface as Absent-seen-then-gone ("died during startup") instead of
+    // this waiter's generic deadline error. Poll every 500 ms.
+    // gone_threshold = 30 ticks = 15 s of sustained absence on FRESH frames.
+    let deadline = Duration::from_millis(spec.request.health_timeout_ms.max(0) as u64)
+        + Duration::from_secs(20);
+    wait_for_terminal_row(status_of, Duration::from_millis(500), deadline, 30).await?;
 
     // plan-193 T5c: no staging mirror and no in-memory load counter — the
     // tamad's live wire row (`ready`) is the source of truth for "loaded".

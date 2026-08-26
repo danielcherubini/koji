@@ -411,7 +411,8 @@ impl TamadService for TamadServiceImpl {
             // the DockerConfig JSON in the spec; native specs leave it
             // empty).
             Some(e) if !e.spec.docker_config_json.is_empty() => {
-                let container = format!("tama-{}", e.model_name);
+                let container =
+                    crate::host_installs::docker::runner::container_name_for(&e.model_name);
                 match crate::host_installs::docker::runner::tail_container_logs(&container, 200)
                     .await
                 {

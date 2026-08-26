@@ -28,7 +28,7 @@ use crate::tamad::ProcessInfo;
 /// tamad emits at 1 Hz, so 5s is five ticks of slack before a
 /// silent producer is declared absent. Deliberately NOT 500ms: a
 /// single dropped frame must not blank the model list.
-const LIVE_FRAME_MAX_AGE: Duration = Duration::from_secs(5);
+pub(crate) const LIVE_FRAME_MAX_AGE: Duration = Duration::from_secs(5);
 
 /// The lifecycle statuses a process must report to be counted as a live row.
 ///
@@ -51,7 +51,7 @@ fn eligible_status(status: &str) -> bool {
 /// reporting the budget state on the wire, and the proxy reads that
 /// row for the budget-exhausted 503. Every other non-live status
 /// (`failed`, `unloading`, ...) is not a row.
-fn is_eligible(p: &ProcessInfo) -> bool {
+pub(crate) fn is_eligible(p: &ProcessInfo) -> bool {
     (p.alive && eligible_status(&p.status)) || p.status == "budget_exhausted"
 }
 

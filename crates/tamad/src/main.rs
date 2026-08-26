@@ -148,6 +148,11 @@ async fn main() -> Result<()> {
     let _respawn_supervisor =
         crate::lifecycle::TamadLifecycle::start_respawn_supervisor(&lifecycle);
 
+    // Reconciliation sweep for orphaned `starting` rows (plan-194):
+    // defense in depth — adopts a healthy orphan as verified-ready and
+    // tears down one past its health deadline, every 5 seconds.
+    let _reconciler = crate::lifecycle::TamadLifecycle::start_starting_reconciler(&lifecycle);
+
     {
         // Boot sweep (plan-193 T2 entry): If desired, re-fire all
         // stored lines as running processes (started up — slow models
