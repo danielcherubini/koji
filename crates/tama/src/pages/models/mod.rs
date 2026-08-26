@@ -82,8 +82,26 @@ const FAST_TICK_MS: u64 = 1_500;
 /// transitional.
 const HEARTBEAT_MS: u64 = 8_000;
 
-/// Current wall-clock time in epoch milliseconds. Saturates to 0 on
-/// systems whose clock predates the epoch.
+/// Current time in milliseconds on the clock the polling scheduler
+/// compares against. Only RELATIVE deltas on this clock matter (versus
+/// `last_fetch_ms`, same clock), so the origin is irrelevant.
+///
+/// Browser (csr): `performance.now()` — the one wall clock with a real
+/// implementation on wasm32-unknown-unknown. `SystemTime::now()` is
+/// unimplemented there and PANICS AT RUNTIME (it type-checks fine).
+/// Saturates to 0 when performance is unavailable; the `last_fetch_ms
+/// == 0` sentinel in `should_refetch` keeps scheduling working anyway.
+#[cfg(not(feature = "ssr"))]
+fn now_ms() -> u64 {
+    web_sys::window()
+        .and_then(|w| w.performance())
+        .map(|p| p.now() as u64)
+        .unwrap_or(0)
+}
+
+/// SSR/native flavor: epoch milliseconds, saturating to 0 on systems
+/// whose clock predates the epoch.
+#[cfg(feature = "ssr")]
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

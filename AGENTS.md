@@ -65,7 +65,7 @@ cargo nextest run --workspace
 
 > **Critical:** Always use `--all-targets` with clippy — without it, test-code lint errors are silently skipped locally but will fail CI.
 
-> **Critical:** Never skip the csr check — the two clippy gates compile the ssr/native variant only, so `#[cfg(not(feature = "ssr"))]` code in `crates/tama` is type-unchecked by them (plan-194 post-merge hotfix: an expression closure passed to `on_cleanup` compiled under ssr but broke the wasm build because gloo-timers 0.3's `cancel()` returns a `ScopedClosure`, not `()`).
+> **Critical:** Never skip the csr check — the two clippy gates compile the ssr/native variant only, so `#[cfg(not(feature = "ssr"))]` code in `crates/tama` is type-unchecked by them. And note: even the csr check only proves the wasm code **type-checks** — it does not execute it. Browser-only code (`web_sys`, `gloo_timers`) needs an actual browser to verify. plan-194 post-merge hotfixes: (1) an expression closure passed to `on_cleanup` compiled under ssr but broke the wasm build because gloo-timers 0.3's `cancel()` returns a `Closure`, not `()`, and its `Interval` is `!Send`; (2) `SystemTime::now()` type-checks fine on wasm but **panics at runtime** on wasm32-unknown-unknown — use `performance.now()` (web-sys `Performance` feature) for any in-browser clock.
 
 ### Targeted Testing (during development)
 
