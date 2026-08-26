@@ -20,9 +20,8 @@
   padding: 1rem;
   border-radius: var(--radius-md);
   border: 1px solid var(--border-color);
-  max-height: 600px;
   overflow-y: auto;
-  line-height: 1.6;
+  line-height: 1;
 }
 
 .log-toolbar {
