@@ -45,7 +45,7 @@ fn active_model_name_markup(display: String) -> impl IntoView {
 /// (`gpu_variant · quant · Nk ctx · format`), tok/s badge when generating,
 /// an Unload button honoring the shared busy flag, a `📄` logs link for
 /// tamad-hosted models (the engine container tail, via
-/// `/tama/logs?source={host}:{model}`), and the `▷` benchmark link.
+/// `/tama/logs?source={host}:{model}`), and the `✎` edit link.
 #[component]
 pub fn ActiveModelRow(
     /// The model to render (Ready or Starting).
@@ -74,10 +74,12 @@ pub fn ActiveModelRow(
     let meta = format_model_meta_parts(&model);
     let tps = model.tps.filter(|t| *t > 0.0);
     let id_for_unload = model.id.clone();
-    let bench_href = format!(
-        "/tama/benchmarks?tab=suite&model={}",
-        urlencoding::encode(&model.id)
-    );
+    // Edit link — use db_id when Some, fall back to the id string (same
+    // convention as `ModelCard`).
+    let edit_id = model
+        .db_id
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| model.id.clone());
     view! {
         <div class="active-model-row">
             <span class={status_class} title={status_title}></span>
@@ -130,11 +132,11 @@ pub fn ActiveModelRow(
                     view! { <span></span> }.into_any()
                 }}
                 <A
-                    attr:class="btn btn-secondary btn-sm active-model-bench"
-                    attr:title="Run benchmark suite"
-                    href=bench_href
+                    attr:class="btn btn-secondary btn-sm active-model-edit"
+                    attr:title="Edit model"
+                    href=format!("/tama/models/{}/edit", edit_id)
                 >
-                    "▷"
+                    "✎"
                 </A>
             </div>
         </div>
