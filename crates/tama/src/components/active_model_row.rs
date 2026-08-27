@@ -9,7 +9,7 @@ use leptos_router::components::A;
 use crate::components::gpu_device_card::model_gpu_label;
 use crate::core_mirrors::ModelState;
 use crate::pages::dashboard::{
-    format_model_meta_parts, model_display_name, GpuDeviceStats, ModelStateSnapshot,
+    format_model_meta_parts, format_tok_s, model_display_name, GpuDeviceStats, ModelStateSnapshot,
 };
 
 /// Build the logs-link target for a tamad-hosted model: `/tama/logs?source=`
@@ -95,7 +95,7 @@ pub fn ActiveModelRow(
             <span class="active-model-meta">{meta.join(" · ")}</span>
             {if let Some(t) = tps {
                 view! {
-                    <span class="active-model-tps">{format!("{t:.0} tok/s")}</span>
+                    <span class="active-model-tps">{format_tok_s(t as f64)}</span>
                 }
                 .into_any()
             } else {

@@ -360,6 +360,8 @@ mod tests {
             desired: false,
             restart_count: 0,
             max_restarts: 0,
+            spec_accept_pct: None,
+            spec_decoding_active: false,
         }
     }
 

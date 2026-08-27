@@ -144,6 +144,12 @@ message ProcessInfo {
   bool   desired = 7;
   uint32 restart_count = 8;
   uint32 max_restarts = 9;
+
+  // Spec-decode observation scraped by the tamad from the backend's
+  // Prometheus /metrics (vLLM-only; None = no spec traffic observed
+  // recently or engine is not vLLM). See ADR-0012.
+  optional double spec_accept_pct = 10;
+  bool spec_decoding_active = 11;
 }
 
 message SystemStats {

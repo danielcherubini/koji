@@ -369,6 +369,8 @@ mod tests {
             desired: true,
             restart_count: 0,
             max_restarts: 3,
+            spec_accept_pct: None,
+            spec_decoding_active: false,
         };
         let stats = stats_full(1.5, vec![], vec![proc]);
         let pool = state.tamad_pool();

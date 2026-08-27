@@ -382,3 +382,53 @@ fn test_extract_inference_stats_vllm_sticky_spec_decoding() {
     // spec_decoding_active stays true because previous was true (sticky)
     assert!(stats.spec_decoding_active);
 }
+
+#[test]
+fn test_extract_inference_stats_vllm_preserves_tamad_spec_accept() {
+    // The proxy's merge loop folds the tamad-observed spec-decode values into
+    // the entry (ADR-0012). A per-response vLLM extract REPLACES the whole
+    // entry — the merged values must survive that replacement.
+    let metrics_state = make_metrics_state();
+
+    // Pre-seed as the proxy's merge (server/metrics.rs) does.
+    metrics_state.record_inference_stats(
+        "vllm-server",
+        LatestInferenceStats {
+            tps: Some(10.0),
+            prompt_tps: None,
+            cache_hit_pct: None,
+            spec_accept_pct: Some(44.5),
+            spec_decoding_active: true,
+            last_updated_ms: 100,
+        },
+    );
+
+    let json = serde_json::json!({
+        "metrics": {
+            "tokens_per_second": 62.0,
+            "generation_time_ms": 3000.0,
+            "time_to_first_token_ms": 140.0
+        },
+        "usage": {
+            "prompt_tokens": 9,
+            "completion_tokens": 140,
+            "total_tokens": 149
+        }
+    });
+
+    let result = extract_inference_stats("vllm-server", &json, &metrics_state);
+
+    assert!(result.is_some());
+    let stats = result.unwrap();
+    // The response updates tps…
+    assert!((stats.tps.unwrap() - 62.0f32).abs() < 0.01);
+    // …but the tamad-merged spec field is preserved across the replacement.
+    assert_eq!(stats.spec_accept_pct, Some(44.5f32));
+    assert!(stats.spec_decoding_active);
+
+    // The stored entry carries the preserved value too.
+    let map = metrics_state.inference_stats_snapshot();
+    let stored = map.get("vllm-server").unwrap();
+    assert_eq!(stored.spec_accept_pct, Some(44.5f32));
+    assert!((stored.tps.unwrap() - 62.0f32).abs() < 0.01);
+}

@@ -137,21 +137,31 @@ fn extract_vllm_stats(
         .unwrap_or_default()
         .as_millis() as i64;
 
-    // Read previous spec_decoding_active flag (vLLM doesn't do spec decoding
-    // in the same way as llama.cpp, but preserve sticky state)
-    let prev_active = metrics_state
-        .inference_stats
-        .borrow()
-        .get(backend_name)
-        .map(|s| s.spec_decoding_active)
-        .unwrap_or(false);
+    // Read previous spec fields (vLLM doesn't do spec decoding in the same
+    // way as llama.cpp): the proxy's per-server map is written by BOTH the
+    // tamad-merged spec observations (server/metrics.rs, ADR-0012) and this
+    // per-response whole-entry replacement, so carry both across.
+    //
+    // `borrow()` is `watch::Sender::borrow` — it hands back a guard holding
+    // the channel's internal RwLock as a *read* lock. Read both fields and
+    // drop the guard BEFORE `record_inference_stats` takes the write lock
+    // in `send_modify`; keeping it across that call self-deadlocks (the
+    // rwlock is non-reentrant).
+    let (prev_spec_pct, prev_active) = {
+        let guard = metrics_state.inference_stats.borrow();
+        let entry = guard.get(backend_name);
+        (
+            entry.and_then(|s| s.spec_accept_pct),
+            entry.map(|s| s.spec_decoding_active).unwrap_or(false),
+        )
+    };
 
     let stats = LatestInferenceStats {
         tps: Some(tokens_per_second as f32),
         prompt_tps,
         cache_hit_pct,
-        spec_accept_pct: None, // vLLM doesn't expose spec decoding stats
-        spec_decoding_active: prev_active,
+        spec_accept_pct: prev_spec_pct, // tamad-merged value (ADR-0012) — preserve across per-response replacement
+        spec_decoding_active: prev_active, // vLLM responses never set this true themselves
         last_updated_ms: now_ms,
     };
 

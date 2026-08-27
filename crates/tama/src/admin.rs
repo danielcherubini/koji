@@ -440,6 +440,8 @@ mod tests {
             desired: true,
             restart_count: 0,
             max_restarts: 3,
+            spec_accept_pct: None,
+            spec_decoding_active: false,
         };
         let stats = tama_core::tamad::pool::test_support::stats_full(1.5, vec![], vec![proc]);
         state

@@ -55,6 +55,8 @@ mod tests {
                 desired: false,
                 restart_count: 0,
                 max_restarts: 0,
+                spec_accept_pct: None,
+                spec_decoding_active: false,
             }],
         };
         assert_eq!(stats.cpu_usage_percent, 42.5);
@@ -139,6 +141,8 @@ mod tests {
                 desired: false,
                 restart_count: 0,
                 max_restarts: 0,
+                spec_accept_pct: None,
+                spec_decoding_active: false,
             }],
         };
         assert_eq!(provider.loaded_models.len(), 1);

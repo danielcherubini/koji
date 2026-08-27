@@ -104,6 +104,10 @@ pub fn to_process_info(entry: &ProcessEntry, store_row: Option<&StoredProcess>) 
         max_restarts: store_row
             .map(|r| r.max_restarts)
             .unwrap_or(DEFAULT_MAX_RESTARTS),
+        // Spec-decode observation (wire fields 10-11): defaults until the
+        // tamad backend /metrics scrape populates them (plan-194 Task 2).
+        spec_accept_pct: None,
+        spec_decoding_active: false,
     }
 }
 
@@ -2730,6 +2734,8 @@ mod tests {
             desired: false,
             restart_count: 0,
             max_restarts: 0,
+            spec_accept_pct: None,
+            spec_decoding_active: false,
         };
         let bytes = old.encode_to_vec();
         let decoded = ProcessInfo::decode(::prost::bytes::Bytes::from(bytes)).unwrap();

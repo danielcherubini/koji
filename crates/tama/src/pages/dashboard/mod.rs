@@ -217,20 +217,20 @@ pub fn Dashboard() -> impl IntoView {
             // Token Generation card: live tok/s + derived inter-token latency.
             let tg_visible = has_data && cur.tps.is_some();
             let tg_value = match cur.tps {
-                Some(t) => format!("{t:.1} tok/s"),
+                Some(t) => format_tok_s(t as f64),
                 None => "—".to_string(),
             };
             let tg_secondary = cur.tps.and_then(ms_per_token).map(|ms| {
-                format!("ITL {ms:.1} ms/tok · peak {:.0} tok/s", telemetry.tg_peak)
+                format!("ITL {} · peak {}", format_ms_per_token(ms), format_tok_s(telemetry.tg_peak as f64))
             });
             // Prompt Processing card: live tok/s + derived prefill latency.
             let pp_visible = has_data && cur.prompt_tps.is_some();
             let pp_value = match cur.prompt_tps {
-                Some(t) => format!("{t:.1} tok/s"),
+                Some(t) => format_tok_s(t as f64),
                 None => "—".to_string(),
             };
             let pp_secondary = cur.prompt_tps.and_then(ms_per_token).map(|ms| {
-                format!("prefill {ms:.1} ms/tok · peak {:.0} tok/s", telemetry.pp_peak)
+                format!("TTF {} · peak {}", format_ms_per_token(ms), format_tok_s(telemetry.pp_peak as f64))
             });
 
             view! {
@@ -466,7 +466,7 @@ pub fn Dashboard() -> impl IntoView {
                                 <div class="efficiency-item">
                                     {match cur.spec_accept_pct {
                                         Some(p) => view! {
-                                            <div class="card-value">{format!("{p:.0}%")}</div>
+                                            <div class="card-value">{format_pct(p as f64)}</div>
                                         }.into_any(),
                                         None => view! {
                                             <div class="card-value-empty">"—"</div>

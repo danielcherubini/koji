@@ -18,6 +18,7 @@
   font-size: 1.75rem;
   font-weight: 600;
   font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
   color: var(--text-primary);
   line-height: 1.2;
 }
@@ -27,12 +28,14 @@
   color: var(--text-secondary);
   margin-top: 0.125rem;
   font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
 }
 
 .card-value-empty {
   font-size: 1.75rem;
   font-weight: 600;
   font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
   color: var(--text-muted);
 }
 

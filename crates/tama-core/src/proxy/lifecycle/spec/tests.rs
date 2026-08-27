@@ -713,6 +713,8 @@ async fn setup_stub_load(
         desired: false,
         restart_count: 0,
         max_restarts: 0,
+        spec_accept_pct: None,
+        spec_decoding_active: false,
     }];
     let addr = start_stub(stub).await;
     let url = format!("grpc://{addr}");

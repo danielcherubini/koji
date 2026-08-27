@@ -67,6 +67,8 @@ fn row_from(p: &ProcessInfo, last_seen_ms: i64) -> ModelRow {
         desired: p.desired,
         restart_count: p.restart_count,
         max_restarts: p.max_restarts,
+        spec_accept_pct: p.spec_accept_pct.map(|v| v as f32),
+        spec_decoding_active: p.spec_decoding_active,
     }
 }
 
@@ -78,7 +80,10 @@ fn row_from(p: &ProcessInfo, last_seen_ms: i64) -> ModelRow {
 /// wire; `endpoint` is the routing target (wire field 5); `pid` is the wire
 /// process id (wire field 3, the authoritative source for `backend_pid`);
 /// `desired` and the restart counters (wire fields 7-9, T3) complete the
-/// picture (plan-193 T5c).
+/// picture (plan-193 T5c). `spec_accept_pct` / `spec_decoding_active`
+/// (wire fields 10-11) carry the tamad's vLLM spec-decode observation
+/// (ADR-0012) — `None`/`false` when the engine reports no spec traffic or
+/// is not vLLM.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
 pub struct ModelRow {
     pub key: String,
@@ -90,6 +95,11 @@ pub struct ModelRow {
     pub desired: bool,
     pub restart_count: u32,
     pub max_restarts: u32,
+    /// Spec-decode acceptance percentage (0-100) reported by the tamad's
+    /// backend scrape; `None` = no spec traffic observed or non-vLLM engine.
+    pub spec_accept_pct: Option<f32>,
+    /// Whether the backend currently has spec decoding active (vLLM only).
+    pub spec_decoding_active: bool,
 }
 
 /// Transactionally spawn as a Vec + index so `all()` can hand out a slice.
@@ -207,6 +217,8 @@ mod tests {
             desired,
             restart_count,
             max_restarts,
+            spec_accept_pct: None,
+            spec_decoding_active: false,
         }
     }
 
@@ -402,6 +414,49 @@ mod tests {
         );
         let rows = live(&pool_with(stats).await).await;
         assert!(rows.all().is_empty());
+    }
+
+    /// Wire spec-decode fields (ProcessInfo fields 10-11, ADR-0012) ride
+    /// onto the live row: a vLLM process reporting an acceptance rate and
+    /// active spec decoding surfaces both on the ModelRow.
+    #[tokio::test]
+    async fn test_row_carries_spec_decode_fields() {
+        let mut p = proc("qwen3-spec", "ready", true, "http://x:1", true, 0, 3);
+        p.spec_accept_pct = Some(44.5);
+        p.spec_decoding_active = true;
+        let rows = live(&pool_with(stats_with(vec![p])).await).await;
+        let r = rows.row("qwen3-spec").expect("ready row present");
+        assert_eq!(
+            r.spec_accept_pct,
+            Some(44.5),
+            "acceptance pct rides the wire"
+        );
+        assert!(
+            r.spec_decoding_active,
+            "spec-decode active flag rides the wire"
+        );
+    }
+
+    /// The default wire frame (no spec observation) maps the spec-decode
+    /// fields to their `None`/`false` defaults — no population, no crash.
+    #[tokio::test]
+    async fn test_row_spec_fields_default_to_none_false() {
+        let rows = live(
+            &pool_with(stats_with(vec![proc(
+                "qwen3",
+                "ready",
+                true,
+                "http://x:1",
+                true,
+                0,
+                3,
+            )]))
+            .await,
+        )
+        .await;
+        let r = rows.row("qwen3").expect("ready row present");
+        assert_eq!(r.spec_accept_pct, None);
+        assert!(!r.spec_decoding_active);
     }
 
     /// plan-193 T6 — the `models_loaded` semantics switch, as a count,

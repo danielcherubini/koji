@@ -747,13 +747,13 @@ fn test_loaded_or_starting_models_preserves_fields() {
 
 // ── format_cluster_subtitle tests ─────────────────────────────────────────
 
-/// The cluster subtitle renders the canonical line with rounded
+/// The cluster subtitle renders the canonical line with shared digit-rule
 /// throughput and count-inflected words (`1 Model`, `2 Nodes`).
 #[test]
 fn test_format_cluster_subtitle_full() {
     assert_eq!(
         format_cluster_subtitle(2, 3, 1, Some(53.4)),
-        "2 Nodes (3 GPUs) · 1 Model Active · 53 tok/s"
+        "2 Nodes (3 GPUs) · 1 Model Active · 53.4 tok/s"
     );
 }
 

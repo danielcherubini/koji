@@ -20,6 +20,7 @@ mod register;
 mod server;
 mod state;
 mod stats;
+mod vllm_metrics;
 
 use process_table::ProcessTable;
 use register::Registrar;

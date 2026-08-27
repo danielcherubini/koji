@@ -271,6 +271,42 @@ pub fn ms_per_token(tps: f32) -> Option<f64> {
     (tps > 0.0).then(|| 1000.0 / tps as f64)
 }
 
+/// The single digit rule for live throughput/latency numbers:
+/// `v < 1` → 2 decimals, NO trailing trim ("0.30");
+/// `1 <= v < 100` → 1 decimal, trim a rendered trailing ".0" ("72.6";
+/// `100.0`/`99.96` → "100"); `v >= 100` → 0 decimals ("3347").
+///
+/// Pure number — no unit suffix (callers append " tok/s" / " ms/tok").
+pub fn format_auto(v: f64) -> String {
+    if v < 1.0 {
+        format!("{v:.2}")
+    } else if v < 100.0 {
+        let s = format!("{v:.1}");
+        s.strip_suffix(".0").unwrap_or(&s).to_string()
+    } else {
+        format!("{v:.0}")
+    }
+}
+
+/// Format a live throughput with the shared digit rule and unit suffix,
+/// e.g. "72.6 tok/s", "3347 tok/s".
+pub fn format_tok_s(v: f64) -> String {
+    format!("{} tok/s", format_auto(v))
+}
+
+/// Format a per-token latency with the shared digit rule and unit suffix,
+/// e.g. "13.8 ms/tok", "0.30 ms/tok", "25 ms/tok", "1 ms/tok" (trim).
+/// Display wrapper over [`format_auto`] — same body as the tok/s numbers.
+pub fn format_ms_per_token(v: f64) -> String {
+    format!("{} ms/tok", format_auto(v))
+}
+
+/// Format a percentage with one decimal, for the spec-decode acceptance
+/// rate — e.g. "44.5%".
+pub fn format_pct(v: f64) -> String {
+    format!("{v:.1}%")
+}
+
 /// Partition active models into per-host buckets keyed by host name, plus an
 /// "unassigned" bucket for models whose `host_name` is `None` or matches no
 /// known host. Every name in `host_names` gets a bucket (possibly empty) so
@@ -347,8 +383,8 @@ pub fn loaded_or_starting_models(models: &[ModelStateSnapshot]) -> Vec<ModelStat
 /// (`1 Node (1 GPU) · 1 Model Active · 53 tok/s`), plural otherwise
 /// (`2 Nodes (3 GPUs) · 2 Models Active · 53 tok/s`).
 ///
-/// `tps` is rendered rounded as `53 tok/s`; when it is `None` or zero the
-/// line ends with a placeholder dash (`—`) instead.
+/// `tps` is rendered with the shared digit rule ([`format_tok_s`]); when it
+/// is `None` or zero the line ends with a placeholder dash (`—`) instead.
 pub fn format_cluster_subtitle(
     nodes: usize,
     gpus: usize,
@@ -356,7 +392,7 @@ pub fn format_cluster_subtitle(
     tps: Option<f32>,
 ) -> String {
     let tps_str = match tps {
-        Some(t) if t > 0.0 => format!("{t:.0} tok/s"),
+        Some(t) if t > 0.0 => format_tok_s(t as f64),
         _ => "—".to_string(),
     };
     let node_label = if nodes == 1 { "Node" } else { "Nodes" };
@@ -521,4 +557,51 @@ pub fn model_display_name(m: &ModelStateSnapshot) -> String {
         .or(m.api_name.as_deref())
         .unwrap_or(m.id.as_str())
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The 1-decimal branch trims a rendered trailing ".0" so values that
+    /// round up to a whole number (99.96) look clean rather than "100.0".
+    #[test]
+    fn test_format_tok_s_trim_mid_range() {
+        assert_eq!(format_tok_s(99.96), "100 tok/s");
+        assert_eq!(format_tok_s(100.0), "100 tok/s");
+    }
+
+    /// Values in [1, 100) keep their one decimal ("72.6 tok/s"); values
+    /// at/above 100 render 0-decimal ("3347 tok/s") — no "3347.2".
+    #[test]
+    fn test_format_tok_s_digit_rules() {
+        assert_eq!(format_tok_s(72.6), "72.6 tok/s");
+        assert_eq!(format_tok_s(3347.2), "3347 tok/s");
+    }
+
+    /// Values below 1 keep two decimals with NO trailing trim — the false
+    /// "0.0" the old `{ms:.1}` formatting produced for tiny ms/tok values
+    /// now reads "0.30".
+    #[test]
+    fn test_format_auto_sub_one_no_trim() {
+        assert_eq!(format_auto(0.2987), "0.30");
+    }
+
+    /// The ms/tok display wrapper shares the body of `format_auto` and
+    /// appends the unit — "1 ms/tok" (trim), "25 ms/tok" (trim),
+    /// "13.8 ms/tok" (mid range), "0.30 ms/tok" (sub-1, no trim).
+    #[test]
+    fn test_format_ms_per_token() {
+        assert_eq!(format_ms_per_token(1.0), "1 ms/tok");
+        assert_eq!(format_ms_per_token(25.0), "25 ms/tok");
+        assert_eq!(format_ms_per_token(13.76), "13.8 ms/tok");
+        assert_eq!(format_ms_per_token(0.02987), "0.03 ms/tok");
+    }
+
+    /// The spec-decode acceptance rate renders with one decimal ("44.5%").
+    #[test]
+    fn test_format_pct() {
+        assert_eq!(format_pct(44.474), "44.5%");
+        assert_eq!(format_pct(99.96), "100.0%");
+    }
 }

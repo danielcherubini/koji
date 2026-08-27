@@ -1,6 +1,7 @@
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
+use crate::pages::dashboard::format_auto;
 use crate::utils::chart_utils::{format_duration_label, format_relative_time};
 
 /// One data series for a [`BarChart`]. Multiple series render as paired
@@ -328,9 +329,9 @@ pub fn BarChart(
                     let label = s.label.clone();
                     let unit_part = if unit.is_empty() { "" } else { &unit };
                     let text = if label.is_empty() {
-                        format!("{:.1}{}", val, unit_part)
+                        format!("{}{}", format_auto(val as f64), unit_part)
                     } else {
-                        format!("{} {:.1}{}", label, val, unit_part)
+                        format!("{} {}{}", label, format_auto(val as f64), unit_part)
                     };
                     Some(
                         view! {
