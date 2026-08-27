@@ -13,16 +13,8 @@ Plans for features, refactors, and bug fixes in the Tama project.
 ## Quick Stats
 
 - **Total Plans**: 100
-- **Backlog**: 1
-- **Completed**: 97 ✅
-
----
-
-## Backlog
-
-| # | Plan | Status |
-|---|------|--------|
-| 194 | [vLLM Spec-Decode Telemetry + Consistent tok/s Formatting](plan-194-vllm-spec-telemetry.md) (ADR-0012) | Backlog |
+- **Backlog**: 0
+- **Completed**: 98 ✅
 
 > **Note:** The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan.
 
@@ -32,6 +24,7 @@ Plans for features, refactors, and bug fixes in the Tama project.
 
 | # | Plan | Status |
 |---|------|--------|
+| 194 | [vLLM Spec-Decode Telemetry + Consistent tok/s Formatting](done/plan-194-vllm-spec-telemetry.md) (ADR-0012) | ✅ COMPLETED (squash `930ee31d`) |
 | 194 | [Models Page: Live State, Filter Toolbar, Pull-Host UX](done/plan-194-models-live-state-filters-pull-host.md) | ✅ COMPLETED (squash `d59398f4`) |
 | 194 | [Detached Health Gate](done/plan-194-detached-health-gate.md) | ✅ COMPLETED (squash `221bbb6e`) |
 | 193 | [Tamad is the Source of Truth for Lifecycle](done/plan-193-tamad-lifecycle-truth.md) (ADR-0011) | ✅ COMPLETED (PR #177) |
@@ -84,4 +77,4 @@ When implementing a new feature:
 
 ---
 
-**Last Updated**: 2026-07-29
+**Last Updated**: 2026-08-26
