@@ -615,7 +615,12 @@ pub fn Models() -> impl IntoView {
                     </div>
                 </div>
 
-                <Suspense fallback=|| view! {
+                // `Transition`, NOT `Suspense`: in Leptos, `Suspense` falls
+                // back to the spinner every time a resource RE-fetches (the
+                // page visibly flashed on every 1.5s/8s poll). `Transition`
+                // shows the fallback only for the initial load and keeps the
+                // children in place across refetches (in-place diff on update).
+                <Transition fallback=|| view! {
                     <div class="card card--centered">
                         <span class="spinner">"Loading models..."</span>
                     </div>
@@ -737,7 +742,7 @@ pub fn Models() -> impl IntoView {
                             }
                         })
                     }}
-                </Suspense>
+                </Transition>
                 <Modal
                     open=rw_signal_to_signal(pull_modal_open)
                     on_close=Callback::new(move |_| pull_modal_open.set(false))
