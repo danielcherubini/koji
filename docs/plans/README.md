@@ -13,23 +13,18 @@ Plans for features, refactors, and bug fixes in the Tama project.
 ## Quick Stats
 
 - **Total Plans**: 101
-- **Backlog**: 1
-- **Completed**: 98 ✅
+- **Backlog**: 0
+- **Completed**: 99 ✅
 
 > **Note:** The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan.
 
 ---
 
-## Backlog
-
-| # | Plan | Status |
-|---|------|--------|
-| 195 | [Structured Logging Redesign](plan-195-structured-logging.md) (ADR-0013) | ⏳ Backlog |
-
 ## Completed (Recent)
 
 | # | Plan | Status |
 |---|------|--------|
+| 195 | [Structured Logging Redesign](done/plan-195-structured-logging.md) (ADR-0013) | ✅ COMPLETED (squash `93985db4`) |
 | 194 | [vLLM Spec-Decode Telemetry + Consistent tok/s Formatting](done/plan-194-vllm-spec-telemetry.md) (ADR-0012) | ✅ COMPLETED (squash `930ee31d`) |
 | 194 | [Models Page: Live State, Filter Toolbar, Pull-Host UX](done/plan-194-models-live-state-filters-pull-host.md) | ✅ COMPLETED (squash `d59398f4`) |
 | 194 | [Detached Health Gate](done/plan-194-detached-health-gate.md) | ✅ COMPLETED (squash `221bbb6e`) |
