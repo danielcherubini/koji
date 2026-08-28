@@ -16,9 +16,10 @@ serde_json = { workspace = true }
 serde = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
-tokio-stream = { version = "0.1", features = ["sync"] }
+tokio-stream = { version = "0.1", features = ["sync", "io-util"] }
 futures-util = { workspace = true }
 async-stream = { workspace = true }
+chrono = { workspace = true }
 reqwest = { workspace = true }
 sysinfo = { workspace = true }
 rand = { workspace = true }

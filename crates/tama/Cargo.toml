@@ -53,6 +53,9 @@ toml_edit = { workspace = true, optional = true }
 percent-encoding = { workspace = true, optional = true }
 time = { workspace = true, optional = true }
 rusqlite = { workspace = true, optional = true }
+# tokio-util: CancellationToken to bound the log-store writer's clean
+# shutdown at app exit (plan-195 task 3)
+tokio-util = { version = "0.7", optional = true }
 uuid = { version = "1", features = ["v4", "js"] }
 urlencoding = "2.1"
 chrono = "0.4.44"
@@ -71,6 +74,7 @@ ssr = [
   "dep:percent-encoding",
   "dep:time",
   "dep:rusqlite",
+  "dep:tokio-util",
   "tama-core/web-ui",
 ]
 

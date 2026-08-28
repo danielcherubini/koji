@@ -11,6 +11,105 @@ use sqlx::{PgPool, Row};
 
 use crate::config::types::{CompactionDevice, LogLevel, RestartPolicy};
 
+// ── Tests ───────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testing::postgres::with_schema;
+
+    /// The four structured-logging fields added to `app_general` (plan-195
+    /// task 3) round-trip through `upsert_general` / `get_general`: set
+    /// values persist, and a `NULL` directive comes back as `None`.
+    #[tokio::test]
+    async fn test_general_log_fields_round_trip() {
+        let guard = with_schema().await;
+        let pool = &guard.pool;
+
+        upsert_general(
+            pool,
+            &LogLevel::Debug,
+            Some("/models"),
+            Some("/logs"),
+            Some("hf-token"),
+            12,
+            Some("tama=debug,tama_core::proxy=trace"),
+            14,
+            42_000,
+            512,
+        )
+        .await
+        .unwrap();
+
+        let record = get_general(pool).await.unwrap().unwrap();
+        assert_eq!(record.log_level, "debug");
+        assert_eq!(
+            record.log_directives,
+            Some("tama=debug,tama_core::proxy=trace".to_string())
+        );
+        assert_eq!(record.log_retention_days, 14);
+        assert_eq!(record.log_retention_rows, 42_000);
+        assert_eq!(record.log_retention_max_mb, 512);
+
+        // A NULL directive round-trips as None; retention returns to the
+        // values passed explicitly.
+        upsert_general(
+            pool,
+            &LogLevel::Info,
+            None,
+            None,
+            None,
+            12,
+            None,
+            7,
+            50_000,
+            256,
+        )
+        .await
+        .unwrap();
+        let record = get_general(pool).await.unwrap().unwrap();
+        assert_eq!(record.log_directives, None);
+        assert_eq!(record.log_retention_days, 7);
+        assert_eq!(record.log_retention_rows, 50_000);
+        assert_eq!(record.log_retention_max_mb, 256);
+
+        guard.finish().await;
+    }
+
+    /// `Config::save` + `Config::load_from_pool` carry the four new fields
+    /// end-to-end (save goes through `upsert_general`, load reconstructs
+    /// `General` from the record).
+    #[tokio::test]
+    async fn test_config_save_load_round_trips_log_fields() {
+        let guard = with_schema().await;
+        let pool = &guard.pool;
+
+        let mut config = crate::config::Config::load_from_pool(pool)
+            .await
+            .expect("initial load seeds defaults");
+
+        config.general.log_directives = Some("tama_core=warn".to_string());
+        config.general.log_retention_days = 3;
+        config.general.log_retention_rows = 10_000;
+        config.general.log_retention_max_mb = 64;
+
+        config.save(pool).await.expect("save config");
+
+        let reloaded = crate::config::Config::load_from_pool(pool)
+            .await
+            .expect("reload config");
+        assert_eq!(
+            reloaded.general.log_directives,
+            Some("tama_core=warn".to_string())
+        );
+        assert_eq!(reloaded.general.log_retention_days, 3);
+        assert_eq!(reloaded.general.log_retention_rows, 10_000);
+        assert_eq!(reloaded.general.log_retention_max_mb, 64);
+
+        guard.finish().await;
+    }
+}
+
 // ── Typed record structs ─────────────────────────────────────────────
 
 /// A row from the `app_general` table.
@@ -21,6 +120,15 @@ pub struct GeneralRecord {
     pub logs_dir: Option<String>,
     pub hf_token: Option<String>,
     pub update_check_interval: u32,
+    /// Target-specific log directives (RUST_LOG syntax); `None` = no
+    /// durable directives (plan-195 task 5 column `log_directives`).
+    pub log_directives: Option<String>,
+    /// Log store retention: max entry age in days.
+    pub log_retention_days: u32,
+    /// Log store retention: max row count.
+    pub log_retention_rows: u64,
+    /// Log store retention: max estimated size in MiB.
+    pub log_retention_max_mb: u64,
 }
 
 /// A row from the `app_proxy` table.
@@ -114,22 +222,36 @@ pub async fn upsert_general(
     logs_dir: Option<&str>,
     hf_token: Option<&str>,
     update_check_interval: u32,
+    log_directives: Option<&str>,
+    log_retention_days: u32,
+    log_retention_rows: u64,
+    log_retention_max_mb: u64,
 ) -> Result<()> {
-    sqlx::query(
-        "INSERT INTO app_general (id, log_level, models_dir, logs_dir, hf_token, update_check_interval)
-         VALUES (1, $1, $2, $3, $4, $5)
+    sqlx::query(concat!(
+        "INSERT INTO app_general (id, log_level, models_dir, logs_dir, hf_token,",
+        " update_check_interval, log_directives, log_retention_days,",
+        " log_retention_rows, log_retention_max_mb)
+         VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9)
          ON CONFLICT (id) DO UPDATE SET
              log_level = EXCLUDED.log_level,
              models_dir = EXCLUDED.models_dir,
              logs_dir = EXCLUDED.logs_dir,
              hf_token = EXCLUDED.hf_token,
-             update_check_interval = EXCLUDED.update_check_interval",
-    )
+             update_check_interval = EXCLUDED.update_check_interval,
+             log_directives = EXCLUDED.log_directives,
+             log_retention_days = EXCLUDED.log_retention_days,
+             log_retention_rows = EXCLUDED.log_retention_rows,
+             log_retention_max_mb = EXCLUDED.log_retention_max_mb"
+    ))
     .bind(log_level.as_str())
     .bind(models_dir)
     .bind(logs_dir)
     .bind(hf_token)
     .bind(i64::from(update_check_interval))
+    .bind(log_directives)
+    .bind(i64::from(log_retention_days))
+    .bind(log_retention_rows as i64)
+    .bind(log_retention_max_mb as i64)
     .execute(pool)
     .await
     .context("Failed to upsert app_general")?;
@@ -139,7 +261,8 @@ pub async fn upsert_general(
 /// Get the general app config row. Returns None if no row exists.
 pub async fn get_general(pool: &PgPool) -> Result<Option<GeneralRecord>> {
     let row = sqlx::query(
-        "SELECT log_level, models_dir, logs_dir, hf_token, update_check_interval
+        "SELECT log_level, models_dir, logs_dir, hf_token, update_check_interval,
+                log_directives, log_retention_days, log_retention_rows, log_retention_max_mb
          FROM app_general WHERE id = 1",
     )
     .fetch_optional(pool)
@@ -157,6 +280,19 @@ pub async fn get_general(pool: &PgPool) -> Result<Option<GeneralRecord>> {
             .get::<i64, _>("update_check_interval")
             .try_into()
             .context("app_general.update_check_interval out of range")?,
+        log_directives: row.get::<Option<String>, _>("log_directives"),
+        log_retention_days: row
+            .get::<i32, _>("log_retention_days")
+            .try_into()
+            .context("app_general.log_retention_days out of range")?,
+        log_retention_rows: row
+            .get::<i64, _>("log_retention_rows")
+            .try_into()
+            .context("app_general.log_retention_rows out of range")?,
+        log_retention_max_mb: row
+            .get::<i64, _>("log_retention_max_mb")
+            .try_into()
+            .context("app_general.log_retention_max_mb out of range")?,
     }))
 }
 

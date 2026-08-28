@@ -10,7 +10,6 @@
 //! never downloads or builds backends (ADR-0010).
 
 pub mod installer;
-pub mod log_stream;
 pub mod manager;
 pub mod migration;
 pub mod tts_kokoro;

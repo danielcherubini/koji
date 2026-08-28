@@ -17,6 +17,7 @@ pub mod db;
 pub mod gpu;
 pub mod installations;
 pub mod logging;
+pub mod logstore;
 pub mod models;
 pub mod network;
 pub mod platform;

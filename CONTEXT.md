@@ -44,6 +44,10 @@ _Avoid_: Shortcut, nickname, virtual model
 Prompt compression via Microsoft's LLMLingua-2 model. Reduces token count before prompts hit the main LLM. Runs as a Python FastAPI subprocess owned by the host **tamad's** backend lifecycle (the proxy only requests the load/unload; the tamad spawns and manages the process).
 _Avoid_: Prompt compression, summarization
 
+**Log store**:
+Tama's embedded SQLite database (`base_dir/logs/tama-logs.db`, table `logs`) holding structured tracing events from the proxy and, via the tamad `StreamLogs` channel, from inference hosts. Ephemeral bounded operational records — **not** app state; never in Postgres, never part of `pg_dump`. Retention is bounded by max age + max rows + max bytes (defaults 7d / 50k / 256 MB). Replaces the old file-tail log UI as the web control plane's log source of truth.
+_Avoid_: log database, log DB, log archive
+
 **Backend lifecycle**:
 The tamad's system for managing backend processes: spawn, health poll, idle timeout unload, dead PID detection, auto-restart (with max restarts limit), and graceful shutdown. Applies to LLM backends, Kokoro TTS, and compaction servers. The proxy requests lifecycle operations; the tamad executes them on its host. On tamad shutdown (SIGTERM/SIGINT) the daemon kills the process groups of *all* loaded backends, so no backend outlives the daemon that owns it.
 _Avoid_: Process management, backend supervisor

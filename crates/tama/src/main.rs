@@ -15,6 +15,14 @@ use tama_core::proxy::{ProxyServer, ProxyState};
 
 mod admin;
 
+#[cfg(feature = "ssr")]
+mod log_runtime;
+
+/// Bounded capacity of the structured-log capture channel (plan-195
+/// task 3): the hot path is a non-blocking `try_send`; when full the
+/// layer drops the newest event and bumps the shared drop counter.
+const LOG_STORE_CHANNEL_CAPACITY: usize = 1024;
+
 /// Set up HF_TOKEN environment variable from config if present.
 fn setup_hf_token(config: &Config) {
     if let Some(token) = &config.general.hf_token {
@@ -89,7 +97,29 @@ async fn run_server() -> Result<()> {
     // provides `logs_dir`. After `Config::load_from_pool`, `init_tracing`
     // applies the DB-derived log_level and installs the real file writer —
     // no second global `.init()` (which would panic).
-    let (filter_handle, file_writer) = init_default_tracing();
+    //
+    // The structured-log capture channel is created at the SAME instant
+    // (the [`tama_core::logstore::LogStoreLayer`] needs the sender baked
+    // into the global subscriber; a layer can't be grafted on later).
+    // Records accumulate in the bounded channel (full → drop-newest) until
+    // the writer task starts after `logs_dir` is known from config.
+    let (logstore_tx, logstore_rx) =
+        tokio::sync::mpsc::channel::<tama_core::logstore::LogRecord>(LOG_STORE_CHANNEL_CAPACITY);
+    let logstore_dropped = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    // One clone for the tamad `StreamLogs` ingest wiring (plan-195
+    // task 7, used by `TamadPool::set_log_tx` in the SSR block below);
+    // the layer installed next takes the original.
+    let tamad_ingest_tx = logstore_tx.clone();
+    let (filter_handle, file_writer) =
+        install_default_tracing(Some((logstore_tx, logstore_dropped.clone())));
+
+    // The capture channel is only drained in the SSR build (where the web
+    // bootstrap owns the writer's lifetime). The CSR-only build does not
+    // run the server, so its channel legitimately fills and drops.
+    #[cfg(not(feature = "ssr"))]
+    let _ = logstore_rx;
+    #[cfg(not(feature = "ssr"))]
+    let _ = tamad_ingest_tx;
 
     // main.rs is the SINGLE owner of the pool: load bootstrap → resolve
     // password → create pool → retry until reachable → run migrations →
@@ -201,6 +231,103 @@ async fn run_server() -> Result<()> {
 
     #[cfg(feature = "ssr")]
     {
+        // ── Structured log store runtime (plan-195 task 3) ──────────
+        // The capture channel started at subscriber install is drained
+        // by the writer task from now on. The returned
+        // `crate::log_runtime::LogRuntime` is the WorkerGuard for
+        // structured logging: it stays in scope until app exit
+        // (dropping its JoinHandle / cancel token early silently stops
+        // persisting — see the type's docs and `tama_core::logstore::
+        // writer`), then cancel + await the final status after the
+        // server is down. The writer never touches SSE; a
+        // small bridge task publishes degraded transitions on the
+        // `/tama/v1/logs/events` broadcast only (routed in task 4).
+        let logs_path = log_store_path(&config)?;
+        // Retention bounds from the (boot-loaded) General config —
+        // see `start_log_runtime`'s docs for why they are boot-time
+        // (changing them takes effect on the next boot).
+        let log_retention = Some(tama_core::logstore::PruneBounds {
+            max_age_secs: i64::from(config.general.log_retention_days) * 86400,
+            max_rows: i64::try_from(config.general.log_retention_rows).unwrap_or(i64::MAX),
+            max_bytes: i64::try_from(config.general.log_retention_max_mb)
+                .map(|mb| mb * 1024 * 1024)
+                .unwrap_or(i64::MAX),
+        });
+        let log_runtime = crate::log_runtime::start_log_runtime(
+            &logs_path,
+            logstore_rx,
+            logstore_dropped,
+            log_retention,
+        )
+        .await?;
+        // Wire the per-tamad `StreamLogs` ingest (plan-195 task 7): the
+        // pool's ingest tasks share this SAME capture channel — tamad
+        // rows land in the store indistinguishable from the proxy's own
+        // rows. Defensively a no-op when the pool has no (grpc) tamads
+        // yet: the ingest tasks poll for the channel until set, and
+        // `load_all` upserts handled the streaming side already.
+        proxy_state.tamad_pool().set_log_tx(tamad_ingest_tx);
+        // The web state's `/tama/v1/logs/status` receiver — cloned BEFORE the
+        // read endpoint below is moved out of the runtime.
+        let log_status_rx = log_runtime.status_rx();
+
+        // Status → SSE bridge: a small task owns a `status_rx` clone
+        // and, on degraded transitions only, pushes self-describing
+        // JSON onto the per-endpoint broadcast held in
+        // `WebState.log_events_tx` (mirrors the `update_tx` pattern —
+        // the SSE handler creates the sender when a client connects).
+        let log_events_tx: Arc<tokio::sync::Mutex<Option<tokio::sync::broadcast::Sender<String>>>> =
+            Arc::new(tokio::sync::Mutex::new(None));
+        {
+            let mut bridge_rx = log_runtime.status_rx();
+            let bridge_tx = log_events_tx.clone();
+            tokio::spawn(async move {
+                let mut was_degraded = false;
+                while bridge_rx.changed().await.is_ok() {
+                    let status = *bridge_rx.borrow_and_update();
+                    let frame = if status.degraded && !was_degraded {
+                        Some(serde_json::json!({
+                            "event": "log_store_degraded",
+                            "since": status.degraded_since,
+                            "channel_len": status.channel_len,
+                            "ring_len": status.ring_len,
+                        }))
+                    } else if !status.degraded && was_degraded {
+                        Some(serde_json::json!({
+                            "event": "log_store_restored",
+                            "had_entries": status.channel_len + status.ring_len,
+                            "ring_flushed": status.ring_len == 0,
+                        }))
+                    } else {
+                        None
+                    };
+                    if let Some(frame) = frame {
+                        publish_log_event(&bridge_tx, frame).await;
+                    }
+                    was_degraded = status.degraded;
+                }
+            });
+        }
+
+        // Read API (plan-195 task 4): the read-endpoint move into the web
+        // state here (second connection to `tama-logs.db`; the read
+        // endpoints never touch the writer connection, WAL: 1 writer +
+        // N readers). The legacy on-demand tail provider (tamad engine
+        // log + local `*.log`) goes through TTL cache, so concurrent UI
+        // polls repeat the fetch.
+        let log_read = std::sync::Arc::new(std::sync::Mutex::new(log_runtime.reader));
+        let log_tail: std::sync::Arc<dyn tama_core::proxy::tama_handlers::LogTailProvider> =
+            std::sync::Arc::new(tama_core::proxy::tama_handlers::CachingTailProvider::new(
+                std::sync::Arc::new(tama_core::proxy::tama_handlers::TamadTailProvider::new(
+                    proxy_state.tamad_pool(),
+                    Some(
+                        config
+                            .logs_dir()
+                            .unwrap_or_else(|_| db_dir.clone().unwrap_or_default().join("logs")),
+                    ),
+                )),
+            ));
+
         // Create WebState separately from ProxyState.
         // WebState is owned by the tama crate, not tama-core.
         let web_state = {
@@ -215,6 +342,11 @@ async fn run_server() -> Result<()> {
                 update_tx: Arc::new(tokio::sync::Mutex::new(None)),
                 upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
                 db_pool: db_pool.clone(),
+                log_filter: Some(filter_handle.clone()),
+                log_status: Some(Arc::new(log_status_rx)),
+                log_events_tx: log_events_tx.clone(),
+                log_read: Some(log_read),
+                log_tail: Some(log_tail),
             })
         };
 
@@ -243,8 +375,37 @@ async fn run_server() -> Result<()> {
             }
         };
 
+        // Take the writer JoinHandle out of the runtime so it can be
+        // awaited below; the cancel token + reader live on in
+        // `log_runtime` until app exit (WorkerGuard rule).
+        let writer_handle = log_runtime.writer_handle;
+
         // Use the listener module which handles OS signals + graceful shutdown
-        tama_core::proxy::server::listener::run(app, addr, Some(on_shutdown), None).await
+        tama_core::proxy::server::listener::run(app, addr, Some(on_shutdown), None).await?;
+
+        // ── Log writer WorkerGuard (the `LogRuntime`, plan-195 task 3):
+        // the guard's token + reader stayed in scope until the last
+        // event could be logged; now cancel + await the final status
+        // (holding them longer would lose nothing). ──
+        log_runtime.writer_token.cancel();
+        match tokio::time::timeout(std::time::Duration::from_secs(5), writer_handle).await {
+            Ok(Ok(final_status)) => {
+                if final_status.degraded {
+                    tracing::warn!(
+                        retries_seen = final_status.retries_seen,
+                        "log store writer exited DEGRADED — check disk/db health"
+                    );
+                } else {
+                    tracing::debug!(
+                        dropped_count = final_status.dropped_count,
+                        "log store writer drained cleanly"
+                    );
+                }
+            }
+            Ok(Err(e)) => tracing::warn!("log store writer task failed: {e}"),
+            Err(_) => tracing::warn!("log store writer did not join within 5s"),
+        }
+        Ok(())
     }
 
     #[cfg(not(feature = "ssr"))]
@@ -254,30 +415,28 @@ async fn run_server() -> Result<()> {
     }
 }
 
-/// Build the `EnvFilter` for a log level (the level from the DB-backed
-/// config is authoritative).
-///
-/// RUST_LOG target-specific directives (e.g. "tama_core::backends=debug")
-/// are added on top. Bare level directives (e.g. "warn") are ignored so
-/// they can't override the configured log_level and silence the file logger.
-fn build_log_filter(log_level: &tama_core::config::LogLevel) -> tracing_subscriber::EnvFilter {
-    let level: tracing::Level = (*log_level).into();
-    let mut env_filter = tracing_subscriber::EnvFilter::new(format!("{}", level));
-    if let Ok(rust_log) = std::env::var("RUST_LOG") {
-        for directive in rust_log.split(',') {
-            let directive = directive.trim();
-            // Only add directives with a target (contain '='). Bare levels
-            // like "warn" or "info" would set the default and override the
-            // config level — we want the config to be authoritative.
-            if directive.is_empty() || !directive.contains('=') {
-                continue;
-            }
-            if let Ok(parsed) = directive.parse::<tracing_subscriber::filter::Directive>() {
-                env_filter = env_filter.add_directive(parsed);
-            }
-        }
+/// Path of the SQLite structured log store: `tama-logs.db` under the
+/// resolved `logs_dir` (the same `<logs_dir or base_dir/logs>`
+/// resolution the JSON log file uses).
+fn log_store_path(config: &Config) -> Result<std::path::PathBuf> {
+    config
+        .logs_dir()
+        .with_context(|| "Failed to resolve logs directory from config")
+        .map(|dir| dir.join("tama-logs.db"))
+}
+
+/// Publish one self-describing JSON frame onto the `/tama/v1/logs/events`
+/// per-endpoint broadcast. `None` (no SSE client connected) and send
+/// failures (the listener went away) are normal and silently dropped —
+/// events are never re-published.
+async fn publish_log_event(
+    tx: &Arc<tokio::sync::Mutex<Option<tokio::sync::broadcast::Sender<String>>>>,
+    frame: serde_json::Value,
+) {
+    let guard = tx.lock().await;
+    if let Some(sender) = guard.as_ref() {
+        let _ = sender.send(frame.to_string());
     }
-    env_filter
 }
 
 /// JSON file writer that discards writes until the real non-blocking writer
@@ -343,10 +502,20 @@ impl<'writer> tracing_subscriber::fmt::MakeWriter<'writer> for SwappableFileWrit
 /// - File: JSON lines through a `SwappableFileWriter` (discarding until the
 ///   real writer is installed by `init_tracing` after the DB config load)
 ///
+/// When `log_capture` is `Some((tx, dropped_counter))` (the proxy server
+/// path — plan-195 task 3), a `LogStoreLayer` is added so events also flow
+/// into the bounded channel the writer task drains. It MUST be baked in at
+/// install — a layer can't be grafted onto a global subscriber afterwards.
+///
 /// Returns the filter handle (to apply the DB-derived log_level) and the
 /// swappable file writer (to install the real log file). Must be called
 /// exactly once — a second `init()` would panic.
-fn init_default_tracing() -> (
+fn install_default_tracing(
+    log_capture: Option<(
+        tokio::sync::mpsc::Sender<tama_core::logstore::LogRecord>,
+        Arc<std::sync::atomic::AtomicU64>,
+    )>,
+) -> (
     tracing_subscriber::reload::Handle<tracing_subscriber::EnvFilter, tracing_subscriber::Registry>,
     SwappableFileWriter,
 ) {
@@ -354,27 +523,61 @@ fn init_default_tracing() -> (
         fmt, layer::SubscriberExt, reload, util::SubscriberInitExt, Registry,
     };
 
-    let env_filter = build_log_filter(&tama_core::config::LogLevel::Info);
+    let env_filter =
+        tama_core::logstore::filter::build_log_filter(&tama_core::config::LogLevel::Info, "")
+            .expect("building the startup log filter (empty directives always parse)");
     let (filter, filter_handle) = reload::Layer::new(env_filter);
     let file_writer = SwappableFileWriter::new();
-    Registry::default()
-        .with(filter)
-        .with(
-            fmt::layer()
-                .with_target(false)
-                .with_file(false)
-                .with_line_number(false),
-        )
-        .with(fmt::layer().json().with_writer(file_writer.clone()))
-        .init();
+
+    match log_capture {
+        Some((store_tx, dropped)) => {
+            Registry::default()
+                .with(filter)
+                .with(tama_core::logstore::build_layer(
+                    store_tx,
+                    tama_core::logstore::Source::proxy(),
+                    dropped,
+                ))
+                .with(
+                    fmt::layer()
+                        .with_target(false)
+                        .with_file(false)
+                        .with_line_number(false),
+                )
+                .with(fmt::layer().json().with_writer(file_writer.clone()))
+                .init();
+        }
+        None => {
+            Registry::default()
+                .with(filter)
+                .with(
+                    fmt::layer()
+                        .with_target(false)
+                        .with_file(false)
+                        .with_line_number(false),
+                )
+                .with(fmt::layer().json().with_writer(file_writer.clone()))
+                .init();
+        }
+    }
 
     (filter_handle, file_writer)
 }
 
+/// Console-only install for the `tama admin` CLI (no structured-log
+/// capture: the CLI is short-lived and its output is the console).
+fn init_default_tracing() -> (
+    tracing_subscriber::reload::Handle<tracing_subscriber::EnvFilter, tracing_subscriber::Registry>,
+    SwappableFileWriter,
+) {
+    install_default_tracing(None)
+}
+
 /// Apply the DB-derived tracing configuration to the live subscriber:
 /// - Update the dynamic `EnvFilter` to `config.general.log_level`
-/// - Install the real non-blocking JSON file writer (tama.log with
-///   size-based rotation) behind the swappable writer
+/// - Install the real non-blocking JSON file writer (hourly-rolling
+///   `tama.log.*` via `RollingFileAppender`, plan-195 task 4) behind the
+///   swappable writer
 ///
 /// No second global `.init()` — the subscriber installed by
 /// `init_default_tracing` serves the whole process (plan-190 Task 3: the
@@ -389,8 +592,14 @@ fn init_tracing(
     >,
     file_writer: &SwappableFileWriter,
 ) -> Result<tracing_appender::non_blocking::WorkerGuard> {
-    // Apply the DB-derived log level to the live subscriber.
-    let env_filter = build_log_filter(&config.general.log_level);
+    // Apply the DB-derived log level + durable directives to the live
+    // subscriber (`build_log_filter` merges `RUST_LOG` internally).
+    let log_directives = config.general.log_directives.clone().unwrap_or_default();
+    let env_filter =
+        tama_core::logstore::filter::build_log_filter(&config.general.log_level, &log_directives)
+            .with_context(|| {
+            format!("building the log filter from the DB config (directives: {log_directives:?})")
+        })?;
     filter_handle
         .modify(|f| *f = env_filter)
         .context("updating dynamic log-level filter after DB config load")?;
@@ -402,26 +611,26 @@ fn init_tracing(
     std::fs::create_dir_all(&logs_dir)
         .with_context(|| format!("Failed to create logs directory: {}", logs_dir.display()))?;
 
-    // Size-based rotation check on startup (reuses constants from logging module)
-    let log_path = logs_dir.join("tama.log");
-    if log_path.exists() {
-        if let Ok(meta) = std::fs::metadata(&log_path) {
-            if meta.len() > tama_core::logging::MAX_LOG_SIZE {
-                tama_core::logging::rotate_logs(&logs_dir, "tama")?;
-            }
-        }
-    }
+    // Hourly rolling file writer for the JSON output (plan-195 task 4) —
+    // replaces the manual size-based one-shot rotation at boot: the
+    // rolling appender rotates at every hour boundary in-process and
+    // prunes to the newest 24 files. `filename_prefix("tama.log")` +
+    // HOURLY yields `tama.log.<YYYY-MM-DD-HH>`-style files in
+    // `<logs_dir>`; the swappable install keeps the before-config window
+    // dropping as before.
+    let appender = tracing_appender::rolling::RollingFileAppender::builder()
+        .rotation(tracing_appender::rolling::Rotation::HOURLY)
+        .max_log_files(24)
+        .filename_prefix("tama.log")
+        .build(&logs_dir)
+        .with_context(|| {
+            format!(
+                "Failed to create the rolling log writer in {}",
+                logs_dir.display()
+            )
+        })?;
 
-    // Open non-blocking file writer for JSON output and install it behind
-    // the swappable writer (the JSON layer is already live on the global
-    // subscriber).
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .with_context(|| format!("Failed to open log file: {}", log_path.display()))?;
-
-    let (non_blocking, guard) = tracing_appender::non_blocking(file);
+    let (non_blocking, guard) = tracing_appender::non_blocking(appender);
     file_writer.install(non_blocking);
 
     Ok(guard)
@@ -429,7 +638,7 @@ fn init_tracing(
 
 #[cfg(test)]
 mod tracing_tests {
-    use super::{build_log_filter, SwappableFileWriter};
+    use super::SwappableFileWriter;
     use std::io::Write;
     use std::sync::{Arc, Mutex};
     use tracing_subscriber::layer::{Layer, SubscriberExt};
@@ -448,6 +657,7 @@ mod tracing_tests {
     }
 
     use tama_core::config::LogLevel;
+    use tama_core::logstore::filter::build_log_filter;
 
     /// A DB-configured `log_level` takes effect after startup: events are
     /// gated by the filter built from the level, through a real subscriber.
@@ -460,7 +670,7 @@ mod tracing_tests {
             (LogLevel::Error, false, false),
         ];
         for (level, expects_debug, expects_info) in cases {
-            let filter = build_log_filter(&level);
+            let filter = build_log_filter(&level, "").expect("valid filter from config level");
             let collected: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
             let writer = Collector(collected.clone());
             let subscriber = tracing_subscriber::registry().with(
@@ -498,7 +708,8 @@ mod tracing_tests {
 
         let collected: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
         let writer = Collector(collected.clone());
-        let (filter, handle) = reload::Layer::new(build_log_filter(&LogLevel::Info));
+        let (filter, handle) =
+            reload::Layer::new(build_log_filter(&LogLevel::Info, "").expect("valid filter"));
         let subscriber = Registry::default().with(filter).with(
             tracing_subscriber::fmt::layer()
                 .with_ansi(false)
@@ -507,7 +718,7 @@ mod tracing_tests {
         tracing::subscriber::with_default(subscriber, || {
             tracing::debug!("pre-update-debug");
             handle
-                .modify(|f| *f = build_log_filter(&LogLevel::Debug))
+                .modify(|f| *f = build_log_filter(&LogLevel::Debug, "").expect("valid filter"))
                 .expect("reload handle must work against a live subscriber");
             tracing::debug!("post-update-debug");
             tracing::info!("post-update-info");

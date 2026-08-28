@@ -104,6 +104,10 @@ async fn test_general_roundtrip() {
         Some("/var/log/tama"),
         Some("hf_abc123"),
         30,
+        Some("tama=debug"),
+        14,
+        42_000,
+        512,
     )
     .await
     .unwrap();
@@ -115,11 +119,26 @@ async fn test_general_roundtrip() {
     assert_eq!(general.logs_dir, Some("/var/log/tama".to_string()));
     assert_eq!(general.hf_token, Some("hf_abc123".to_string()));
     assert_eq!(general.update_check_interval, 30);
+    assert_eq!(general.log_directives, Some("tama=debug".to_string()));
+    assert_eq!(general.log_retention_days, 14);
+    assert_eq!(general.log_retention_rows, 42_000);
+    assert_eq!(general.log_retention_max_mb, 512);
 
     // Upsert again (update)
-    upsert_general(&guard.pool, &LogLevel::Warn, None, None, None, 60)
-        .await
-        .unwrap();
+    upsert_general(
+        &guard.pool,
+        &LogLevel::Warn,
+        None,
+        None,
+        None,
+        60,
+        None,
+        7,
+        50_000,
+        256,
+    )
+    .await
+    .unwrap();
 
     let general = get_general(&guard.pool).await.unwrap().unwrap();
     assert_eq!(general.log_level, "warn");
@@ -127,6 +146,10 @@ async fn test_general_roundtrip() {
     assert_eq!(general.logs_dir, None);
     assert_eq!(general.hf_token, None);
     assert_eq!(general.update_check_interval, 60);
+    assert_eq!(general.log_directives, None);
+    assert_eq!(general.log_retention_days, 7);
+    assert_eq!(general.log_retention_rows, 50_000);
+    assert_eq!(general.log_retention_max_mb, 256);
 
     guard.finish().await;
 }

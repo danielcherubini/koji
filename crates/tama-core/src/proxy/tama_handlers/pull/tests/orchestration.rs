@@ -180,6 +180,9 @@ async fn test_pull_host_verification_failure_is_mirrored() {
         stats_processes: vec![],
         logs_requests: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         log_messages: vec![],
+        stream_log_frames: std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new())),
+        stream_log_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        stream_log_refuse: false,
     };
     let addr = start_stub(stub.clone()).await;
 

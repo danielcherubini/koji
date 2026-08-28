@@ -12,13 +12,19 @@ Plans for features, refactors, and bug fixes in the Tama project.
 
 ## Quick Stats
 
-- **Total Plans**: 100
-- **Backlog**: 0
+- **Total Plans**: 101
+- **Backlog**: 1
 - **Completed**: 98 ✅
 
 > **Note:** The Tama Management API Spec (2026-04-03) was removed as it was a design document, not an implementation plan.
 
 ---
+
+## Backlog
+
+| # | Plan | Status |
+|---|------|--------|
+| 195 | [Structured Logging Redesign](plan-195-structured-logging.md) (ADR-0013) | ⏳ Backlog |
 
 ## Completed (Recent)
 

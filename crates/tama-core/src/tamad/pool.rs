@@ -7,13 +7,15 @@
 //! status is mirrored into `tamad_registry.status`.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
 use sqlx::PgPool;
+use tokio::sync::mpsc;
 
+use crate::logstore::{DedupState, LogRecord};
 use crate::providers::TamadConnection;
 use crate::tamad::client::TamadClient;
 use crate::tamad::SystemStats;
@@ -56,6 +58,9 @@ pub struct TamadHandle {
     online: tokio::sync::watch::Sender<bool>,
     cancel: tokio::sync::watch::Sender<bool>,
     task: tokio::sync::Mutex<Option<tokio::task::AbortHandle>>,
+    /// The background `StreamLogs` ingest task (plan-195 task 7),
+    /// alongside the stats stream task.
+    stream_logs_task: tokio::sync::Mutex<Option<tokio::task::AbortHandle>>,
 }
 
 impl TamadHandle {
@@ -70,6 +75,7 @@ impl TamadHandle {
             online,
             cancel,
             task: tokio::sync::Mutex::new(None),
+            stream_logs_task: tokio::sync::Mutex::new(None),
         }
     }
 
@@ -212,10 +218,15 @@ impl TamadHandle {
         client.logs(req).await
     }
 
-    /// Cancel and abort the background stream task (idempotent).
+    /// Cancel and abort the background stream tasks (idempotent).
     async fn shutdown(&self) {
         self.cancel.send_replace(true);
         if let Ok(mut task) = self.task.try_lock() {
+            if let Some(handle) = task.take() {
+                handle.abort();
+            }
+        }
+        if let Ok(mut task) = self.stream_logs_task.try_lock() {
             if let Some(handle) = task.take() {
                 handle.abort();
             }
@@ -229,6 +240,13 @@ pub struct TamadPool {
     db_pool: Arc<PgPool>,
     /// Test override for the reconnect backoff base (defaults to 1s).
     backoff_base: Option<Duration>,
+    /// The shared structured-log channel sender — set once at boot by
+    /// [`set_log_tx`]; `None` until then (defensively disables the
+    /// `StreamLogs` ingest tasks, plan-195 task 7).
+    log_tx: Arc<Mutex<Option<mpsc::Sender<LogRecord>>>>,
+    /// The shared replay-dedupe state, one entry per
+    /// `(tamad, source) → instance → last_seq` (plan-195 task 7).
+    dedupe: Arc<tokio::sync::Mutex<DedupState>>,
 }
 
 impl TamadPool {
@@ -238,6 +256,8 @@ impl TamadPool {
             handles: tokio::sync::RwLock::new(HashMap::new()),
             db_pool,
             backoff_base: None,
+            log_tx: Arc::new(Mutex::new(None)),
+            dedupe: Arc::new(tokio::sync::Mutex::new(DedupState::new())),
         }
     }
 
@@ -245,6 +265,13 @@ impl TamadPool {
     pub fn with_backoff_base(mut self, base: Duration) -> Self {
         self.backoff_base = Some(base);
         self
+    }
+
+    /// Wire the shared structured-log channel sender (called once at
+    /// boot, after the writer task exists; plan-195 task 7). The
+    /// per-tamad `StreamLogs` ingest tasks dial only after this is set.
+    pub fn set_log_tx(&self, tx: mpsc::Sender<LogRecord>) {
+        *self.log_tx.lock().expect("log_tx lock poisoned") = Some(tx);
     }
 
     /// Load all rows from `tamad_registry` and start a stream task for each.
@@ -285,6 +312,23 @@ impl TamadPool {
         let db_pool = Arc::clone(&self.db_pool);
         let task = tokio::spawn(run_stream_task(db_pool, handle.clone(), backoff));
         *handle.task.lock().await = Some(task.abort_handle());
+
+        // The sibling `StreamLogs` ingest task (plan-195 task 7): same
+        // cancel/backoff lifecycle as the stats stream task. Skipped for
+        // HTTP-protocol connections (no gRPC stream), and holding off
+        // (defensively) until `set_log_tx` wires the channel.
+        if handle.connection.protocol.is_grpc() {
+            let ingest = crate::tamad::stream_logs::spawn_stream_logs_ingest(
+                handle.connection.id.clone(),
+                handle.connection.clone(),
+                Arc::clone(&self.log_tx),
+                Arc::clone(&self.dedupe),
+                handle.connection.name.clone(),
+                handle.cancel.subscribe(),
+                backoff,
+            );
+            *handle.stream_logs_task.lock().await = Some(ingest.abort_handle());
+        }
         Ok(())
     }
 
@@ -473,7 +517,7 @@ pub mod test_support {
     use crate::providers::{Protocol, TamadConnection, TamadStatus};
     use crate::tamad::pool::LatestStats;
     use crate::tamad::pool::TamadHandle;
-    use crate::tamad::{JobEvent, LogEntry, StatsRequest, SystemStats};
+    use crate::tamad::{Empty, JobEvent, LogEntry, StatsRequest, StreamLogMessage, SystemStats};
 
     // ── Stub tamad gRPC service ──
 
@@ -555,6 +599,21 @@ pub mod test_support {
         /// Scripted `LogEntry.message` values every `logs` RPC streams
         /// back (timestamp/level left empty).
         pub log_messages: Vec<String>,
+        /// The server side of `StreamLogs` (plan-195 task 6, stage 2a):
+        /// scripted messages that a `stream_logs` DIAL streams out —
+        /// the proxy (task 7) dials the tamad and receives them in
+        /// order. The queue is consumed (drained) on each dial, mirroring
+        /// the real tamad's "replay the ring, then live" shape; tests
+        /// may re-queue frames between dials (each dial = fresh
+        /// replay).
+        pub stream_log_frames: Arc<tokio::sync::Mutex<Vec<StreamLogMessage>>>,
+        /// Number of `stream_logs` dials received (for assertions).
+        pub stream_log_calls: Arc<AtomicUsize>,
+        /// When set, `stream_logs` refuses with `UNIMPLEMENTED`
+        /// (simulated old tamad; the SAME status a tamad would return
+        /// if the proxy dials it before the RPC exists — task 7's
+        /// UNIMPLEMENTED-stop contract, testable here).
+        pub stream_log_refuse: bool,
     }
 
     type EmptyStream<T> =
@@ -642,6 +701,9 @@ pub mod test_support {
     impl crate::tamad::TamadService for StubTamad {
         type LogsStream = EmptyStream<LogEntry>;
         type StreamStatsStream = BoxedStatsStream;
+        type StreamLogsStream = std::pin::Pin<
+            Box<dyn Stream<Item = std::result::Result<StreamLogMessage, tonic::Status>> + Send>,
+        >;
         type StreamJobStream = BoxedJobStream;
 
         async fn list_providers(
@@ -882,6 +944,77 @@ pub mod test_support {
                 cancelled: false,
             }))
         }
+
+        /// The tamad side of `StreamLogs` (plan-195 task 6, stage 2a):
+        /// the PROXY dials (this stub plays the tamad). Each dial
+        /// streams `stream_log_frames` out in order, then holds the
+        /// stream open scanning for newly queued frames until the
+        /// client disconnects (or `down` flips) — the real tamad
+        /// behaves the same way (replay + live, unbounded; nothing is
+        /// reset between dials).
+        async fn stream_logs(
+            &self,
+            _request: tonic::Request<Empty>,
+        ) -> std::result::Result<tonic::Response<Self::StreamLogsStream>, tonic::Status> {
+            self.stream_log_calls.fetch_add(1, Ordering::SeqCst);
+            if self.stream_log_refuse {
+                return Err(tonic::Status::unimplemented(
+                    "StreamLogs not implemented (old tamad)",
+                ));
+            }
+            // Mirror the tamad's own liveness: while the stats simulation
+            // is failing (fail-first or past succeed_until), every other
+            // RPC — including this one — hits the same wall (the real
+            // tamad is down: nothing answers any dial).
+            let calls = self.calls.load(Ordering::SeqCst);
+            let successes = self.successes.load(Ordering::SeqCst);
+            if calls < self.fail_first_n || successes >= self.succeed_until {
+                return Err(tonic::Status::unavailable("simulated tamad down"));
+            }
+            let frames = self.stream_log_frames.clone();
+            let down = self.down.clone();
+            let stream = async_stream::try_stream! {
+                // Replay: every frame currently queued, in order.
+                let mut idx = 0;
+                {
+                    let guard = frames.lock().await;
+                    while idx < guard.len() {
+                        yield guard[idx].clone();
+                        idx += 1;
+                    }
+                }
+                // Live: hold open until newly queued frames or `down`.
+                loop {
+                    let mut down_rx = down.subscribe();
+                    tokio::select! {
+                        _ = down_rx.changed() => {
+                            if *down_rx.borrow_and_update() { return; }
+                        }
+                        _ = frame_queued(&frames, &mut idx) => {}
+                    }
+                    let g = frames.lock().await;
+                    while idx < g.len() {
+                        yield g[idx].clone();
+                        idx += 1;
+                    }
+                    drop(g);
+                }
+            };
+            Ok(tonic::Response::new(Box::pin(stream)))
+        }
+    }
+
+    /// Park until a frame is queued past `idx` (test scaffold: the
+    /// stub's "live" half polls on a short beat rather than a notifier
+    /// — good enough for scripted frames).
+    #[allow(dead_code)]
+    async fn frame_queued(
+        frames: &Arc<tokio::sync::Mutex<Vec<StreamLogMessage>>>,
+        idx: &mut usize,
+    ) {
+        while *idx >= frames.lock().await.len() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
     }
 
     /// Start the stub service on an ephemeral localhost port.
@@ -958,6 +1091,9 @@ pub mod test_support {
             stats_processes: vec![],
             logs_requests: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             log_messages: vec![],
+            stream_log_frames: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            stream_log_calls: Arc::new(AtomicUsize::new(0)),
+            stream_log_refuse: false,
             load_requests: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             load_delays: std::collections::HashMap::new(),
             load_model_fail: Arc::new(tokio::sync::Mutex::new(false)),
@@ -1067,6 +1203,9 @@ mod tests {
             stats_processes: vec![],
             logs_requests: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             log_messages: vec![],
+            stream_log_frames: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            stream_log_calls: Arc::new(AtomicUsize::new(0)),
+            stream_log_refuse: false,
         };
         let addr = start_stub(stub.clone()).await;
         let url = format!("grpc://{addr}");
@@ -1090,6 +1229,12 @@ mod tests {
         assert!(
             wait_for(|| async { handle.is_online().await }).await,
             "handle should come online"
+        );
+        // The online flag flips before the first snapshot is consumed —
+        // wait for the snapshot explicitly (order-independent).
+        assert!(
+            wait_for(|| async { handle.latest().await.is_some() }).await,
+            "snapshot received"
         );
         let latest = handle.latest().await.expect("snapshot received");
         assert_eq!(
@@ -1181,6 +1326,9 @@ mod tests {
             stats_processes: vec![],
             logs_requests: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             log_messages: vec![],
+            stream_log_frames: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            stream_log_calls: Arc::new(AtomicUsize::new(0)),
+            stream_log_refuse: false,
         };
         let addr = start_stub(stub.clone()).await;
         let url = format!("grpc://{addr}");
@@ -1198,6 +1346,12 @@ mod tests {
             stub.calls.load(Ordering::SeqCst) >= 4,
             "3 failures + 1 success expected, got {}",
             stub.calls.load(Ordering::SeqCst)
+        );
+        // The online flag flips before the first snapshot is consumed —
+        // wait for the snapshot explicitly (order-independent).
+        assert!(
+            wait_for(|| async { handle.latest().await.is_some() }).await,
+            "snapshot received"
         );
         let latest = handle.latest().await.expect("snapshot received");
         assert_eq!(latest.cpu_usage_percent, 42.5);
@@ -1244,6 +1398,9 @@ mod tests {
             stats_processes: vec![],
             logs_requests: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             log_messages: vec![],
+            stream_log_frames: std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            stream_log_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            stream_log_refuse: false,
         };
         let addr = start_stub(stub).await;
         let url = format!("grpc://{addr}");
@@ -1352,6 +1509,120 @@ mod tests {
         guard.finish().await;
     }
 
+    /// The pool's `StreamLogs` hook (plan-195 task 7): once the boot
+    /// wiring sets the log channel, `upsert_connection` spawns the
+    /// ingest sibling and the stub's scripted frames land on the shared
+    /// channel with the host-prefixed source taxonomy — the same rows
+    /// the store and the UI would show.
+    #[tokio::test]
+    async fn test_upsert_connection_ingests_stream_logs() {
+        let guard = with_schema().await;
+        let db_pool = Arc::new(guard.pool.clone());
+
+        let stub = test_support::stub_default();
+        let addr = start_stub(stub.clone()).await;
+        let url = format!("grpc://{addr}");
+        insert_tamad(
+            &db_pool,
+            "uuid-ingest",
+            "ingest",
+            &url,
+            "grpc",
+            Some("secret"),
+        )
+        .await
+        .unwrap();
+
+        let pool = TamadPool::new(db_pool.clone()).with_backoff_base(Duration::from_millis(20));
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<LogRecord>(16);
+        pool.set_log_tx(tx);
+
+        stub.stream_log_frames.lock().await.extend([
+            crate::tamad::tamad_service::StreamLogMessage {
+                kind: Some(crate::tamad::tamad_service::stream_log_message::Kind::Init(
+                    crate::tamad::tamad_service::StreamInit {
+                        instance_id: "boot-ingest".to_string(),
+                        start_seq_by_source: {
+                            let mut m = std::collections::HashMap::new();
+                            m.insert("tamad".to_string(), 0);
+                            m.insert("model:m".to_string(), 0);
+                            m
+                        },
+                    },
+                )),
+            },
+        ]);
+        // Append the two line frames in a second extend (single-extend
+        // array literal gets long).
+        {
+            let mut frames = stub.stream_log_frames.lock().await;
+            frames.push(crate::tamad::StreamLogMessage {
+                kind: Some(crate::tamad::tamad_service::stream_log_message::Kind::Line(
+                    crate::tamad::LoggedLine {
+                        ts: 1700000000001,
+                        level: 2,
+                        source: "tamad".to_string(),
+                        message: "{\"message\":\"pool control line\"}".to_string(),
+                        seq: 1,
+                        dropped: false,
+                        dropped_count: 0,
+                        dropped_since_ts: 0,
+                    },
+                )),
+            });
+            frames.push(crate::tamad::StreamLogMessage {
+                kind: Some(crate::tamad::tamad_service::stream_log_message::Kind::Line(
+                    crate::tamad::LoggedLine {
+                        ts: 1700000000002,
+                        level: 4,
+                        source: "model:m".to_string(),
+                        message: "{\"message\":\"pool engine line\"}".to_string(),
+                        seq: 1,
+                        dropped: false,
+                        dropped_count: 0,
+                        dropped_since_ts: 0,
+                    },
+                )),
+            });
+        }
+
+        let conn = grpc_conn("uuid-ingest", "ingest-host", &url);
+        pool.upsert_connection(&conn).await.unwrap();
+
+        // Both records land with the host-prefixed taxonomy and the
+        // flat envelope keys.
+        for (i, (want_source, want_msg)) in [
+            ("tamad:ingest-host", "pool control line"),
+            ("tamad:ingest-host:model:m", "pool engine line"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let rec = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+                .await
+                .unwrap_or_else(|_| panic!("record {} within 5s", i + 1))
+                .expect("receiver open");
+            assert_eq!(rec.source.as_str(), *want_source);
+            assert_eq!(rec.msg.get("message"), Some(&serde_json::json!(want_msg)));
+            assert_eq!(rec.msg.get("host"), Some(&serde_json::json!("ingest-host")));
+            assert_eq!(
+                rec.msg.get("instance_id"),
+                Some(&serde_json::json!("boot-ingest"))
+            );
+        }
+        assert!(
+            tokio::time::timeout(Duration::from_millis(500), rx.recv())
+                .await
+                .is_err(),
+            "no extra records"
+        );
+
+        // Removing the connection tears the ingest task down (ABORTED
+        // or already finished — either is a clean stop).
+        pool.remove_connection("uuid-ingest").await.unwrap();
+        guard.finish().await;
+    }
+
     /// HTTP-protocol connections have no stats stream: the handle exists but
     /// stays "unknown" (never online, no snapshot, DB status unchanged).
     #[tokio::test]
@@ -1392,5 +1663,137 @@ mod tests {
         assert!(row.status.is_unknown(), "DB status stays unknown");
 
         guard.finish().await;
+    }
+}
+
+// ─── plan-195 task 6: StubTamad `StreamLogs` (server-streaming stance) ────
+// The KEY task-7 enablers: the PROXY dials the tamad over its existing
+// gRPC client channel and receives a scripted `stream_log_frames`;
+// `stream_log_refuse` computes `UNIMPLEMENTED` on dial (the "old
+// tamad" / old-v2 contract that task 7's ingest loop must stop on).
+
+#[cfg(test)]
+mod task6_stream_logs {
+    use super::test_support::{start_stub, stub_default};
+    use crate::tamad::tamad_service::stream_log_message::Kind;
+    use crate::tamad::tamad_service::Empty as GrpcEmpty;
+    use crate::tamad::TamadServiceClient;
+
+    fn line(seq: i64, msg: &str) -> crate::tamad::StreamLogMessage {
+        crate::tamad::StreamLogMessage {
+            kind: Some(Kind::Line(crate::tamad::LoggedLine {
+                ts: 1,
+                level: 2,
+                source: "tamad".into(),
+                message: format!("{{\"message\":\"{msg}\"}}"),
+                seq,
+                dropped: false,
+                dropped_count: 0,
+                dropped_since_ts: 0,
+            })),
+        }
+    }
+
+    async fn dial(addr: std::net::SocketAddr) -> TamadServiceClient<tonic::transport::Channel> {
+        let url = format!("http://{addr}");
+        let uri: http::Uri = url.parse().unwrap();
+        let ep = tonic::transport::Endpoint::new(uri)
+            .unwrap()
+            .connect_timeout(std::time::Duration::from_secs(5));
+        for _ in 0..50 {
+            if let Ok(ch) = ep.connect().await {
+                return TamadServiceClient::new(ch);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        panic!("stub never came up");
+    }
+
+    /// A scripted `stream_log_frames` replays out in order on a dial;
+    /// a frame queued while the dial is open is delivered live (the
+    /// stream holds open); a SECOND dial replays the re-queued frame
+    /// again (per-dial replay — task 7 dedups by (instance_id, seq));
+    /// each dial counts once.
+    #[tokio::test]
+    async fn test_stub_streams_scripted_frames_then_live() {
+        let stub = stub_default();
+        stub.stream_log_frames.lock().await.push(line(1, "a"));
+        stub.stream_log_frames.lock().await.push(line(2, "b"));
+        let addr = start_stub(stub.clone()).await;
+        let mut client = dial(addr).await;
+
+        let mut stream = client
+            .stream_logs(tonic::Request::new(GrpcEmpty {}))
+            .await
+            .expect("dial opens")
+            .into_inner();
+        let a = stream
+            .message()
+            .await
+            .expect("frame a")
+            .expect("open")
+            .kind
+            .unwrap();
+        let a = match a {
+            Kind::Line(l) => l,
+            other => panic!("expected line, got {other:?}"),
+        };
+        assert_eq!(a.seq, 1);
+        assert!(a.message.contains("a"));
+        let b = stream
+            .message()
+            .await
+            .expect("frame b")
+            .expect("open")
+            .kind
+            .unwrap();
+        let b = match b {
+            Kind::Line(l) => l,
+            other => panic!("expected line, got {other:?}"),
+        };
+        assert_eq!(b.seq, 2);
+
+        // Queued while open → the stub's live half picks it up.
+        stub.stream_log_frames.lock().await.push(line(3, "c"));
+        let c = tokio::time::timeout(std::time::Duration::from_secs(5), stream.message())
+            .await
+            .expect("within 5s")
+            .expect("frame c")
+            .expect("open")
+            .kind
+            .unwrap();
+        let c = match c {
+            Kind::Line(l) => l,
+            other => panic!("expected line, got {other:?}"),
+        };
+        assert_eq!(c.seq, 3);
+        drop(stream);
+        assert_eq!(
+            stub.stream_log_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+    }
+
+    /// `stream_log_refuse` → `UNIMPLEMENTED` on dial: no frame is ever
+    /// seen. Task 7's ingest loop stops on exactly this code.
+    #[tokio::test]
+    async fn test_stub_refuse_propagates_unimplemented() {
+        let mut stub = stub_default();
+        stub.stream_log_refuse = true;
+        stub.stream_log_frames.lock().await.push(line(1, "never"));
+        let addr = start_stub(stub.clone()).await;
+        let mut client = dial(addr).await;
+
+        let err = client
+            .stream_logs(tonic::Request::new(GrpcEmpty {}))
+            .await
+            .expect_err("refuse must surface as a status error");
+        assert_eq!(err.code(), tonic::Code::Unimplemented);
+        assert_eq!(
+            stub.stream_log_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
     }
 }

@@ -114,6 +114,10 @@ async fn test_config_roundtrip() {
             logs_dir: Some("/var/log/tama".to_string()),
             hf_token: Some("hf_test123".to_string()),
             update_check_interval: 24,
+            log_directives: Some("tama_core::proxy=debug".to_string()),
+            log_retention_days: 14,
+            log_retention_rows: 25_000,
+            log_retention_max_mb: 128,
         },
         backends: std::collections::HashMap::new(),
         lifecycle: Lifecycle {
@@ -238,6 +242,13 @@ async fn test_config_roundtrip() {
     assert_eq!(loaded.general.logs_dir, Some("/var/log/tama".to_string()));
     assert_eq!(loaded.general.hf_token, Some("hf_test123".to_string()));
     assert_eq!(loaded.general.update_check_interval, 24);
+    assert_eq!(
+        loaded.general.log_directives,
+        Some("tama_core::proxy=debug".to_string())
+    );
+    assert_eq!(loaded.general.log_retention_days, 14);
+    assert_eq!(loaded.general.log_retention_rows, 25_000);
+    assert_eq!(loaded.general.log_retention_max_mb, 128);
 
     // Lifecycle
     assert_eq!(loaded.lifecycle.restart_policy, RestartPolicy::OnFailure);
@@ -507,9 +518,20 @@ async fn test_should_check_uses_db_interval() {
     assert!(checker.should_check(&guard.pool).await.unwrap());
 
     // Interval = 1h; a record from 2 hours ago must trigger a check.
-    upsert_general(&guard.pool, &LogLevel::Info, None, None, None, 1)
-        .await
-        .unwrap();
+    upsert_general(
+        &guard.pool,
+        &LogLevel::Info,
+        None,
+        None,
+        None,
+        1,
+        None,
+        7,
+        50_000,
+        256,
+    )
+    .await
+    .unwrap();
     let now = chrono::Utc::now().timestamp();
     let two_hours_ago = now - 7200;
     tama_core::db::queries::upsert_update_check(

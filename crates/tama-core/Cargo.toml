@@ -34,7 +34,7 @@ self_update = { version = "0.44", default-features = false, features = ["archive
 http = "1"
 semver = "1"
 sha2 = "0.10"
-chrono = { version = "0.4", features = ["serde"] }
+chrono = { workspace = true }
 lru = "0.12"
 futures = "0.3"
 regex.workspace = true
@@ -45,9 +45,15 @@ gguf-parser = { git = "https://github.com/Defilan/gguf-parser", branch = "main" 
 oauth2.workspace = true
 cookie.workspace = true
 percent-encoding = "2"
+# tokio-util: CancellationToken for the log-store writer's shutdown seam
+# (the same role the tracing_appender WorkerGuard plays for the JSON file
+# writer; see logstore/writer.rs) — thin over tokio 1.x, already transitively
+# configured in the workspace graph.
+tokio-util = "0.7"
 tonic.workspace = true
 prost.workspace = true
 sqlx.workspace = true
+rusqlite.workspace = true
 
 [features]
 web-ui = []
@@ -68,7 +74,8 @@ tonic-build = "0.12"
 protoc-bin-vendored = "3"
 
 [dev-dependencies]
-rusqlite.workspace = true
+# dev-only: `start_paused` (`tokio::time` Mock clock) for the logstore writer tests
+tokio = { workspace = true, features = ["test-util"] }
 serde_json = "1.0.149"
 tempfile.workspace = true
 wiremock = "0.6"

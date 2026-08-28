@@ -715,6 +715,11 @@ mod tests {
                 ),
             ]))),
             db_pool: tama_test_support::test_dummy_pool(),
+            log_filter: None,
+            log_status: None,
+            log_read: None,
+            log_tail: None,
+            log_events_tx: Arc::new(tokio::sync::Mutex::new(None)),
         };
 
         let app = Router::new()
@@ -792,6 +797,11 @@ mod tests {
                 ),
             ]))),
             db_pool: tama_test_support::test_dummy_pool(),
+            log_filter: None,
+            log_status: None,
+            log_read: None,
+            log_tail: None,
+            log_events_tx: Arc::new(tokio::sync::Mutex::new(None)),
         };
 
         let app = Router::new()
@@ -856,6 +866,11 @@ mod tests {
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             db_pool: tama_test_support::test_dummy_pool(),
+            log_filter: None,
+            log_status: None,
+            log_read: None,
+            log_tail: None,
+            log_events_tx: Arc::new(tokio::sync::Mutex::new(None)),
         };
 
         let app = Router::new()
@@ -937,6 +952,11 @@ mod tests {
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: upload_lock.clone(),
             db_pool: tama_test_support::test_dummy_pool(),
+            log_filter: None,
+            log_status: None,
+            log_read: None,
+            log_tail: None,
+            log_events_tx: Arc::new(tokio::sync::Mutex::new(None)),
         };
 
         let app = Router::new()
@@ -1035,6 +1055,11 @@ mod tests {
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: upload_lock.clone(),
             db_pool: tama_test_support::test_dummy_pool(),
+            log_filter: None,
+            log_status: None,
+            log_read: None,
+            log_tail: None,
+            log_events_tx: Arc::new(tokio::sync::Mutex::new(None)),
         };
 
         let app = Router::new()
@@ -1152,6 +1177,11 @@ mod tests {
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: upload_lock.clone(),
             db_pool: tama_test_support::test_dummy_pool(),
+            log_filter: None,
+            log_status: None,
+            log_read: None,
+            log_tail: None,
+            log_events_tx: Arc::new(tokio::sync::Mutex::new(None)),
         };
 
         let app = Router::new()

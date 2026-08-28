@@ -14,6 +14,7 @@ use uuid::Uuid;
 
 use crate::api::error::error_response;
 use crate::web_types::WebState;
+use tama_core::providers::TamadConnection;
 use tama_core::proxy::ProxyState;
 
 /// Request body for registering a new tamad.
@@ -23,6 +24,24 @@ pub struct CreateTamadRequest {
     pub url: String,
     pub protocol: String, // "grpc" or "http"
     pub token: Option<String>,
+}
+
+/// Register RESPONSE (plan-195 task 6): wrapped
+/// `{ connection, supports_stream_logs }` — the register endpoint
+/// only. GET/list keep returning bare `TamadConnection` (the flag is
+/// a one-shot registration-handshake advertisement, not a stored
+/// attribute). The old proxy returned a bare `TamadConnection` — for
+/// a new tamad talking to it the field is ABSENT and the tamad
+/// defaults it to `false` (serde side: `register_once` in
+/// `crates/tamad/src/register.rs`).
+#[derive(Debug, serde::Serialize)]
+pub struct CreateTamadResponse {
+    pub connection: TamadConnection,
+    /// Always `true` from a new proxy: it implements the
+    /// proxy-side `StreamLogs` ingest (task 7 shipped) and the
+    /// tamad-side dial is exactly the capability this flag
+    /// advertises (plan-195 task 6).
+    pub supports_stream_logs: bool,
 }
 
 /// POST /tama/v1/tamads
@@ -111,7 +130,14 @@ pub async fn create_tamad(
             } else {
                 StatusCode::OK
             };
-            (status, Json(tamad)).into_response()
+            (
+                status,
+                Json(CreateTamadResponse {
+                    connection: tamad,
+                    supports_stream_logs: true,
+                }),
+            )
+                .into_response()
         }
         Ok(None) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -148,6 +174,11 @@ mod tests {
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             db_pool: pool,
+            log_filter: None,
+            log_status: None,
+            log_read: None,
+            log_tail: None,
+            log_events_tx: Arc::new(tokio::sync::Mutex::new(None)),
         });
 
         (state, web_state, guard)
@@ -272,11 +303,14 @@ mod tests {
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body_str).unwrap();
-        assert_eq!(json["name"], "my-grpc-tamad");
-        assert_eq!(json["protocol"], "grpc");
-        assert_eq!(json["token"], "secret-token");
+        // plan-195 task 6: the register response is wrapped — the
+        // capabilities flag is advertised; the connection nests in.
+        assert_eq!(json["supports_stream_logs"], true);
+        assert_eq!(json["connection"]["name"], "my-grpc-tamad");
+        assert_eq!(json["connection"]["protocol"], "grpc");
+        assert_eq!(json["connection"]["token"], "secret-token");
         assert!(
-            json["id"].is_string(),
+            json["connection"]["id"].is_string(),
             "id should be auto-generated UUID string"
         );
         guard.finish().await;
@@ -313,8 +347,9 @@ mod tests {
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body_str).unwrap();
-        assert_eq!(json["name"], "my-http-tamad");
-        assert_eq!(json["protocol"], "http");
+        assert_eq!(json["supports_stream_logs"], true);
+        assert_eq!(json["connection"]["name"], "my-http-tamad");
+        assert_eq!(json["connection"]["protocol"], "http");
         guard.finish().await;
     }
 
@@ -372,11 +407,11 @@ mod tests {
             .unwrap();
         let second: serde_json::Value = serde_json::from_slice(&body_str).unwrap();
         assert_eq!(
-            second["id"], first["id"],
+            second["connection"]["id"], first["connection"]["id"],
             "upsert must return the originally stored id"
         );
-        assert_eq!(second["url"], "grpc://localhost:50052");
-        assert_eq!(second["token"], "tok-new");
+        assert_eq!(second["connection"]["url"], "grpc://localhost:50052");
+        assert_eq!(second["connection"]["token"], "tok-new");
         guard.finish().await;
     }
 }

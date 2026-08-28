@@ -76,8 +76,12 @@ const TAMA_MANAGED_PATHS: &[&str] = &[
     "/tama/v1/hf/*repo_id",
     "/tama/v1/docs",
     "/tama/v1/logs",
-    "/tama/v1/logs/:backend",
-    "/tama/v1/logs/:backend/events",
+    "/tama/v1/logs/sources",
+    "/tama/v1/logs/summary",
+    "/tama/v1/logs/status",
+    "/tama/v1/logs/stream",
+    "/tama/v1/logs/events",
+    "/tama/v1/logs/export",
     "/tama/v1/system/health",
     "/tama/v1/providers",
     "/tama/v1/providers/:name",
@@ -90,7 +94,7 @@ const TAMA_MANAGED_PATHS: &[&str] = &[
 /// a path in both is a shadow-route bug (audit F33).
 #[test]
 fn test_proxy_and_management_tables_are_disjoint() {
-    const EXPECTED_TAMA_PATH_COUNT: usize = 75;
+    const EXPECTED_TAMA_PATH_COUNT: usize = 79;
     assert_eq!(
         TAMA_MANAGED_PATHS.len(),
         EXPECTED_TAMA_PATH_COUNT,
@@ -138,6 +142,11 @@ async fn test_unified_app_serves_api_not_spa_html() {
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             db_pool: tama_test_support::test_dummy_pool(),
+            log_filter: None,
+            log_status: None,
+            log_read: None,
+            log_tail: None,
+            log_events_tx: Arc::new(tokio::sync::Mutex::new(None)),
         });
         let web_routes = tama_web::router::build_web_routes(web_state);
         let server = tama_core::proxy::ProxyServer::new(state).await;

@@ -44,12 +44,11 @@ struct LogFileCandidate {
 }
 
 /// Collect backend log file stems from the configured logs dir(s), newest
-/// mtime first. Mirrors the file scan in tama-core's `handle_all_logs`
-/// (backend_logs.rs): every `*.log` except `tama.log` is a source. Live
+/// mtime first. Every `*.log` file except `tama.log` is a source. Live
 /// tamad SSE sources are intentionally not included — a configured model's
 /// persistent log is the on-disk tail from its last backend run.
 async fn collect_log_sources(cfg: &tama_core::config::Config) -> Vec<LogFileCandidate> {
-    // Resolve candidate logs dirs (same fallbacks handle_all_logs uses).
+    // Resolve candidate logs dirs (configured dir + base_dir/logs fallback).
     let mut dirs: Vec<std::path::PathBuf> = Vec::new();
     if let Ok(d) = cfg.logs_dir() {
         dirs.push(d.clone());

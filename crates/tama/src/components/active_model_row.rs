@@ -13,18 +13,18 @@ use crate::pages::dashboard::{
 };
 
 /// Build the logs-link target for a tamad-hosted model: `/tama/logs?source=`
-/// plus the URL-encoded `{host_name}:{model_id}` source name — exactly the
-/// name `collect_tamad_log_sources` builds on the proxy side (the tamad
-/// connection name + the model's config key, which is also the process
-/// table's `model_name` / container `tama-<model>` key).
+/// plus the URL-encoded `tamad:<host_name>:model:<model_id>` source label —
+/// exactly the shape the structured-log store indexes tamad engine lines
+/// under (see `docs/api/logs.md`, "Source vocabulary"). The tail adapter
+/// fronts that label when the store has no rows for it yet.
 ///
 /// `None` when the model has no host: file-based models have no
-/// `{host}:{model}` engine-log source, so the link is omitted.
+/// `tamad:` engine-log source, so the link is omitted.
 pub fn model_logs_href(host_name: Option<&str>, model_id: &str) -> Option<String> {
     let host = host_name?;
     Some(format!(
         "/tama/logs?source={}",
-        urlencoding::encode(&format!("{host}:{model_id}"))
+        urlencoding::encode(&format!("tamad:{host}:model:{model_id}"))
     ))
 }
 
@@ -45,7 +45,7 @@ fn active_model_name_markup(display: String) -> impl IntoView {
 /// (`gpu_variant · quant · Nk ctx · format`), tok/s badge when generating,
 /// an Unload button honoring the shared busy flag, a `📄` logs link for
 /// tamad-hosted models (the engine container tail, via
-/// `/tama/logs?source={host}:{model}`), and the `✎` edit link.
+/// `/tama/logs?source=tamad:{host}:model:{model_id}`), and the `✎` edit link.
 #[component]
 pub fn ActiveModelRow(
     /// The model to render (Ready or Starting).
@@ -215,18 +215,19 @@ mod tests {
     }
 
     /// A tamad-hosted model (host_name Some) yields the encoded
-    /// `{host}:{model_id}` source link — the `:` must be percent-encoded so
-    /// it survives the `?source=` query param.
+    /// `tamad:<host>:model:<model_id>` source link — the new structured-log
+    /// vocabulary (plan-195), with `:` percent-encoded so it survives the
+    /// `?source=` query param.
     #[test]
     fn test_model_logs_href_tamad_hosted_encodes_colon() {
         assert_eq!(
             model_logs_href(Some("gpu-box"), "qwen--qwen3.8-27b-fp8"),
-            Some("/tama/logs?source=gpu-box%3Aqwen--qwen3.8-27b-fp8".to_string())
+            Some("/tama/logs?source=tamad%3Agpu-box%3Amodel%3Aqwen--qwen3.8-27b-fp8".to_string())
         );
     }
 
-    /// A hostless model (host_name None) has no `{host}:{model}` engine-log
-    /// source → the link is omitted entirely.
+    /// A hostless model (host_name None) has no `tamad:` engine-log source →
+    /// the link is omitted entirely.
     #[test]
     fn test_model_logs_href_local_model_none() {
         assert_eq!(model_logs_href(None, "qwen--qwen3.8-27b-fp8"), None);

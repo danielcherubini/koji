@@ -49,7 +49,6 @@ impl Clone for ProxyState {
             client: self.client.clone(),
             db_dir: self.db_dir.clone(),
             config_write_semaphore: Arc::clone(&self.config_write_semaphore),
-            backend_logs: self.backend_logs.clone(),
             cookie_key: self.cookie_key.clone(),
             langfuse_client: Arc::clone(&self.langfuse_client),
             remote_forwarder: self.remote_forwarder.clone(),
@@ -74,8 +73,6 @@ pub struct ProxyState {
     /// Replaces the old global CONFIG_WRITE_LOCK to allow controlled
     /// parallelism (default capacity=4) instead of full serialization.
     pub(crate) config_write_semaphore: Arc<tokio::sync::Semaphore>,
-    /// Backend log stream manager — broadcasts backend stdout/stderr via SSE.
-    pub(crate) backend_logs: crate::installations::log_stream::BackendLogManager,
     /// Signing key for session cookies (OAuth2 OIDC login).
     pub(crate) cookie_key: cookie::Key,
     /// Langfuse observability client, initialized from config at startup.
@@ -274,11 +271,6 @@ impl ProxyState {
     pub fn set_pull_queue(&mut self, queue: Option<Arc<PullQueueService>>) {
         self.pull.pull_queue = queue;
     }
-
-    /// Returns a reference to the backend log stream manager.
-    pub fn backend_logs(&self) -> &crate::installations::log_stream::BackendLogManager {
-        &self.backend_logs
-    }
 }
 
 #[cfg(test)]
@@ -416,7 +408,6 @@ mod tests {
         let _: &reqwest::Client = state.client();
         let _: &Option<std::path::PathBuf> = state.db_dir();
         let _: &Option<Arc<PullQueueService>> = state.pull_queue();
-        let _: &crate::installations::log_stream::BackendLogManager = state.backend_logs();
         // Sub-structs are composed and independently cloneable.
         let _registry = state.registry.clone();
         let _metrics = state.metrics.clone();

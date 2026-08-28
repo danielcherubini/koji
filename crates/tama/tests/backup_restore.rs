@@ -159,6 +159,11 @@ async fn test_restore_from_v3_archive_end_to_end() {
         update_tx: Arc::new(tokio::sync::Mutex::new(None)),
         upload_lock,
         db_pool: Arc::new(target_guard.pool.clone()),
+        log_filter: None,
+        log_status: None,
+        log_read: None,
+        log_tail: None,
+        log_events_tx: Arc::new(tokio::sync::Mutex::new(None)),
     };
 
     let app = Router::new()

@@ -17,6 +17,23 @@ service TamadService {
   rpc PullModel(PullModelRequest) returns (JobIdResponse);
   rpc RunBenchmark(RunBenchmarkRequest) returns (JobIdResponse);
   rpc CancelJob(CancelJobRequest) returns (CancelJobResponse);
+
+  // plan-195 task 6 (stage 2a): structured log push. SERVER-STREAMING:
+  // the tamad is the gRPC *server* (it already serves this service) and
+  // the proxy is the dialing *client* — the same transport, auth, and
+  // dial path as PullModel/Logs/Stats. The proxy hosts no gRPC server
+  // (REST/HTTP+SSE only), so the tamad never dials; a stream connection
+  // means "the proxy wants logs right now". The tamad's handler sends
+  // `StreamInit{instance_id, start_seq_by_source}` FIRST, then the
+  // replay ring, oldest→newest, then live entries, until the client
+  // disconnects. `instance_id` is per-boot and `seq` is per-source,
+  // so late replays and dedup on the proxy side (task 7) are keyed on
+  // (instance_id, seq). Nothing is reset on connect: a reconnect re-
+  // replays the ring under the same per-boot identity. Capability gate:
+  // the register response carries `supports_stream_logs` (absent on old
+  // proxies ⇒ the tamad treats it as false); old proxy + new tamad ⇒
+  // the proxy never dials and nothing changes on the wire.
+  rpc StreamLogs(Empty) returns (stream StreamLogMessage);
 }
 
 message Empty {}
@@ -216,4 +233,49 @@ message RunBenchmarkRequest {
   //                      tamad's install dir (<data-dir>/install)
   string model_path_rel = 4;
   string binary_path_rel = 5;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// plan-195 task 6 (stage 2a): structured log push protocol.
+//
+// APPEND-ONLY section — never renumber. `rpc Logs` and `LogEntry` above
+// stay exactly as-is (legacy one-shot tail); the types below are the v2
+// stream consumed by `StreamLogs`.
+// ───────────────────────────────────────────────────────────────────────────
+
+/// One structured log line pushed from a tamad.
+message LoggedLine {
+  // unix ms, capture time (tamad clock)
+  int64 ts = 1;
+  // 0..4 = TRACE..ERROR; -1 = unknown (engine container line)
+  int32 level = 2;
+  // "tamad" | "model:<model_name>"
+  string source = 3;
+  // JSON doc: {"message":str, "target":str?, ...fields}
+  string message = 4;
+  // monotonic per source, per boot
+  int64 seq = 5;
+  // true ⇒ synthetic drop marker
+  bool dropped = 6;
+  int64 dropped_count = 7;
+  // unix ms, meaningful when dropped
+  int64 dropped_since_ts = 8;
+}
+
+/// First frame of every `StreamLogs` stream: the tamad announces its
+/// per-boot identity and where the replay ring currently starts per
+/// source (0 when that source has no surviving line).
+message StreamInit {
+  // per-boot UUID v4 (NOT the pid)
+  string instance_id = 1;
+  // source → 0 (or the surviving ring's min-seq)
+  map<string, int64> start_seq_by_source = 2;
+}
+
+/// Wire envelope: an init frame or a log line.
+message StreamLogMessage {
+  oneof kind {
+    StreamInit init = 1;
+    LoggedLine line = 2;
+  }
 }

@@ -460,6 +460,22 @@ pub fn logs_tail_args(container_name: &str, max_lines: usize) -> Vec<String> {
     ]
 }
 
+/// Build the `docker logs` argument vector for FOLLOWING a container's
+/// engine log (plan-195 task 6): `-f` blocks until EOF, `-t` prefixes
+/// each line with its RFC3339 capture time (parsed by the tail
+/// supervisor, `crates/tamad/src/push/tails.rs`). New alongside the
+/// one-shot `logs_tail_args` above; the one-shot legacy form keeps its
+/// shape (without `-t`) — no behavioral cosmetic difference there: the
+/// legacy `Logs` RPC is unchanged.
+pub fn logs_follow_args(container_name: &str) -> Vec<String> {
+    vec![
+        "logs".to_string(),
+        "-f".to_string(),
+        "-t".to_string(),
+        container_name.to_string(),
+    ]
+}
+
 /// Tail the last `max_lines` lines of a container's logs.
 ///
 /// Runs `docker logs --tail <n> <name>`. A non-zero exit
@@ -526,12 +542,17 @@ mod tests {
     fn test_logs_tail_args_vector() {
         assert_eq!(
             logs_tail_args("tama-model-a", 200),
-            vec![
-                "logs".to_string(),
-                "--tail".to_string(),
-                "200".to_string(),
-                "tama-model-a".to_string(),
-            ]
+            vec!["logs", "--tail", "200", "tama-model-a"]
+        );
+    }
+
+    /// The follow form (plan-195 task 6) is the streaming tail used by
+    /// the engine-tail supervisor: `-f -t <container>`.
+    #[test]
+    fn test_logs_follow_args_vector() {
+        assert_eq!(
+            logs_follow_args("tama-model-a"),
+            vec!["logs", "-f", "-t", "tama-model-a"]
         );
     }
 

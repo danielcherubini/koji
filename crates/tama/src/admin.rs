@@ -162,13 +162,18 @@ async fn bootstrap_proxy_state(filter_handle: &FilterHandle) -> Result<Arc<Proxy
     let config = Config::load_from_pool(&pool)
         .await
         .context("loading app config from Postgres")?;
-    // Apply the DB-derived log_level to the live console filter (the
-    // JSON file writer stays in discarding mode; admin does not log to a
-    // file).
-    if let Err(e) =
-        filter_handle.modify(|f| *f = crate::build_log_filter(&config.general.log_level))
+    // Apply the DB-derived log_level + log_directives to the live console
+    // filter (the JSON file writer stays in discarding mode; admin does
+    // not log to a file).
+    let log_directives = config.general.log_directives.clone().unwrap_or_default();
+    match tama_core::logstore::filter::build_log_filter(&config.general.log_level, &log_directives)
     {
-        tracing::warn!("failed to apply the DB log level: {e}");
+        Ok(new_filter) => {
+            if let Err(e) = filter_handle.modify(|f| *f = new_filter) {
+                tracing::warn!("failed to apply the DB log level: {e}");
+            }
+        }
+        Err(e) => tracing::warn!("failed to build the DB log level filter: {e}"),
     }
     crate::setup_hf_token(&config);
 

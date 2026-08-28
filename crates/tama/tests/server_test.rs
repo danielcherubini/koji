@@ -7,7 +7,8 @@ mod tests {
     use std::sync::Arc;
 
     /// Create a minimal WebState for tests (dummy pool when none supplied —
-    /// it never connects).
+    /// it never connects). A real in-memory log store is wired so the
+    /// `/tama/v1/logs*` read endpoints serve live rows instead of 503.
     fn test_web_state(pool: Option<Arc<PgPool>>) -> tama_web::web_types::WebState {
         tama_web::web_types::WebState {
             jobs: Some(Arc::new(tama_web::web_types::JobManager::new())),
@@ -17,6 +18,13 @@ mod tests {
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             db_pool: pool.unwrap_or_else(tama_test_support::test_dummy_pool),
+            log_filter: None,
+            log_status: None,
+            log_read: Some(Arc::new(std::sync::Mutex::new(
+                tama_core::logstore::LogStore::in_memory().unwrap(),
+            ))),
+            log_tail: None,
+            log_events_tx: Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
 
@@ -521,16 +529,15 @@ mod tests {
             content_type
         );
         let body: serde_json::Value = resp.json().await.unwrap();
-        assert!(body["sources"].is_array());
+        assert!(body["entries"].is_array());
     }
 
-    /// GET /tama/v1/logs/:backend/events returns SSE (not HTML from SPA wildcard).
+    /// GET /tama/v1/logs/stream returns SSE (not HTML from SPA wildcard).
     #[tokio::test]
-    async fn test_backend_log_sse_returns_events() {
+    async fn test_log_stream_sse_returns_events() {
         let (client, addr) = start_test_server().await;
-        // Use a timeout so the SSE handler doesn't hang the test.
         let resp = client
-            .get(format!("http://{}/tama/v1/logs/test_backend/events", addr))
+            .get(format!("http://{}/tama/v1/logs/stream?after=0", addr))
             .send()
             .await
             .unwrap();

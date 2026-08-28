@@ -58,7 +58,6 @@ impl ProxyState {
                 .expect("failed to build HTTP client"),
             db_dir,
             config_write_semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
-            backend_logs: crate::installations::log_stream::BackendLogManager::default(),
             cookie_key: cookie::Key::generate(),
             langfuse_client: Arc::new(tokio::sync::RwLock::new(langfuse_client)),
             remote_forwarder: crate::proxy::remote::RemoteForwarder::new(),

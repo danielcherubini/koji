@@ -52,7 +52,16 @@ impl Registrar {
     /// Attempt a single idempotent registration (upsert by name).
     ///
     /// Success is a 200 (already registered, updated) or 201 (created).
-    pub(crate) async fn register_once(&self) -> Result<()> {
+    /// Returns the register response's `supports_stream_logs`
+    /// capability flag (plan-195 task 6): `true` when the proxy
+    /// advertised it, `false` when the field is absent (old proxy)
+    /// or the body is not the wrapped shape. The wrapped response —
+    /// `{ connection: TamadConnection, supports_stream_logs: bool }` —
+    /// is what the NEW proxy's register endpoint returns; GET/list
+    /// endpoints keep returning bare `TamadConnection` (the flag is a
+    /// one-shot registration-handshake advertisement, not a stored
+    /// attribute).
+    pub(crate) async fn register_once(&self) -> Result<bool> {
         let body = serde_json::json!({
             "name": self.name,
             "url": self.public_url,
@@ -75,7 +84,21 @@ impl Registrar {
             } else {
                 debug!(name = %self.name, "Self-registration refreshed with proxy");
             }
-            Ok(())
+            // Parse the capability flag: absent / non-object ⇒ false
+            // (old proxy → bare `TamadConnection` body → "connection"
+            // missing ⇒ default false, exactly the document's "field
+            // absent ⇒ false" contract).
+            let supports = match resp.json::<serde_json::Value>().await {
+                Ok(v) => v
+                    .get("supports_stream_logs")
+                    .and_then(|s| s.as_bool())
+                    .unwrap_or(false),
+                Err(_) => false,
+            };
+            if supports {
+                debug!(name = %self.name, "Proxy supports StreamLogs push (v2)");
+            }
+            Ok(supports)
         } else {
             let text = resp.text().await.unwrap_or_default();
             Err(anyhow!(
@@ -89,13 +112,23 @@ impl Registrar {
     /// Register immediately, then every 300 seconds forever.
     ///
     /// Errors are logged and the loop continues — the tamad must never
-    /// fail to serve because the proxy is down.
-    pub async fn run_loop(self) {
+    /// fail to serve because the proxy is down. On every successful
+    /// registration, the peer capability flag (`supports_stream_logs`)
+    /// is published to `capability_tx` — the `LogPushRuntime` gate
+    /// (plan-195 task 6: old proxy ⇒ flag false ⇒ the tamad's log
+    /// feed cycles bounded, no markers, nothing assumes a live
+    /// consumer).
+    pub async fn run_loop(self, capability_tx: tokio::sync::watch::Sender<bool>) {
         let mut interval =
             tokio::time::interval(tokio::time::Duration::from_secs(REGISTER_INTERVAL_SECS));
         loop {
-            if let Err(e) = self.register_once().await {
-                warn!(error = %e, "Self-registration attempt failed; will retry");
+            match self.register_once().await {
+                Ok(supports) => {
+                    let _ = capability_tx.send(supports);
+                }
+                Err(e) => {
+                    warn!(error = %e, "Self-registration attempt failed; will retry");
+                }
             }
             interval.tick().await;
         }
@@ -194,5 +227,48 @@ mod tests {
             "error should mention the status: {}",
             err
         );
+    }
+
+    /// V2 proxy: the register response is wrapped
+    /// `{ connection: TamadConnection, supports_stream_logs: bool }` —
+    /// the flag is parsed out (plan-195 task 6 capability gate).
+    #[tokio::test]
+    async fn test_register_once_parses_supports_stream_logs() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/tama/v1/tamads"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "connection": {"id": "cu-1", "name": "my-tamad"},
+                "supports_stream_logs": true,
+            })))
+            .mount(&mock)
+            .await;
+
+        let supports = make_registrar(&mock.uri())
+            .register_once()
+            .await
+            .expect("201 success");
+        assert!(supports, "v2 proxy advertises the StreamLogs push");
+    }
+
+    /// Old proxy: a bare `TamadConnection` body (no capability field,
+    /// and no `connection` wrapper) → the flag defaults to `false`
+    /// without erroring.
+    #[tokio::test]
+    async fn test_register_once_old_proxy_body_defaults_false() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/tama/v1/tamads"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "id": "abc", "name": "my-tamad", "url": "grpc://x", "protocol": "grpc",
+            })))
+            .mount(&mock)
+            .await;
+
+        let supports = make_registrar(&mock.uri())
+            .register_once()
+            .await
+            .expect("201 success");
+        assert!(!supports, "absent field ⇒ the tamad treats it as false");
     }
 }

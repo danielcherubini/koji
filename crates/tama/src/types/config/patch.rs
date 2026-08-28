@@ -18,6 +18,15 @@ pub struct GeneralPatch {
     pub logs_dir: Option<String>,
     pub hf_token: Option<String>,
     pub update_check_interval: Option<u32>,
+    /// Target-specific log directives (RUST_LOG syntax). Validated at the
+    /// API boundary before persist (an invalid directive is a 400).
+    pub log_directives: Option<String>,
+    /// Log store retention: max entry age in days.
+    pub log_retention_days: Option<u32>,
+    /// Log store retention: max row count.
+    pub log_retention_rows: Option<u64>,
+    /// Log store retention: max estimated size in MiB.
+    pub log_retention_max_mb: Option<u64>,
 }
 
 /// PATCH body for Lifecycle section.

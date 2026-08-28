@@ -13,7 +13,7 @@ use futures_util::stream::StreamExt;
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
 use std::time::Instant;
-use tracing::info;
+use tracing::{debug, info};
 
 pub async fn forward_request(
     state: &Arc<ProxyState>,
@@ -89,7 +89,10 @@ pub async fn forward_request(
         .and_then(|mc| mc.gpu_device.clone())
         .unwrap_or_else(|| "default".to_string());
 
-    info!(gpu = %gpu_info, "Forwarding request to: {}", target_uri);
+    // plan-195 emission convention: per-request forward noise is DEBUG —
+    // the 50k-row retention window must not be burned by one line per
+    // proxied request.
+    debug!(gpu = %gpu_info, "Forwarding request to: {}", target_uri);
 
     let method = parts.method.clone();
 

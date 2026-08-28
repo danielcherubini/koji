@@ -1,8 +1,15 @@
-use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
+use axum::{
+    extract::{Extension, State},
+    http::StatusCode,
+    response::IntoResponse,
+    Json,
+};
 use std::sync::Arc;
 
 use crate::api::error::{error_body, error_response, error_response_simple};
 use crate::types::config::StructuredConfigBody;
+use crate::web_types::WebState;
+use tama_core::logstore::{apply_reload, build_log_filter, LogFilterError};
 use tama_core::proxy::tama_handlers::OkResponse;
 use tama_core::proxy::ProxyState;
 
@@ -14,7 +21,6 @@ pub mod field_update;
 pub mod helpers;
 pub mod hf;
 pub mod installations;
-pub mod logs;
 pub mod middleware;
 pub mod models;
 pub mod openapi;
@@ -196,6 +202,16 @@ fn merge_general(
         update_check_interval: patch
             .update_check_interval
             .unwrap_or(existing.update_check_interval),
+        log_directives: patch.log_directives.or(existing.log_directives),
+        log_retention_days: patch
+            .log_retention_days
+            .unwrap_or(existing.log_retention_days),
+        log_retention_rows: patch
+            .log_retention_rows
+            .unwrap_or(existing.log_retention_rows),
+        log_retention_max_mb: patch
+            .log_retention_max_mb
+            .unwrap_or(existing.log_retention_max_mb),
     }
 }
 
@@ -347,12 +363,75 @@ fn merge_sampling_templates(
     existing
 }
 
+/// Validate the merged general log config at the API boundary, BEFORE
+/// anything is persisted.
+///
+/// A bad directive persisted would brick the filter at the next boot, so
+/// this runs the exact same builder the proxy startup and `tama admin`
+/// use (`tama_core::logstore::build_log_filter`): validate-and-apply can
+/// never disagree with boot behavior. `build_log_filter` reads the
+/// `RUST_LOG` env var internally and the durable `log_directives` win
+/// over it for the same target (documented in `docs/api/config.md`).
+pub fn validate_log_config(general: &tama_core::config::General) -> Result<(), LogFilterError> {
+    let directives = general.log_directives.as_deref().unwrap_or_default();
+    build_log_filter(&general.log_level, directives).map(|_| ())
+}
+
+/// Persist a merged config and — when `log_level` or `log_directives`
+/// changed — live-apply the new filter to the running subscriber (no
+/// restart). Caller must have run [`validate_log_config`] first.
+///
+/// Returns the number of active directives in the reloaded filter (1 base
+/// level directive + every env/config directive); `0` when the log config
+/// did not change or no live filter is wired in this state (tests — the
+/// persisted values then take effect at next boot). A post-validation
+/// [`LogFilterError`] is mapped to 500: validation ran the same builder
+/// moments earlier, so a failure now is a logic bug.
+async fn persist_and_apply_log_config(
+    state: &Arc<ProxyState>,
+    web_state: &WebState,
+    existing: &tama_core::config::Config,
+    merged: &tama_core::config::Config,
+) -> Result<usize, (StatusCode, String)> {
+    // (2) Persist to Postgres DB (plan-190 Task 3: async pool-based save).
+    merged
+        .save(&state.db_pool())
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let log_changed = merged.general.log_level != existing.general.log_level
+        || merged.general.log_directives != existing.general.log_directives;
+    if !log_changed {
+        return Ok(0);
+    }
+
+    // (3) Live-apply the new filter through the reload handle.
+    match &web_state.log_filter {
+        Some(handle) => apply_reload(
+            handle,
+            &merged.general.log_level,
+            merged.general.log_directives.as_deref().unwrap_or_default(),
+        )
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+        None => {
+            // Not wired (tests): persist only — the new level takes effect
+            // at next boot. Never an error.
+            tracing::debug!("log filter not wired in this state; persisted level applies at boot");
+            Ok(0)
+        }
+    }
+}
+
 /// PATCH /tama/v1/config/structured — surgical partial update.
 ///
-/// Loads existing config from DB, deep-merges the patch, persists back to DB,
-/// and syncs the proxy's in-memory config for hot-reload.
+/// Loads existing config from DB, deep-merges the patch, validates the
+/// merged log config at the boundary (400 on a bad directive, nothing
+/// persisted), persists back to DB, live-applies the filter when the log
+/// level or directives changed, and syncs the proxy's in-memory config
+/// for hot-reload.
 pub async fn patch_structured_config(
     State(state): State<Arc<ProxyState>>,
+    Extension(web_state): Extension<WebState>,
     Json(body): Json<crate::types::config::ConfigPatchBody>,
 ) -> impl IntoResponse {
     // Load existing config from DB
@@ -362,7 +441,7 @@ pub async fn patch_structured_config(
     };
 
     // Convert core Config to mirror types
-    let existing_mirror: crate::types::config::Config = existing_core.into();
+    let existing_mirror: crate::types::config::Config = existing_core.clone().into();
 
     // Deep-merge the patch
     let merged_mirror = merge_config_patch(existing_mirror, body);
@@ -370,15 +449,27 @@ pub async fn patch_structured_config(
     // Convert merged mirror Config back to core
     let merged_core: tama_core::config::Config = merged_mirror.into();
 
-    // Persist to Postgres DB (plan-190 Task 3: async pool-based save)
-    let pool = state.db_pool();
-    match merged_core.clone().save(&pool).await {
-        Ok(()) => {
+    // (1) Validate the log config BEFORE persisting: an invalid directive
+    // must 400 with the DB row untouched.
+    if let Err(e) = validate_log_config(&merged_core.general) {
+        return error_response_simple(StatusCode::BAD_REQUEST, e.to_string());
+    }
+
+    // (2) + (3) Persist, then live-apply the filter on a log change.
+    match persist_and_apply_log_config(&state, &web_state, &existing_core, &merged_core).await {
+        Ok(active_directives) => {
+            if active_directives > 0 {
+                tracing::info!(
+                    active_directives,
+                    log_level = merged_core.general.log_level.as_str(),
+                    "log filter reloaded live"
+                );
+            }
             // Sync proxy config for hot-reload
             sync_proxy_config(&state, merged_core).await;
             Json(OkResponse::OK).into_response()
         }
-        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
+        Err((status, message)) => error_response_simple(status, message),
     }
 }
 
@@ -404,6 +495,10 @@ mod tests {
                 logs_dir: Some("/logs".to_string()),
                 hf_token: None,
                 update_check_interval: 12,
+                log_directives: None,
+                log_retention_days: 7,
+                log_retention_rows: 50_000,
+                log_retention_max_mb: 256,
             },
             backends: std::collections::BTreeMap::new(),
             lifecycle: Lifecycle {
@@ -614,4 +709,201 @@ mod tests {
 
     // The save-response drift-guard test lives in tests/config_structured_test.rs
     // (needs a Postgres pool; plan-190 Task 3).
+
+    // ── Log config: validate + live-apply (plan-195 task 3) ──────────
+
+    use crate::types::config::GeneralPatch;
+    use crate::web_types::WebState;
+    use tama_core::config::LogLevel;
+    use tracing_subscriber::layer::SubscriberExt;
+
+    /// Building the web state for the PATCH handler tests: real Postgres
+    /// pool from the schema guard, log runtime unwired (except where a
+    /// live filter handle is the point of the test).
+    fn web_state_for_test(pool: &std::sync::Arc<sqlx::PgPool>) -> WebState {
+        WebState {
+            jobs: None,
+            capabilities: None,
+            update_checker: std::sync::Arc::new(tama_core::updates::UpdateChecker::default()),
+            binary_version: "test".to_string(),
+            update_tx: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
+            upload_lock: std::sync::Arc::new(tokio::sync::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
+            db_pool: pool.clone(),
+            log_filter: None,
+            log_status: None,
+            log_events_tx: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
+            log_read: None,
+            log_tail: None,
+        }
+    }
+
+    /// Validation rejects a directive-looking string that fails to parse
+    /// — and names the offending literal — while empty and bare-word
+    /// strings (not directives — same target-only rule as boot) are ok.
+    #[test]
+    fn test_validate_log_config() {
+        let mut general = tama_core::config::General::default();
+        assert!(validate_log_config(&general).is_ok(), "no directives");
+
+        general.log_directives = Some("".to_string());
+        assert!(validate_log_config(&general).is_ok(), "empty string");
+
+        general.log_directives = Some("not a directive at all".to_string());
+        assert!(
+            validate_log_config(&general).is_ok(),
+            "no '=' means 'not a directive' (skipped, per the boot rule)"
+        );
+
+        general.log_directives = Some("tama_core=debug,tama=warn".to_string());
+        assert!(validate_log_config(&general).is_ok(), "valid directives");
+
+        general.log_directives = Some("probe_target=not-a-level:-".to_string());
+        let err = validate_log_config(&general).expect_err("invalid directive must be Err");
+        assert!(
+            err.to_string().contains("probe_target=not-a-level:-"),
+            "error must carry the offending literal, got: {err}"
+        );
+    }
+
+    /// PATCH with an invalid `log_directives` is a 400 at the boundary and
+    /// the app_general row is unchanged (asserted via a second read).
+    #[tokio::test]
+    async fn test_patch_structured_config_invalid_directives_400_and_no_persist() {
+        let guard = crate::testing::postgres::with_schema().await;
+        let pool = std::sync::Arc::new(guard.pool.clone());
+        let config_dir = tempfile::tempdir().expect("config dir");
+        let config = tama_core::config::Config::load_from_pool(&pool)
+            .await
+            .expect("load seeded config");
+        let state = std::sync::Arc::new(tama_core::proxy::ProxyState::new(
+            config,
+            Some(config_dir.path().to_path_buf()),
+            pool.clone(),
+        ));
+
+        let before = tama_core::db::queries::get_general(&pool)
+            .await
+            .expect("pre-patch row");
+
+        let body = crate::types::config::ConfigPatchBody {
+            general: Some(GeneralPatch {
+                log_level: Some(LogLevel::Debug),
+                log_directives: Some("probe_target=not-a-level:-".to_string()),
+                ..Default::default()
+            }),
+            lifecycle: None,
+            sampling_templates: None,
+            proxy: None,
+            compaction: None,
+            langfuse: None,
+        };
+
+        let web_state = web_state_for_test(&pool);
+        let response = patch_structured_config(
+            axum::extract::State(state.clone()),
+            axum::extract::Extension(web_state.clone()),
+            Json(body),
+        )
+        .await
+        .into_response();
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "invalid directive must 400 and persist nothing"
+        );
+
+        let after = tama_core::db::queries::get_general(&pool)
+            .await
+            .expect("post-patch row");
+        assert_eq!(
+            before, after,
+            "the app_general row must be untouched on a 400"
+        );
+
+        guard.finish().await;
+    }
+
+    /// PATCH with valid log config persists the new values AND the live
+    /// filter is reloaded through the `reload::Handle` — the apply returns
+    /// the directive count (1 base-level + the config directive), no
+    /// restart.
+    #[tokio::test]
+    async fn test_patch_structured_config_valid_directives_persist_and_apply_live() {
+        let guard = crate::testing::postgres::with_schema().await;
+        let pool = std::sync::Arc::new(guard.pool.clone());
+        let config_dir = tempfile::tempdir().expect("config dir");
+        let config = tama_core::config::Config::load_from_pool(&pool)
+            .await
+            .expect("load seeded config");
+        let state = std::sync::Arc::new(tama_core::proxy::ProxyState::new(
+            config,
+            Some(config_dir.path().to_path_buf()),
+            pool.clone(),
+        ));
+
+        // A LIVE filter the way main.rs wires it: reload::Layer + the
+        // subscriber holding that layer (must stay in scope for the test).
+        let (filter, handle) = tracing_subscriber::reload::Layer::new(
+            tama_core::logstore::build_log_filter(&LogLevel::Info, "").expect("initial filter"),
+        );
+        let _subscriber = tracing_subscriber::registry().with(filter);
+        let mut web_state = web_state_for_test(&pool);
+        web_state.log_filter = Some(handle);
+
+        // Handler: persist + live-apply.
+        let body = crate::types::config::ConfigPatchBody {
+            general: Some(GeneralPatch {
+                log_level: Some(LogLevel::Debug),
+                log_directives: Some("probe_target=trace".to_string()),
+                ..Default::default()
+            }),
+            lifecycle: None,
+            sampling_templates: None,
+            proxy: None,
+            compaction: None,
+            langfuse: None,
+        };
+        let response = patch_structured_config(
+            axum::extract::State(state.clone()),
+            axum::extract::Extension(web_state.clone()),
+            Json(body),
+        )
+        .await
+        .into_response();
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "valid log config persists"
+        );
+
+        // The row carries the new values ...
+        let general = tama_core::db::queries::get_general(&pool)
+            .await
+            .expect("post-patch row")
+            .expect("row exists");
+        assert_eq!(general.log_level, "debug");
+        assert_eq!(
+            general.log_directives,
+            Some("probe_target=trace".to_string())
+        );
+
+        // ... and the apply path itself returns Ok(directive count):
+        // 1 base-level directive + 1 config directive. (The persisted
+        // config is already debug + directives, so `before` is the
+        // simulated pre-patch state — a genuine level/directive change.)
+        let after_cfg = tama_core::config::Config::load_from_pool(&pool)
+            .await
+            .expect("persisted config");
+        let mut before_cfg = after_cfg.clone();
+        before_cfg.general.log_level = LogLevel::Info;
+        before_cfg.general.log_directives = None;
+        let count = persist_and_apply_log_config(&state, &web_state, &before_cfg, &after_cfg)
+            .await
+            .expect("post-validation apply must succeed");
+        assert_eq!(count, 2, "1 base-level + 1 config directive");
+
+        guard.finish().await;
+    }
 }

@@ -33,6 +33,7 @@ use tama_core::tamad::tamad_service::RemoveProviderRequest;
 use tama_core::tamad::tamad_service::RestartProviderRequest;
 use tama_core::tamad::tamad_service::RunBenchmarkRequest;
 use tama_core::tamad::tamad_service::StatsRequest;
+use tama_core::tamad::tamad_service::StreamLogMessage;
 use tama_core::tamad::tamad_service::SystemStats;
 use tama_core::tamad::tamad_service::UnloadModelRequest;
 use tama_core::tamad::tamad_service::UpdateProviderRequest;
@@ -113,6 +114,11 @@ pub struct TamadServiceImpl {
     /// In-memory job registry (plan-191 Task 6) behind `PullModel`/
     /// `StreamJob`; later tasks add install/update/benchmark jobs here.
     jobs: Arc<JobRegistry>,
+    /// The `StreamLogs` push runtime (plan-195 Task 6, stage 2a): the
+    /// buffer owner for the server-streaming `StreamLogs` RPC — the
+    /// proxy dials and `stream_logs` (after auth) serves `StreamInit`,
+    /// the replay ring, then live entries.
+    push: Arc<crate::push::runtime::LogPushRuntime>,
 }
 
 impl TamadServiceImpl {
@@ -125,6 +131,7 @@ impl TamadServiceImpl {
         state: Arc<TamadState>,
         table: Arc<ProcessTable>,
         lifecycle: Arc<TamadLifecycle>,
+        push: Arc<crate::push::runtime::LogPushRuntime>,
     ) -> Self {
         Self {
             expected_token: token,
@@ -137,6 +144,7 @@ impl TamadServiceImpl {
             jobs: JobRegistry::new(),
             state,
             table,
+            push,
         }
     }
 
@@ -710,6 +718,34 @@ impl TamadService for TamadServiceImpl {
             tama_core::tamad::tamad_service::CancelJobResponse { cancelled },
         ))
     }
+
+    type StreamLogsStream = Pin<
+        Box<
+            dyn tokio_stream::Stream<Item = std::result::Result<StreamLogMessage, tonic::Status>>
+                + Send,
+        >,
+    >;
+
+    /// Structured log push (plan-195 Task 6, stage 2a) — SERVER-streaming:
+    /// the PROXY dials this RPC (its task-7 per-online-tamad ingest task,
+    /// same transport/auth as PullModel/Logs/Stats); the tamad never
+    /// dials. After auth: `StreamInit{instance_id, start_seq_by_source}`
+    /// first, then the replay ring oldest→newest, then live entries —
+    /// until the client disconnects. Nothing is reset on connect; the
+    /// `instance_id` is per-boot (task 7 dedups on `(instance_id, seq)`).
+    async fn stream_logs(
+        &self,
+        request: tonic::Request<GrpcEmpty>,
+    ) -> std::result::Result<tonic::Response<Self::StreamLogsStream>, tonic::Status> {
+        check_auth(&request, &self.expected_token)?;
+        let (handshake, live_rx) = self.push.stream();
+        let live = tokio_stream::wrappers::ReceiverStream::new(live_rx)
+            .map(Ok::<StreamLogMessage, tonic::Status>);
+        let stream = futures_util::stream::iter(handshake)
+            .map(Ok::<StreamLogMessage, tonic::Status>)
+            .chain(live);
+        Ok(tonic::Response::new(Box::pin(stream)))
+    }
 }
 
 pub async fn health_handler() -> String {
@@ -722,12 +758,13 @@ pub async fn start(
     state: Arc<TamadState>,
     table: Arc<ProcessTable>,
     lifecycle: Arc<TamadLifecycle>,
+    push: Arc<crate::push::runtime::LogPushRuntime>,
 ) -> Result<()> {
     let addr: SocketAddr = addr
         .parse()
         .map_err(|e| anyhow!("Invalid address '{}': {}", addr, e))?;
 
-    let service = TamadServiceImpl::new(state.token().to_string(), state, table, lifecycle);
+    let service = TamadServiceImpl::new(state.token().to_string(), state, table, lifecycle, push);
 
     let grpc_task = match protocol {
         "grpc" | "both" => {
@@ -912,6 +949,7 @@ pub(crate) mod test_support {
             state,
             Arc::clone(&table),
             Arc::new(lifecycle),
+            crate::push::runtime::LogPushRuntime::dormant(),
         );
         let jobs = Arc::clone(service.jobs());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -955,6 +993,46 @@ pub(crate) mod test_support {
             .metadata_mut()
             .insert("authorization", format!("Bearer {token}").parse().unwrap());
         request
+    }
+
+    /// Like `start_test_server`, but hosts a caller-supplied `LogPush`
+    /// runtime so a `stream_logs` dial delivers the caller's rings.
+    /// (plan-195 task 6 harness.)
+    pub async fn start_push_test_server(
+        push: Arc<crate::push::runtime::LogPushRuntime>,
+    ) -> (tonic::transport::Endpoint, tempfile::TempDir) {
+        let (state, dir) = test_state();
+        let table = Arc::new(ProcessTable::default());
+        let lifecycle = crate::lifecycle::TamadLifecycle::new(
+            Arc::clone(&table),
+            Arc::clone(&state.store),
+            Arc::clone(&state),
+        );
+        let service = TamadServiceImpl::new(
+            "secret".to_string(),
+            state,
+            table,
+            Arc::new(lifecycle),
+            push,
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+            if let Err(e) = TonicServer::builder()
+                .add_service(tama_core::tamad::TamadServiceServer::new(service))
+                .serve_with_incoming(incoming)
+                .await
+            {
+                tracing::error!(error = %e, "test gRPC server error");
+            }
+        });
+        (
+            tonic::transport::Endpoint::from_shared(format!("http://{addr}"))
+                .unwrap()
+                .connect_timeout(std::time::Duration::from_secs(2)),
+            dir,
+        )
     }
 }
 
@@ -1761,6 +1839,7 @@ mod tests {
                 Arc::clone(&state.store),
                 Arc::clone(&state),
             )),
+            crate::push::runtime::LogPushRuntime::dormant(),
         )
         .with_installer(std::sync::Arc::new(MarkerInstaller));
         let jobs = Arc::clone(service.jobs());
@@ -2096,6 +2175,7 @@ mod tests {
                 Arc::clone(&state.store),
                 Arc::clone(&state),
             )),
+            crate::push::runtime::LogPushRuntime::dormant(),
         )
         .with_bench_executor(std::sync::Arc::new(StubBenchExecutor {
             json: r#"{"ok": true}"#.to_string(),
@@ -2275,5 +2355,159 @@ mod tests {
         assert_eq!(terminal.result_json, r#"{"ok": true}"#);
         let job = jobs.get(&terminal.job_id).expect("job retained");
         assert!(job.is_terminal());
+    }
+
+    // ── plan-195 task 6: real stream_logs handler over in-process tonic
+    // (smoke per plan: in-process runtime test — no dev host with running
+    //  containers available for a docker-tail smoke)
+
+    fn push_evt(source: &str, msg: &str) -> crate::push::PushEvent {
+        crate::push::PushEvent {
+            ts: crate::push::now_unix_ms(),
+            level: 2,
+            source: source.to_string(),
+            message: format!("{{\"message\":\"{msg}\"}}"),
+        }
+    }
+
+    /// Connect → `StreamInit` FIRST with the per-boot id; the ring is
+    /// replayed oldest→newest with continuing per-source seqs; a live
+    /// append arrives on the SAME stream; a second dial (proxy
+    /// "reconnect") keeps the SAME `instance_id` (per-boot) and its
+    /// start-seqs grow (nothing resets on connect); wrong token → an
+    /// auth error before any frame.
+    #[tokio::test]
+    async fn test_stream_logs_handshake_replay_live_reconnect() {
+        let (feed_tx, feed_rx) = tokio::sync::mpsc::channel(crate::push::EVENT_CHANNEL_CAP);
+        let push = crate::push::runtime::LogPushRuntime::spawn(
+            feed_rx,
+            crate::push::runtime::fixed_capability(true),
+        );
+        for m in ["s1", "s2", "s3"] {
+            feed_tx.try_send(push_evt("tamad", m)).unwrap();
+        }
+
+        let (ep, _dir) = start_push_test_server(push.clone()).await;
+        let mut client = connected_client(ep).await;
+
+        // Wait for the absorb loop to record the seeds: poll a
+        // throwaway dial (init + N replay frames are instantly
+        // available; the next one would block).
+        let mut seed_count = 0;
+        for _ in 0..100 {
+            let mut st = client
+                .stream_logs(authed(tonic::Request::new(Empty {}), "secret"))
+                .await
+                .expect("authed dial opens")
+                .into_inner();
+            let mut n = 0;
+            while let Ok(Ok(Some(_))) =
+                tokio::time::timeout(std::time::Duration::from_millis(100), st.message()).await
+            {
+                n += 1;
+            }
+            seed_count = n - 1; // minus the init frame
+            if seed_count == 3 {
+                break;
+            }
+        }
+        assert_eq!(seed_count, 3, "seeds absorbed before the test dial");
+
+        // The test dial: init FIRST, then replay s1..s3, then a live
+        // append at seq 4.
+        let mut st = client
+            .stream_logs(authed(tonic::Request::new(Empty {}), "secret"))
+            .await
+            .expect("authed dial opens")
+            .into_inner();
+        let init = match st
+            .message()
+            .await
+            .expect("frame")
+            .expect("stream open")
+            .kind
+            .expect("frame kind")
+        {
+            tama_core::tamad::tamad_service::stream_log_message::Kind::Init(i) => i,
+            other => panic!("first frame must be init, got {other:?}"),
+        };
+        assert_eq!(init.instance_id, push.instance_id().to_string());
+        assert_eq!(init.start_seq_by_source.get("tamad"), Some(&1));
+        let mut seqs = Vec::new();
+        let mut msgs = Vec::new();
+        for _ in 0..3 {
+            let l = match st
+                .message()
+                .await
+                .expect("frame")
+                .expect("stream open")
+                .kind
+                .expect("kind")
+            {
+                tama_core::tamad::tamad_service::stream_log_message::Kind::Line(l) => l,
+                other => panic!("replay frame must be a line, got {other:?}"),
+            };
+            seqs.push(l.seq);
+            msgs.push(l.message.clone());
+        }
+        assert_eq!(seqs, vec![1, 2, 3], "replay continues per-source seqs");
+        assert_eq!(msgs[0], r#"{"message":"s1"}"#);
+        assert_eq!(msgs[2], r#"{"message":"s3"}"#);
+
+        // Live append (recorded AFTER this dial connected) arrives next.
+        feed_tx.try_send(push_evt("tamad", "live-1")).unwrap();
+        let live = match st
+            .message()
+            .await
+            .expect("frame")
+            .expect("stream open")
+            .kind
+            .expect("kind")
+        {
+            tama_core::tamad::tamad_service::stream_log_message::Kind::Line(l) => l,
+            other => panic!("live frame must be a line, got {other:?}"),
+        };
+        assert_eq!(live.seq, 4, "live takes the next per-source seq");
+        assert!(live.message.contains("live-1"));
+        drop(st);
+
+        // Reconnect: same runtime ⇒ same per-boot instance_id; its init
+        // reflects the ring's grown state (model:m's first surviving
+        // line is seq 1; tamad's start seq unchanged).
+        feed_tx.try_send(push_evt("model:m", "m-1")).unwrap();
+        let mut st2 = client
+            .stream_logs(authed(tonic::Request::new(Empty {}), "secret"))
+            .await
+            .expect("re-dial opens")
+            .into_inner();
+        let init2 = match st2
+            .message()
+            .await
+            .expect("frame")
+            .expect("stream open")
+            .kind
+            .expect("kind")
+        {
+            tama_core::tamad::tamad_service::stream_log_message::Kind::Init(i) => i,
+            other => panic!("first frame must be init, got {other:?}"),
+        };
+        assert_eq!(
+            init2.instance_id, init.instance_id,
+            "id is per-boot — a reconnect keeps it"
+        );
+        assert_eq!(init2.start_seq_by_source.get("model:m"), Some(&1));
+        assert_eq!(init2.start_seq_by_source.get("tamad"), Some(&1));
+
+        // Wrong bearer token: rejected BEFORE any frame.
+        let err = client
+            .stream_logs(authed(tonic::Request::new(Empty {}), "wrong"))
+            .await
+            .expect_err("wrong token must be rejected");
+        assert_eq!(
+            err.code(),
+            tonic::Code::Unauthenticated,
+            "auth runs before streaming"
+        );
+        push.shutdown();
     }
 }

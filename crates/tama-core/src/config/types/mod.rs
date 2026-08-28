@@ -91,6 +91,10 @@ impl Config {
             logs_dir: general_row.logs_dir,
             hf_token: general_row.hf_token,
             update_check_interval: general_row.update_check_interval,
+            log_directives: general_row.log_directives,
+            log_retention_days: general_row.log_retention_days,
+            log_retention_rows: general_row.log_retention_rows,
+            log_retention_max_mb: general_row.log_retention_max_mb,
         };
 
         // Read proxy
@@ -263,6 +267,10 @@ impl Config {
             self.general.logs_dir.as_deref(),
             self.general.hf_token.as_deref(),
             self.general.update_check_interval,
+            self.general.log_directives.as_deref(),
+            self.general.log_retention_days,
+            self.general.log_retention_rows,
+            self.general.log_retention_max_mb,
         )
         .await?;
 

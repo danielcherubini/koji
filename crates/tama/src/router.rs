@@ -34,7 +34,12 @@ use crate::api::tamads::{
 use tama_core::proxy::{
     forward_to_backend,
     tama_handlers::{
-        backend_logs::handle_all_logs, handle_backend_log_sse, handle_tama_system_health,
+        handle_tama_system_health,
+        logs_api::{
+            handle_delete_logs, handle_log_events_sse, handle_log_export, handle_log_query,
+            handle_log_sources, handle_log_status, handle_log_stream, handle_log_summary,
+            LogsApiState,
+        },
     },
     ProxyState,
 };
@@ -300,6 +305,7 @@ pub fn build_web_routes(
 
     // Sub-router for non-backend state-changing endpoints with CSRF enforcement
     let csrf_routes = Router::new()
+        .route("/tama/v1/logs", delete(handle_delete_logs))
         .route(
             "/tama/v1/config",
             get(api::get_config)
@@ -453,13 +459,19 @@ pub fn build_web_routes(
         )
         // API documentation (OpenAPI 3.1.0 spec)
         .route("/tama/v1/docs", get(api::openapi::serve_spec))
-        // System health + backend logs: core proxy handlers mounted explicitly
-        // (they are part of the management API surface but implemented in tama-core).
+        // System health: core proxy handler mounted explicitly (it is part of
+        // the management API surface but implemented in tama-core).
         .route("/tama/v1/system/health", get(handle_tama_system_health))
-        .route("/tama/v1/logs", get(handle_all_logs))
-        .route("/tama/v1/logs/:backend/events", get(handle_backend_log_sse))
-        // Logs: backend-specific log retrieval
-        .route("/tama/v1/logs/:backend", get(api::logs::get_backend_logs))
+        // Structured log store read API (plan-195 task 4) — the legacy
+        // all-tail handler (`handle_all_logs`) is retired with the Type II
+        // consumer in task 5.
+        .route("/tama/v1/logs", get(handle_log_query))
+        .route("/tama/v1/logs/sources", get(handle_log_sources))
+        .route("/tama/v1/logs/summary", get(handle_log_summary))
+        .route("/tama/v1/logs/status", get(handle_log_status))
+        .route("/tama/v1/logs/stream", get(handle_log_stream))
+        .route("/tama/v1/logs/events", get(handle_log_events_sse))
+        .route("/tama/v1/logs/export", get(handle_log_export))
         .merge(csrf_routes)
         .merge(backend_routes)
         // Redirect old /ui paths to /tama
@@ -477,5 +489,13 @@ pub fn build_web_routes(
         // wraps merged sub-routers too — axum layers before .merge() don't apply
         // to the merged routes)
         .layer(axum::extract::Extension(web_state.as_ref().clone()))
+        // Read-endpoint log API state (same fields, shaped for the
+        // tama-core handlers that can't name WebState directly).
+        .layer(axum::extract::Extension(LogsApiState {
+            log_read: web_state.log_read.clone(),
+            log_tail: web_state.log_tail.clone(),
+            log_status: web_state.log_status.clone(),
+            log_events_tx: web_state.log_events_tx.clone(),
+        }))
         .layer(CatchPanicLayer::new())
 }

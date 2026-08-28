@@ -196,6 +196,11 @@ mod tests {
             update_tx: Arc::new(tokio::sync::Mutex::new(None)),
             upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             db_pool: pool,
+            log_filter: None,
+            log_status: None,
+            log_read: None,
+            log_tail: None,
+            log_events_tx: Arc::new(tokio::sync::Mutex::new(None)),
         });
 
         (state, web_state, guard)
@@ -283,7 +288,7 @@ mod tests {
             .await
             .unwrap();
         let created: serde_json::Value = serde_json::from_slice(&body_str).unwrap();
-        let tamad_id = created["id"].as_str().unwrap();
+        let tamad_id = created["connection"]["id"].as_str().unwrap();
 
         // PATCH update url and token
         let body = serde_json::json!({
@@ -363,7 +368,7 @@ mod tests {
             .await
             .unwrap();
         let created: serde_json::Value = serde_json::from_slice(&body_str).unwrap();
-        let tamad_id = created["id"].as_str().unwrap();
+        let tamad_id = created["connection"]["id"].as_str().unwrap();
 
         // Seed the singleton config row and point pull_backend at the tamad.
         tama_core::db::queries::seed_defaults(&pool).await.unwrap();
@@ -429,7 +434,7 @@ mod tests {
             .await
             .unwrap();
         let created: serde_json::Value = serde_json::from_slice(&body_str).unwrap();
-        let tamad_id = created["id"].as_str().unwrap();
+        let tamad_id = created["connection"]["id"].as_str().unwrap();
 
         // POST create a local provider pointing at the tamad (unique name
         // — the shared Postgres container is reused across tests)
@@ -513,7 +518,7 @@ mod tests {
             .await
             .unwrap();
         let created: serde_json::Value = serde_json::from_slice(&body_str).unwrap();
-        let tamad_id = created["id"].as_str().unwrap();
+        let tamad_id = created["connection"]["id"].as_str().unwrap();
 
         // PATCH only url (no token)
         let body = serde_json::json!({
@@ -592,7 +597,7 @@ mod tests {
             .await
             .unwrap();
         let created: serde_json::Value = serde_json::from_slice(&body_str).unwrap();
-        let tamad_id = created["id"].as_str().unwrap();
+        let tamad_id = created["connection"]["id"].as_str().unwrap();
 
         // POST health check
         let req = Request::builder()

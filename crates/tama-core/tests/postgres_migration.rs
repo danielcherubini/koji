@@ -88,8 +88,8 @@ async fn test_run_migrations_ok_re_run_is_noop() {
     .await
     .expect("query _sqlx_migrations");
     assert_eq!(
-        row.0, 5,
-        "one success row per migration file (initial + desired_models + pull_backend + the two T7 shadow drops)"
+        row.0, 6,
+        "one success row per migration file (initial + desired_models + pull_backend + the two T7 shadow drops + app_general log fields)"
     );
 
     let _ = guard.finish().await;

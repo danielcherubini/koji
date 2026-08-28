@@ -524,10 +524,93 @@ pub fn spec() -> serde_json::Value {
             op_q(
                 "get",
                 "getLogs",
-                "Get recent log lines",
-                "Returns grouped recent log lines: the tama.log file, each backend's local log file, and engine-log tails from tamad-hosted models named `{tamad-host}:{model}` (their backends run in `tama-<model>` Docker containers and write no local files).",
-                &["web-api"],
-                &[("lines", "query")],
+                "Query structured logs",
+                "Pages the structured log store (default 200, max 1000 per page, newest-first by default). `source` is a single label: `proxy` for proxy-generated lines, `backend:{id}` for proxy-side backend lifecycle, or a tamad label (exact or delimiter-aware prefix; `tamad:`-shaped sources are served by the legacy tail adapter). `level` filters by minimum level, `q` is full-text, `since`/`until` are unix ms. Use `next_cursor` to page.",
+                &["web-api", "logs"],
+                &[("level", "query"), ("source", "query"), ("q", "query"), ("since", "query"), ("until", "query"), ("limit", "query"), ("cursor", "query"), ("order", "query")],
+                Some("LogsQueryResult"),
+            ),
+        ),
+        (
+            "/tama/v1/logs",
+            serde_json::json!({
+                "operationId": "deleteLogs",
+                "summary": "Delete logs",
+                "description": "Deletes structured log entries (all rows by default, or one `id` with `?id=`). Truncates the table + reclaims the vacuum; the ongoing app is unaffected. CSRF-protected.",
+                "tags": ["web-api", "logs"],
+                "parameters": [{"name": "id", "in": "query", "required": false, "schema": {"type": "integer"}}],
+                "responses": {"200": {"description": "Deletion summary with `deleted` row count."}}
+            }),
+        ),
+        (
+            "/tama/v1/logs/sources",
+            op(
+                "get",
+                "getLogSources",
+                "List log sources",
+                "Lists the sources that exist in the structured log store (label + row count + latest ts) plus the on-demand legacy tamad tail sources.",
+                &["web-api", "logs"],
+                None,
+                Some("LogSources"),
+            ),
+        ),
+        (
+            "/tama/v1/logs/summary",
+            op_q(
+                "get",
+                "getLogSummary",
+                "Summarize log counts",
+                "Row counts by level within the optional `since` unix ms window.",
+                &["web-api", "logs"],
+                &[("since", "query")],
+                Some("LogSummary"),
+            ),
+        ),
+        (
+            "/tama/v1/logs/status",
+            op(
+                "get",
+                "getLogStatus",
+                "Log store status",
+                "Writer channel/ring backlog, degraded flag + degraded-since unix ms. `503` when the log runtime is not wired (non-SSR boot / tests).",
+                &["web-api", "logs"],
+                None,
+                Some("LogStoreStatusDto"),
+            ),
+        ),
+        (
+            "/tama/v1/logs/stream",
+            op_q(
+                "get",
+                "logStreamSse",
+                "Stream new log entries (SSE)",
+                "Server-sent events tailing the structured log store: one `event: entry` frame per row with `id > after` (default 0 = from the beginning, paged 200 rows at a time), then a 1 s heartbeat poll; idle ticks emit `event: keepalive`. Accepts the same filters + the `after` rowid anchor as `GET /tama/v1/logs`.",
+                &["web-api", "logs"],
+                &[("level", "query"), ("source", "query"), ("q", "query"), ("since", "query"), ("until", "query"), ("after", "query")],
+                None,
+            ),
+        ),
+        (
+            "/tama/v1/logs/events",
+            op(
+                "get",
+                "logEventsSse",
+                "Log store status events (SSE)",
+                "Server-sent status transitions of the structured log writer. `event: log_store_degraded` when the writer starts dropping (with `since`/backlog counters) and `event: log_store_restored` on recovery (`had_entries`/`ring_flushed`). Self-describing JSON frames; the endpoint exists so degraded storage is visible from the UI instead of being silent.",
+                &["web-api", "logs"],
+                None,
+                None,
+            ),
+        ),
+        (
+            "/tama/v1/logs/export",
+            op_q(
+                "get",
+                "exportLogs",
+                "Export logs as CSV",
+                "Exports the full query result set as CSV (content type `text/csv`, blob download). `format` must be `csv`; `413 PayloadTooLarge` when the window exceeds the hard cap (50,000 rows) — check the count with `/tama/v1/logs/summary` first.",
+                &["web-api", "logs"],
+                &[("level", "query"), ("source", "query"), ("q", "query"), ("since", "query"), ("until", "query"), ("format", "query")],
                 None,
             ),
         ),
@@ -801,6 +884,70 @@ fn schemas() -> serde_json::Value {
                         "type": {"type": "string"}
                     }
                 }
+            }
+        }),
+    );
+    // Log store read API (plan-195 task 4)
+    map.insert(
+        "LogsQueryResult".into(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["entries", "next_cursor"],
+            "properties": {
+                "entries": {"type": "array", "items": {"$ref": "#/components/schemas/LogEntryDto"}},
+                "next_cursor": {"type": ["integer", "null"], "format": "int64"}
+            }
+        }),
+    );
+    map.insert(
+        "LogEntryDto".into(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["id", "ts", "level", "source", "message"],
+            "properties": {
+                "id": {"type": "integer", "format": "int64", "description": "Store rowid; negative for on-demand legacy tail lines"},
+                "ts": {"type": "integer", "format": "int64", "description": "unix ms"},
+                "level": {"type": "string", "enum": ["trace", "debug", "info", "warn", "error"]},
+                "level_known": {"type": "boolean", "description": "false only for legacy tail lines"},
+                "source": {"type": "string"},
+                "message": {"type": "string"},
+                "fields": {"type": "object", "description": "Structured fields without the top-level message"},
+                "legacy": {"type": "boolean", "description": "true = on-demand tail line, not a stored row"}
+            }
+        }),
+    );
+    map.insert(
+        "LogSources".into(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["source_summary", "legacy_sources"],
+            "properties": {
+                "source_summary": {"type": "array", "items": {"type": "object", "required": ["source", "row_count", "latest_ts"], "properties": {"source": {"type": "string"}, "row_count": {"type": "integer", "format": "int64"}, "latest_ts": {"type": "integer", "format": "int64"}}}},
+                "legacy_sources": {"type": "array", "items": {"type": "string"}, "description": "On-demand legacy tail sources (tamad hosts/models)"}
+            }
+        }),
+    );
+    map.insert(
+        "LogSummary".into(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["total", "by_level"],
+            "properties": {
+                "total": {"type": "integer", "format": "int64"},
+                "by_level": {"type": "array", "items": {"type": "object", "required": ["level", "count"], "properties": {"level": {"type": "string"}, "count": {"type": "integer", "format": "int64"}}}}
+            }
+        }),
+    );
+    map.insert(
+        "LogStoreStatusDto".into(),
+        serde_json::json!({
+            "type": "object",
+            "required": ["degraded", "degraded_since", "channel_len", "ring_len"],
+            "properties": {
+                "degraded": {"type": "boolean"},
+                "degraded_since": {"type": ["integer", "null"], "format": "int64", "description": "unix ms"},
+                "channel_len": {"type": "integer"},
+                "ring_len": {"type": "integer"}
             }
         }),
     );

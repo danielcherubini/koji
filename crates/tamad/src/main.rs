@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use tracing::{info, warn};
+use tracing_subscriber::layer::SubscriberExt;
 
 mod bench;
 mod compaction_server;
@@ -16,6 +17,7 @@ mod lifecycle;
 mod process;
 mod process_table;
 mod pulls;
+mod push;
 mod register;
 mod server;
 mod state;
@@ -100,7 +102,22 @@ use tokio::signal::unix::{signal, SignalKind};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
+    // Plan-195 task 6: stdout fmt layer + the `StreamLogs` push layer.
+    // The push layer captures the tamad's OWN tracing events into the
+    // bounded feed channel; the layer never blocks (try_send, drop
+    // newest). The absorb loop (runtime) writes events into the rings
+    // ONLY once the register handshake has confirmed the peer
+    // supports the push (old proxy ⇒ feed cycles, bounded, no
+    // markers).
+    let (push_feed_tx, push_feed_rx) = tokio::sync::mpsc::channel(crate::push::EVENT_CHANNEL_CAP);
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    let subscriber = tracing_subscriber::registry()
+        .with(env_filter)
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stdout))
+        .with(crate::push::layer::build_layer(push_feed_tx.clone()));
+    tracing::subscriber::set_global_default(subscriber)
+        .expect("set_global_default once per process");
 
     let args = CliArgs::from_args()?;
     let state = Arc::new(TamadState::from_cli(&args)?);
@@ -112,6 +129,13 @@ async fn main() -> Result<()> {
         "Starting tamad daemon"
     );
 
+    // The register-handshake capability gate: the tamad's log feed
+    // switches from "cycle bounded" to "record into rings" the moment
+    // a register succeeds against a v2 proxy (flag true). No CLI
+    // flag — the push attempt is the PROXY's dial; this flag is the
+    // tamad's gate.
+    let (capability_tx, capability_rx) = tokio::sync::watch::channel(false);
+
     if let (Some(proxy_url), Some(proxy_token)) = (&state.proxy_url, &state.proxy_token) {
         let registrar = Registrar::new(
             proxy_url.clone(),
@@ -121,7 +145,11 @@ async fn main() -> Result<()> {
             state.protocol.clone(),
             state.token().to_string(),
         );
-        tokio::spawn(registrar.run_loop());
+        // Plan-195 task 6: each successful registration publishes the
+        // peer capability flag into the push runtime's gate.
+        tokio::spawn(async move {
+            registrar.run_loop(capability_tx).await;
+        });
     }
 
     let process_table = Arc::new(ProcessTable::default());
@@ -149,6 +177,13 @@ async fn main() -> Result<()> {
     let _respawn_supervisor =
         crate::lifecycle::TamadLifecycle::start_respawn_supervisor(&lifecycle);
 
+    // Plan-195 task 6: the `StreamLogs` push runtime (always on —
+    // cheap/bounded; the register gate decides whether the rings fill)
+    // and the engine-container tail supervisor (one `docker logs -f -t`
+    // child per running container-backed model).
+    let log_push = crate::push::runtime::LogPushRuntime::spawn(push_feed_rx, capability_rx);
+    let tails = crate::push::tails::TailSupervisor::start(Arc::clone(&process_table), push_feed_tx);
+
     // Reconciliation sweep for orphaned `starting` rows (plan-194):
     // defense in depth — adopts a healthy orphan as verified-ready and
     // tears down one past its health deadline, every 5 seconds.
@@ -172,7 +207,8 @@ async fn main() -> Result<()> {
         let state = Arc::clone(&state);
         let process_table = Arc::clone(&process_table);
         let lifecycle = Arc::clone(&lifecycle);
-        async move { server::start(&addr, &protocol, state, process_table, lifecycle).await }
+        let log_push = Arc::clone(&log_push);
+        async move { server::start(&addr, &protocol, state, process_table, lifecycle, log_push).await }
     });
 
     // Graceful shutdown (plan-191 follow-up A): on SIGTERM/SIGINT the daemon
@@ -203,6 +239,8 @@ async fn main() -> Result<()> {
     }
 
     info!("Stopping all backend process groups before exit");
+    tails.stop();
+    log_push.shutdown();
     if let Err(e) = lifecycle.kill_all().await {
         warn!(error = %e, "kill_all reported errors; exiting anyway");
     }

@@ -80,6 +80,10 @@ impl From<tama_core::config::General> for General {
             logs_dir: g.logs_dir,
             hf_token: g.hf_token,
             update_check_interval: g.update_check_interval,
+            log_directives: g.log_directives,
+            log_retention_days: g.log_retention_days,
+            log_retention_rows: g.log_retention_rows,
+            log_retention_max_mb: g.log_retention_max_mb,
         }
     }
 }
@@ -93,6 +97,10 @@ impl From<General> for tama_core::config::General {
             logs_dir: g.logs_dir,
             hf_token: g.hf_token,
             update_check_interval: g.update_check_interval,
+            log_directives: g.log_directives,
+            log_retention_days: g.log_retention_days,
+            log_retention_rows: g.log_retention_rows,
+            log_retention_max_mb: g.log_retention_max_mb,
         }
     }
 }

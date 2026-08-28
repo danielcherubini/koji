@@ -109,6 +109,10 @@ mod tests {
                 "logs_dir": "/var/log/tama",
                 "hf_token": "hf_testtoken",
                 "update_check_interval": 6,
+                "log_directives": "tama_core=debug",
+                "log_retention_days": 14,
+                "log_retention_rows": 25_000,
+                "log_retention_max_mb": 128,
             },
             "backends": {},
             "lifecycle": {

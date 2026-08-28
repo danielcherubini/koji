@@ -382,7 +382,7 @@ pub struct UploadEntry {
 ///
 /// Contains only the fields needed by the web control plane (SSR + CSR).
 /// Defined in tama crate to avoid circular dependency with tama-core.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct WebState {
     /// Job manager for backend install/update/restore/benchmark operations.
     pub jobs: Option<Arc<JobManager>>,
@@ -401,6 +401,37 @@ pub struct WebState {
     /// it); `main.rs` is the single owner and shares the same `Arc<PgPool>`
     /// with `ProxyState`.
     pub db_pool: std::sync::Arc<sqlx::PgPool>,
+    /// Live reload handle of the process's `EnvFilter` (plan-195 task 3).
+    /// `PATCH /tama/v1/config/structured` applies `log_level` /
+    /// `log_directives` changes through it immediately — no restart.
+    /// `None` when the log runtime is not wired (tests): the apply no-ops
+    /// with a `debug!` and the persisted values take effect at next boot.
+    pub log_filter: Option<
+        tracing_subscriber::reload::Handle<
+            tracing_subscriber::EnvFilter,
+            tracing_subscriber::Registry,
+        >,
+    >,
+    /// Receiver of the log-store writer status (degraded/healthy
+    /// transitions, channel/ring backlog). `None` when the log runtime is
+    /// not wired (tests).
+    pub log_status:
+        Option<std::sync::Arc<tokio::sync::watch::Receiver<tama_core::logstore::LogStoreStatus>>>,
+    /// Broadcast sender for log-store status events, consumed by
+    /// `GET /tama/v1/logs/events` (the log-store SSE, task 4; the
+    /// deleted `takeObservation` user-log receiver is NOT this).
+    /// `None` while no SSE client is connected (same per-endpoint pattern
+    /// as `update_tx`); WebState-stored, not app-global.
+    pub log_events_tx:
+        std::sync::Arc<tokio::sync::Mutex<Option<tokio::sync::broadcast::Sender<String>>>>,
+    /// Second read-endpoint log store connection (task 4) — the read API
+    /// (`GET /tama/v1/logs*`) hands this to the handlers, never the
+    /// writer. `None` in hand-built test states (apps return empty sets).
+    pub log_read: Option<std::sync::Arc<std::sync::Mutex<tama_core::logstore::LogStore>>>,
+    /// On-demand legacy tail provider (task 4): `tamad:*` engine-log
+    /// tails + local `*.log` tails for the read API. `None` in
+    /// hand-built test states (tail sources return empty sets).
+    pub log_tail: Option<std::sync::Arc<dyn tama_core::proxy::tama_handlers::LogTailProvider>>,
 }
 
 // Compile-time check: WebState must be Clone + Send + Sync + 'static for the

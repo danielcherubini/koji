@@ -6,6 +6,7 @@
 //!    always call `handle_response` on every response to handle 401 redirects and CSRF extraction.
 
 pub mod chart_utils;
+pub mod log_page;
 pub mod self_update;
 
 #[cfg(not(feature = "ssr"))]

@@ -369,6 +369,25 @@ impl TamadClient {
         Ok(response.into_inner())
     }
 
+    /// Open the long-lived `StreamLogs` stream (gRPC only): the tamad's
+    /// structured control + engine lines (`StreamInit`, replay, live).
+    ///
+    /// A fresh channel per stream (same rationale as `stream_stats`).
+    /// Dial statuses `UNIMPLEMENTED` / `NOT_FOUND` / `UNAUTHENTICATED`
+    /// surface as `Err` and are treated as terminal by the ingest task
+    /// (see `stream_logs::is_terminal_ingest_status`).
+    pub async fn stream_logs(&self) -> Result<tonic::Streaming<crate::tamad::StreamLogMessage>> {
+        let channel = self
+            .fresh_channel()
+            .await
+            .context("StreamLogs requires a gRPC connection")?;
+        let mut client = crate::tamad::TamadServiceClient::new(channel);
+        let response = client
+            .stream_logs(self.authed(crate::tamad::Empty {}))
+            .await?;
+        Ok(response.into_inner())
+    }
+
     /// Open a fresh gRPC channel (uncached — for long-lived streams).
     async fn fresh_channel(&self) -> Result<tonic::transport::Channel> {
         if !self.connection.protocol.is_grpc() {
@@ -740,6 +759,9 @@ mod tests {
             stats_processes: vec![],
             logs_requests: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             log_messages: vec![],
+            stream_log_frames: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            stream_log_calls: Arc::new(AtomicUsize::new(0)),
+            stream_log_refuse: false,
         };
         let addr = crate::tamad::pool::test_support::start_stub(stub.clone()).await;
         let url = format!("grpc://{addr}");
@@ -791,6 +813,9 @@ mod tests {
             stats_processes: vec![],
             logs_requests: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             log_messages: vec![],
+            stream_log_frames: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            stream_log_calls: Arc::new(AtomicUsize::new(0)),
+            stream_log_refuse: false,
         };
         let addr = crate::tamad::pool::test_support::start_stub(stub).await;
         let conn = crate::tamad::pool::test_support::grpc_conn(
@@ -845,6 +870,9 @@ mod tests {
             stats_processes: vec![],
             logs_requests: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             log_messages: vec![],
+            stream_log_frames: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            stream_log_calls: Arc::new(AtomicUsize::new(0)),
+            stream_log_refuse: false,
         };
         let addr = crate::tamad::pool::test_support::start_stub(stub).await;
         let conn = crate::tamad::pool::test_support::grpc_conn(
@@ -937,6 +965,9 @@ mod tests {
             stats_processes: vec![],
             logs_requests: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             log_messages: vec![],
+            stream_log_frames: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            stream_log_calls: Arc::new(AtomicUsize::new(0)),
+            stream_log_refuse: false,
         }
     }
 

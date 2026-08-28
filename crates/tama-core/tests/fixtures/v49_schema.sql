@@ -36,7 +36,11 @@ CREATE TABLE app_general (
             models_dir TEXT,
             logs_dir TEXT,
             hf_token TEXT,
-            update_check_interval INTEGER NOT NULL DEFAULT 12
+            update_check_interval INTEGER NOT NULL DEFAULT 12,
+            log_directives TEXT,
+            log_retention_days INTEGER NOT NULL DEFAULT 7,
+            log_retention_rows BIGINT NOT NULL DEFAULT 50000,
+            log_retention_max_mb BIGINT NOT NULL DEFAULT 256
         );
 CREATE TABLE app_langfuse (
         id INTEGER PRIMARY KEY CHECK (id = 1),

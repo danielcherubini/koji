@@ -67,13 +67,36 @@ On connect, the stream replays the log head/tail snapshot, then switches to live
 
 Stream benchmark job events. Same format as backend job events above.
 
-## GET /tama/v1/logs/:backend/events
+## GET /tama/v1/logs/stream
 
-Stream real-time log lines for a specific backend. On connect, replays the log snapshot, then switches to live streaming.
+Live tail of the structured log store (plan-195). Polls 200 rows per second
+and pushes every new row matching the filters; `after` anchors the stream to
+an already-seen rowid (default `0`). Accepts the same `level` / `source` /
+`q` / `since` / `until` filters as `GET /tama/v1/logs`. Full contract in
+`docs/api/logs.md`.
 
 | Event | Data |
 |-------|------|
-| `log` | `{ line: "..." }` |
+| `entry` | one `LogEntryDto` (compact single-line JSON) |
+| `keepalive` | `{"keepalive": true}` (empty poll tick) |
+
+## Log Store Events (GET /tama/v1/logs/events)
+
+SSE of the structured-log **writer's** degraded / restored transitions —
+the read endpoints and the drop-marker rows show the *results* of a backlog
+building up; this signal makes the *event* visible (UI banner). Self-describing
+JSON frames on a single `log_store` SSE event; keep-alive comment lines as
+usual. No parameters.
+
+| Event (`data.event`) | Data |
+|-------|------|
+| `log_store_degraded` | `{ event, since, channel_len, ring_len }` — fired when the writer starts dropping (`since` = unix ms the episode began; `channel_len`/`ring_len` = backlog sizes at that moment) |
+| `log_store_restored` | `{ event, had_entries, ring_flushed }` — fired on recovery (`had_entries` = entries held when degraded; `ring_flushed` = whether the overflow ring drained fully) |
+| `Lagged` | `{ Lagged: n }` (client fell behind) |
+
+The drop markers written in-band (`dropped: true` rows, see
+`docs/api/logs.md`) let search show exactly what the writer dropped after
+recovery; the health snapshot at any moment is `GET /tama/v1/logs/status`.
 
 ## GET /tama/v1/system/metrics/stream
 

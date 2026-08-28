@@ -1,6 +1,7 @@
 pub mod client;
 pub mod pool;
 pub mod protocol;
+pub mod stream_logs;
 
 pub mod tamad_service {
     include!(concat!(env!("OUT_DIR"), "/tamad.rs"));
@@ -13,9 +14,10 @@ pub use tamad_service::tamad_service_server::{TamadService, TamadServiceServer};
 pub use tamad_service::{
     CancelJobRequest, CancelJobResponse, Empty, GpuInfo, HealthResponse, InstallProviderRequest,
     JobEvent, JobIdResponse, JobRequest, ListProvidersResponse, LoadModelRequest,
-    LoadModelResponse, LogEntry, LogsRequest, ProcessInfo, ProviderInfo, PullModelRequest,
-    RemoveProviderRequest, RestartProviderRequest, RunBenchmarkRequest, StatsRequest, SystemStats,
-    UnloadModelRequest, UpdateProviderRequest,
+    LoadModelResponse, LogEntry, LoggedLine, LogsRequest, ProcessInfo, ProviderInfo,
+    PullModelRequest, RemoveProviderRequest, RestartProviderRequest, RunBenchmarkRequest,
+    StatsRequest, StreamInit, StreamLogMessage, SystemStats, UnloadModelRequest,
+    UpdateProviderRequest,
 };
 
 #[cfg(test)]

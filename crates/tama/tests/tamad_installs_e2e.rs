@@ -305,6 +305,11 @@ async fn test_install_update_remove_executed_on_tamad() {
         update_tx: Arc::new(tokio::sync::Mutex::new(None)),
         upload_lock: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         db_pool: pool,
+        log_filter: None,
+        log_status: None,
+        log_read: None,
+        log_tail: None,
+        log_events_tx: Arc::new(tokio::sync::Mutex::new(None)),
     });
     let router = Router::new()
         .route("/tama/v1/backends/install", post(install_installation))

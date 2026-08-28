@@ -17,6 +17,20 @@ pub struct General {
     /// How often to check for updates (in hours). Default 12.
     #[serde(default = "defaults::default_update_check_interval")]
     pub update_check_interval: u32,
+    /// Target-specific log directives (RUST_LOG syntax, `target=level` pairs
+    /// comma-separated). Durable override merged into the runtime filter;
+    /// wins over the `RUST_LOG` env var for the same target.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_directives: Option<String>,
+    /// SQLite log store retention: max entry age in days. Default 7.
+    #[serde(default = "defaults::default_log_retention_days")]
+    pub log_retention_days: u32,
+    /// SQLite log store retention: max row count. Default 50,000.
+    #[serde(default = "defaults::default_log_retention_rows")]
+    pub log_retention_rows: u64,
+    /// SQLite log store retention: max estimated size in MiB. Default 256.
+    #[serde(default = "defaults::default_log_retention_max_mb")]
+    pub log_retention_max_mb: u64,
 }
 
 impl Default for General {
@@ -27,6 +41,10 @@ impl Default for General {
             logs_dir: None,
             hf_token: None,
             update_check_interval: defaults::default_update_check_interval(),
+            log_directives: None,
+            log_retention_days: defaults::DEFAULT_LOG_RETENTION_DAYS,
+            log_retention_rows: defaults::DEFAULT_LOG_RETENTION_ROWS,
+            log_retention_max_mb: defaults::DEFAULT_LOG_RETENTION_MAX_MB,
         }
     }
 }
