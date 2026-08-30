@@ -13,6 +13,7 @@
 pub mod image;
 pub mod reconcile;
 pub mod runner;
+pub mod runtime;
 
 // Re-export the live surface for the daemon startup path.
 pub use reconcile::startup_reconcile;

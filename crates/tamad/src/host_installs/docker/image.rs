@@ -10,12 +10,14 @@ use anyhow::{anyhow, Result};
 use std::process::Stdio;
 use tokio::process::Command;
 
-/// Check whether the Docker CLI is available and the daemon is reachable.
+use super::runtime::ContainerRuntime;
+
+/// Check whether the container CLI is available and the daemon is reachable.
 ///
-/// Runs `docker info` and returns `Ok(())` on success. Returns an error if the
-/// docker binary is missing or the daemon cannot be reached.
-pub async fn docker_available() -> Result<()> {
-    let output = Command::new("docker")
+/// Runs `docker info` (or `podman info`) and returns `Ok(())` on success.
+/// Returns an error if the binary is missing or the daemon cannot be reached.
+pub async fn docker_available(runtime: ContainerRuntime) -> Result<()> {
+    let output = Command::new(runtime.command())
         .arg("info")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -25,7 +27,10 @@ pub async fn docker_available() -> Result<()> {
     if output.status.success() {
         Ok(())
     } else {
-        Err(anyhow!("Docker daemon is not reachable"))
+        Err(anyhow!(
+            "container runtime '{}' daemon is not reachable",
+            runtime
+        ))
     }
 }
 
@@ -44,7 +49,7 @@ mod tests {
         // Use only /usr/bin which won't have our fake docker.
         std::env::set_var("PATH", "/usr/bin");
 
-        let result = docker_available().await;
+        let result = docker_available(ContainerRuntime::default()).await;
 
         // Restore original PATH before asserting.
         std::env::set_var("PATH", &original_path);
@@ -118,7 +123,7 @@ mod image_tests {
     async fn test_docker_available_with_fake_docker() {
         let (_tmpdir, _docker_dir, original_path) = set_fake_docker_path();
 
-        let result = docker_available().await;
+        let result = docker_available(ContainerRuntime::default()).await;
         assert!(
             result.is_ok(),
             "docker_available should succeed with fake docker: {:?}",

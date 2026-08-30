@@ -16,6 +16,7 @@ use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use tokio::process::Command;
 
+use super::runtime::ContainerRuntime;
 use tama_core::installations::{DockerConfig, DockerVolume};
 
 /// A spawned Docker container.
@@ -232,8 +233,8 @@ async fn getent_gid(name: &str) -> Result<String> {
 // ─── Image Management ────────────────────────────────────────────
 
 /// Whether a Docker image is already present locally.
-pub async fn is_image_present(image: &str) -> Result<bool> {
-    let output = Command::new("docker")
+pub async fn is_image_present(runtime: ContainerRuntime, image: &str) -> Result<bool> {
+    let output = Command::new(runtime.command())
         .arg("image")
         .arg("inspect")
         .arg(image)
@@ -252,8 +253,8 @@ pub async fn is_image_present(image: &str) -> Result<bool> {
 }
 
 /// Pull a Docker image (blocking, bounded by `timeout_secs`).
-pub async fn pull_image(image: &str, timeout_secs: u64) -> Result<()> {
-    let mut child = Command::new("docker")
+pub async fn pull_image(runtime: ContainerRuntime, image: &str, timeout_secs: u64) -> Result<()> {
+    let mut child = Command::new(runtime.command())
         .arg("pull")
         .arg(image)
         .stdout(std::process::Stdio::piped())
@@ -288,6 +289,7 @@ pub fn container_name_for(model_name: &str) -> String {
 /// Builds and executes `docker run` with all flags from the config. Returns
 /// a `DockerContainer` (name, id, pid).
 pub async fn spawn_container(
+    runtime: ContainerRuntime,
     model_name: &str,
     config: &DockerConfig,
     host_port: u16,
@@ -298,9 +300,9 @@ pub async fn spawn_container(
     let container_name = container_name_for(model_name);
 
     // Clean up any existing container with this name first
-    let _ = remove_container(&container_name).await;
+    let _ = remove_container(runtime, &container_name).await;
 
-    let mut cmd = Command::new("docker");
+    let mut cmd = Command::new(runtime.command());
     cmd.arg("run");
     cmd.arg("-d");
     cmd.arg("--name").arg(&container_name);
@@ -357,26 +359,26 @@ pub async fn spawn_container(
     // The host PID must be present AND non-zero: `kill_process_group(0)`
     // would signal tamad's OWN process group (kill(-0) == kill(0)), so a
     // missing/zero inspect PID is a hard error, never a silent 0.
-    let inspected = match inspect_container(&id).await {
+    let inspected = match inspect_container(runtime, &id).await {
         Ok(v) => v,
         Err(e) => {
-            let _ = stop_container(&id).await;
-            let _ = remove_container(&id).await;
+            let _ = stop_container(runtime, &id).await;
+            let _ = remove_container(runtime, &id).await;
             return Err(e.context("inspecting spawned container for its host PID"));
         }
     };
     let inspected = match inspected {
         Some(v) => v,
         None => {
-            let _ = stop_container(&id).await;
-            let _ = remove_container(&id).await;
+            let _ = stop_container(runtime, &id).await;
+            let _ = remove_container(runtime, &id).await;
             anyhow::bail!("container '{container_name}' vanished immediately after run");
         }
     };
     let pid = inspected.state.pid.map(|p| p as u32).filter(|p| *p != 0);
     let Some(pid) = pid else {
-        let _ = stop_container(&id).await;
-        let _ = remove_container(&id).await;
+        let _ = stop_container(runtime, &id).await;
+        let _ = remove_container(runtime, &id).await;
         anyhow::bail!("docker did not report a usable host PID for container '{container_name}'");
     };
 
@@ -388,8 +390,8 @@ pub async fn spawn_container(
 }
 
 /// Stop a Docker container. Tolerates "No such container".
-pub async fn stop_container(name: &str) -> Result<()> {
-    let output = Command::new("docker")
+pub async fn stop_container(runtime: ContainerRuntime, name: &str) -> Result<()> {
+    let output = Command::new(runtime.command())
         .arg("stop")
         .arg("-t")
         .arg("5")
@@ -407,8 +409,11 @@ pub async fn stop_container(name: &str) -> Result<()> {
 }
 
 /// Inspect a container, returning parsed state (None when absent).
-pub async fn inspect_container(name: &str) -> Result<Option<DockerInspect>> {
-    let output = Command::new("docker")
+pub async fn inspect_container(
+    runtime: ContainerRuntime,
+    name: &str,
+) -> Result<Option<DockerInspect>> {
+    let output = Command::new(runtime.command())
         .arg("inspect")
         .arg(name)
         .stdout(std::process::Stdio::piped())
@@ -429,8 +434,8 @@ pub async fn inspect_container(name: &str) -> Result<Option<DockerInspect>> {
 }
 
 /// Remove a Docker container. Tolerates "No such container".
-pub async fn remove_container(name: &str) -> Result<()> {
-    let output = Command::new("docker")
+pub async fn remove_container(runtime: ContainerRuntime, name: &str) -> Result<()> {
+    let output = Command::new(runtime.command())
         .arg("rm")
         .arg("-f")
         .arg(name)
@@ -482,8 +487,12 @@ pub fn logs_follow_args(container_name: &str) -> Vec<String> {
 /// (e.g. "No such container") is an error carrying docker's stderr so the
 /// caller can log what actually happened; the server's `logs` handler
 /// degrades that to an empty stream.
-pub async fn tail_container_logs(container_name: &str, max_lines: usize) -> Result<Vec<String>> {
-    let output = Command::new("docker")
+pub async fn tail_container_logs(
+    runtime: ContainerRuntime,
+    container_name: &str,
+    max_lines: usize,
+) -> Result<Vec<String>> {
+    let output = Command::new(runtime.command())
         .args(logs_tail_args(container_name, max_lines))
         .output()
         .await
@@ -511,7 +520,7 @@ mod tests {
     #[tokio::test]
     async fn test_remove_container_no_such_container_ok() {
         let (_tmpdir, _dir, original, _guard) = guarded_fake_docker().await;
-        let result = remove_container("nonexistent-container").await;
+        let result = remove_container(ContainerRuntime::default(), "nonexistent-container").await;
         restore_docker_path(&original);
         assert!(result.is_ok(), "remove should tolerate missing container");
     }
@@ -519,7 +528,7 @@ mod tests {
     #[tokio::test]
     async fn test_stop_container_no_such_container_ok() {
         let (_tmpdir, _dir, original, _guard) = guarded_fake_docker().await;
-        let result = stop_container("nonexistent-container").await;
+        let result = stop_container(ContainerRuntime::default(), "nonexistent-container").await;
         restore_docker_path(&original);
         assert!(result.is_ok(), "stop should tolerate missing container");
     }
@@ -527,7 +536,7 @@ mod tests {
     #[tokio::test]
     async fn test_inspect_container_no_such_container_returns_none() {
         let (_tmpdir, _dir, original, _guard) = guarded_fake_docker().await;
-        let result = inspect_container("nonexistent-container").await;
+        let result = inspect_container(ContainerRuntime::default(), "nonexistent-container").await;
         restore_docker_path(&original);
         assert!(
             result.is_ok(),
@@ -564,12 +573,20 @@ mod tests {
         // Create the container via the same spawn path the lifecycle uses.
         let models_dir = tempfile::tempdir().unwrap();
         let config = fake_docker_config_for_tests();
-        let container = spawn_container("model-a", &config, 18099, vec![], &[], models_dir.path())
-            .await
-            .expect("fake container spawn");
+        let container = spawn_container(
+            ContainerRuntime::default(),
+            "model-a",
+            &config,
+            18099,
+            vec![],
+            &[],
+            models_dir.path(),
+        )
+        .await
+        .expect("fake container spawn");
         assert_eq!(container.name, "tama-model-a");
 
-        let lines = tail_container_logs(&container.name, 200)
+        let lines = tail_container_logs(ContainerRuntime::default(), &container.name, 200)
             .await
             .expect("tail must succeed for a live container");
         restore_docker_path(&original);
@@ -590,7 +607,7 @@ mod tests {
     #[tokio::test]
     async fn test_tail_container_logs_missing_container_errors() {
         let (_tmpdir, _dir, original, _guard) = guarded_fake_docker().await;
-        let err = tail_container_logs("tama-ghost", 200)
+        let err = tail_container_logs(ContainerRuntime::default(), "tama-ghost", 200)
             .await
             .expect_err("missing container must error");
         restore_docker_path(&original);

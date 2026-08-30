@@ -363,6 +363,7 @@ mod tests {
             models_dir: Some(dir.path().join("models")),
             data_dir: Some(dir.keep()),
             no_replay_desired: false,
+            container_runtime: crate::host_installs::docker::runtime::ContainerRuntime::default(),
         };
         Arc::new(TamadState::from_cli(&args).unwrap())
     }

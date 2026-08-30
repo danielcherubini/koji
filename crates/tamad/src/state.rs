@@ -17,6 +17,8 @@ use tracing::{info, warn};
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 
+use crate::host_installs::docker::runtime::ContainerRuntime;
+
 pub mod store;
 
 /// Runtime state for the tamad daemon.
@@ -41,6 +43,9 @@ pub struct TamadState {
     pub proxy_token: Option<String>,
     /// This tamad's bearer token, persisted at `<data_dir>/tamad.token`.
     token: String,
+    /// Container runtime (`docker` | `podman`) for docker-backed backends,
+    /// resolved from `--container-runtime` at startup.
+    pub container_runtime: ContainerRuntime,
     /// Per-model lifecycle store on host disk, `<data_dir>/state/` (T1).
     /// First production read lands with the T2 respawn sweep.
     #[allow(dead_code)]
@@ -143,6 +148,7 @@ impl TamadState {
             proxy_token,
             token,
             store: Arc::new(store),
+            container_runtime: args.container_runtime,
         })
     }
 
@@ -175,6 +181,7 @@ mod tests {
             models_dir: None,
             data_dir: Some(data_dir.to_path_buf()),
             no_replay_desired: false,
+            container_runtime: crate::host_installs::docker::runtime::ContainerRuntime::default(),
         }
     }
 
@@ -234,6 +241,7 @@ mod tests {
             models_dir: Some(dir.path().join("weights")),
             data_dir: Some(dir.path().to_path_buf()),
             no_replay_desired: false,
+            container_runtime: crate::host_installs::docker::runtime::ContainerRuntime::default(),
         };
 
         let s = TamadState::from_cli(&args).unwrap();

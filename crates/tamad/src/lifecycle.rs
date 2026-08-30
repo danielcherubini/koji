@@ -362,8 +362,11 @@ impl TamadLifecycle {
                     // down rather than kill an instance this row doesn't own.
                     let container_name =
                         crate::host_installs::docker::runner::container_name_for(&entry.model_name);
-                    match crate::host_installs::docker::runner::inspect_container(&container_name)
-                        .await
+                    match crate::host_installs::docker::runner::inspect_container(
+                        self.state.container_runtime,
+                        &container_name,
+                    )
+                    .await
                     {
                         Ok(Some(inspect)) if inspect.state.pid == Some(entry.pid as u64) => {
                             // Teardown by inspected id when available; fall back
@@ -372,10 +375,12 @@ impl TamadLifecycle {
                             let teardown_target =
                                 inspect.id.clone().unwrap_or_else(|| container_name.clone());
                             let _ = crate::host_installs::docker::runner::stop_container(
+                                self.state.container_runtime,
                                 &teardown_target,
                             )
                             .await;
                             let _ = crate::host_installs::docker::runner::remove_container(
+                                self.state.container_runtime,
                                 &teardown_target,
                             )
                             .await;
@@ -808,13 +813,14 @@ impl TamadLifecycle {
 
         // Image presence: pull on first load (images can be large — allow a
         // generous timeout). Fail when the host genuinely can't fetch it.
-        if !crate::host_installs::docker::runner::is_image_present(&config.image).await? {
+        let runtime = self.state.container_runtime;
+        if !crate::host_installs::docker::runner::is_image_present(runtime, &config.image).await? {
             info!(
                 model = %req.model_name,
                 image = %config.image,
                 "pulling docker image"
             );
-            crate::host_installs::docker::runner::pull_image(&config.image, 1800)
+            crate::host_installs::docker::runner::pull_image(runtime, &config.image, 1800)
                 .await
                 .with_context(|| format!("pulling docker image '{}'", config.image))?;
         }
@@ -855,6 +861,7 @@ impl TamadLifecycle {
         );
 
         let container = crate::host_installs::docker::runner::spawn_container(
+            runtime,
             &req.model_name,
             &config,
             host_port,
@@ -982,8 +989,16 @@ impl TamadLifecycle {
             );
             // docker stop/rm accept full container ids — teardown is bound to
             // THIS instance even if the deterministic name was reused.
-            let _ = crate::host_installs::docker::runner::stop_container(&container_id).await;
-            let _ = crate::host_installs::docker::runner::remove_container(&container_id).await;
+            let _ = crate::host_installs::docker::runner::stop_container(
+                self.state.container_runtime,
+                &container_id,
+            )
+            .await;
+            let _ = crate::host_installs::docker::runner::remove_container(
+                self.state.container_runtime,
+                &container_id,
+            )
+            .await;
             // Re-check ownership AFTER teardown too — the kill window is where
             // a concurrent writer is most likely to have moved the row on.
             if self.owns_starting_row(&req.model_name, pid).await {
@@ -1054,8 +1069,16 @@ impl TamadLifecycle {
         if !entry.spec.docker_config_json.is_empty() {
             let _ = kill_process_group(entry.pid).await;
             let name = crate::host_installs::docker::runner::container_name_for(model_name);
-            let _ = crate::host_installs::docker::runner::stop_container(&name).await;
-            let _ = crate::host_installs::docker::runner::remove_container(&name).await;
+            let _ = crate::host_installs::docker::runner::stop_container(
+                self.state.container_runtime,
+                &name,
+            )
+            .await;
+            let _ = crate::host_installs::docker::runner::remove_container(
+                self.state.container_runtime,
+                &name,
+            )
+            .await;
             info!(model = %model_name, "docker backend container unloaded");
             return Ok(());
         }

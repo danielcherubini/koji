@@ -421,8 +421,12 @@ impl TamadService for TamadServiceImpl {
             Some(e) if !e.spec.docker_config_json.is_empty() => {
                 let container =
                     crate::host_installs::docker::runner::container_name_for(&e.model_name);
-                match crate::host_installs::docker::runner::tail_container_logs(&container, 200)
-                    .await
+                match crate::host_installs::docker::runner::tail_container_logs(
+                    crate::host_installs::docker::runtime::ContainerRuntime::default(),
+                    &container,
+                    200,
+                )
+                .await
                 {
                     Ok(lines) => lines,
                     Err(e) => {
@@ -924,6 +928,7 @@ pub(crate) mod test_support {
             models_dir: Some(dir.path().join("models")),
             data_dir: Some(dir.path().join("data")),
             no_replay_desired: false,
+            container_runtime: crate::host_installs::docker::runtime::ContainerRuntime::default(),
         };
         (Arc::new(TamadState::from_cli(&args).unwrap()), dir)
     }
@@ -1238,6 +1243,7 @@ mod tests {
         // The fake container the tail will read from.
         let models_dir = tempfile::tempdir().unwrap();
         let container = spawn_container(
+            crate::host_installs::docker::runtime::ContainerRuntime::default(),
             "model-a",
             &fake_docker_config_for_tests(),
             18091,
@@ -1308,6 +1314,7 @@ mod tests {
 
         let models_dir = tempfile::tempdir().unwrap();
         spawn_container(
+            crate::host_installs::docker::runtime::ContainerRuntime::default(),
             "model-b",
             &fake_docker_config_for_tests(),
             18093,

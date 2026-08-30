@@ -6,6 +6,8 @@ use anyhow::Result;
 use tracing::{info, warn};
 use tracing_subscriber::layer::SubscriberExt;
 
+use crate::host_installs::docker::runtime::ContainerRuntime;
+
 mod bench;
 mod compaction_server;
 mod download;
@@ -42,6 +44,10 @@ struct CliArgs {
     /// operational switch (an operator deploy-safety valve — there is no
     /// proxy-side toggle, so "no feature flag" holds).
     no_replay_desired: bool,
+    /// Container runtime for docker-backed backends: `docker` (default) or
+    /// `podman`. A host-property selector resolved once at startup and
+    /// threaded into the docker runner / reconcile / log-tail call sites.
+    container_runtime: ContainerRuntime,
 }
 
 impl CliArgs {
@@ -53,6 +59,7 @@ impl CliArgs {
         let mut models_dir: Option<PathBuf> = None;
         let mut data_dir: Option<PathBuf> = None;
         let mut no_replay_desired = false;
+        let mut container_runtime = ContainerRuntime::default();
 
         let mut args = env::args().skip(1);
         while let Some(arg) = args.next() {
@@ -78,6 +85,13 @@ impl CliArgs {
                 "--no-replay-desired" => {
                     no_replay_desired = true;
                 }
+                "--container-runtime" => {
+                    let raw = args.next().unwrap_or_else(|| "docker".to_string());
+                    container_runtime = raw.parse().unwrap_or_else(|e| {
+                        eprintln!("Invalid --container-runtime: {e}");
+                        std::process::exit(1);
+                    });
+                }
                 _ => {
                     eprintln!("Unknown argument: {}", arg);
                     std::process::exit(1);
@@ -93,6 +107,7 @@ impl CliArgs {
             models_dir,
             data_dir,
             no_replay_desired,
+            container_runtime,
         })
     }
 }
@@ -162,10 +177,10 @@ async fn main() -> Result<()> {
     // Reap docker containers left on THIS HOST by a previous crashed
     // instance (the proxy used to do this on its own startup; now the host
     // owner — the tamad — does it). No-ops when Docker is unavailable.
-    let startup = crate::host_installs::docker::startup_reconcile();
+    let startup = crate::host_installs::docker::startup_reconcile(args.container_runtime);
     tokio::spawn(async move {
         if let Err(e) = startup.await {
-            warn!(error = %e, "docker startup reconciliation failed (continuing)");
+            warn!(error = %e, "container startup reconciliation failed (continuing)");
         }
     });
 

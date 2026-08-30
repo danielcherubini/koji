@@ -41,6 +41,7 @@ use tokio_stream::StreamExt;
 use tracing::{debug, warn};
 
 use crate::host_installs::docker::runner::{container_name_for, logs_follow_args};
+use crate::host_installs::docker::runtime::ContainerRuntime;
 use crate::process_table::{ProcessEntry, ProcessTable};
 
 use super::{model_source, now_unix_ms, PushEvent};
@@ -269,7 +270,7 @@ async fn spawn_tail_child(
 )> {
     let container = container_name_for(model);
     let source = model_source(model);
-    let mut child = Command::new("docker")
+    let mut child = Command::new(ContainerRuntime::default().command())
         .args(logs_follow_args(&container))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

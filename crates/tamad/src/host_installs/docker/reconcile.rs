@@ -9,21 +9,25 @@
 
 use super::image::docker_available;
 use super::runner;
+use super::runtime::ContainerRuntime;
 use anyhow::Result;
 
 /// Reap any managed containers left behind from crashed Tama instances.
 ///
-/// 1. Check if Docker is available via `docker info`. If unavailable, log a warning and return `Ok(())`.
-/// 2. Run `docker ps -a --filter label=tama.managed=true` to list managed containers.
-/// 3. For each container found, call `docker rm -f {id}` to remove it.
-pub async fn startup_reconcile() -> Result<()> {
-    // Check if Docker is available — if not, skip reconciliation (don't block startup).
-    if docker_available().await.is_err() {
-        tracing::warn!("Docker not available, skipping startup reconciliation");
+/// 1. Check if the container runtime is available via `info`. If unavailable, log a warning and return `Ok(())`.
+/// 2. Run `ps -a --filter label=tama.managed=true` to list managed containers.
+/// 3. For each container found, call `rm -f {id}` to remove it.
+pub async fn startup_reconcile(runtime: ContainerRuntime) -> Result<()> {
+    // Check if the runtime is available — if not, skip reconciliation (don't block startup).
+    if docker_available(runtime).await.is_err() {
+        tracing::warn!(
+            "container runtime '{}' not available, skipping startup reconciliation",
+            runtime
+        );
         return Ok(());
     }
 
-    let output = tokio::process::Command::new("docker")
+    let output = tokio::process::Command::new(runtime.command())
         .args([
             "ps",
             "-a",
@@ -49,7 +53,7 @@ pub async fn startup_reconcile() -> Result<()> {
         if parts.len() == 2 {
             let _id = parts[0];
             let name = parts[1];
-            match runner::remove_container(name).await {
+            match runner::remove_container(runtime, name).await {
                 Ok(()) => {
                     tracing::info!("Reaped stale managed container: {}", name);
                     removed_count += 1;
@@ -74,6 +78,7 @@ pub async fn startup_reconcile() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host_installs::docker::runtime::ContainerRuntime;
     use std::env;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
@@ -169,7 +174,9 @@ mod tests {
         );
 
         // Run reconciliation.
-        startup_reconcile().await.expect("reconcile should succeed");
+        startup_reconcile(ContainerRuntime::default())
+            .await
+            .expect("reconcile should succeed");
 
         // Verify managed containers were removed, non-managed was left alone.
         assert!(
@@ -197,7 +204,7 @@ mod tests {
         create_container(&containers_dir, "xyz001", "other-container", false);
 
         // Should succeed without errors.
-        startup_reconcile()
+        startup_reconcile(ContainerRuntime::default())
             .await
             .expect("reconcile should succeed with no managed containers");
 
@@ -213,7 +220,7 @@ mod tests {
         let _guard = setup_fake_docker();
 
         // No containers at all — should succeed without errors.
-        startup_reconcile()
+        startup_reconcile(ContainerRuntime::default())
             .await
             .expect("reconcile should succeed with no containers");
     }
@@ -224,7 +231,7 @@ mod tests {
         let original_path = env::var("PATH").unwrap_or_default();
         env::set_var("PATH", "/nonexistent");
 
-        let result = startup_reconcile().await;
+        let result = startup_reconcile(ContainerRuntime::default()).await;
 
         // Restore PATH.
         env::set_var("PATH", &original_path);
