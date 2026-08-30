@@ -551,6 +551,12 @@ mod tests {
             let mut collector =
                 StatsCollector::new(test_state()).with_scrape_interval(Duration::from_millis(1));
             let first = collector.tick(vec![spec_process(seed.uri())]);
+            // Guarantee at least one scrape interval elapses between the
+            // two ticks: on fast CI machines tick 2 can land <1ms after
+            // tick 1's scrape, the `last_scrape` guard would throttle it
+            // and the 2nd tick would observe no fresh window (the
+            // presence-assert below would fail).
+            std::thread::sleep(Duration::from_millis(5));
             let second = collector.tick(vec![spec_process(next.uri())]);
             (first, second)
         })
