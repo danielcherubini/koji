@@ -7,10 +7,11 @@
 //!   level chips (minimum level → `level=`), time presets (`since`),
 //!   full-text search (`q`).
 //! - **Live tail** via server-sent `entry` events on
-//!   `/tama/v1/logs/stream?…&after=<max id seen>`; newest-first PREPEND into
-//!   a capped in-buffer row list (2 000, drop-oldest with a "…N older
-//!   trimmed" line); scrolling up pauses, "jump to latest" resumes and
-//!   flushes the held rows.
+//!   `/tama/v1/logs/stream?…&after=<max id seen>`; newest-appended
+//!   into a capped in-buffer row list (2 000, drop-oldest from the head
+//!   with a "…N older trimmed" line); scrolling up (away from the
+//!   bottom) pauses, "jump to latest" scrolls to the bottom, resumes
+//!   and flushes the held rows.
 //! - **Writer-health banner** seeded by a one-shot `GET /logs/status` and
 //!   live via the `log_store` self-describing frames on
 //!   `GET /tama/v1/logs/events`; dismissible per browser session.
@@ -33,7 +34,8 @@ use crate::utils::{get_request, handle_response};
 const PAGE_LIMIT: u32 = 1_000;
 /// Source selected when the URL carries none.
 const DEFAULT_SOURCE: &str = "proxy";
-/// How far (px) you may be scrolled up before live follow pauses.
+/// How far (px) you may be scrolled away from the BOTTOM before
+/// live follow pauses.
 const SCROLL_FOLLOW_TOLERANCE_PX: i32 = 4;
 /// Search-box debounce (ms).
 const SEARCH_DEBOUNCE_MS: u32 = 400;
@@ -199,8 +201,8 @@ impl PageFilters {
     }
 }
 
-/// Prepend `incoming` rows (newest-first) onto `rows`, or hold them in
-/// `pending` while paused; dedupes by id and trims the oldest tail past
+/// Append `incoming` rows (chronological, oldest→newest) onto `rows`, or hold them in
+/// `pending` while paused; dedupes by id and trims the oldest head past
 /// `MAX_BUFFER_ROWS`.
 fn ingest_rows(
     rows: RwSignal<Vec<LogEntryRow>>,
@@ -227,25 +229,27 @@ fn ingest_rows(
     if live.get_untracked() {
         let current_len = rows.get_untracked().len();
         let drop = lp::buffer_trim(current_len, fresh.len(), MAX_BUFFER_ROWS);
-        let mut next = fresh; // newest-first: prepend, keep newest
-        next.extend(rows.get_untracked());
-        next.truncate(next.len().saturating_sub(drop));
-        trimmed_total.update(|t| *t = t.saturating_add(drop));
+        let mut next = rows.get_untracked();
+        next.extend(fresh); // chronological: oldest first
+        if drop > 0 {
+            next.drain(0..drop); // the excess is the oldest head
+            trimmed_total.update(|t| *t = t.saturating_add(drop));
+        }
         rows.set(next);
     } else {
         pending.update(|v| v.extend(fresh));
     }
 }
 
-/// Pin `#id`'s scroll position to the absolute top (newest rows live
-/// there: the page renders newest-first). No-op when the element is
+/// Pin `#id`'s scroll position to the absolute bottom (newest rows live
+/// there: the page renders oldest→newest). No-op when the element is
 /// absent (page not mounted yet) — the caller already decided to follow.
-fn force_scroll_top(id: &str) {
+fn force_scroll_bottom(id: &str) {
     if let Some(window) =
         web_sys::window().and_then(|w| w.document().and_then(|d| d.get_element_by_id(id)))
     {
         if let Ok(el) = window.dyn_into::<web_sys::HtmlElement>() {
-            el.set_scroll_top(0);
+            el.set_scroll_top(el.scroll_height());
         }
     }
 }
@@ -412,9 +416,10 @@ pub fn Logs() -> impl IntoView {
         // has anchored `max_id` (see re-key inside the task).
         let gen_c = stream_gen;
         spawn_local(async move {
-            // Initial page: filtered, newest first.
+            // Initial page: filtered, oldest first (oldest at the top
+            // of the buffer / bottom-pinned view lands on the newest).
             let qstring = q.api_query(server_now.get_untracked());
-            let page_url = format!("/tama/v1/logs?{qstring}&limit={PAGE_LIMIT}&order=desc");
+            let page_url = format!("/tama/v1/logs?{qstring}&limit={PAGE_LIMIT}&order=asc");
             match get_request(&page_url).send().await {
                 Ok(resp) => {
                     if handle_response(&resp) {
@@ -442,6 +447,19 @@ pub fn Logs() -> impl IntoView {
                                         trimmed_total.set(dropped_by_cap);
                                     }
                                     rows.set(mapped);
+
+                                    // Land the viewport on the newest rows (the
+                                    // buffer's tail / bottom); re-assert once Leptos
+                                    // has rendered the batch (the immediate read can
+                                    // predate the layout).
+                                    force_scroll_bottom("log-entries");
+                                    let landing_live = live;
+                                    wasm_bindgen_futures::spawn_local(async move {
+                                        gloo_timers::future::TimeoutFuture::new(80).await;
+                                        if landing_live.get_untracked() {
+                                            force_scroll_bottom("log-entries");
+                                        }
+                                    });
                                 }
                                 Err(e) => {
                                     page_error.set(Some(format!("Parse error: {e}")));
@@ -552,6 +570,16 @@ pub fn Logs() -> impl IntoView {
                             batch_max_id,
                             batch,
                         );
+                        // Keep the bottom pinned while following: re-assert the
+                        // bottom edge once the appended rows are laid out.
+                        if batch_live.get() {
+                            wasm_bindgen_futures::spawn_local(async move {
+                                gloo_timers::future::TimeoutFuture::new(80).await;
+                                if batch_live.get() {
+                                    force_scroll_bottom("log-entries");
+                                }
+                            });
+                        }
                     }
                 });
             },
@@ -780,7 +808,7 @@ pub fn Logs() -> impl IntoView {
             </a>
         </div>
 
-        // Entries — newest first; NEW rows PREPEND.
+        // Entries — oldest first (top); NEW rows APPEND at the bottom.
         <div
             class="log-entries"
             id="log-entries"
@@ -790,7 +818,12 @@ pub fn Logs() -> impl IntoView {
                 else {
                     return;
                 };
-                live.set(el.scroll_top() <= SCROLL_FOLLOW_TOLERANCE_PX);
+                // Follow = at the bottom (newest rows live there).
+                // (web-sys 0.3 exposes no `scrollBottom`; distance to the
+                // bottom edge = scrollHeight - clientHeight - scrollTop.)
+                let distance_to_bottom =
+                    el.scroll_height() - el.client_height() - el.scroll_top();
+                live.set(distance_to_bottom <= SCROLL_FOLLOW_TOLERANCE_PX);
             }
         >
             // Jump-to-latest while paused (flushes held rows + resumes).
@@ -816,15 +849,17 @@ pub fn Logs() -> impl IntoView {
                                         held,
                                     );
                                 }
-                                force_scroll_top("log-entries");
-                                // Re-assert after Leptos flushes the prepended
-                                // rows (the flush grows the content above the
+                                force_scroll_bottom("log-entries");
+                                // Re-assert after Leptos flushes the appended
+                                // rows (the flush grows the content below the
                                 // viewport, shifting the scroll offset — one
                                 // scroll event later the live check sees us
-                                // top-locked again).
+                                // bottom-locked again).
                                 wasm_bindgen_futures::spawn_local(async move {
                                     gloo_timers::future::TimeoutFuture::new(80).await;
-                                    force_scroll_top("log-entries");
+                                    if live.get() {
+                                        force_scroll_bottom("log-entries");
+                                    }
                                 });
                             }
                         >
@@ -832,6 +867,20 @@ pub fn Logs() -> impl IntoView {
                         </button>
                     }
                     .into_any()
+                }
+            }}
+            // Buffer-trim notice: trimmed rows are OLDER than the buffered
+            // window, and the oldest buffered rows sit at the top — so the
+            // notice renders at the top of the scroll area.
+            {move || {
+                let t = trimmed_total.get();
+                if t > 0 {
+                    view! {
+                        <div class="log-trimmed">{format!("…{t} older rows trimmed")}</div>
+                    }
+                    .into_any()
+                } else {
+                    view! { <div></div> }.into_any()
                 }
             }}
             {move || {
@@ -933,17 +982,6 @@ pub fn Logs() -> impl IntoView {
                     </div>
                 }
                 .into_any()
-            }}
-            {move || {
-                let t = trimmed_total.get();
-                if t > 0 {
-                    view! {
-                        <div class="log-trimmed">{format!("…{t} older rows trimmed")}</div>
-                    }
-                    .into_any()
-                } else {
-                    view! { <div></div> }.into_any()
-                }
             }}
         </div>
     }

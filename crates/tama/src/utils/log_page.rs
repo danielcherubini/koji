@@ -321,8 +321,10 @@ pub fn row_from_parts(
     }
 }
 
-/// How many rows to drop from the (oldest) end once `incoming` rows are
-/// prepended on top of `buffer_len` while staying `<= max`. `0` under cap.
+/// How many rows to drop from the OLDEST end once `incoming` rows are
+/// added to `buffer_len` while staying `<= max`. `0` under cap.
+/// (Which end is the oldest is decided by the caller: the page keeps
+/// the buffer chronological, oldest at the head.)
 pub fn buffer_trim(buffer_len: usize, incoming: usize, max: usize) -> usize {
     (buffer_len.saturating_add(incoming)).saturating_sub(max)
 }
