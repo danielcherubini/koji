@@ -218,9 +218,12 @@
 
 /* Structured fields disclosure: inline toggle at the row's end; when
    OPEN the whole detail block is auto-placed onto a full-width
-   second row (its span conflicts with the row-1 cells). */
+   second row (its grid-row:1 conflicts with the row-1 cells).
+   Floating grid-row lock: the toggle stays on line 1 even if the
+   loaded stylesheet omits the extra `auto` column track. */
 .log-row__fields {
   grid-column: 5;
+  grid-row: 1;
   justify-self: end;
   font-size: 0.62rem;
   color: var(--text-muted);
